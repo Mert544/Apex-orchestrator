@@ -1,11 +1,15 @@
+from pathlib import Path
+
 from app.models.enums import NodeStatus
 from app.models.report import FinalReport
 from app.skills.action_generator import ActionGenerator
+from app.tools.project_profile import ProjectProfiler
 
 
 class Synthesizer:
-    def __init__(self) -> None:
+    def __init__(self, project_root: str | Path | None = None) -> None:
         self.action_generator = ActionGenerator()
+        self.project_root = Path(project_root) if project_root is not None else None
 
     def synthesize(self, objective: str, nodes):
         report = FinalReport(objective=objective)
@@ -47,5 +51,8 @@ class Synthesizer:
                 report.main_findings.append(node.claim)
 
         report.key_risks = list(dict.fromkeys(report.key_risks))
-        report.recommended_actions = self.action_generator.generate(sorted_nodes)
+        profile = None
+        if self.project_root is not None and self.project_root.exists():
+            profile = ProjectProfiler(self.project_root).profile()
+        report.recommended_actions = self.action_generator.generate(sorted_nodes, profile=profile)
         return report
