@@ -24,7 +24,7 @@ def main() -> None:
         config=config,
         decomposer=decomposer,
         validator=validator,
-        synthesizer=Synthesizer(),
+        synthesizer=Synthesizer(project_root=target_root),
     )
 
     objective = (
