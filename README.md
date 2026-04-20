@@ -116,6 +116,9 @@ config/
 
 tests/
 └── test_*.py        # core verification suite
+
+examples/
+└── synthetic_shop/  # intentionally imperfect demo project
 ```
 
 ## How it works
@@ -191,6 +194,25 @@ To run against another project:
 export EPISTEMIC_TARGET_ROOT=/absolute/path/to/your/project
 python -m app.main
 ```
+
+## Try the demo project
+
+A synthetic project is included under `examples/synthetic_shop`.
+It is intentionally small, centralized, partially tested, and contains sensitive/auth/payment surfaces so the orchestrator has something meaningful to find.
+
+Run the engine against it like this:
+
+```bash
+export EPISTEMIC_TARGET_ROOT=$(pwd)/examples/synthetic_shop
+python -m app.main
+```
+
+What you should expect to see in the report:
+
+- dependency hub claims around `order_service.py`
+- sensitive surface claims around auth/payment files
+- validation gap or untested module claims
+- configuration and automation-related signals
 
 ## Recommended usage modes
 
