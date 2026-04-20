@@ -1,0 +1,7 @@
+max_depth: 3
+max_total_nodes: 20
+top_k_questions: 2
+min_security: 0.80
+min_quality: 0.60
+min_novelty: 0.20
+mode: balanced
