@@ -1,0 +1,6 @@
+constitution:
+  require_four_question_classes: true
+  require_counter_evidence: true
+  downgrade_unsupported_claims: true
+  stop_low_value_branches: true
+  show_confidence_structure_in_final: true
