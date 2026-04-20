@@ -16,6 +16,7 @@ from app.policies.constitution import (
 )
 from app.policies.scoring import score_confidence, score_question_priority
 from app.skills.assumption_extractor import AssumptionExtractor
+from app.skills.claim_analyzer import ClaimAnalyzer
 from app.skills.question_generator import QuestionGenerator
 from app.skills.quality_judge import QualityJudge
 from app.skills.security_governor import SecurityGovernor
@@ -30,6 +31,7 @@ class FractalResearchOrchestrator:
 
         self.graph = GraphStore()
         self.assumption_extractor = AssumptionExtractor()
+        self.claim_analyzer = ClaimAnalyzer()
         self.question_generator = QuestionGenerator()
         self.quality_judge = QualityJudge()
         self.security_governor = SecurityGovernor()
@@ -40,12 +42,26 @@ class FractalResearchOrchestrator:
 
     def run(self, objective: str):
         root_claims = self.decomposer.decompose(objective)
-        for i, claim in enumerate(root_claims):
-            node = ResearchNode(id=f"root-{i}", claim=claim, depth=0)
+        root_nodes = [self._make_node(id=f"root-{i}", claim=claim, depth=0) for i, claim in enumerate(root_claims)]
+        root_nodes.sort(key=lambda n: n.claim_priority, reverse=True)
+
+        for node in root_nodes:
             self.graph.add_node(node)
             self.budget.consume_node()
             self._expand(node)
         return self.synthesizer.synthesize(objective, self.graph.get_all_nodes())
+
+    def _make_node(self, id: str, claim: str, depth: int, parent_ids: list[str] | None = None) -> ResearchNode:
+        analysis = self.claim_analyzer.analyze(claim)
+        return ResearchNode(
+            id=id,
+            claim=claim,
+            parent_ids=parent_ids or [],
+            depth=depth,
+            claim_type=analysis.claim_type,
+            claim_priority=analysis.priority,
+            claim_signals=analysis.signals,
+        )
 
     def _expand(self, node: ResearchNode) -> None:
         stop = self.termination.should_stop_before_expansion(node, self.budget)
@@ -108,17 +124,22 @@ class FractalResearchOrchestrator:
                 return
 
             child_claims = self.decomposer.decompose(question.text)
-            for j, child_claim in enumerate(child_claims):
-                if self.budget.exhausted:
-                    node.status = NodeStatus.STOPPED
-                    node.stop_reason = StopReason.BUDGET_EXHAUSTED
-                    return
-                child = ResearchNode(
+            child_nodes = [
+                self._make_node(
                     id=f"{node.id}-{idx}-{j}",
                     claim=child_claim,
                     parent_ids=[node.id],
                     depth=node.depth + 1,
                 )
+                for j, child_claim in enumerate(child_claims)
+            ]
+            child_nodes.sort(key=lambda n: n.claim_priority, reverse=True)
+
+            for child in child_nodes:
+                if self.budget.exhausted:
+                    node.status = NodeStatus.STOPPED
+                    node.stop_reason = StopReason.BUDGET_EXHAUSTED
+                    return
                 self.graph.add_node(child)
                 self.budget.consume_node()
                 self.execution_loop.expand(self, child)
