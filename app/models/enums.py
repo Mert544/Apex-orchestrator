@@ -8,6 +8,17 @@ class QuestionType(str, Enum):
     DEEPENING = "deepening"
 
 
+class ClaimType(str, Enum):
+    ARCHITECTURE = "architecture"
+    VALIDATION = "validation"
+    SECURITY = "security"
+    CONFIGURATION = "configuration"
+    AUTOMATION = "automation"
+    FEATURE_GAP = "feature_gap"
+    OPERATIONS = "operations"
+    GENERAL = "general"
+
+
 class NodeStatus(str, Enum):
     NEW = "new"
     VALIDATED = "validated"
