@@ -21,4 +21,6 @@ class FinalReport(BaseModel):
     known_claim_count: int = 0
     known_question_count: int = 0
     previous_run_count: int = 0
+    focus_branch: str | None = None
+    focus_claim: str | None = None
     debug_stats: dict[str, int | float] = Field(default_factory=dict)
