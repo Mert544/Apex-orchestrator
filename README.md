@@ -5,6 +5,7 @@ A minimal but working V1 starter codebase for a **constitution-driven fractal re
 This system is designed to:
 
 - scan project files and derive implementation claims
+- seed initial structural claims from a project profile
 - generate four mandatory question classes for every claim
 - search for supporting and opposing evidence inside the project itself
 - enforce a constitution in code, not only in prompts
@@ -47,6 +48,7 @@ python -m app.main
 
 - import-safe Python package structure
 - configurable orchestrator loop
+- project-aware claim seeding from repository structure
 - local project evidence scanning
 - graph memory with simple deduplication
 - stop reasons and branch controls
@@ -55,7 +57,7 @@ python -m app.main
 
 ## Suggested next steps
 
-1. Replace the mock decomposer with an LLM-backed decomposer.
+1. Replace heuristic claim seeding with host-model-assisted decomposition.
 2. Upgrade repo search from keyword matching to semantic retrieval.
 3. Add claim typing, dependency tracing, and branch audit logs.
 4. Add host-environment adapters for Claude Code / opencode.
