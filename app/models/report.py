@@ -13,3 +13,4 @@ class FinalReport(BaseModel):
     key_risks: list[str] = Field(default_factory=list)
     unresolved_questions: list[str] = Field(default_factory=list)
     stopped_branches: list[str] = Field(default_factory=list)
+    recommended_actions: list[str] = Field(default_factory=list)
