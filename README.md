@@ -19,6 +19,7 @@ Epistemic Orchestrator is designed to go further:
 - **constitution-driven**: every expansion is constrained by explicit rules
 - **fractal**: every meaningful claim can generate deeper sub-questions
 - **risk-aware**: contradictory evidence, security, quality, novelty, and budget gates matter
+- **memory-aware**: the agent can remember prior runs without becoming blind to repeated but still important branches
 - **action-oriented**: the end state is not just insight, but useful engineering direction
 
 ## What “fractal” means here
@@ -94,7 +95,10 @@ flowchart TD
 - lightweight Python import and symbol extraction
 - dependency hub and symbol density signals
 - untested module heuristics
-- graph memory with simple deduplication
+- grounded recommended actions
+- agent memory stored under `.epistemic/memory.json`
+- memory-aware novelty scoring with **degrade-not-block** behavior
+- debug stats for duplicate blocking, memory degradation, and spam filtering
 - recursive question generation with constitutional gates
 - final synthesis with confidence map and prioritized findings
 - test suite + GitHub Actions CI
@@ -104,7 +108,7 @@ flowchart TD
 ```text
 app/
 ├── engine/          # budget, novelty, termination, execution loop
-├── memory/          # graph store and dedup helpers
+├── memory/          # graph store and persistent agent memory
 ├── models/          # nodes, questions, reports, enums
 ├── policies/        # constitution and scoring
 ├── skills/          # decomposer, validator, claim analyzer, synthesizer
@@ -154,6 +158,7 @@ Each claim is enriched with:
 - evidence for / against
 - assumptions
 - risk score
+- fractal branch path like `x.a`, `x.a.b`, `x.c.a`
 
 ### 4. Fractal expansion
 For every viable claim, the engine generates four mandatory question classes:
@@ -165,18 +170,31 @@ For every viable claim, the engine generates four mandatory question classes:
 
 Then it decides whether to expand or stop the branch.
 
-### 5. Synthesis
+### 5. Agent memory
+The orchestrator writes persistent project memory under `.epistemic/memory.json`.
+This memory stores prior claims, prior questions, recent runs, and branch history.
+
+Important behavior:
+
+- repeated items within the **same run** are still blocked
+- repeated items from **prior runs** are **degraded**, not blocked outright
+- low-value recursive noise is still filtered by the spam guard
+
+### 6. Synthesis
 The final report contains:
 
 - main findings
 - claim types
 - claim priorities
+- branch map and branch questions
 - confidence map
 - strongest supporting evidence
 - strongest opposing evidence
 - assumptions
 - unresolved questions
 - stopped branches
+- recommended actions
+- memory metadata and debug stats
 
 ## Quick start
 
@@ -207,12 +225,16 @@ export EPISTEMIC_TARGET_ROOT=$(pwd)/examples/synthetic_shop
 python -m app.main
 ```
 
+Run it a second time against the same project to observe agent memory behavior.
+The report should keep branching alive while showing memory-related degradation counters in `debug_stats`.
+
 What you should expect to see in the report:
 
 - dependency hub claims around `order_service.py`
 - sensitive surface claims around auth/payment files
 - validation gap or untested module claims
 - configuration and automation-related signals
+- a `.epistemic/memory.json` file created in the target project
 
 ## Recommended usage modes
 
@@ -252,22 +274,22 @@ Use it for:
 ## Roadmap
 
 ### Near term
-- real dependency graph edges
-- stronger test linking
 - evidence anchors with precise traceability
 - richer contradiction generation
+- patch and test suggestion scaffolds
+- stronger e2e regression coverage
 
 ### Mid term
-- action generator
 - refactor/test suggestion engine
 - patch candidate generation
 - host adapters for Claude Code / opencode
+- branch-focused user-directed expansion
 
 ### Later
-- persistent memory
-- branch audit history
 - semantic retrieval
 - graph-aware expansion strategies
+- richer persistent memory policies
+- longitudinal project change analysis
 
 ## License
 
