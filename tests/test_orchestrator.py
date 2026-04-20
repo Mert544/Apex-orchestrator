@@ -28,9 +28,10 @@ def test_orchestrator_returns_report():
     assert isinstance(report.confidence_map, dict)
     assert isinstance(report.claim_types, dict)
     assert isinstance(report.claim_priorities, dict)
+    assert isinstance(report.recommended_actions, list)
 
 
-def test_orchestrator_populates_claim_metadata():
+def test_orchestrator_populates_claim_metadata_and_actions():
     orchestrator = make_orchestrator()
     report = orchestrator.run("Automation gap claim: no CI workflow files were detected, so validation should expand.")
 
@@ -38,3 +39,4 @@ def test_orchestrator_populates_claim_metadata():
     assert first_claim in report.claim_types
     assert first_claim in report.claim_priorities
     assert isinstance(report.claim_priorities[first_claim], float)
+    assert len(report.recommended_actions) >= 1
