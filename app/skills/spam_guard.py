@@ -12,6 +12,13 @@ class SpamGuard:
         "investigation claim:",
     )
 
+    GENERIC_QUESTION_PATTERNS = (
+        re.compile(r"^What critical information is missing to validate this claim\??$", re.IGNORECASE),
+        re.compile(r"^What evidence would directly contradict this claim\??$", re.IGNORECASE),
+        re.compile(r"^What are the consequences if this claim is wrong\??$", re.IGNORECASE),
+        re.compile(r"^What sub-factors or causal components explain this claim\??$", re.IGNORECASE),
+    )
+
     def is_low_value_question(self, question_text: str, parent_claim: str) -> bool:
         q = self._clean(question_text)
         parent = self._clean(parent_claim)
@@ -20,6 +27,8 @@ class SpamGuard:
         if self._nested_meta_count(q) > 1:
             return True
         if q.lower() == parent.lower():
+            return True
+        if any(pattern.match(q) for pattern in self.GENERIC_QUESTION_PATTERNS):
             return True
         return False
 
@@ -54,11 +63,14 @@ class SpamGuard:
 
     def _canonical(self, text: str) -> str:
         lowered = self._clean(text).lower()
-        for prefix in self.META_PREFIXES:
-            if lowered.startswith(prefix):
-                lowered = lowered[len(prefix):].strip()
+        previous = None
+        while lowered != previous:
+            previous = lowered
+            for prefix in self.META_PREFIXES:
+                if lowered.startswith(prefix):
+                    lowered = lowered[len(prefix):].strip()
         lowered = re.sub(r"\s+", " ", lowered)
-        lowered = lowered.strip(" .:-")
+        lowered = lowered.strip(" .:-`\"'")
         return lowered
 
     def _clean(self, text: str) -> str:
