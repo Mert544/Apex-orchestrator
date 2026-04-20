@@ -9,6 +9,7 @@ class Synthesizer:
         seen_support = set()
         seen_oppose = set()
         seen_unresolved = set()
+        seen_findings = set()
 
         sorted_nodes = sorted(nodes, key=lambda n: n.claim_priority, reverse=True)
 
@@ -37,7 +38,9 @@ class Synthesizer:
             )
             if node.status == NodeStatus.STOPPED and node.stop_reason:
                 report.stopped_branches.append(f"{node.claim} -> {node.stop_reason.value}")
+            if node.claim not in seen_findings and len(report.main_findings) < 10:
+                seen_findings.add(node.claim)
+                report.main_findings.append(node.claim)
 
-        report.main_findings = [node.claim for node in sorted_nodes[:10]]
         report.key_risks = list(dict.fromkeys(report.key_risks))
         return report
