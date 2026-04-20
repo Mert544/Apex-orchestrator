@@ -1,8 +1,12 @@
 from app.models.enums import NodeStatus
 from app.models.report import FinalReport
+from app.skills.action_generator import ActionGenerator
 
 
 class Synthesizer:
+    def __init__(self) -> None:
+        self.action_generator = ActionGenerator()
+
     def synthesize(self, objective: str, nodes):
         report = FinalReport(objective=objective)
         seen_assumptions = set()
@@ -43,4 +47,5 @@ class Synthesizer:
                 report.main_findings.append(node.claim)
 
         report.key_risks = list(dict.fromkeys(report.key_risks))
+        report.recommended_actions = self.action_generator.generate(sorted_nodes)
         return report
