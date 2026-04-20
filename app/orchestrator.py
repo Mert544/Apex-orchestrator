@@ -21,15 +21,17 @@ from app.skills.claim_normalizer import ClaimNormalizer
 from app.skills.question_generator import QuestionGenerator
 from app.skills.quality_judge import QualityJudge
 from app.skills.security_governor import SecurityGovernor
+from app.skills.spam_guard import SpamGuard
 from app.utils.branching import make_branch_path
 
 
 class FractalResearchOrchestrator:
-    def __init__(self, config: dict[str, Any], decomposer, validator, synthesizer) -> None:
+    def __init__(self, config: dict[str, Any], decomposer, validator, synthesizer, memory_store=None) -> None:
         self.config = config
         self.decomposer = decomposer
         self.validator = validator
         self.synthesizer = synthesizer
+        self.memory_store = memory_store
 
         self.graph = GraphStore()
         self.assumption_extractor = AssumptionExtractor()
@@ -38,14 +40,16 @@ class FractalResearchOrchestrator:
         self.question_generator = QuestionGenerator()
         self.quality_judge = QualityJudge()
         self.security_governor = SecurityGovernor()
+        self.spam_guard = SpamGuard()
         self.novelty_scorer = NoveltyScorer(self.graph)
         self.budget = BudgetController(max_total_nodes=int(config["max_total_nodes"]))
         self.termination = TerminationEngine(config)
         self.execution_loop = ExecutionLoop()
+        self.memory_state = self.memory_store.hydrate_graph(self.graph) if self.memory_store is not None else {}
 
     def run(self, objective: str):
         root_claims = [claim for claim in self.decomposer.decompose(objective) if self.claim_normalizer.is_viable(claim)]
-        root_claims = list(dict.fromkeys(root_claims))
+        root_claims = self.spam_guard.filter_claims(list(dict.fromkeys(root_claims)))
         root_nodes = [
             self._make_node(
                 id=f"root-{i}",
@@ -61,7 +65,16 @@ class FractalResearchOrchestrator:
             self.graph.add_node(node)
             self.budget.consume_node()
             self._expand(node)
-        return self.synthesizer.synthesize(objective, self.graph.get_all_nodes())
+
+        report = self.synthesizer.synthesize(objective, self.graph.get_all_nodes())
+        if self.memory_store is not None:
+            memory_summary = self.memory_store.persist_run(objective, report, self.graph.get_all_nodes())
+            report.memory_file = memory_summary.get("memory_file")
+            report.memory_run_id = memory_summary.get("run_id")
+            report.known_claim_count = memory_summary.get("known_claim_count", 0)
+            report.known_question_count = memory_summary.get("known_question_count", 0)
+            report.previous_run_count = memory_summary.get("previous_run_count", 0)
+        return report
 
     def _make_node(
         self,
@@ -122,6 +135,8 @@ class FractalResearchOrchestrator:
         for question in node.questions:
             if self.graph.has_similar_question(question.text):
                 continue
+            if self.spam_guard.is_low_value_question(question.text, node.claim):
+                continue
             question.novelty = self.novelty_scorer.score_question(question.text)
             question.priority = score_question_priority(
                 impact=question.impact,
@@ -148,7 +163,7 @@ class FractalResearchOrchestrator:
 
             raw_child_claims = self.decomposer.decompose(question.text)
             child_claims = [claim for claim in raw_child_claims if self.claim_normalizer.is_viable(claim)]
-            child_claims = list(dict.fromkeys(child_claims))
+            child_claims = self.spam_guard.filter_claims(list(dict.fromkeys(child_claims)), parent_claim=node.claim)
             if not child_claims:
                 continue
 
