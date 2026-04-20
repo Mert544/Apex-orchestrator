@@ -53,23 +53,44 @@ class FractalResearchOrchestrator:
             "memory_claim_repeats_degraded": 0,
             "spam_questions_filtered": 0,
             "spam_claims_filtered": 0,
+            "focus_branch_hits": 0,
+            "focus_branch_misses": 0,
         }
 
-    def run(self, objective: str):
-        raw_root_claims = [claim for claim in self.decomposer.decompose(objective) if self.claim_normalizer.is_viable(claim)]
-        root_claims = self.spam_guard.filter_claims(list(dict.fromkeys(raw_root_claims)))
-        self.debug_stats["spam_claims_filtered"] += max(0, len(raw_root_claims) - len(root_claims))
+    def run(self, objective: str, focus_branch: str | None = None):
+        focus_claim = None
+        focus_question = None
+        if focus_branch:
+            focus_claim, focus_question = self._resolve_focus_branch(focus_branch)
 
-        root_nodes = [
-            self._make_node(
-                id=f"root-{i}",
-                claim=claim,
-                depth=0,
-                branch_path=make_branch_path("x", i),
-            )
-            for i, claim in enumerate(root_claims)
-        ]
-        root_nodes.sort(key=lambda n: n.claim_priority, reverse=True)
+        if focus_branch and focus_claim:
+            root_nodes = [
+                self._make_node(
+                    id="focus-root",
+                    claim=focus_claim,
+                    depth=0,
+                    branch_path=focus_branch,
+                    source_question=focus_question,
+                )
+            ]
+            self.debug_stats["focus_branch_hits"] += 1
+        else:
+            if focus_branch:
+                self.debug_stats["focus_branch_misses"] += 1
+            raw_root_claims = [claim for claim in self.decomposer.decompose(objective) if self.claim_normalizer.is_viable(claim)]
+            root_claims = self.spam_guard.filter_claims(list(dict.fromkeys(raw_root_claims)))
+            self.debug_stats["spam_claims_filtered"] += max(0, len(raw_root_claims) - len(root_claims))
+
+            root_nodes = [
+                self._make_node(
+                    id=f"root-{i}",
+                    claim=claim,
+                    depth=0,
+                    branch_path=make_branch_path("x", i),
+                )
+                for i, claim in enumerate(root_claims)
+            ]
+            root_nodes.sort(key=lambda n: n.claim_priority, reverse=True)
 
         for node in root_nodes:
             self.graph.add_node(node)
@@ -77,6 +98,8 @@ class FractalResearchOrchestrator:
             self._expand(node)
 
         report = self.synthesizer.synthesize(objective, self.graph.get_all_nodes())
+        report.focus_branch = focus_branch
+        report.focus_claim = focus_claim
         report.debug_stats = dict(self.debug_stats)
         if self.memory_store is not None:
             memory_summary = self.memory_store.persist_run(objective, report, self.graph.get_all_nodes())
@@ -86,6 +109,14 @@ class FractalResearchOrchestrator:
             report.known_question_count = memory_summary.get("known_question_count", 0)
             report.previous_run_count = memory_summary.get("previous_run_count", 0)
         return report
+
+    def _resolve_focus_branch(self, focus_branch: str) -> tuple[str | None, str | None]:
+        last_report = self.memory_state.get("last_report", {}) if isinstance(self.memory_state, dict) else {}
+        branch_map = last_report.get("branch_map", {}) if isinstance(last_report, dict) else {}
+        branch_questions = last_report.get("branch_questions", {}) if isinstance(last_report, dict) else {}
+        claim = branch_map.get(focus_branch)
+        question = branch_questions.get(focus_branch)
+        return claim, question
 
     def _make_node(
         self,
