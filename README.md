@@ -8,6 +8,7 @@ This system is designed to:
 - seed initial structural claims from a project profile
 - classify claims into typed research buckets
 - prioritize claims before recursive expansion
+- inspect Python import relationships and symbol surfaces
 - generate four mandatory question classes for every claim
 - search for supporting and opposing evidence inside the project itself
 - enforce a constitution in code, not only in prompts
@@ -54,6 +55,7 @@ python -m app.main
 - project-aware claim seeding from repository structure
 - heuristic claim typing and priority scoring
 - local project evidence scanning
+- lightweight Python dependency and symbol extraction
 - graph memory with simple deduplication
 - stop reasons and branch controls
 - tests for the core engine
@@ -63,5 +65,5 @@ python -m app.main
 
 1. Replace heuristic claim seeding and classification with host-model-assisted decomposition.
 2. Upgrade repo search from keyword matching to semantic retrieval.
-3. Add dependency tracing, branch audit logs, and persistent memory.
+3. Add true dependency tracing edges, branch audit logs, and persistent memory.
 4. Add host-environment adapters for Claude Code / opencode.
