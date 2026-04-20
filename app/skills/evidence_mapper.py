@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from app.tools.external_search import CompositeSearchTool, SearchResult
+from pathlib import Path
+
+from app.tools.repo_scanner import RepoEvidence, RepoScanner
 
 
 class EvidenceMapper:
-    def __init__(self, search_tool: CompositeSearchTool | None = None) -> None:
-        self.search_tool = search_tool or CompositeSearchTool()
+    def __init__(self, project_root: str | Path | None = None, repo_scanner: RepoScanner | None = None) -> None:
+        root = Path(project_root) if project_root is not None else Path.cwd()
+        self.repo_scanner = repo_scanner or RepoScanner(root=root)
 
     def map(self, claim: str) -> dict:
-        supporting = self.search_tool.search(claim, top_k=3)
-        opposing = self.search_tool.search(f"evidence against {claim}", top_k=2)
+        supporting = self.repo_scanner.search(claim, top_k=3)
+        opposing = self.repo_scanner.search(f"counter risk contradiction {claim}", top_k=2)
 
         return {
             "evidence_for": self._render_results(supporting),
@@ -18,13 +21,8 @@ class EvidenceMapper:
             "sources_against": opposing,
         }
 
-    def _render_results(self, results: list[SearchResult]) -> list[str]:
+    def _render_results(self, results: list[RepoEvidence]) -> list[str]:
         rendered: list[str] = []
         for item in results:
-            parts = [item.title.strip()]
-            if item.snippet:
-                parts.append(item.snippet.strip())
-            if item.url:
-                parts.append(item.url.strip())
-            rendered.append(" | ".join(parts))
+            rendered.append(f"{item.path} | score={item.score} | {item.snippet}")
         return rendered
