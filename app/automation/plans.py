@@ -16,4 +16,9 @@ DEFAULT_AUTOMATION_PLANS: dict[str, list[AutomationStep]] = {
         AutomationStep(name="profile_project", skill_name="profile_project"),
         AutomationStep(name="run_tests", skill_name="run_tests"),
     ],
+    "prepare_repo": [
+        AutomationStep(name="prepare_workspace", skill_name="prepare_workspace"),
+        AutomationStep(name="profile_project", skill_name="profile_project"),
+        AutomationStep(name="run_tests", skill_name="run_tests"),
+    ],
 }
