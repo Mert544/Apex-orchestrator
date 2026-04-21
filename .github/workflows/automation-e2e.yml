@@ -1,0 +1,126 @@
+name: automation-e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install project
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e .[dev] || pip install -e .
+
+      - name: Run test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest -q
+
+      - name: Run project_scan automation plan
+        shell: bash
+        env:
+          EPISTEMIC_TARGET_ROOT: ${{ github.workspace }}/examples/synthetic_shop
+          EPISTEMIC_AUTOMATION_PLAN: project_scan
+          EPISTEMIC_OBJECTIVE: Scan the target project, extract meaningful implementation claims, and continue with constitution-driven fractal questioning.
+        run: |
+          set -euo pipefail
+          python -m app.main > project_scan.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path('project_scan.json').read_text())
+          assert data['plan_name'] == 'project_scan'
+          assert [s['step_name'] for s in data['steps']] == [
+              'profile_project',
+              'decompose_objective',
+              'run_research',
+          ]
+          assert all(s['status'] == 'ok' for s in data['steps'])
+          final = data['final_output']
+          assert final['branch_map'], 'branch_map empty'
+          assert final['recommended_actions'], 'recommended_actions empty'
+
+          deep = [b for b in final['branch_map'] if b.count('.') >= 2]
+          focus_branch = deep[0] if deep else sorted(final['branch_map'])[0]
+          Path('focus_branch.txt').write_text(focus_branch)
+          print(f'focus_branch={focus_branch}')
+          PY
+
+      - name: Run focused_branch automation plan
+        shell: bash
+        env:
+          EPISTEMIC_TARGET_ROOT: ${{ github.workspace }}/examples/synthetic_shop
+          EPISTEMIC_AUTOMATION_PLAN: focused_branch
+          EPISTEMIC_OBJECTIVE: Scan the target project, extract meaningful implementation claims, and continue with constitution-driven fractal questioning.
+        run: |
+          set -euo pipefail
+          export EPISTEMIC_FOCUS_BRANCH="$(cat focus_branch.txt)"
+          python -m app.main > focused_branch.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          focus_branch = Path('focus_branch.txt').read_text().strip()
+          data = json.loads(Path('focused_branch.json').read_text())
+
+          assert data['plan_name'] == 'focused_branch'
+          assert len(data['steps']) == 1
+          assert data['steps'][0]['step_name'] == 'run_research'
+          assert data['steps'][0]['status'] == 'ok'
+
+          final = data['final_output']
+          assert final['focus_branch'] == focus_branch
+          assert final['focus_claim'], 'focus_claim missing'
+          assert final['branch_map'], 'focused branch_map empty'
+          assert all(
+              b == focus_branch or b.startswith(focus_branch + '.')
+              for b in final['branch_map']
+          ), 'focused run produced branches outside selected prefix'
+          PY
+
+      - name: Verify memory file
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          memory = Path('examples/synthetic_shop/.epistemic/memory.json')
+          assert memory.exists(), 'memory.json not created'
+
+          data = json.loads(memory.read_text())
+          assert data.get('last_report'), 'last_report missing'
+          assert data.get('last_full_report'), 'last_full_report missing'
+          assert len(data.get('runs', [])) >= 2, 'expected at least 2 runs'
+          print('memory verification passed')
+          PY
+
+      - name: Upload debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: automation-e2e-artifacts
+          if-no-files-found: warn
+          path: |
+            project_scan.json
+            focused_branch.json
+            focus_branch.txt
+            examples/synthetic_shop/.epistemic/memory.json
