@@ -1,40 +1,154 @@
+<div align="center">
+
 # Epistemic Orchestrator
 
-A constitutional **fractal project intelligence engine** for codebases.
+### Constitutional fractal intelligence for codebases
 
-Instead of stopping at a flat answer, Epistemic Orchestrator scans a project, derives structural claims, classifies and prioritizes them, generates recursive follow-up questions, searches for supporting and opposing evidence, and expands only the highest-value branches.
+**Scan deeper. Ask better questions. Focus the right branch.**
 
-## Why this project exists
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Architecture](https://img.shields.io/badge/architecture-fractal-purple)
+![Memory](https://img.shields.io/badge/memory-degrade--not--block-green)
+![Focus](https://img.shields.io/badge/focus-branch--aware-orange)
+![License](https://img.shields.io/badge/license-Apache%202.0-black)
 
-Most project analyzers stop at one of these layers:
+</div>
 
-- static file listing
-- symbol extraction
-- lint-style findings
-- one-shot LLM summaries
+---
 
-Epistemic Orchestrator is designed to go further:
+## Why this repo matters
 
-- **structure-first**: understand the repository as a graph, not a folder dump
-- **constitution-driven**: every expansion is constrained by explicit rules
-- **fractal**: every meaningful claim can generate deeper sub-questions
-- **risk-aware**: contradictory evidence, security, quality, novelty, and budget gates matter
-- **memory-aware**: the agent can remember prior runs without becoming blind to repeated but still important branches
-- **branch-focus aware**: the user can ask the engine to deepen one exact fractal branch such as `x.a` or `x.b.c`
-- **action-oriented**: the end state is not just insight, but useful engineering direction
+Most code intelligence tools stop too early.
+
+They give you one of these:
+- a file tree
+- a lint-style issue list
+- a one-shot summary
+- a vague “looks fine” answer
+
+**Epistemic Orchestrator goes further.**
+
+It treats a codebase like a living reasoning surface:
+- extract structural claims
+- challenge those claims
+- branch recursively
+- preserve memory across runs
+- cut low-value recursion
+- focus only where the next insight is worth the cost
+
+This is not just repo analysis.
+This is **fractal project reasoning**.
+
+---
+
+## What makes it different
+
+### 1. It thinks in branches, not blobs
+Instead of one flat summary, the engine builds a branch map such as:
+
+```text
+x.a     dependency hub risk
+x.a.a   why this hub matters
+x.a.b   what evidence could contradict it
+x.b     sensitive surface claim
+x.b.a   auth/payment expansion
+```
+
+### 2. It remembers without going blind
+Most systems either:
+- forget everything, or
+- over-deduplicate and stop exploring
+
+This project uses **degrade-not-block memory**:
+- same-run duplicates still stop
+- prior-run repeats are degraded, not killed
+- important branches can reappear with lower novelty instead of disappearing completely
+
+### 3. It cuts recursive noise
+The system includes a spam guard that filters:
+- repetitive meta-claims
+- generic shell questions
+- low-value recursive echoes
+
+### 4. It lets the user steer depth
+After a full scan, you can focus a specific branch like:
+- `x.a`
+- `x.a.b`
+- `x.k.b`
+
+and deepen only that subtree.
+
+---
+
+## The pitch in one sentence
+
+**Epistemic Orchestrator is an agent brain for codebases: it scans, questions, prioritizes, remembers, and deepens the most valuable path instead of stopping at a shallow answer.**
+
+---
+
+## Core capabilities
+
+- project-aware structural scanning
+- claim extraction from repository signals
+- claim typing and priority scoring
+- recursive question generation with constitutional rules
+- supporting and opposing evidence mapping
+- branch maps like `x.a`, `x.a.b`, `x.c.a`
+- persistent agent memory in `.epistemic/memory.json`
+- degrade-not-block novelty logic
+- branch focus mode
+- debug stats for duplicates, memory degradation, spam filtering, and focus hits/misses
+- grounded recommended actions
+- skill automation plans such as `project_scan` and `focused_branch`
+
+---
+
+## How it works
+
+```mermaid
+flowchart TD
+    A[Target Project] --> B[Perception Layer]
+    B --> B1[Repo Scanner]
+    B --> B2[Project Profiler]
+    B --> B3[Dependency Signals]
+    B --> B4[Test Linking]
+
+    B --> C[Claim Seeding]
+    C --> D[Claim Analysis]
+    D --> D1[Type]
+    D --> D2[Priority]
+    D --> D3[Evidence]
+    D --> D4[Assumptions]
+
+    D --> E[Fractal Expansion]
+    E --> E1[Missing Info Questions]
+    E --> E2[Contradiction Questions]
+    E --> E3[Risk Questions]
+    E --> E4[Deepening Questions]
+
+    E --> F[Memory + Spam Guard]
+    F --> G[Branch Map]
+    G --> H[Focused Expansion]
+    H --> I[Actions + Final Report]
+```
+
+---
 
 ## What “fractal” means here
 
-Fractal does **not** just mean recursively scanning files.
-It means the engine follows a mathematical and constitutional pattern:
+Fractal does **not** mean “keep recursing forever.”
+
+It means every meaningful claim follows a disciplined loop:
 
 1. derive a claim
 2. classify and prioritize it
 3. generate four mandatory question classes
 4. search for supporting and opposing evidence
 5. evaluate risk, quality, novelty, and security
-6. expand only if the branch is worth expanding
-7. surface not just conclusions, but the confidence structure behind them
+6. expand only if the branch deserves more budget
+7. expose not just conclusions, but the confidence structure behind them
+
+---
 
 ## Core constitution
 
@@ -47,168 +161,7 @@ It means the engine follows a mathematical and constitutional pattern:
 7. Tie expansion to budget and novelty thresholds.
 8. Show the confidence structure, not only the final conclusion.
 
-## Architecture overview
-
-```mermaid
-flowchart TD
-    A[Target Project] --> B[Perception Layer]
-    B --> B1[Repo Scanner]
-    B --> B2[Project Profiler]
-    B --> B3[Python Structure Analyzer]
-    B --> B4[Dependency Signals]
-
-    B1 --> C[Epistemic Layer]
-    B2 --> C
-    B3 --> C
-    B4 --> C
-
-    C --> C1[Claim Seeding]
-    C --> C2[Claim Typing]
-    C --> C3[Claim Priority]
-    C --> C4[Evidence Mapping]
-
-    C1 --> D[Fractal Reasoning Layer]
-    C2 --> D
-    C3 --> D
-    C4 --> D
-
-    D --> D1[Missing Info Questions]
-    D --> D2[Contradiction Questions]
-    D --> D3[Risk Questions]
-    D --> D4[Deepening Questions]
-    D --> D5[Security Gate]
-    D --> D6[Quality Gate]
-    D --> D7[Novelty/Budget Gate]
-
-    D --> E[Output Layer]
-    E --> E1[Main Findings]
-    E --> E2[Confidence Map]
-    E --> E3[Risks]
-    E --> E4[Open Questions]
-    E --> E5[Stopped Branches]
-```
-
-## Current capabilities
-
-- project-aware claim seeding from repository structure
-- heuristic claim typing and priority scoring
-- local project evidence scanning
-- lightweight Python import and symbol extraction
-- dependency hub and symbol density signals
-- untested module heuristics
-- grounded recommended actions
-- agent memory stored under `.epistemic/memory.json`
-- memory-aware novelty scoring with **degrade-not-block** behavior
-- branch map output such as `x.a`, `x.a.b`, `x.c.a`
-- branch focus mode for user-directed deepening
-- debug stats for duplicate blocking, memory degradation, spam filtering, and focus-branch hits/misses
-- recursive question generation with constitutional gates
-- final synthesis with confidence map and prioritized findings
-- test suite + GitHub Actions CI
-
-## Repository layout
-
-```text
-app/
-├── engine/          # budget, novelty, termination, execution loop
-├── memory/          # graph store and persistent agent memory
-├── models/          # nodes, questions, reports, enums
-├── policies/        # constitution and scoring
-├── skills/          # decomposer, validator, claim analyzer, synthesizer
-├── tools/           # repo scanner, project profiler, dependency signals
-└── utils/           # support utilities
-
-config/
-└── *.yaml           # engine, routing, and policy config
-
-tests/
-└── test_*.py        # core verification suite
-
-examples/
-└── synthetic_shop/  # intentionally imperfect demo project
-```
-
-## How it works
-
-### 1. Perception
-The engine scans the target repository and extracts structural signals:
-
-- file types
-- top directories
-- entrypoints
-- tests
-- CI/workflows
-- config surfaces
-- sensitive paths
-- Python imports and symbols
-
-### 2. Claim seeding
-Those signals are transformed into initial claims such as:
-
-- dependency hub claim
-- symbol density claim
-- testing gap claim
-- automation claim
-- sensitive surface claim
-- configuration claim
-
-### 3. Claim analysis
-Each claim is enriched with:
-
-- claim type
-- claim priority
-- claim signals
-- evidence for / against
-- assumptions
-- risk score
-- fractal branch path like `x.a`, `x.a.b`, `x.c.a`
-
-### 4. Fractal expansion
-For every viable claim, the engine generates four mandatory question classes:
-
-- missing-information questions
-- contradiction questions
-- risk questions
-- deepening questions
-
-Then it decides whether to expand or stop the branch.
-
-### 5. Agent memory
-The orchestrator writes persistent project memory under `.epistemic/memory.json`.
-This memory stores prior claims, prior questions, recent runs, and branch history.
-
-Important behavior:
-
-- repeated items within the **same run** are still blocked
-- repeated items from **prior runs** are **degraded**, not blocked outright
-- low-value recursive noise is still filtered by the spam guard
-
-### 6. Branch focus mode
-After a normal run, the report includes a `branch_map` and `branch_questions` section.
-You can reuse one of those branch paths in a later run to deepen only that branch.
-
-Behavior:
-
-- if the branch exists in agent memory, the focused run starts from that exact claim
-- descendants continue underneath the same prefix, for example `x.b.c`, `x.b.c.a`, `x.b.c.b`
-- if the branch does not exist, the system falls back to a normal full scan and records a focus miss in `debug_stats`
-
-### 7. Synthesis
-The final report contains:
-
-- main findings
-- claim types
-- claim priorities
-- branch map and branch questions
-- confidence map
-- strongest supporting evidence
-- strongest opposing evidence
-- assumptions
-- unresolved questions
-- stopped branches
-- recommended actions
-- memory metadata and debug stats
-- optional focus branch metadata
+---
 
 ## Quick start
 
@@ -216,108 +169,163 @@ The final report contains:
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
-python -m app.main
 pytest
+python -m app.main
 ```
 
-To run against another project:
+Run against another project:
 
 ```bash
 export EPISTEMIC_TARGET_ROOT=/absolute/path/to/your/project
 python -m app.main
 ```
 
-## Try the demo project
-
-A synthetic project is included under `examples/synthetic_shop`.
-It is intentionally small, centralized, partially tested, and contains sensitive/auth/payment surfaces so the orchestrator has something meaningful to find.
-
-Run the engine against it like this:
+Run with skill automation:
 
 ```bash
-export EPISTEMIC_TARGET_ROOT=$(pwd)/examples/synthetic_shop
+export EPISTEMIC_TARGET_ROOT=/absolute/path/to/your/project
+export EPISTEMIC_AUTOMATION_PLAN=project_scan
 python -m app.main
 ```
 
-Run it a second time against the same project to observe agent memory behavior.
-The report should keep branching alive while showing memory-related degradation counters in `debug_stats`.
+Focus a branch:
 
-Then focus one branch:
+```bash
+export EPISTEMIC_TARGET_ROOT=/absolute/path/to/your/project
+export EPISTEMIC_AUTOMATION_PLAN=focused_branch
+export EPISTEMIC_FOCUS_BRANCH=x.a.b
+python -m app.main
+```
+
+---
+
+## Demo project
+
+A synthetic project is included under `examples/synthetic_shop`.
+It is intentionally small, centralized, partially tested, and includes auth/payment/config surfaces so the engine has something meaningful to find.
 
 ```bash
 export EPISTEMIC_TARGET_ROOT=$(pwd)/examples/synthetic_shop
+export EPISTEMIC_AUTOMATION_PLAN=project_scan
+python -m app.main
+```
+
+Then deepen one branch:
+
+```bash
+export EPISTEMIC_TARGET_ROOT=$(pwd)/examples/synthetic_shop
+export EPISTEMIC_AUTOMATION_PLAN=focused_branch
 export EPISTEMIC_FOCUS_BRANCH=x.a
 python -m app.main
 ```
 
-What you should expect to see in the report:
+---
 
-- dependency hub claims around `order_service.py`
-- sensitive surface claims around auth/payment files
-- validation gap or untested module claims
-- configuration and automation-related signals
-- a `.epistemic/memory.json` file created in the target project
-- focused runs whose branch keys stay under the selected prefix
+## Output you should expect
 
-## Recommended usage modes
+A successful run should surface things like:
+- dependency hub claims
+- sensitive surface claims
+- validation gaps and critical untested modules
+- configuration and CI signals
+- branch maps and branch questions
+- recommended actions grounded in real files
+- a persistent memory file at `.epistemic/memory.json`
 
-### Scan mode
-Fast structural overview of a project.
+---
 
-Use it for:
-- onboarding a new repo
-- high-level architectural review
-- quick technical risk discovery
+## Skill automation
 
-### Audit mode
-Deeper analysis of validation, security, configuration, and dependency pressure.
+The repo now supports plan-based skill automation.
 
-Use it for:
-- release readiness checks
-- technical debt review
-- engineering health scans
+### `project_scan`
+Runs a structured sequence:
+1. profile project
+2. decompose objective
+3. run research orchestrator
 
-### Expansion mode
-Focused recursive analysis of one branch.
+### `focused_branch`
+Runs focused research using the selected branch from memory.
 
-Use it for:
-- auth module inspection
-- payment flow review
-- CI gap analysis
-- entrypoint risk analysis
-- branch-directed deepening such as `x.a.b`
+This moves the system from “a collection of skills” toward “an automation backbone.”
 
-## Example analysis themes
+---
 
-- Which dependency hubs are central and under-tested?
-- Which sensitive modules appear early in the expansion tree?
-- Which entrypoints create architectural coupling risk?
-- Which config surfaces likely hide environment assumptions?
-- Which subsystems deserve the next engineering investment?
-- Which specific branch should be deepened next?
+## Current architecture snapshot
+
+```text
+app/
+├── automation/      # skill registry, plans, runner, adapters
+├── engine/          # budget, novelty, termination, execution loop
+├── memory/          # graph store and persistent memory
+├── models/          # nodes, questions, reports, enums
+├── policies/        # constitution and scoring
+├── runtime/         # workspace, git, command foundation
+├── skills/          # reasoning, execution, safety
+├── tools/           # repo scanner, project profiler, dependency signals
+└── utils/           # support utilities
+
+config/
+└── *.yaml
+
+tests/
+└── test_*.py
+
+examples/
+└── synthetic_shop/
+```
+
+---
 
 ## Roadmap
 
-### Near term
-- evidence anchors with precise traceability
-- richer contradiction generation
-- patch and test suggestion scaffolds
-- stronger e2e regression coverage
+### Now
+- stabilize automation, memory, spam guard, and branch focus
+- strengthen e2e validation
+- expand runtime foundation
 
-### Mid term
-- refactor/test suggestion engine
-- patch candidate generation
-- host adapters for Claude Code / opencode
-- richer branch-focused user-directed expansion
+### Next
+- supervised patch loop
+- test execution skills
+- patch application and verification
+- safety guardrails for controlled code changes
 
 ### Later
-- semantic retrieval
-- graph-aware expansion strategies
-- richer persistent memory policies
-- longitudinal project change analysis
+- repair loop
+- draft PR automation
+- richer execution skills
+- full guarded autonomous coding workflows
+
+---
+
+## Project status
+
+**Current state:** strong internal alpha / working core
+
+Today it is strongest as:
+- repo intelligence engine
+- fractal analysis system
+- branch-focused research agent
+- memory-aware planning brain
+
+It is **not yet** a full end-to-end autonomous coding agent.
+That is the next stage of the roadmap.
+
+---
+
+## Why star or follow this repo
+
+If you care about:
+- agent engineering
+- memory-aware repo intelligence
+- recursive reasoning systems
+- branch-directed project analysis
+- building toward safe autonomous coding agents
+
+this repo is building exactly in that direction.
+
+---
 
 ## License
 
 Licensed under **Apache-2.0**.
-
-A detectable license file is included so GitHub can display the license clearly for the repository.
