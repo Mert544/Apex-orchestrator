@@ -21,4 +21,10 @@ DEFAULT_AUTOMATION_PLANS: dict[str, list[AutomationStep]] = {
         AutomationStep(name="profile_project", skill_name="profile_project"),
         AutomationStep(name="run_tests", skill_name="run_tests"),
     ],
+    "supervised_patch_loop": [
+        AutomationStep(name="run_research", skill_name="run_research"),
+        AutomationStep(name="plan_tasks", skill_name="plan_tasks"),
+        AutomationStep(name="plan_patch", skill_name="plan_patch"),
+        AutomationStep(name="verify_changes", skill_name="verify_changes"),
+    ],
 }
