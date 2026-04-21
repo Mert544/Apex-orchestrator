@@ -4,6 +4,9 @@ from pathlib import Path
 
 from app.automation.models import AutomationContext
 from app.automation.registry import SkillAutomationRegistry
+from app.execution.patch_planner import PatchPlanner
+from app.execution.task_planner import TaskPlanner
+from app.execution.verifier import Verifier
 from app.memory.persistent_memory import PersistentMemoryStore
 from app.orchestrator import FractalResearchOrchestrator
 from app.skills.decomposer import Decomposer
@@ -73,12 +76,7 @@ def prepare_workspace_skill(context: AutomationContext):
 
 
 def run_tests_skill(context: AutomationContext):
-    target_root = context.project_root
-    if context.workspace_dir is not None:
-        target_root = context.workspace_dir
-    elif context.state.get("workspace", {}).get("project_dir"):
-        target_root = Path(context.state["workspace"]["project_dir"])
-
+    target_root = _target_root(context)
     result = RunTestsSkill().run(target_root)
     result_dict = {
         "project_root": result.project_root,
@@ -116,6 +114,42 @@ def detect_sensitive_edit_skill(context: AutomationContext):
     return result_dict
 
 
+def plan_tasks_skill(context: AutomationContext):
+    report = context.state.get("final_report", {})
+    result = TaskPlanner().plan(report)
+    result_dict = result.to_dict()
+    context.state["task_plan"] = result_dict
+    return result_dict
+
+
+def plan_patch_skill(context: AutomationContext):
+    tasks = context.state.get("task_plan", {}).get("tasks", [])
+    task = tasks[0] if tasks else {}
+    result = PatchPlanner().plan(task)
+    result_dict = result.to_dict()
+    context.state["patch_plan"] = result_dict
+    context.state["changed_files"] = list(result.target_files)
+    return result_dict
+
+
+def verify_changes_skill(context: AutomationContext):
+    target_root = _target_root(context)
+    changed_files = context.state.get("changed_files", [])
+    result = Verifier().verify(project_root=target_root, changed_files=changed_files)
+    result_dict = result.to_dict()
+    context.state["verification"] = result_dict
+    return result_dict
+
+
+def _target_root(context: AutomationContext):
+    target_root = context.project_root
+    if context.workspace_dir is not None:
+        target_root = context.workspace_dir
+    elif context.state.get("workspace", {}).get("project_dir"):
+        target_root = Path(context.state["workspace"]["project_dir"])
+    return target_root
+
+
 def build_default_registry() -> SkillAutomationRegistry:
     registry = SkillAutomationRegistry()
     registry.register("profile_project", profile_project_skill)
@@ -125,4 +159,7 @@ def build_default_registry() -> SkillAutomationRegistry:
     registry.register("run_tests", run_tests_skill)
     registry.register("check_patch_scope", check_patch_scope_skill)
     registry.register("detect_sensitive_edit", detect_sensitive_edit_skill)
+    registry.register("plan_tasks", plan_tasks_skill)
+    registry.register("plan_patch", plan_patch_skill)
+    registry.register("verify_changes", verify_changes_skill)
     return registry
