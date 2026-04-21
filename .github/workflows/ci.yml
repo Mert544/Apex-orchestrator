@@ -5,10 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:
     runs-on: ubuntu-latest
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -19,9 +21,14 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
-          pip install -e .[dev]
+          pip install -e .[dev] || pip install -e .
 
       - name: Run tests
-        run: pytest
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest -q
