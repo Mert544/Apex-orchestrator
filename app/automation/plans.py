@@ -12,4 +12,8 @@ DEFAULT_AUTOMATION_PLANS: dict[str, list[AutomationStep]] = {
     "focused_branch": [
         AutomationStep(name="run_research", skill_name="run_research"),
     ],
+    "verify_project": [
+        AutomationStep(name="profile_project", skill_name="profile_project"),
+        AutomationStep(name="run_tests", skill_name="run_tests"),
+    ],
 }
