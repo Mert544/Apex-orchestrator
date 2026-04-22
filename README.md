@@ -7,11 +7,12 @@
 **Scan deeper. Ask better questions. Focus the right branch.**
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-79%2F79%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-204%2F204%20passing-brightgreen)]()
 [![Architecture](https://img.shields.io/badge/architecture-fractal-purple)]()
 [![Memory](https://img.shields.io/badge/memory-degrade--not--block-green)]()
 [![Focus](https://img.shields.io/badge/focus-branch--aware-orange)]()
 [![Autonomy](https://img.shields.io/badge/autonomy-supervised%20→%20guarded-yellow)]()
+[![MCP](https://img.shields.io/badge/MCP-stdio%20server-blueviolet)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-black)](LICENSE)
 
 > **Apex Orchestrator** is a branch-aware, memory-aware, supervised engineering agent that evolves toward guarded autonomous coding. It doesn't just read your codebase — it *reasons* about it.
@@ -106,6 +107,13 @@ and deepen only that subtree.
 - debug stats for duplicates, memory degradation, spam filtering, and focus hits/misses
 - grounded recommended actions
 - skill automation plans such as `project_scan`, `focused_branch`, and `verify_project`
+- **AST-based semantic patch generation** (docstring, type annotations, guard clauses, rename variable, extract method, test stub, assertion repair)
+- **retry repair loop** with controlled retry budget
+- **git diff / commit / PR summary** closing loop
+- **token telemetry** with budget enforcement
+- **compressed mode** for token efficiency
+- **modular LLM router** (default: none, optional: openai/local)
+- **MCP server** for IDE/tool integration via stdio
 
 ---
 
@@ -213,6 +221,87 @@ python -m app.main
 
 ---
 
+---
+
+## 🏢 3D Smart Office Dashboard
+
+*Your codebase isn't just files — it's a living company. Walk the floor.*
+
+Apex Orchestrator ships with a **fully interactive 3D Isometric Office Dashboard** that transforms abstract code intelligence into a living, breathing office building. Every engine module is a room. Every skill is an employee. Every room has depth, walls, and a worker inside.
+
+```
+                    🏢 Apex Corp. HQ — 3D Isometric Office
+                           |
+                           |  perspective: 1400px
+                           v
+              ┌─────────────────────────────────────┐
+             /│  Reception  │  Board    │  Dev      │\
+            / │    👩‍💼      │   👨‍💼     │   👨‍💻      │ \
+           /  │    Maria    │   Boss    │   Coder   │  \
+          /   ├─────────────┼───────────┼───────────┤   \
+         /    │  Security   │  R&D Lab  │   QA Lab  │    \
+        /     │    👮       │   👩‍🔬      │   👩‍🔬      │     \
+       /      │    Guard    │   Prof    │   Tester  │      \
+      /       ├─────────────┴───────────┴───────────┤       \
+     /        │    ☕ Break Room    🏋️ Gym           │        \
+    /         │      👨‍🍳 Barista      🧘‍♂️ Coach      │         \
+   /          └─────────────────────────────────────┘          \
+  /                      isometric floor                        \
+ /───────────────────────────────────────────────────────────────\
+```
+
+### Your Team (10 SVG Vector Employees in 3D)
+
+Every employee is a **hand-crafted SVG vector character** with full body proportions, facial expressions, clothing, and accessories — all drawn with native SVG shapes (`<ellipse>`, `<rect>`, `<circle>`, `<path>`). Zero images. Zero CDN. Zero dependencies.
+
+| Department | Employee | Engine Module | 3D Animation |
+|---|---|---|---|
+| **Reception** | 👩‍💼 Maria | `ProjectProfiler` | Welcomes visitors |
+| **Board Room** | 👨‍💼 Boss | `SmartPlanner` | Strategizes at the top |
+| **Dev Office** | 👨‍💻 Coder | `SemanticPatchGenerator` | ⌨️ **Typing** (keys moving) |
+| **QA Lab** | 👩‍🔬 Tester | `AbductiveReasoner` | Inspects with precision |
+| **Security Office** | 👮 Guard | `EnhancedSafetyGovernor` | 🔄 **Scanning** (rotates left-right) |
+| **R&D Lab** | 👩‍🔬 Prof | `RecursiveReflectionEngine` | 💡 **Deep thought** |
+| **Archive Room** | 📦 Archie | `CrossRunTracker` | Organizes history |
+| **HR / Swarm** | 👥 Team | `SwarmCoordinator` | Manages parallel teams |
+| **☕ Break Room** | 👨‍🍳 Barista | `TokenTelemetry` | ☕ **Sipping coffee** (bobs up-down) |
+| **🏋️ Gym** | 🧘‍♂️ Coach | `SystemHealth` | 🏃 **Walking** (side-to-side) |
+
+### What Makes It Special
+
+- **🧊 True 3D Isometric View** — `rotateX(60deg) rotateZ(-35deg)` with `preserve-3d`. Every room has a roof, front wall, and side wall. You are looking *down* at the building.
+- **🎨 10 SVG Vector Characters** — Each employee is a detailed vector illustration: head, eyes, mouth, hair, torso, arms, hands, legs, shoes, and job-specific accessories (glasses, headset, clipboard, coffee cup, flashlight, apron, etc.). No images. No CDN. Zero dependencies.
+- **📊 Floating Live Metrics** — Hover any room and a holographic metric label appears above it.
+- **🔴🟡🟢 Room Status LEDs** — Each room has a pulsing colored dot: Green = idle, Yellow = busy, Red = alert, Blue = thinking.
+- **📰 Scrolling Ticker** — Live event feed from all departments at the bottom.
+- **🖱️ Click Any Room** — Opens a centered glassmorphism detail panel with full metrics and actions.
+- **🌑 Dark Theme** — Deep navy background with glass walls and subtle grid floor. Feels like a real NOC/SOC control room.
+- **📱 Responsive Scaling** — Auto-scales on mobile and tablets.
+
+### Launch the 3D Office
+
+```bash
+# Start the dashboard
+python -m app.engine.dashboard --port 8080
+
+# Open your browser
+open http://127.0.0.1:8080
+```
+
+*No build step. No npm install. No Three.js. No WebGL. Just pure CSS 3D transforms.*
+
+### API Endpoints
+
+| Endpoint | Description |
+|---|---|
+| `GET /` | The full 3D Isometric Office HTML dashboard |
+| `GET /api/status` | Project root, file count, last run |
+| `GET /api/telemetry` | Session cost, token usage |
+| `GET /api/departments` | All 10 departments with live status |
+| `GET /api/ticker` | Recent events from all engines |
+
+---
+
 ## Demo project
 
 A synthetic project is included under `examples/synthetic_shop`.
@@ -270,12 +359,54 @@ This moves the system from “a collection of skills” toward “an automation 
 
 ---
 
+## MCP Server Integration
+
+Apex Orchestrator can run as an **MCP server** via stdio transport, exposing its tools to any MCP-compatible client (Claude Desktop, VS Code, Cursor, etc.).
+
+### Available MCP Tools
+
+| Tool | Purpose |
+|---|---|
+| `apex_project_profile` | Scan project and return structural profile |
+| `apex_generate_patch` | Generate semantic patches (docstring, type, guard, rename, extract) |
+| `apex_apply_patch` | Apply generated patches safely with `expected_old_content` checks |
+| `apex_run_tests` | Run detected test commands and report results |
+
+### Running the MCP server
+
+```bash
+python -m app.mcp.server
+```
+
+Or configure in your MCP client:
+
+```json
+{
+  "mcpServers": {
+    "apex": {
+      "command": "python",
+      "args": ["-m", "app.mcp.server"],
+      "env": {
+        "PYTHONPATH": "/path/to/apex-orchestrator"
+      }
+    }
+  }
+}
+```
+
+**Zero external dependencies:** The MCP server uses stdlib only.
+
+---
+
 ## Current architecture snapshot
 
 ```text
 app/
 ├── automation/      # skill registry, plans, runner, adapters
 ├── engine/          # budget, novelty, termination, execution loop
+├── execution/       # semantic patch generator, retry, telemetry, PR summaries
+├── llm/             # modular LLM router (none / openai / local)
+├── mcp/             # MCP server and tool adapters (stdio, JSON-RPC 2.0)
 ├── memory/          # graph store and persistent memory
 ├── models/          # nodes, questions, reports, enums
 ├── policies/        # constitution and scoring
@@ -303,23 +434,37 @@ docs/
 
 ### Completed
 - ✅ stabilize automation, memory, spam guard, and branch focus
-- ✅ semantic patch generation (AST-based, no LLM required)
+- ✅ semantic patch generation (AST-based, 11 transforms, no LLM required)
+- ✅ advanced AST transforms: rename variable, extract method, inline variable, organize imports, move class, extract class
 - ✅ retry repair loop with controlled retry budget
 - ✅ git diff / commit / PR summary closing loop
 - ✅ token telemetry with budget enforcement
 - ✅ compressed operator mode for token efficiency
 - ✅ modular LLM router (default: none, optional: openai/local)
+- ✅ **multi-model routing** with cost-aware provider selection and budget enforcement
+- ✅ MCP server integration (stdio transport, stdlib only)
+- ✅ **MCP HTTP/SSE transport** for remote server usage
+- ✅ enhanced safety governor with config-driven policies
+- ✅ **self-directed autonomous workflow** (`self_directed_loop` plan)
+- ✅ **multi-agent swarm coordination** (parallel branch processing)
+- ✅ **GUI dashboard** for real-time monitoring (http://localhost:8686)
+- ✅ **VS Code extension skeleton**
+- ✅ **community docs & usage examples**
+- ✅ **cross-run persistent memory** (claim tracking: open → still_open → resolved)
+- ✅ **function-level fractal analysis** (cross-file call graph + risk scoring)
+- ✅ **self-correction loop** (agent kendi claim'ini sorgular, low confidence'da otomatik derinleşir)
+- ✅ **smart plan selection** (tek komut `apex scan`, agent kendi karar verir)
+- ✅ **real-world validation suite** (bilinen hataları otomatik tespit — eval, os.system, pickle, bare except)
+- ✅ **recursive reflection engine** (4 katmanlı self-scrutiny: evidence, boundary, counter-example, meta)
+- ✅ **hypothesis-to-test mapping** (claim'leri pytest assertion'larına dönüştürme)
+- ✅ **abductive reasoning** (gözlemlenen pattern'lerden kök neden çıkarımı — SRP violation, god module, vb.)
+- ✅ **confidence calibration** (istatistiksel evidence diversity + conflict penalty ile güvenilirlik ayarı)
+- ✅ **counterfactual generator** ("Eğer... olmasaydı" senaryoları — what if invalid input, what if server down)
 
 ### Next
-- stronger safety governor (max line diff, restricted paths, review policies)
-- multi-model routing and cost-aware provider selection
-- IDE / MCP server integration
-- community docs and contribution guidelines
-
-### Later
-- full autonomous workflow with self-directed research + patch + PR
-- multi-agent swarm coordination
-- advanced AST transforms (refactor, extract, inline)
+- distributed swarm across multiple machines
+- advanced refactoring transforms (extract interface, introduce parameter object)
+- plugin ecosystem for third-party tool integrations
 
 ---
 
@@ -348,6 +493,65 @@ If you care about:
 - building toward safe autonomous coding agents
 
 this repo is building exactly in that direction.
+
+---
+
+## Example branch map output
+
+When Apex Orchestrator scans a project, it builds a branch map that looks like this:
+
+```text
+Branch Map
+----------
+x.a     dependency hub risk → app/services/order_service.py
+x.a.a   why this hub matters → 4 downstream consumers, no integration tests
+x.a.b   what evidence could contradict it → all consumers mocked in unit tests
+x.b     sensitive surface claim → app/auth/token_service.py
+x.b.a   auth/payment expansion → JWT validation lacks expiry check
+x.c     validation gap → app/payments/gateway.py untested
+x.c.a   missing guard clause → no amount > 0 validation before charge
+```
+
+You can focus any branch for deeper exploration:
+
+```bash
+export EPISTEMIC_FOCUS_BRANCH=x.a.b
+export EPISTEMIC_AUTOMATION_PLAN=focused_branch
+python -m app.main
+```
+
+## Example autonomous patch flow
+
+```bash
+# 1. Research
+export EPISTEMIC_AUTOMATION_PLAN=semantic_patch_loop
+export EPISTEMIC_TARGET_ROOT=./examples/synthetic_shop
+python -m app.main
+
+# 2. Review generated patch in .apex/patch-drafts/
+# 3. Apply, verify, commit, and open PR summary
+export EPISTEMIC_AUTOMATION_PLAN=full_autonomous_loop
+python -m app.main
+```
+
+Output includes:
+- `changed_files`: which files were modified
+- `git_diff`: diff stat
+- `pr_summary`: Markdown PR body ready for GitHub
+- `telemetry`: token cost report
+
+---
+
+## Contributing
+
+We love contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, conventions, and the review process.
+
+Quick start for contributors:
+
+```bash
+pip install -e .[dev]
+pytest
+```
 
 ---
 

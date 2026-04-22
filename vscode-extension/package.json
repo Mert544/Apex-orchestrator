@@ -1,0 +1,62 @@
+{
+  "name": "apex-orchestrator",
+  "displayName": "Apex Orchestrator",
+  "description": "Run Apex Orchestrator commands directly from VS Code",
+  "version": "0.1.0",
+  "publisher": "apex-team",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Machine Learning", "Debuggers", "Other"],
+  "activationEvents": [
+    "onCommand:apex.projectScan",
+    "onCommand:apex.semanticPatch",
+    "onCommand:apex.runTests"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "apex.projectScan",
+        "title": "Apex: Project Scan",
+        "category": "Apex"
+      },
+      {
+        "command": "apex.semanticPatch",
+        "title": "Apex: Generate Semantic Patch",
+        "category": "Apex"
+      },
+      {
+        "command": "apex.runTests",
+        "title": "Apex: Run Tests",
+        "category": "Apex"
+      },
+      {
+        "command": "apex.openPresence",
+        "title": "Apex: Open Presence Log",
+        "category": "Apex"
+      }
+    ],
+    "configuration": {
+      "title": "Apex Orchestrator",
+      "properties": {
+        "apex.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Path to the Python executable that runs Apex"
+        },
+        "apex.projectRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Root directory of the project to analyze (leave empty to use workspace root)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0"
+  }
+}

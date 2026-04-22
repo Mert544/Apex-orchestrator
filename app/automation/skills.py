@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from app.automation.models import AutomationContext
@@ -304,16 +305,19 @@ def git_commit_skill(context: AutomationContext):
     tasks = context.state.get("task_plan", {}).get("tasks", [])
     task = tasks[0] if tasks else {}
     title = str(task.get("title", patch_plan.get("title", "Apex Orchestrator patch")))
+    # Prefer PR summary commit_message if available (includes co-authored-by in team mode)
+    pr_summary = context.state.get("pr_summary", {})
+    commit_message = pr_summary.get("commit_message") or title.strip(".")
     git = GitAdapter()
     # Stage only files we actually changed
     if changed_files:
         git.add(target_root, changed_files)
-    commit_result = git.commit(target_root, message=f"{title.strip('.')}")
+    commit_result = git.commit(target_root, message=commit_message)
     result_dict = {
         "ok": commit_result.ok,
         "stdout": commit_result.stdout,
         "stderr": commit_result.stderr,
-        "commit_message": title.strip("."),
+        "commit_message": commit_message,
         "project_root": str(Path(target_root).resolve()),
     }
     context.state["git_commit"] = result_dict
