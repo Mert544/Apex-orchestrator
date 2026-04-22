@@ -64,16 +64,10 @@ def test_failure_analysis_detects_patch_apply_failure():
     assert "patch input" in result["recommended_next_step"].lower()
 
 
-def test_supervised_patch_loop_applies_patch_and_produces_repair_suggestion(tmp_path: Path):
+def test_supervised_patch_loop_generates_and_applies_patch(tmp_path: Path):
     _build_demo_project(tmp_path)
     runner = SkillAutomationRunner(build_default_registry())
     context = _make_context(tmp_path)
-    context.state["patch_requests"] = [
-        {
-            "path": "README.md",
-            "new_content": "demo project\nupdated by supervised apply loop\n",
-        }
-    ]
 
     result = runner.run_plan("supervised_patch_loop", context)
 
@@ -81,13 +75,18 @@ def test_supervised_patch_loop_applies_patch_and_produces_repair_suggestion(tmp_
         "run_research",
         "plan_tasks",
         "plan_patch",
+        "generate_patch_requests",
         "apply_patch",
         "verify_changes",
         "repair_from_verification",
     ]
     assert all(step.status == "ok" for step in result.steps)
-    assert result.steps[3].output["ok"] is True
-    assert result.steps[3].output["changed_files"] == ["README.md"]
+    assert result.steps[0].output["estimated_analysis_tokens"] > 0
+    assert result.steps[0].output["estimated_response_tokens"] > 0
+    assert result.steps[0].output["estimated_total_tokens"] >= result.steps[0].output["estimated_response_tokens"]
+    assert result.steps[3].output["patch_requests"]
+    assert result.steps[4].output["ok"] is True
+    assert result.steps[4].output["changed_files"]
     assert result.final_output["failure_analysis"]["primary_failure_type"] in {
         "no_failure_detected",
         "patch_scope_failure",
