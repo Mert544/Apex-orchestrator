@@ -604,7 +604,7 @@ const departments = [
 const roomMeshes = [];
 const characterMeshes = [];
 
-const deptData = {{}};
+const deptData = {};
 
 for (const dept of departments) {
   const room = createRoom(dept.w, dept.d, dept.color, dept.x, dept.z);
@@ -721,7 +721,7 @@ function animate() {
 }
 
 /* ── Data Loading ──────────────────────────────────── */
-let deptMetrics = {{}};
+let deptMetrics = {};
 
 async function loadDepartments() {
   try {
