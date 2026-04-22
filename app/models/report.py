@@ -24,3 +24,7 @@ class FinalReport(BaseModel):
     focus_branch: str | None = None
     focus_claim: str | None = None
     debug_stats: dict[str, int | float] = Field(default_factory=dict)
+    estimated_analysis_tokens: int = 0
+    estimated_response_tokens: int = 0
+    estimated_memory_tokens: int = 0
+    estimated_total_tokens: int = 0
