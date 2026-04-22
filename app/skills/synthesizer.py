@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from app.engine.token_accounting import TokenAccounting
 from app.models.enums import NodeStatus
 from app.models.report import FinalReport
 from app.skills.action_generator import ActionGenerator
@@ -10,6 +11,7 @@ class Synthesizer:
     def __init__(self, project_root: str | Path | None = None) -> None:
         self.action_generator = ActionGenerator()
         self.project_root = Path(project_root) if project_root is not None else None
+        self.token_accounting = TokenAccounting()
 
     def synthesize(self, objective: str, nodes):
         report = FinalReport(objective=objective)
@@ -58,4 +60,23 @@ class Synthesizer:
         if self.project_root is not None and self.project_root.exists():
             profile = ProjectProfiler(self.project_root).profile()
         report.recommended_actions = self.action_generator.generate(sorted_nodes, profile=profile)
+
+        analysis_texts = [objective]
+        analysis_texts.extend(report.branch_map.values())
+        analysis_texts.extend(report.branch_questions.values())
+        analysis_texts.extend(report.assumptions)
+        analysis_texts.extend(report.strongest_supporting_evidence)
+        analysis_texts.extend(report.strongest_opposing_evidence)
+        analysis_texts.extend(report.unresolved_questions)
+
+        response_texts = []
+        response_texts.extend(report.main_findings)
+        response_texts.extend(report.key_risks)
+        response_texts.extend(report.recommended_actions)
+        response_texts.extend(report.stopped_branches)
+
+        report.estimated_analysis_tokens = self.token_accounting.estimate_many(analysis_texts)
+        report.estimated_response_tokens = self.token_accounting.estimate_many(response_texts)
+        report.estimated_memory_tokens = 0
+        report.estimated_total_tokens = report.estimated_analysis_tokens + report.estimated_response_tokens
         return report
