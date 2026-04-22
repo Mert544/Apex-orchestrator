@@ -21,6 +21,18 @@ class RepairFailedTestSkill:
         patch_plan = patch_plan or {}
         target_files = list(patch_plan.get("target_files", []) or [])
 
+        if failure_type == "patch_apply_failure":
+            return RepairSuggestion(
+                repair_type="patch_input_repair",
+                suggested_actions=[
+                    "Check patch input structure and required keys.",
+                    "Verify file paths are inside project root.",
+                    "Retry with explicit expected_old_content when patching existing files.",
+                ],
+                target_files=target_files,
+                retry_recommended=True,
+            )
+
         if failure_type == "test_failure":
             return RepairSuggestion(
                 repair_type="test_failure_repair",
