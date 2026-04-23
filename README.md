@@ -7,7 +7,7 @@
 **Scan deeper. Ask better questions. Focus the right branch.**
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-239%2F239%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-243%2F243%20passing-brightgreen)]()
 [![Architecture](https://img.shields.io/badge/architecture-fractal-purple)]()
 [![Memory](https://img.shields.io/badge/memory-degrade--not--block-green)]()
 [![Focus](https://img.shields.io/badge/focus-branch--aware-orange)]()

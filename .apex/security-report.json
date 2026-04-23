@@ -1,12 +1,12 @@
 {
   "project_root": "C:\\Users\\salio\\Apex-orchestrator",
   "summary": {
-    "total_files": 677,
-    "functions_analyzed": 829,
-    "total_risks": 847,
+    "total_files": 813,
+    "functions_analyzed": 857,
+    "total_risks": 875,
     "critical": 0,
     "high": 21,
-    "medium": 826,
+    "medium": 854,
     "low": 0
   },
   "risks": {
@@ -247,6 +247,54 @@
         "function": "do_GET",
         "risk": "long_function (32 lines)",
         "risk_score": 0.2
+      },
+      {
+        "file": "app/automation/auto_merge.py",
+        "function": "AutoMerger.__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/auto_merge.py",
+        "function": "AutoMerger._run_git",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/auto_merge.py",
+        "function": "AutoMerger.commit_patches",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/auto_merge.py",
+        "function": "AutoMerger.push",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/auto_merge.py",
+        "function": "__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/auto_merge.py",
+        "function": "_run_git",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/auto_merge.py",
+        "function": "commit_patches",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/auto_merge.py",
+        "function": "push",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
       },
       {
         "file": "app/automation/models.py",
@@ -1209,6 +1257,66 @@
         "risk_score": 0.1
       },
       {
+        "file": "app/engine/incremental_analyzer.py",
+        "function": "IncrementalAnalyzer.__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/incremental_analyzer.py",
+        "function": "IncrementalAnalyzer._load_state",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/incremental_analyzer.py",
+        "function": "IncrementalAnalyzer._save_state",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/incremental_analyzer.py",
+        "function": "IncrementalAnalyzer._fingerprint",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/incremental_analyzer.py",
+        "function": "IncrementalAnalyzer.analyze",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/incremental_analyzer.py",
+        "function": "__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/incremental_analyzer.py",
+        "function": "_load_state",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/incremental_analyzer.py",
+        "function": "_save_state",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/incremental_analyzer.py",
+        "function": "_fingerprint",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/incremental_analyzer.py",
+        "function": "analyze",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
         "file": "app/engine/novelty.py",
         "function": "NoveltyScorer.__init__",
         "risk": "missing_docstring",
@@ -1373,6 +1481,42 @@
       {
         "file": "app/engine/self_correction.py",
         "function": "_is_meta_claim",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/self_healing.py",
+        "function": "SelfHealingTestEngine.__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/self_healing.py",
+        "function": "SelfHealingTestEngine._run_tests",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/self_healing.py",
+        "function": "SelfHealingTestEngine.heal",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/self_healing.py",
+        "function": "__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/self_healing.py",
+        "function": "_run_tests",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/engine/self_healing.py",
+        "function": "heal",
         "risk": "missing_docstring",
         "risk_score": 0.1
       },
@@ -1675,6 +1819,30 @@
         "function": "choose",
         "risk": "long_function (45 lines)",
         "risk_score": 0.2
+      },
+      {
+        "file": "app/execution/parallel_patch.py",
+        "function": "ParallelSemanticPatcher.__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/execution/parallel_patch.py",
+        "function": "ParallelSemanticPatcher.apply_batch",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/execution/parallel_patch.py",
+        "function": "__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/execution/parallel_patch.py",
+        "function": "apply_batch",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
       },
       {
         "file": "app/execution/patch_planner.py",

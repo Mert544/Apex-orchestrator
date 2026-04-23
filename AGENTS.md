@@ -425,6 +425,94 @@ python -m app.cli plugin uninstall my-plugin
 python -m app.registry_server --port 8765
 ```
 
+## Semantic Patch Pipeline
+
+The semantic patch generator now uses a three-layer pipeline:
+
+### 1. Target Selection (`app/execution/target_selector.py`)
+```python
+from app.execution.target_selector import TargetSelector
+
+selector = TargetSelector()
+result = selector.select(
+    project_root="/path/to/project",
+    patch_plan={"target_files": ["app/main.py"]},
+    task={"title": "Add input validation"},
+)
+# result.targets: list of RankedTarget with scores and reasons
+```
+
+### 2. Context Extraction (`app/execution/context_extractor.py`)
+```python
+from app.execution.context_extractor import ContextExtractor
+
+extractor = ContextExtractor()
+result = extractor.extract(
+    project_root="/path/to/project",
+    target_files=["app/main.py"],
+    window_lines=40,
+)
+# result.contexts: list of FileContext with code_window, imports, related_tests
+```
+
+### 3. Edit Strategy (`app/execution/edit_strategy.py`)
+```python
+from app.execution.edit_strategy import EditStrategy
+
+strategy = EditStrategy()
+result = strategy.choose(
+    title="Add input validation",
+    patch_plan={"change_strategy": ["Add guard clause"]},
+    related_tests=["tests/test_main.py"],
+)
+# result.strategy: "add_guard_clause", result.confidence: 0.85
+```
+
+These layers feed into `SemanticPatchGenerator.generate()`, which produces patches with metadata:
+- `selected_targets`: Which files were chosen and why
+- `extracted_contexts`: Code windows around targets
+- `chosen_strategy`: What strategy was picked and its confidence
+
+## Architecture Snapshot (Post-Compaction)
+
+```
+app/
+├── automation/
+│   └── skills/              # 8 modules (research, patch, verify, git, safety, telemetry, workspace, context)
+│       ├── __init__.py      # Exports build_default_registry
+│       ├── registry_builder.py
+│       └── ...
+├── execution/
+│   ├── semantic_patch_generator.py   # Main pipeline: select → extract → choose → transform
+│   ├── target_selector.py            # Rank and select target files
+│   ├── context_extractor.py          # Extract code windows and symbols
+│   ├── edit_strategy.py              # Choose transform strategy
+│   └── semantic/                     # 11 AST transforms + 2 generators
+│       ├── transforms/
+│       │   ├── docstring.py
+│       │   ├── guard_clause.py
+│       │   ├── type_annotations.py
+│       │   ├── repair_test.py
+│       │   ├── rename_variable.py
+│       │   ├── extract_method.py
+│       │   ├── inline_variable.py
+│       │   ├── organize_imports.py
+│       │   ├── move_class.py
+│       │   ├── extract_class.py
+│       │   └── base.py
+│       └── generators/
+│           ├── draft.py
+│           └── stub.py
+├── orchestrator/
+│   ├── __init__.py          # Exports FractalResearchOrchestrator, FocusBranchResolver, NodeFactory, ReportComposer
+│   ├── core.py              # Main orchestrator logic
+│   ├── factory.py           # Node creation + focus branch resolution
+│   ├── report_composer.py   # Post-run synthesis
+│   └── metrics.py           # Phase timing + progress
+```
+
+**Facades removed:** `app/automation/skills.py`, `app/orchestrator.py`
+
 ## Adding a New Skill
 
 1. Implement skill function in the appropriate `app/automation/skills/*.py` file
