@@ -29,6 +29,7 @@ class AutomationStepResult:
     status: str
     output: Any = None
     error: str | None = None
+    error_type: str | None = None
 
 
 @dataclass
@@ -47,6 +48,7 @@ class AutomationRunResult:
                     "status": step.status,
                     "output": step.output,
                     "error": step.error,
+                    "error_type": step.error_type,
                 }
                 for step in self.steps
             ],

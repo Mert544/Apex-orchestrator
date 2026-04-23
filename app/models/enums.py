@@ -34,3 +34,4 @@ class StopReason(str, Enum):
     BUDGET_EXHAUSTED = "budget_exhausted"
     DUPLICATE_BRANCH = "duplicate_branch"
     NO_HIGH_VALUE_QUESTIONS = "no_high_value_questions"
+    TIMEOUT = "timeout"

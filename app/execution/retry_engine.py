@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -45,11 +47,15 @@ class RetryEngine:
     def __init__(
         self,
         max_retries: int = 1,
+        base_delay: float = 1.0,
+        max_delay: float = 30.0,
         semantic_generator: SemanticPatchGenerator | None = None,
         verifier: Verifier | None = None,
         patch_applier: ApplyPatchSkill | None = None,
     ) -> None:
         self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.max_delay = max_delay
         self.semantic_generator = semantic_generator or SemanticPatchGenerator()
         self.verifier = verifier or Verifier()
         self.patch_applier = patch_applier or ApplyPatchSkill()
@@ -104,6 +110,11 @@ class RetryEngine:
         for attempt in range(1, self.max_retries + 1):
             result.attempts = attempt
             rationale.append(f"Attempt {attempt}/{self.max_retries}: generating repair patch for '{failure_type}'.")
+
+            if attempt > 1:
+                delay = min(self.base_delay * (2 ** (attempt - 2)), self.max_delay)
+                jitter = delay * 0.1 * (random.random() * 2 - 1)
+                time.sleep(max(0.0, delay + jitter))
 
             repair_context = {
                 "failure_type": failure_type,

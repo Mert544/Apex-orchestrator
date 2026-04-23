@@ -7,7 +7,7 @@
 **Scan deeper. Ask better questions. Focus the right branch.**
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-211%2F211%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-239%2F239%20passing-brightgreen)]()
 [![Architecture](https://img.shields.io/badge/architecture-fractal-purple)]()
 [![Memory](https://img.shields.io/badge/memory-degrade--not--block-green)]()
 [![Focus](https://img.shields.io/badge/focus-branch--aware-orange)]()
@@ -341,9 +341,17 @@ tests/
 └── test_*.py
 
 examples/
-└── synthetic_shop/
+├── synthetic_shop/
+├── flask_mini/
+├── microservices_shop/
+├── legacy_bank/
+└── ml_pipeline/
+
+scripts/
+└── security_audit.py
 
 docs/
+├── comparison.md
 └── branding.md
 ```
 
@@ -383,11 +391,28 @@ docs/
 - ✅ **advanced refactoring transforms** (extract interface ABC, introduce parameter object dataclass)
 - ✅ **plugin ecosystem** for third-party tool integrations (hook points: before_scan, after_patch, on_claim, etc.)
 - ✅ **django_mini real-world case study** (SQL injection, missing CSRF, hardcoded secret, bare except)
+- ✅ **simulation projects** (`microservices_shop`, `legacy_bank`, `ml_pipeline`) with deliberately planted issues for validation
+- ✅ **competitor comparison framework** (`docs/comparison.md`) — positions Apex vs Copilot, Cursor, Claude, Codex
+- ✅ **PluginRegistry integrated into `app.main`** automation flow with hook firing (`before_scan`, `after_patch`, `on_report`, etc.)
+- ✅ **CI/CD security audit pipeline** (`.github/workflows/security-audit.yml` + `scripts/security_audit.py`)
+- ✅ **Architecture hardening** — `semantic_patch_generator.py` (818 lines) split into `execution/semantic/` sub-package with 11 transform modules
+- ✅ **Skills sub-package** — `automation/skills.py` (445 lines) split into domain-specific modules (research, patch, verify, git, safety, telemetry)
+- ✅ **Orchestrator slim-down** — `orchestrator.py` factored into `core.py` + `factory.py` + `report_composer.py`
+- ✅ **Performance optimization** — AST caching, O(n²) → O(1) novelty scoring, `GraphStore` cached views
+- ✅ **Memory eviction policy** — `PersistentMemoryStore` with `max_claims`, `max_questions`, `max_state_size_mb` limits
+- ✅ **Progress reporting + phase metrics** — `on_progress` callback + `PhaseMetrics` context manager
+- ✅ **Wall-clock timeouts** — `TerminationEngine` with `max_run_seconds` and `max_expand_seconds`
+- ✅ **Plugin crash isolation** — failing hooks collected without stopping others
+- ✅ **Circuit breaker** — `CircuitBreaker` class integrated into `DistributedSwarmCoordinator`
+- ✅ **Retry exponential backoff + jitter** — `RetryEngine` with configurable delays
+- ✅ **Structured error reporting** — `AutomationStepResult.error_type` (validation, patch, network, timeout)
+- ✅ **VS Code Extension MVP** — TypeScript migration, tree view, status bar, diagnostics, progress UI
+- ✅ **CLI** — `apex scan`, `apex plugin install/list/uninstall` commands
+- ✅ **Plugin Registry Server** — stdlib `http.server` with JSON index and download endpoints
 
 ### Next
 - plugin marketplace / registry server
 - IDE language server protocol (LSP) integration
-- automated security audit pipeline (CI/CD hook)
 
 ---
 

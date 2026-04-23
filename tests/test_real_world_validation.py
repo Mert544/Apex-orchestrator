@@ -36,3 +36,52 @@ def test_synthetic_shop_detects_hubs():
     report = validator.run()
     assert report["total_files"] >= 5
     assert len(report["critical_untested"]) >= 1
+
+
+def test_microservices_shop_known_issues_detected():
+    root = Path(__file__).parent.parent / "examples" / "microservices_shop"
+    validator = RealWorldValidator(root)
+    expected = [
+        "eval()",
+        "os.system()",
+        "pickle.loads",
+        "missing_docstring",
+        "bare_except",
+        "too_many_arguments",
+    ]
+    result = validator.assert_expected_issues(expected)
+    assert result["all_found"] is True, f"Missing expected issues: {result['missing']}"
+    assert result["total_risks"] >= 6
+
+
+def test_legacy_bank_known_issues_detected():
+    root = Path(__file__).parent.parent / "examples" / "legacy_bank"
+    validator = RealWorldValidator(root)
+    expected = [
+        "eval()",
+        "exec()",
+        "os.system()",
+        "pickle.loads",
+        "missing_docstring",
+        "too_many_arguments",
+    ]
+    result = validator.assert_expected_issues(expected)
+    assert result["all_found"] is True, f"Missing expected issues: {result['missing']}"
+    assert result["total_risks"] >= 6
+
+
+def test_ml_pipeline_known_issues_detected():
+    root = Path(__file__).parent.parent / "examples" / "ml_pipeline"
+    validator = RealWorldValidator(root)
+    expected = [
+        "eval()",
+        "exec()",
+        "os.system()",
+        "yaml.load",
+        "missing_docstring",
+        "bare_except",
+        "too_many_arguments",
+    ]
+    result = validator.assert_expected_issues(expected)
+    assert result["all_found"] is True, f"Missing expected issues: {result['missing']}"
+    assert result["total_risks"] >= 6

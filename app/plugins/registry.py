@@ -54,6 +54,7 @@ class PluginRegistry:
         self.plugins: list[ApexPlugin] = []
         self._hooks: dict[str, list[Callable[..., Any]]] = {h: [] for h in self.HOOK_POINTS}
         self._plugin_dirs = plugin_dirs or []
+        self._hook_errors: list[dict[str, Any]] = []
 
     def discover(self, extra_dirs: list[str] | None = None) -> list[Path]:
         """Return list of candidate plugin file paths."""
@@ -124,12 +125,17 @@ class PluginRegistry:
         """Run all registered functions for *hook_name*, passing *context*.
 
         Each hook may mutate *context*. Returns the (possibly mutated) context.
+        Isolated: one failing hook does not stop others.
         """
+        errors: list[dict[str, Any]] = []
         for fn in self._hooks.get(hook_name, []):
             try:
                 fn(context)
-            except Exception:
-                continue
+            except Exception as exc:
+                errors.append({"hook": hook_name, "error": str(exc)})
+        if errors:
+            self._hook_errors.extend(errors)
+            context.setdefault("_hook_errors", []).extend(errors)
         return context
 
     def list_plugins(self) -> list[dict[str, Any]]:

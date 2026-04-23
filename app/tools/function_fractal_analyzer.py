@@ -13,23 +13,55 @@ class FunctionFractalAnalyzer:
     """
 
     RISK_PATTERNS = {
-        "eval": "Uses eval() — arbitrary code execution risk",
-        "exec": "Uses exec() — arbitrary code execution risk",
-        "os.system": "Uses os.system() — shell injection risk",
-        "subprocess.call": "Uses subprocess without shell=False — injection risk",
-        "pickle.loads": "Uses pickle.loads() — deserialization risk",
-        "yaml.load": "Uses yaml.load() without Loader — arbitrary object risk",
-        "input": "Uses input() in Python 2 style — security concern",
-        "__import__": "Dynamic import — potential code injection",
+        "eval(": "Uses eval() — arbitrary code execution risk",
+        "exec(": "Uses exec() — arbitrary code execution risk",
+        "os.system(": "Uses os.system() — shell injection risk",
+        "subprocess.call(": "Uses subprocess without shell=False — injection risk",
+        "pickle.loads(": "Uses pickle.loads() — deserialization risk",
+        "yaml.load(": "Uses yaml.load() without Loader — arbitrary object risk",
+        "input(": "Uses input() in Python 2 style — security concern",
+        "__import__(": "Dynamic import — potential code injection",
     }
+
+    def __init__(self, max_files: int = 0) -> None:
+        self.max_files = max_files
+        self._file_cache: dict[str, tuple[float, ast.AST, str]] = {}
+        self._call_graph_cache: dict[str, Any] | None = None
+
+    def _get_cached_ast(self, path: Path) -> tuple[ast.AST, str] | None:
+        """Return (tree, source) from cache or parse and cache by (path, mtime)."""
+        path_str = str(path.resolve())
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None
+
+        cached = self._file_cache.get(path_str)
+        if cached is not None:
+            cached_mtime, tree, source = cached
+            if cached_mtime == mtime:
+                return tree, source
+
+        try:
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+        except (SyntaxError, OSError):
+            return None
+
+        self._file_cache[path_str] = (mtime, tree, source)
+        return tree, source
+
+    @staticmethod
+    def _is_test_file(path: Path) -> bool:
+        name = path.name
+        return name.startswith("test") or "test_" in name
 
     def analyze_file(self, file_path: str | Path) -> list[dict[str, Any]]:
         path = Path(file_path)
-        source = path.read_text(encoding="utf-8")
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:
+        parsed = self._get_cached_ast(path)
+        if parsed is None:
             return []
+        tree, source = parsed
 
         results = []
         module_name = self._module_name_from_path(path)
@@ -56,12 +88,44 @@ class FunctionFractalAnalyzer:
         risks = []
         risk_score = 0.0
 
-        # Check for risk patterns
+        # Check for risk patterns via AST Call nodes (avoids false positives in strings)
         fn_source = ast.unparse(node) if hasattr(ast, "unparse") else ""
-        for pattern, description in self.RISK_PATTERNS.items():
-            if pattern in fn_source:
-                risks.append(description)
-                risk_score += 0.3
+        for subnode in ast.walk(node):
+            if isinstance(subnode, ast.Call):
+                if isinstance(subnode.func, ast.Name):
+                    if subnode.func.id == "eval":
+                        risks.append("Uses eval() — arbitrary code execution risk")
+                        risk_score += 0.3
+                    elif subnode.func.id == "exec":
+                        risks.append("Uses exec() — arbitrary code execution risk")
+                        risk_score += 0.3
+                    elif subnode.func.id == "input":
+                        risks.append("Uses input() in Python 2 style — security concern")
+                        risk_score += 0.3
+                    elif subnode.func.id == "__import__":
+                        risks.append("Dynamic import — potential code injection")
+                        risk_score += 0.3
+                elif isinstance(subnode.func, ast.Attribute):
+                    chain = []
+                    current = subnode.func
+                    while isinstance(current, ast.Attribute):
+                        chain.append(current.attr)
+                        current = current.value
+                    if isinstance(current, ast.Name):
+                        chain.append(current.id)
+                    chain_str = ".".join(reversed(chain))
+                    if chain_str == "os.system":
+                        risks.append("Uses os.system() — shell injection risk")
+                        risk_score += 0.3
+                    elif chain_str == "subprocess.call":
+                        risks.append("Uses subprocess without shell=False — injection risk")
+                        risk_score += 0.3
+                    elif chain_str == "pickle.loads":
+                        risks.append("Uses pickle.loads() — deserialization risk")
+                        risk_score += 0.3
+                    elif chain_str == "yaml.load":
+                        risks.append("Uses yaml.load() without Loader — arbitrary object risk")
+                        risk_score += 0.3
 
         # Missing docstring
         if not has_docstring:
@@ -100,43 +164,37 @@ class FunctionFractalAnalyzer:
     def build_call_graph(self, project_root: str | Path) -> dict[str, dict[str, Any]]:
         """Build a cross-file call graph: who calls whom."""
         root = Path(project_root)
+        cache_key = str(root.resolve())
+        if self._call_graph_cache is not None and self._call_graph_cache.get("key") == cache_key:
+            return self._call_graph_cache["graph"]
+
         graph: dict[str, dict[str, Any]] = {}
         all_functions: dict[str, str] = {}  # full_name -> file_path
 
-        # First pass: collect all functions
-        for py_file in root.rglob("*.py"):
-            if "test_" in py_file.name or py_file.name.startswith("test"):
+        # Collect Python files once, skipping tests efficiently
+        py_files = [f for f in root.rglob("*.py") if not self._is_test_file(f)]
+        if self.max_files > 0:
+            py_files = py_files[:self.max_files]
+
+        file_infos: list[tuple[str, dict[str, str], list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]]] = []
+
+        # First pass: collect all functions and imports with a single parent map per file
+        for py_file in py_files:
+            parsed = self._get_cached_ast(py_file)
+            if parsed is None:
                 continue
+            tree, _ = parsed
             module = self._module_name_from_path(py_file)
-            try:
-                tree = ast.parse(py_file.read_text(encoding="utf-8"))
-            except SyntaxError:
-                continue
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    fn_name = node.name
-                    # Try to find parent class
-                    for parent in ast.walk(tree):
-                        if isinstance(parent, ast.ClassDef) and node in parent.body:
-                            fn_name = f"{parent.name}.{node.name}"
-                            break
-                    full = f"{module}::{fn_name}"
-                    all_functions[full] = str(py_file)
-                    graph[full] = {"callees": set(), "callers": set(), "file": str(py_file)}
 
-        # Second pass: find calls
-        for py_file in root.rglob("*.py"):
-            if "test_" in py_file.name or py_file.name.startswith("test"):
-                continue
-            try:
-                source = py_file.read_text(encoding="utf-8")
-                tree = ast.parse(source)
-            except SyntaxError:
-                continue
+            # Build parent-pointer map in one traversal
+            parent_map: dict[ast.AST, ast.AST] = {}
+            for parent in ast.walk(tree):
+                for child in ast.iter_child_nodes(parent):
+                    parent_map[child] = parent
 
-            # Determine current module and imported names
-            current_module = self._module_name_from_path(py_file)
-            imports: dict[str, str] = {}  # alias -> full_module
+            imports: dict[str, str] = {}
+            functions: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
@@ -146,30 +204,37 @@ class FunctionFractalAnalyzer:
                     for alias in node.names:
                         name = alias.asname or alias.name
                         imports[name] = mod
-
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     fn_name = node.name
-                    for parent in ast.walk(tree):
-                        if isinstance(parent, ast.ClassDef) and node in parent.body:
-                            fn_name = f"{parent.name}.{node.name}"
+                    current = node
+                    while current in parent_map:
+                        current = parent_map[current]
+                        if isinstance(current, ast.ClassDef):
+                            fn_name = f"{current.name}.{node.name}"
                             break
-                    caller = f"{current_module}::{fn_name}"
-                    if caller not in graph:
-                        continue
+                    full = f"{module}::{fn_name}"
+                    all_functions[full] = str(py_file)
+                    graph[full] = {"callees": set(), "callers": set(), "file": str(py_file)}
+                    functions.append((full, node))
 
-                    for sub in ast.walk(node):
-                        if isinstance(sub, ast.Call):
-                            callee = self._resolve_call(sub, imports, current_module, all_functions)
-                            if callee and callee in graph:
-                                graph[caller]["callees"].add(callee)
-                                graph[callee]["callers"].add(caller)
+            file_infos.append((module, imports, functions))
+
+        # Second pass: find calls
+        for module, imports, functions in file_infos:
+            for caller, node in functions:
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Call):
+                        callee = self._resolve_call(sub, imports, module, all_functions)
+                        if callee and callee in graph:
+                            graph[caller]["callees"].add(callee)
+                            graph[callee]["callers"].add(caller)
 
         # Convert sets to lists for JSON serialization
         for key in graph:
             graph[key]["callees"] = sorted(graph[key]["callees"])
             graph[key]["callers"] = sorted(graph[key]["callers"])
 
+        self._call_graph_cache = {"key": cache_key, "graph": graph}
         return graph
 
     def compute_cross_file_impact(self, project_root: str | Path) -> dict[str, dict[str, Any]]:

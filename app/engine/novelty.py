@@ -13,7 +13,7 @@ class NoveltyScorer:
         return 1.0
 
     def score_node(self, node) -> float:
-        if any(existing.claim.strip().lower() == node.claim.strip().lower() for existing in self.graph.get_all_nodes() if existing.id != node.id):
+        if self.graph.has_similar_claim(node.claim):
             return 0.0
         if self.graph.has_memory_claim(node.claim):
             return 0.25

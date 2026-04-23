@@ -7,10 +7,21 @@ from typing import Any
 
 
 class PersistentMemoryStore:
-    def __init__(self, project_root: str | Path, memory_dir_name: str = ".epistemic") -> None:
+    def __init__(
+        self,
+        project_root: str | Path,
+        memory_dir_name: str = ".epistemic",
+        max_claims: int = 500,
+        max_questions: int = 500,
+        max_state_size_mb: float = 10.0,
+    ) -> None:
         self.project_root = Path(project_root)
         self.memory_dir = self.project_root / memory_dir_name
         self.memory_file = self.memory_dir / "memory.json"
+        self.max_claims = max_claims
+        self.max_questions = max_questions
+        self.max_state_size_bytes = max_state_size_mb * 1024 * 1024
+        self._state_cache: dict[str, Any] | None = None
 
     def hydrate_graph(self, graph) -> dict[str, Any]:
         state = self.load_state()
@@ -20,9 +31,16 @@ class PersistentMemoryStore:
             graph.load_memory_question(question)
         return state
 
+    def estimated_bytes(self) -> int:
+        state = self.load_state()
+        return len(json.dumps(state, default=str).encode("utf-8"))
+
     def persist_run(self, objective: str, report, nodes) -> dict[str, Any]:
         state = self.load_state()
         run_id = self._make_run_id()
+
+        # Evict oversized collections before mutating
+        state = self._evict(state)
 
         sorted_nodes = sorted(nodes, key=lambda n: n.claim_priority, reverse=True)
         branch_history = []
@@ -70,6 +88,7 @@ class PersistentMemoryStore:
 
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.memory_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        self._state_cache = state
 
         return {
             "memory_file": str(self.memory_file),
@@ -80,25 +99,9 @@ class PersistentMemoryStore:
         }
 
     def load_state(self) -> dict[str, Any]:
-        if not self.memory_file.exists():
-            return {
-                "schema_version": 1,
-                "project_root": str(self.project_root),
-                "known_claims": [],
-                "known_questions": [],
-                "runs": [],
-                "branch_history": [],
-                "last_report": {},
-                "last_full_report": {},
-            }
-        try:
-            raw = json.loads(self.memory_file.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                raw.setdefault("last_full_report", {})
-                return raw
-        except Exception:
-            pass
-        return {
+        if self._state_cache is not None:
+            return self._state_cache
+        default = {
             "schema_version": 1,
             "project_root": str(self.project_root),
             "known_claims": [],
@@ -108,12 +111,48 @@ class PersistentMemoryStore:
             "last_report": {},
             "last_full_report": {},
         }
+        if not self.memory_file.exists():
+            self._state_cache = default
+            return default
+        try:
+            raw = json.loads(self.memory_file.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                raw.setdefault("last_full_report", {})
+                self._state_cache = raw
+                return raw
+        except Exception:
+            pass
+        self._state_cache = default
+        return default
 
     def _make_run_id(self) -> str:
         return datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
 
     def _utc_now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _evict(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Trim state to keep within size and count limits."""
+        for key, limit in (("known_claims", self.max_claims), ("known_questions", self.max_questions)):
+            items = state.get(key, [])
+            if len(items) > limit:
+                # Keep most recent (end of list) — they were added last
+                state[key] = items[-limit:]
+
+        # If still oversized, trim more aggressively
+        size = len(json.dumps(state, default=str).encode("utf-8"))
+        if size > self.max_state_size_bytes:
+            overshoot_ratio = size / self.max_state_size_bytes
+            for key, limit in (("known_claims", self.max_claims), ("known_questions", self.max_questions)):
+                items = state.get(key, [])
+                new_limit = max(10, int(limit / overshoot_ratio))
+                if len(items) > new_limit:
+                    state[key] = items[-new_limit:]
+            # Also trim branch_history
+            bh = state.get("branch_history", [])
+            if bh:
+                state["branch_history"] = bh[-100:]
+        return state
 
     def _dedupe(self, values: list[str]) -> list[str]:
         cleaned: list[str] = []

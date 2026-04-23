@@ -1,9 +1,12 @@
+from collections.abc import Iterator
+
 from app.models.node import ResearchNode
 
 
 class GraphStore:
     def __init__(self) -> None:
         self.nodes: dict[str, ResearchNode] = {}
+        self._cached_nodes: list[ResearchNode] = []
         self.question_texts: set[str] = set()
         self.claim_texts: set[str] = set()
         self.memory_question_texts: set[str] = set()
@@ -11,6 +14,7 @@ class GraphStore:
 
     def add_node(self, node: ResearchNode) -> None:
         self.nodes[node.id] = node
+        self._cached_nodes.append(node)
         self.register_claim(node.claim)
 
     def load_memory_claim(self, claim: str) -> None:
@@ -46,4 +50,18 @@ class GraphStore:
             self.claim_texts.add(cleaned)
 
     def get_all_nodes(self) -> list[ResearchNode]:
-        return list(self.nodes.values())
+        return list(self._cached_nodes)
+
+    def iter_all_nodes(self) -> Iterator[ResearchNode]:
+        yield from self._cached_nodes
+
+    def branch_map(self) -> dict[str, str]:
+        """Map branch paths to their corresponding claims."""
+        result: dict[str, str] = {}
+        for node in self._cached_nodes:
+            if node.branch_path:
+                result[node.branch_path] = node.claim
+        return result
+
+    def size(self) -> int:
+        return len(self._cached_nodes)

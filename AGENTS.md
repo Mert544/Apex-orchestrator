@@ -17,6 +17,9 @@ pip install -e .[dev]
 # Run all tests
 pytest
 
+# Run security audit
+python scripts/security_audit.py
+
 # Run specific test groups
 pytest tests/test_semantic_patch_generator.py
 pytest tests/test_retry_engine.py
@@ -198,7 +201,7 @@ graph = analyzer.build_call_graph("app/")
 impact = analyzer.compute_cross_file_impact("app/")
 ```
 
-- Detects `eval()`, `os.system()`, `pickle.loads()`, bare except, missing docstrings
+- Detects `eval()`, `os.system()`, `pickle.loads()`, bare except, missing docstrings via AST `Call` node inspection (no false positives from docstrings)
 - Builds cross-file call graph
 - Computes downstream impact for risky functions
 
@@ -350,10 +353,82 @@ registry.run_hook("after_patch", {"changed_files": [...]})
 
 Hook points: `before_scan`, `after_scan`, `before_patch`, `after_patch`, `before_test`, `after_test`, `on_claim`, `on_report`
 
+### Plugin Integration in `app.main`
+
+When running automation plans, `app.main` automatically:
+1. Loads plugins from `plugin_dirs` in config or `APEX_PLUGIN_PATH` env var
+2. Passes the `PluginRegistry` to `SkillAutomationRunner`
+3. Fires hooks at plan boundaries (`before_scan`, `after_patch`, `on_report`, etc.)
+
+```python
+# Example plugin: plugins/audit_plugin.py
+__plugin_name__ = "audit"
+
+def register(proxy):
+    proxy.add_hook("before_scan", lambda ctx: print("Scan starting..."))
+    proxy.add_hook("on_report", lambda ctx: print("Report generated."))
+```
+
+## Simulation Projects
+
+Three synthetic validation targets with deliberately planted issues:
+
+| Project | Issues |
+|---|---|
+| `examples/microservices_shop` | eval(), os.system(), pickle.loads, bare except, too_many_arguments, missing_docstring |
+| `examples/legacy_bank` | eval(), exec(), os.system(), pickle.loads, too_many_arguments, missing_docstring |
+| `examples/ml_pipeline` | eval(), exec(), os.system(), yaml.load, bare except, too_many_arguments, missing_docstring |
+
+Run validation:
+```bash
+pytest tests/test_real_world_validation.py -v
+```
+
+## CI/CD Security Audit Pipeline
+
+A GitHub Actions workflow (`.github/workflows/security-audit.yml`) runs:
+1. Full test suite
+2. `scripts/security_audit.py` — deterministic AST-based risk analysis
+3. Uploads `.apex/security-report.json` as artifact
+4. Fails pipeline if critical risks detected
+
+The audit script uses AST `Call` node inspection (not naive string matching) to eliminate false positives from docstrings and string literals.
+
+## Competitor Comparison
+
+See `docs/comparison.md` for detailed positioning against GitHub Copilot, Cursor, Claude (Sonnet), and OpenAI Codex.
+
+Key differentiators:
+- **Fractal reasoning** vs linear completion
+- **Cross-run memory** vs session-only
+- **Deterministic self-correction** vs prompt-dependent
+- **AST-first refactoring** vs LLM generation
+- **Zero mandatory dependencies** vs cloud API required
+
+## CLI Usage
+
+```bash
+# Scan a project
+python -m app.cli scan --plan=project_scan --target=/path/to/project
+
+# Install a plugin
+python -m app.cli plugin install my-plugin
+python -m app.cli plugin install https://example.com/plugin.py
+
+# List installed plugins
+python -m app.cli plugin list
+
+# Uninstall a plugin
+python -m app.cli plugin uninstall my-plugin
+
+# Run registry server
+python -m app.registry_server --port 8765
+```
+
 ## Adding a New Skill
 
-1. Implement skill function in `app/automation/skills.py`
-2. Register in `build_default_registry()`
+1. Implement skill function in the appropriate `app/automation/skills/*.py` file
+2. Register in `build_default_registry()` in `app/automation/skills/registry_builder.py`
 3. Add plan step in `app/automation/plans.py` if needed
 4. Write test in `tests/test_<feature>.py`
 5. Update this guide

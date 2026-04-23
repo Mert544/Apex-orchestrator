@@ -9,34 +9,99 @@
   },
   "categories": ["Machine Learning", "Debuggers", "Other"],
   "activationEvents": [
-    "onCommand:apex.projectScan",
-    "onCommand:apex.semanticPatch",
-    "onCommand:apex.runTests"
+    "onLanguage:python",
+    "workspaceContains:**/*.py",
+    "onCommand:apex.projectScan"
   ],
-  "main": "./extension.js",
+  "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "apex.projectScan",
-        "title": "Apex: Project Scan",
-        "category": "Apex"
+        "title": "Project Scan",
+        "category": "Apex",
+        "icon": "$(search)"
       },
       {
         "command": "apex.semanticPatch",
-        "title": "Apex: Generate Semantic Patch",
-        "category": "Apex"
+        "title": "Generate Semantic Patch",
+        "category": "Apex",
+        "icon": "$(lightbulb-autofix)"
       },
       {
         "command": "apex.runTests",
-        "title": "Apex: Run Tests",
-        "category": "Apex"
+        "title": "Run Tests",
+        "category": "Apex",
+        "icon": "$(beaker)"
       },
       {
         "command": "apex.openPresence",
-        "title": "Apex: Open Presence Log",
-        "category": "Apex"
+        "title": "Open Presence Log",
+        "category": "Apex",
+        "icon": "$(output)"
+      },
+      {
+        "command": "apex.refreshResults",
+        "title": "Refresh Results",
+        "category": "Apex",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "apex.clearResults",
+        "title": "Clear Results",
+        "category": "Apex",
+        "icon": "$(clear-all)"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "apex.projectScan",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "apex.semanticPatch",
+          "when": "editorLangId == python"
+        }
+      ],
+      "editor/title/run": [
+        {
+          "command": "apex.projectScan",
+          "group": "navigation",
+          "when": "editorLangId == python"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "apex.refreshResults",
+          "when": "view == apex.scanResults",
+          "group": "navigation"
+        },
+        {
+          "command": "apex.clearResults",
+          "when": "view == apex.scanResults",
+          "group": "navigation"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "apex-explorer",
+          "title": "Apex",
+          "icon": "$(search)"
+        }
+      ]
+    },
+    "views": {
+      "apex-explorer": [
+        {
+          "id": "apex.scanResults",
+          "name": "Scan Results",
+          "when": "apex.hasResults"
+        }
+      ]
+    },
     "configuration": {
       "title": "Apex Orchestrator",
       "properties": {
@@ -54,9 +119,15 @@
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
     "package": "vsce package"
   },
   "devDependencies": {
-    "@types/vscode": "^1.80.0"
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.0"
   }
 }

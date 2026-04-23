@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+import time
+from typing import Any, Callable
 
 from app.engine.budget import BudgetController
 from app.engine.compressed_mode import CompressedModeEngine
-from app.engine.execution_loop import ExecutionLoop
+from app.engine.debug_engine import DebugEngine
 from app.engine.novelty import NoveltyScorer
 from app.engine.termination import TerminationEngine
 from app.execution.token_telemetry import TokenTelemetry
@@ -12,6 +13,9 @@ from app.llm.router import LLMRouter
 from app.memory.graph_store import GraphStore
 from app.models.enums import NodeStatus, StopReason
 from app.models.node import ResearchNode
+from app.orchestrator.factory import FocusBranchResolver, NodeFactory
+from app.orchestrator.metrics import PhaseMetrics
+from app.orchestrator.report_composer import ReportComposer
 from app.policies.constitution import (
     downgrade_if_unsupported,
     enforce_four_question_types,
@@ -29,8 +33,7 @@ from app.utils.branching import make_branch_path
 
 
 class FractalResearchOrchestrator:
-    def __init__(self, config: dict[str, Any], decomposer, validator, synthesizer, memory_store=None) -> None:
-        # Apply compressed mode overrides if configured
+    def __init__(self, config: dict[str, Any], decomposer, validator, synthesizer, memory_store=None, debug: DebugEngine | None = None) -> None:
         self._compressed = CompressedModeEngine(config)
         self.config = self._compressed.config
 
@@ -39,7 +42,8 @@ class FractalResearchOrchestrator:
         self.synthesizer = synthesizer
         self.memory_store = memory_store
 
-        # Telemetry + optional LLM
+        self.debug = debug or DebugEngine(enabled=bool(config.get("debug_enabled", False)))
+
         budget_limit = int(self.config.get("token_budget_limit", 0))
         self.telemetry = TokenTelemetry(budget_limit=budget_limit)
         self.llm = LLMRouter.from_config(self.config)
@@ -55,9 +59,9 @@ class FractalResearchOrchestrator:
         self.novelty_scorer = NoveltyScorer(self.graph)
         self.budget = BudgetController(max_total_nodes=int(self.config["max_total_nodes"]))
         self.termination = TerminationEngine(self.config)
-        self.execution_loop = ExecutionLoop()
+        self.node_factory = NodeFactory(self.claim_analyzer)
         self.memory_state = self.memory_store.hydrate_graph(self.graph) if self.memory_store is not None else {}
-        self.debug_stats = {
+        self.debug_stats: dict[str, int | float] = {
             "run_question_duplicates_blocked": 0,
             "memory_question_repeats_degraded": 0,
             "run_claim_duplicates_blocked": 0,
@@ -68,126 +72,116 @@ class FractalResearchOrchestrator:
             "focus_branch_misses": 0,
         }
 
-    def run(self, objective: str, focus_branch: str | None = None):
+    def run(
+        self,
+        objective: str,
+        focus_branch: str | None = None,
+        on_progress: Callable[[str, int, int], None] | None = None,
+    ):
+        run_start = time.perf_counter()
+        metrics = PhaseMetrics()
+        self.termination.set_deadline(
+            run_start,
+            max_run_seconds=float(self.config.get("max_run_seconds", 0.0)),
+            max_expand_seconds=float(self.config.get("max_expand_seconds", 0.0)),
+        )
+        self.debug.trace("orchestrator_start", f"run() objective={objective[:60]}", {
+            "focus_branch": focus_branch,
+            "mode": self._compressed.mode,
+            "max_depth": self.config.get("max_depth"),
+        })
+
         focus_claim = None
         focus_question = None
         if focus_branch:
-            focus_claim, focus_question = self._resolve_focus_branch(focus_branch)
+            focus_claim, focus_question = FocusBranchResolver.resolve(focus_branch, self.memory_state)
 
-        if focus_branch and focus_claim:
-            root_nodes = [
-                self._make_node(
-                    id="focus-root",
-                    claim=focus_claim,
-                    depth=0,
-                    branch_path=focus_branch,
-                    source_question=focus_question,
-                )
-            ]
-            self.debug_stats["focus_branch_hits"] += 1
-        else:
-            if focus_branch:
-                self.debug_stats["focus_branch_misses"] += 1
-            raw_root_claims = [claim for claim in self.decomposer.decompose(objective) if self.claim_normalizer.is_viable(claim)]
-            root_claims = self.spam_guard.filter_claims(list(dict.fromkeys(raw_root_claims)))
-            self.debug_stats["spam_claims_filtered"] += max(0, len(raw_root_claims) - len(root_claims))
+        with metrics.context("decompose"):
+            if focus_branch and focus_claim:
+                root_nodes = [
+                    self.node_factory.make_node(
+                        id="focus-root",
+                        claim=focus_claim,
+                        depth=0,
+                        branch_path=focus_branch,
+                        source_question=focus_question,
+                    )
+                ]
+                self.debug_stats["focus_branch_hits"] += 1
+                self.debug.trace("focus_branch", f"Hit {focus_branch}", {"claim": focus_claim[:60]})
+            else:
+                if focus_branch:
+                    self.debug_stats["focus_branch_misses"] += 1
+                    self.debug.trace("focus_branch", f"Miss {focus_branch} — falling back to full scan")
+                raw_root_claims = [claim for claim in self.decomposer.decompose(objective) if self.claim_normalizer.is_viable(claim)]
+                root_claims = self.spam_guard.filter_claims(list(dict.fromkeys(raw_root_claims)))
+                self.debug_stats["spam_claims_filtered"] += max(0, len(raw_root_claims) - len(root_claims))
+                self.debug.trace("decompose", f"{len(root_claims)} root claims from objective", {
+                    "raw_count": len(raw_root_claims),
+                    "filtered_count": len(root_claims),
+                })
 
-            root_nodes = [
-                self._make_node(
-                    id=f"root-{i}",
-                    claim=claim,
-                    depth=0,
-                    branch_path=make_branch_path("x", i),
-                )
-                for i, claim in enumerate(root_claims)
-            ]
-            root_nodes.sort(key=lambda n: n.claim_priority, reverse=True)
+                root_nodes = [
+                    self.node_factory.make_node(
+                        id=f"root-{i}",
+                        claim=claim,
+                        depth=0,
+                        branch_path=make_branch_path("x", i),
+                    )
+                    for i, claim in enumerate(root_claims)
+                ]
+                root_nodes.sort(key=lambda n: n.claim_priority, reverse=True)
 
-        for node in root_nodes:
+        if on_progress:
+            on_progress("decompose", 1, 1)
+
+        total_roots = len(root_nodes)
+        for idx, node in enumerate(root_nodes):
             self.graph.add_node(node)
             self.budget.consume_node()
-            self._expand(node)
+            self._expand(node, on_progress=on_progress, current_root=idx, total_roots=total_roots)
+            if on_progress:
+                on_progress("expand", idx + 1, total_roots)
 
-        report = self.synthesizer.synthesize(objective, self.graph.get_all_nodes())
-        report.focus_branch = focus_branch
-        report.focus_claim = focus_claim
-        report.debug_stats = dict(self.debug_stats)
-        report.mode = self._compressed.mode
-
-        # Record telemetry for this run
-        self.telemetry.record_analysis(objective)
-        self.telemetry.record_response(report.model_dump_json())
-
-        if self.memory_store is not None:
-            memory_summary = self.memory_store.persist_run(objective, report, self.graph.get_all_nodes())
-            report.memory_file = memory_summary.get("memory_file")
-            report.memory_run_id = memory_summary.get("run_id")
-            report.known_claim_count = memory_summary.get("known_claim_count", 0)
-            report.known_question_count = memory_summary.get("known_question_count", 0)
-            report.previous_run_count = memory_summary.get("previous_run_count", 0)
-            report.estimated_memory_tokens = (report.known_claim_count * 8) + (report.known_question_count * 8)
-            report.estimated_total_tokens = (
-                report.estimated_analysis_tokens
-                + report.estimated_response_tokens
-                + report.estimated_memory_tokens
+        with metrics.context("synthesize"):
+            composer = ReportComposer(
+                graph=self.graph,
+                telemetry=self.telemetry,
+                debug=self.debug,
+                compressed=self._compressed,
+                memory_store=self.memory_store,
             )
-            self.telemetry.record_memory(report.model_dump_json())
+            report = composer.compose(
+                objective=objective,
+                synthesizer=self.synthesizer,
+                focus_branch=focus_branch,
+                focus_claim=focus_claim,
+                debug_stats=self.debug_stats,
+            )
+        report.phase_metrics = metrics.to_dict()
 
-        # Attach telemetry snapshot to report
-        snap = self.telemetry.snapshot()
-        report.telemetry = snap.to_dict()
-
-        # Apply compressed mode report trimming if active
-        if self._compressed.mode == "compressed":
-            report_dict = report.model_dump()
-            compressed = self._compressed.compress_report(report_dict)
-            # Update report fields from compressed dict
-            for key in ("main_findings", "branch_map", "recommended_actions", "key_risks"):
-                if key in compressed:
-                    setattr(report, key, compressed[key])
-
+        if on_progress:
+            on_progress("complete", self.graph.size(), self.graph.size())
         return report
 
-    def _resolve_focus_branch(self, focus_branch: str) -> tuple[str | None, str | None]:
-        state = self.memory_state if isinstance(self.memory_state, dict) else {}
-        full_report = state.get("last_full_report", {}) if isinstance(state.get("last_full_report", {}), dict) else {}
-        last_report = state.get("last_report", {}) if isinstance(state.get("last_report", {}), dict) else {}
-
-        for candidate in (full_report, last_report):
-            branch_map = candidate.get("branch_map", {}) if isinstance(candidate, dict) else {}
-            branch_questions = candidate.get("branch_questions", {}) if isinstance(candidate, dict) else {}
-            claim = branch_map.get(focus_branch)
-            if claim:
-                return claim, branch_questions.get(focus_branch)
-        return None, None
-
-    def _make_node(
+    def _expand(
         self,
-        id: str,
-        claim: str,
-        depth: int,
-        parent_ids: list[str] | None = None,
-        branch_path: str = "",
-        source_question: str | None = None,
-    ) -> ResearchNode:
-        analysis = self.claim_analyzer.analyze(claim)
-        return ResearchNode(
-            id=id,
-            claim=claim,
-            parent_ids=parent_ids or [],
-            depth=depth,
-            branch_path=branch_path,
-            source_question=source_question,
-            claim_type=analysis.claim_type,
-            claim_priority=analysis.priority,
-            claim_signals=analysis.signals,
-        )
+        node: ResearchNode,
+        on_progress: Callable[[str, int, int], None] | None = None,
+        current_root: int = 0,
+        total_roots: int = 0,
+    ) -> None:
+        self.debug.trace("expand_enter", f"Expanding {node.id}", {
+            "branch": node.branch_path,
+            "depth": node.depth,
+            "claim": node.claim[:60],
+        })
 
-    def _expand(self, node: ResearchNode) -> None:
         stop = self.termination.should_stop_before_expansion(node, self.budget)
         if stop is not None:
             node.status = NodeStatus.STOPPED
             node.stop_reason = stop
+            self.debug.trace("expand_stop", f"Pre-expansion stop: {stop}", {"node": node.id})
             return
 
         validation = self.validator.validate(node.claim)
@@ -195,6 +189,11 @@ class FractalResearchOrchestrator:
         node.evidence_against = validation.get("evidence_against", [])
         node.assumptions = validation.get("assumptions", []) or self.assumption_extractor.extract(node.claim)
         node.risk = float(validation.get("risk", 0.4))
+        self.debug.trace("validate", f"Validated {node.id}", {
+            "evidence_for": len(node.evidence_for),
+            "evidence_against": len(node.evidence_against),
+            "risk": node.risk,
+        })
 
         node = must_search_counter_evidence(node)
         node.confidence = score_confidence(
@@ -208,9 +207,6 @@ class FractalResearchOrchestrator:
 
         node.security = self.security_governor.review(node)
         node.quality = self.quality_judge.evaluate(node)
-        node.novelty = self.novelty_scorer.score_node(node)
-        if self.graph.has_memory_claim(node.claim):
-            self.debug_stats["memory_claim_repeats_degraded"] += 1
 
         stop = self.termination.should_stop_after_scoring(node)
         if stop is not None:
@@ -244,12 +240,15 @@ class FractalResearchOrchestrator:
             return
 
         selected_questions = sorted(fresh_questions, key=lambda q: q.priority, reverse=True)[: int(self.config["top_k_questions"])]
+        self.debug.trace("questions_selected", f"Node {node.id}", {"selected": len(selected_questions), "fresh": len(fresh_questions)})
 
         child_counter = 0
+        total_children = 0
         for idx, question in enumerate(selected_questions):
             if self.budget.exhausted:
                 node.status = NodeStatus.STOPPED
                 node.stop_reason = StopReason.BUDGET_EXHAUSTED
+                self.debug.trace("budget_exhausted", f"Node {node.id} — mid-expansion")
                 return
 
             raw_child_claims = self.decomposer.decompose(question.text)
@@ -265,7 +264,7 @@ class FractalResearchOrchestrator:
                 branch_path = make_branch_path(node.branch_path, child_counter)
                 child_counter += 1
                 child_nodes.append(
-                    self._make_node(
+                    self.node_factory.make_node(
                         id=f"{node.id}-{idx}-{j}",
                         claim=child_claim,
                         parent_ids=[node.id],
@@ -280,14 +279,23 @@ class FractalResearchOrchestrator:
                 if self.budget.exhausted:
                     node.status = NodeStatus.STOPPED
                     node.stop_reason = StopReason.BUDGET_EXHAUSTED
+                    self.debug.trace("budget_exhausted", f"Node {node.id} — child creation")
                     return
                 if self.graph.has_similar_claim(child.claim):
                     self.debug_stats["run_claim_duplicates_blocked"] += 1
                     continue
                 if self.graph.has_memory_claim(child.claim):
                     self.debug_stats["memory_claim_repeats_degraded"] += 1
+                child.novelty = self.novelty_scorer.score_node(child)
                 self.graph.add_node(child)
                 self.budget.consume_node()
-                self.execution_loop.expand(self, child)
+                total_children += 1
+                self._expand(child, on_progress=on_progress, current_root=current_root, total_roots=total_roots)
+                if on_progress and total_roots > 0:
+                    on_progress("expand", current_root + 1, total_roots)
 
         node.status = NodeStatus.EXPANDED
+        self.debug.trace("expand_exit", f"Node {node.id} expanded", {
+            "children_created": total_children,
+            "depth": node.depth,
+        })

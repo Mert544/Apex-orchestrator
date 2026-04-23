@@ -9,6 +9,49 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 
+class CircuitBreaker:
+    """Simple circuit breaker for remote node calls."""
+
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+    def __init__(self, failure_threshold: int = 3, recovery_timeout: float = 30.0) -> None:
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.state = self.CLOSED
+        self.failures = 0
+        self.last_failure_time: float = 0.0
+
+    def call(self, fn: Callable[[], Any]) -> Any:
+        if self.state == self.OPEN:
+            if time.time() - self.last_failure_time >= self.recovery_timeout:
+                self.state = self.HALF_OPEN
+            else:
+                raise CircuitBreakerOpen("Circuit breaker is OPEN")
+        try:
+            result = fn()
+            self._on_success()
+            return result
+        except Exception as exc:
+            self._on_failure()
+            raise exc
+
+    def _on_success(self) -> None:
+        self.failures = 0
+        self.state = self.CLOSED
+
+    def _on_failure(self) -> None:
+        self.failures += 1
+        self.last_failure_time = time.time()
+        if self.failures >= self.failure_threshold:
+            self.state = self.OPEN
+
+
+class CircuitBreakerOpen(Exception):
+    pass
+
+
 @dataclass
 class SwarmNode:
     """A remote node in the distributed swarm."""
@@ -52,6 +95,7 @@ class DistributedSwarmCoordinator:
     def __init__(self, nodes: list[SwarmNode] | None = None) -> None:
         self.nodes: list[SwarmNode] = nodes or []
         self._timeout_seconds = 60
+        self._circuits: dict[str, CircuitBreaker] = {}
 
     def register_node(self, node: SwarmNode) -> None:
         self.nodes.append(node)
@@ -70,16 +114,21 @@ class DistributedSwarmCoordinator:
         task_name: str,
         payload: dict[str, Any],
     ) -> dict[str, Any] | None:
+        cb = self._circuits.setdefault(node.node_id, CircuitBreaker())
         try:
-            body = json.dumps({"task": task_name, "payload": payload}).encode("utf-8")
-            req = urllib.request.Request(
-                node.url("/execute"),
-                data=body,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=self._timeout_seconds) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+            def _call() -> dict[str, Any]:
+                body = json.dumps({"task": task_name, "payload": payload}).encode("utf-8")
+                req = urllib.request.Request(
+                    node.url("/execute"),
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=self._timeout_seconds) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            return cb.call(_call)
+        except CircuitBreakerOpen:
+            return {"error": f"Circuit breaker OPEN for {node.node_id}"}
         except Exception as e:
             return {"error": str(e)}
 

@@ -32,3 +32,6 @@ class FinalReport(BaseModel):
     estimated_total_tokens: int = 0
     telemetry: dict[str, Any] = Field(default_factory=dict)
     mode: str = "balanced"
+    debug_diagnostics: list[str] = Field(default_factory=list)
+    debug_report_file: str | None = None
+    phase_metrics: dict[str, float] = Field(default_factory=dict)
