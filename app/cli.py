@@ -29,6 +29,53 @@ def _load_config() -> dict:
     return load_yaml(root / "config" / "default.yaml")
 
 
+def cmd_agents(args: argparse.Namespace) -> int:
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    agent_type = args.agent_type
+
+    if agent_type == "security":
+        from examples.helper_agents.security_agent import SecurityAgent
+        agent = SecurityAgent(target)
+        report = agent.scan()
+        print(json.dumps(report.to_dict(), indent=2))
+
+    elif agent_type == "docstring":
+        from examples.helper_agents.docstring_agent import DocstringAgent
+        agent = DocstringAgent(target)
+        report = agent.scan()
+        print(f"Found {len(report.gaps)} missing docstrings")
+        if args.patch:
+            patched = agent.patch()
+            print(f"Patched {len(patched)} files: {patched}")
+        print(json.dumps(report.to_dict(), indent=2))
+
+    elif agent_type == "test-stub":
+        from examples.helper_agents.test_stub_agent import TestStubAgent
+        agent = TestStubAgent(target)
+        report = agent.scan()
+        print(f"Coverage: {report.coverage_ratio * 100:.0f}% ({report.tested_functions}/{report.total_functions})")
+        if args.generate:
+            generated = agent.generate_stubs()
+            print(f"Generated {len(generated)} test stubs: {generated}")
+        print(json.dumps(report.to_dict(), indent=2))
+
+    elif agent_type == "dependency":
+        from examples.helper_agents.dependency_agent import DependencyAgent
+        agent = DependencyAgent(target)
+        report = agent.analyze()
+        print(f"Modules: {report.total_modules}, Edges: {len(report.edges)}")
+        if report.circular_imports:
+            print(f"Circular imports detected: {len(report.circular_imports)}")
+        if report.orphaned_modules:
+            print(f"Orphaned modules: {report.orphaned_modules}")
+        print(json.dumps(report.to_dict(), indent=2))
+
+    else:
+        print(f"Unknown agent type: {agent_type}")
+        return 1
+    return 0
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     target = Path(args.target).resolve() if args.target else _get_project_root()
     os.environ["EPISTEMIC_TARGET_ROOT"] = str(target)
@@ -127,6 +174,14 @@ def main() -> int:
     scan_parser.add_argument("--focus-branch", default="", help="Focus branch path")
     scan_parser.add_argument("--objective", default="", help="Scan objective")
     scan_parser.set_defaults(func=cmd_scan)
+
+    # agents
+    agents_parser = subparsers.add_parser("agents", help="Run helper agents")
+    agents_parser.add_argument("agent_type", choices=["security", "docstring", "test-stub", "dependency"], help="Agent type")
+    agents_parser.add_argument("--target", default="", help="Target project root")
+    agents_parser.add_argument("--patch", action="store_true", help="Apply patches (docstring agent)")
+    agents_parser.add_argument("--generate", action="store_true", help="Generate stubs (test-stub agent)")
+    agents_parser.set_defaults(func=cmd_agents)
 
     # plugin
     plugin_parser = subparsers.add_parser("plugin", help="Manage plugins")
