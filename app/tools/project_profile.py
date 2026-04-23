@@ -68,19 +68,24 @@ class ProjectProfiler:
         ext_counter: Counter[str] = Counter()
         dir_counter: Counter[str] = Counter()
 
+        skipped_dirs = {".git", "__pycache__", ".apex", ".epistemic", "node_modules", ".venv", "venv"}
         scanned = 0
         for path in self.root.rglob("*"):
             if scanned >= self.max_files:
                 break
             if not path.is_file():
                 continue
+            rel = path.relative_to(self.root)
+            rel_str = str(rel)
+            # Skip known non-source directories
+            if any(part in skipped_dirs for part in rel.parts):
+                continue
             scanned += 1
             profile.total_files += 1
 
-            rel = path.relative_to(self.root)
-            rel_str = str(rel)
-            ext = path.suffix.lower() or "<no_ext>"
-            ext_counter[ext] += 1
+            ext = path.suffix.lower() or ""
+            if ext:
+                ext_counter[ext] += 1
 
             if rel.parts:
                 dir_counter[rel.parts[0]] += 1

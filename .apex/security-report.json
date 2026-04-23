@@ -1,12 +1,12 @@
 {
   "project_root": "C:\\Users\\salio\\Apex-orchestrator",
   "summary": {
-    "total_files": 963,
-    "functions_analyzed": 1061,
-    "total_risks": 1045,
+    "total_files": 294,
+    "functions_analyzed": 1041,
+    "total_risks": 1029,
     "critical": 0,
     "high": 21,
-    "medium": 1024,
+    "medium": 1008,
     "low": 0
   },
   "risks": {
@@ -547,102 +547,6 @@
         "function": "create_vote",
         "risk": "too_many_arguments (6)",
         "risk_score": 0.2
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "DashboardHandler.do_GET",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "DashboardHandler._send_json",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "DashboardHandler._send_html",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "DashboardHandler.log_message",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "ConsensusDashboard.__init__",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "ConsensusDashboard._load_html",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "ConsensusDashboard.stop",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "ConsensusDashboard.url",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "do_GET",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "_send_json",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "_send_html",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "log_message",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "__init__",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "_load_html",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "stop",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
-      },
-      {
-        "file": "app/agents/dashboard.py",
-        "function": "url",
-        "risk": "missing_docstring",
-        "risk_score": 0.1
       },
       {
         "file": "app/agents/debate.py",
@@ -6101,7 +6005,7 @@
       {
         "file": "app/tools/project_profile.py",
         "function": "ProjectProfiler.profile",
-        "risk": "long_function (40 lines)",
+        "risk": "long_function (44 lines)",
         "risk_score": 0.2
       },
       {
@@ -6125,7 +6029,7 @@
       {
         "file": "app/tools/project_profile.py",
         "function": "profile",
-        "risk": "long_function (40 lines)",
+        "risk": "long_function (44 lines)",
         "risk_score": 0.2
       },
       {
