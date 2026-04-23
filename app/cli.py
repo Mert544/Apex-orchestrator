@@ -150,6 +150,40 @@ def cmd_plugin_list(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_consensus(args: argparse.Namespace) -> int:
+    from app.agents.evaluator import ClaimEvaluator
+
+    evaluator = ClaimEvaluator(consensus_strategy=args.strategy, quorum=args.quorum)
+    claims = args.claims.split(";") if args.claims else []
+    if not claims:
+        print("No claims provided. Use --claims='claim1;claim2;claim3'")
+        return 1
+
+    results = evaluator.evaluate_batch(claims)
+    approved = [r for r in results if r.final_verdict.name == "APPROVE"]
+    rejected = [r for r in results if r.final_verdict.name == "REJECT"]
+    abstained = [r for r in results if r.final_verdict.name == "ABSTAIN"]
+
+    print(f"\n=== CONSENSUS RESULTS ({args.strategy}) ===")
+    print(f"Total: {len(results)} | Approved: {len(approved)} | Rejected: {len(rejected)} | Abstained: {len(abstained)}")
+    print()
+
+    for result in results:
+        status_icon = "[OK]" if result.final_verdict.name == "APPROVE" else "[NO]" if result.final_verdict.name == "REJECT" else "[--]"
+        print(f"{status_icon} {result.claim[:80]}...")
+        print(f"   Verdict: {result.final_verdict.name} (confidence: {result.confidence:.2f})")
+        for vote in result.votes:
+            icon = "+" if vote.verdict.name == result.final_verdict.name else "-"
+            print(f"   {icon} {vote.agent_name} ({vote.agent_role}): {vote.verdict.name} @ {vote.confidence:.2f} — {vote.reasoning[:60]}")
+        print()
+
+    if args.json:
+        import json
+        print(json.dumps([r.to_dict() for r in results], indent=2))
+
+    return 0
+
+
 def cmd_plugin_uninstall(args: argparse.Namespace) -> int:
     plugin_dir = _get_project_root() / "plugins"
     target = plugin_dir / f"{args.name}.py"
@@ -180,6 +214,14 @@ def main() -> int:
     agents_parser.add_argument("--patch", action="store_true", help="Apply patches (docstring agent)")
     agents_parser.add_argument("--generate", action="store_true", help="Generate stubs (test-stub agent)")
     agents_parser.set_defaults(func=cmd_agents)
+
+    # consensus
+    consensus_parser = subparsers.add_parser("consensus", help="Evaluate claims via agent consensus")
+    consensus_parser.add_argument("--claims", required=True, help="Semicolon-separated claims to evaluate")
+    consensus_parser.add_argument("--strategy", default="majority", choices=["unanimous", "majority", "supermajority", "weighted", "threshold"], help="Consensus strategy")
+    consensus_parser.add_argument("--quorum", type=int, default=2, help="Minimum votes required")
+    consensus_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+    consensus_parser.set_defaults(func=cmd_consensus)
 
     # plugin
     plugin_parser = subparsers.add_parser("plugin", help="Manage plugins")

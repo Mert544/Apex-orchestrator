@@ -1,12 +1,12 @@
 {
   "project_root": "C:\\Users\\salio\\Apex-orchestrator",
   "summary": {
-    "total_files": 904,
-    "functions_analyzed": 988,
-    "total_risks": 987,
+    "total_files": 937,
+    "functions_analyzed": 1023,
+    "total_risks": 1019,
     "critical": 0,
     "high": 21,
-    "medium": 966,
+    "medium": 998,
     "low": 0
   },
   "risks": {
@@ -190,6 +190,12 @@
       },
       {
         "file": "app/cli.py",
+        "function": "cmd_consensus",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/cli.py",
         "function": "cmd_plugin_uninstall",
         "risk": "missing_docstring",
         "risk_score": 0.1
@@ -198,7 +204,13 @@
         "file": "app/cli.py",
         "function": "main",
         "risk": "missing_docstring",
-        "risk_score": 0.1
+        "risk_score": 0.2
+      },
+      {
+        "file": "app/cli.py",
+        "function": "main",
+        "risk": "long_function (35 lines)",
+        "risk_score": 0.2
       },
       {
         "file": "app/main.py",
@@ -401,6 +413,186 @@
       {
         "file": "app/agents/bus.py",
         "function": "stats",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "ConsensusResult.to_dict",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "ConsensusEngine.__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "ConsensusEngine._register_strategies",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "ConsensusEngine.evaluate",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "ConsensusEngine._unanimous",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "ConsensusEngine._majority",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "ConsensusEngine._supermajority",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "ConsensusEngine._weighted",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "ConsensusEngine._threshold",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "ConsensusEngine.create_vote",
+        "risk": "missing_docstring",
+        "risk_score": 0.2
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "ConsensusEngine.create_vote",
+        "risk": "too_many_arguments (6)",
+        "risk_score": 0.2
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "to_dict",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "_register_strategies",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "evaluate",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "_unanimous",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "_majority",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "_supermajority",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "_weighted",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "_threshold",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "create_vote",
+        "risk": "missing_docstring",
+        "risk_score": 0.2
+      },
+      {
+        "file": "app/agents/consensus.py",
+        "function": "create_vote",
+        "risk": "too_many_arguments (6)",
+        "risk_score": 0.2
+      },
+      {
+        "file": "app/agents/evaluator.py",
+        "function": "ClaimEvaluator.__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/evaluator.py",
+        "function": "ClaimEvaluator._init_default_panel",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/evaluator.py",
+        "function": "ClaimEvaluator.evaluate_batch",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/evaluator.py",
+        "function": "ClaimEvaluator.to_dict",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/evaluator.py",
+        "function": "__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/evaluator.py",
+        "function": "_init_default_panel",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/evaluator.py",
+        "function": "evaluate_batch",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/agents/evaluator.py",
+        "function": "to_dict",
         "risk": "missing_docstring",
         "risk_score": 0.1
       },
@@ -4211,7 +4403,7 @@
       {
         "file": "app/orchestrator/core.py",
         "function": "FractalResearchOrchestrator.run",
-        "risk": "long_function (39 lines)",
+        "risk": "long_function (42 lines)",
         "risk_score": 0.2
       },
       {
@@ -4247,7 +4439,7 @@
       {
         "file": "app/orchestrator/core.py",
         "function": "run",
-        "risk": "long_function (39 lines)",
+        "risk": "long_function (42 lines)",
         "risk_score": 0.2
       },
       {

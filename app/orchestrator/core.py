@@ -13,6 +13,7 @@ from app.llm.router import LLMRouter
 from app.memory.graph_store import GraphStore
 from app.models.enums import NodeStatus, StopReason
 from app.models.node import ResearchNode
+from app.agents.evaluator import ClaimEvaluator
 from app.orchestrator.factory import FocusBranchResolver, NodeFactory
 from app.orchestrator.metrics import PhaseMetrics
 from app.orchestrator.report_composer import ReportComposer
@@ -60,6 +61,7 @@ class FractalResearchOrchestrator:
         self.budget = BudgetController(max_total_nodes=int(self.config["max_total_nodes"]))
         self.termination = TerminationEngine(self.config)
         self.node_factory = NodeFactory(self.claim_analyzer)
+        self.evaluator = ClaimEvaluator(consensus_strategy=self.config.get("consensus_strategy", "majority"))
         self.memory_state = self.memory_store.hydrate_graph(self.graph) if self.memory_store is not None else {}
         self.debug_stats: dict[str, int | float] = {
             "run_question_duplicates_blocked": 0,
@@ -121,6 +123,11 @@ class FractalResearchOrchestrator:
                     "filtered_count": len(root_claims),
                 })
 
+                # Peer-review root claims via agent consensus
+                approved = self.evaluator.filter_approved(root_claims, min_confidence=0.5)
+                self.debug.trace("consensus", f"{len(approved)}/{len(root_claims)} claims approved by agent panel")
+
+                approved_claims = [claim for claim, _ in approved] if approved else root_claims[:5]
                 root_nodes = [
                     self.node_factory.make_node(
                         id=f"root-{i}",
@@ -128,7 +135,7 @@ class FractalResearchOrchestrator:
                         depth=0,
                         branch_path=make_branch_path("x", i),
                     )
-                    for i, claim in enumerate(root_claims)
+                    for i, claim in enumerate(approved_claims)
                 ]
                 root_nodes.sort(key=lambda n: n.claim_priority, reverse=True)
 
