@@ -59,6 +59,50 @@ export function registerCommands(
             diagnostics.clear();
             vscode.commands.executeCommand('setContext', 'apex.hasResults', false);
             setStatus('idle');
+        }),
+        vscode.commands.registerCommand('apex.autonomousRun', async () => {
+            const config = vscode.workspace.getConfiguration('apex');
+            const goal = await vscode.window.showInputBox({
+                prompt: 'Enter a natural-language goal',
+                placeHolder: 'e.g. security audit, fix docstrings',
+                value: config.get<string>('defaultGoal', 'scan project')
+            });
+            if (!goal) { return; }
+            const mode = await vscode.window.showQuickPick(
+                ['report', 'supervised', 'autonomous'],
+                { placeHolder: 'Select execution mode', canPickMany: false }
+            ) as string | undefined;
+            if (!mode) { return; }
+            setStatus('scanning');
+            outputChannel.appendLine(`[autonomous] Goal: ${goal} | Mode: ${mode}`);
+            await runApex('run', outputChannel, {
+                APEX_GOAL: goal,
+                APEX_MODE: mode,
+            });
+            setStatus('success');
+        }),
+        vscode.commands.registerCommand('apex.daemonStart', async () => {
+            const config = vscode.workspace.getConfiguration('apex');
+            const goal = await vscode.window.showInputBox({
+                prompt: 'Daemon goal',
+                value: config.get<string>('defaultGoal', 'scan project')
+            });
+            if (!goal) { return; }
+            const interval = config.get<number>('daemonInterval', 3600);
+            outputChannel.appendLine(`[daemon] Starting with goal: ${goal}, interval: ${interval}s`);
+            await runApex('daemon', outputChannel, {
+                APEX_DAEMON_ACTION: 'start',
+                APEX_GOAL: goal,
+                APEX_DAEMON_INTERVAL: String(interval),
+            });
+            vscode.window.showInformationMessage('Apex daemon started');
+        }),
+        vscode.commands.registerCommand('apex.daemonStop', async () => {
+            await runApex('daemon', outputChannel, { APEX_DAEMON_ACTION: 'stop' });
+            vscode.window.showInformationMessage('Apex daemon stopped');
+        }),
+        vscode.commands.registerCommand('apex.daemonStatus', async () => {
+            await runApex('daemon', outputChannel, { APEX_DAEMON_ACTION: 'status' });
         })
     );
 }

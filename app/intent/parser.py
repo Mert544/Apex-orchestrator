@@ -29,43 +29,68 @@ class IntentParser:
         "security": ("full_autonomous_loop", ["security_agent"]),
         "güvenlik": ("full_autonomous_loop", ["security_agent"]),
         "risk": ("full_autonomous_loop", ["security_agent"]),
+        "riskli": ("full_autonomous_loop", ["security_agent"]),
         "vulnerability": ("full_autonomous_loop", ["security_agent"]),
+        "zafiyet": ("full_autonomous_loop", ["security_agent"]),
+        "açık": ("full_autonomous_loop", ["security_agent"]),
+        "tehlike": ("full_autonomous_loop", ["security_agent"]),
         # Testing
         "test": ("semantic_patch_loop", ["test_stub_agent"]),
         "coverage": ("semantic_patch_loop", ["test_stub_agent"]),
         "stub": ("semantic_patch_loop", ["test_stub_agent"]),
+        "testler": ("semantic_patch_loop", ["test_stub_agent"]),
+        "kapsam": ("semantic_patch_loop", ["test_stub_agent"]),
         # Documentation
         "docstring": ("semantic_patch_loop", ["docstring_agent"]),
         "documentation": ("semantic_patch_loop", ["docstring_agent"]),
         "docs": ("semantic_patch_loop", ["docstring_agent"]),
+        "dökümantasyon": ("semantic_patch_loop", ["docstring_agent"]),
+        "belge": ("semantic_patch_loop", ["docstring_agent"]),
+        "aciklama": ("semantic_patch_loop", ["docstring_agent"]),
         # Dependencies
         "dependency": ("project_scan", ["dependency_agent"]),
         "import": ("project_scan", ["dependency_agent"]),
         "coupling": ("project_scan", ["dependency_agent"]),
+        "bağımlılık": ("project_scan", ["dependency_agent"]),
+        "modül": ("project_scan", ["dependency_agent"]),
         # General scan
         "scan": ("project_scan", []),
         "analyze": ("project_scan", []),
         "review": ("project_scan", []),
         "inspect": ("project_scan", []),
+        "tara": ("project_scan", []),
+        "incele": ("project_scan", []),
+        "analiz": ("project_scan", []),
+        "kontrol": ("project_scan", []),
+        "rapor": ("project_scan", []),
         # Fixing / patching
         "fix": ("semantic_patch_loop", []),
         "repair": ("semantic_patch_loop", []),
         "patch": ("semantic_patch_loop", []),
         "improve": ("semantic_patch_loop", []),
         "refactor": ("semantic_patch_loop", []),
+        "düzelt": ("semantic_patch_loop", []),
+        "tamir": ("semantic_patch_loop", []),
+        "iyileştir": ("semantic_patch_loop", []),
+        "yama": ("semantic_patch_loop", []),
         # Full autonomous
         "autonomous": ("full_autonomous_loop", []),
         "full": ("full_autonomous_loop", []),
         "end-to-end": ("full_autonomous_loop", []),
+        "otonom": ("full_autonomous_loop", []),
+        "tam": ("full_autonomous_loop", []),
+        "hepsi": ("full_autonomous_loop", []),
         # Self-improvement
         "self-improve": ("self_directed_loop", []),
         "self improve": ("self_directed_loop", []),
         "apex on apex": ("self_directed_loop", []),
+        "kendini geliştir": ("self_directed_loop", []),
+        "kendi kendine": ("self_directed_loop", []),
     }
 
     _MODE_KEYWORDS: dict[str, list[str]] = {
-        "report": ["report", "audit only", "dry-run", "dry run", "sadece rapor"],
-        "autonomous": ["autonomous", "auto", "otomatik", "no-confirm", "no confirm"],
+        "report": ["report", "audit only", "dry-run", "dry run", "sadece rapor", "sadece incele"],
+        "autonomous": ["autonomous", "auto", "otomatik", "otonom", "no-confirm", "no confirm", "onaysiz"],
     }
 
     def parse(self, goal: str, explicit_mode: str | None = None) -> ParsedIntent:

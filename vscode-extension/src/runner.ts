@@ -11,7 +11,7 @@ export function runApex(
         const config = vscode.workspace.getConfiguration('apex');
         const pythonPath = config.get<string>('pythonPath', 'python');
         let projectRoot = config.get<string>('projectRoot', '');
-        
+
         if (!projectRoot && vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
             projectRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
         }
@@ -31,7 +31,21 @@ export function runApex(
         outputChannel.appendLine(`[Apex] Running plan: ${plan}`);
         outputChannel.appendLine(`[Apex] Project root: ${projectRoot}`);
 
-        const child = cp.spawn(pythonPath, ['-m', 'app.main'], {
+        // Build command based on plan type
+        let args: string[];
+        if (plan === 'run' && extraEnv?.APEX_GOAL) {
+            args = ['-m', 'app.cli', 'run', '--goal', extraEnv.APEX_GOAL, '--mode', extraEnv.APEX_MODE || 'supervised'];
+            if (projectRoot) { args.push('--target', projectRoot); }
+        } else if (plan === 'daemon' && extraEnv?.APEX_DAEMON_ACTION) {
+            args = ['-m', 'app.cli', 'daemon', extraEnv.APEX_DAEMON_ACTION];
+            if (extraEnv.APEX_GOAL) { args.push('--goal', extraEnv.APEX_GOAL); }
+            if (extraEnv.APEX_DAEMON_INTERVAL) { args.push('--interval', extraEnv.APEX_DAEMON_INTERVAL); }
+            if (projectRoot) { args.push('--target', projectRoot); }
+        } else {
+            args = ['-m', 'app.main'];
+        }
+
+        const child = cp.spawn(pythonPath, args, {
             cwd: apexRoot,
             env,
             shell: true

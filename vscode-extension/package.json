@@ -51,6 +51,30 @@
         "title": "Clear Results",
         "category": "Apex",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "apex.autonomousRun",
+        "title": "Autonomous Run",
+        "category": "Apex",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "apex.daemonStart",
+        "title": "Start Daemon",
+        "category": "Apex",
+        "icon": "$(play-circle)"
+      },
+      {
+        "command": "apex.daemonStop",
+        "title": "Stop Daemon",
+        "category": "Apex",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "apex.daemonStatus",
+        "title": "Daemon Status",
+        "category": "Apex",
+        "icon": "$(info)"
       }
     ],
     "menus": {
@@ -114,6 +138,22 @@
           "type": "string",
           "default": "",
           "description": "Root directory of the project to analyze (leave empty to use workspace root)"
+        },
+        "apex.defaultGoal": {
+          "type": "string",
+          "default": "scan project",
+          "description": "Default natural-language goal for autonomous runs"
+        },
+        "apex.defaultMode": {
+          "type": "string",
+          "default": "supervised",
+          "enum": ["report", "supervised", "autonomous"],
+          "description": "Default execution mode for autonomous runs"
+        },
+        "apex.daemonInterval": {
+          "type": "number",
+          "default": 3600,
+          "description": "Daemon interval in seconds"
         }
       }
     }

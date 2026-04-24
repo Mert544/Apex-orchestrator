@@ -62,6 +62,32 @@ class TestIntentParser:
         assert result.plan_type == "full_autonomous_loop"
         assert "security_agent" in result.agents
 
+    def test_turkish_scan_keywords(self):
+        result = self.parser.parse("projeyi tara")
+        assert result.plan_type == "project_scan"
+
+    def test_turkish_fix_keywords(self):
+        result = self.parser.parse("hataları düzelt")
+        assert result.plan_type == "semantic_patch_loop"
+
+    def test_turkish_docstring_keywords(self):
+        result = self.parser.parse("aciklama ekle")
+        assert result.plan_type == "semantic_patch_loop"
+        assert "docstring_agent" in result.agents
+
+    def test_turkish_autonomous_mode(self):
+        result = self.parser.parse("tam otonom calistir")
+        assert result.mode == "autonomous"
+        assert result.plan_type == "full_autonomous_loop"
+
+    def test_turkish_self_improve(self):
+        result = self.parser.parse("kendini geliştir")
+        assert result.plan_type == "self_directed_loop"
+
+    def test_turkish_report_mode(self):
+        result = self.parser.parse("sadece rapor ver")
+        assert result.mode == "report"
+
     def test_combined_agents(self):
         result = self.parser.parse("Fix security and add docstrings")
         # "fix" + "docstring" → semantic_patch_loop (2 matches) beats "security" → full_autonomous_loop (1 match)
