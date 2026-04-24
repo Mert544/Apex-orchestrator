@@ -1,12 +1,12 @@
 {
   "project_root": "C:\\Users\\salio\\Apex-orchestrator",
   "summary": {
-    "total_files": 299,
-    "functions_analyzed": 1059,
-    "total_risks": 1044,
+    "total_files": 301,
+    "functions_analyzed": 1066,
+    "total_risks": 1051,
     "critical": 0,
     "high": 27,
-    "medium": 1017,
+    "medium": 1024,
     "low": 0
   },
   "risks": {
@@ -244,6 +244,12 @@
       },
       {
         "file": "app/cli.py",
+        "function": "cmd_run",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/cli.py",
         "function": "main",
         "risk": "missing_docstring",
         "risk_score": 0.2
@@ -251,7 +257,7 @@
       {
         "file": "app/cli.py",
         "function": "main",
-        "risk": "long_function (36 lines)",
+        "risk": "long_function (41 lines)",
         "risk_score": 0.2
       },
       {
@@ -3677,6 +3683,42 @@
       {
         "file": "app/execution/semantic/transforms/type_annotations.py",
         "function": "apply",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/intent/parser.py",
+        "function": "IntentParser.parse",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/intent/parser.py",
+        "function": "IntentParser._detect_mode",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/intent/parser.py",
+        "function": "IntentParser._build_rationale",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/intent/parser.py",
+        "function": "parse",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/intent/parser.py",
+        "function": "_detect_mode",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/intent/parser.py",
+        "function": "_build_rationale",
         "risk": "missing_docstring",
         "risk_score": 0.1
       },

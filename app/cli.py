@@ -205,6 +205,43 @@ def cmd_plugin_uninstall(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_run(args: argparse.Namespace) -> int:
+    from app.intent.parser import IntentParser
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    parser = IntentParser()
+    intent = parser.parse(args.goal, explicit_mode=args.mode)
+
+    print(f"\n=== APEX ORCHESTRATOR — AUTONOMOUS RUN ===")
+    print(f"Goal: {intent.goal}")
+    print(f"Plan: {intent.plan_type}")
+    print(f"Agents: {', '.join(intent.agents) if intent.agents else 'all available'}")
+    print(f"Mode: {intent.mode}")
+    print(f"Rationale: {intent.rationale}")
+    print()
+
+    # Adjust plan for report mode (no patching)
+    plan = intent.plan_type
+    if intent.mode == "report" and plan in ("full_autonomous_loop", "semantic_patch_loop", "self_directed_loop"):
+        plan = "project_scan"
+        print("[report mode] Patching disabled. Using project_scan instead.")
+
+    os.environ["EPISTEMIC_TARGET_ROOT"] = str(target)
+    os.environ["EPISTEMIC_AUTOMATION_PLAN"] = plan
+    os.environ["EPISTEMIC_OBJECTIVE"] = intent.goal
+
+    # TODO: supervised mode interactive confirmation (Phase C)
+    if intent.mode == "supervised":
+        print("[supervised mode] Running with human oversight. Patches will be staged, not committed.")
+
+    if intent.mode == "autonomous":
+        print("[autonomous mode] Full automation enabled. Changes will be applied automatically.")
+
+    from app.main import main
+    main()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="apex", description="Apex Orchestrator CLI")
     subparsers = parser.add_subparsers(dest="command")
@@ -248,6 +285,13 @@ def main() -> int:
     uninstall_parser = plugin_sub.add_parser("uninstall", help="Uninstall a plugin")
     uninstall_parser.add_argument("name", help="Plugin name")
     uninstall_parser.set_defaults(func=cmd_plugin_uninstall)
+
+    # run (autonomous intent-based)
+    run_parser = subparsers.add_parser("run", help="Run Apex autonomously based on a natural-language goal")
+    run_parser.add_argument("--goal", required=True, help="Natural-language goal, e.g. 'security audit', 'fix docstrings'")
+    run_parser.add_argument("--target", default="", help="Target project root")
+    run_parser.add_argument("--mode", default="supervised", choices=["report", "supervised", "autonomous"], help="Execution mode")
+    run_parser.set_defaults(func=cmd_run)
 
     args = parser.parse_args()
     if hasattr(args, "func"):
