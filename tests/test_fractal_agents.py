@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from app.agents.fractal_agents import FractalSecurityAgent, FractalAnalyzerAgent
+from app.agents.fractal_agents import (
+    FractalSecurityAgent,
+    FractalDocstringAgent,
+    FractalTestStubAgent,
+    FractalAnalyzerAgent,
+)
 from app.agents.bus import AgentBus
 
 
@@ -33,6 +38,28 @@ class TestFractalSecurityAgent:
         risky.write_text("eval(x)\n")
         agent.run(project_root=tmp_path)
         assert len(received) >= 1
+
+
+class TestFractalDocstringAgent:
+    def test_finds_gaps_and_analyzes(self, tmp_path):
+        code = tmp_path / "code.py"
+        code.write_text("def foo(): pass\n")
+        agent = FractalDocstringAgent()
+        result = agent.run(project_root=tmp_path, max_depth=3)
+        assert result["findings_count"] >= 1
+        assert result["fractal_analyzed"] >= 1
+        assert any(f["issue"] == "missing_docstring" for f in result["findings"])
+
+
+class TestFractalTestStubAgent:
+    def test_finds_gaps_and_analyzes(self, tmp_path):
+        src = tmp_path / "src.py"
+        src.write_text("def bar(): pass\n")
+        agent = FractalTestStubAgent()
+        result = agent.run(project_root=tmp_path, max_depth=3)
+        assert result["findings_count"] >= 1
+        assert result["fractal_analyzed"] >= 1
+        assert any(f["issue"] == "missing_test" for f in result["findings"])
 
 
 class TestFractalAnalyzerAgent:
