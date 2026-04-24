@@ -80,6 +80,7 @@ class SwarmCoordinator:
         if agent.state == AgentState.IDLE:
             project_root = msg.payload.get("project_root", ".")
             result = agent.run(project_root=project_root)
+            self._results.append(result)
             # Emit findings
             if result.get("risks"):
                 self.bus.broadcast(
