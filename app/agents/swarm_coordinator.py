@@ -68,6 +68,16 @@ class SwarmCoordinator:
         self.bus.subscribe("_coordinator", "security.alert", self._route_to_evaluator)
         self.bus.subscribe("_coordinator", "claim.approved", self._route_to_patcher)
         self.bus.subscribe("_coordinator", "patch.applied", self._route_to_tester)
+        self.bus.subscribe("_coordinator", "fractal.analysis.complete", self._handle_fractal_complete)
+
+    def _handle_fractal_complete(self, msg: AgentMessage) -> None:
+        """Collect fractal analysis results."""
+        self._results.append({
+            "type": "fractal_analysis",
+            "finding": msg.payload.get("finding"),
+            "tree_depth": msg.payload.get("tree_depth"),
+            "agent": msg.sender,
+        })
 
     def _route_to_tester(self, msg: AgentMessage) -> None:
         """Route applied patches to test agent."""
