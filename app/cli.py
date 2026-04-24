@@ -362,6 +362,20 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     from app.main import main
     main()
+
+    # Auto-fractal summary for security/audit goals
+    if any(kw in intent.goal.lower() for kw in ("security", "audit", "risk", "vuln")):
+        print("\n=== AUTO-FRACTAL SUMMARY ===")
+        from app.agents.fractal_agents import FractalSecurityAgent
+        agent = FractalSecurityAgent()
+        result = agent.run(project_root=str(target), max_depth=3)
+        from app.reporting.composer import ReportComposer
+        composer = ReportComposer([result])
+        summary = composer.to_markdown()
+        print(summary[:1500])  # Print first 1500 chars to avoid flooding
+        if len(summary) > 1500:
+            print("\n... (truncated) Use `apex report` for full output.")
+
     return 0
 
 
