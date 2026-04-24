@@ -109,6 +109,7 @@ class PluginRegistry:
             hooks=dict(proxy._hooks),
             config=dict(proxy._config),
         )
+        plugin.agent_subscriptions = list(proxy._agent_subscriptions)
         self.plugins.append(plugin)
         for hook_name, fn in plugin.hooks.items():
             if hook_name in self._hooks:
@@ -148,9 +149,42 @@ class _PluginProxy:
     def __init__(self) -> None:
         self._hooks: dict[str, Callable[..., Any]] = {}
         self._config: dict[str, Any] = {}
+        self._agent_subscriptions: list[tuple[str, Callable[..., Any]]] = []
 
     def add_hook(self, name: str, fn: Callable[..., Any]) -> None:
         self._hooks[name] = fn
 
+    def on_agent_event(self, topic: str, fn: Callable[..., Any]) -> None:
+        """Subscribe plugin handler to AgentBus topic."""
+        self._agent_subscriptions.append((topic, fn))
+
     def set_config(self, key: str, value: Any) -> None:
         self._config[key] = value
+
+
+class PluginEventBridge:
+    """Bridge between PluginRegistry and AgentBus.
+
+    Allows plugins to react to agent swarm events without
+    knowing the internal bus implementation.
+    """
+
+    def __init__(self, registry: PluginRegistry, bus: Any) -> None:
+        self.registry = registry
+        self.bus = bus
+        self._wired = False
+
+    def wire(self) -> None:
+        """Subscribe all plugin agent_event handlers to the bus."""
+        if self._wired or self.bus is None:
+            return
+        for plugin in self.registry.plugins:
+            # Plugins that used on_agent_event during register()
+            # Need to access proxy subscriptions — we store them on plugin load
+            for topic, handler in getattr(plugin, "agent_subscriptions", []):
+                self.bus.subscribe(plugin.name, topic, handler)
+        self._wired = True
+
+    def broadcast_to_plugins(self, topic: str, payload: dict[str, Any]) -> None:
+        """Forward a bus event to plugins via the on_report / after_scan hooks."""
+        self.registry.run_hook("on_report", {"topic": topic, "payload": payload})
