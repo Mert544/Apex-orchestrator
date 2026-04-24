@@ -32,11 +32,21 @@ from .safety import (
     enhanced_safety_check_skill,
 )
 from .telemetry import export_token_report_skill, record_telemetry_skill
+from .agent_scans import (
+    security_scan_skill,
+    docstring_scan_skill,
+    coverage_scan_skill,
+    dependency_scan_skill,
+)
 
 
 def build_default_registry() -> SkillAutomationRegistry:
     registry = SkillAutomationRegistry()
     registry.register("profile_project", profile_project_skill)
+    registry.register("security_scan", security_scan_skill)
+    registry.register("docstring_scan", docstring_scan_skill)
+    registry.register("coverage_scan", coverage_scan_skill)
+    registry.register("dependency_scan", dependency_scan_skill)
     registry.register("decompose_objective", decompose_objective_skill)
     registry.register("run_research", run_research_skill)
     registry.register("prepare_workspace", prepare_workspace_skill)

@@ -207,35 +207,38 @@ def cmd_plugin_uninstall(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     from app.intent.parser import IntentParser
+    from app.automation.planner import AutonomousPlanner
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
-    parser = IntentParser()
-    intent = parser.parse(args.goal, explicit_mode=args.mode)
+    intent_parser = IntentParser()
+    intent = intent_parser.parse(args.goal, explicit_mode=args.mode)
+
+    planner = AutonomousPlanner()
+    plan = planner.build_plan(intent)
 
     print(f"\n=== APEX ORCHESTRATOR — AUTONOMOUS RUN ===")
     print(f"Goal: {intent.goal}")
-    print(f"Plan: {intent.plan_type}")
-    print(f"Agents: {', '.join(intent.agents) if intent.agents else 'all available'}")
-    print(f"Mode: {intent.mode}")
-    print(f"Rationale: {intent.rationale}")
+    print(f"Plan: {plan.plan_name}")
+    print(f"Steps: {len(plan.steps)}")
+    print(f"Agents: {', '.join(plan.agents) if plan.agents else 'all available'}")
+    print(f"Mode: {plan.mode}")
+    print(f"Can patch: {plan.can_patch}")
+    print(f"Fallback: {plan.fallback_plan}")
+    print(f"Rationale: {plan.rationale}")
     print()
 
-    # Adjust plan for report mode (no patching)
-    plan = intent.plan_type
-    if intent.mode == "report" and plan in ("full_autonomous_loop", "semantic_patch_loop", "self_directed_loop"):
-        plan = "project_scan"
-        print("[report mode] Patching disabled. Using project_scan instead.")
-
     os.environ["EPISTEMIC_TARGET_ROOT"] = str(target)
-    os.environ["EPISTEMIC_AUTOMATION_PLAN"] = plan
+    os.environ["EPISTEMIC_AUTOMATION_PLAN"] = plan.plan_name
     os.environ["EPISTEMIC_OBJECTIVE"] = intent.goal
 
-    # TODO: supervised mode interactive confirmation (Phase C)
-    if intent.mode == "supervised":
+    if plan.mode == "supervised":
         print("[supervised mode] Running with human oversight. Patches will be staged, not committed.")
 
-    if intent.mode == "autonomous":
+    if plan.mode == "autonomous":
         print("[autonomous mode] Full automation enabled. Changes will be applied automatically.")
+
+    if plan.mode == "report":
+        print("[report mode] Scanning only. No files will be modified.")
 
     from app.main import main
     main()

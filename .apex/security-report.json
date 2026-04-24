@@ -1,12 +1,12 @@
 {
   "project_root": "C:\\Users\\salio\\Apex-orchestrator",
   "summary": {
-    "total_files": 301,
-    "functions_analyzed": 1066,
-    "total_risks": 1051,
+    "total_files": 305,
+    "functions_analyzed": 1082,
+    "total_risks": 1061,
     "critical": 0,
     "high": 27,
-    "medium": 1024,
+    "medium": 1034,
     "low": 0
   },
   "risks": {
@@ -1324,6 +1324,66 @@
       },
       {
         "file": "app/automation/models.py",
+        "function": "to_dict",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/planner.py",
+        "function": "AutonomousPlanner.__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/planner.py",
+        "function": "AutonomousPlanner.build_plan",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/planner.py",
+        "function": "AutonomousPlanner._select_base_plan",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/planner.py",
+        "function": "AutonomousPlanner._determine_fallback",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/planner.py",
+        "function": "DynamicPlan.to_dict",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/planner.py",
+        "function": "__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/planner.py",
+        "function": "build_plan",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/planner.py",
+        "function": "_select_base_plan",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/planner.py",
+        "function": "_determine_fallback",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/planner.py",
         "function": "to_dict",
         "risk": "missing_docstring",
         "risk_score": 0.1
