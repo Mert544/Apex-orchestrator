@@ -69,3 +69,42 @@ class TestFractal5WhysEngine:
         assert d["level"] == 1
         assert len(d["children"]) == 1
         assert d["children"][0]["level"] == 2
+
+    def test_counter_evidence_enabled(self):
+        engine = Fractal5WhysEngine(max_depth=3, enable_counter_evidence=True)
+        finding = {"issue": "eval() usage", "file": "auth.py"}
+        tree = engine.analyze(finding)
+        assert len(tree.counter_evidence) > 0
+        assert tree.rebuttal != ""
+
+    def test_counter_evidence_disabled(self):
+        engine = Fractal5WhysEngine(max_depth=3, enable_counter_evidence=False)
+        finding = {"issue": "eval() usage", "file": "auth.py"}
+        tree = engine.analyze(finding)
+        assert len(tree.counter_evidence) == 0
+        assert tree.rebuttal == ""
+
+    def test_meta_analysis_recommends_patch(self):
+        engine = Fractal5WhysEngine(max_depth=5)
+        finding = {"issue": "eval() usage", "file": "auth.py", "severity": "critical"}
+        tree = engine.analyze(finding)
+        meta = engine.meta_analyze(tree)
+        assert meta.recommended_action == "patch"
+        assert meta.aggregate_confidence > 0.0
+        assert meta.depth_reached >= 1
+
+    def test_meta_analysis_recommends_ignore(self):
+        engine = Fractal5WhysEngine(max_depth=5)
+        finding = {"issue": "unknown thing", "file": "x.py", "severity": "info"}
+        tree = engine.analyze(finding)
+        meta = engine.meta_analyze(tree)
+        assert meta.recommended_action in ("ignore", "escalate", "review")
+
+    def test_counter_evidence_generator(self):
+        from app.engine.fractal_5whys import CounterEvidenceGenerator
+        gen = CounterEvidenceGenerator()
+        node = FractalNode(level=2, question="Why?", answer="Developer convenience", confidence=0.9)
+        finding = {"issue": "eval() usage"}
+        counter, rebuttal = gen.generate(node, finding)
+        assert len(counter) > 0
+        assert rebuttal != ""
