@@ -264,34 +264,6 @@ def cmd_hook(args: argparse.Namespace) -> int:
     return 1
 
 
-def cmd_dashboard(args: argparse.Namespace) -> int:
-    from app.dashboard import ApexDashboardServer
-
-    target = Path(args.target).resolve() if args.target else _get_project_root()
-    if args.action == "start":
-        server = ApexDashboardServer(str(target), host=args.host, port=args.port)
-        server.start()
-        print(f"[dashboard] Open http://{args.host}:{args.port} in your browser")
-        print("[dashboard] Press Ctrl+C to stop")
-        try:
-            while True:
-                import time
-                time.sleep(1)
-        except KeyboardInterrupt:
-            server.stop()
-            print("\n[dashboard] Stopped.")
-        return 0
-
-    if args.action == "open":
-        import webbrowser
-        url = f"http://{args.host}:{args.port}"
-        webbrowser.open(url)
-        return 0
-
-    print(f"Unknown dashboard action: {args.action}")
-    return 1
-
-
 def cmd_run(args: argparse.Namespace) -> int:
     from app.intent.parser import IntentParser
     from app.automation.planner import AutonomousPlanner
@@ -397,14 +369,6 @@ def main() -> int:
     hook_parser.add_argument("action", choices=["install", "uninstall"], help="Hook action")
     hook_parser.add_argument("--target", default="", help="Target project root")
     hook_parser.set_defaults(func=cmd_hook)
-
-    # dashboard
-    dashboard_parser = subparsers.add_parser("dashboard", help="Launch web dashboard")
-    dashboard_parser.add_argument("action", choices=["start", "open"], default="start", nargs="?", help="Dashboard action")
-    dashboard_parser.add_argument("--target", default="", help="Target project root")
-    dashboard_parser.add_argument("--host", default="127.0.0.1", help="Bind host")
-    dashboard_parser.add_argument("--port", type=int, default=8766, help="Bind port")
-    dashboard_parser.set_defaults(func=cmd_dashboard)
 
     args = parser.parse_args()
     if hasattr(args, "func"):
