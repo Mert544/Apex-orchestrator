@@ -520,3 +520,158 @@ app/
 3. Add plan step in `app/automation/plans.py` if needed
 4. Write test in `tests/test_<feature>.py`
 5. Update this guide
+
+---
+
+## Autonomous CLI
+
+Run Apex with a natural-language goal:
+
+```bash
+apex run --goal="security audit" --mode=report
+apex run --goal="fix docstrings" --mode=supervised
+apex run --goal="improve test coverage" --mode=autonomous
+```
+
+Modes:
+- `report` — Scan only, no file changes
+- `supervised` — Ask before each patch
+- `autonomous` — Full automation, apply and commit
+
+## Event-Driven Agent Swarm
+
+```python
+from app.agents.swarm_coordinator import SwarmCoordinator
+from app.agents.skills import SecurityAgent, DocstringAgent
+
+coord = SwarmCoordinator()
+coord.register_agents([SecurityAgent(), DocstringAgent()])
+results = coord.run_autonomous("security audit", target=".", mode="report")
+```
+
+Agent'lar `AgentBus` uzerinden event'lerle haberlesir:
+- `scan.complete` -> Agent calistir
+- `security.alert` -> ClaimEvaluator'a yonlendir
+- `claim.approved` -> PatchGenerator'a yonlendir
+- `patch.applied` -> TestAgent dogrulama
+
+## Agent Learning
+
+Behavioral learning from past runs:
+
+```python
+from app.agents.learning import AgentLearning
+
+learning = AgentLearning(project_root=".")
+learning.record_result("security", "eval", success=True)
+tips = learning.get_tips("security")
+# {"eval": {"success_rate": 0.95, "ema_confidence": 0.92, "suggested_priority": 1}}
+```
+
+- EMA confidence tracking (alpha=0.3)
+- Priority ranking — high-success patterns run first
+- Skip suggestion — consistently failing patterns are skipped
+- Persistence: `.apex/agent_learning.json`
+
+## Plugin Event Bridge
+
+Plugins can subscribe to agent swarm events:
+
+```python
+# plugins/my_plugin.py
+def register(proxy):
+    def on_alert(msg):
+        print(f"Security alert: {msg.payload}")
+    proxy.on_agent_event("security.alert", on_alert)
+```
+
+## Recursive Agent Teams
+
+Agents can spawn sub-agents for parallel work:
+
+```python
+from app.agents.recursive import RecursiveAgent
+
+class MyAgent(RecursiveAgent):
+    def _execute(self, **kwargs):
+        for task in tasks:
+            self.spawn_sub_agent(f"sub-{task}", "worker", {"task": task})
+        return merge_results(self.wait_for_sub_agents(timeout=30.0))
+```
+
+## Real-Time Collaboration
+
+Multiple Apex instances can collaborate over the network:
+
+```python
+from app.agents.collaboration import ApexCollaborationProtocol
+
+proto = ApexCollaborationProtocol(node_id="apex-1", bus=agent_bus)
+proto.start()  # UDP discovery + TCP event sync
+```
+
+## Report Composer
+
+Generate human-readable reports from agent results:
+
+```python
+from app.reporting.composer import ReportComposer
+
+composer = ReportComposer(results)
+composer.to_markdown("report.md")
+composer.to_html("report.html")
+composer.to_sarif("report.sarif")  # GitHub Code Scanning
+```
+
+CLI:
+```bash
+apex report --input=results.json --format=markdown --output=report.md
+```
+
+## Kubernetes Operator
+
+```yaml
+apiVersion: apex.io/v1
+kind: ApexRun
+metadata:
+  name: nightly-scan
+spec:
+  targetRepo: https://github.com/org/repo
+  goal: "security audit"
+  mode: report
+  schedule: "0 2 * * *"
+```
+
+```python
+from app.k8s.operator import ApexOperator, ApexRunResource, ApexRunSpec
+
+op = ApexOperator()
+op.add_resource(ApexRunResource(name="nightly", namespace="default", spec=...))
+op.reconcile_all()
+```
+
+## Vector Store (Embedding-Free)
+
+```python
+from app.memory.vector_store import VectorStore
+
+store = VectorStore()
+store.add("eval() in auth.py", {"severity": "high"})
+results = store.search("eval usage", top_k=3)
+```
+
+Pure stdlib — no ML dependencies. Uses bag-of-words + cosine similarity.
+
+## GitHub Actions Bot
+
+Automatically runs on every PR:
+
+```yaml
+# .github/workflows/apex-bot.yml
+- uses: actions/checkout@v4
+- run: python scripts/apex_github_bot.py --mode=report
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+Posts findings as PR comments. Fails CI on critical risks.
