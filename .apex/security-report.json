@@ -1,12 +1,12 @@
 {
   "project_root": "C:\\Users\\salio\\Apex-orchestrator",
   "summary": {
-    "total_files": 305,
-    "functions_analyzed": 1082,
-    "total_risks": 1061,
+    "total_files": 307,
+    "functions_analyzed": 1097,
+    "total_risks": 1074,
     "critical": 0,
-    "high": 27,
-    "medium": 1034,
+    "high": 29,
+    "medium": 1045,
     "low": 0
   },
   "risks": {
@@ -46,6 +46,18 @@
         "file": "app/agents/memory.py",
         "function": "remember",
         "risk": "Dynamic import \u2014 potential code injection",
+        "risk_score": 0.3
+      },
+      {
+        "file": "app/automation/adaptive_runner.py",
+        "function": "AdaptiveRunner._confirm_step",
+        "risk": "Uses input() in Python 2 style \u2014 security concern",
+        "risk_score": 0.3
+      },
+      {
+        "file": "app/automation/adaptive_runner.py",
+        "function": "_confirm_step",
+        "risk": "Uses input() in Python 2 style \u2014 security concern",
         "risk_score": 0.3
       },
       {
@@ -1265,6 +1277,72 @@
       {
         "file": "app/agents/skills/security_agent.py",
         "function": "_calc_score",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/adaptive_runner.py",
+        "function": "AdaptiveRunner.__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.2
+      },
+      {
+        "file": "app/automation/adaptive_runner.py",
+        "function": "AdaptiveRunner.__init__",
+        "risk": "too_many_arguments (6)",
+        "risk_score": 0.2
+      },
+      {
+        "file": "app/automation/adaptive_runner.py",
+        "function": "AdaptiveRunner.run_plan",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/adaptive_runner.py",
+        "function": "AdaptiveRunner._execute_with_retry",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/adaptive_runner.py",
+        "function": "AdaptiveRunner._is_patch_skill",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/adaptive_runner.py",
+        "function": "_classify_error",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/adaptive_runner.py",
+        "function": "__init__",
+        "risk": "missing_docstring",
+        "risk_score": 0.2
+      },
+      {
+        "file": "app/automation/adaptive_runner.py",
+        "function": "__init__",
+        "risk": "too_many_arguments (6)",
+        "risk_score": 0.2
+      },
+      {
+        "file": "app/automation/adaptive_runner.py",
+        "function": "run_plan",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/adaptive_runner.py",
+        "function": "_execute_with_retry",
+        "risk": "missing_docstring",
+        "risk_score": 0.1
+      },
+      {
+        "file": "app/automation/adaptive_runner.py",
+        "function": "_is_patch_skill",
         "risk": "missing_docstring",
         "risk_score": 0.1
       },
