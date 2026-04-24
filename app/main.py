@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from app.agents.skills import SecurityAgent, DocstringAgent, TestStubAgent, DependencyAgent
+from app.agents.swarm_coordinator import SwarmCoordinator
 from app.automation.models import AutomationContext
 from app.automation.runner import SkillAutomationRunner
 from app.automation.skills import build_default_registry
@@ -12,10 +14,29 @@ from app.orchestrator import FractalResearchOrchestrator
 from app.plugins.registry import PluginRegistry
 from app.skills.decomposer import Decomposer
 from app.skills.evidence_mapper import EvidenceMapper
-from app.skills.synthesizer import Synthesizer
 from app.skills.validator import Validator
+from app.skills.synthesizer import Synthesizer
 from app.utils.json_utils import pretty_json
 from app.utils.yaml_utils import load_yaml
+
+
+def _build_swarm_for_plan(plan_name: str) -> SwarmCoordinator:
+    """Create a SwarmCoordinator with agents matching the plan."""
+    coord = SwarmCoordinator()
+
+    # Always register core agents for event-driven execution
+    agents = []
+    if "security" in plan_name or "full" in plan_name or "self" in plan_name:
+        agents.append(SecurityAgent())
+    if "docstring" in plan_name or "semantic" in plan_name or "full" in plan_name or "self" in plan_name:
+        agents.append(DocstringAgent())
+    if "test" in plan_name or "coverage" in plan_name or "semantic" in plan_name or "full" in plan_name or "self" in plan_name:
+        agents.append(TestStubAgent())
+    if "dependency" in plan_name or "project_scan" in plan_name or "full" in plan_name or "self" in plan_name:
+        agents.append(DependencyAgent())
+
+    coord.register_agents(agents)
+    return coord
 
 
 def main() -> None:
@@ -38,6 +59,19 @@ def main() -> None:
     plugins.load_all()
 
     if automation_plan:
+        # Try event-driven swarm first if agents are available
+        swarm = _build_swarm_for_plan(automation_plan)
+        if swarm.registry.agents:
+            print(f"[main] Running event-driven swarm with {len(swarm.registry.agents)} agent(s)")
+            results = swarm.run_autonomous(
+                goal=objective,
+                target=str(target_root),
+                mode="supervised",
+            )
+            print(pretty_json({"swarm_results": results, "stats": swarm.stats()}))
+            return
+
+        # Fallback to legacy runner
         context = AutomationContext(
             project_root=target_root,
             objective=objective,
