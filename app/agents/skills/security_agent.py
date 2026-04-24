@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""SecurityAgent — AST-based security risk detector."""
+"""SecurityAgent — AST-based security risk detector with auto-tuning."""
 
 import ast
 import re
@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.base import Agent
+from app.agents.learning import AgentLearning
 
 
 class SecurityAgent(Agent):
-    """Agent: scans code for security anti-patterns."""
+    """Agent: scans code for security anti-patterns with auto-tuning."""
 
     CRITICAL_PATTERNS = {
         "eval": ("eval() usage", "critical", "Replace with ast.literal_eval or json.loads"),
@@ -30,9 +31,26 @@ class SecurityAgent(Agent):
         (r'(?:database_url|db_url|connection_string)\s*=\s*["\'][^"\']+["\']', "hardcoded_connection", "medium"),
     ]
 
-    def __init__(self, name: str = "security", **kwargs: Any) -> None:
+    def __init__(self, name: str = "security", learning: AgentLearning | None = None, **kwargs: Any) -> None:
         super().__init__(name=name, role="security_auditor", **kwargs)
         self.project_root: Path | None = None
+        self.learning = learning
+        # Instance-level copy to avoid mutating class variable
+        self.patterns = dict(self.CRITICAL_PATTERNS)
+        self._apply_learned_tuning()
+
+    def _apply_learned_tuning(self) -> None:
+        """Adjust patterns based on past performance."""
+        if self.learning is None:
+            return
+        for pattern_name in list(self.patterns.keys()):
+            if self.learning.should_skip("security", pattern_name, min_ema=0.3):
+                self.patterns.pop(pattern_name, None)
+
+    def record_result(self, pattern: str, success: bool) -> None:
+        """Record whether a detection was correct (for learning)."""
+        if self.learning:
+            self.learning.record_result("security", pattern, success)
 
     def _execute(self, project_root: str | Path = ".", **kwargs: Any) -> dict[str, Any]:
         root = Path(project_root).resolve()
@@ -101,7 +119,7 @@ class SecurityAgent(Agent):
         if not func_name:
             return findings
 
-        for pattern, (risk_type, severity, suggestion) in self.CRITICAL_PATTERNS.items():
+        for pattern, (risk_type, severity, suggestion) in self.patterns.items():
             if pattern in func_name:
                 # False positive filters
                 if pattern == "compile" and any(safe in func_name for safe in ("re.compile", "regex.compile")):
