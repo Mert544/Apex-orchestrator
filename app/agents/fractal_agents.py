@@ -5,19 +5,22 @@ from typing import Any
 from app.agents.base import Agent, AgentMessage
 from app.agents.recursive import RecursiveAgent
 from app.engine.fractal_5whys import Fractal5WhysEngine
+from app.engine.fractal_patch_generator import FractalPatchGenerator
 
 
 class BaseFractalAgent(RecursiveAgent):
     """Base class for agents that perform fractal deep-analysis on their findings.
 
     Subclasses implement `_scan()` to return raw findings.
-    Base class automatically runs fractal 5-Whys on each finding.
+    Base class automatically runs fractal 5-Whys + meta-analysis + optional auto-patch.
     """
 
     def __init__(self, name: str, role: str, bus=None, context=None) -> None:
         super().__init__(name=name, role=role, bus=bus, context=context)
         self.fractal_engine = Fractal5WhysEngine(max_depth=5)
+        self.patch_generator = FractalPatchGenerator()
         self.max_fractal_budget = 10
+        self.auto_patch = False  # Set True to auto-apply recommended patches
 
     def _scan(self, project_root: str, **kwargs: Any) -> dict[str, Any]:
         """Override in subclass. Must return dict with 'findings' list."""
@@ -28,11 +31,23 @@ class BaseFractalAgent(RecursiveAgent):
         findings = scan_result.get("findings", [])
 
         fractal_trees = []
+        meta_results = []
+        generated_patches = []
         budget = min(len(findings), self.max_fractal_budget)
+
         for finding in findings[:budget]:
-            sub = self.spawn_fractal_analyzer(finding, max_depth)
-            if sub:
-                fractal_trees.append(sub.to_dict())
+            tree = self.spawn_fractal_analyzer(finding, max_depth)
+            if tree:
+                fractal_trees.append(tree.to_dict())
+                meta = self.fractal_engine.meta_analyze(tree)
+                meta_results.append(meta.to_dict())
+
+                if meta.recommended_action == "patch":
+                    patches = self.patch_generator.generate(finding, meta.to_dict())
+                    generated_patches.extend([p.to_dict() for p in patches])
+                    if self.auto_patch:
+                        for p in patches:
+                            self.patch_generator.apply(p, project_root)
 
         return {
             "agent": self.name,
@@ -42,6 +57,9 @@ class BaseFractalAgent(RecursiveAgent):
             "fractal_analyzed": len(fractal_trees),
             "findings": findings,
             "fractal_trees": fractal_trees,
+            "meta_analyses": meta_results,
+            "generated_patches": generated_patches,
+            "patches_applied": sum(1 for p in generated_patches if p.get("applied")),
         }
 
     def spawn_fractal_analyzer(self, finding: dict[str, Any], max_depth: int) -> Any:
