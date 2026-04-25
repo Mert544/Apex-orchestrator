@@ -1,0 +1,76 @@
+{
+  "entries": [
+    {
+      "node_key": "eval() usage:unsafe_code.py:5",
+      "old_confidence": 0.86,
+      "feedback_score": 1.0,
+      "new_confidence": 0.9019999999999999,
+      "timestamp": "2026-04-25 14:08:57",
+      "action_type": "patch"
+    },
+    {
+      "node_key": "os.system() shell injection:unsafe_code.py:10",
+      "old_confidence": 0.8200000000000001,
+      "feedback_score": 1.0,
+      "new_confidence": 0.8739999999999999,
+      "timestamp": "2026-04-25 14:08:57",
+      "action_type": "patch"
+    },
+    {
+      "node_key": "eval() usage:unsafe_code.py:13",
+      "old_confidence": 0.86,
+      "feedback_score": 1.0,
+      "new_confidence": 0.9019999999999999,
+      "timestamp": "2026-04-25 14:08:58",
+      "action_type": "patch"
+    },
+    {
+      "node_key": "eval() usage:unsafe.py:3",
+      "old_confidence": 0.86,
+      "feedback_score": -0.5,
+      "new_confidence": 0.45199999999999996,
+      "timestamp": "2026-04-25 14:10:15",
+      "action_type": "patch"
+    },
+    {
+      "node_key": "eval() usage:unsafe.py:3",
+      "old_confidence": 0.86,
+      "feedback_score": -0.5,
+      "new_confidence": 0.45199999999999996,
+      "timestamp": "2026-04-25 14:10:15",
+      "action_type": "patch"
+    },
+    {
+      "node_key": "eval() usage:unsafe.py:3",
+      "old_confidence": 0.86,
+      "feedback_score": -0.5,
+      "new_confidence": 0.45199999999999996,
+      "timestamp": "2026-04-25 14:10:15",
+      "action_type": "patch"
+    },
+    {
+      "node_key": "eval() usage:unsafe.py:3",
+      "old_confidence": 0.86,
+      "feedback_score": -0.5,
+      "new_confidence": 0.45199999999999996,
+      "timestamp": "2026-04-25 14:10:27",
+      "action_type": "patch"
+    },
+    {
+      "node_key": "eval() usage:unsafe.py:3",
+      "old_confidence": 0.86,
+      "feedback_score": -0.5,
+      "new_confidence": 0.45199999999999996,
+      "timestamp": "2026-04-25 14:10:27",
+      "action_type": "patch"
+    },
+    {
+      "node_key": "eval() usage:unsafe.py:3",
+      "old_confidence": 0.86,
+      "feedback_score": -0.5,
+      "new_confidence": 0.45199999999999996,
+      "timestamp": "2026-04-25 14:10:27",
+      "action_type": "patch"
+    }
+  ]
+}

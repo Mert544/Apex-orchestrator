@@ -72,7 +72,7 @@ class FractalPatchGenerator:
             finding="eval() usage",
             action="replace_with_literal_eval",
             old_code="eval(user_input)",
-            new_code="import ast; ast.literal_eval(user_input)  # TODO: validate input before parsing",
+            new_code="ast.literal_eval(user_input)",
             confidence=0.85,
         )
 

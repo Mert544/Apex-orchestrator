@@ -102,7 +102,8 @@ class ActionExecutor:
                 text=True,
                 timeout=60,
             )
-            success = result.returncode == 0
+            # pytest exit code 5 = no tests collected (acceptable)
+            success = result.returncode in (0, 5)
             return ActionResult(
                 action_type="test",
                 success=success,

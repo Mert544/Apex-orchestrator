@@ -60,22 +60,45 @@ class BaseFractalAgent(RecursiveAgent):
         # Phase 2: Hands (ActionExecutor) executes if auto_patch enabled
         action_results = []
         if self.auto_patch:
+            self.executor = ActionExecutor(project_root)
             for decision in decisions:
                 if decision.action_type == "patch" and decision.patches:
                     for patch_dict in decision.patches:
                         patch = FractalPatch(**patch_dict)
                         plan = self.planner.plan(decision.finding)
                         strategy = plan.next_strategy()
-                        result = self.executor.execute_patch(patch, run_tests=True)
-                        action_results.append(result.to_dict())
+                        # Step 1: Apply patch in sandbox
+                        patch_result = self.executor.execute_patch(patch, run_tests=False)
+                        
+                        # Step 2: If patch applied, run tests
+                        test_result = None
+                        if patch_result.success:
+                            test_result = self.executor._run_tests()
+                        
+                        # Determine overall success
+                        overall_success = patch_result.success and (test_result is None or test_result.success)
+                        
+                        action_results.append({
+                            "action_type": "patch",
+                            "success": overall_success,
+                            "patch_applied": patch_result.success,
+                            "test_success": test_result.success if test_result else None,
+                            "changed_files": patch_result.changed_files,
+                            "feedback_score": 1.0 if overall_success else -0.5,
+                        })
+
+                        # Step 3: Promote to original if everything passed
+                        if overall_success:
+                            self.executor.promote_to_original()
 
                         # Feedback loop: update confidence
                         node_key = f"{decision.finding.get('issue','')}:{decision.finding.get('file','')}:{decision.finding.get('line',0)}"
                         old_conf = decision.meta_analysis.get("aggregate_confidence", 0.5)
-                        self.feedback.update(node_key, old_conf, result.feedback_score, result.action_type)
+                        score = 1.0 if overall_success else -0.5
+                        self.feedback.update(node_key, old_conf, score, "patch")
 
                         # Retry with fallback if failed
-                        if not result.success:
+                        if not overall_success:
                             fallback = plan.next_strategy()
                             if fallback:
                                 # Try fallback strategy (simplified: just log)

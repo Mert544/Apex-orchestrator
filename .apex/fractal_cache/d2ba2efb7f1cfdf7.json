@@ -1,0 +1,94 @@
+{
+  "level": 1,
+  "question": "What is the risk: eval() usage?",
+  "answer": "CRITICAL severity issue in unsafe.py",
+  "confidence": 1.0,
+  "evidence": [
+    "Detected in unsafe.py"
+  ],
+  "counter_evidence": [
+    "This analysis is based on pattern matching, not runtime behavior.",
+    "The finding may be a false positive."
+  ],
+  "rebuttal": "Pattern-based detection has known limitations. Validate with manual review or dynamic analysis.",
+  "children": [
+    {
+      "level": 2,
+      "question": "Why does eval() exist in this code?",
+      "answer": "Developer used dynamic execution instead of safer alternatives",
+      "confidence": 0.9,
+      "evidence": [
+        "eval() allows arbitrary code execution"
+      ],
+      "counter_evidence": [
+        "This analysis is based on pattern matching, not runtime behavior.",
+        "The finding may be a false positive."
+      ],
+      "rebuttal": "Pattern-based detection has known limitations. Validate with manual review or dynamic analysis.",
+      "children": [
+        {
+          "level": 3,
+          "question": "Why was eval() introduced instead of safer parsing?",
+          "answer": "Developer may not have known about ast.literal_eval or json.loads",
+          "confidence": 0.75,
+          "evidence": [
+            "Knowledge gap in secure coding practices"
+          ],
+          "counter_evidence": [
+            "This analysis is based on pattern matching, not runtime behavior.",
+            "The finding may be a false positive."
+          ],
+          "rebuttal": "Pattern-based detection has known limitations. Validate with manual review or dynamic analysis.",
+          "children": [
+            {
+              "level": 4,
+              "question": "Why wasn't this caught in code review or testing?",
+              "answer": "Security scanning is not part of the CI pipeline",
+              "confidence": 0.85,
+              "evidence": [
+                "No automated security checks in pre-commit or CI"
+              ],
+              "counter_evidence": [
+                "This analysis is based on pattern matching, not runtime behavior.",
+                "The finding may be a false positive."
+              ],
+              "rebuttal": "Pattern-based detection has known limitations. Validate with manual review or dynamic analysis.",
+              "children": [
+                {
+                  "level": 5,
+                  "question": "Why does the system architecture permit this risk?",
+                  "answer": "No input validation layer or sandboxing at the application boundary",
+                  "confidence": 0.8,
+                  "evidence": [
+                    "Architecture lacks defense-in-depth strategy"
+                  ],
+                  "counter_evidence": [
+                    "This analysis is based on pattern matching, not runtime behavior.",
+                    "The finding may be a false positive."
+                  ],
+                  "rebuttal": "Pattern-based detection has known limitations. Validate with manual review or dynamic analysis.",
+                  "children": [],
+                  "metadata": {}
+                }
+              ],
+              "metadata": {}
+            }
+          ],
+          "metadata": {}
+        }
+      ],
+      "metadata": {}
+    }
+  ],
+  "metadata": {
+    "finding": {
+      "file": "unsafe.py",
+      "line": 2,
+      "risk_type": "eval() usage",
+      "severity": "critical",
+      "details": "Detected eval at line 2",
+      "suggestion": "Replace with ast.literal_eval or json.loads",
+      "issue": "eval() usage"
+    }
+  }
+}
