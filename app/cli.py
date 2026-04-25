@@ -350,6 +350,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     os.environ["EPISTEMIC_TARGET_ROOT"] = str(target)
     os.environ["EPISTEMIC_AUTOMATION_PLAN"] = plan.plan_name
     os.environ["EPISTEMIC_OBJECTIVE"] = intent.goal
+    if args.fractal:
+        os.environ["APEX_USE_FRACTAL"] = "1"
 
     if plan.mode == "supervised":
         print("[supervised mode] Running with human oversight. Patches will be staged, not committed.")
@@ -428,6 +430,7 @@ def main() -> int:
     run_parser.add_argument("--goal", required=True, help="Natural-language goal, e.g. 'security audit', 'fix docstrings'")
     run_parser.add_argument("--target", default="", help="Target project root")
     run_parser.add_argument("--mode", default="supervised", choices=["report", "supervised", "autonomous"], help="Execution mode")
+    run_parser.add_argument("--fractal", action="store_true", help="Enable fractal 5-Whys deep analysis on all findings")
     run_parser.set_defaults(func=cmd_run)
 
     # daemon

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from app.agents.skills import SecurityAgent, DocstringAgent, TestStubAgent, DependencyAgent
+from app.agents.fractal_agents import FractalSecurityAgent, FractalDocstringAgent, FractalTestStubAgent
 from app.agents.swarm_coordinator import SwarmCoordinator
 from app.automation.models import AutomationContext
 from app.automation.runner import SkillAutomationRunner
@@ -20,18 +21,22 @@ from app.utils.json_utils import pretty_json
 from app.utils.yaml_utils import load_yaml
 
 
-def _build_swarm_for_plan(plan_name: str) -> SwarmCoordinator:
-    """Create a SwarmCoordinator with agents matching the plan."""
+def _build_swarm_for_plan(plan_name: str, use_fractal: bool = False) -> SwarmCoordinator:
+    """Create a SwarmCoordinator with agents matching the plan.
+
+    When use_fractal=True, registers FractalSecurityAgent,
+    FractalDocstringAgent, and FractalTestStubAgent instead of
+    the plain variants so every finding gets 5-Whys deep analysis.
+    """
     coord = SwarmCoordinator()
 
-    # Always register core agents for event-driven execution
     agents = []
     if "security" in plan_name or "full" in plan_name or "self" in plan_name:
-        agents.append(SecurityAgent())
+        agents.append(FractalSecurityAgent() if use_fractal else SecurityAgent())
     if "docstring" in plan_name or "semantic" in plan_name or "full" in plan_name or "self" in plan_name:
-        agents.append(DocstringAgent())
+        agents.append(FractalDocstringAgent() if use_fractal else DocstringAgent())
     if "test" in plan_name or "coverage" in plan_name or "semantic" in plan_name or "full" in plan_name or "self" in plan_name:
-        agents.append(TestStubAgent())
+        agents.append(FractalTestStubAgent() if use_fractal else TestStubAgent())
     if "dependency" in plan_name or "project_scan" in plan_name or "full" in plan_name or "self" in plan_name:
         agents.append(DependencyAgent())
 
@@ -58,17 +63,34 @@ def main() -> None:
     plugins = PluginRegistry(plugin_dirs=plugin_dirs)
     plugins.load_all()
 
+    use_fractal = os.getenv("APEX_USE_FRACTAL", "").lower() in ("1", "true", "yes")
+    if not use_fractal:
+        # Auto-detect fractal mode for security/audit/risk goals
+        use_fractal = any(kw in objective.lower() for kw in ("security", "audit", "risk", "vuln"))
+
     if automation_plan:
         # Try event-driven swarm first if agents are available
-        swarm = _build_swarm_for_plan(automation_plan)
+        swarm = _build_swarm_for_plan(automation_plan, use_fractal=use_fractal)
         if swarm.registry.agents:
+            mode = "supervised"
             print(f"[main] Running event-driven swarm with {len(swarm.registry.agents)} agent(s)")
+            if use_fractal:
+                print("[main] Fractal deep-analysis enabled (5-Whys + counter-evidence + meta-analysis)")
             results = swarm.run_autonomous(
                 goal=objective,
                 target=str(target_root),
-                mode="supervised",
+                mode=mode,
             )
             print(pretty_json({"swarm_results": results, "stats": swarm.stats()}))
+
+            # Auto-generate fractal-aware report
+            from app.reporting.composer import ReportComposer
+            composer = ReportComposer(results)
+            report_dir = target_root / ".apex"
+            report_dir.mkdir(exist_ok=True)
+            md_path = report_dir / "fractal-report.md"
+            composer.to_markdown(md_path)
+            print(f"[main] Report written to {md_path}")
             return
 
         # Fallback to legacy runner
