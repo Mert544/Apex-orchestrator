@@ -826,3 +826,50 @@ python -m app.main
 ```
 
 After a swarm run, a fractal-aware report is auto-generated at `.apex/fractal-report.md`.
+
+### Visual Export (Mermaid)
+
+Generate Mermaid flowcharts from fractal trees:
+
+```python
+from app.reporting.composer import ReportComposer
+
+composer = ReportComposer(results)
+composer.to_mermaid("report.mmd")
+```
+
+Or directly:
+
+```python
+from app.reporting.mermaid_exporter import FractalMermaidExporter
+from app.engine.fractal_5whys import Fractal5WhysEngine
+
+engine = Fractal5WhysEngine(max_depth=5)
+tree = engine.analyze({"issue": "eval() usage", "file": "auth.py"})
+
+exporter = FractalMermaidExporter()
+mermaid = exporter.export(tree)
+print(mermaid)
+```
+
+Paste the output into GitHub markdown, Notion, or any Mermaid renderer.
+
+### Cross-Run Memory
+
+Track findings across multiple runs to detect persistent vs. resolved issues:
+
+```python
+from app.engine.fractal_cross_run import FractalCrossRunBridge
+
+bridge = FractalCrossRunBridge(project_root=".")
+bridge.record_findings(run_id="run-1", findings=findings)
+
+# Next run
+bridge.record_findings(run_id="run-2", findings=new_findings)
+persistent = bridge.get_persistent_findings()
+recall = bridge.build_recall_prompt()
+```
+
+- Persistent issues (seen in 2+ runs) are surfaced first
+- Resolved issues are marked `potentially_resolved`
+- Generates recall prompts for the next run
