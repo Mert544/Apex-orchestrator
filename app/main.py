@@ -19,7 +19,11 @@ from app.automation.models import AutomationContext
 from app.automation.runner import SkillAutomationRunner
 from app.automation.skills import build_default_registry
 from app.engine.debug_engine import DebugEngine
+from app.engine.rollback_journal import RollbackJournal
+from app.engine.checkpoint_manager import CheckpointManager
+from app.memory.bridge import CentralMemoryBridge
 from app.memory.persistent_memory import PersistentMemoryStore
+from app.metrics.exporter import MetricsMiddleware, PrometheusExporter
 from app.orchestrator import FractalResearchOrchestrator
 from app.plugins.registry import PluginRegistry
 from app.policies.mode_policy import ModePolicy, mode_from_string, apply_cli_overrides
@@ -174,12 +178,24 @@ def main() -> None:
         print(pretty_json(result.to_dict()))
         return
 
+    # Initialize integrated memory, metrics, and safety infrastructure
+    memory_bridge = CentralMemoryBridge(str(target_root))
+    metrics = MetricsMiddleware()
+    rollback = RollbackJournal(project_root=str(target_root))
+    checkpoint = CheckpointManager(project_root=str(target_root))
+
+    # Debug engine — auto-enable at higher verbosity in autonomous mode
+    debug_enabled = bool(config.get("debug_enabled", False)) or policy.mode.value == "autonomous"
+    debug = DebugEngine(
+        project_root=str(target_root),
+        enabled=debug_enabled,
+        level=DebugEngine.LEVEL_TRACE if policy.mode.value == "autonomous" else DebugEngine.LEVEL_INFO,
+    )
+
     validator = Validator(evidence_mapper=EvidenceMapper(project_root=target_root))
     decomposer = Decomposer(project_root=target_root)
     memory_store = PersistentMemoryStore(project_root=target_root)
-    debug = DebugEngine(
-        project_root=str(target_root), enabled=bool(config.get("debug_enabled", False))
-    )
+    memory_store.hydrate_graph(validator.evidence_mapper.graph if hasattr(validator.evidence_mapper, "graph") else None)
 
     orchestrator = FractalResearchOrchestrator(
         config=config,
@@ -190,8 +206,52 @@ def main() -> None:
         debug=debug,
     )
 
+    # Record run start
+    import time
+    import uuid
+    run_id = f"run-{int(time.time())}"
+    start_time = time.time()
+
+    debug.trace("orchestrator", f"Starting run {run_id} in {policy.mode.value} mode")
     report = orchestrator.run(objective, focus_branch=focus_branch)
+    duration = time.time() - start_time
     print(pretty_json(report.model_dump()))
+
+    # Persist findings across runs
+    findings = []
+    for key, conf in report.confidence_map.items():
+        findings.append({"claim": key, "confidence": conf, "branch": ""})
+    memory_bridge.record_run(run_id, claims=findings)
+    checkpoint.record_run(run_id, report)
+
+    # Record metrics
+    patches_applied_val = getattr(report, "patches_applied", 0)
+    patches_blocked_val = getattr(report, "patches_blocked", 0)
+    claims_count = len(findings)
+    metrics.record_run(
+        plan=automation_plan or "default",
+        duration_seconds=duration,
+        claims_found=claims_count,
+        patches_applied=patches_applied_val,
+    )
+
+    # Rollback journal snapshot
+    rollback.snapshot()
+
+    debug.trace("orchestrator", f"Run {run_id} completed in {duration:.1f}s", {
+        "claims": claims_count,
+        "patches": patches_applied_val,
+        "blocked": patches_blocked_val,
+    })
+
+    # Persist debug and checkpoint reports
+    debug_report = debug.report()
+    metrics_text = metrics.render()
+    (target_root / ".apex").mkdir(parents=True, exist_ok=True)
+    (target_root / ".apex" / "metrics.prom").write_text(metrics_text, encoding="utf-8")
+    print(f"[metrics] Written to .apex/metrics.prom ({claims_count} claims, {patches_applied_val} patches)")
+
+    memory_bridge.close()
 
 
 if __name__ == "__main__":

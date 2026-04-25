@@ -141,6 +141,21 @@ class LocalProvider(LLMProvider):
         )
 
 
+class DeepSeekProvider(OpenAICompatibleProvider):
+    """Provider for DeepSeek models (deepseek-v4, deepseek-chat).
+
+    Uses the OpenAI-compatible API at api.deepseek.com.
+    Requires: pip install openai
+    """
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        super().__init__({
+            **config,
+            "base_url": config.get("base_url", "https://api.deepseek.com/v1"),
+            "model": config.get("model", "deepseek-chat"),
+        })
+
+
 class LLMRouter:
     """Routes prompts to configured LLM provider.
 
@@ -153,6 +168,7 @@ class LLMRouter:
         "none": NoOpProvider,
         "openai": OpenAICompatibleProvider,
         "local": LocalProvider,
+        "deepseek": DeepSeekProvider,
     }
 
     def __init__(self, provider: LLMProvider) -> None:

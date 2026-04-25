@@ -278,6 +278,115 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_self_audit(args: argparse.Namespace) -> int:
+    from app.agents.skills.self_audit_agent import SelfAuditAgent
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    agent = SelfAuditAgent()
+    result = agent.run(project_root=str(target))
+
+    if args.format == "json":
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(f"# Apex Self-Audit Report")
+        print(f"**Target:** {target}")
+        print()
+        print(f"- Risks found: {len(result.get('findings', []))}")
+        print(f"- Missing docstrings: {result.get('missing_docstrings_count', 0)}")
+        print(f"- Long functions (>50 lines): {result.get('long_functions_count', 0)}")
+        print(f"- TODOs: {result.get('todos_count', 0)}")
+        cov = result.get("coverage_gap", {})
+        print(f"- Tested modules: {', '.join(cov.get('tested_modules', []))}")
+        print(f"- Untested modules: {', '.join(cov.get('untested_modules', []))}")
+    return 0
+
+
+def cmd_fix_docstrings(args: argparse.Namespace) -> int:
+    from app.agents.skills import DocstringAgent
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    agent = DocstringAgent()
+    result = agent.run(project_root=str(target), patch=not args.dry_run)
+    print(f"Symbols scanned: {result['total_symbols']}")
+    print(f"Gaps found: {result['gaps_found']}")
+    if not args.dry_run:
+        print(f"Files patched: {len(result['patched_files'])}")
+        for f in result['patched_files']:
+            print(f"  patched: {f}")
+    else:
+        print("(Dry run — no files modified)")
+        for gap in result.get('gaps', [])[:20]:
+            print(f"  {gap['file']}:{gap['line']} {gap['symbol_type']} '{gap['name']}'")
+    return 0
+
+
+def cmd_fix_coverage(args: argparse.Namespace) -> int:
+    from app.agents.skills import TestStubAgent
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    agent = TestStubAgent()
+    result = agent.run(project_root=str(target), generate=args.generate)
+    print(f"Functions scanned: {result['total_functions']}")
+    print(f"Tested functions: {result['tested_functions']}")
+    print(f"Coverage: {result['coverage_ratio']:.1%}")
+    print(f"Gaps found: {result['gaps_found']}")
+    if args.generate:
+        print(f"Stubs generated: {len(result['stubs_generated'])}")
+        for s in result['stubs_generated']:
+            print(f"  created: {s}")
+    else:
+        print("(Dry run — use --generate to create test files)")
+    return 0
+
+
+def cmd_lsp(args: argparse.Namespace) -> int:
+    from app.lsp.server import main as lsp_main
+
+    return lsp_main()
+
+
+def cmd_metrics(args: argparse.Namespace) -> int:
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    from app.metrics.exporter import MetricsMiddleware
+
+    mw = MetricsMiddleware()
+    mw.record_run("cli_serve", 0.0, 0, 0)
+
+    class MetricsHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.end_headers()
+            self.wfile.write(mw.render().encode("utf-8"))
+
+        def log_message(self, format, *args):
+            pass
+
+    server = HTTPServer(("0.0.0.0", args.port), MetricsHandler)
+    print(f"Metrics endpoint: http://0.0.0.0:{args.port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.shutdown()
+    return 0
+
+
+def cmd_marketplace(args: argparse.Namespace) -> int:
+    from app.plugins.marketplace_server import PluginMarketplaceServer
+
+    server = PluginMarketplaceServer(host="0.0.0.0", port=args.port, plugin_dir=args.plugin_dir)
+    server.start()
+    print(f"Marketplace server: http://0.0.0.0:{args.port}")
+    try:
+        import time
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        server.stop()
+    return 0
+
+
 def cmd_hook(args: argparse.Namespace) -> int:
     from app.hook_installer import GitHookInstaller
 
@@ -675,6 +784,39 @@ def main() -> int:
     )
     report_parser.add_argument("--output", required=True, help="Output file path")
     report_parser.set_defaults(func=cmd_report)
+
+    # self-audit
+    self_audit_parser = subparsers.add_parser("self-audit", help="Run Apex self-audit on its own codebase")
+    self_audit_parser.add_argument("--target", default=".", help="Target project root")
+    self_audit_parser.add_argument("--format", default="markdown", choices=["markdown", "json"], help="Output format")
+    self_audit_parser.set_defaults(func=cmd_self_audit)
+
+    # fix-docstrings
+    fix_doc_parser = subparsers.add_parser("fix-docstrings", help="Auto-fix missing docstrings")
+    fix_doc_parser.add_argument("--target", default=".", help="Target project root")
+    fix_doc_parser.add_argument("--dry-run", action="store_true", help="Show gaps without patching")
+    fix_doc_parser.set_defaults(func=cmd_fix_docstrings)
+
+    # fix-coverage
+    fix_cov_parser = subparsers.add_parser("fix-coverage", help="Auto-generate test stubs")
+    fix_cov_parser.add_argument("--target", default=".", help="Target project root")
+    fix_cov_parser.add_argument("--generate", action="store_true", help="Generate test files")
+    fix_cov_parser.set_defaults(func=cmd_fix_coverage)
+
+    # lsp
+    lsp_parser = subparsers.add_parser("lsp", help="Start LSP language server (stdio)")
+    lsp_parser.set_defaults(func=cmd_lsp)
+
+    # metrics
+    metrics_parser = subparsers.add_parser("metrics", help="Start Prometheus metrics endpoint")
+    metrics_parser.add_argument("--port", type=int, default=9090, help="Metrics endpoint port")
+    metrics_parser.set_defaults(func=cmd_metrics)
+
+    # marketplace
+    marketplace_parser = subparsers.add_parser("marketplace", help="Start plugin marketplace server")
+    marketplace_parser.add_argument("--port", type=int, default=8765, help="Marketplace server port")
+    marketplace_parser.add_argument("--plugin-dir", default="plugins", help="Plugin directory")
+    marketplace_parser.set_defaults(func=cmd_marketplace)
 
     # hook
     hook_parser = subparsers.add_parser("hook", help="Manage git hooks")
