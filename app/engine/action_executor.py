@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.engine.fractal_patch_generator import FractalPatch
+from app.engine.rollback_journal import RollbackJournal
 
 
 @dataclass
@@ -20,6 +21,7 @@ class ActionResult:
     stderr: str = ""
     changed_files: list[str] = field(default_factory=list)
     feedback_score: float = 0.0  # +1.0 success, -0.5 failure, 0.0 unknown
+    patch_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -29,6 +31,7 @@ class ActionResult:
             "stderr": self.stderr,
             "changed_files": self.changed_files,
             "feedback_score": self.feedback_score,
+            "patch_id": self.patch_id,
         }
 
 
@@ -38,6 +41,11 @@ class ActionExecutor:
     Never modifies the original project directly.
     Always works in a temporary copy unless explicitly approved.
 
+    Features:
+    - Rollback journal integration
+    - Patch tracking for potential rollback
+    - Safety verification
+
     Usage:
         executor = ActionExecutor(project_root=".")
         result = executor.execute_patch(patch, run_tests=True)
@@ -45,48 +53,96 @@ class ActionExecutor:
             executor.promote_to_original()
     """
 
-    def __init__(self, project_root: str = ".") -> None:
+    def __init__(self, project_root: str = ".", enable_rollback: bool = True, dry_run: bool = False) -> None:
         self.project_root = Path(project_root).resolve()
         self.sandbox_dir: Path | None = None
         self._last_changed_files: list[str] = []
+        self._rollback_journal = (
+            RollbackJournal(project_root=str(self.project_root))
+            if enable_rollback
+            else None
+        )
+        self._run_id: str = ""
+        self._dry_run = dry_run
+
+    def set_run_id(self, run_id: str) -> None:
+        """Set the current run ID for tracking."""
+        self._run_id = run_id
 
     def create_sandbox(self) -> Path:
         """Create a temporary copy of the project for safe execution."""
         tmp = Path(tempfile.mkdtemp(prefix="apex_sandbox_"))
         # Copy project files (excluding .git, node_modules, etc.)
-        ignore = shutil.ignore_patterns(".git", "__pycache__", "*.pyc", ".venv", "node_modules", ".apex")
+        ignore = shutil.ignore_patterns(
+            ".git", "__pycache__", "*.pyc", ".venv", "node_modules", ".apex"
+        )
         shutil.copytree(self.project_root, tmp / "project", ignore=ignore)
         self.sandbox_dir = tmp / "project"
         return self.sandbox_dir
 
-    def execute_patch(self, patch: FractalPatch, run_tests: bool = False) -> ActionResult:
-        """Apply a patch in sandbox and optionally run tests."""
+    def execute_patch(
+        self, patch: FractalPatch, run_tests: bool = False, dry_run: bool = False
+    ) -> ActionResult:
+        """Apply a patch in sandbox and optionally run tests.
+
+        If dry_run is True, validates the patch without writing.
+        """
         if not self.sandbox_dir:
             self.create_sandbox()
 
         sandbox_path = self.sandbox_dir / patch.file
         if not sandbox_path.exists():
-            return ActionResult(action_type="patch", success=False, stderr="File not found in sandbox")
+            return ActionResult(
+                action_type="patch", success=False, stderr="File not found in sandbox"
+            )
 
-        content = sandbox_path.read_text(encoding="utf-8")
-        if patch.old_code not in content:
-            return ActionResult(action_type="patch", success=False, stderr="old_code not found in file")
+        old_content = sandbox_path.read_text(encoding="utf-8")
+        if patch.old_code not in old_content:
+            return ActionResult(
+                action_type="patch", success=False, stderr="old_code not found in file"
+            )
+
+        if dry_run:
+            new_content = old_content.replace(patch.old_code, patch.new_code, 1)
+            return ActionResult(
+                action_type="patch",
+                success=True,
+                stdout=f"[dry-run] Would replace {len(patch.old_code)} bytes with {len(patch.new_code)} bytes in {patch.file}",
+                changed_files=[str(patch.file)],
+                feedback_score=0.0,
+                patch_id="dry-run",
+            )
+
+        # Record old content for potential rollback
+        patch_id = ""
+        if self._rollback_journal:
+            patch_id = self._rollback_journal.record_patch(
+                file_path=str(patch.file),
+                old_content=old_content,
+                new_content=old_content.replace(patch.old_code, patch.new_code, 1),
+                run_id=self._run_id,
+                issue=patch.finding,
+                action_type=patch.action,
+            )
 
         # Apply patch
-        content = content.replace(patch.old_code, patch.new_code, 1)
-        sandbox_path.write_text(content, encoding="utf-8")
+        new_content = old_content.replace(patch.old_code, patch.new_code, 1)
+        sandbox_path.write_text(new_content, encoding="utf-8")
         patch.applied = True
         self._last_changed_files.append(str(patch.file))
 
         # Optionally run tests
         if run_tests:
-            return self._run_tests()
+            result = self._run_tests()
+            result.patch_id = patch_id
+            return result
 
         return ActionResult(
             action_type="patch",
             success=True,
             changed_files=self._last_changed_files.copy(),
             feedback_score=0.0,  # Applied but not tested
+            patch_id=patch_id,
         )
 
     def _run_tests(self) -> ActionResult:
@@ -130,7 +186,40 @@ class ActionExecutor:
             dst = self.project_root / changed
             if src.exists():
                 dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+                # Mark patch as promoted in journal
+                if self._rollback_journal:
+                    for record in reversed(self._rollback_journal.records):
+                        if record.file_path == changed and not record.promoted:
+                            self._rollback_journal.mark_promoted(record.patch_id)
+                            break
         return True
+
+    def rollback_last(self) -> bool:
+        """Rollback the last patch."""
+        if self._rollback_journal:
+            return self._rollback_journal.rollback_last()
+        return False
+
+    def rollback_all(self) -> int:
+        """Rollback all non-reverted patches."""
+        if self._rollback_journal:
+            return self._rollback_journal.rollback_all()
+        return 0
+
+    def rollback_file(self, file_path: str) -> bool:
+        """Rollback a specific file to its original content."""
+        if self._rollback_journal:
+            for record in reversed(self._rollback_journal.records):
+                if record.file_path == file_path and not record.reverted:
+                    return self._rollback_journal.rollback(record.patch_id)
+        return False
+
+    def get_patch_history(self) -> list[dict[str, Any]]:
+        """Get patch history from journal."""
+        if self._rollback_journal:
+            return self._rollback_journal.get_patch_history()
+        return []
 
     def cleanup(self) -> None:
         """Remove sandbox directory."""

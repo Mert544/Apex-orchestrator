@@ -20,6 +20,7 @@ from app.execution.semantic.transforms import inline_variable
 from app.execution.semantic.transforms import organize_imports
 from app.execution.semantic.transforms import move_class
 from app.execution.semantic.transforms import extract_class
+from app.execution.semantic.transforms import security as security_transforms
 
 
 class SemanticPatchGenerator:
@@ -146,6 +147,8 @@ class SemanticPatchGenerator:
                     new_class_name=extract_cfg.get("new_class_name", ""),
                     base_class=extract_cfg.get("base_class", None),
                 )
+            elif transform in ("fix_eval", "fix_os_system", "fix_bare_except"):
+                result = security_transforms.apply(rel_path, current, title)
 
             if result:
                 return self._attach_metadata(self._estimate_and_return(result), selection, contexts, strategy)

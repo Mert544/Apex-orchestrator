@@ -50,6 +50,14 @@ class ReportComposer:
                     lines.append(self._render_fractal_tree(tree))
                 lines.append("")
 
+            # Reasoning graph
+            reasoning_graph = result.get("reasoning_graph")
+            if reasoning_graph:
+                from app.reporting.reasoning_graph_exporter import ReasoningGraph, ReasoningGraphExporter
+                graph = ReasoningGraph.from_dict(reasoning_graph)
+                exporter = ReasoningGraphExporter()
+                lines.append(exporter.to_markdown(graph))
+
         md = "\n".join(lines)
         if path:
             Path(path).write_text(md, encoding="utf-8")
@@ -121,6 +129,14 @@ class ReportComposer:
             {''.join(fractal_html)}
             """
 
+        reasoning_graph_section = ""
+        for result in self.results:
+            rg = result.get("reasoning_graph")
+            if rg:
+                from app.reporting.reasoning_graph_exporter import ReasoningGraph, ReasoningGraphExporter
+                graph = ReasoningGraph.from_dict(rg)
+                reasoning_graph_section += ReasoningGraphExporter().to_html(graph)
+
         html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Apex Report</title></head>
 <body style="font-family:system-ui,sans-serif;max-width:800px;margin:2rem auto;padding:0 1rem;">
@@ -128,6 +144,7 @@ class ReportComposer:
 <p style="color:#666;">Generated: {self.timestamp} | Agents: {len(self.results)}</p>
 {''.join(findings_html) if findings_html else '<p style="color:#666;">No findings.</p>'}
 {fractal_section}
+{reasoning_graph_section}
 </body></html>"""
 
         if path:

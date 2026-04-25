@@ -1,0 +1,6 @@
+apiVersion: v2
+name: apex-orchestrator
+description: Helm chart for Apex Orchestrator
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

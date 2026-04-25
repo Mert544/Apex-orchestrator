@@ -7,6 +7,7 @@ Usage:
     python -m app.cli plugin list
     python -m app.cli plugin uninstall <name>
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,36 +36,46 @@ def cmd_agents(args: argparse.Namespace) -> int:
 
     if agent_type == "security":
         from app.agents.skills import SecurityAgent
+
         agent = SecurityAgent()
         result = agent.run(project_root=target)
         print(json.dumps(result, indent=2))
 
     elif agent_type == "docstring":
         from app.agents.skills import DocstringAgent
+
         agent = DocstringAgent()
         result = agent.run(project_root=target, patch=args.patch)
         print(f"Found {result['gaps_found']} missing docstrings")
-        if result['patched_files']:
-            print(f"Patched {len(result['patched_files'])} files: {result['patched_files']}")
+        if result["patched_files"]:
+            print(
+                f"Patched {len(result['patched_files'])} files: {result['patched_files']}"
+            )
         print(json.dumps(result, indent=2))
 
     elif agent_type == "test-stub":
         from app.agents.skills import TestStubAgent
+
         agent = TestStubAgent()
         result = agent.run(project_root=target, generate=args.generate)
-        print(f"Coverage: {result['coverage_ratio'] * 100:.0f}% ({result['tested_functions']}/{result['total_functions']})")
-        if result['stubs_generated']:
-            print(f"Generated {len(result['stubs_generated'])} test stubs: {result['stubs_generated']}")
+        print(
+            f"Coverage: {result['coverage_ratio'] * 100:.0f}% ({result['tested_functions']}/{result['total_functions']})"
+        )
+        if result["stubs_generated"]:
+            print(
+                f"Generated {len(result['stubs_generated'])} test stubs: {result['stubs_generated']}"
+            )
         print(json.dumps(result, indent=2))
 
     elif agent_type == "dependency":
         from app.agents.skills import DependencyAgent
+
         agent = DependencyAgent()
         result = agent.run(project_root=target)
         print(f"Modules: {result['total_modules']}, Edges: {result['total_edges']}")
-        if result['circular_imports']:
+        if result["circular_imports"]:
             print(f"Circular imports detected: {len(result['circular_imports'])}")
-        if result['orphaned_modules']:
+        if result["orphaned_modules"]:
             print(f"Orphaned modules: {result['orphaned_modules']}")
         print(json.dumps(result, indent=2))
 
@@ -82,8 +93,18 @@ def cmd_scan(args: argparse.Namespace) -> int:
         os.environ["EPISTEMIC_FOCUS_BRANCH"] = args.focus_branch
     if args.objective:
         os.environ["EPISTEMIC_OBJECTIVE"] = args.objective
-    # Delegate to main
+    if args.auto_patch is not None:
+        os.environ["APEX_AUTO_PATCH"] = "1" if args.auto_patch else "0"
+    if args.auto_commit is not None:
+        os.environ["APEX_AUTO_COMMIT"] = "1" if args.auto_commit else "0"
+    if args.max_fractal_budget is not None:
+        os.environ["APEX_MAX_FRACTAL_BUDGET"] = str(args.max_fractal_budget)
+    if args.safety_policy is not None:
+        os.environ["APEX_SAFETY_POLICY"] = args.safety_policy
+    if args.mode is not None:
+        os.environ["APEX_MODE"] = args.mode
     from app.main import main
+
     main()
     return 0
 
@@ -154,8 +175,11 @@ def cmd_consensus(args: argparse.Namespace) -> int:
     from app.agents.evaluator import ClaimEvaluator
 
     import time
+
     memory_dir = str(_get_project_root() / ".apex") if args.use_memory else None
-    evaluator = ClaimEvaluator(consensus_strategy=args.strategy, quorum=args.quorum, memory_dir=memory_dir)
+    evaluator = ClaimEvaluator(
+        consensus_strategy=args.strategy, quorum=args.quorum, memory_dir=memory_dir
+    )
     claims = args.claims.split(";") if args.claims else []
     if not claims:
         print("No claims provided. Use --claims='claim1;claim2;claim3'")
@@ -171,24 +195,39 @@ def cmd_consensus(args: argparse.Namespace) -> int:
     cached = [r for r in results if r.metadata.get("cached")]
 
     print(f"\n=== CONSENSUS RESULTS ({args.strategy}) ===")
-    print(f"Total: {len(results)} | Approved: {len(approved)} | Rejected: {len(rejected)} | Abstained: {len(abstained)}")
+    print(
+        f"Total: {len(results)} | Approved: {len(approved)} | Rejected: {len(rejected)} | Abstained: {len(abstained)}"
+    )
     if args.use_memory:
-        print(f"Cached: {len(cached)} | Memory entries: {evaluator.memory.stats()['total_entries']}")
+        print(
+            f"Cached: {len(cached)} | Memory entries: {evaluator.memory.stats()['total_entries']}"
+        )
     print(f"Time: {elapsed:.3f}s")
     print()
 
     for result in results:
         cached_mark = " [CACHED]" if result.metadata.get("cached") else ""
-        status_icon = "[OK]" if result.final_verdict.name == "APPROVE" else "[NO]" if result.final_verdict.name == "REJECT" else "[--]"
+        status_icon = (
+            "[OK]"
+            if result.final_verdict.name == "APPROVE"
+            else "[NO]"
+            if result.final_verdict.name == "REJECT"
+            else "[--]"
+        )
         print(f"{status_icon}{cached_mark} {result.claim[:80]}...")
-        print(f"   Verdict: {result.final_verdict.name} (confidence: {result.confidence:.2f})")
+        print(
+            f"   Verdict: {result.final_verdict.name} (confidence: {result.confidence:.2f})"
+        )
         for vote in result.votes:
             icon = "+" if vote.verdict.name == result.final_verdict.name else "-"
-            print(f"   {icon} {vote.agent_name} ({vote.agent_role}): {vote.verdict.name} @ {vote.confidence:.2f} — {vote.reasoning[:60]}")
+            print(
+                f"   {icon} {vote.agent_name} ({vote.agent_role}): {vote.verdict.name} @ {vote.confidence:.2f} — {vote.reasoning[:60]}"
+            )
         print()
 
     if args.json:
         import json
+
         print(json.dumps([r.to_dict() for r in results], indent=2))
 
     return 0
@@ -303,20 +342,29 @@ def cmd_fractal(args: argparse.Namespace) -> int:
 
     if args.subcommand == "analyze":
         from app.agents.fractal_agents import FractalSecurityAgent
+
         agent = FractalSecurityAgent()
+        if args.max_fractal_budget is not None:
+            agent.max_fractal_budget = args.max_fractal_budget
         result = agent.run(project_root=target, max_depth=args.depth)
-        print(f"Scanned {result['scanned_files']} files, found {result['findings_count']} risks")
-        print(f"Fractal analyzed {result['fractal_analyzed']} findings (depth={args.depth})")
+        print(
+            f"Scanned {result['scanned_files']} files, found {result['findings_count']} risks"
+        )
+        print(
+            f"Fractal analyzed {result['fractal_analyzed']} findings (depth={args.depth})"
+        )
         if args.json:
             print(json.dumps(result, indent=2))
         else:
             from app.reporting.composer import ReportComposer
+
             composer = ReportComposer([result])
             md = composer.to_markdown()
             print(md)
 
     elif args.subcommand == "tree":
         from app.engine.fractal_5whys import Fractal5WhysEngine
+
         engine = Fractal5WhysEngine(max_depth=args.depth)
         finding = json.loads(args.finding)
         tree = engine.analyze(finding)
@@ -352,26 +400,45 @@ def cmd_run(args: argparse.Namespace) -> int:
     os.environ["EPISTEMIC_OBJECTIVE"] = intent.goal
     if args.fractal:
         os.environ["APEX_USE_FRACTAL"] = "1"
+    if args.auto_patch is not None:
+        os.environ["APEX_AUTO_PATCH"] = "1" if args.auto_patch else "0"
+    if args.auto_commit is not None:
+        os.environ["APEX_AUTO_COMMIT"] = "1" if args.auto_commit else "0"
+    if args.max_fractal_budget is not None:
+        os.environ["APEX_MAX_FRACTAL_BUDGET"] = str(args.max_fractal_budget)
+    if args.safety_policy is not None:
+        os.environ["APEX_SAFETY_POLICY"] = args.safety_policy
+    if args.dry_run:
+        os.environ["APEX_DRY_RUN"] = "1"
+    if args.mode is not None:
+        os.environ["APEX_MODE"] = args.mode
 
     if plan.mode == "supervised":
-        print("[supervised mode] Running with human oversight. Patches will be staged, not committed.")
+        print(
+            "[supervised mode] Running with human oversight. Patches will be staged, not committed."
+        )
 
     if plan.mode == "autonomous":
-        print("[autonomous mode] Full automation enabled. Changes will be applied automatically.")
+        print(
+            "[autonomous mode] Full automation enabled. Changes will be applied automatically."
+        )
 
     if plan.mode == "report":
         print("[report mode] Scanning only. No files will be modified.")
 
     from app.main import main
+
     main()
 
     # Auto-fractal summary for security/audit goals
     if any(kw in intent.goal.lower() for kw in ("security", "audit", "risk", "vuln")):
         print("\n=== AUTO-FRACTAL SUMMARY ===")
         from app.agents.fractal_agents import FractalSecurityAgent
+
         agent = FractalSecurityAgent()
         result = agent.run(project_root=str(target), max_depth=3)
         from app.reporting.composer import ReportComposer
+
         composer = ReportComposer([result])
         summary = composer.to_markdown()
         print(summary[:1500])  # Print first 1500 chars to avoid flooding
@@ -387,27 +454,82 @@ def main() -> int:
 
     # scan
     scan_parser = subparsers.add_parser("scan", help="Run an automation plan")
-    scan_parser.add_argument("--plan", default="project_scan", help="Automation plan name")
+    scan_parser.add_argument(
+        "--plan", default="project_scan", help="Automation plan name"
+    )
     scan_parser.add_argument("--target", default="", help="Target project root")
     scan_parser.add_argument("--focus-branch", default="", help="Focus branch path")
     scan_parser.add_argument("--objective", default="", help="Scan objective")
+    scan_parser.add_argument(
+        "--auto-patch",
+        type=lambda x: x.lower() in ("1", "true", "yes"),
+        default=None,
+        help="Enable automatic patching",
+    )
+    scan_parser.add_argument(
+        "--auto-commit",
+        type=lambda x: x.lower() in ("1", "true", "yes"),
+        default=None,
+        help="Enable automatic commit",
+    )
+    scan_parser.add_argument(
+        "--max-fractal-budget",
+        type=int,
+        default=None,
+        help="Max fractal analysis budget",
+    )
+    scan_parser.add_argument(
+        "--safety-policy",
+        default=None,
+        choices=["minimal", "standard", "strict"],
+        help="Safety policy level",
+    )
+    scan_parser.add_argument(
+        "--mode",
+        default=None,
+        choices=["report", "supervised", "autonomous"],
+        help="Execution mode (report/supervised/autonomous)",
+    )
     scan_parser.set_defaults(func=cmd_scan)
 
     # agents
     agents_parser = subparsers.add_parser("agents", help="Run helper agents")
-    agents_parser.add_argument("agent_type", choices=["security", "docstring", "test-stub", "dependency"], help="Agent type")
+    agents_parser.add_argument(
+        "agent_type",
+        choices=["security", "docstring", "test-stub", "dependency"],
+        help="Agent type",
+    )
     agents_parser.add_argument("--target", default="", help="Target project root")
-    agents_parser.add_argument("--patch", action="store_true", help="Apply patches (docstring agent)")
-    agents_parser.add_argument("--generate", action="store_true", help="Generate stubs (test-stub agent)")
+    agents_parser.add_argument(
+        "--patch", action="store_true", help="Apply patches (docstring agent)"
+    )
+    agents_parser.add_argument(
+        "--generate", action="store_true", help="Generate stubs (test-stub agent)"
+    )
     agents_parser.set_defaults(func=cmd_agents)
 
     # consensus
-    consensus_parser = subparsers.add_parser("consensus", help="Evaluate claims via agent consensus")
-    consensus_parser.add_argument("--claims", required=True, help="Semicolon-separated claims to evaluate")
-    consensus_parser.add_argument("--strategy", default="majority", choices=["unanimous", "majority", "supermajority", "weighted", "threshold"], help="Consensus strategy")
-    consensus_parser.add_argument("--quorum", type=int, default=2, help="Minimum votes required")
+    consensus_parser = subparsers.add_parser(
+        "consensus", help="Evaluate claims via agent consensus"
+    )
+    consensus_parser.add_argument(
+        "--claims", required=True, help="Semicolon-separated claims to evaluate"
+    )
+    consensus_parser.add_argument(
+        "--strategy",
+        default="majority",
+        choices=["unanimous", "majority", "supermajority", "weighted", "threshold"],
+        help="Consensus strategy",
+    )
+    consensus_parser.add_argument(
+        "--quorum", type=int, default=2, help="Minimum votes required"
+    )
     consensus_parser.add_argument("--json", action="store_true", help="Output raw JSON")
-    consensus_parser.add_argument("--use-memory", action="store_true", help="Enable persistent agent memory for caching and learning")
+    consensus_parser.add_argument(
+        "--use-memory",
+        action="store_true",
+        help="Enable persistent agent memory for caching and learning",
+    )
     consensus_parser.set_defaults(func=cmd_consensus)
 
     # plugin
@@ -426,47 +548,139 @@ def main() -> int:
     uninstall_parser.set_defaults(func=cmd_plugin_uninstall)
 
     # run (autonomous intent-based)
-    run_parser = subparsers.add_parser("run", help="Run Apex autonomously based on a natural-language goal")
-    run_parser.add_argument("--goal", required=True, help="Natural-language goal, e.g. 'security audit', 'fix docstrings'")
+    run_parser = subparsers.add_parser(
+        "run", help="Run Apex autonomously based on a natural-language goal"
+    )
+    run_parser.add_argument(
+        "--goal",
+        required=True,
+        help="Natural-language goal, e.g. 'security audit', 'fix docstrings'",
+    )
     run_parser.add_argument("--target", default="", help="Target project root")
-    run_parser.add_argument("--mode", default="supervised", choices=["report", "supervised", "autonomous"], help="Execution mode")
-    run_parser.add_argument("--fractal", action="store_true", help="Enable fractal 5-Whys deep analysis on all findings")
+    run_parser.add_argument(
+        "--mode",
+        default="supervised",
+        choices=["report", "supervised", "autonomous"],
+        help="Execution mode",
+    )
+    run_parser.add_argument(
+        "--fractal",
+        action="store_true",
+        help="Enable fractal 5-Whys deep analysis on all findings",
+    )
+    run_parser.add_argument(
+        "--auto-patch",
+        type=lambda x: x.lower() in ("1", "true", "yes"),
+        default=None,
+        help="Enable automatic patching (overrides mode default)",
+    )
+    run_parser.add_argument(
+        "--auto-commit",
+        type=lambda x: x.lower() in ("1", "true", "yes"),
+        default=None,
+        help="Enable automatic commit (overrides mode default)",
+    )
+    run_parser.add_argument(
+        "--max-fractal-budget",
+        type=int,
+        default=None,
+        help="Max fractal analysis budget (default 10)",
+    )
+    run_parser.add_argument(
+        "--safety-policy",
+        default=None,
+        choices=["minimal", "standard", "strict"],
+        help="Safety policy level",
+    )
+    run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Dry-run mode (validate only, no file changes)",
+    )
     run_parser.set_defaults(func=cmd_run)
 
     # daemon
-    daemon_parser = subparsers.add_parser("daemon", help="Run Apex periodically in the background")
-    daemon_parser.add_argument("action", choices=["start", "stop", "status"], help="Daemon action")
-    daemon_parser.add_argument("--goal", default="scan project", help="Goal to run periodically")
-    daemon_parser.add_argument("--interval", type=int, default=3600, help="Interval in seconds")
+    daemon_parser = subparsers.add_parser(
+        "daemon", help="Run Apex periodically in the background"
+    )
+    daemon_parser.add_argument(
+        "action", choices=["start", "stop", "status"], help="Daemon action"
+    )
+    daemon_parser.add_argument(
+        "--goal", default="scan project", help="Goal to run periodically"
+    )
+    daemon_parser.add_argument(
+        "--interval", type=int, default=3600, help="Interval in seconds"
+    )
     daemon_parser.add_argument("--target", default="", help="Target project root")
-    daemon_parser.add_argument("--mode", default="report", choices=["report", "supervised", "autonomous"], help="Execution mode for daemon runs")
+    daemon_parser.add_argument(
+        "--mode",
+        default="report",
+        choices=["report", "supervised", "autonomous"],
+        help="Execution mode for daemon runs",
+    )
     daemon_parser.set_defaults(func=cmd_daemon)
 
     # fractal
-    fractal_parser = subparsers.add_parser("fractal", help="Fractal deep analysis tools")
+    fractal_parser = subparsers.add_parser(
+        "fractal", help="Fractal deep analysis tools"
+    )
     fractal_sub = fractal_parser.add_subparsers(dest="subcommand")
 
-    fractal_analyze_parser = fractal_sub.add_parser("analyze", help="Analyze project with fractal 5-Whys depth")
-    fractal_analyze_parser.add_argument("--target", default="", help="Target project root")
-    fractal_analyze_parser.add_argument("--depth", type=int, default=5, help="Max fractal depth (1-5)")
-    fractal_analyze_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+    fractal_analyze_parser = fractal_sub.add_parser(
+        "analyze", help="Analyze project with fractal 5-Whys depth"
+    )
+    fractal_analyze_parser.add_argument(
+        "--target", default="", help="Target project root"
+    )
+    fractal_analyze_parser.add_argument(
+        "--depth", type=int, default=5, help="Max fractal depth (1-5)"
+    )
+    fractal_analyze_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON"
+    )
+    fractal_analyze_parser.add_argument(
+        "--max-fractal-budget",
+        type=int,
+        default=None,
+        help="Max fractal analysis budget (default 10)",
+    )
     fractal_analyze_parser.set_defaults(func=cmd_fractal)
 
-    fractal_tree_parser = fractal_sub.add_parser("tree", help="Render fractal tree for a single finding")
-    fractal_tree_parser.add_argument("--finding", required=True, help='JSON finding, e.g. {"issue":"eval()","file":"a.py"}')
-    fractal_tree_parser.add_argument("--depth", type=int, default=5, help="Max fractal depth (1-5)")
+    fractal_tree_parser = fractal_sub.add_parser(
+        "tree", help="Render fractal tree for a single finding"
+    )
+    fractal_tree_parser.add_argument(
+        "--finding",
+        required=True,
+        help='JSON finding, e.g. {"issue":"eval()","file":"a.py"}',
+    )
+    fractal_tree_parser.add_argument(
+        "--depth", type=int, default=5, help="Max fractal depth (1-5)"
+    )
     fractal_tree_parser.set_defaults(func=cmd_fractal)
 
     # report
-    report_parser = subparsers.add_parser("report", help="Generate report from run results")
-    report_parser.add_argument("--input", required=True, help="Input JSON file from a previous run")
-    report_parser.add_argument("--format", default="markdown", choices=["markdown", "html", "sarif"], help="Output format")
+    report_parser = subparsers.add_parser(
+        "report", help="Generate report from run results"
+    )
+    report_parser.add_argument(
+        "--input", required=True, help="Input JSON file from a previous run"
+    )
+    report_parser.add_argument(
+        "--format",
+        default="markdown",
+        choices=["markdown", "html", "sarif"],
+        help="Output format",
+    )
     report_parser.add_argument("--output", required=True, help="Output file path")
     report_parser.set_defaults(func=cmd_report)
 
     # hook
     hook_parser = subparsers.add_parser("hook", help="Manage git hooks")
-    hook_parser.add_argument("action", choices=["install", "uninstall"], help="Hook action")
+    hook_parser.add_argument(
+        "action", choices=["install", "uninstall"], help="Hook action"
+    )
     hook_parser.add_argument("--target", default="", help="Target project root")
     hook_parser.set_defaults(func=cmd_hook)
 

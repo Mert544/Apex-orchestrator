@@ -17,6 +17,8 @@ class FractalPatch:
     new_code: str
     confidence: float
     applied: bool = False
+    reversible: bool = True
+    patch_source: str = "fractal"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -27,6 +29,8 @@ class FractalPatch:
             "new_code": self.new_code,
             "confidence": self.confidence,
             "applied": self.applied,
+            "reversible": self.reversible,
+            "patch_source": self.patch_source,
         }
 
 
@@ -43,7 +47,9 @@ class FractalPatchGenerator:
     - missing docstring → add placeholder docstring
     """
 
-    def generate(self, finding: dict[str, Any], meta: dict[str, Any]) -> list[FractalPatch]:
+    def generate(
+        self, finding: dict[str, Any], meta: dict[str, Any]
+    ) -> list[FractalPatch]:
         if meta.get("recommended_action") != "patch":
             return []
 
@@ -82,7 +88,7 @@ class FractalPatchGenerator:
             finding="os.system() usage",
             action="replace_with_subprocess_run",
             old_code="os.system(command)",
-            new_code='import subprocess; subprocess.run(command, shell=False, check=True)  # TODO: split args properly',
+            new_code="import subprocess; subprocess.run(command, shell=False, check=True)  # TODO: split args properly",
             confidence=0.8,
         )
 
@@ -96,7 +102,9 @@ class FractalPatchGenerator:
             confidence=0.95,
         )
 
-    def _patch_missing_docstring(self, file_path: str, line: int, finding: dict[str, Any]) -> FractalPatch:
+    def _patch_missing_docstring(
+        self, file_path: str, line: int, finding: dict[str, Any]
+    ) -> FractalPatch:
         target = finding.get("target", "function")
         return FractalPatch(
             file=file_path,
@@ -108,7 +116,9 @@ class FractalPatchGenerator:
             confidence=0.9,
         )
 
-    def _patch_missing_test(self, file_path: str, line: int, finding: dict[str, Any]) -> FractalPatch:
+    def _patch_missing_test(
+        self, file_path: str, line: int, finding: dict[str, Any]
+    ) -> FractalPatch:
         func = finding.get("target", "function")
         return FractalPatch(
             file=file_path,

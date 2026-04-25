@@ -23,6 +23,7 @@ class TestFractalCLI:
             target=str(tmp_path),
             depth=3,
             json=False,
+            max_fractal_budget=None,
         )
         ret = cmd_fractal(args)
         assert ret == 0
@@ -52,6 +53,7 @@ class TestFractalCLI:
             target=str(tmp_path),
             depth=2,
             json=True,
+            max_fractal_budget=None,
         )
         ret = cmd_fractal(args)
         assert ret == 0

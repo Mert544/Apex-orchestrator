@@ -1,159 +1,55 @@
 {
   "name": "apex-orchestrator",
   "displayName": "Apex Orchestrator",
-  "description": "Run Apex Orchestrator commands directly from VS Code",
+  "description": "Run Apex Orchestrator plans directly from VS Code",
   "version": "0.1.0",
-  "publisher": "apex-team",
+  "publisher": "apex",
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.74.0"
   },
-  "categories": ["Machine Learning", "Debuggers", "Other"],
+  "categories": [
+    "Machine Learning",
+    "Testing",
+    "Other"
+  ],
   "activationEvents": [
-    "onLanguage:python",
-    "workspaceContains:**/*.py",
-    "onCommand:apex.projectScan"
+    "onCommand:apex.projectScan",
+    "onCommand:apex.semanticPatch",
+    "onCommand:apex.runTests",
+    "onCommand:apex.openPresenceLog"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "apex.projectScan",
-        "title": "Project Scan",
-        "category": "Apex",
-        "icon": "$(search)"
+        "title": "Apex: Project Scan"
       },
       {
         "command": "apex.semanticPatch",
-        "title": "Generate Semantic Patch",
-        "category": "Apex",
-        "icon": "$(lightbulb-autofix)"
+        "title": "Apex: Generate Semantic Patch"
       },
       {
         "command": "apex.runTests",
-        "title": "Run Tests",
-        "category": "Apex",
-        "icon": "$(beaker)"
+        "title": "Apex: Run Tests"
       },
       {
-        "command": "apex.openPresence",
-        "title": "Open Presence Log",
-        "category": "Apex",
-        "icon": "$(output)"
-      },
-      {
-        "command": "apex.refreshResults",
-        "title": "Refresh Results",
-        "category": "Apex",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "apex.clearResults",
-        "title": "Clear Results",
-        "category": "Apex",
-        "icon": "$(clear-all)"
-      },
-      {
-        "command": "apex.autonomousRun",
-        "title": "Autonomous Run",
-        "category": "Apex",
-        "icon": "$(rocket)"
-      },
-      {
-        "command": "apex.daemonStart",
-        "title": "Start Daemon",
-        "category": "Apex",
-        "icon": "$(play-circle)"
-      },
-      {
-        "command": "apex.daemonStop",
-        "title": "Stop Daemon",
-        "category": "Apex",
-        "icon": "$(debug-stop)"
-      },
-      {
-        "command": "apex.daemonStatus",
-        "title": "Daemon Status",
-        "category": "Apex",
-        "icon": "$(info)"
+        "command": "apex.openPresenceLog",
+        "title": "Apex: Open Presence Log"
       }
     ],
-    "menus": {
-      "commandPalette": [
-        {
-          "command": "apex.projectScan",
-          "when": "workspaceFolderCount > 0"
-        },
-        {
-          "command": "apex.semanticPatch",
-          "when": "editorLangId == python"
-        }
-      ],
-      "editor/title/run": [
-        {
-          "command": "apex.projectScan",
-          "group": "navigation",
-          "when": "editorLangId == python"
-        }
-      ],
-      "view/title": [
-        {
-          "command": "apex.refreshResults",
-          "when": "view == apex.scanResults",
-          "group": "navigation"
-        },
-        {
-          "command": "apex.clearResults",
-          "when": "view == apex.scanResults",
-          "group": "navigation"
-        }
-      ]
-    },
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "apex-explorer",
-          "title": "Apex",
-          "icon": "$(search)"
-        }
-      ]
-    },
-    "views": {
-      "apex-explorer": [
-        {
-          "id": "apex.scanResults",
-          "name": "Scan Results",
-          "when": "apex.hasResults"
-        }
-      ]
-    },
     "configuration": {
       "title": "Apex Orchestrator",
       "properties": {
         "apex.pythonPath": {
           "type": "string",
           "default": "python",
-          "description": "Path to the Python executable that runs Apex"
+          "description": "Path to the Python executable"
         },
         "apex.projectRoot": {
           "type": "string",
           "default": "",
-          "description": "Root directory of the project to analyze (leave empty to use workspace root)"
-        },
-        "apex.defaultGoal": {
-          "type": "string",
-          "default": "scan project",
-          "description": "Default natural-language goal for autonomous runs"
-        },
-        "apex.defaultMode": {
-          "type": "string",
-          "default": "supervised",
-          "enum": ["report", "supervised", "autonomous"],
-          "description": "Default execution mode for autonomous runs"
-        },
-        "apex.daemonInterval": {
-          "type": "number",
-          "default": 3600,
-          "description": "Daemon interval in seconds"
+          "description": "Project root directory (defaults to workspace root)"
         }
       }
     }
@@ -161,13 +57,11 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts",
-    "package": "vsce package"
+    "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@types/vscode": "^1.80.0",
+    "@types/vscode": "^1.74.0",
+    "@types/node": "18.x",
     "typescript": "^5.0.0"
   }
 }

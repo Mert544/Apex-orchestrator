@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from app.automation.models import AutomationContext
+from app.policies.safety_gates import SafetyGates, SafetyGatesReport
 from app.skills.safety.check_patch_scope import CheckPatchScopeSkill
 from app.skills.safety.detect_sensitive_edit import DetectSensitiveEditSkill
-from app.skills.safety.enhanced_safety_governor import EnhancedSafetyGovernor
 
 from ._context import _target_root
 
@@ -37,14 +37,28 @@ def detect_sensitive_edit_skill(context: AutomationContext):
 def enhanced_safety_check_skill(context: AutomationContext):
     target_root = _target_root(context)
     changed_files = context.state.get("changed_files", [])
-    governor = EnhancedSafetyGovernor(context.config)
-    file_diffs = governor.compute_line_diffs(target_root, changed_files)
-    result = governor.evaluate(changed_files, file_diffs)
-    result_dict = result.to_dict()
-    context.state["enhanced_safety"] = result_dict
-    # If policy requires human review, mark verification as failed
-    if result.requires_human_review:
+    old_code = context.state.get("old_code", "")
+    new_code = context.state.get("new_code", "")
+
+    max_files = 5
+    if context.config:
+        safety_cfg = context.config.get("safety", {})
+        max_files = int(safety_cfg.get("max_changed_files", 5))
+
+    gates = SafetyGates(project_root=target_root, max_changed_files=max_files)
+    report: SafetyGatesReport = gates.check_all(
+        changed_files=changed_files,
+        old_code=old_code,
+        new_code=new_code,
+        skip_test=False,
+    )
+
+    result_dict = report.to_dict()
+    context.state["safety_gates"] = result_dict
+
+    if report.blocked:
         context.state["verification"] = context.state.get("verification", {})
-        context.state["verification"]["enhanced_safety"] = result_dict
+        context.state["verification"]["safety_gates"] = result_dict
         context.state["verification"]["ok"] = False
+
     return result_dict

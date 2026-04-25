@@ -35,3 +35,9 @@ class FinalReport(BaseModel):
     debug_diagnostics: list[str] = Field(default_factory=list)
     debug_report_file: str | None = None
     phase_metrics: dict[str, float] = Field(default_factory=dict)
+    autonomy_mode: str = "report"
+    safety_gates_passed: bool = True
+    safety_gates_summary: str = ""
+    patches_applied: int = 0
+    patches_blocked: int = 0
+    feedback_learned_patterns: list[dict[str, Any]] = Field(default_factory=list)

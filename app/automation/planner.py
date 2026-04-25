@@ -7,6 +7,7 @@ from app.automation.models import AutomationStep
 from app.automation.plans import DEFAULT_AUTOMATION_PLANS
 from app.automation.smart_planner import SmartPlanner
 from app.intent.parser import ParsedIntent
+from app.policy.mode import ModePolicy
 
 
 class AutonomousPlanner:
@@ -14,7 +15,8 @@ class AutonomousPlanner:
 
     Usage:
         planner = AutonomousPlanner()
-        plan = planner.build_plan(intent, project_profile={"total_files": 42, ...})
+        policy = ModePolicy.from_env()
+        plan = planner.build_plan(intent, project_profile={"total_files": 42}, policy=policy)
         # plan.steps: list of AutomationStep
         # plan.fallback_plan: str
         # plan.can_patch: bool
@@ -53,8 +55,10 @@ class AutonomousPlanner:
         self,
         intent: ParsedIntent,
         project_profile: dict[str, Any] | None = None,
+        policy: ModePolicy | None = None,
     ) -> "DynamicPlan":
         profile = project_profile or {}
+        policy = policy or ModePolicy.from_env()
 
         # 1. Select base plan from intent (or SmartPlanner if no explicit plan)
         base_plan_name = self._select_base_plan(intent, profile)
@@ -63,11 +67,12 @@ class AutonomousPlanner:
         # 2. Inject agent-specific steps
         steps = self._inject_agent_steps(steps, intent.agents)
 
-        # 3. Filter for report mode (remove patching)
-        can_patch = True
+        # 3. Filter based on mode — report mode strips all patching skills;
+        # supervised/autonomous include patching skills but actual application
+        # is controlled by policy.permissions.can_auto_patch at execution time
+        can_patch = intent.mode != "report"
         if intent.mode == "report":
             steps = [s for s in steps if s.skill_name not in self._PATCH_SKILLS]
-            can_patch = False
 
         # 4. Determine fallback
         fallback = self._determine_fallback(base_plan_name, intent.mode)

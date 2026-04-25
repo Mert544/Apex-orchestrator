@@ -34,6 +34,11 @@ class ReportComposer:
         focus_branch: str | None,
         focus_claim: str | None,
         debug_stats: dict[str, int | float],
+        autonomy_mode: str = "report",
+        safety_gates_passed: bool = True,
+        safety_gates_summary: str = "",
+        patches_applied: int = 0,
+        patches_blocked: int = 0,
     ) -> FinalReport:
         all_nodes = self.graph.get_all_nodes()
 
@@ -49,6 +54,28 @@ class ReportComposer:
         report.debug_stats = dict(debug_stats)
         report.mode = self.compressed.mode
 
+        report.autonomy_mode = autonomy_mode
+        report.safety_gates_passed = safety_gates_passed
+        report.safety_gates_summary = safety_gates_summary
+        report.patches_applied = patches_applied
+        report.patches_blocked = patches_blocked
+
+        if self.memory_store is not None:
+            from app.engine.feedback_loop import FeedbackLoop
+
+            feedback = FeedbackLoop()
+            feedback_learned = []
+            for entry in feedback.entries[-10:]:
+                feedback_learned.append(
+                    {
+                        "node_key": entry.node_key,
+                        "old_confidence": entry.old_confidence,
+                        "feedback_score": entry.feedback_score,
+                        "action_type": entry.action_type,
+                    }
+                )
+            report.feedback_learned_patterns = feedback_learned
+
         # Record telemetry for this run
         self.telemetry.record_analysis(objective)
         self.telemetry.record_response(report.model_dump_json())
@@ -60,7 +87,9 @@ class ReportComposer:
             report.known_claim_count = memory_summary.get("known_claim_count", 0)
             report.known_question_count = memory_summary.get("known_question_count", 0)
             report.previous_run_count = memory_summary.get("previous_run_count", 0)
-            report.estimated_memory_tokens = (report.known_claim_count * 8) + (report.known_question_count * 8)
+            report.estimated_memory_tokens = (report.known_claim_count * 8) + (
+                report.known_question_count * 8
+            )
             report.estimated_total_tokens = (
                 report.estimated_analysis_tokens
                 + report.estimated_response_tokens
@@ -82,15 +111,25 @@ class ReportComposer:
         if self.debug.enabled:
             debug_report = self.debug.report()
             report.debug_report_file = str(
-                self.debug.project_root / ".apex" / "debug" / f"debug-{int(time.time())}.json"
+                self.debug.project_root
+                / ".apex"
+                / "debug"
+                / f"debug-{int(time.time())}.json"
             )
-            self.debug.trace("orchestrator_end", f"run() complete — {len(all_nodes)} nodes")
+            self.debug.trace(
+                "orchestrator_end", f"run() complete — {len(all_nodes)} nodes"
+            )
 
         # Apply compressed mode report trimming if active
         if self.compressed.mode == "compressed":
             report_dict = report.model_dump()
             compressed = self.compressed.compress_report(report_dict)
-            for key in ("main_findings", "branch_map", "recommended_actions", "key_risks"):
+            for key in (
+                "main_findings",
+                "branch_map",
+                "recommended_actions",
+                "key_risks",
+            ):
                 if key in compressed:
                     setattr(report, key, compressed[key])
 

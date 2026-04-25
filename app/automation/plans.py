@@ -3,6 +3,10 @@ from __future__ import annotations
 from app.automation.models import AutomationStep
 
 
+def _safety_gate_step() -> AutomationStep:
+    return AutomationStep(name="safety_gate_check", skill_name="enhanced_safety_check")
+
+
 DEFAULT_AUTOMATION_PLANS: dict[str, list[AutomationStep]] = {
     "project_scan": [
         AutomationStep(name="profile_project", skill_name="profile_project"),
@@ -30,26 +34,39 @@ DEFAULT_AUTOMATION_PLANS: dict[str, list[AutomationStep]] = {
         AutomationStep(name="run_research", skill_name="run_research"),
         AutomationStep(name="plan_tasks", skill_name="plan_tasks"),
         AutomationStep(name="plan_patch", skill_name="plan_patch"),
-        AutomationStep(name="generate_patch_requests", skill_name="generate_patch_requests"),
+        AutomationStep(
+            name="generate_patch_requests", skill_name="generate_patch_requests"
+        ),
+        _safety_gate_step(),
         AutomationStep(name="apply_patch", skill_name="apply_patch"),
         AutomationStep(name="verify_changes", skill_name="verify_changes"),
-        AutomationStep(name="repair_from_verification", skill_name="repair_from_verification"),
+        AutomationStep(
+            name="repair_from_verification", skill_name="repair_from_verification"
+        ),
     ],
     "supervised_apply_loop": [
         AutomationStep(name="clone_repo", skill_name="clone_repo"),
         AutomationStep(name="run_research", skill_name="run_research"),
         AutomationStep(name="plan_tasks", skill_name="plan_tasks"),
         AutomationStep(name="plan_patch", skill_name="plan_patch"),
-        AutomationStep(name="generate_patch_requests", skill_name="generate_patch_requests"),
+        AutomationStep(
+            name="generate_patch_requests", skill_name="generate_patch_requests"
+        ),
+        _safety_gate_step(),
         AutomationStep(name="apply_patch", skill_name="apply_patch"),
         AutomationStep(name="verify_changes", skill_name="verify_changes"),
-        AutomationStep(name="repair_from_verification", skill_name="repair_from_verification"),
+        AutomationStep(
+            name="repair_from_verification", skill_name="repair_from_verification"
+        ),
     ],
     "semantic_patch_loop": [
         AutomationStep(name="run_research", skill_name="run_research"),
         AutomationStep(name="plan_tasks", skill_name="plan_tasks"),
         AutomationStep(name="plan_patch", skill_name="plan_patch"),
-        AutomationStep(name="generate_semantic_patch", skill_name="generate_semantic_patch"),
+        AutomationStep(
+            name="generate_semantic_patch", skill_name="generate_semantic_patch"
+        ),
+        _safety_gate_step(),
         AutomationStep(name="apply_patch", skill_name="apply_patch"),
         AutomationStep(name="verify_changes", skill_name="verify_changes"),
         AutomationStep(name="repair_with_retry", skill_name="repair_with_retry"),
@@ -59,7 +76,10 @@ DEFAULT_AUTOMATION_PLANS: dict[str, list[AutomationStep]] = {
         AutomationStep(name="run_research", skill_name="run_research"),
         AutomationStep(name="plan_tasks", skill_name="plan_tasks"),
         AutomationStep(name="plan_patch", skill_name="plan_patch"),
-        AutomationStep(name="generate_semantic_patch", skill_name="generate_semantic_patch"),
+        AutomationStep(
+            name="generate_semantic_patch", skill_name="generate_semantic_patch"
+        ),
+        _safety_gate_step(),
         AutomationStep(name="apply_patch", skill_name="apply_patch"),
         AutomationStep(name="verify_changes", skill_name="verify_changes"),
         AutomationStep(name="repair_with_retry", skill_name="repair_with_retry"),
@@ -73,7 +93,10 @@ DEFAULT_AUTOMATION_PLANS: dict[str, list[AutomationStep]] = {
         AutomationStep(name="run_research", skill_name="run_research"),
         AutomationStep(name="plan_tasks", skill_name="plan_tasks"),
         AutomationStep(name="plan_patch", skill_name="plan_patch"),
-        AutomationStep(name="generate_semantic_patch", skill_name="generate_semantic_patch"),
+        AutomationStep(
+            name="generate_semantic_patch", skill_name="generate_semantic_patch"
+        ),
+        _safety_gate_step(),
         AutomationStep(name="apply_patch", skill_name="apply_patch"),
         AutomationStep(name="verify_changes", skill_name="verify_changes"),
         AutomationStep(name="repair_with_retry", skill_name="repair_with_retry"),
@@ -93,7 +116,10 @@ DEFAULT_AUTOMATION_PLANS: dict[str, list[AutomationStep]] = {
         AutomationStep(name="run_research", skill_name="run_research"),
         AutomationStep(name="plan_tasks", skill_name="plan_tasks"),
         AutomationStep(name="plan_patch", skill_name="plan_patch"),
-        AutomationStep(name="generate_semantic_patch", skill_name="generate_semantic_patch"),
+        AutomationStep(
+            name="generate_semantic_patch", skill_name="generate_semantic_patch"
+        ),
+        _safety_gate_step(),
         AutomationStep(name="apply_patch", skill_name="apply_patch"),
         AutomationStep(name="verify_changes", skill_name="verify_changes"),
         AutomationStep(name="repair_with_retry", skill_name="repair_with_retry"),

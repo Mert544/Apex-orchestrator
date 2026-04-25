@@ -1,0 +1,31 @@
+replicaCount: 1
+
+image:
+  repository: apex-orchestrator
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 8767
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+env:
+  EPISTEMIC_TARGET_ROOT: "/workspace"
+  APEX_MODE: "report"
+
+persistence:
+  enabled: true
+  size: 10Gi
+  mountPath: /workspace
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

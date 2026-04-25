@@ -12,6 +12,12 @@ def test_run_command_report_mode(tmp_path: Path, monkeypatch, capsys):
         goal="security audit",
         target=str(tmp_path),
         mode="report",
+        fractal=False,
+        auto_patch=None,
+        auto_commit=None,
+        max_fractal_budget=None,
+        safety_policy=None,
+        dry_run=False,
     )
     # app.main.main() will be called; we just verify cmd_run doesn't crash
     import app.main
@@ -36,6 +42,12 @@ def test_run_command_supervised_mode(tmp_path: Path, monkeypatch):
         goal="fix docstrings",
         target=str(tmp_path),
         mode="supervised",
+        fractal=False,
+        auto_patch=None,
+        auto_commit=None,
+        max_fractal_budget=None,
+        safety_policy=None,
+        dry_run=False,
     )
     import app.main
     monkeypatch.setattr(app.main, "main", lambda: None)
@@ -49,6 +61,12 @@ def test_run_command_autonomous_mode(tmp_path: Path, monkeypatch, capsys):
         goal="autonomous full improvement",
         target=str(tmp_path),
         mode="autonomous",
+        fractal=False,
+        auto_patch=None,
+        auto_commit=None,
+        max_fractal_budget=None,
+        safety_policy=None,
+        dry_run=False,
     )
     import app.main
     monkeypatch.setattr(app.main, "main", lambda: None)

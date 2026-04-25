@@ -29,6 +29,7 @@ class TestMainSwarmFractal:
         monkeypatch.setenv("EPISTEMIC_AUTOMATION_PLAN", "project_scan")
         monkeypatch.setenv("EPISTEMIC_OBJECTIVE", "security audit")
         monkeypatch.setenv("APEX_USE_FRACTAL", "1")
+        monkeypatch.setenv("APEX_MODE", "report")
         monkeypatch.setenv("EPISTEMIC_FOCUS_BRANCH", "")
 
         from app.main import main
@@ -43,6 +44,7 @@ class TestMainSwarmFractal:
         monkeypatch.setenv("EPISTEMIC_TARGET_ROOT", str(tmp_path))
         monkeypatch.setenv("EPISTEMIC_AUTOMATION_PLAN", "project_scan")
         monkeypatch.setenv("EPISTEMIC_OBJECTIVE", "audit security risks")
+        monkeypatch.setenv("APEX_MODE", "report")
         monkeypatch.setenv("EPISTEMIC_FOCUS_BRANCH", "")
 
         from app.main import main

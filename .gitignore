@@ -13,3 +13,8 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+
+# Apex runtime artifacts
+.apex/
+.epistemic/
+*.log

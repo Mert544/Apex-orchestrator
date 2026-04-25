@@ -43,3 +43,27 @@ class GitAdapter:
 
     def commit(self, repo_dir: str | Path, message: str) -> CommandResult:
         return self.runner.run(CommandSpec(command=["git", "commit", "-m", message], cwd=Path(repo_dir)))
+
+    def push(self, repo_dir: str | Path, remote: str = "origin", branch: str | None = None) -> CommandResult:
+        command = ["git", "push", remote]
+        if branch:
+            command.append(branch)
+        return self.runner.run(CommandSpec(command=command, cwd=Path(repo_dir)))
+
+    def tag(self, repo_dir: str | Path, tag_name: str, message: str | None = None) -> CommandResult:
+        command = ["git", "tag", "-a", tag_name] if message else ["git", "tag", tag_name]
+        if message:
+            command.extend(["-m", message])
+        return self.runner.run(CommandSpec(command=command, cwd=Path(repo_dir)))
+
+    def remote_add(self, repo_dir: str | Path, name: str, url: str) -> CommandResult:
+        return self.runner.run(CommandSpec(command=["git", "remote", "add", name, url], cwd=Path(repo_dir)))
+
+    def remote_list(self, repo_dir: str | Path) -> CommandResult:
+        return self.runner.run(CommandSpec(command=["git", "remote", "-v"], cwd=Path(repo_dir)))
+
+    def stash(self, repo_dir: str | Path, message: str | None = None) -> CommandResult:
+        command = ["git", "stash", "push"]
+        if message:
+            command.extend(["-m", message])
+        return self.runner.run(CommandSpec(command=command, cwd=Path(repo_dir)))

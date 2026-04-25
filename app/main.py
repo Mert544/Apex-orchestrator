@@ -3,8 +3,17 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from app.agents.skills import SecurityAgent, DocstringAgent, TestStubAgent, DependencyAgent
-from app.agents.fractal_agents import FractalSecurityAgent, FractalDocstringAgent, FractalTestStubAgent
+from app.agents.skills import (
+    SecurityAgent,
+    DocstringAgent,
+    TestStubAgent,
+    DependencyAgent,
+)
+from app.agents.fractal_agents import (
+    FractalSecurityAgent,
+    FractalDocstringAgent,
+    FractalTestStubAgent,
+)
 from app.agents.swarm_coordinator import SwarmCoordinator
 from app.automation.models import AutomationContext
 from app.automation.runner import SkillAutomationRunner
@@ -13,6 +22,7 @@ from app.engine.debug_engine import DebugEngine
 from app.memory.persistent_memory import PersistentMemoryStore
 from app.orchestrator import FractalResearchOrchestrator
 from app.plugins.registry import PluginRegistry
+from app.policies.mode_policy import ModePolicy, mode_from_string, apply_cli_overrides
 from app.skills.decomposer import Decomposer
 from app.skills.evidence_mapper import EvidenceMapper
 from app.skills.validator import Validator
@@ -21,7 +31,9 @@ from app.utils.json_utils import pretty_json
 from app.utils.yaml_utils import load_yaml
 
 
-def _build_swarm_for_plan(plan_name: str, use_fractal: bool = False) -> SwarmCoordinator:
+def _build_swarm_for_plan(
+    plan_name: str, use_fractal: bool = False
+) -> SwarmCoordinator:
     """Create a SwarmCoordinator with agents matching the plan.
 
     When use_fractal=True, registers FractalSecurityAgent,
@@ -33,11 +45,27 @@ def _build_swarm_for_plan(plan_name: str, use_fractal: bool = False) -> SwarmCoo
     agents = []
     if "security" in plan_name or "full" in plan_name or "self" in plan_name:
         agents.append(FractalSecurityAgent() if use_fractal else SecurityAgent())
-    if "docstring" in plan_name or "semantic" in plan_name or "full" in plan_name or "self" in plan_name:
+    if (
+        "docstring" in plan_name
+        or "semantic" in plan_name
+        or "full" in plan_name
+        or "self" in plan_name
+    ):
         agents.append(FractalDocstringAgent() if use_fractal else DocstringAgent())
-    if "test" in plan_name or "coverage" in plan_name or "semantic" in plan_name or "full" in plan_name or "self" in plan_name:
+    if (
+        "test" in plan_name
+        or "coverage" in plan_name
+        or "semantic" in plan_name
+        or "full" in plan_name
+        or "self" in plan_name
+    ):
         agents.append(FractalTestStubAgent() if use_fractal else TestStubAgent())
-    if "dependency" in plan_name or "project_scan" in plan_name or "full" in plan_name or "self" in plan_name:
+    if (
+        "dependency" in plan_name
+        or "project_scan" in plan_name
+        or "full" in plan_name
+        or "self" in plan_name
+    ):
         agents.append(DependencyAgent())
 
     coord.register_agents(agents)
@@ -56,6 +84,40 @@ def main() -> None:
     )
     automation_plan = os.getenv("EPISTEMIC_AUTOMATION_PLAN")
 
+    mode = mode_from_string(os.getenv("APEX_MODE"))
+    auto_patch_env = os.getenv("APEX_AUTO_PATCH")
+    auto_commit_env = os.getenv("APEX_AUTO_COMMIT")
+    max_fractal_env = os.getenv("APEX_MAX_FRACTAL_BUDGET")
+    safety_policy_env = os.getenv("APEX_SAFETY_POLICY")
+
+    policy = ModePolicy(
+        mode=mode,
+        auto_patch=auto_patch_env.lower() in ("1", "true", "yes")
+        if auto_patch_env
+        else False,
+        auto_commit=auto_commit_env.lower() in ("1", "true", "yes")
+        if auto_commit_env
+        else False,
+        max_fractal_budget=int(max_fractal_env)
+        if max_fractal_env and max_fractal_env.isdigit()
+        else 10,
+        safety_policy=safety_policy_env or "standard",
+    )
+
+    if automation_plan and policy.permissions.requires_safety_gates:
+        print(f"[mode] Running in {policy.mode.value} mode with safety gates enabled")
+        if policy.permissions.requires_clean_working_tree:
+            result = policy.enforce_clean_working_tree()
+            if not result.passed:
+                print(f"[mode] BLOCKED: {result.message}")
+                return
+
+    patches_applied = 0
+    patches_blocked = 0
+    if automation_plan and policy.auto_patch:
+        patches_applied = 0
+        patches_blocked = 0
+
     # Load plugins from config or environment
     plugin_dirs = config.get("plugin_dirs", [])
     if os.getenv("APEX_PLUGIN_PATH"):
@@ -66,16 +128,22 @@ def main() -> None:
     use_fractal = os.getenv("APEX_USE_FRACTAL", "").lower() in ("1", "true", "yes")
     if not use_fractal:
         # Auto-detect fractal mode for security/audit/risk goals
-        use_fractal = any(kw in objective.lower() for kw in ("security", "audit", "risk", "vuln"))
+        use_fractal = any(
+            kw in objective.lower() for kw in ("security", "audit", "risk", "vuln")
+        )
 
     if automation_plan:
         # Try event-driven swarm first if agents are available
         swarm = _build_swarm_for_plan(automation_plan, use_fractal=use_fractal)
         if swarm.registry.agents:
             mode = "supervised"
-            print(f"[main] Running event-driven swarm with {len(swarm.registry.agents)} agent(s)")
+            print(
+                f"[main] Running event-driven swarm with {len(swarm.registry.agents)} agent(s)"
+            )
             if use_fractal:
-                print("[main] Fractal deep-analysis enabled (5-Whys + counter-evidence + meta-analysis)")
+                print(
+                    "[main] Fractal deep-analysis enabled (5-Whys + counter-evidence + meta-analysis)"
+                )
             results = swarm.run_autonomous(
                 goal=objective,
                 target=str(target_root),
@@ -85,6 +153,7 @@ def main() -> None:
 
             # Auto-generate fractal-aware report
             from app.reporting.composer import ReportComposer
+
             composer = ReportComposer(results)
             report_dir = target_root / ".apex"
             report_dir.mkdir(exist_ok=True)
@@ -108,7 +177,9 @@ def main() -> None:
     validator = Validator(evidence_mapper=EvidenceMapper(project_root=target_root))
     decomposer = Decomposer(project_root=target_root)
     memory_store = PersistentMemoryStore(project_root=target_root)
-    debug = DebugEngine(project_root=str(target_root), enabled=bool(config.get("debug_enabled", False)))
+    debug = DebugEngine(
+        project_root=str(target_root), enabled=bool(config.get("debug_enabled", False))
+    )
 
     orchestrator = FractalResearchOrchestrator(
         config=config,

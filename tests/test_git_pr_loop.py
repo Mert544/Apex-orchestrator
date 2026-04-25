@@ -147,6 +147,7 @@ def test_full_autonomous_loop_runs_end_to_end(tmp_path: Path):
         "plan_tasks",
         "plan_patch",
         "generate_semantic_patch",
+        "safety_gate_check",
         "apply_patch",
         "verify_changes",
         "repair_with_retry",
