@@ -27,9 +27,10 @@ class SecurityAgent(Agent):
 
     SECRET_PATTERNS = [
         (r'(?:password|passwd|pwd)\s*=\s*["\'][^"\']+["\']', "hardcoded_password", "high"),
-        (r'(?:api_key|apikey|token|secret)\s*=\s*["\'][^"\']+["\']', "hardcoded_secret", "high"),
+        (r'(?:api_key|apikey|auth_token|access_token|secret_key|client_secret)\s*=\s*["\'][^"\']+["\']', "hardcoded_secret", "high"),
         (r'(?:database_url|db_url|connection_string)\s*=\s*["\'][^"\']+["\']', "hardcoded_connection", "medium"),
     ]
+    SECRET_EXCLUDE_VALUES = {"", "local", "test", "example", "your_key_here", "config.get"}
 
     def __init__(self, name: str = "security", learning: AgentLearning | None = None, **kwargs: Any) -> None:
         super().__init__(name=name, role="security_auditor", **kwargs)
@@ -82,7 +83,7 @@ class SecurityAgent(Agent):
         }
 
     def _discover_files(self, root: Path) -> list[str]:
-        skipped = {"examples", "tests", "test", "__pycache__", ".git", ".apex", ".epistemic"}
+        skipped = {"examples", "tests", "test", "validation", "__pycache__", ".git", ".apex", ".epistemic"}
         return [
             str(p.relative_to(root).as_posix())
             for p in root.rglob("*.py")
@@ -120,7 +121,9 @@ class SecurityAgent(Agent):
             return findings
 
         for pattern, (risk_type, severity, suggestion) in self.patterns.items():
-            if pattern in func_name:
+            # Exact match: either direct call (eval) or method call (obj.eval)
+            is_match = func_name == pattern or func_name.endswith("." + pattern)
+            if is_match:
                 # False positive filters
                 if pattern == "compile" and any(safe in func_name for safe in ("re.compile", "regex.compile")):
                     continue
@@ -158,7 +161,17 @@ class SecurityAgent(Agent):
         lines = source.splitlines()
         for line_no, line in enumerate(lines, 1):
             for pattern, risk_type, severity in self.SECRET_PATTERNS:
-                if re.search(pattern, line, re.IGNORECASE):
+                match = re.search(pattern, line, re.IGNORECASE)
+                if match:
+                    # Extract assigned value for exclusion check
+                    value_match = re.search(r'=\s*["\']([^"\']+)["\']', line)
+                    if value_match:
+                        value = value_match.group(1).strip().lower()
+                        if value in self.SECRET_EXCLUDE_VALUES:
+                            continue
+                        # Skip config.get() patterns
+                        if "config.get" in line or "os.environ" in line:
+                            continue
                     findings.append(
                         {
                             "file": rel_path,
