@@ -1,6 +1,13 @@
 max_depth: 3
 max_total_nodes: 20
 top_k_questions: 2
+
+# Focus on the main idea (objective). Relevance-to-objective always shapes
+# branch/question priority so the tree stays anchored to the main idea.
+# Set focus.min_relevance > 0 to also PRUNE branches that drift off-topic.
+focus:
+  min_relevance: 0.0   # 0 = prioritise only; e.g. 0.15 prunes off-topic drift
+  min_depth: 1         # never prune roots; only branches at/after this depth
 min_security: 0.80
 min_quality: 0.60
 min_novelty: 0.20

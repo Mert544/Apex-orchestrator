@@ -29,6 +29,7 @@ from app.skills.claim_analyzer import ClaimAnalyzer
 from app.skills.claim_normalizer import ClaimNormalizer
 from app.skills.question_generator import QuestionGenerator
 from app.skills.quality_judge import QualityJudge
+from app.skills.relevance_scorer import RelevanceScorer
 from app.skills.security_governor import SecurityGovernor
 from app.skills.spam_guard import SpamGuard
 from app.utils.branching import make_branch_path
@@ -74,7 +75,15 @@ class FractalResearchOrchestrator:
             "spam_claims_filtered": 0,
             "focus_branch_hits": 0,
             "focus_branch_misses": 0,
+            "focus_drift_pruned": 0,
         }
+
+        # Relevance-to-objective ("main idea") focus. Configured per run() once
+        # the objective is known; these are safe no-op defaults until then.
+        focus_cfg = self.config.get("focus", {}) or {}
+        self.focus_min_relevance = float(focus_cfg.get("min_relevance", 0.0))
+        self.focus_min_depth = int(focus_cfg.get("min_depth", 1))
+        self.relevance_scorer = RelevanceScorer("")
 
     def run(
         self,
@@ -84,6 +93,7 @@ class FractalResearchOrchestrator:
     ):
         run_start = time.perf_counter()
         metrics = PhaseMetrics()
+        self.relevance_scorer = RelevanceScorer(objective)
         self.termination.set_deadline(
             run_start,
             max_run_seconds=float(self.config.get("max_run_seconds", 0.0)),
@@ -152,6 +162,8 @@ class FractalResearchOrchestrator:
             if on_progress:
                 on_progress("expand", idx + 1, total_roots)
 
+        self.debug_stats["mean_relevance"] = self._mean_relevance()
+
         with metrics.context("synthesize"):
             composer = ReportComposer(
                 graph=self.graph,
@@ -174,6 +186,13 @@ class FractalResearchOrchestrator:
         if on_progress:
             on_progress("complete", self.graph.size(), self.graph.size())
         return report
+
+    def _mean_relevance(self) -> float:
+        """Average relevance-to-objective across explored nodes (observability)."""
+        nodes = self.graph.get_all_nodes()
+        if not nodes:
+            return 1.0
+        return round(sum(n.relevance for n in nodes) / len(nodes), 4)
 
     def _attach_llm_summary(self, report) -> None:
         """Enrich the report with an LLM executive summary when enabled.
@@ -214,6 +233,23 @@ class FractalResearchOrchestrator:
             node.status = NodeStatus.STOPPED
             node.stop_reason = stop
             self.debug.trace("expand_stop", f"Pre-expansion stop: {stop}", {"node": node.id})
+            return
+
+        # Focus on the main idea: score this branch's relevance to the objective
+        # and prune it if it has drifted off-topic (only when enabled via config).
+        node.relevance = self.relevance_scorer.score(node.claim)
+        if (
+            self.focus_min_relevance > 0.0
+            and node.depth >= self.focus_min_depth
+            and node.relevance < self.focus_min_relevance
+        ):
+            node.status = NodeStatus.STOPPED
+            node.stop_reason = StopReason.FOCUS_DRIFT
+            self.debug_stats["focus_drift_pruned"] += 1
+            self.debug.trace("focus_drift", f"Pruned off-topic {node.id}", {
+                "relevance": node.relevance,
+                "claim": node.claim[:60],
+            })
             return
 
         validation = self.validator.validate(node.claim)
@@ -262,6 +298,7 @@ class FractalResearchOrchestrator:
                 uncertainty=question.uncertainty,
                 risk=question.risk,
                 novelty=question.novelty,
+                relevance=self.relevance_scorer.score(question.text),
             )
             self.graph.register_question(question.text)
             fresh_questions.append(question)
@@ -305,7 +342,11 @@ class FractalResearchOrchestrator:
                         source_question=question.text,
                     )
                 )
-            child_nodes.sort(key=lambda n: n.claim_priority, reverse=True)
+            for child in child_nodes:
+                child.relevance = self.relevance_scorer.score(child.claim)
+            child_nodes.sort(
+                key=lambda n: n.claim_priority * (0.5 + 0.5 * n.relevance), reverse=True
+            )
 
             for child in child_nodes:
                 if self.budget.exhausted:
