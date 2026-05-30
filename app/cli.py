@@ -412,6 +412,25 @@ def cmd_hook(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Generate a self-contained HTML dashboard for the project."""
+    from app.reporting.dashboard import build_dashboard
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    html_doc = build_dashboard(
+        str(target),
+        objective=args.objective or None,
+        max_ideas=args.max_ideas,
+        idea_depth=args.depth,
+        breadth=args.breadth,
+    )
+    out_path = Path(args.out) if args.out else target / ".apex" / "dashboard.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html_doc, encoding="utf-8")
+    print(f"[dashboard] Written to {out_path}")
+    return 0
+
+
 def cmd_ideate(args: argparse.Namespace) -> int:
     """Generate a permutation tree of development ideas from the codebase."""
     from app.engine.idea_permutation import (
@@ -961,6 +980,18 @@ def main() -> int:
     ideate_parser.add_argument("--json", action="store_true", help="Emit JSON")
     ideate_parser.add_argument("--out", default="", help="Write markdown to this path")
     ideate_parser.set_defaults(func=cmd_ideate)
+
+    # dashboard
+    dash_parser = subparsers.add_parser(
+        "dashboard", help="Generate a self-contained HTML project dashboard"
+    )
+    dash_parser.add_argument("--target", default="", help="Target project root")
+    dash_parser.add_argument("--objective", default="", help="Optional theme to focus ideas on")
+    dash_parser.add_argument("--depth", type=int, default=2, help="Idea permutation depth")
+    dash_parser.add_argument("--breadth", type=int, default=3, help="Operators per idea")
+    dash_parser.add_argument("--max-ideas", type=int, default=24, dest="max_ideas", help="Idea budget")
+    dash_parser.add_argument("--out", default="", help="Output HTML path (default <target>/.apex/dashboard.html)")
+    dash_parser.set_defaults(func=cmd_dashboard)
 
     # hook
     hook_parser = subparsers.add_parser("hook", help="Manage git hooks")
