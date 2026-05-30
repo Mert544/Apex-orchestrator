@@ -412,6 +412,45 @@ def cmd_hook(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_ideate(args: argparse.Namespace) -> int:
+    """Generate a permutation tree of development ideas from the codebase."""
+    from app.engine.idea_permutation import (
+        IdeaPermutationEngine,
+        render_markdown,
+        render_mermaid,
+    )
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    engine = IdeaPermutationEngine(
+        config={
+            "max_total_ideas": args.max_ideas,
+            "max_idea_depth": args.depth,
+            "breadth": args.breadth,
+            "min_relevance": args.min_relevance,
+        },
+        project_root=str(target),
+    )
+    report = engine.run(objective=args.objective or None)
+
+    if args.json:
+        print(json.dumps(report.model_dump(), indent=2))
+    else:
+        print(render_markdown(report))
+        if args.mermaid:
+            print()
+            print(render_mermaid(report))
+
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        body = render_markdown(report)
+        if args.mermaid:
+            body += "\n\n" + render_mermaid(report)
+        out_path.write_text(body, encoding="utf-8")
+        print(f"\n[ideate] Written to {out_path}")
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     from app.reporting.composer import ReportComposer
 
@@ -817,6 +856,36 @@ def main() -> int:
     marketplace_parser.add_argument("--port", type=int, default=8765, help="Marketplace server port")
     marketplace_parser.add_argument("--plugin-dir", default="plugins", help="Plugin directory")
     marketplace_parser.set_defaults(func=cmd_marketplace)
+
+    # ideate
+    ideate_parser = subparsers.add_parser(
+        "ideate",
+        help="Generate a permutation tree of development ideas from the codebase",
+    )
+    ideate_parser.add_argument("--target", default="", help="Target project root")
+    ideate_parser.add_argument(
+        "--objective", default="", help="Optional theme to focus ideas on"
+    )
+    ideate_parser.add_argument("--depth", type=int, default=2, help="Permutation depth")
+    ideate_parser.add_argument(
+        "--breadth", type=int, default=4, help="Operators applied per idea"
+    )
+    ideate_parser.add_argument(
+        "--max-ideas", type=int, default=40, dest="max_ideas", help="Idea budget"
+    )
+    ideate_parser.add_argument(
+        "--min-relevance",
+        type=float,
+        default=0.0,
+        dest="min_relevance",
+        help="Drop ideas below this relevance to the objective (0=off)",
+    )
+    ideate_parser.add_argument(
+        "--mermaid", action="store_true", help="Also emit a Mermaid diagram"
+    )
+    ideate_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    ideate_parser.add_argument("--out", default="", help="Write markdown to this path")
+    ideate_parser.set_defaults(func=cmd_ideate)
 
     # hook
     hook_parser = subparsers.add_parser("hook", help="Manage git hooks")

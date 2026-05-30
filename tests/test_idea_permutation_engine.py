@@ -74,3 +74,34 @@ def test_deterministic(tmp_path):
     a = IdeaPermutationEngine(cfg, tmp_path).run()
     b = IdeaPermutationEngine(cfg, tmp_path).run()
     assert [i.title for i in a.ideas] == [i.title for i in b.ideas]
+
+
+def test_render_markdown_and_mermaid(tmp_path):
+    _project(tmp_path)
+    rep = IdeaPermutationEngine({"max_total_ideas": 12, "max_idea_depth": 2}, tmp_path).run()
+    from app.engine.idea_permutation import render_markdown, render_mermaid
+
+    md = render_markdown(rep)
+    assert "# Development Ideas" in md
+    assert any(r.title in md for r in rep.roots())
+    assert "value" in md
+
+    mer = render_mermaid(rep)
+    assert "flowchart TD" in mer
+    assert "-->" in mer  # has at least one parent->child edge
+
+
+def test_cli_ideate_smoke(tmp_path, capsys):
+    _project(tmp_path)
+    import argparse
+    from app.cli import cmd_ideate
+
+    args = argparse.Namespace(
+        target=str(tmp_path), objective="", depth=2, breadth=3, max_ideas=10,
+        min_relevance=0.0, mermaid=True, json=False, out="",
+    )
+    rc = cmd_ideate(args)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Development Ideas" in out
+    assert "flowchart TD" in out

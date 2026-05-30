@@ -219,3 +219,52 @@ def _compose_title(subject: str, chain: list[str]) -> str:
     """Readable, distinct title from the operator chain over a subject."""
     lenses = " → ".join(name.capitalize() for name in chain)
     return f"{lenses}: {subject}"
+
+
+def render_markdown(report: IdeaTreeReport) -> str:
+    """Render an idea tree as a readable, hierarchical markdown document."""
+    lines = [f"# Development Ideas for `{report.project_root}`", ""]
+    meta = f"{report.stats.get('total_ideas', 0)} ideas · mean value {report.stats.get('mean_value', 0)}"
+    if report.objective:
+        meta = f"objective: _{report.objective}_ · " + meta
+    lines += [meta, ""]
+
+    by_parent: dict[str | None, list[IdeaNode]] = {}
+    for idea in report.ideas:
+        by_parent.setdefault(idea.parent_id, []).append(idea)
+
+    def walk(idea: IdeaNode, depth: int) -> None:
+        indent = "  " * depth
+        if depth == 0:
+            lines.append(f"## {idea.branch_path} — {idea.title}  (value {idea.value})")
+            if idea.source_facts:
+                lines.append(f"{indent}- _facts: {', '.join(idea.source_facts)}_")
+        else:
+            caveat = f"  ⚠ {idea.caveats[0]}" if idea.caveats else ""
+            lines.append(
+                f"{indent}- `{idea.branch_path}` [{idea.operator}] {idea.title}  (v {idea.value}){caveat}"
+            )
+        for child in by_parent.get(idea.id, []):
+            walk(child, depth + 1)
+
+    for root in by_parent.get(None, []):
+        walk(root, 0)
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_mermaid(report: IdeaTreeReport) -> str:
+    """Render the idea tree as a Mermaid flowchart."""
+    lines = ["```mermaid", "flowchart TD"]
+    for idea in report.ideas:
+        label = idea.title.replace('"', "'")
+        lines.append(f'    {idea.branch_path.replace(".", "_")}["{label}"]')
+    for idea in report.ideas:
+        if idea.parent_id:
+            parent = next((p for p in report.ideas if p.id == idea.parent_id), None)
+            if parent:
+                a = parent.branch_path.replace(".", "_")
+                b = idea.branch_path.replace(".", "_")
+                lines.append(f"    {a} --> {b}")
+    lines.append("```")
+    return "\n".join(lines)
