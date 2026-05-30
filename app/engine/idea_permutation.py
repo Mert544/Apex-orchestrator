@@ -118,12 +118,23 @@ class IdeaPermutationEngine:
         min_relevance:   drop ideas below this relevance to the objective (0=off)
     """
 
-    def __init__(self, config: dict[str, Any] | None = None, project_root: str | Path = ".") -> None:
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        project_root: str | Path = ".",
+        extra_operators: list[Operator | dict[str, Any]] | None = None,
+    ) -> None:
         cfg = config or {}
         self.project_root = str(project_root)
         self.profiler = ProjectProfiler(self.project_root)
         self.seeder = IdeaSeeder()
-        self.operators = DEVELOPMENT_OPERATORS
+        # Plugins (or callers) can contribute operators to widen the alphabet.
+        extra = [
+            op if isinstance(op, Operator) else Operator(**op)
+            for op in (extra_operators or [])
+            if isinstance(op, Operator) or "{x}" in op.get("template", "")
+        ]
+        self.operators = DEVELOPMENT_OPERATORS + extra
         self.counterfactual = CounterfactualGenerator()
         self.max_depth = int(cfg.get("max_idea_depth", 2))
         self.breadth = int(cfg.get("breadth", 4))

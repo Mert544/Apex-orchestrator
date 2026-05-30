@@ -108,6 +108,7 @@ class PluginRegistry:
             config=dict(proxy._config),
         )
         plugin.agent_subscriptions = list(proxy._agent_subscriptions)
+        plugin.operators = list(proxy._operators)
         self.plugins.append(plugin)
         for hook_name, fn in plugin.hooks.items():
             if hook_name in self._hooks:
@@ -140,6 +141,13 @@ class PluginRegistry:
     def list_plugins(self) -> list[dict[str, Any]]:
         return [p.to_dict() for p in self.plugins]
 
+    def idea_operators(self) -> list[dict[str, Any]]:
+        """Operators contributed by plugins for the Idea Permutation Engine."""
+        ops: list[dict[str, Any]] = []
+        for plugin in self.plugins:
+            ops.extend(getattr(plugin, "operators", []))
+        return ops
+
 
 class _PluginProxy:
     """Passed to plugin ``register()`` so they can safely add hooks."""
@@ -148,6 +156,7 @@ class _PluginProxy:
         self._hooks: dict[str, Callable[..., Any]] = {}
         self._config: dict[str, Any] = {}
         self._agent_subscriptions: list[tuple[str, Callable[..., Any]]] = []
+        self._operators: list[dict[str, Any]] = []
 
     def add_hook(self, name: str, fn: Callable[..., Any]) -> None:
         self._hooks[name] = fn
@@ -155,6 +164,16 @@ class _PluginProxy:
     def on_agent_event(self, topic: str, fn: Callable[..., Any]) -> None:
         """Subscribe plugin handler to AgentBus topic."""
         self._agent_subscriptions.append((topic, fn))
+
+    def add_operator(self, name: str, template: str, feasibility: float = 0.5) -> None:
+        """Contribute a development operator to the Idea Permutation Engine.
+
+        ``template`` must contain ``{x}`` (the code subject), e.g.
+        "Add OpenTelemetry tracing to {x}".
+        """
+        self._operators.append(
+            {"name": name, "template": template, "feasibility": feasibility}
+        )
 
     def set_config(self, key: str, value: Any) -> None:
         self._config[key] = value

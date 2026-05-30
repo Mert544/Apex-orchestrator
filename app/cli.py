@@ -421,6 +421,14 @@ def cmd_ideate(args: argparse.Namespace) -> int:
     )
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
+
+    # Plugins may contribute extra development operators to the alphabet.
+    from app.plugins.registry import PluginRegistry
+
+    plugins = PluginRegistry()
+    plugins.load_all()
+    extra_operators = plugins.idea_operators()
+
     engine = IdeaPermutationEngine(
         config={
             "max_total_ideas": args.max_ideas,
@@ -429,6 +437,7 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             "min_relevance": args.min_relevance,
         },
         project_root=str(target),
+        extra_operators=extra_operators,
     )
     report = engine.run(objective=args.objective or None)
 
