@@ -40,3 +40,22 @@ def test_dashboard_renders_idea_tree(tmp_path):
     html_doc = build_dashboard(str(tmp_path), max_ideas=12)
     assert "class='op'" in html_doc  # idea operator chips rendered
     assert "Action plan" in html_doc
+
+
+def test_dashboard_includes_git_repo_section_when_in_repo(tmp_path):
+    import subprocess
+    _project(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path)
+    html_doc = build_dashboard(str(tmp_path))
+    assert "Repository" in html_doc
+    assert "uncommitted files" in html_doc
+
+
+def test_dashboard_skips_repo_section_outside_git(tmp_path):
+    _project(tmp_path)  # not a git repo
+    html_doc = build_dashboard(str(tmp_path))
+    # Other sections still render; the repo section is simply omitted.
+    assert "Project profile" in html_doc
+    assert "<h2>Repository</h2>" not in html_doc

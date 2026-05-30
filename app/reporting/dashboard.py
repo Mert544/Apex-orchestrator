@@ -67,6 +67,30 @@ def _run_reasoning(project_root: str, objective: str | None) -> dict[str, Any]:
         return {"error": str(exc)}
 
 
+def _git_info(project_root: str) -> dict[str, Any]:
+    """Best-effort local git status (offline). Empty dict if not a repo."""
+    import subprocess
+
+    def _run(args: list[str]) -> str:
+        try:
+            out = subprocess.run(
+                ["git", *args], cwd=project_root, capture_output=True, text=True, timeout=5
+            )
+            return out.stdout.strip() if out.returncode == 0 else ""
+        except Exception:
+            return ""
+
+    if _run(["rev-parse", "--is-inside-work-tree"]) != "true":
+        return {}
+    porcelain = _run(["status", "--porcelain"])
+    return {
+        "branch": _run(["rev-parse", "--abbrev-ref", "HEAD"]),
+        "commits": [c for c in _run(["log", "--oneline", "-5"]).splitlines() if c],
+        "dirty": len([line for line in porcelain.splitlines() if line.strip()]),
+        "total_commits": _run(["rev-list", "--count", "HEAD"]),
+    }
+
+
 def build_dashboard(
     project_root: str,
     objective: str | None = None,
@@ -95,8 +119,9 @@ def build_dashboard(
     ).run(objective=objective or None)
     action_plan = IdeaActionBridge().plan_tree(idea_report, top=15)
     reasoning = _run_reasoning(project_root, objective)
+    git = _git_info(project_root)
 
-    return _render_html(project_root, profile, findings, idea_report, action_plan, reasoning)
+    return _render_html(project_root, profile, findings, idea_report, action_plan, reasoning, git)
 
 
 # --- rendering (stdlib only, self-contained) --------------------------------
@@ -230,6 +255,21 @@ def _actions_section(plan) -> str:
     )
 
 
+def _repo_section(git: dict[str, Any]) -> str:
+    if not git:
+        return ""
+    chips = "".join(
+        [
+            _chip("branch", git.get("branch", "—")),
+            _chip("commits", git.get("total_commits", "—")),
+            _chip("uncommitted files", git.get("dirty", 0)),
+        ]
+    )
+    commits = "".join(f"<li><code>{_esc(c)}</code></li>" for c in git.get("commits", []))
+    body = f"<ul class='commits'>{commits}</ul>" if commits else ""
+    return f"<section><h2>Repository</h2><div class='chips'>{chips}</div>{body}</section>"
+
+
 def _reasoning_section(r: dict[str, Any]) -> str:
     if "error" in r:
         return f"<section><h2>Reasoning &amp; telemetry</h2><p class='muted'>unavailable: {_esc(r['error'])}</p></section>"
@@ -276,14 +316,16 @@ ul.tree li{margin:3px 0}
 .caveat{color:#e0a85e;font-size:12px}
 .cols{display:flex;flex-wrap:wrap;gap:24px}.col h4{margin:8px 0 4px;color:#8b93a7;font-size:13px}
 .col ul{margin:0;padding-left:18px;font-size:12px}
+ul.commits{margin:6px 0;padding-left:18px;font-size:12px;color:#8b93a7}
 details summary{cursor:pointer;color:#8b93a7;font-size:13px;margin-top:8px}
 pre{background:#1d2230;padding:12px;border-radius:6px;overflow:auto;font-size:12px}
 """
 
 
-def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning) -> str:
+def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning, git=None) -> str:
     body = "".join(
         [
+            _repo_section(git or {}),
             _profile_section(profile),
             _findings_section(findings),
             _ideas_section(idea_report),
