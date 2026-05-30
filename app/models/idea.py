@@ -48,3 +48,39 @@ class IdeaTreeReport(BaseModel):
 
     def children_of(self, parent_id: str) -> list[IdeaNode]:
         return [i for i in self.ideas if i.parent_id == parent_id]
+
+
+class ActionStep(BaseModel):
+    """A concrete, reviewable action derived from a development idea.
+
+    The bridge never executes — it proposes what acting on an idea branch
+    would concretely mean, mapping it to a known transform when one exists.
+    """
+
+    branch_path: str
+    title: str
+    operator: str
+    subject: str
+    action_type: str
+    target: str = ""
+    description: str = ""
+    executable: bool = False
+    value: float = 0.0
+    source_facts: list[str] = Field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump()
+
+
+class ActionPlan(BaseModel):
+    """An ordered, supervised action plan derived from an idea tree."""
+
+    objective: str = ""
+    project_root: str = ""
+    mode: str = "supervised"
+    steps: list[ActionStep] = Field(default_factory=list)
+    stats: dict[str, Any] = Field(default_factory=dict)
+
+    def executable_steps(self) -> list[ActionStep]:
+        return [s for s in self.steps if s.executable]
+

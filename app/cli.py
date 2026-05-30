@@ -432,8 +432,25 @@ def cmd_ideate(args: argparse.Namespace) -> int:
     )
     report = engine.run(objective=args.objective or None)
 
+    # Optionally bridge ideas into a supervised, never-applied action plan.
+    action_plan = None
+    if getattr(args, "actions", False):
+        from app.engine.idea_action_bridge import (
+            IdeaActionBridge,
+            render_action_markdown,
+        )
+
+        action_plan = IdeaActionBridge().plan_tree(
+            report, mode="supervised", top=args.top or None
+        )
+
     if args.json:
-        print(json.dumps(report.model_dump(), indent=2))
+        payload = report.model_dump()
+        if action_plan is not None:
+            payload["action_plan"] = action_plan.model_dump()
+        print(json.dumps(payload, indent=2))
+    elif action_plan is not None:
+        print(render_action_markdown(action_plan))
     else:
         print(render_markdown(report))
         if args.mermaid:
@@ -443,9 +460,12 @@ def cmd_ideate(args: argparse.Namespace) -> int:
     if args.out:
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        body = render_markdown(report)
-        if args.mermaid:
-            body += "\n\n" + render_mermaid(report)
+        if action_plan is not None:
+            body = render_action_markdown(action_plan)
+        else:
+            body = render_markdown(report)
+            if args.mermaid:
+                body += "\n\n" + render_mermaid(report)
         out_path.write_text(body, encoding="utf-8")
         print(f"\n[ideate] Written to {out_path}")
     return 0
@@ -879,6 +899,14 @@ def main() -> int:
         default=0.0,
         dest="min_relevance",
         help="Drop ideas below this relevance to the objective (0=off)",
+    )
+    ideate_parser.add_argument(
+        "--actions",
+        action="store_true",
+        help="Bridge ideas into a supervised, never-applied action plan",
+    )
+    ideate_parser.add_argument(
+        "--top", type=int, default=0, help="Limit action plan to top-N ideas by value"
     )
     ideate_parser.add_argument(
         "--mermaid", action="store_true", help="Also emit a Mermaid diagram"
