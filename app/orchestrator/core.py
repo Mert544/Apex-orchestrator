@@ -5,6 +5,8 @@ from typing import Any, Callable
 
 from app.engine.budget import BudgetController
 from app.engine.compressed_mode import CompressedModeEngine
+from app.engine.confidence_calibration import ConfidenceCalibrator
+from app.engine.counterfactual_generator import CounterfactualGenerator
 from app.engine.debug_engine import DebugEngine
 from app.engine.novelty import NoveltyScorer
 from app.engine.termination import TerminationEngine
@@ -76,6 +78,8 @@ class FractalResearchOrchestrator:
             "focus_branch_hits": 0,
             "focus_branch_misses": 0,
             "focus_drift_pruned": 0,
+            "counterfactuals_generated": 0,
+            "calibrated_nodes": 0,
         }
 
         # Relevance-to-objective ("main idea") focus. Configured per run() once
@@ -84,6 +88,14 @@ class FractalResearchOrchestrator:
         self.focus_min_relevance = float(focus_cfg.get("min_relevance", 0.0))
         self.focus_min_depth = int(focus_cfg.get("min_depth", 1))
         self.relevance_scorer = RelevanceScorer("")
+
+        # Deep-reasoning engines (deterministic, no LLM). When enabled, each
+        # expanded claim is stress-tested with counterfactual scenarios and its
+        # confidence is statistically calibrated from evidence quality.
+        reasoning_cfg = self.config.get("reasoning", {}) or {}
+        self.deep_reasoning = bool(reasoning_cfg.get("deep", True))
+        self.counterfactual_generator = CounterfactualGenerator()
+        self.confidence_calibrator = ConfidenceCalibrator()
 
     def run(
         self,
@@ -187,6 +199,37 @@ class FractalResearchOrchestrator:
             on_progress("complete", self.graph.size(), self.graph.size())
         return report
 
+    def _apply_deep_reasoning(self, node: ResearchNode) -> None:
+        """Stress-test a claim with counterfactuals and calibrate its confidence.
+
+        Wires the previously-orphaned CounterfactualGenerator and
+        ConfidenceCalibrator engines into the live reasoning path. Deterministic,
+        no LLM. Failures are isolated so they never break an expansion.
+        """
+        try:
+            cf = self.counterfactual_generator.generate(
+                {"text": node.claim, "context": " ".join(node.evidence_against)}
+            )
+            node.counterfactuals = cf.scenarios
+            if cf.scenarios:
+                self.debug_stats["counterfactuals_generated"] += len(cf.scenarios)
+
+            evidence = [
+                {"weight": 0.6, "type": "direct", "source": e, "contradicts": False}
+                for e in node.evidence_for
+            ] + [
+                {"weight": 0.6, "type": "indirect", "source": e, "contradicts": True}
+                for e in node.evidence_against
+            ]
+            calib = self.confidence_calibrator.calibrate(
+                {"confidence": node.confidence, "evidence": evidence}
+            )
+            node.confidence = calib.adjusted_confidence
+            node.confidence_reliability = calib.reliability
+            self.debug_stats["calibrated_nodes"] += 1
+        except Exception as exc:  # never let enrichment break a run
+            self.debug.trace("deep_reasoning_error", str(exc), {"node": node.id})
+
     def _mean_relevance(self) -> float:
         """Average relevance-to-objective across explored nodes (observability)."""
         nodes = self.graph.get_all_nodes()
@@ -269,6 +312,9 @@ class FractalResearchOrchestrator:
             evidence_against_count=len(node.evidence_against),
         )
         node = downgrade_if_unsupported(node)
+
+        if self.deep_reasoning:
+            self._apply_deep_reasoning(node)
 
         node.questions = self.question_generator.generate(node.claim, node.assumptions)
         enforce_four_question_types(node.questions)

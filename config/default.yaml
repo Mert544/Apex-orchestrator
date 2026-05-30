@@ -8,6 +8,12 @@ top_k_questions: 2
 focus:
   min_relevance: 0.0   # 0 = prioritise only; e.g. 0.15 prunes off-topic drift
   min_depth: 1         # never prune roots; only branches at/after this depth
+
+# Deep reasoning (deterministic, no LLM): stress-test each claim with
+# counterfactual "what if" scenarios and statistically calibrate its
+# confidence from evidence quality/diversity/conflict.
+reasoning:
+  deep: true
 min_security: 0.80
 min_quality: 0.60
 min_novelty: 0.20
