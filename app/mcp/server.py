@@ -141,9 +141,14 @@ class MCPServer:
         }
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Console-script entry point: run the Apex MCP stdio server."""
     from app.mcp.tools import build_apex_tools
 
     tools = build_apex_tools()
     server = MCPServer(tools)
     server.run()
+
+
+if __name__ == "__main__":
+    main()

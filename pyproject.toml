@@ -13,9 +13,14 @@ dependencies = [
   "PyYAML>=6.0",
 ]
 
+[project.scripts]
+apex = "app.cli:main"
+apex-mcp = "app.mcp.server:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
+  "pytest-cov>=4.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -23,3 +28,11 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/validation/*", "*/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
