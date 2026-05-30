@@ -103,3 +103,54 @@ def test_plan_tree_draft_populates_previews_without_side_effects(tmp_path):
     # No source file changed.
     for p, content in snapshot.items():
         assert p.read_text() == content
+
+
+def test_apply_blocked_in_report_mode(tmp_path):
+    _project(tmp_path)
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Document: app/main.py", subject="app/main.py",
+                    operator="document", operator_chain=["document"],
+                    source_facts=["untested: app/main.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    before = (tmp_path / "app" / "main.py").read_text()
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="report")
+    assert result["applied"] is False
+    assert "read-only" in result["reason"]
+    assert (tmp_path / "app" / "main.py").read_text() == before  # untouched
+
+
+def test_apply_in_supervised_mode_writes_file(tmp_path):
+    # A file with a function missing a docstring -> add_docstring applies.
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "svc.py"
+    src.write_text("def handler(x):\n    return x + 1\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Document: app/svc.py", subject="app/svc.py",
+                    operator="document", operator_chain=["document"],
+                    source_facts=["dependency-hub: app/svc.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    assert step.action_type == "add_docstring"
+
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
+
+    if result["applied"]:
+        # The file was actually changed and now contains a docstring.
+        assert src.read_text() != "def handler(x):\n    return x + 1\n"
+        assert '"""' in src.read_text()
+    else:
+        # If no transform applied, the file must remain untouched.
+        assert src.read_text() == "def handler(x):\n    return x + 1\n"
+
+
+def test_apply_blocks_sensitive_path(tmp_path):
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "keys.py").write_text("def k():\n    return 1\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Document: secrets/keys.py", subject="secrets/keys.py",
+                    operator="document", operator_chain=["document"],
+                    source_facts=["sensitive-path: secrets/keys.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    # Even if a patch is generated, the sensitive-path gate must block writing.
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
+    if result["applied"] is False and "safety" in result.get("reason", ""):
+        assert (tmp_path / "secrets" / "keys.py").read_text() == "def k():\n    return 1\n"

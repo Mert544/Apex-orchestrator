@@ -443,27 +443,45 @@ def cmd_ideate(args: argparse.Namespace) -> int:
 
     # Optionally bridge ideas into a supervised, never-applied action plan.
     action_plan = None
+    apply_results = None
     if getattr(args, "actions", False):
         from app.engine.idea_action_bridge import (
             IdeaActionBridge,
             render_action_markdown,
         )
 
-        action_plan = IdeaActionBridge().plan_tree(
+        bridge = IdeaActionBridge()
+        action_plan = bridge.plan_tree(
             report,
-            mode="supervised",
+            mode=getattr(args, "mode", None) or "supervised",
             top=args.top or None,
-            draft=getattr(args, "draft", False),
+            draft=getattr(args, "draft", False) or getattr(args, "apply", False),
             project_root=str(target),
         )
+        # Strictly opt-in apply: only when --apply is passed; gated by mode + safety.
+        if getattr(args, "apply", False):
+            apply_results = [
+                {"branch": s.branch_path, "action": s.action_type,
+                 **bridge.apply_step(s, str(target), mode=getattr(args, "mode", None) or "supervised")}
+                for s in action_plan.executable_steps()
+            ]
 
     if args.json:
         payload = report.model_dump()
         if action_plan is not None:
             payload["action_plan"] = action_plan.model_dump()
+        if apply_results is not None:
+            payload["apply_results"] = apply_results
         print(json.dumps(payload, indent=2))
     elif action_plan is not None:
         print(render_action_markdown(action_plan))
+        if apply_results is not None:
+            applied = sum(1 for r in apply_results if r.get("applied"))
+            print(f"\n## Applied {applied}/{len(apply_results)} executable steps (mode: {getattr(args, 'mode', None) or 'supervised'})")
+            for r in apply_results:
+                status = "✅" if r.get("applied") else "⛔"
+                detail = r.get("reason") or ", ".join(r.get("changed_files", []))
+                print(f"- {status} `{r['branch']}` {r['action']} — {detail}")
     else:
         print(render_markdown(report))
         if args.mermaid:
@@ -925,6 +943,17 @@ def main() -> int:
         "--draft",
         action="store_true",
         help="Draft real patch previews for executable steps (never applied)",
+    )
+    ideate_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply executable steps — gated by mode + safety gates (opt-in)",
+    )
+    ideate_parser.add_argument(
+        "--mode",
+        default="supervised",
+        choices=["report", "supervised", "autonomous"],
+        help="Execution mode for --apply (report cannot patch)",
     )
     ideate_parser.add_argument(
         "--mermaid", action="store_true", help="Also emit a Mermaid diagram"

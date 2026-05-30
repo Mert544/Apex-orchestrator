@@ -75,22 +75,16 @@ class IdeaActionBridge:
         "create_test_stub": ["test coverage"],
     }
 
-    def draft_patch(self, step: ActionStep, project_root: str) -> dict | None:
-        """Draft a real patch *preview* for an executable step — never applied.
-
-        Uses the existing SemanticPatchGenerator with a change-strategy hint that
-        selects the matching transform. Returns a compact preview (transform,
-        files, rationale, truncated new content) or None if nothing applies.
-        """
+    def _generate(self, step: ActionStep, project_root: str):
+        """Run the semantic generator for an executable step. Returns the
+        SemanticPatchResult (proposed only) or None."""
         if not step.executable or step.action_type not in self._ACTION_STRATEGY:
             return None
+        if not step.target or not step.target.endswith(".py"):
+            return None
         if step.action_type == "create_test_stub":
-            if not step.target or not step.target.endswith(".py"):
-                return None
             target_files = [f"tests/test_{Path(step.target).stem}.py"]
         else:
-            if not step.target or not step.target.endswith(".py"):
-                return None
             target_files = [step.target]
 
         from app.execution.semantic_patch_generator import SemanticPatchGenerator
@@ -106,7 +100,17 @@ class IdeaActionBridge:
             result = SemanticPatchGenerator().generate(project_root, patch_plan)
         except Exception:
             return None
-        if not result.patch_requests:
+        return result if result.patch_requests else None
+
+    def draft_patch(self, step: ActionStep, project_root: str) -> dict | None:
+        """Draft a real patch *preview* for an executable step — never applied.
+
+        Uses the existing SemanticPatchGenerator with a change-strategy hint that
+        selects the matching transform. Returns a compact preview (transform,
+        files, rationale, truncated new content) or None if nothing applies.
+        """
+        result = self._generate(step, project_root)
+        if result is None:
             return None
         first = result.patch_requests[0]
         new_content = (first.get("new_content") or "")[:400]
@@ -116,6 +120,61 @@ class IdeaActionBridge:
             "rationale": result.rationale,
             "preview": new_content,
             "applied": False,
+        }
+
+    def apply_step(
+        self, step: ActionStep, project_root: str, mode: str = "supervised", run_tests: bool = False
+    ) -> dict:
+        """Apply an executable step's patch — strictly gated, opt-in.
+
+        Enforces ModePolicy (must allow patching) and SafetyGates (scope,
+        sensitive paths, secrets) before writing anything. Report mode can
+        never apply. Returns a result dict describing what happened.
+        """
+        from app.policies.mode_policy import ModePolicy, mode_from_string
+
+        policy = ModePolicy(mode=mode_from_string(mode))
+        perms = policy.permissions
+        if not perms.can_patch:
+            return {"applied": False, "reason": f"mode '{mode}' is read-only (cannot patch)"}
+
+        result = self._generate(step, project_root)
+        if result is None:
+            return {"applied": False, "reason": "no applicable patch generated"}
+
+        patch_requests = result.patch_requests
+        changed = [pr.get("path", "") for pr in patch_requests]
+
+        if perms.requires_safety_gates:
+            from app.policies.safety_gates import SafetyGates
+
+            new_code = "\n".join(pr.get("new_content", "") or "" for pr in patch_requests)
+            old_code = "\n".join(pr.get("expected_old_content", "") or "" for pr in patch_requests)
+            gates = SafetyGates(project_root, max_changed_files=perms.max_changed_files)
+            report = gates.check_all(
+                changed_files=changed, old_code=old_code, new_code=new_code, skip_test=not run_tests
+            )
+            if report.blocked:
+                return {"applied": False, "reason": "blocked by safety gates", "summary": report.summary}
+
+        from app.skills.execution.apply_patch import ApplyPatchSkill, FilePatch
+
+        patches = [
+            FilePatch(
+                path=pr["path"],
+                new_content=pr["new_content"],
+                expected_old_content=pr.get("expected_old_content"),
+            )
+            for pr in patch_requests
+        ]
+        applied = ApplyPatchSkill().run(project_root, patches)
+        return {
+            "applied": applied.ok,
+            "mode": mode,
+            "transform_type": result.transform_type,
+            "changed_files": applied.changed_files,
+            "skipped_files": applied.skipped_files,
+            "error": applied.error,
         }
 
     def plan_tree(
