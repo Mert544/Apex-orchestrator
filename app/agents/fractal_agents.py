@@ -22,6 +22,22 @@ from app.policies.safety_gates import SafetyGates
 from app.policy.learning import LearningPolicy
 
 
+def _minimal_code(code: str) -> str:
+    """Return the minimal form of generated patch code.
+
+    Strips a trailing inline ``# TODO`` annotation if a patch source emitted
+    one, operating only on the final line so legitimate ``# TODO`` markers
+    elsewhere in the snippet are preserved. Replaces the old, fragile
+    ``split("# TODO")[0]`` heuristic that truncated on the first occurrence.
+    """
+    lines = code.rstrip().splitlines()
+    if lines:
+        head, sep, _ = lines[-1].partition("# TODO")
+        if sep:
+            lines[-1] = head.rstrip()
+    return "\n".join(lines).strip()
+
+
 class BaseFractalAgent(RecursiveAgent):
     """Base class for agents that perform fractal deep-analysis on their findings.
 
@@ -372,10 +388,8 @@ class BaseFractalAgent(RecursiveAgent):
         issue = finding.get("issue", "").lower()
         file_path = original_patch.file
 
-        if "eval" in issue:
-            new_code = original_patch.new_code.split("# TODO")[0].strip()
-        elif "os.system" in issue:
-            new_code = original_patch.new_code.split("# TODO")[0].strip()
+        if "eval" in issue or "os.system" in issue:
+            new_code = _minimal_code(original_patch.new_code)
         elif "bare except" in issue:
             new_code = "except Exception:  # TODO: add specific exception type"
         else:

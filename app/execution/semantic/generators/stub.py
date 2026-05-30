@@ -21,8 +21,15 @@ def try_create_stub(root: Path, rel_path: str, title: str, task_id: str) -> Sema
                 import pytest
 
 
+                @pytest.mark.skip(reason="Apex stub: implement tests for {module_name}")
                 def test_{module_name}_exists():
-                    assert True, "stub test for {module_name}"
+                    \"\"\"Placeholder test for the {module_name} module.
+
+                    Replace this stub: import the module under test and assert
+                    on its public behavior. The skip marker keeps the suite green
+                    until a real assertion is written.
+                    \"\"\"
+                    raise NotImplementedError("Implement tests for {module_name}")
                 """
             )
             return SemanticPatchResult(
