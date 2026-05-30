@@ -9,6 +9,7 @@ from app.engine.debug_engine import DebugEngine
 from app.engine.novelty import NoveltyScorer
 from app.engine.termination import TerminationEngine
 from app.execution.token_telemetry import TokenTelemetry
+from app.llm.agent_adapter import AgentLLMAdapter
 from app.llm.router import LLMRouter
 from app.memory.graph_store import GraphStore
 from app.models.enums import NodeStatus, StopReason
@@ -48,6 +49,7 @@ class FractalResearchOrchestrator:
         budget_limit = int(self.config.get("token_budget_limit", 0))
         self.telemetry = TokenTelemetry(budget_limit=budget_limit)
         self.llm = LLMRouter.from_config(self.config)
+        self.llm_adapter = AgentLLMAdapter(self.llm)
 
         self.graph = GraphStore()
         self.assumption_extractor = AssumptionExtractor()
@@ -167,9 +169,32 @@ class FractalResearchOrchestrator:
             )
         report.phase_metrics = metrics.to_dict()
 
+        self._attach_llm_summary(report)
+
         if on_progress:
             on_progress("complete", self.graph.size(), self.graph.size())
         return report
+
+    def _attach_llm_summary(self, report) -> None:
+        """Enrich the report with an LLM executive summary when enabled.
+
+        When no LLM is configured (the default), this is a no-op so runs stay
+        fully deterministic and offline. Any provider error degrades silently
+        back to the deterministic report.
+        """
+        if not self.llm_adapter.is_available():
+            return
+        findings = report.main_findings[:20]
+        if not findings:
+            return
+        try:
+            summary = self.llm_adapter.summarize_results(findings)
+        except Exception as exc:  # never let LLM enrichment break a run
+            self.debug.trace("llm_summary_error", str(exc), {})
+            return
+        if summary:
+            report.llm_summary = summary
+            self.debug.trace("llm_summary", "Attached LLM summary", {"chars": len(summary)})
 
     def _expand(
         self,
