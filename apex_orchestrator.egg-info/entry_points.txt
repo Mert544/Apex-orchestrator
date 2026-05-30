@@ -1,0 +1,3 @@
+[console_scripts]
+apex = app.cli:main
+apex-mcp = app.mcp.server:main
