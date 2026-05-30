@@ -1,7 +1,9 @@
 # Idea Permutation Engine — Design
 
-> Status: **Design / awaiting approval to implement.**
+> Status: **P-A, P-B, P-C implemented & shipped** (778 tests green).
+> P-D (MCP tool, optional LLM polish, plugin-contributed operators) is future work.
 > Source of ideas: **derived from the existing codebase** (per project owner).
+> Run it: `apex ideate --target=examples/flask_mini --depth=2 --breadth=4`
 
 ## 1. Vision
 

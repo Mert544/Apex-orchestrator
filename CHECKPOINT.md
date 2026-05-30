@@ -1,9 +1,9 @@
 # Apex Autonomous Engineering Organism - Checkpoint
 
 **Date**: 2026-05-30
-**Commit**: 0899d64 (branch `claude/apex-orchestrator-eZbJO`)
-**Tests**: 762 passing ✅ (5 git tests fail only in this sandbox — commit-signing, green in real CI)
-**Status**: integration-hardening COMPLETE — see Phase 8 below
+**Commit**: 310e106 (branch `claude/apex-orchestrator-eZbJO`)
+**Tests**: 778 passing ✅ (5 git tests fail only in this sandbox — commit-signing, green in real CI)
+**Status**: Idea Permutation Engine shipped — see Phase 8 (integration) & Phase 9 (idea engine)
 
 > Previous milestone: autonomy-safety-core (2026-04-25, 633 tests).
 
@@ -600,3 +600,30 @@ strictly optional and off by default.
 - Still open for a future phase: plugin hooks in the main swarm path (P0.3),
   CI quality gates (ruff/mypy/coverage), and broader `engine/`+`memory/`+
   `tools/` test coverage.
+
+---
+
+## Phase 9: Idea Permutation Engine ✅ (2026-05-30)
+
+The project's core vision, now a working feature: a **generative** fractal that
+splits a project into autonomous development branches and permutes each into
+operator-sequence sub-branches — the "abc" of every "a". Derived from the real
+codebase, fully deterministic (no LLM). Design: `docs/idea-permutation-engine.md`.
+
+- **Models** (`app/models/idea.py`): `IdeaNode` (traceable to `source_facts` +
+  `operator_chain`), `IdeaTreeReport`.
+- **Seeder** (`app/engine/idea_permutation.py` `IdeaSeeder`): root development
+  branches from `ProjectProfiler` facts (dependency hubs, untested/sensitive/
+  entrypoint modules, symbol hubs, missing CI).
+- **Engine** (`IdeaPermutationEngine`): best-first expansion applying the
+  `DEVELOPMENT_OPERATORS` alphabet (extend/harden/test/simplify/document/
+  integrate/generalize/observe) each idea hasn't used yet, so every branch path
+  is a unique permutation of lenses over a code subject. Reuses RelevanceScorer,
+  CounterfactualGenerator (per-idea caveats), GraphStore dedup, BudgetController.
+  `value = 0.4*relevance + 0.3*novelty + 0.3*feasibility`.
+- **CLI**: `apex ideate --target=. --depth --breadth --max-ideas --min-relevance
+  --objective --mermaid --json --out` → hierarchical markdown + Mermaid tree.
+- **Tests**: 21 new (seeder rules/limits/dedup, permutation uniqueness & chain
+  integrity, budget, relevance pruning, determinism, rendering, CLI smoke).
+- **Future (P-D)**: MCP `apex_ideate` tool, optional LLM polish of titles, and
+  plugin-contributed operators.
