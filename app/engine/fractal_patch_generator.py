@@ -88,7 +88,7 @@ class FractalPatchGenerator:
             finding="os.system() usage",
             action="replace_with_subprocess_run",
             old_code="os.system(command)",
-            new_code="import subprocess; subprocess.run(command, shell=False, check=True)  # TODO: split args properly",
+            new_code="import shlex, subprocess; subprocess.run(shlex.split(command), check=True)",
             confidence=0.8,
         )
 
@@ -112,7 +112,11 @@ class FractalPatchGenerator:
             action="add_docstring",
             old_code=f"def {target}():",
             new_code=f'''def {target}():
-    """TODO: Add docstring for {target}."""''',
+    """Summary of {target}.
+
+    Returns:
+        The result of {target}.
+    """''',
             confidence=0.9,
         )
 
@@ -126,8 +130,12 @@ class FractalPatchGenerator:
             action="generate_test_stub",
             old_code="",
             new_code=f'''def test_{func}():
-    """TODO: Implement test for {func}."""
-    assert {func}() is not None
+    """Verify the behavior of {func}.
+
+    Arrange inputs, call {func}, then assert on the result.
+    """
+    result = {func}()
+    assert result is not None  # replace with a meaningful assertion
 ''',
             confidence=0.7,
         )

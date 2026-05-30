@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from app.llm.router import LLMRouter, LLMResponse
@@ -63,8 +65,6 @@ class AgentLLMAdapter:
             return ""
 
     def _parse_json_response(self, content: str) -> dict[str, Any]:
-        import json
-        import re
         # Extract JSON from markdown code block if present
         match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
         if match:
