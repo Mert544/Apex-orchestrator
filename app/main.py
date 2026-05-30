@@ -53,30 +53,22 @@ def _build_swarm_for_plan(
     """
     coord = SwarmCoordinator()
 
+    # project_scan is a broad read-only sweep: run every scanner.
+    broad = "project_scan" in plan_name or "full" in plan_name or "self" in plan_name
+
     agents = []
-    if "security" in plan_name or "full" in plan_name or "self" in plan_name:
+    if "security" in plan_name or broad:
         agents.append(FractalSecurityAgent() if use_fractal else SecurityAgent())
-    if (
-        "docstring" in plan_name
-        or "semantic" in plan_name
-        or "full" in plan_name
-        or "self" in plan_name
-    ):
+    if "docstring" in plan_name or "semantic" in plan_name or broad:
         agents.append(FractalDocstringAgent() if use_fractal else DocstringAgent())
     if (
         "test" in plan_name
         or "coverage" in plan_name
         or "semantic" in plan_name
-        or "full" in plan_name
-        or "self" in plan_name
+        or broad
     ):
         agents.append(FractalTestStubAgent() if use_fractal else TestStubAgent())
-    if (
-        "dependency" in plan_name
-        or "project_scan" in plan_name
-        or "full" in plan_name
-        or "self" in plan_name
-    ):
+    if "dependency" in plan_name or broad:
         agents.append(DependencyAgent())
 
     coord.register_agents(agents)
