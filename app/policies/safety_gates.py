@@ -233,7 +233,6 @@ class SafetyGates:
                 passed=True,
                 message="No files to protect",
             )
-        missing: list[str] = []
         for f in changed_files:
             full = self.project_root / f
             if not full.exists() and not (self.project_root / f).is_file():

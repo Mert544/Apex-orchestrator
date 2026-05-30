@@ -103,7 +103,7 @@ class LLMVoter:
                     agent_role=agent_role,
                     verdict=Verdict.REJECT,
                     confidence=0.85,
-                    reasoning=f"Security-sensitive keyword detected",
+                    reasoning="Security-sensitive keyword detected",
                     weight=weight,
                 )
             return Vote(

@@ -191,7 +191,7 @@ class SwarmCoordinator:
         """Evaluator processes submitted claims."""
         claims = msg.payload.get("claims", [])
         if claims:
-            result = agent.run(claims=claims)
+            agent.run(claims=claims)
             # Results are emitted inside _route_to_evaluator after run
 
     def _route_to_patcher(self, msg: AgentMessage) -> None:

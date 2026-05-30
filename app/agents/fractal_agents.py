@@ -5,14 +5,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from app.agents.base import Agent, AgentMessage
+from app.agents.base import Agent
 from app.agents.recursive import RecursiveAgent
 from app.engine.fractal_5whys import Fractal5WhysEngine
-from app.engine.fractal_patch_generator import FractalPatchGenerator, FractalPatch
+from app.engine.fractal_patch_generator import FractalPatch
 from app.engine.fractal_cache import FractalCache
 from app.engine.fractal_cross_run import FractalCrossRunBridge
 from app.engine.fractal_cortex import FractalCortex, CortexDecision
-from app.engine.action_executor import ActionExecutor, ActionResult
+from app.engine.action_executor import ActionExecutor
 from app.engine.feedback_loop import FeedbackLoop
 from app.engine.reflector import Reflector
 from app.engine.planner import Planner
@@ -126,7 +126,7 @@ class BaseFractalAgent(RecursiveAgent):
                     for patch_dict in decision.patches:
                         patch = FractalPatch(**patch_dict)
                         plan = self.planner.plan(decision.finding)
-                        strategy = plan.next_strategy()
+                        plan.next_strategy()
 
                         patch_result = self.executor.execute_patch(
                             patch, run_tests=False
@@ -284,12 +284,10 @@ class BaseFractalAgent(RecursiveAgent):
                 },
             )
             # Cache the tree
-            from app.engine.fractal_5whys import FractalNode
 
             tree = self._rebuild_tree(decision.fractal_tree)
             self.cache.put(finding, tree)
         else:
-            from app.engine.fractal_5whys import FractalNode
 
             tree = self._rebuild_tree(decision.fractal_tree)
             self.cache.put(finding, tree)
@@ -346,8 +344,7 @@ class BaseFractalAgent(RecursiveAgent):
 
         Returns the successful outcome dict or None if all fallbacks failed.
         """
-        file_path = original_patch.file
-        issue = finding.get("issue", "unknown").lower()
+        finding.get("issue", "unknown").lower()
 
         for strategy in ["scope_reduce", "semantic_patch", "split_patches", "test_first", "review_only"]:
             try:

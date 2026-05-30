@@ -109,7 +109,7 @@ class ReportComposer:
 
         # Generate debug report to disk if enabled
         if self.debug.enabled:
-            debug_report = self.debug.report()
+            self.debug.report()
             report.debug_report_file = str(
                 self.debug.project_root
                 / ".apex"

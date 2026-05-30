@@ -69,7 +69,7 @@ class ApexDaemon:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             if result.returncode == 0:
-                print(f"[daemon] Run completed successfully.")
+                print("[daemon] Run completed successfully.")
             else:
                 print(f"[daemon] Run failed (code {result.returncode}): {result.stderr[:200]}")
         except subprocess.TimeoutExpired:

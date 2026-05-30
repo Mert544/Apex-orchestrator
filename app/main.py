@@ -30,10 +30,10 @@ from app.engine.rollback_journal import RollbackJournal
 from app.engine.checkpoint_manager import CheckpointManager
 from app.memory.bridge import CentralMemoryBridge
 from app.memory.persistent_memory import PersistentMemoryStore
-from app.metrics.exporter import MetricsMiddleware, PrometheusExporter
+from app.metrics.exporter import MetricsMiddleware
 from app.orchestrator import FractalResearchOrchestrator
 from app.plugins.registry import PluginRegistry, PluginEventBridge
-from app.policies.mode_policy import ModePolicy, mode_from_string, apply_cli_overrides
+from app.policies.mode_policy import ModePolicy, mode_from_string
 from app.skills.decomposer import Decomposer
 from app.skills.evidence_mapper import EvidenceMapper
 from app.skills.validator import Validator
@@ -154,11 +154,8 @@ def main() -> None:
                 print(f"[mode] BLOCKED: {result.message}")
                 return
 
-    patches_applied = 0
-    patches_blocked = 0
     if automation_plan and policy.auto_patch:
-        patches_applied = 0
-        patches_blocked = 0
+        pass
 
     # Load plugins from config or environment
     plugin_dirs = config.get("plugin_dirs", [])
@@ -241,7 +238,6 @@ def main() -> None:
 
     # Record run start
     import time
-    import uuid
     run_id = f"run-{int(time.time())}"
     start_time = time.time()
 
@@ -278,7 +274,7 @@ def main() -> None:
     })
 
     # Persist debug and checkpoint reports
-    debug_report = debug.report()
+    debug.report()
     metrics_text = metrics.render()
     (target_root / ".apex").mkdir(parents=True, exist_ok=True)
     (target_root / ".apex" / "metrics.prom").write_text(metrics_text, encoding="utf-8")

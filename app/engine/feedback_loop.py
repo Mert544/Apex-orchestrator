@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -87,7 +87,7 @@ class FeedbackLoop:
         if not run_id:
             return False
 
-        current_time = time.time()
+        time.time()
         for entry in reversed(self.entries[-10:]):
             if entry.node_key == node_key and entry.run_id == run_id:
                 if entry.action_type == action_type:

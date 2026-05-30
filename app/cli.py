@@ -288,7 +288,7 @@ def cmd_self_audit(args: argparse.Namespace) -> int:
     if args.format == "json":
         print(json.dumps(result, indent=2, default=str))
     else:
-        print(f"# Apex Self-Audit Report")
+        print("# Apex Self-Audit Report")
         print(f"**Target:** {target}")
         print()
         print(f"- Risks found: {len(result.get('findings', []))}")
@@ -493,7 +493,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     planner = AutonomousPlanner()
     plan = planner.build_plan(intent)
 
-    print(f"\n=== APEX ORCHESTRATOR — AUTONOMOUS RUN ===")
+    print("\n=== APEX ORCHESTRATOR — AUTONOMOUS RUN ===")
     print(f"Goal: {intent.goal}")
     print(f"Plan: {plan.plan_name}")
     print(f"Steps: {len(plan.steps)}")

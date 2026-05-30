@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any
 
 from app.memory.cross_run_tracker import CrossRunTracker, ClaimStatus
-from app.engine.fractal_5whys import FractalNode
 
 
 class FractalCrossRunBridge:

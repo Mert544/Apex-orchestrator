@@ -3,7 +3,6 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from app.execution.semantic_patch_generator import SemanticPatchGenerator
 from app.execution.semantic.result import SemanticPatchResult

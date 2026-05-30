@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import re
 
 from ..result import SemanticPatchResult
 from .base import _get_indent
@@ -41,12 +40,11 @@ def _patch_eval(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchRe
         lineno = node.lineno
         lines = source.splitlines(keepends=True)
         line_content = lines[lineno - 1] if lineno <= len(lines) else ""
-        indent = _get_indent(line_content)
+        _get_indent(line_content)
 
         if arg_source.startswith("ast.literal_eval(") or arg_source.startswith("json.loads("):
             return None
 
-        new_call = f"ast.literal_eval({arg_source})"
         new_line = line_content.replace(f"eval({arg_source})", f"ast.literal_eval({arg_source})")
 
         new_lines = list(lines)
@@ -91,7 +89,7 @@ def _patch_os_system(rel_path: str, source: str, tree: ast.Module) -> SemanticPa
         lineno = node.lineno
         lines = source.splitlines(keepends=True)
         line_content = lines[lineno - 1] if lineno <= len(lines) else ""
-        indent = _get_indent(line_content)
+        _get_indent(line_content)
 
         new_line = line_content.replace(
             f"os.system({arg_source})",
@@ -158,9 +156,9 @@ def _get_arg_source(arg_node: ast.expr, source: str) -> str:
     if isinstance(arg_node, ast.Attribute):
         return _get_arg_source(arg_node.value, source)
     if isinstance(arg_node, ast.Call):
-        full_source = source.splitlines()[arg_node.lineno - 1] if arg_node.lineno <= len(source.splitlines()) else ""
+        source.splitlines()[arg_node.lineno - 1] if arg_node.lineno <= len(source.splitlines()) else ""
         start = arg_node.col_offset
-        end = start + len(ast.unparse(arg_node))
+        start + len(ast.unparse(arg_node))
         return ast.unparse(arg_node)
     if isinstance(arg_node, (ast.Str, ast.Constant)):
         if isinstance(arg_node, ast.Str):

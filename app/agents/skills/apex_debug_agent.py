@@ -196,7 +196,7 @@ class ApexDebugAgent:
 
         r = self._last_result
         lines = [
-            f"Apex Debug Analysis Summary",
+            "Apex Debug Analysis Summary",
             f"  Files analyzed: {r.files_analyzed}",
             f"  Duration: {r.duration_ms}ms",
             f"  Findings: {len(r.findings)} total",
