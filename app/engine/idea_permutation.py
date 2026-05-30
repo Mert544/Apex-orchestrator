@@ -212,7 +212,40 @@ class IdeaPermutationEngine:
         node.value = round(
             0.4 * node.relevance + 0.3 * node.novelty + 0.3 * node.feasibility, 4
         )
-        node.caveats = self.counterfactual.generate({"text": node.title}).scenarios[:2]
+        # Feed operator/fact context so counterfactual caveats are relevant to
+        # the development direction, not generic.
+        cf_text = f"{node.title} {_caveat_hint(node)}".strip()
+        node.caveats = self.counterfactual.generate({"text": cf_text}).scenarios[:2]
+
+
+# Keyword-rich context per development lens so the CounterfactualGenerator
+# surfaces scenarios relevant to that direction (it pattern-matches on text).
+_OPERATOR_HINTS: dict[str, str] = {
+    "harden": "guard validation check sanitize secret",
+    "document": "docstring documented contract",
+    "simplify": "long complex refactor",
+    "integrate": "network request call subsystem",
+    "observe": "network call logging monitoring",
+    "test": "check validation edge cases",
+    "extend": "validation guard new input",
+    "generalize": "configurable check reusable",
+}
+_FACT_HINTS: dict[str, str] = {
+    "sensitive-path": "guard validation secret check",
+    "untested": "check validation edge cases",
+    "critical-untested": "check validation edge cases",
+    "entrypoint": "request call network",
+    "dependency-hub": "complex",
+    "symbol-hub": "complex",
+    "config": "hardcoded secret",
+}
+
+
+def _caveat_hint(node: IdeaNode) -> str:
+    if node.operator != "root":
+        return _OPERATOR_HINTS.get(node.operator, "")
+    label = node.source_facts[0].split(":")[0].strip() if node.source_facts else ""
+    return _FACT_HINTS.get(label, "")
 
 
 def _compose_title(subject: str, chain: list[str]) -> str:

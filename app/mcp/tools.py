@@ -116,6 +116,38 @@ def apex_run_tests(project_root: str = ".") -> str:
     )
 
 
+def apex_ideate(
+    project_root: str = ".",
+    objective: str = "",
+    depth: int = 2,
+    breadth: int = 4,
+    max_ideas: int = 40,
+    actions: bool = False,
+) -> str:
+    """Generate a permutation tree of development ideas derived from the codebase.
+
+    Args:
+        project_root: Path to the project.
+        objective: Optional theme to focus ideas on.
+        depth: Permutation depth.
+        breadth: Operators applied per idea.
+        max_ideas: Idea budget.
+        actions: Also return a supervised action plan (proposed, never applied).
+    """
+    from app.engine.idea_permutation import IdeaPermutationEngine
+
+    report = IdeaPermutationEngine(
+        {"max_total_ideas": max_ideas, "max_idea_depth": depth, "breadth": breadth},
+        project_root,
+    ).run(objective=objective or None)
+    payload = report.model_dump()
+    if actions:
+        from app.engine.idea_action_bridge import IdeaActionBridge
+
+        payload["action_plan"] = IdeaActionBridge().plan_tree(report).model_dump()
+    return json.dumps(payload, indent=2, default=str)
+
+
 def build_apex_tools() -> dict[str, Any]:
     """Return a mapping of tool names to callable tool functions with JSON schemas."""
     # Attach lightweight JSON schemas for MCP discovery
@@ -174,9 +206,25 @@ def build_apex_tools() -> dict[str, Any]:
             "project_root": {"type": "string", "default": "."},
         },
     }
+    apex_ideate.input_schema = {  # type: ignore[attr-defined]
+        "type": "object",
+        "properties": {
+            "project_root": {"type": "string", "default": "."},
+            "objective": {"type": "string", "default": ""},
+            "depth": {"type": "integer", "default": 2},
+            "breadth": {"type": "integer", "default": 4},
+            "max_ideas": {"type": "integer", "default": 40},
+            "actions": {
+                "type": "boolean",
+                "default": False,
+                "description": "Also return a supervised action plan (never applied).",
+            },
+        },
+    }
     return {
         "apex_project_profile": apex_project_profile,
         "apex_generate_patch": apex_generate_patch,
         "apex_apply_patch": apex_apply_patch,
         "apex_run_tests": apex_run_tests,
+        "apex_ideate": apex_ideate,
     }

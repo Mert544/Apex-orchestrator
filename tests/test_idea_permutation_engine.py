@@ -105,3 +105,13 @@ def test_cli_ideate_smoke(tmp_path, capsys):
     assert rc == 0
     assert "Development Ideas" in out
     assert "flowchart TD" in out
+
+
+def test_caveats_are_operator_relevant(tmp_path):
+    _project(tmp_path)
+    rep = IdeaPermutationEngine({"max_total_ideas": 12, "max_idea_depth": 1, "breadth": 4}, tmp_path).run()
+    harden = next(i for i in rep.ideas if i.operator == "harden")
+    # Hardening caveats should reference input/validation/security, not the
+    # generic "holds after refactoring" fallback.
+    joined = " ".join(harden.caveats).lower()
+    assert "input" in joined or "attacker" in joined or "validation" in joined
