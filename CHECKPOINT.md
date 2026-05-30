@@ -1,9 +1,9 @@
 # Apex Autonomous Engineering Organism - Checkpoint
 
 **Date**: 2026-05-30
-**Commit**: 310e106 (branch `claude/apex-orchestrator-eZbJO`)
-**Tests**: 778 passing ✅ (5 git tests fail only in this sandbox — commit-signing, green in real CI)
-**Status**: Idea Permutation Engine shipped — see Phase 8 (integration) & Phase 9 (idea engine)
+**Commit**: 7067cf2 (branch `claude/apex-orchestrator-eZbJO`)
+**Tests**: 786 passing ✅ (5 git tests fail only in this sandbox — commit-signing, green in real CI)
+**Status**: Idea engine + action bridge + CI gate shipped — see Phases 8–10
 
 > Previous milestone: autonomy-safety-core (2026-04-25, 633 tests).
 
@@ -627,3 +627,28 @@ codebase, fully deterministic (no LLM). Design: `docs/idea-permutation-engine.md
   integrity, budget, relevance pruning, determinism, rendering, CLI smoke).
 - **Future (P-D)**: MCP `apex_ideate` tool, optional LLM polish of titles, and
   plugin-contributed operators.
+
+---
+
+## Phase 10: Idea→Action, CI gate, docs (2026-05-30)
+
+Four-theme follow-up to Phase 9.
+
+- **A — Idea→Action bridge** (`app/engine/idea_action_bridge.py`): maps each
+  idea's terminal operator (or a root's fact) to a known action type, marking
+  executable ones (create_test_stub/add_docstring/harden_security/
+  organize_imports) vs design tasks. `apex ideate --actions --top N` prints a
+  value-ordered, supervised plan that is **never applied**.
+- **A2 — Idea engine P-D**: operator/fact-aware counterfactual caveats (relevant,
+  not generic); new MCP tool `apex_ideate` (tree + optional action plan).
+- **B — CI gates**: `[tool.ruff]` config (select E/F/W, ignore E402 intentional
+  `__future__`-first pattern); fixed remaining pyflakes (TYPE_CHECKING forward
+  refs, dead imports, ambiguous name) so `ruff check app/` is green; `ci.yml`
+  gains a ruff lint job + coverage (term + xml).
+- **C — Docs & honesty**: README Idea Permutation Engine section + refreshed
+  roadmap; new `ROADMAP.md`; explicit "Experimental (not production-ready)"
+  labels for the K8s operator, Helm chart, and VS Code extension.
+
+Remaining (ROADMAP): plugin-contributed operators, optional LLM polish of idea
+titles, idea→real-patch drafting, and raising `engine/`/`memory/`/`tools/`
+coverage.
