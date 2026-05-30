@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+from datetime import datetime, timezone
 from typing import Any
 
 from app.engine.idea_action_bridge import IdeaActionBridge
@@ -8,6 +9,8 @@ from app.engine.idea_permutation import IdeaPermutationEngine, render_mermaid
 from app.models.idea import IdeaTreeReport
 from app.tools.project_profile import ProjectProfile, ProjectProfiler
 
+
+# --- data gathering ---------------------------------------------------------
 
 def _run_scanners(project_root: str) -> dict[str, dict[str, Any]]:
     """Run the read-only scanner agents and collect their results."""
@@ -124,14 +127,75 @@ def build_dashboard(
     return _render_html(project_root, profile, findings, idea_report, action_plan, reasoning, git)
 
 
-# --- rendering (stdlib only, self-contained) --------------------------------
+# --- rendering (stdlib only, self-contained, professional) ------------------
 
 def _esc(value: Any) -> str:
     return html.escape(str(value))
 
 
+def _severity_badge(sev: str) -> str:
+    sev = (sev or "").lower()
+    cls = {
+        "critical": "sev-crit",
+        "high": "sev-high",
+        "medium": "sev-med",
+        "low": "sev-low",
+    }.get(sev, "sev-none")
+    return f"<span class='badge {cls}'>{_esc(sev or 'n/a')}</span>"
+
+
+def _kpi(label: str, value: Any, accent: str = "", sub: str = "") -> str:
+    sub_html = f"<div class='kpi-sub'>{_esc(sub)}</div>" if sub else ""
+    return (
+        f"<div class='kpi'><div class='kpi-val {accent}'>{_esc(value)}</div>"
+        f"<div class='kpi-label'>{_esc(label)}</div>{sub_html}</div>"
+    )
+
+
+def _card(section_id: str, icon: str, title: str, inner: str) -> str:
+    return (
+        f"<section id='{section_id}' class='card'>"
+        f"<h2><span class='ico'>{icon}</span>{title}</h2>{inner}</section>"
+    )
+
+
+def _overview(profile, findings, idea_report, action_plan, git) -> str:
+    sec = findings.get("security", {})
+    cov = findings.get("coverage", {})
+    doc = findings.get("docstring", {})
+    cov_pct = int(cov.get("coverage_ratio", 0) * 100) if "coverage_ratio" in cov else None
+    sec_n = sec.get("findings_count", 0) or 0
+    cards = [
+        _kpi("Files", profile.total_files, "a-blue"),
+        _kpi("Security findings", sec_n, "a-red" if sec_n else "a-green"),
+        _kpi("Coverage", f"{cov_pct}%" if cov_pct is not None else "—", "a-amber"),
+        _kpi("Missing docs", doc.get("gaps_found", "—"), "a-amber"),
+        _kpi("Ideas", idea_report.stats.get("total_ideas", 0), "a-violet"),
+        _kpi("Action steps", action_plan.stats.get("total_steps", 0), "a-blue",
+             sub=f"{action_plan.stats.get('executable_steps', 0)} executable"),
+    ]
+    if git:
+        cards.append(_kpi("Uncommitted", git.get("dirty", 0), "a-amber", sub=f"on {git.get('branch', '?')}"))
+    return f"<section id='overview' class='overview'><div class='kpis'>{''.join(cards)}</div></section>"
+
+
+def _repo_section(git: dict[str, Any]) -> str:
+    if not git:
+        return ""
+    chips = "".join(
+        [
+            _chip("branch", git.get("branch", "—")),
+            _chip("commits", git.get("total_commits", "—")),
+            _chip("uncommitted files", git.get("dirty", 0)),
+        ]
+    )
+    commits = "".join(f"<li><code>{_esc(c)}</code></li>" for c in git.get("commits", []))
+    body = f"<ul class='commits'>{commits}</ul>" if commits else ""
+    return _card("repository", "🌿", "Repository", f"<div class='chips'>{chips}</div>{body}")
+
+
 def _chip(label: str, value: Any) -> str:
-    return f'<span class="chip"><b>{_esc(value)}</b> {_esc(label)}</span>'
+    return f"<span class='chip'><b>{_esc(value)}</b> {_esc(label)}</span>"
 
 
 def _profile_section(p: ProjectProfile) -> str:
@@ -160,7 +224,19 @@ def _profile_section(p: ProjectProfile) -> str:
             _list("Sensitive paths", p.sensitive_paths),
         ]
     )
-    return f"<section><h2>Project profile</h2><div class='chips'>{chips}</div><div class='cols'>{cols}</div></section>"
+    return _card("profile", "📦", "Project profile", f"<div class='chips'>{chips}</div><div class='cols'>{cols}</div>")
+
+
+def _coverage_bar(cov: dict[str, Any]) -> str:
+    if "coverage_ratio" not in cov:
+        return ""
+    pct = int(cov.get("coverage_ratio", 0) * 100)
+    tone = "bar-good" if pct >= 70 else "bar-warn" if pct >= 30 else "bar-bad"
+    return (
+        f"<div class='bar-wrap'><div class='bar-label'>Test coverage "
+        f"<b>{pct}%</b></div><div class='bar'><div class='bar-fill {tone}' "
+        f"style='width:{pct}%'></div></div></div>"
+    )
 
 
 def _findings_section(findings: dict[str, dict[str, Any]]) -> str:
@@ -172,7 +248,6 @@ def _findings_section(findings: dict[str, dict[str, Any]]) -> str:
         [
             _chip("security findings", sec.get("findings_count", "—")),
             _chip("missing docstrings", doc.get("gaps_found", "—")),
-            _chip("coverage", f"{int(cov.get('coverage_ratio', 0) * 100)}%" if "coverage_ratio" in cov else "—"),
             _chip("dependency edges", dep.get("total_edges", "—")),
             _chip("circular imports", len(dep.get("circular_imports", []) or [])),
         ]
@@ -180,22 +255,18 @@ def _findings_section(findings: dict[str, dict[str, Any]]) -> str:
     rows = ""
     for f in (sec.get("findings", []) or [])[:12]:
         issue = (
-            f.get("details")
-            or f.get("risk_type")
-            or f.get("issue")
-            or f.get("risk")
-            or ""
+            f.get("details") or f.get("risk_type") or f.get("issue") or f.get("risk") or ""
         )
         rows += (
             f"<tr><td><code>{_esc(f.get('file', '?'))}:{_esc(f.get('line', '?'))}</code></td>"
-            f"<td>{_esc(issue)}</td>"
-            f"<td>{_esc(f.get('severity', ''))}</td></tr>"
+            f"<td>{_esc(issue)}</td><td>{_severity_badge(f.get('severity', ''))}</td></tr>"
         )
     table = (
-        f"<table><thead><tr><th>Location</th><th>Issue</th><th>Severity</th></tr></thead>"
-        f"<tbody>{rows or '<tr><td colspan=3>No security findings.</td></tr>'}</tbody></table>"
+        "<table><thead><tr><th>Location</th><th>Issue</th><th>Severity</th></tr></thead>"
+        f"<tbody>{rows or '<tr><td colspan=3 class=empty>No security findings 🎉</td></tr>'}</tbody></table>"
     )
-    return f"<section><h2>Scan findings</h2><div class='chips'>{chips}</div>{table}</section>"
+    inner = f"<div class='chips'>{chips}</div>{_coverage_bar(cov)}{table}"
+    return _card("findings", "🔍", "Scan findings", inner)
 
 
 def _ideas_section(report: IdeaTreeReport) -> str:
@@ -208,7 +279,7 @@ def _ideas_section(report: IdeaTreeReport) -> str:
         caveat = f" <span class='caveat'>⚠ {_esc(idea.caveats[0])}</span>" if idea.caveats else ""
         head = (
             f"<span class='op'>{_esc(idea.operator)}</span> {_esc(idea.title)} "
-            f"<span class='val'>v{_esc(idea.value)}</span>{caveat}"
+            f"<span class='val'>{_esc(idea.value)}</span>{caveat}"
         )
         if children:
             inner = "".join(f"<li>{walk(c)}</li>" for c in children)
@@ -217,27 +288,24 @@ def _ideas_section(report: IdeaTreeReport) -> str:
 
     roots = "".join(f"<li>{walk(r)}</li>" for r in by_parent.get(None, []))
     mermaid = render_mermaid(report).replace("```mermaid", "").replace("```", "").strip()
-    return (
-        f"<section><h2>Idea permutation tree</h2>"
+    inner = (
         f"<p class='muted'>{_esc(report.stats.get('total_ideas', 0))} ideas · mean value "
         f"{_esc(report.stats.get('mean_value', 0))}</p>"
         f"<ul class='tree'>{roots}</ul>"
-        f"<details><summary>Mermaid source</summary><pre class='mermaid'>{_esc(mermaid)}</pre></details>"
-        f"</section>"
+        f"<details><summary>Mermaid source</summary><pre>{_esc(mermaid)}</pre></details>"
     )
+    return _card("ideas", "💡", "Idea permutation tree", inner)
 
 
 def _actions_section(plan) -> str:
     rows = ""
     for s in plan.steps[:20]:
-        tag = "🛠️" if s.executable else "📐"
-        draft = ""
-        if s.patch_preview:
-            draft = f" → <code>{_esc(s.patch_preview.get('transform_type'))}</code>"
+        pill = "<span class='pill exec'>executable</span>" if s.executable else "<span class='pill design'>design</span>"
+        draft = f" → <code>{_esc(s.patch_preview.get('transform_type'))}</code>" if s.patch_preview else ""
         rows += (
-            f"<tr><td>{tag}</td><td><code>{_esc(s.branch_path)}</code></td>"
+            f"<tr><td>{pill}</td><td><code>{_esc(s.branch_path)}</code></td>"
             f"<td>{_esc(s.action_type)}{draft}</td><td>{_esc(s.description)}</td>"
-            f"<td>{_esc(s.value)}</td></tr>"
+            f"<td class='num'>{_esc(s.value)}</td></tr>"
         )
     st = plan.stats
     chips = "".join(
@@ -247,32 +315,19 @@ def _actions_section(plan) -> str:
             _chip("design tasks", st.get("design_tasks", 0)),
         ]
     )
-    return (
-        f"<section><h2>Action plan <span class='muted'>(supervised — not applied)</span></h2>"
+    inner = (
+        "<p class='muted'>Supervised — proposed, never applied.</p>"
         f"<div class='chips'>{chips}</div>"
-        f"<table><thead><tr><th></th><th>Branch</th><th>Action</th><th>Description</th><th>Value</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table></section>"
+        "<table><thead><tr><th>Type</th><th>Branch</th><th>Action</th><th>Description</th><th>Value</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
     )
-
-
-def _repo_section(git: dict[str, Any]) -> str:
-    if not git:
-        return ""
-    chips = "".join(
-        [
-            _chip("branch", git.get("branch", "—")),
-            _chip("commits", git.get("total_commits", "—")),
-            _chip("uncommitted files", git.get("dirty", 0)),
-        ]
-    )
-    commits = "".join(f"<li><code>{_esc(c)}</code></li>" for c in git.get("commits", []))
-    body = f"<ul class='commits'>{commits}</ul>" if commits else ""
-    return f"<section><h2>Repository</h2><div class='chips'>{chips}</div>{body}</section>"
+    return _card("actions", "🛠️", "Action plan", inner)
 
 
 def _reasoning_section(r: dict[str, Any]) -> str:
     if "error" in r:
-        return f"<section><h2>Reasoning &amp; telemetry</h2><p class='muted'>unavailable: {_esc(r['error'])}</p></section>"
+        return _card("reasoning", "🧠", "Reasoning &amp; telemetry",
+                     f"<p class='muted'>unavailable: {_esc(r['error'])}</p>")
     ds = r.get("debug_stats", {}) or {}
     chips = "".join(
         [
@@ -285,59 +340,105 @@ def _reasoning_section(r: dict[str, Any]) -> str:
         ]
     )
     rows = "".join(
-        f"<tr><td>{_esc(k)}</td><td>{_esc(round(v, 3))}</td></tr>"
+        f"<tr><td>{_esc(k)}</td><td class='num'>{_esc(round(v, 3))}</td></tr>"
         for k, v in list(r.get("confidence_map", {}).items())[:10]
     )
     table = (
-        f"<table><thead><tr><th>Claim</th><th>Confidence</th></tr></thead>"
-        f"<tbody>{rows or '<tr><td colspan=2>No claims.</td></tr>'}</tbody></table>"
+        "<table><thead><tr><th>Claim</th><th>Confidence</th></tr></thead>"
+        f"<tbody>{rows or '<tr><td colspan=2 class=empty>No claims.</td></tr>'}</tbody></table>"
     )
-    return f"<section><h2>Reasoning &amp; telemetry</h2><div class='chips'>{chips}</div>{table}</section>"
+    return _card("reasoning", "🧠", "Reasoning &amp; telemetry", f"<div class='chips'>{chips}</div>{table}")
 
 
 _CSS = """
-body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#0f1117;color:#e6e6e6}
-header{padding:24px 32px;background:#161a23;border-bottom:1px solid #2a2f3a}
-h1{margin:0;font-size:20px} h2{font-size:16px;border-bottom:1px solid #2a2f3a;padding-bottom:6px}
-.muted{color:#8b93a7;font-weight:normal;font-size:13px}
-main{max-width:1000px;margin:0 auto;padding:24px 32px}
-section{margin:28px 0}
-.chips{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
-.chip{background:#1d2230;border:1px solid #2a2f3a;border-radius:14px;padding:4px 10px;font-size:12px}
-.chip b{color:#6ea8fe}
-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #20242e;vertical-align:top}
-th{color:#8b93a7;font-weight:600}
-code{background:#1d2230;padding:1px 5px;border-radius:4px;font-size:12px;color:#9ad}
-ul.tree{list-style:none;padding-left:0} ul.tree ul{border-left:1px solid #2a2f3a;margin-left:10px;padding-left:14px}
-ul.tree li{margin:3px 0}
-.op{background:#26314a;color:#9cc4ff;border-radius:4px;padding:0 6px;font-size:11px;text-transform:uppercase}
-.val{color:#7bd88f;font-size:12px}
-.caveat{color:#e0a85e;font-size:12px}
-.cols{display:flex;flex-wrap:wrap;gap:24px}.col h4{margin:8px 0 4px;color:#8b93a7;font-size:13px}
-.col ul{margin:0;padding-left:18px;font-size:12px}
-ul.commits{margin:6px 0;padding-left:18px;font-size:12px;color:#8b93a7}
-details summary{cursor:pointer;color:#8b93a7;font-size:13px;margin-top:8px}
-pre{background:#1d2230;padding:12px;border-radius:6px;overflow:auto;font-size:12px}
+:root{--bg:#f6f7fb;--card:#fff;--ink:#1c2230;--muted:#6b7280;--line:#e7e9f0;
+--accent:#5b6cff;--accent2:#7c5cff;--radius:14px;--shadow:0 1px 3px rgba(20,30,60,.06),0 8px 24px rgba(20,30,60,.05)}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,sans-serif;background:var(--bg);color:var(--ink);line-height:1.5}
+a{color:inherit;text-decoration:none}
+.nav{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.85);backdrop-filter:blur(8px);
+border-bottom:1px solid var(--line);padding:12px 28px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.brand{font-weight:700;font-size:16px;display:flex;align-items:center;gap:8px}
+.brand .dot{background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.nav .path{color:var(--muted);font-size:13px;font-family:ui-monospace,monospace}
+.nav .links{margin-left:auto;display:flex;gap:14px;flex-wrap:wrap}
+.nav .links a{font-size:13px;color:var(--muted);padding:4px 0;border-bottom:2px solid transparent}
+.nav .links a:hover{color:var(--accent);border-color:var(--accent)}
+.hero{background:linear-gradient(135deg,#5b6cff,#7c5cff);color:#fff;padding:30px 28px 64px}
+.hero h1{margin:0 0 4px;font-size:22px}.hero p{margin:0;opacity:.85;font-size:14px}
+main{max-width:1080px;margin:-44px auto 48px;padding:0 28px;display:flex;flex-direction:column;gap:20px}
+.overview .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow)}
+.kpi-val{font-size:28px;font-weight:700;line-height:1}
+.kpi-label{color:var(--muted);font-size:13px;margin-top:6px}
+.kpi-sub{color:var(--muted);font-size:11px;margin-top:2px}
+.a-blue{color:#3b5bff}.a-red{color:#e5484d}.a-green{color:#30a46c}.a-amber{color:#e09b16}.a-violet{color:#8e4ec6}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px;box-shadow:var(--shadow)}
+.card h2{margin:0 0 14px;font-size:16px;display:flex;align-items:center;gap:9px}
+.card h2 .ico{font-size:18px}
+.muted{color:var(--muted);font-size:13px;margin:0 0 12px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}
+.chip{background:#f1f3fb;border:1px solid var(--line);border-radius:20px;padding:5px 12px;font-size:12px;color:var(--muted)}
+.chip b{color:var(--ink)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+tbody tr:hover{background:#fafbff}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+td.empty{color:var(--muted);text-align:center;padding:18px}
+code{background:#f1f3fb;padding:2px 6px;border-radius:5px;font-size:12px;font-family:ui-monospace,monospace;color:#4250c5}
+.badge{font-size:11px;padding:2px 9px;border-radius:20px;font-weight:600;text-transform:capitalize}
+.sev-crit{background:#fdecee;color:#c62828}.sev-high{background:#fdf0e6;color:#d2691e}
+.sev-med{background:#fbf6e3;color:#9a7b14}.sev-low{background:#eef1f6;color:#5b6472}.sev-none{background:#eef1f6;color:#8a909c}
+.pill{font-size:11px;padding:2px 9px;border-radius:20px;font-weight:600}
+.pill.exec{background:#e7f6ee;color:#1c7a48}.pill.design{background:#eef1fb;color:#4250c5}
+.bar-wrap{margin:4px 0 16px}.bar-label{font-size:13px;color:var(--muted);margin-bottom:5px}
+.bar{height:9px;background:#eef1f6;border-radius:6px;overflow:hidden}
+.bar-fill{height:100%;border-radius:6px}.bar-good{background:#30a46c}.bar-warn{background:#e09b16}.bar-bad{background:#e5484d}
+ul.tree{list-style:none;padding-left:0;margin:0}
+ul.tree ul{border-left:2px solid var(--line);margin-left:11px;padding-left:16px}
+ul.tree li{margin:5px 0;font-size:13px}
+.op{background:linear-gradient(135deg,#eef0ff,#f3eefe);color:#5346c9;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+.val{color:#30a46c;font-size:12px;font-weight:600}
+.caveat{color:#c77d20;font-size:12px}
+.cols{display:flex;flex-wrap:wrap;gap:28px}.col h4{margin:6px 0 4px;color:var(--muted);font-size:13px}
+.col ul{margin:0;padding-left:18px;font-size:12px}.commits{margin:8px 0;padding-left:18px;font-size:12px;color:var(--muted)}
+details summary{cursor:pointer;color:var(--muted);font-size:13px;margin-top:10px}
+pre{background:#0f1117;color:#cdd3e0;padding:14px;border-radius:8px;overflow:auto;font-size:12px;margin-top:8px}
+footer{text-align:center;color:var(--muted);font-size:12px;padding:8px 0 36px}
+@media(max-width:640px){.nav .links{display:none}.hero{padding-bottom:54px}main{margin-top:-40px}}
 """
 
 
 def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning, git=None) -> str:
-    body = "".join(
+    git = git or {}
+    nav_links = [("overview", "Overview"), ("findings", "Findings"), ("ideas", "Ideas"),
+                 ("actions", "Actions"), ("reasoning", "Reasoning"), ("profile", "Profile")]
+    if git:
+        nav_links.append(("repository", "Repo"))
+    links = "".join(f"<a href='#{i}'>{_esc(t)}</a>" for i, t in nav_links)
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    sections = "".join(
         [
-            _repo_section(git or {}),
-            _profile_section(profile),
+            _overview(profile, findings, idea_report, action_plan, git),
             _findings_section(findings),
             _ideas_section(idea_report),
             _actions_section(action_plan),
             _reasoning_section(reasoning),
+            _profile_section(profile),
+            _repo_section(git),
         ]
     )
     return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<title>Apex Dashboard — {_esc(project_root)}</title><style>{_CSS}</style></head>"
-        f"<body><header><h1>🧠 Apex Dashboard</h1>"
-        f"<div class='muted'>{_esc(project_root)}</div></header>"
-        f"<main>{body}</main></body></html>"
+        f"<title>Apex Dashboard — {_esc(project_root)}</title><style>{_CSS}</style></head><body>"
+        f"<nav class='nav'><span class='brand'><span class='dot'>🧠 Apex</span></span>"
+        f"<span class='path'>{_esc(project_root)}</span><span class='links'>{links}</span></nav>"
+        f"<header class='hero'><h1>Project Dashboard</h1>"
+        f"<p>Code intelligence, development ideas &amp; supervised actions · generated {generated}</p></header>"
+        f"<main>{sections}</main>"
+        "<footer>Generated by Apex Orchestrator — deterministic, offline, self-contained.</footer>"
+        "</body></html>"
     )
