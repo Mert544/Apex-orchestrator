@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-from pathlib import Path
 from typing import Any
 
 from app.engine.idea_action_bridge import IdeaActionBridge
