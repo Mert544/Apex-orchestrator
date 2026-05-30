@@ -10,16 +10,16 @@ Living document. For shipped detail see `CHECKPOINT.md`.
 - Integration hardening — swarm runs every scanner, orphaned reasoning engines
   wired in, plugin hooks fire in the main path.
 - Quality — `ruff` lint gate + coverage in CI; deterministic-by-default core.
+- **Idea → Action bridge** (`apex ideate --actions`) + real patch *drafting*
+  (`--draft`, preview only, never applied) via `SemanticPatchGenerator`.
+- **MCP `apex_ideate` tool**; operator/fact-aware counterfactual caveats.
+- **Plugin-contributed operators** (`proxy.add_operator`) widen the alphabet.
 
 ## Next (near-term)
-1. **Idea engine P-D**
-   - MCP `apex_ideate` tool so IDEs/agents can request idea trees.
-   - Optional LLM *polish* of idea titles/rationale (additive, off by default —
-     same pattern as `report.llm_summary`).
-   - Plugin-contributed operators (extend the permutation alphabet).
-   - Idea-specific counterfactual caveats (feed subject/operator context).
-2. **Idea → real drafts** — let an executable action step draft an actual patch
-   via `SemanticPatchGenerator` (report-only preview, then supervised apply).
+1. Optional LLM *polish* of idea titles/rationale (additive, off by default —
+   same pattern as `report.llm_summary`).
+2. Supervised *apply* path: take a drafted patch through ModePolicy +
+   SafetyGates to an actual (reviewed) change.
 3. **Coverage** — raise unit-test coverage of the thin areas: `app/engine/`,
    `app/memory/`, `app/tools/`, `app/policies/`.
 
