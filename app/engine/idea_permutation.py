@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
-from app.models.idea import IdeaNode
-from app.tools.project_profile import ProjectProfile
+from app.engine.budget import BudgetController
+from app.engine.counterfactual_generator import CounterfactualGenerator
+from app.memory.graph_store import GraphStore
+from app.models.idea import IdeaNode, IdeaTreeReport
+from app.skills.relevance_scorer import RelevanceScorer
+from app.tools.project_profile import ProjectProfile, ProjectProfiler
 from app.utils.branching import make_branch_path
 
 
@@ -94,3 +100,122 @@ class IdeaSeeder:
             )
 
         return roots
+
+
+class IdeaPermutationEngine:
+    """Generative fractal: split a project into autonomous development branches
+    and permute each into operator-sequence sub-branches.
+
+    Roots are derived from the real codebase (IdeaSeeder). Each idea is then
+    expanded by applying development operators it has not used yet, so every
+    branch path is a unique *permutation* of lenses over a code subject
+    (the "abc" of each "a"). Deterministic — no LLM.
+
+    Config keys (all optional):
+        max_total_ideas: budget on emitted ideas (default 40)
+        max_idea_depth:  how deep the permutation goes (default 2)
+        breadth:         operators applied per node (default 4)
+        min_relevance:   drop ideas below this relevance to the objective (0=off)
+    """
+
+    def __init__(self, config: dict[str, Any] | None = None, project_root: str | Path = ".") -> None:
+        cfg = config or {}
+        self.project_root = str(project_root)
+        self.profiler = ProjectProfiler(self.project_root)
+        self.seeder = IdeaSeeder()
+        self.operators = DEVELOPMENT_OPERATORS
+        self.counterfactual = CounterfactualGenerator()
+        self.max_depth = int(cfg.get("max_idea_depth", 2))
+        self.breadth = int(cfg.get("breadth", 4))
+        self.min_relevance = float(cfg.get("min_relevance", 0.0))
+        self.budget = BudgetController(max_total_nodes=int(cfg.get("max_total_ideas", 40)))
+
+    def run(self, objective: str | None = None) -> IdeaTreeReport:
+        profile = self.profiler.profile()
+        relevance = RelevanceScorer(objective or "")
+        graph = GraphStore()  # reused purely for near-duplicate idea detection
+        stats = {"considered": 0, "pruned_relevance": 0, "pruned_duplicate": 0}
+
+        emitted: list[IdeaNode] = []
+        frontier: list[IdeaNode] = []
+
+        for root in self.seeder.seed(profile, objective):
+            if self.budget.exhausted:
+                break
+            self._score(root, relevance)
+            graph.register_claim(root.title)
+            self.budget.consume_node()
+            emitted.append(root)
+            frontier.append(root)
+
+        # Best-first expansion by value.
+        while frontier and not self.budget.exhausted:
+            frontier.sort(key=lambda n: n.value, reverse=True)
+            node = frontier.pop(0)
+            if node.depth >= self.max_depth:
+                continue
+            for child in self._expand(node):
+                if self.budget.exhausted:
+                    break
+                stats["considered"] += 1
+                if graph.has_similar_claim(child.title):
+                    stats["pruned_duplicate"] += 1
+                    continue
+                self._score(child, relevance)
+                if self.min_relevance > 0.0 and child.relevance < self.min_relevance:
+                    stats["pruned_relevance"] += 1
+                    continue
+                graph.register_claim(child.title)
+                self.budget.consume_node()
+                emitted.append(child)
+                frontier.append(child)
+
+        stats["total_ideas"] = len(emitted)
+        stats["mean_value"] = (
+            round(sum(i.value for i in emitted) / len(emitted), 4) if emitted else 0.0
+        )
+        return IdeaTreeReport(
+            objective=objective or "",
+            project_root=self.project_root,
+            ideas=emitted,
+            branch_map={i.branch_path: i.title for i in emitted},
+            stats=stats,
+        )
+
+    def _expand(self, node: IdeaNode) -> list[IdeaNode]:
+        """Apply each unused operator to produce permutation children."""
+        children: list[IdeaNode] = []
+        available = [op for op in self.operators if op.name not in node.operator_chain]
+        for i, op in enumerate(available[: self.breadth]):
+            chain = node.operator_chain + [op.name]
+            children.append(
+                IdeaNode(
+                    id=f"{node.id}-{i}",
+                    title=_compose_title(node.subject, chain),
+                    subject=node.subject,
+                    rationale=op.template.format(x=node.subject),
+                    branch_path=make_branch_path(node.branch_path, i),
+                    depth=node.depth + 1,
+                    parent_id=node.id,
+                    operator=op.name,
+                    operator_chain=chain,
+                    source_facts=node.source_facts,
+                    feasibility=round(op.feasibility * (0.9 ** node.depth), 4),
+                )
+            )
+        return children
+
+    def _score(self, node: IdeaNode, relevance: RelevanceScorer) -> None:
+        node.relevance = relevance.score(f"{node.title} {node.subject}")
+        if node.operator == "root":
+            node.feasibility = node.feasibility or 0.7
+        node.value = round(
+            0.4 * node.relevance + 0.3 * node.novelty + 0.3 * node.feasibility, 4
+        )
+        node.caveats = self.counterfactual.generate({"text": node.title}).scenarios[:2]
+
+
+def _compose_title(subject: str, chain: list[str]) -> str:
+    """Readable, distinct title from the operator chain over a subject."""
+    lenses = " → ".join(name.capitalize() for name in chain)
+    return f"{lenses}: {subject}"
