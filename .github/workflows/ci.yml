@@ -11,6 +11,23 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ruff
+        run: pip install ruff>=0.6
+
+      - name: Ruff lint (app/)
+        run: ruff check app/
+
   test:
     runs-on: ubuntu-latest
 
@@ -30,11 +47,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .[dev] || pip install -e .
 
-      - name: Run tests
+      - name: Run tests with coverage
         shell: bash
         run: |
           set -euo pipefail
-          pytest -q 2>&1 | tee ci-pytest.log
+          pytest -q --cov=app --cov-report=term-missing:skip-covered --cov-report=xml 2>&1 | tee ci-pytest.log
 
       - name: Upload CI logs
         if: always()
@@ -44,3 +61,4 @@ jobs:
           if-no-files-found: warn
           path: |
             ci-pytest.log
+            coverage.xml

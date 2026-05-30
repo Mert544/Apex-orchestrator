@@ -247,7 +247,7 @@ class ModePolicy:
             )
             if result.returncode != 0:
                 return False, "git status failed"
-            lines = [l for l in result.stdout.splitlines() if l.strip()]
+            lines = [line for line in result.stdout.splitlines() if line.strip()]
             if lines:
                 return False, f"{len(lines)} uncommitted changes"
             return True, "clean"

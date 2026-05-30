@@ -21,10 +21,22 @@ apex-mcp = "app.mcp.server:main"
 dev = [
   "pytest>=8.0",
   "pytest-cov>=4.0",
+  "ruff>=0.6",
 ]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+# Pyflakes (F) catches real bugs (e.g. the undefined-name crash fixed this
+# session). E402 is ignored: many modules intentionally place the module
+# docstring after `from __future__ import annotations`, which is harmless.
+select = ["E", "F", "W"]
+ignore = ["E402", "E501", "E741"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

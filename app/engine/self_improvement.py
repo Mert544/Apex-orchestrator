@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.automation.planner import DynamicPlan
 
 from app.automation.planner import AutonomousPlanner
 from app.intent.parser import IntentParser

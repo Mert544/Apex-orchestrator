@@ -3,7 +3,11 @@ from __future__ import annotations
 import ast
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.engine.fractal_5whys import FractalNode
+    from app.engine.planner import Plan
 
 from app.agents.base import Agent
 from app.agents.recursive import RecursiveAgent
