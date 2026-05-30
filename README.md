@@ -116,6 +116,37 @@ python -m app.mcp.server
 
 ---
 
+## 💡 Idea Permutation Engine
+
+Apex doesn't only *analyse* code — it can **propose how to develop it**. The Idea
+Permutation Engine splits a project into autonomous development branches derived
+from its real structure, then permutes each branch into operator-sequence
+sub-ideas — the "abc" of every "a". Fully deterministic (no LLM required).
+
+```bash
+# Generate a tree of development directions, grounded in the codebase
+apex ideate --target=. --depth=2 --breadth=4
+
+# Turn the highest-value ideas into a supervised action plan (never applied)
+apex ideate --target=. --actions --top=10
+```
+
+```
+## x.a — Evolve the central module app/routes/api.py   (value 0.82)
+   - x.a.a [extend]  Extend: app/routes/api.py
+   - x.a.b [harden]  Harden: app/routes/api.py        ⚠ caveat: ...
+   - x.a.c [test]    Test: app/routes/api.py
+       - x.a.c.b  Test → Harden: app/routes/api.py
+```
+
+Each idea is traceable to a concrete project fact, scored by relevance/novelty/
+feasibility, and stress-tested with counterfactual caveats. The action bridge
+maps executable ideas (tests, docstrings, hardening) to known transforms while
+surfacing higher-level directions as design tasks — and it **proposes, it never
+applies**. See `docs/idea-permutation-engine.md`.
+
+---
+
 ## 🛡️ Safety First
 
 Apex operates in three modes:
@@ -200,29 +231,34 @@ apex run --plan=full_autonomous_loop --target=.
 ## 🗺️ Roadmap
 
 ### ✅ Completed
+- **Idea Permutation Engine** (`apex ideate`) — generative development-branch tree + supervised action bridge
+- Objective-relevance focus + deterministic deep reasoning (counterfactual stress-test + confidence calibration)
 - Fractal reasoning engine (5-Whys + counter-evidence + meta-analysis)
 - AST-based semantic patch generation (11 transforms)
 - Retry repair loop with controlled budget
 - Git diff / commit / PR summary closing loop
 - Token telemetry with budget enforcement
-- Multi-model LLM routing with cost-aware selection
+- Optional free LLM providers (GitHub Models, Groq, Gemini, Ollama; off by default)
 - MCP server (stdio + HTTP/SSE)
-- Multi-agent swarm with circuit breaker & graceful shutdown
+- Multi-agent swarm — every scanner runs on a scan; plugin hooks fire in the main path
 - Cross-run persistent memory (JSON + Shelve backends)
 - Central Memory Bridge (unified CrossRun + Findings + Learning)
 - Self-audit agent (AST risk, docstring, complexity analysis)
-- VS Code extension (TypeScript)
-- Docker + Helm deployment
 - Prometheus metrics exporter
 - Plugin ecosystem with hook points
-- CI/CD security audit pipeline
-- **715+ tests** with comprehensive coverage
+- CI: tests + coverage + ruff lint gate
+- **780+ tests** passing
 
 ### 🚧 Next
+- Idea engine P-D: MCP `apex_ideate` tool, optional LLM polish, plugin-contributed operators
+- Raise unit-test coverage of `engine/`, `memory/`, `tools/`
 - Plugin marketplace / registry server
 - IDE Language Server Protocol (LSP) integration
-- Enhanced self-healing for patch failures
-- Real-time collaboration protocol across multiple machines
+
+### 🧪 Experimental (not production-ready)
+- Kubernetes operator (`app/k8s/operator.py`) — in-memory reconciliation; does not yet use the K8s client
+- Helm chart — skeletal (no RBAC/ingress)
+- VS Code extension — a CLI wrapper (spawns `app.main`), not a full LSP/diagnostics integration
 
 ---
 
