@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.models.idea import ActionPlan, ActionStep, IdeaNode, IdeaTreeReport
 
 # Terminal-operator -> (action_type, description template, executable).
@@ -64,14 +66,77 @@ class IdeaActionBridge:
         label = idea.source_facts[0].split(":")[0].strip() if idea.source_facts else ""
         return _FACT_ACTIONS.get(label, ("design_task", "Develop {s}", False))
 
+    # action_type -> change_strategy hint that steers EditStrategy to the
+    # matching deterministic transform.
+    _ACTION_STRATEGY = {
+        "add_docstring": ["add docstring document"],
+        "organize_imports": ["organize imports cleanup unused"],
+        "harden_security": ["add guard clause input validation security"],
+        "create_test_stub": ["test coverage"],
+    }
+
+    def draft_patch(self, step: ActionStep, project_root: str) -> dict | None:
+        """Draft a real patch *preview* for an executable step — never applied.
+
+        Uses the existing SemanticPatchGenerator with a change-strategy hint that
+        selects the matching transform. Returns a compact preview (transform,
+        files, rationale, truncated new content) or None if nothing applies.
+        """
+        if not step.executable or step.action_type not in self._ACTION_STRATEGY:
+            return None
+        if step.action_type == "create_test_stub":
+            if not step.target or not step.target.endswith(".py"):
+                return None
+            target_files = [f"tests/test_{Path(step.target).stem}.py"]
+        else:
+            if not step.target or not step.target.endswith(".py"):
+                return None
+            target_files = [step.target]
+
+        from app.execution.semantic_patch_generator import SemanticPatchGenerator
+
+        patch_plan = {
+            "target_files": target_files,
+            "title": step.description,
+            "task_id": f"idea-{step.branch_path}",
+            "branch": step.branch_path,
+            "change_strategy": self._ACTION_STRATEGY[step.action_type],
+        }
+        try:
+            result = SemanticPatchGenerator().generate(project_root, patch_plan)
+        except Exception:
+            return None
+        if not result.patch_requests:
+            return None
+        first = result.patch_requests[0]
+        new_content = (first.get("new_content") or "")[:400]
+        return {
+            "transform_type": result.transform_type,
+            "files": [pr.get("path") for pr in result.patch_requests],
+            "rationale": result.rationale,
+            "preview": new_content,
+            "applied": False,
+        }
+
     def plan_tree(
-        self, report: IdeaTreeReport, mode: str = "supervised", top: int | None = None
+        self,
+        report: IdeaTreeReport,
+        mode: str = "supervised",
+        top: int | None = None,
+        draft: bool = False,
+        project_root: str | None = None,
     ) -> ActionPlan:
         ideas = sorted(report.ideas, key=lambda i: i.value, reverse=True)
         if top is not None:
             ideas = ideas[:top]
         steps = [self.plan_idea(i) for i in ideas]
+        if draft:
+            root = project_root or report.project_root or "."
+            for step in steps:
+                if step.executable:
+                    step.patch_preview = self.draft_patch(step, root)
         executable = sum(1 for s in steps if s.executable)
+        drafted = sum(1 for s in steps if s.patch_preview)
         return ActionPlan(
             objective=report.objective,
             project_root=report.project_root,
@@ -81,6 +146,7 @@ class IdeaActionBridge:
                 "total_steps": len(steps),
                 "executable_steps": executable,
                 "design_tasks": len(steps) - executable,
+                "drafted_patches": drafted,
             },
         )
 
@@ -99,4 +165,9 @@ def render_action_markdown(plan: ActionPlan) -> str:
     for s in plan.steps:
         tag = "🛠️" if s.executable else "📐"
         lines.append(f"- {tag} `{s.branch_path}` **{s.action_type}** — {s.description}  (v {s.value})")
+        if s.patch_preview:
+            files = ", ".join(s.patch_preview.get("files", []))
+            lines.append(
+                f"    ↳ draft `{s.patch_preview.get('transform_type')}` → {files} (preview, not applied)"
+            )
     return "\n".join(lines)

@@ -441,7 +441,11 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         )
 
         action_plan = IdeaActionBridge().plan_tree(
-            report, mode="supervised", top=args.top or None
+            report,
+            mode="supervised",
+            top=args.top or None,
+            draft=getattr(args, "draft", False),
+            project_root=str(target),
         )
 
     if args.json:
@@ -907,6 +911,11 @@ def main() -> int:
     )
     ideate_parser.add_argument(
         "--top", type=int, default=0, help="Limit action plan to top-N ideas by value"
+    )
+    ideate_parser.add_argument(
+        "--draft",
+        action="store_true",
+        help="Draft real patch previews for executable steps (never applied)",
     )
     ideate_parser.add_argument(
         "--mermaid", action="store_true", help="Also emit a Mermaid diagram"

@@ -59,3 +59,47 @@ def test_render_action_markdown(tmp_path):
     md = render_action_markdown(IdeaActionBridge().plan_tree(report))
     assert "Action Plan" in md
     assert "not applied" in md
+
+
+def test_draft_patch_for_test_stub_is_preview_only(tmp_path):
+    _project(tmp_path)
+    from app.models.idea import IdeaNode
+
+    idea = IdeaNode(
+        id="i", title="Test: app/main.py", subject="app/main.py", operator="test",
+        operator_chain=["test"], source_facts=["untested: app/main.py"],
+    )
+    bridge = IdeaActionBridge()
+    step = bridge.plan_idea(idea)
+    before = (tmp_path / "app" / "main.py").read_text()
+
+    preview = bridge.draft_patch(step, str(tmp_path))
+
+    assert preview is not None
+    assert preview["applied"] is False
+    assert preview["files"]
+    # Drafting must NOT touch the source tree.
+    assert (tmp_path / "app" / "main.py").read_text() == before
+    assert not (tmp_path / "tests").exists()
+
+
+def test_design_task_has_no_draft():
+    from app.models.idea import IdeaNode
+
+    idea = IdeaNode(id="i", title="Extend: app/main.py", subject="app/main.py", operator="extend")
+    step = IdeaActionBridge().plan_idea(idea)
+    assert IdeaActionBridge().draft_patch(step, ".") is None
+
+
+def test_plan_tree_draft_populates_previews_without_side_effects(tmp_path):
+    _project(tmp_path)
+    report = IdeaPermutationEngine({"max_total_ideas": 12, "max_idea_depth": 2}, tmp_path).run()
+    snapshot = {p: p.read_text() for p in (tmp_path / "app").glob("*.py")}
+
+    plan = IdeaActionBridge().plan_tree(report, top=10, draft=True, project_root=str(tmp_path))
+
+    assert plan.stats["drafted_patches"] >= 1
+    assert any(s.patch_preview for s in plan.steps)
+    # No source file changed.
+    for p, content in snapshot.items():
+        assert p.read_text() == content

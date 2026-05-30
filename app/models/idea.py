@@ -67,6 +67,7 @@ class ActionStep(BaseModel):
     executable: bool = False
     value: float = 0.0
     source_facts: list[str] = Field(default_factory=list)
+    patch_preview: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump()
