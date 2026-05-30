@@ -5,9 +5,9 @@ from app.skills.synthesizer import Synthesizer
 from app.skills.validator import Validator
 
 
-def _make_orchestrator(focus=None):
+def _make_orchestrator(focus=None, max_depth=2):
     config = {
-        "max_depth": 2,
+        "max_depth": max_depth,
         "max_total_nodes": 12,
         "top_k_questions": 2,
         "min_security": 0.8,
@@ -72,10 +72,19 @@ def test_pruning_off_by_default_keeps_behaviour():
 
 
 def test_pruning_can_be_enabled_via_config():
-    # A very high threshold prunes any branch that is not near-perfectly on topic.
-    orch = _make_orchestrator(focus={"min_relevance": 0.99, "min_depth": 1})
-    report = orch.run("Investigate the CI pipeline and test coverage")
-    # Enabling the drift cut should stop at least one off-topic branch.
+    # With pruning enabled, off-topic branches that drift below the relevance
+    # threshold are stopped. This objective reliably spawns lower-relevance
+    # sibling claims at depth >= 1 that the drift cut removes.
+    orch = _make_orchestrator(focus={"min_relevance": 0.8, "min_depth": 1})
+    report = orch.run("Investigate database query performance and indexing")
     assert report.debug_stats["focus_drift_pruned"] >= 1
     # The run still completes and returns a usable report.
-    assert report.objective == "Investigate the CI pipeline and test coverage"
+    assert report.objective == "Investigate database query performance and indexing"
+
+
+def test_pruning_off_does_not_prune_same_objective():
+    # The same objective with pruning disabled removes nothing (sanity check
+    # that the prune is what's doing the work, not termination).
+    orch = _make_orchestrator()  # no focus config -> pruning off
+    report = orch.run("Investigate database query performance and indexing")
+    assert report.debug_stats["focus_drift_pruned"] == 0
