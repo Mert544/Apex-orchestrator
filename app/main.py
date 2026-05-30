@@ -255,7 +255,7 @@ def main() -> None:
     for key, conf in report.confidence_map.items():
         findings.append({"claim": key, "confidence": conf, "branch": ""})
     memory_bridge.record_run(run_id, claims=findings)
-    checkpoint.save_checkpoint(run_id, mode=policy.mode.value, goal=objective, stats={"claims": claims_count, "duration": duration})
+    checkpoint.save_checkpoint(run_id, mode=policy.mode.value, goal=objective, stats={"claims": len(findings), "duration": duration})
 
     # Record metrics
     patches_applied_val = getattr(report, "patches_applied", 0)
