@@ -67,3 +67,14 @@ def test_dashboard_includes_debug_section(tmp_path):
     assert "<h2><span class='ico'>🐞</span>Debug</h2>" in html_doc or "Debug" in html_doc
     # Debug chips present (traces / anomalies).
     assert "anomalies" in html_doc
+
+
+def test_dashboard_badges_synthesis_and_fragility(tmp_path):
+    # eval/os.system + import edge -> security findings, synthesis, and a pair.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "a.py").write_text("import os\ndef a(c):\n    return eval(c)\n")
+    (tmp_path / "app" / "b.py").write_text("import app.a\ndef b():\n    return app.a.a('1')\n")
+    html_doc = build_dashboard(str(tmp_path), max_ideas=60, idea_depth=2, breadth=6)
+    # Synthesized/module-pair appendix and badges render.
+    assert "Synthesized" in html_doc
+    assert "ibadge" in html_doc

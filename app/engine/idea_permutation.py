@@ -524,7 +524,17 @@ def _context_weight(node: IdeaNode, op_name: str, security_pressure: float = 1.0
     return 1.0
 
 
+# Caveat hints for synthesized ideas, keyed by kind, so counterfactuals stay
+# on-topic instead of misfiring on incidental words in the title.
+_KIND_HINTS: dict[str, str] = {
+    "synthesis": "check validation edge cases security",
+    "pair": "interface boundary coupling refactor",
+}
+
+
 def _caveat_hint(node: IdeaNode) -> str:
+    if node.kind != "permutation":
+        return _KIND_HINTS.get(node.kind, "interface boundary")
     if node.operator != "root":
         return _OPERATOR_HINTS.get(node.operator, "")
     label = node.source_facts[0].split(":")[0].strip() if node.source_facts else ""

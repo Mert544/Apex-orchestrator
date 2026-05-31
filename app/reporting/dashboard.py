@@ -318,29 +318,63 @@ def _findings_section(findings: dict[str, dict[str, Any]]) -> str:
     return _card("findings", "🔍", "Scan findings", inner)
 
 
+def _kind_badge(idea) -> str:
+    """A small badge marking fragility roots and synthesized/pair ideas."""
+    label = idea.source_facts[0].split(":")[0].strip() if idea.source_facts else ""
+    if idea.kind == "synthesis":
+        return "<span class='ibadge b-synth'>synthesis</span>"
+    if idea.kind == "pair":
+        return "<span class='ibadge b-pair'>module-pair</span>"
+    if label == "fragile":
+        return "<span class='ibadge b-frag'>fragile</span>"
+    return ""
+
+
 def _ideas_section(report: IdeaTreeReport) -> str:
     by_parent: dict[str | None, list] = {}
     for idea in report.ideas:
         by_parent.setdefault(idea.parent_id, []).append(idea)
+
+    synth = [i for i in report.ideas if i.kind != "permutation"]
+    synth_ids = {i.id for i in synth}
+    perm_roots = [
+        i for i in by_parent.get(None, [])
+        if i.kind == "permutation" and i.id not in synth_ids
+    ]
 
     def walk(idea) -> str:
         children = by_parent.get(idea.id, [])
         caveat = f" <span class='caveat'>⚠ {_esc(idea.caveats[0])}</span>" if idea.caveats else ""
         head = (
             f"<span class='op'>{_esc(idea.operator)}</span> {_esc(idea.title)} "
-            f"<span class='val'>{_esc(idea.value)}</span>{caveat}"
+            f"{_kind_badge(idea)}<span class='val'>{_esc(idea.value)}</span>{caveat}"
         )
         if children:
             inner = "".join(f"<li>{walk(c)}</li>" for c in children)
             return f"{head}<ul>{inner}</ul>"
         return head
 
-    roots = "".join(f"<li>{walk(r)}</li>" for r in by_parent.get(None, []))
+    roots = "".join(f"<li>{walk(r)}</li>" for r in perm_roots)
     mermaid = render_mermaid(report).replace("```mermaid", "").replace("```", "").strip()
+
+    synth_html = ""
+    if synth:
+        items = "".join(
+            f"<li>{_kind_badge(i)} {_esc(i.title)} "
+            f"<span class='val'>{_esc(i.value)}</span></li>"
+            for i in sorted(synth, key=lambda n: n.value, reverse=True)
+        )
+        synth_html = (
+            "<h4 style='margin:14px 0 4px'>🔗 Synthesized &amp; module-pair ideas</h4>"
+            f"<ul class='commits'>{items}</ul>"
+        )
+
     inner = (
         f"<p class='muted'>{_esc(report.stats.get('total_ideas', 0))} ideas · mean value "
-        f"{_esc(report.stats.get('mean_value', 0))}</p>"
+        f"{_esc(report.stats.get('mean_value', 0))} · "
+        f"{_esc(report.stats.get('synthesized', 0))} synthesized</p>"
         f"<ul class='tree'>{roots}</ul>"
+        f"{synth_html}"
         f"<details><summary>Mermaid source</summary><pre>{_esc(mermaid)}</pre></details>"
     )
     return _card("ideas", "💡", "Idea permutation tree", inner)
@@ -450,6 +484,8 @@ ul.tree li{margin:5px 0;font-size:13px}
 .op{background:linear-gradient(135deg,#eef0ff,#f3eefe);color:#5346c9;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
 .val{color:#30a46c;font-size:12px;font-weight:600}
 .caveat{color:#c77d20;font-size:12px}
+.ibadge{font-size:10px;font-weight:700;border-radius:6px;padding:1px 7px;margin:0 4px;text-transform:uppercase;letter-spacing:.03em}
+.b-synth{background:#e8f0fe;color:#2d5fd0}.b-pair{background:#eef9f0;color:#1c7a48}.b-frag{background:#fdecee;color:#c62828}
 .cols{display:flex;flex-wrap:wrap;gap:28px}.col h4{margin:6px 0 4px;color:var(--muted);font-size:13px}
 .col ul{margin:0;padding-left:18px;font-size:12px}.commits{margin:8px 0;padding-left:18px;font-size:12px;color:var(--muted)}
 details summary{cursor:pointer;color:var(--muted);font-size:13px;margin-top:10px}
