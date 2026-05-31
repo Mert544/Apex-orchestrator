@@ -184,3 +184,36 @@ def test_diversity_spreads_ideas_across_subjects(tmp_path):
     )
     # Diversity-aware selection should touch more than one subject.
     assert len(child_subjects) >= 2
+
+
+def test_render_markdown_shows_synthesized_section(tmp_path):
+    _project(tmp_path)
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 60, "max_idea_depth": 2, "breadth": 8}, tmp_path
+    ).run()
+    from app.engine.idea_permutation import render_markdown
+
+    md = render_markdown(rep)
+    synth = [i for i in rep.ideas if i.kind != "permutation"]
+    if synth:
+        assert "Synthesized ideas" in md
+        assert any(i.title in md for i in synth)
+
+
+def test_security_pressure_amplifies_harden_test(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "svc.py").write_text("import os\ndef r(c):\n    return eval(c)\n")
+    eng = IdeaPermutationEngine(
+        {"max_total_ideas": 30, "max_idea_depth": 1, "breadth": 6}, tmp_path
+    )
+    rep = eng.run()
+    # Real findings raise the pressure above the neutral 1.0.
+    assert eng._security_pressure > 1.0
+    # Clean project stays neutral.
+    (tmp_path / "app" / "clean.py").write_text("def ok(x):\n    return x + 1\n")
+    clean = tmp_path / "clean_proj"
+    clean.mkdir()
+    (clean / "m.py").write_text("def ok(x):\n    return x + 1\n")
+    eng2 = IdeaPermutationEngine({"max_total_ideas": 20}, clean)
+    eng2.run()
+    assert eng2._security_pressure == 1.0

@@ -203,7 +203,26 @@ class IdeaPermutationEngine:
         self.breadth = int(cfg.get("breadth", 4))
         self.min_relevance = float(cfg.get("min_relevance", 0.0))
         self.budget = BudgetController(max_total_nodes=int(cfg.get("max_total_ideas", 40)))
+        # When False, skip the security scan (e.g. tests/perf); weighting stays static.
+        self.security_aware = bool(cfg.get("security_aware", True))
+        self._security_pressure = 1.0
 
+    def _scan_security_pressure(self) -> float:
+        """Map real security findings to a harden/test weighting multiplier.
+
+        0 findings → 1.0 (no bias); grows ~0.06 per finding, capped at 1.3.
+        Best-effort and deterministic; any failure leaves weighting static.
+        """
+        if not self.security_aware:
+            return 1.0
+        try:
+            from app.agents.skills import SecurityAgent
+
+            result = SecurityAgent().run(project_root=self.project_root)
+            n = int(result.get("findings_count", 0) or 0)
+        except Exception:
+            return 1.0
+        return round(min(1.3, 1.0 + 0.06 * n), 4)
     def run(self, objective: str | None = None) -> IdeaTreeReport:
         profile = self.profiler.profile()
         relevance = RelevanceScorer(objective or "")
@@ -211,6 +230,9 @@ class IdeaPermutationEngine:
         self.novelty = NoveltyScorer(graph)  # reuse the dedup-backed scorer
         self._chain_counts: dict[str, int] = {}  # per-run, for deterministic novelty
         self._subject_counts: dict[str, int] = {}  # subject-diversity novelty signal
+        # Security pressure: how strongly real findings should bias harden/test
+        # weighting. Scales 1.0 (none) → up to 1.3 (many findings). Best-effort.
+        self._security_pressure = self._scan_security_pressure()
         stats = {"considered": 0, "pruned_relevance": 0, "pruned_duplicate": 0}
 
         emitted: list[IdeaNode] = []
@@ -389,8 +411,9 @@ class IdeaPermutationEngine:
                 if node.depth == 0
                 else f"{base} — building on: {' then '.join(node.operator_chain)}."
             )
-            # Context reweighting: security-relevant subjects favor harden/test.
-            ctx = _context_weight(node, op.name)
+            # Context reweighting: security-relevant subjects favor harden/test,
+            # scaled by how many real security findings the project has.
+            ctx = _context_weight(node, op.name, self._security_pressure)
             feasibility = min(1.0, round(op.feasibility * (0.9 ** node.depth) * ctx, 4))
             children.append(
                 IdeaNode(
@@ -472,12 +495,19 @@ _FACT_HINTS: dict[str, str] = {
 _SECURITY_LABELS = {"sensitive-path", "critical-untested", "untested", "partial-coverage", "fragile"}
 
 
-def _context_weight(node: IdeaNode, op_name: str) -> float:
-    """Upweight harden/test for security-relevant subjects, downweight the rest."""
+def _context_weight(node: IdeaNode, op_name: str, security_pressure: float = 1.0) -> float:
+    """Upweight harden/test for security-relevant subjects, downweight the rest.
+
+    ``security_pressure`` (>= 1.0) scales the harden/test boost up when the
+    project has real security findings, so reliability lenses rise to the top
+    exactly when they matter most.
+    """
     label = node.source_facts[0].split(":")[0].strip() if node.source_facts else ""
     if label in _SECURITY_LABELS:
         if op_name in ("harden", "test"):
-            return 1.1
+            # base 1.1 boost, amplified by security pressure (capped to keep
+            # feasibility <= 1.0 after the min() at the call site).
+            return min(1.3, 1.1 * security_pressure)
         if op_name in ("integrate", "generalize"):
             return 0.9
     return 1.0
@@ -508,6 +538,13 @@ def render_markdown(report: IdeaTreeReport) -> str:
     for idea in report.ideas:
         by_parent.setdefault(idea.parent_id, []).append(idea)
 
+    # Synthesis/pair ideas are parentless-but-not-roots; render them separately.
+    synth = [i for i in report.ideas if i.kind != "permutation"]
+    synth_ids = {i.id for i in synth}
+    perm_roots = [
+        i for i in by_parent.get(None, []) if i.kind == "permutation" and i.id not in synth_ids
+    ]
+
     def walk(idea: IdeaNode, depth: int) -> None:
         indent = "  " * depth
         if depth == 0:
@@ -522,8 +559,15 @@ def render_markdown(report: IdeaTreeReport) -> str:
         for child in by_parent.get(idea.id, []):
             walk(child, depth + 1)
 
-    for root in by_parent.get(None, []):
+    for root in perm_roots:
         walk(root, 0)
+        lines.append("")
+
+    if synth:
+        lines.append("## 🔗 Synthesized ideas (beyond single-lens permutation)")
+        for idea in sorted(synth, key=lambda n: n.value, reverse=True):
+            tag = "synthesis" if idea.kind == "synthesis" else "module-pair"
+            lines.append(f"- [{tag}] {idea.title}  (v {idea.value})")
         lines.append("")
     return "\n".join(lines)
 
