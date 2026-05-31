@@ -546,9 +546,12 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         )
         # Strictly opt-in apply: only when --apply is passed; gated by mode + safety.
         if getattr(args, "apply", False):
+            verify = getattr(args, "verify", False)
             apply_results = [
                 {"branch": s.branch_path, "action": s.action_type,
-                 **bridge.apply_step(s, str(target), mode=getattr(args, "mode", None) or "supervised")}
+                 **bridge.apply_step(s, str(target),
+                                     mode=getattr(args, "mode", None) or "supervised",
+                                     verify=verify)}
                 for s in action_plan.executable_steps()
             ]
 
@@ -565,8 +568,15 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             applied = sum(1 for r in apply_results if r.get("applied"))
             print(f"\n## Applied {applied}/{len(apply_results)} executable steps (mode: {getattr(args, 'mode', None) or 'supervised'})")
             for r in apply_results:
-                status = "✅" if r.get("applied") else "⛔"
+                if r.get("rolled_back"):
+                    status = "↩️"
+                elif r.get("applied"):
+                    status = "✅"
+                else:
+                    status = "⛔"
                 detail = r.get("reason") or ", ".join(r.get("changed_files", []))
+                if r.get("verified") is True:
+                    detail += "  (tests pass)"
                 print(f"- {status} `{r['branch']}` {r['action']} — {detail}")
     else:
         print(render_markdown(report))
@@ -1034,6 +1044,11 @@ def main() -> int:
         "--apply",
         action="store_true",
         help="Apply executable steps — gated by mode + safety gates (opt-in)",
+    )
+    ideate_parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="After applying, run tests and auto-rollback any step that breaks them",
     )
     ideate_parser.add_argument(
         "--mode",

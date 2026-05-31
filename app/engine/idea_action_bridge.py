@@ -151,13 +151,23 @@ class IdeaActionBridge:
         }
 
     def apply_step(
-        self, step: ActionStep, project_root: str, mode: str = "supervised", run_tests: bool = False
+        self,
+        step: ActionStep,
+        project_root: str,
+        mode: str = "supervised",
+        run_tests: bool = False,
+        verify: bool = False,
     ) -> dict:
         """Apply an executable step's patch — strictly gated, opt-in.
 
         Enforces ModePolicy (must allow patching) and SafetyGates (scope,
         sensitive paths, secrets) before writing anything. Report mode can
-        never apply. Returns a result dict describing what happened.
+        never apply.
+
+        When ``verify`` is set, the original file contents are snapshotted
+        before writing; after applying, the test suite is run and — if it
+        fails — every changed file is restored to its pre-patch content
+        (automatic rollback). Returns a result dict describing what happened.
         """
         from app.policies.mode_policy import ModePolicy, mode_from_string
 
@@ -187,6 +197,13 @@ class IdeaActionBridge:
 
         from app.skills.execution.apply_patch import ApplyPatchSkill, FilePatch
 
+        # Snapshot originals for rollback before touching the tree.
+        root = Path(project_root)
+        snapshot: dict[str, str | None] = {}
+        for pr in patch_requests:
+            fp = root / pr["path"]
+            snapshot[pr["path"]] = fp.read_text(encoding="utf-8") if fp.exists() else None
+
         patches = [
             FilePatch(
                 path=pr["path"],
@@ -196,7 +213,8 @@ class IdeaActionBridge:
             for pr in patch_requests
         ]
         applied = ApplyPatchSkill().run(project_root, patches)
-        return {
+
+        out = {
             "applied": applied.ok,
             "mode": mode,
             "transform_type": result.transform_type,
@@ -204,6 +222,32 @@ class IdeaActionBridge:
             "skipped_files": applied.skipped_files,
             "error": applied.error,
         }
+        if not (verify and applied.ok and applied.changed_files):
+            return out
+
+        # Verify: run tests; roll back the changed files if they fail.
+        from app.skills.execution.run_tests import RunTestsSkill
+
+        summary = RunTestsSkill().run(project_root)
+        out["verified"] = bool(summary.ok)
+        out["test_commands"] = summary.commands
+        if summary.ok or not summary.commands:
+            # Pass (or no test command detected -> nothing to verify against).
+            out["rolled_back"] = False
+            return out
+
+        # Tests failed -> restore every changed file to its snapshot.
+        for rel in applied.changed_files:
+            original = snapshot.get(rel)
+            fp = root / rel
+            if original is None:
+                fp.unlink(missing_ok=True)  # file was newly created
+            else:
+                fp.write_text(original, encoding="utf-8")
+        out["applied"] = False
+        out["rolled_back"] = True
+        out["reason"] = "tests failed after patch; changes rolled back"
+        return out
 
     def plan_tree(
         self,

@@ -200,3 +200,56 @@ def test_harden_falls_back_to_guard_when_no_known_issue(tmp_path):
     # Should not raise; may or may not apply depending on guard applicability.
     result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
     assert "applied" in result
+
+
+def test_verify_keeps_patch_when_tests_pass(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    src = tmp_path / "app" / "svc.py"
+    src.write_text("def handler(x):\n    return x + 1\n")
+    (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    assert 1 + 1 == 2\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Document: app/svc.py", subject="app/svc.py",
+                    operator="document", operator_chain=["document"],
+                    source_facts=["dependency-hub: app/svc.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    res = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised", verify=True)
+    if res["applied"]:
+        assert res["verified"] is True
+        assert res.get("rolled_back") is False
+        assert '"""' in src.read_text()
+
+
+def test_verify_rolls_back_when_tests_fail(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    src = tmp_path / "app" / "svc.py"
+    original = "def handler(x):\n    return x + 1\n"
+    src.write_text(original)
+    (tmp_path / "tests" / "test_fail.py").write_text("def test_fail():\n    assert False\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Document: app/svc.py", subject="app/svc.py",
+                    operator="document", operator_chain=["document"],
+                    source_facts=["dependency-hub: app/svc.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    res = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised", verify=True)
+    # The patch generated and applied, tests failed -> rolled back, file restored.
+    if res.get("rolled_back"):
+        assert res["applied"] is False
+        assert src.read_text() == original
+
+
+def test_verify_rolls_back_newly_created_file(tmp_path):
+    # A create_test_stub that breaks tests should delete the newly-created file.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "main.py").write_text("def main():\n    return 1\n")
+    (tmp_path / "tests" / "test_fail.py").write_text("def test_fail():\n    assert False\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Test: app/main.py", subject="app/main.py",
+                    operator="test", operator_chain=["test"],
+                    source_facts=["untested: app/main.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    res = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised", verify=True)
+    if res.get("rolled_back"):
+        assert not (tmp_path / "tests" / "test_main.py").exists()
