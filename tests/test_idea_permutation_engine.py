@@ -33,7 +33,10 @@ def test_branches_are_unique_operator_permutations(tmp_path):
     titles = [i.title for i in rep.ideas]
     assert len(titles) == len(set(titles))  # no duplicate ideas
 
-    for idea in rep.ideas:
+    # Permutation invariants apply only to permutation-kind ideas; synthesis
+    # and module-pair ideas are a separate emit path by design.
+    perm = [i for i in rep.ideas if i.kind == "permutation"]
+    for idea in perm:
         # An operator never repeats within a single branch path (a permutation).
         assert len(idea.operator_chain) == len(set(idea.operator_chain))
         # A child's chain extends its parent's by exactly one operator.
@@ -139,3 +142,29 @@ def test_deep_rationale_references_prior_lenses(tmp_path):
     ).run()
     deep = [i for i in rep.ideas if i.depth == 2]
     assert deep and all("building on:" in i.rationale for i in deep)
+
+
+def test_synthesis_creates_security_test_suite_idea(tmp_path):
+    # A subject that gets both test and harden lenses should yield a synthesized
+    # security-test-suite idea (kind="synthesis").
+    _project(tmp_path)
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 60, "max_idea_depth": 2, "breadth": 8}, tmp_path
+    ).run()
+    synth = [i for i in rep.ideas if i.kind == "synthesis"]
+    assert synth, "expected at least one synthesized idea"
+    assert any("security-focused test suite" in i.title for i in synth)
+    assert "synthesized" in rep.stats
+
+
+def test_module_pair_ideas_from_dependency_edges(tmp_path):
+    # app/b.py imports app/a.py -> a dependency edge -> a "standardize interface" pair idea.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "a.py").write_text("def a():\n    return 1\n")
+    (tmp_path / "app" / "b.py").write_text("import app.a\ndef b():\n    return app.a.a()\n")
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 60, "max_idea_depth": 1, "breadth": 4}, tmp_path
+    ).run()
+    pairs = [i for i in rep.ideas if i.kind == "pair"]
+    assert pairs, "expected at least one module-pair idea"
+    assert any("interface between" in i.title or "import cycle" in i.title for i in pairs)

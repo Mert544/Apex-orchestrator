@@ -25,6 +25,7 @@ class ProjectProfile:
     untested_modules: list[str] = field(default_factory=list)
     critical_untested_modules: list[str] = field(default_factory=list)
     module_to_tests: dict[str, list[str]] = field(default_factory=dict)
+    dependency_edges: list[tuple[str, str]] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -123,6 +124,9 @@ class ProjectProfiler:
 
         graph_builder = DependencyGraphBuilder(self.root)
         profile.dependency_hubs = graph_builder.top_central_modules(limit=5)
+        profile.dependency_edges = [
+            (e.source, e.target) for e in graph_builder.edges()
+        ]
 
         symbol_rank = sorted(modules, key=lambda m: len(m.symbols), reverse=True)
         profile.symbol_hubs = [m.path for m in symbol_rank if len(m.symbols) > 0][:5]

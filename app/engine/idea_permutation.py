@@ -213,8 +213,13 @@ class IdeaPermutationEngine:
             emitted.append(root)
             frontier.append(root)
 
+        # Reserve a slice of the budget for synthesis so mechanical permutation
+        # can't crowd out the genuinely-new ideas.
+        reserve = max(4, int(self.budget.max_total_nodes * 0.15))
+        perm_cap = max(len(emitted), self.budget.max_total_nodes - reserve)
+
         # Best-first expansion by value.
-        while frontier and not self.budget.exhausted:
+        while frontier and not self.budget.exhausted and len(emitted) < perm_cap:
             frontier.sort(key=lambda n: n.value, reverse=True)
             node = frontier.pop(0)
             if node.depth >= self.max_depth:
@@ -235,6 +240,19 @@ class IdeaPermutationEngine:
                 emitted.append(child)
                 frontier.append(child)
 
+        # Synthesis: genuinely new ideas beyond mechanical permutation, drawn
+        # from the budget slice reserved above.
+        synth = self._synthesize(emitted, profile, relevance, graph)
+        added = 0
+        for node in synth:
+            if self.budget.exhausted:
+                break
+            graph.register_claim(node.title)
+            self.budget.consume_node()
+            emitted.append(node)
+            added += 1
+        stats["synthesized"] = added
+
         stats["total_ideas"] = len(emitted)
         stats["mean_value"] = (
             round(sum(i.value for i in emitted) / len(emitted), 4) if emitted else 0.0
@@ -246,6 +264,94 @@ class IdeaPermutationEngine:
             branch_map={i.branch_path: i.title for i in emitted},
             stats=stats,
         )
+
+    def _synthesize(
+        self,
+        emitted: list[IdeaNode],
+        profile: ProjectProfile,
+        relevance: RelevanceScorer,
+        graph: GraphStore,
+    ) -> list[IdeaNode]:
+        """Produce genuinely new ideas that no single operator permutation yields.
+
+        Two sources:
+          1. Cross-lens synthesis — if a subject got BOTH 'test' and 'harden'
+             lenses, propose a dedicated security-focused test suite.
+          2. Module-pair ideas — from dependency-graph edges, propose
+             standardizing the interface between coupled modules (and breaking
+             import cycles when a mutual edge exists).
+        These are not permutations, so they carry kind != "permutation" and a
+        non-conflicting branch path (`x.s*` / `x.p*`).
+        """
+        out: list[IdeaNode] = []
+
+        # 1. Cross-lens synthesis per subject.
+        lenses_by_subject: dict[str, set[str]] = {}
+        for idea in emitted:
+            if idea.subject:
+                lenses_by_subject.setdefault(idea.subject, set()).update(idea.operator_chain)
+        sidx = 0
+        for subject, lenses in lenses_by_subject.items():
+            if {"test", "harden"} <= lenses:
+                node = IdeaNode(
+                    id=f"synth-{sidx}",
+                    title=f"Build a security-focused test suite for {subject}",
+                    subject=subject,
+                    rationale=(
+                        "Synthesized: both hardening and testing apply to this "
+                        "subject, so target the hardening with dedicated tests."
+                    ),
+                    branch_path=f"x.s{sidx}",
+                    depth=1,
+                    operator="synthesis",
+                    operator_chain=["harden", "test"],
+                    source_facts=["synthesis: test+harden"],
+                    kind="synthesis",
+                )
+                self._score(node, relevance)
+                if not graph.has_similar_claim(node.title):
+                    out.append(node)
+                    sidx += 1
+
+        # 2. Module-pair ideas from the dependency graph.
+        edges = getattr(profile, "dependency_edges", []) or []
+        edge_set = {(s, t) for s, t in edges}
+        seen_pairs: set[tuple[str, str]] = set()
+        pidx = 0
+        for source, target in edges:
+            if pidx >= 4:  # keep pair ideas bounded
+                break
+            key = tuple(sorted((source, target)))
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            cyclic = (target, source) in edge_set
+            if cyclic:
+                title = f"Break the import cycle between {source} and {target}"
+                rationale = "Synthesized: mutual imports form a dependency cycle."
+                facts = ["dependency-cycle"]
+            else:
+                title = f"Standardize the interface between {source} and {target}"
+                rationale = "Synthesized: a dependency edge couples these modules."
+                facts = ["dependency-edge"]
+            node = IdeaNode(
+                id=f"pair-{pidx}",
+                title=title,
+                subject=f"{source}↔{target}",
+                rationale=rationale,
+                branch_path=f"x.p{pidx}",
+                depth=1,
+                operator="synthesis",
+                operator_chain=["integrate"],
+                source_facts=facts,
+                kind="pair",
+            )
+            self._score(node, relevance)
+            if not graph.has_similar_claim(node.title):
+                out.append(node)
+                pidx += 1
+
+        return out
 
     def _expand(self, node: IdeaNode) -> list[IdeaNode]:
         """Apply each unused operator to produce permutation children."""

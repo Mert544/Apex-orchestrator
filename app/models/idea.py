@@ -23,6 +23,9 @@ class IdeaNode(BaseModel):
     source_facts: list[str] = Field(default_factory=list)
     operator: str = "root"
     operator_chain: list[str] = Field(default_factory=list)
+    # How this idea was produced: "permutation" (operator lens chain),
+    # "synthesis" (combined lenses), or "pair" (module-pair from the dep graph).
+    kind: str = "permutation"
 
     relevance: float = 1.0
     novelty: float = 1.0
