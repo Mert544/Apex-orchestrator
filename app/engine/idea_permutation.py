@@ -93,6 +93,17 @@ class IdeaSeeder:
         roots: list[IdeaNode] = []
         seen_subjects: set[str] = set()
 
+        # Fragility first (highest priority): heavily-depended-on but thinly
+        # tested modules — the biggest blast-radius risk.
+        for module in (getattr(profile, "fragile_modules", []) or [])[:3]:
+            self._append_root(
+                roots, seen_subjects,
+                title=f"Reduce fragility of the heavily-depended-on module {module}",
+                subject=module,
+                fact_label="fragile",
+                fact_value=f"{module} (high in-degree, thin tests)",
+            )
+
         for attr, limit, title_tmpl, fact_label in self._RULES:
             values = getattr(profile, attr, []) or []
             for subject in values[:limit]:
@@ -199,6 +210,7 @@ class IdeaPermutationEngine:
         graph = GraphStore()  # reused purely for near-duplicate idea detection
         self.novelty = NoveltyScorer(graph)  # reuse the dedup-backed scorer
         self._chain_counts: dict[str, int] = {}  # per-run, for deterministic novelty
+        self._subject_counts: dict[str, int] = {}  # subject-diversity novelty signal
         stats = {"considered": 0, "pruned_relevance": 0, "pruned_duplicate": 0}
 
         emitted: list[IdeaNode] = []
@@ -218,9 +230,19 @@ class IdeaPermutationEngine:
         reserve = max(4, int(self.budget.max_total_nodes * 0.15))
         perm_cap = max(len(emitted), self.budget.max_total_nodes - reserve)
 
-        # Best-first expansion by value.
+        # Best-first expansion, but diversity-aware: a subject that has already
+        # produced many ideas is temporarily down-ranked so the tree spreads
+        # across modules instead of over-mining one hub. This shapes *selection
+        # order* only — node.value (the score) is untouched.
+        emitted_by_subject: dict[str, int] = {}
+        for n in emitted:
+            emitted_by_subject[n.subject] = emitted_by_subject.get(n.subject, 0) + 1
+
+        def _priority(n: IdeaNode) -> float:
+            return n.value - 0.05 * emitted_by_subject.get(n.subject, 0)
+
         while frontier and not self.budget.exhausted and len(emitted) < perm_cap:
-            frontier.sort(key=lambda n: n.value, reverse=True)
+            frontier.sort(key=_priority, reverse=True)
             node = frontier.pop(0)
             if node.depth >= self.max_depth:
                 continue
@@ -238,6 +260,7 @@ class IdeaPermutationEngine:
                 graph.register_claim(child.title)
                 self.budget.consume_node()
                 emitted.append(child)
+                emitted_by_subject[child.subject] = emitted_by_subject.get(child.subject, 0) + 1
                 frontier.append(child)
 
         # Synthesis: genuinely new ideas beyond mechanical permutation, drawn
@@ -398,7 +421,11 @@ class IdeaPermutationEngine:
         sig = ">".join(node.operator_chain)
         seen = self._chain_counts.get(sig, 0)
         self._chain_counts[sig] = seen + 1
-        nov = 1.0 - 0.15 * node.depth - 0.10 * seen
+        # Subject-diversity: penalize piling many ideas onto the same subject so
+        # the tree spreads across modules instead of over-mining one hub.
+        subj_seen = self._subject_counts.get(node.subject, 0)
+        self._subject_counts[node.subject] = subj_seen + 1
+        nov = 1.0 - 0.15 * node.depth - 0.10 * seen - 0.04 * subj_seen
         return max(0.2, round(nov, 4))
 
     def _score(self, node: IdeaNode, relevance: RelevanceScorer) -> None:
@@ -436,12 +463,13 @@ _FACT_HINTS: dict[str, str] = {
     "dependency-hub": "complex",
     "symbol-hub": "complex",
     "config": "hardcoded secret",
+    "fragile": "check validation edge cases complex",
     "extension-py": "type hints lint",
     "top-directory": "structure boundaries",
 }
 
 # Root fact labels where reliability/security lenses matter most.
-_SECURITY_LABELS = {"sensitive-path", "critical-untested", "untested", "partial-coverage"}
+_SECURITY_LABELS = {"sensitive-path", "critical-untested", "untested", "partial-coverage", "fragile"}
 
 
 def _context_weight(node: IdeaNode, op_name: str) -> float:

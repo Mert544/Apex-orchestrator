@@ -96,3 +96,17 @@ def test_seeds_extension_and_directory_signals():
     facts = [f for r in roots for f in r.source_facts]
     assert any(f.startswith("extension-py:") for f in facts)
     assert any(f.startswith("top-directory:") for f in facts)
+
+
+def test_seeds_fragile_modules_first():
+    profile = _profile(
+        fragile_modules=["app/core.py"],
+        dependency_hubs=["app/core.py"],
+        ci_files=["ci.yml"],
+    )
+    roots = IdeaSeeder().seed(profile)
+    facts = [f for r in roots for f in r.source_facts]
+    assert any(f.startswith("fragile: app/core.py") for f in facts)
+    # Fragility is highest priority -> dedup keeps it over the hub rule.
+    frag = next(r for r in roots if r.source_facts[0].startswith("fragile:"))
+    assert "Reduce fragility" in frag.title

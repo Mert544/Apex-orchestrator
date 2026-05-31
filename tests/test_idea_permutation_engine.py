@@ -168,3 +168,19 @@ def test_module_pair_ideas_from_dependency_edges(tmp_path):
     pairs = [i for i in rep.ideas if i.kind == "pair"]
     assert pairs, "expected at least one module-pair idea"
     assert any("interface between" in i.title or "import cycle" in i.title for i in pairs)
+
+
+def test_diversity_spreads_ideas_across_subjects(tmp_path):
+    # Several modules so the tree has multiple candidate subjects.
+    (tmp_path / "app").mkdir()
+    for name in ("a", "b", "c", "d"):
+        (tmp_path / "app" / f"{name}.py").write_text(f"def {name}():\n    return 1\n")
+    from collections import Counter
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4}, tmp_path
+    ).run()
+    child_subjects = Counter(
+        i.subject for i in rep.ideas if i.kind == "permutation" and i.depth > 0
+    )
+    # Diversity-aware selection should touch more than one subject.
+    assert len(child_subjects) >= 2
