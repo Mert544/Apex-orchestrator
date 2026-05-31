@@ -412,6 +412,55 @@ def cmd_hook(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_debug(args: argparse.Namespace) -> int:
+    """Trace a run or analyze a traceback using the debug subsystem."""
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+
+    if args.subcommand == "analyze":
+        if args.trace and args.trace != "-":
+            trace_text = Path(args.trace).read_text(encoding="utf-8")
+        else:
+            trace_text = sys.stdin.read()
+        from app.agents.limbs import get_limb
+
+        result = get_limb("debug").run(
+            project_root=str(target),
+            error_trace=trace_text,
+            target_file=getattr(args, "file", "") or "",
+        )
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            rc = result.get("root_cause")
+            print("=== APEX DEBUG ANALYZE ===")
+            print(f"Root cause: {rc['type'] if rc else 'unidentified'}")
+            for s in result.get("suggestions", []):
+                print(f"  - {s}")
+        return 0
+
+    # default subcommand == "trace"
+    from app.engine.debug_engine import DebugEngine
+    from app.tools.project_profile import ProjectProfiler
+
+    debug = DebugEngine(str(target), enabled=True)
+    debug.trace("cli", f"debug trace target={target}")
+    profile = ProjectProfiler(str(target)).profile()
+    debug.snapshot(
+        branch_map={d: 1 for d in profile.top_directories},
+        telemetry={"total_files": profile.total_files},
+    )
+    report = debug.report()
+    debug_files = sorted((target / ".apex" / "debug").glob("debug-*.json"))
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print("=== APEX DEBUG TRACE ===")
+        print(f"Traces: {report['trace_count']}  Anomalies: {len(report['anomalies'])}")
+        if debug_files:
+            print(f"Report: {debug_files[-1]}")
+    return 0
+
+
 def cmd_dashboard(args: argparse.Namespace) -> int:
     """Generate a self-contained HTML dashboard for the project."""
     from app.reporting.dashboard import build_dashboard
@@ -992,6 +1041,28 @@ def main() -> int:
     dash_parser.add_argument("--max-ideas", type=int, default=24, dest="max_ideas", help="Idea budget")
     dash_parser.add_argument("--out", default="", help="Output HTML path (default <target>/.apex/dashboard.html)")
     dash_parser.set_defaults(func=cmd_dashboard)
+
+    # debug
+    debug_parser = subparsers.add_parser(
+        "debug", help="Trace a run or analyze a traceback via the debug subsystem"
+    )
+    debug_sub = debug_parser.add_subparsers(dest="subcommand")
+
+    dbg_trace = debug_sub.add_parser(
+        "trace", help="Run with debug tracing; write a .apex/debug report"
+    )
+    dbg_trace.add_argument("--target", default="", help="Target project root")
+    dbg_trace.add_argument("--json", action="store_true", help="Emit JSON")
+    dbg_trace.set_defaults(func=cmd_debug)
+
+    dbg_analyze = debug_sub.add_parser(
+        "analyze", help="Diagnose a traceback (from --trace file or stdin)"
+    )
+    dbg_analyze.add_argument("--target", default="", help="Target project root")
+    dbg_analyze.add_argument("--trace", default="-", help="Traceback file, or - for stdin")
+    dbg_analyze.add_argument("--file", default="", help="Optional source file to scan")
+    dbg_analyze.add_argument("--json", action="store_true", help="Emit JSON")
+    dbg_analyze.set_defaults(func=cmd_debug)
 
     # hook
     hook_parser = subparsers.add_parser("hook", help="Manage git hooks")
