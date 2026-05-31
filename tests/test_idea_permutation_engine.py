@@ -217,3 +217,32 @@ def test_security_pressure_amplifies_harden_test(tmp_path):
     eng2 = IdeaPermutationEngine({"max_total_ideas": 20}, clean)
     eng2.run()
     assert eng2._security_pressure == 1.0
+
+
+def test_value_weights_calibrate_to_objective_presence(tmp_path):
+    # Without an objective, relevance is constant 1.0, so the engine shifts
+    # weight to novelty/feasibility — the signals that actually vary — and the
+    # value distribution should remain discriminating (not flat).
+    (tmp_path / "app").mkdir()
+    for n in ("a", "b", "c", "d", "e"):
+        (tmp_path / "app" / f"{n}.py").write_text(f"def {n}():\n    return 1\n")
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 40, "max_idea_depth": 3, "breadth": 4}, tmp_path
+    ).run()
+    vals = [i.value for i in rep.ideas]
+    # Discriminating: clearly more than a couple of distinct score levels.
+    assert len(set(vals)) >= max(5, len(vals) // 3)
+    assert max(vals) - min(vals) > 0.1
+
+
+def test_ideate_kind_filter(tmp_path, capsys):
+    import argparse
+    from app.cli import cmd_ideate
+    _project(tmp_path)
+    args = argparse.Namespace(
+        target=str(tmp_path), objective="", depth=2, breadth=8, max_ideas=60,
+        min_relevance=0.0, mermaid=False, json=False, out="", kind="synthesis",
+    )
+    assert cmd_ideate(args) == 0
+    out = capsys.readouterr().out
+    assert "synthesis ideas for" in out

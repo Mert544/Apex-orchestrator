@@ -509,6 +509,24 @@ def cmd_ideate(args: argparse.Namespace) -> int:
     )
     report = engine.run(objective=args.objective or None)
 
+    # --kind: list only ideas of a given kind (permutation/synthesis/pair),
+    # value-sorted. A focused view onto what the engine surfaced.
+    kind = getattr(args, "kind", "") or ""
+    if kind and kind != "all":
+        selected = sorted(
+            (i for i in report.ideas if i.kind == kind),
+            key=lambda n: n.value,
+            reverse=True,
+        )
+        if args.json:
+            print(json.dumps([i.to_dict() for i in selected], indent=2))
+        else:
+            print(f"# {kind} ideas for `{target}`  ({len(selected)} found)")
+            for i in selected:
+                caveat = f"  ⚠ {i.caveats[0]}" if i.caveats else ""
+                print(f"- `{i.branch_path}` [{i.operator}] {i.title}  (v {i.value}){caveat}")
+        return 0
+
     # Optionally bridge ideas into a supervised, never-applied action plan.
     action_plan = None
     apply_results = None
@@ -1028,6 +1046,12 @@ def main() -> int:
     )
     ideate_parser.add_argument("--json", action="store_true", help="Emit JSON")
     ideate_parser.add_argument("--out", default="", help="Write markdown to this path")
+    ideate_parser.add_argument(
+        "--kind",
+        default="",
+        choices=["", "all", "permutation", "synthesis", "pair"],
+        help="List only ideas of this kind (value-sorted)",
+    )
     ideate_parser.set_defaults(func=cmd_ideate)
 
     # dashboard

@@ -206,6 +206,7 @@ class IdeaPermutationEngine:
         # When False, skip the security scan (e.g. tests/perf); weighting stays static.
         self.security_aware = bool(cfg.get("security_aware", True))
         self._security_pressure = 1.0
+        self._has_objective = False
 
     def _scan_security_pressure(self) -> float:
         """Map real security findings to a harden/test weighting multiplier.
@@ -226,6 +227,7 @@ class IdeaPermutationEngine:
     def run(self, objective: str | None = None) -> IdeaTreeReport:
         profile = self.profiler.profile()
         relevance = RelevanceScorer(objective or "")
+        self._has_objective = bool(objective and objective.strip())
         graph = GraphStore()  # reused purely for near-duplicate idea detection
         self.novelty = NoveltyScorer(graph)  # reuse the dedup-backed scorer
         self._chain_counts: dict[str, int] = {}  # per-run, for deterministic novelty
@@ -456,9 +458,18 @@ class IdeaPermutationEngine:
         if node.operator == "root":
             node.feasibility = node.feasibility or 0.7
         node.novelty = self._novelty(node)
-        node.value = round(
-            0.4 * node.relevance + 0.3 * node.novelty + 0.3 * node.feasibility, 4
-        )
+        # Weight calibration: relevance only discriminates when an objective is
+        # set (otherwise it is constant 1.0 and the 0.4 term is dead, flattening
+        # scores). With no objective, redistribute that weight to the signals
+        # that actually vary — novelty and feasibility.
+        if self._has_objective:
+            node.value = round(
+                0.4 * node.relevance + 0.3 * node.novelty + 0.3 * node.feasibility, 4
+            )
+        else:
+            node.value = round(
+                0.2 * node.relevance + 0.4 * node.novelty + 0.4 * node.feasibility, 4
+            )
         # Feed operator/fact context so counterfactual caveats are relevant to
         # the development direction, not generic.
         cf_text = f"{node.title} {_caveat_hint(node)}".strip()
