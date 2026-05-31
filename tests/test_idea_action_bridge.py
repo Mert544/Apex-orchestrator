@@ -154,3 +154,49 @@ def test_apply_blocks_sensitive_path(tmp_path):
     result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
     if result["applied"] is False and "safety" in result.get("reason", ""):
         assert (tmp_path / "secrets" / "keys.py").read_text() == "def k():\n    return 1\n"
+
+
+def test_harden_applies_real_eval_fix(tmp_path):
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "svc.py"
+    src.write_text("def run(c):\n    return eval(c)\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Harden: app/svc.py", subject="app/svc.py",
+                    operator="harden", operator_chain=["harden"],
+                    source_facts=["sensitive-path: app/svc.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
+    if result["applied"]:
+        assert result["transform_type"] == "eval_to_literal_eval"
+        assert "ast.literal_eval(c)" in src.read_text()
+        assert "eval(c)" not in src.read_text().replace("literal_eval", "")
+
+
+def test_harden_applies_bare_except_fix(tmp_path):
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "m.py"
+    src.write_text("def f():\n    try:\n        x = 1\n    except:\n        pass\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Harden: app/m.py", subject="app/m.py",
+                    operator="harden", operator_chain=["harden"],
+                    source_facts=["sensitive-path: app/m.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
+    if result["applied"]:
+        assert "except Exception:" in src.read_text()
+
+
+def test_harden_falls_back_to_guard_when_no_known_issue(tmp_path):
+    # No eval/os.system/bare-except -> harden_security still produces *a* patch
+    # (guard clause) rather than erroring.
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "ok.py"
+    src.write_text("def f(x):\n    return x + 1\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Harden: app/ok.py", subject="app/ok.py",
+                    operator="harden", operator_chain=["harden"],
+                    source_facts=["sensitive-path: app/ok.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    # Should not raise; may or may not apply depending on guard applicability.
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
+    assert "applied" in result

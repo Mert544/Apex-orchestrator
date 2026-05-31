@@ -75,6 +75,24 @@ class IdeaActionBridge:
         "create_test_stub": ["test coverage"],
     }
 
+    @staticmethod
+    def _detect_security_issue(project_root: str, rel_path: str) -> str | None:
+        """Return the concrete security pattern present in a file, if any, so
+        harden_security can pick the real AST fix (eval / os.system / bare
+        except) instead of a generic guard clause."""
+        try:
+            text = (Path(project_root) / rel_path).read_text(encoding="utf-8")
+        except OSError:
+            return None
+        # Order matters: most dangerous first.
+        if "eval(" in text:
+            return "eval"
+        if "os.system(" in text:
+            return "os.system"
+        if "except:" in text:
+            return "bare except"
+        return None
+
     def _generate(self, step: ActionStep, project_root: str):
         """Run the semantic generator for an executable step. Returns the
         SemanticPatchResult (proposed only) or None."""
@@ -87,14 +105,24 @@ class IdeaActionBridge:
         else:
             target_files = [step.target]
 
+        # harden_security: prefer a concrete AST security fix when the file has
+        # a known dangerous pattern; fall back to the generic guard-clause hint.
+        change_strategy = self._ACTION_STRATEGY[step.action_type]
+        title = step.description
+        if step.action_type == "harden_security":
+            issue = self._detect_security_issue(project_root, step.target)
+            if issue:
+                change_strategy = [f"fix {issue} security"]
+                title = f"Fix {issue} in {step.target}"
+
         from app.execution.semantic_patch_generator import SemanticPatchGenerator
 
         patch_plan = {
             "target_files": target_files,
-            "title": step.description,
+            "title": title,
             "task_id": f"idea-{step.branch_path}",
             "branch": step.branch_path,
-            "change_strategy": self._ACTION_STRATEGY[step.action_type],
+            "change_strategy": change_strategy,
         }
         try:
             result = SemanticPatchGenerator().generate(project_root, patch_plan)
