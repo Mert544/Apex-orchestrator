@@ -123,8 +123,33 @@ def build_dashboard(
     action_plan = IdeaActionBridge().plan_tree(idea_report, top=15)
     reasoning = _run_reasoning(project_root, objective)
     git = _git_info(project_root)
+    debug = _run_debug(project_root, profile)
 
-    return _render_html(project_root, profile, findings, idea_report, action_plan, reasoning, git)
+    return _render_html(
+        project_root, profile, findings, idea_report, action_plan, reasoning, git, debug
+    )
+
+
+def _run_debug(project_root: str, profile) -> dict[str, Any]:
+    """Run a lightweight debug trace so the dashboard surfaces anomalies."""
+    try:
+        from app.engine.debug_engine import DebugEngine
+
+        debug = DebugEngine(project_root, enabled=True)
+        debug.trace("dashboard", "debug snapshot for dashboard")
+        debug.snapshot(
+            branch_map={d: 1 for d in profile.top_directories},
+            telemetry={"total_files": profile.total_files},
+        )
+        report = debug.report()
+        return {
+            "trace_count": report.get("trace_count", 0),
+            "anomalies": report.get("anomalies", []),
+            "pattern_issues": report.get("pattern_issues", []),
+            "total_time_sec": report.get("total_time_sec", 0),
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 # --- rendering (stdlib only, self-contained, professional) ------------------
@@ -192,6 +217,30 @@ def _repo_section(git: dict[str, Any]) -> str:
     commits = "".join(f"<li><code>{_esc(c)}</code></li>" for c in git.get("commits", []))
     body = f"<ul class='commits'>{commits}</ul>" if commits else ""
     return _card("repository", "🌿", "Repository", f"<div class='chips'>{chips}</div>{body}")
+
+
+def _debug_section(debug: dict[str, Any]) -> str:
+    if not debug:
+        return ""
+    if "error" in debug:
+        return _card("debug", "🐞", "Debug", f"<p class='muted'>unavailable: {_esc(debug['error'])}</p>")
+    anomalies = debug.get("anomalies", []) or []
+    patterns = debug.get("pattern_issues", []) or []
+    chips = "".join(
+        [
+            _chip("traces", debug.get("trace_count", 0)),
+            _chip("anomalies", len(anomalies)),
+            _chip("pattern issues", len(patterns)),
+            _chip("time (s)", debug.get("total_time_sec", 0)),
+        ]
+    )
+    items = anomalies + patterns
+    if items:
+        lis = "".join(f"<li>{_esc(i)}</li>" for i in items[:10])
+        body = f"<ul class='commits'>{lis}</ul>"
+    else:
+        body = "<p class='muted'>No anomalies detected 🎉</p>"
+    return _card("debug", "🐞", "Debug", f"<div class='chips'>{chips}</div>{body}")
 
 
 def _chip(label: str, value: Any) -> str:
@@ -410,10 +459,13 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:8px 0 36px}
 """
 
 
-def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning, git=None) -> str:
+def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning, git=None, debug=None) -> str:
     git = git or {}
+    debug = debug or {}
     nav_links = [("overview", "Overview"), ("findings", "Findings"), ("ideas", "Ideas"),
                  ("actions", "Actions"), ("reasoning", "Reasoning"), ("profile", "Profile")]
+    if debug:
+        nav_links.append(("debug", "Debug"))
     if git:
         nav_links.append(("repository", "Repo"))
     links = "".join(f"<a href='#{i}'>{_esc(t)}</a>" for i, t in nav_links)
@@ -426,6 +478,7 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
             _ideas_section(idea_report),
             _actions_section(action_plan),
             _reasoning_section(reasoning),
+            _debug_section(debug),
             _profile_section(profile),
             _repo_section(git),
         ]

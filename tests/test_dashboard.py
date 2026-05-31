@@ -59,3 +59,11 @@ def test_dashboard_skips_repo_section_outside_git(tmp_path):
     # Other sections still render; the repo section is simply omitted.
     assert "Project profile" in html_doc
     assert "<h2>Repository</h2>" not in html_doc
+
+
+def test_dashboard_includes_debug_section(tmp_path):
+    _project(tmp_path)
+    html_doc = build_dashboard(str(tmp_path))
+    assert "<h2><span class='ico'>🐞</span>Debug</h2>" in html_doc or "Debug" in html_doc
+    # Debug chips present (traces / anomalies).
+    assert "anomalies" in html_doc
