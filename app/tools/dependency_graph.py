@@ -65,6 +65,44 @@ class DependencyGraphBuilder:
         )
         return [node.path for node in ranked if node.centrality > 0][:limit]
 
+    def find_cycles(self, limit: int = 10) -> list[list[str]]:
+        """Return import cycles (incl. indirect A->B->C->A) via DFS + rec-stack.
+
+        Each cycle is a list of module paths ending back at its start. Results
+        are deterministic (graph iterated in sorted order) and de-duplicated by
+        rotation so the same cycle isn't reported from multiple entry points.
+        """
+        graph = self.build()
+        adj = {path: sorted(node.imports) for path, node in graph.items()}
+        visited: set[str] = set()
+        rec_stack: set[str] = set()
+        cycles: list[list[str]] = []
+        seen_keys: set[frozenset] = set()
+
+        def dfs(node: str, path: list[str]) -> None:
+            if len(cycles) >= limit:
+                return
+            visited.add(node)
+            rec_stack.add(node)
+            path.append(node)
+            for neighbor in adj.get(node, []):
+                if neighbor not in visited:
+                    dfs(neighbor, path)
+                elif neighbor in rec_stack:
+                    idx = path.index(neighbor)
+                    cycle = path[idx:]
+                    key = frozenset(cycle)
+                    if len(cycle) >= 2 and key not in seen_keys:
+                        seen_keys.add(key)
+                        cycles.append(cycle + [neighbor])
+            path.pop()
+            rec_stack.remove(node)
+
+        for start in sorted(adj):
+            if start not in visited:
+                dfs(start, [])
+        return cycles[:limit]
+
     def edges(self) -> list[DependencyEdge]:
         module_map = self._module_map()
         analyzer = PythonStructureAnalyzer(self.root)

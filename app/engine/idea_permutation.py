@@ -360,37 +360,56 @@ class IdeaPermutationEngine:
                     out.append(node)
                     sidx += 1
 
-        # 2. Module-pair ideas from the dependency graph.
-        edges = getattr(profile, "dependency_edges", []) or []
-        edge_set = {(s, t) for s, t in edges}
-        seen_pairs: set[tuple[str, str]] = set()
+        # 2. Import-cycle ideas — real cycles incl. indirect A->B->C->A, from
+        # the dependency graph's cycle detector. Modules already covered by a
+        # cycle idea are not re-proposed as plain interface pairs.
         pidx = 0
-        for source, target in edges:
-            if pidx >= 4:  # keep pair ideas bounded
+        in_cycle: set[str] = set()
+        for cycle in (getattr(profile, "import_cycles", []) or [])[:3]:
+            if pidx >= 4:
                 break
-            key = tuple(sorted((source, target)))
-            if key in seen_pairs:
-                continue
-            seen_pairs.add(key)
-            cyclic = (target, source) in edge_set
-            if cyclic:
-                title = f"Break the import cycle between {source} and {target}"
-                rationale = "Synthesized: mutual imports form a dependency cycle."
-                facts = ["dependency-cycle"]
-            else:
-                title = f"Standardize the interface between {source} and {target}"
-                rationale = "Synthesized: a dependency edge couples these modules."
-                facts = ["dependency-edge"]
+            ring = " → ".join(cycle)
+            members = [m for m in cycle if m]
+            in_cycle.update(members)
             node = IdeaNode(
                 id=f"pair-{pidx}",
-                title=title,
-                subject=f"{source}↔{target}",
-                rationale=rationale,
+                title=f"Break the import cycle {ring}",
+                subject="↔".join(dict.fromkeys(members)),
+                rationale=f"Synthesized: {len(set(members))} modules form an import cycle.",
                 branch_path=f"x.p{pidx}",
                 depth=1,
                 operator="synthesis",
                 operator_chain=["integrate"],
-                source_facts=facts,
+                source_facts=["dependency-cycle"],
+                kind="pair",
+            )
+            self._score(node, relevance)
+            if not graph.has_similar_claim(node.title):
+                out.append(node)
+                pidx += 1
+
+        # Plain coupling ideas for edges not already inside a reported cycle.
+        edges = getattr(profile, "dependency_edges", []) or []
+        seen_pairs: set[tuple[str, str]] = set()
+        for source, target in edges:
+            if pidx >= 5:  # keep total pair ideas bounded
+                break
+            if source in in_cycle and target in in_cycle:
+                continue
+            key = tuple(sorted((source, target)))
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            node = IdeaNode(
+                id=f"pair-{pidx}",
+                title=f"Standardize the interface between {source} and {target}",
+                subject=f"{source}↔{target}",
+                rationale="Synthesized: a dependency edge couples these modules.",
+                branch_path=f"x.p{pidx}",
+                depth=1,
+                operator="synthesis",
+                operator_chain=["integrate"],
+                source_facts=["dependency-edge"],
                 kind="pair",
             )
             self._score(node, relevance)

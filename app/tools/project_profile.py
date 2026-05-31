@@ -27,6 +27,7 @@ class ProjectProfile:
     module_to_tests: dict[str, list[str]] = field(default_factory=dict)
     dependency_edges: list[tuple[str, str]] = field(default_factory=list)
     fragile_modules: list[str] = field(default_factory=list)
+    import_cycles: list[list[str]] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -128,6 +129,7 @@ class ProjectProfiler:
         profile.dependency_edges = [
             (e.source, e.target) for e in graph_builder.edges()
         ]
+        profile.import_cycles = graph_builder.find_cycles(limit=5)
 
         symbol_rank = sorted(modules, key=lambda m: len(m.symbols), reverse=True)
         profile.symbol_hubs = [m.path for m in symbol_rank if len(m.symbols) > 0][:5]

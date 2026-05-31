@@ -246,3 +246,19 @@ def test_ideate_kind_filter(tmp_path, capsys):
     assert cmd_ideate(args) == 0
     out = capsys.readouterr().out
     assert "synthesis ideas for" in out
+
+
+def test_detects_indirect_import_cycle(tmp_path):
+    # A -> B -> C -> A is an indirect cycle the old mutual-edge check missed.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "a.py").write_text("import app.b\ndef a():\n    return app.b.b()\n")
+    (tmp_path / "app" / "b.py").write_text("import app.c\ndef b():\n    return app.c.c()\n")
+    (tmp_path / "app" / "c.py").write_text("import app.a\ndef c():\n    return 1\n")
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 40, "max_idea_depth": 1}, tmp_path
+    ).run()
+    pairs = [i for i in rep.ideas if i.kind == "pair"]
+    assert any("import cycle" in i.title for i in pairs)
+    # The cycle idea references all three modules.
+    cyc = next(i for i in pairs if "import cycle" in i.title)
+    assert "a.py" in cyc.title and "b.py" in cyc.title and "c.py" in cyc.title
