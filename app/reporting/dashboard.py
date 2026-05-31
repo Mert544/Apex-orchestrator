@@ -190,10 +190,12 @@ def _overview(profile, findings, idea_report, action_plan, git) -> str:
     doc = findings.get("docstring", {})
     cov_pct = int(cov.get("coverage_ratio", 0) * 100) if "coverage_ratio" in cov else None
     sec_n = sec.get("findings_count", 0) or 0
+    cycles_n = len(getattr(profile, "import_cycles", []) or [])
     cards = [
         _kpi("Files", profile.total_files, "a-blue"),
         _kpi("Security findings", sec_n, "a-red" if sec_n else "a-green"),
         _kpi("Coverage", f"{cov_pct}%" if cov_pct is not None else "—", "a-amber"),
+        _kpi("Import cycles", cycles_n, "a-red" if cycles_n else "a-green"),
         _kpi("Missing docs", doc.get("gaps_found", "—"), "a-amber"),
         _kpi("Ideas", idea_report.stats.get("total_ideas", 0), "a-violet"),
         _kpi("Action steps", action_plan.stats.get("total_steps", 0), "a-blue",
@@ -316,6 +318,42 @@ def _findings_section(findings: dict[str, dict[str, Any]]) -> str:
     )
     inner = f"<div class='chips'>{chips}</div>{_coverage_bar(cov)}{table}"
     return _card("findings", "🔍", "Scan findings", inner)
+
+
+def _architecture_section(p: ProjectProfile) -> str:
+    """Surface architectural risks the engine sees: import cycles + fragility."""
+    cycles = getattr(p, "import_cycles", []) or []
+    fragile = getattr(p, "fragile_modules", []) or []
+    if not cycles and not fragile:
+        return _card(
+            "architecture", "🏛️", "Architecture health",
+            "<p class='muted'>No import cycles or fragile hubs detected 🎉</p>",
+        )
+    chips = "".join(
+        [
+            _chip("import cycles", len(cycles)),
+            _chip("fragile modules", len(fragile)),
+            _chip("dependency edges", len(getattr(p, "dependency_edges", []) or [])),
+        ]
+    )
+    body = ""
+    if cycles:
+        items = "".join(f"<li><code>{_esc(' → '.join(c))}</code></li>" for c in cycles[:5])
+        body += f"<h4 style='margin:12px 0 4px'>🔄 Import cycles</h4><ul class='commits'>{items}</ul>"
+    if fragile:
+        items = "".join(
+            f"<li>{_kind_badge_label('fragile')} <code>{_esc(m)}</code> "
+            f"<span class='muted'>(high in-degree, thin tests)</span></li>"
+            for m in fragile[:5]
+        )
+        body += f"<h4 style='margin:12px 0 4px'>⚠️ Fragile modules</h4><ul class='commits'>{items}</ul>"
+    return _card("architecture", "🏛️", "Architecture health", f"<div class='chips'>{chips}</div>{body}")
+
+
+def _kind_badge_label(label: str) -> str:
+    if label == "fragile":
+        return "<span class='ibadge b-frag'>fragile</span>"
+    return ""
 
 
 def _kind_badge(idea) -> str:
@@ -498,7 +536,8 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:8px 0 36px}
 def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning, git=None, debug=None) -> str:
     git = git or {}
     debug = debug or {}
-    nav_links = [("overview", "Overview"), ("findings", "Findings"), ("ideas", "Ideas"),
+    nav_links = [("overview", "Overview"), ("findings", "Findings"),
+                 ("architecture", "Architecture"), ("ideas", "Ideas"),
                  ("actions", "Actions"), ("reasoning", "Reasoning"), ("profile", "Profile")]
     if debug:
         nav_links.append(("debug", "Debug"))
@@ -511,6 +550,7 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         [
             _overview(profile, findings, idea_report, action_plan, git),
             _findings_section(findings),
+            _architecture_section(profile),
             _ideas_section(idea_report),
             _actions_section(action_plan),
             _reasoning_section(reasoning),

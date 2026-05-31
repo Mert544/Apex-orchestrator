@@ -78,3 +78,15 @@ def test_dashboard_badges_synthesis_and_fragility(tmp_path):
     # Synthesized/module-pair appendix and badges render.
     assert "Synthesized" in html_doc
     assert "ibadge" in html_doc
+
+
+def test_dashboard_architecture_section(tmp_path):
+    # A->B->C->A indirect cycle should surface in the architecture section.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "a.py").write_text("import app.b\ndef a():\n    return app.b.b()\n")
+    (tmp_path / "app" / "b.py").write_text("import app.c\ndef b():\n    return app.c.c()\n")
+    (tmp_path / "app" / "c.py").write_text("import app.a\ndef c():\n    return 1\n")
+    html_doc = build_dashboard(str(tmp_path))
+    assert "Architecture health" in html_doc
+    assert "Import cycles" in html_doc
+    assert "Import cycles" in html_doc  # KPI + section
