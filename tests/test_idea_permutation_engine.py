@@ -115,3 +115,27 @@ def test_caveats_are_operator_relevant(tmp_path):
     # generic "holds after refactoring" fallback.
     joined = " ".join(harden.caveats).lower()
     assert "input" in joined or "attacker" in joined or "validation" in joined
+
+
+def test_novelty_decreases_with_depth_and_repetition(tmp_path):
+    _project(tmp_path)
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 40, "max_idea_depth": 3, "breadth": 4}, tmp_path
+    ).run()
+    roots = [i for i in rep.ideas if i.operator == "root"]
+    deep = [i for i in rep.ideas if i.depth >= 2]
+    assert all(r.novelty == 1.0 for r in roots)
+    assert deep and all(d.novelty < 1.0 for d in deep)
+    assert all(0.2 <= i.novelty <= 1.0 for i in rep.ideas)
+    assert all(0.0 <= i.value <= 1.0 for i in rep.ideas)
+    # Values now spread out: more distinct values than there are roots.
+    assert len({i.value for i in rep.ideas}) > len(roots)
+
+
+def test_deep_rationale_references_prior_lenses(tmp_path):
+    _project(tmp_path)
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4}, tmp_path
+    ).run()
+    deep = [i for i in rep.ideas if i.depth == 2]
+    assert deep and all("building on:" in i.rationale for i in deep)

@@ -72,3 +72,27 @@ def test_idea_tree_report_helpers():
     report = IdeaTreeReport(ideas=[a, b])
     assert report.roots() == [a]
     assert report.children_of("idea-0") == [b]
+
+
+def test_seeds_partial_coverage_distinct_from_untested():
+    profile = _profile(
+        module_to_tests={"app/a.py": ["t1"], "app/b.py": []},
+        untested_modules=["app/b.py"],
+        ci_files=["ci.yml"],
+    )
+    roots = IdeaSeeder().seed(profile)
+    facts = [f for r in roots for f in r.source_facts]
+    # a.py has 1 test -> partial-coverage; b.py has 0 -> untested (different idea)
+    assert any(f.startswith("partial-coverage: app/a.py") for f in facts)
+
+
+def test_seeds_extension_and_directory_signals():
+    profile = _profile(
+        extension_counts={".py": 12},
+        top_directories=["app"],
+        ci_files=["ci.yml"],
+    )
+    roots = IdeaSeeder().seed(profile)
+    facts = [f for r in roots for f in r.source_facts]
+    assert any(f.startswith("extension-py:") for f in facts)
+    assert any(f.startswith("top-directory:") for f in facts)

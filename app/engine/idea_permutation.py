@@ -6,6 +6,7 @@ from typing import Any
 
 from app.engine.budget import BudgetController
 from app.engine.counterfactual_generator import CounterfactualGenerator
+from app.engine.novelty import NoveltyScorer
 from app.memory.graph_store import GraphStore
 from app.models.idea import IdeaNode, IdeaTreeReport
 from app.skills.relevance_scorer import RelevanceScorer
@@ -59,6 +60,35 @@ class IdeaSeeder:
         ("config_files", 1, "Make configuration {s} environment-aware", "config"),
     ]
 
+    def _append_root(
+        self,
+        roots: list[IdeaNode],
+        seen_subjects: set,
+        *,
+        title: str,
+        subject: str,
+        fact_label: str,
+        fact_value: str,
+        rationale: str | None = None,
+    ) -> None:
+        """Append a traceable root idea unless its subject was already seeded."""
+        if subject in seen_subjects:
+            return
+        seen_subjects.add(subject)
+        idx = len(roots)
+        roots.append(
+            IdeaNode(
+                id=f"idea-{idx}",
+                title=title,
+                subject=subject,
+                rationale=rationale or f"Seeded from {fact_label}: {fact_value}",
+                branch_path=make_branch_path("x", idx),
+                depth=0,
+                operator="root",
+                source_facts=[f"{fact_label}: {fact_value}"],
+            )
+        )
+
     def seed(self, profile: ProjectProfile, objective: str | None = None) -> list[IdeaNode]:
         roots: list[IdeaNode] = []
         seen_subjects: set[str] = set()
@@ -66,37 +96,59 @@ class IdeaSeeder:
         for attr, limit, title_tmpl, fact_label in self._RULES:
             values = getattr(profile, attr, []) or []
             for subject in values[:limit]:
-                if subject in seen_subjects:
-                    continue
-                seen_subjects.add(subject)
-                idx = len(roots)
-                roots.append(
-                    IdeaNode(
-                        id=f"idea-{idx}",
-                        title=title_tmpl.format(s=subject),
-                        subject=subject,
-                        rationale=f"Seeded from {fact_label}: {subject}",
-                        branch_path=make_branch_path("x", idx),
-                        depth=0,
-                        operator="root",
-                        source_facts=[f"{fact_label}: {subject}"],
-                    )
+                self._append_root(
+                    roots, seen_subjects,
+                    title=title_tmpl.format(s=subject),
+                    subject=subject,
+                    fact_label=fact_label,
+                    fact_value=subject,
                 )
+
+        # Coverage DEPTH: modules with exactly one linked test are shallowly
+        # covered — they need "deepen", not "first test layer".
+        untested = set(getattr(profile, "untested_modules", []) or [])
+        partial = sorted(
+            m for m, tests in (getattr(profile, "module_to_tests", {}) or {}).items()
+            if 0 < len(tests) <= 1 and m not in untested
+        )
+        for module in partial[:2]:
+            self._append_root(
+                roots, seen_subjects,
+                title=f"Deepen the thin test coverage of {module}",
+                subject=module,
+                fact_label="partial-coverage",
+                fact_value=f"{module} (1 test)",
+            )
+
+        # Dominant language → tooling idea (type hints / lint config).
+        exts = getattr(profile, "extension_counts", {}) or {}
+        if exts.get(".py", 0) >= 1:
+            self._append_root(
+                roots, seen_subjects,
+                title="Add type hints and a lint/type-check config",
+                subject="Python type coverage",
+                fact_label="extension-py",
+                fact_value=f".py x{exts['.py']}",
+            )
+
+        # Dominant top-level directory → structure/boundaries idea.
+        for directory in (getattr(profile, "top_directories", []) or [])[:1]:
+            self._append_root(
+                roots, seen_subjects,
+                title=f"Clarify the structure and boundaries of `{directory}/`",
+                subject=f"{directory}/ package",
+                fact_label="top-directory",
+                fact_value=directory,
+            )
 
         # If the project has no CI, that itself is a development direction.
         if not getattr(profile, "ci_files", None):
-            idx = len(roots)
-            roots.append(
-                IdeaNode(
-                    id=f"idea-{idx}",
-                    title="Add continuous-integration automation",
-                    subject="CI pipeline",
-                    rationale="Seeded from missing-ci: no CI workflow files detected",
-                    branch_path=make_branch_path("x", idx),
-                    depth=0,
-                    operator="root",
-                    source_facts=["missing-ci: no CI workflow files detected"],
-                )
+            self._append_root(
+                roots, seen_subjects,
+                title="Add continuous-integration automation",
+                subject="CI pipeline",
+                fact_label="missing-ci",
+                fact_value="no CI workflow files detected",
             )
 
         return roots
@@ -145,6 +197,8 @@ class IdeaPermutationEngine:
         profile = self.profiler.profile()
         relevance = RelevanceScorer(objective or "")
         graph = GraphStore()  # reused purely for near-duplicate idea detection
+        self.novelty = NoveltyScorer(graph)  # reuse the dedup-backed scorer
+        self._chain_counts: dict[str, int] = {}  # per-run, for deterministic novelty
         stats = {"considered": 0, "pruned_relevance": 0, "pruned_duplicate": 0}
 
         emitted: list[IdeaNode] = []
@@ -199,27 +253,53 @@ class IdeaPermutationEngine:
         available = [op for op in self.operators if op.name not in node.operator_chain]
         for i, op in enumerate(available[: self.breadth]):
             chain = node.operator_chain + [op.name]
+            base = op.template.format(x=node.subject)
+            # Depth-aware rationale: reference the accumulated lens path.
+            rationale = (
+                base
+                if node.depth == 0
+                else f"{base} — building on: {' then '.join(node.operator_chain)}."
+            )
+            # Context reweighting: security-relevant subjects favor harden/test.
+            ctx = _context_weight(node, op.name)
+            feasibility = min(1.0, round(op.feasibility * (0.9 ** node.depth) * ctx, 4))
             children.append(
                 IdeaNode(
                     id=f"{node.id}-{i}",
                     title=_compose_title(node.subject, chain),
                     subject=node.subject,
-                    rationale=op.template.format(x=node.subject),
+                    rationale=rationale,
                     branch_path=make_branch_path(node.branch_path, i),
                     depth=node.depth + 1,
                     parent_id=node.id,
                     operator=op.name,
                     operator_chain=chain,
                     source_facts=node.source_facts,
-                    feasibility=round(op.feasibility * (0.9 ** node.depth), 4),
+                    feasibility=feasibility,
                 )
             )
         return children
+
+    def _novelty(self, node: IdeaNode) -> float:
+        """Deterministic novelty: deeper / more-repeated lens chains are less novel.
+
+        Uses the dedup GraphStore-backed NoveltyScorer's philosophy at the
+        operator-chain granularity (raw titles are already unique by construction,
+        so a per-chain repetition signal is what actually differentiates ideas).
+        """
+        if node.operator == "root":
+            return 1.0
+        sig = ">".join(node.operator_chain)
+        seen = self._chain_counts.get(sig, 0)
+        self._chain_counts[sig] = seen + 1
+        nov = 1.0 - 0.15 * node.depth - 0.10 * seen
+        return max(0.2, round(nov, 4))
 
     def _score(self, node: IdeaNode, relevance: RelevanceScorer) -> None:
         node.relevance = relevance.score(f"{node.title} {node.subject}")
         if node.operator == "root":
             node.feasibility = node.feasibility or 0.7
+        node.novelty = self._novelty(node)
         node.value = round(
             0.4 * node.relevance + 0.3 * node.novelty + 0.3 * node.feasibility, 4
         )
@@ -245,11 +325,28 @@ _FACT_HINTS: dict[str, str] = {
     "sensitive-path": "guard validation secret check",
     "untested": "check validation edge cases",
     "critical-untested": "check validation edge cases",
+    "partial-coverage": "check validation edge cases",
     "entrypoint": "request call network",
     "dependency-hub": "complex",
     "symbol-hub": "complex",
     "config": "hardcoded secret",
+    "extension-py": "type hints lint",
+    "top-directory": "structure boundaries",
 }
+
+# Root fact labels where reliability/security lenses matter most.
+_SECURITY_LABELS = {"sensitive-path", "critical-untested", "untested", "partial-coverage"}
+
+
+def _context_weight(node: IdeaNode, op_name: str) -> float:
+    """Upweight harden/test for security-relevant subjects, downweight the rest."""
+    label = node.source_facts[0].split(":")[0].strip() if node.source_facts else ""
+    if label in _SECURITY_LABELS:
+        if op_name in ("harden", "test"):
+            return 1.1
+        if op_name in ("integrate", "generalize"):
+            return 0.9
+    return 1.0
 
 
 def _caveat_hint(node: IdeaNode) -> str:
