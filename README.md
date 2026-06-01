@@ -174,6 +174,20 @@ back, or blocked — with per-step commit hashes in autonomous mode.
 
 ---
 
+## 🧩 Claude Code Integration
+
+This repo ships first-class [Claude Code](https://code.claude.com) customizations in
+`.claude/`, so you (and Claude) can drive Apex from your editor:
+
+- **Slash commands**: `/apex-ideate`, `/apex-maintain` (defaults to a safe dry run),
+  `/apex-dashboard`
+- **Subagent**: `apex-auditor` — a read-only auditor that reports security, architecture,
+  and coverage findings using Apex's own engines
+- **Skill**: `apex` — guides Claude to both *run* Apex and *extend* it (new transforms,
+  idea operators, seeding signals) following the project's patterns
+
+---
+
 ## 🛡️ Safety First
 
 Apex operates in three modes:
