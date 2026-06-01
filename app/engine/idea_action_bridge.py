@@ -101,7 +101,15 @@ class IdeaActionBridge:
         if not step.target or not step.target.endswith(".py"):
             return None
         if step.action_type == "create_test_stub":
-            target_files = [f"tests/test_{Path(step.target).stem}.py"]
+            # Don't generate tests *for* test files, and never overwrite an
+            # existing test file (that would clobber real tests).
+            stem = Path(step.target).stem
+            if stem.startswith("test_") or "/tests/" in f"/{step.target}" or step.target.startswith("tests/"):
+                return None
+            stub = f"tests/test_{stem}.py"
+            if (Path(project_root) / stub).exists():
+                return None
+            target_files = [stub]
         else:
             target_files = [step.target]
 
@@ -248,6 +256,46 @@ class IdeaActionBridge:
         out["rolled_back"] = True
         out["reason"] = "tests failed after patch; changes rolled back"
         return out
+
+    def apply_plan(
+        self,
+        plan: ActionPlan,
+        project_root: str,
+        mode: str = "supervised",
+        verify: bool = False,
+        max_apply: int | None = None,
+    ) -> dict:
+        """Run a whole maintenance pass: apply each executable step in turn,
+        verifying + rolling back individually, and return an aggregate summary.
+
+        Steps are processed in plan order (already value-sorted). Each step is
+        independent — a rolled-back step does not abort the run. Honors the
+        same gating as apply_step (mode + safety + verify).
+        """
+        results: list[dict] = []
+        applied = rolled_back = blocked = 0
+        for step in plan.executable_steps():
+            if max_apply is not None and applied >= max_apply:
+                break
+            r = self.apply_step(step, project_root, mode=mode, verify=verify)
+            entry = {"branch": step.branch_path, "action": step.action_type,
+                     "target": step.target, **r}
+            results.append(entry)
+            if r.get("rolled_back"):
+                rolled_back += 1
+            elif r.get("applied"):
+                applied += 1
+            else:
+                blocked += 1
+        return {
+            "mode": mode,
+            "verify": verify,
+            "total_executable": len(plan.executable_steps()),
+            "applied": applied,
+            "rolled_back": rolled_back,
+            "blocked": blocked,
+            "results": results,
+        }
 
     def plan_tree(
         self,

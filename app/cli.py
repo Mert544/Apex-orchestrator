@@ -546,14 +546,13 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         )
         # Strictly opt-in apply: only when --apply is passed; gated by mode + safety.
         if getattr(args, "apply", False):
-            verify = getattr(args, "verify", False)
-            apply_results = [
-                {"branch": s.branch_path, "action": s.action_type,
-                 **bridge.apply_step(s, str(target),
-                                     mode=getattr(args, "mode", None) or "supervised",
-                                     verify=verify)}
-                for s in action_plan.executable_steps()
-            ]
+            apply_results = bridge.apply_plan(
+                action_plan,
+                str(target),
+                mode=getattr(args, "mode", None) or "supervised",
+                verify=getattr(args, "verify", False),
+                max_apply=(args.max_apply or None) if getattr(args, "max_apply", 0) else None,
+            )
 
     if args.json:
         payload = report.model_dump()
@@ -565,9 +564,14 @@ def cmd_ideate(args: argparse.Namespace) -> int:
     elif action_plan is not None:
         print(render_action_markdown(action_plan))
         if apply_results is not None:
-            applied = sum(1 for r in apply_results if r.get("applied"))
-            print(f"\n## Applied {applied}/{len(apply_results)} executable steps (mode: {getattr(args, 'mode', None) or 'supervised'})")
-            for r in apply_results:
+            verify_note = " · verified" if apply_results.get("verify") else ""
+            print(
+                f"\n## Maintenance run (mode: {apply_results.get('mode')}{verify_note})\n"
+                f"applied {apply_results['applied']} · rolled back "
+                f"{apply_results['rolled_back']} · blocked {apply_results['blocked']} "
+                f"of {apply_results['total_executable']} executable steps"
+            )
+            for r in apply_results["results"]:
                 if r.get("rolled_back"):
                     status = "↩️"
                 elif r.get("applied"):
@@ -1049,6 +1053,13 @@ def main() -> int:
         "--verify",
         action="store_true",
         help="After applying, run tests and auto-rollback any step that breaks them",
+    )
+    ideate_parser.add_argument(
+        "--max-apply",
+        type=int,
+        default=0,
+        dest="max_apply",
+        help="Cap how many steps a maintenance run applies (0 = no cap)",
     )
     ideate_parser.add_argument(
         "--mode",

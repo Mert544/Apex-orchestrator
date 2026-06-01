@@ -253,3 +253,48 @@ def test_verify_rolls_back_newly_created_file(tmp_path):
     res = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised", verify=True)
     if res.get("rolled_back"):
         assert not (tmp_path / "tests" / "test_main.py").exists()
+
+
+def test_apply_plan_runs_whole_pass_with_summary(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    (tmp_path / "app" / "danger.py").write_text("def run(e):\n    return eval(e)\n")
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "from app.calc import add\ndef test_add():\n    assert add(2, 3) == 5\n"
+    )
+    from app.engine.idea_permutation import IdeaPermutationEngine
+    rep = IdeaPermutationEngine({"max_total_ideas": 20, "max_idea_depth": 1}, tmp_path).run()
+    bridge = IdeaActionBridge()
+    plan = bridge.plan_tree(rep, project_root=str(tmp_path))
+    summary = bridge.apply_plan(plan, str(tmp_path), mode="supervised", verify=True)
+
+    assert summary["applied"] + summary["rolled_back"] + summary["blocked"] == summary["total_executable"]
+    assert len(summary["results"]) == summary["total_executable"]
+    # The eval() should have been fixed and kept (tests still pass).
+    assert "ast.literal_eval" in (tmp_path / "app" / "danger.py").read_text()
+
+
+def test_create_test_stub_never_targets_test_files(tmp_path):
+    # A test file as subject must not spawn a test_test_*.py stub.
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_calc.py").write_text("def test_x():\n    assert True\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Test: tests/test_calc.py", subject="tests/test_calc.py",
+                    operator="test", operator_chain=["test"],
+                    source_facts=["untested: tests/test_calc.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    assert IdeaActionBridge().draft_patch(step, str(tmp_path)) is None
+
+
+def test_run_tests_isolates_target_project(tmp_path):
+    # RunTestsSkill must resolve the TARGET project's package, not the caller's.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "from app.calc import add\ndef test_add():\n    assert add(1, 1) == 2\n"
+    )
+    from app.skills.execution.run_tests import RunTestsSkill
+    summary = RunTestsSkill().run(str(tmp_path))
+    assert summary.ok
