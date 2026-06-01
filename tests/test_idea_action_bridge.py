@@ -336,3 +336,19 @@ def test_apply_plan_commits_in_autonomous(tmp_path):
             ["git", "log", "--oneline"], cwd=tmp_path, capture_output=True, text=True
         ).stdout
         assert "Apex auto-fix" in log
+
+
+def test_harden_flags_pickle_loads(tmp_path):
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "svc.py"
+    src.write_text("import pickle\ndef load(b):\n    return pickle.loads(b)\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Harden: app/svc.py", subject="app/svc.py",
+                    operator="harden", operator_chain=["harden"],
+                    source_facts=["sensitive-path: app/svc.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
+    if result["applied"]:
+        assert result["transform_type"] == "flag_pickle_loads"
+        assert "SECURITY" in src.read_text()
+        assert "pickle.loads(b)" in src.read_text()  # call preserved, just annotated

@@ -89,6 +89,8 @@ class IdeaActionBridge:
             return "eval"
         if "os.system(" in text:
             return "os.system"
+        if "pickle.loads(" in text:
+            return "pickle"
         if "except:" in text:
             return "bare except"
         return None

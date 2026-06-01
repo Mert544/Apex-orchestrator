@@ -66,6 +66,9 @@ class EditStrategy:
         if "bare except" in combined or "bareexcept" in combined:
             reasons.append("Keywords suggest a bare-except fix.")
             return EditStrategyResult(strategy="fix_bare_except", confidence=0.9, reasons=reasons)
+        if "pickle" in combined:
+            reasons.append("Keywords suggest flagging unsafe pickle.loads().")
+            return EditStrategyResult(strategy="fix_pickle", confidence=0.8, reasons=reasons)
 
         if "import" in combined or "unused" in combined or "cleanup" in combined:
             reasons.append("Keywords suggest import cleanup.")

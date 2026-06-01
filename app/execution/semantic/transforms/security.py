@@ -19,6 +19,50 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
         return _patch_os_system(rel_path, source, tree)
     if "bare except" in issue or "bareexcept" in issue:
         return _patch_bare_except(rel_path, source, tree)
+    if "pickle" in issue:
+        return _patch_pickle(rel_path, source, tree)
+    return None
+
+
+def _patch_pickle(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
+    """Flag pickle.loads() with a security warning comment.
+
+    Unlike eval/os.system, there is no safe drop-in replacement (pickle can
+    execute arbitrary code on load, and json/msgpack are not semantically
+    equivalent), so we annotate the call site rather than silently rewriting it.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "loads"):
+            continue
+        if not (isinstance(func.value, ast.Name) and func.value.id == "pickle"):
+            continue
+
+        lineno = node.lineno
+        lines = source.splitlines(keepends=True)
+        if lineno > len(lines):
+            continue
+        line_content = lines[lineno - 1]
+        if "Apex: untrusted pickle" in line_content:
+            continue  # already flagged
+        indent = line_content[: len(line_content) - len(line_content.lstrip())]
+        warning = (
+            f"{indent}# SECURITY (Apex: untrusted pickle.loads can execute "
+            f"arbitrary code; validate the source or use json/msgpack)\n"
+        )
+        new_lines = list(lines)
+        new_lines.insert(lineno - 1, warning)
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel_path,
+                "new_content": "".join(new_lines),
+                "expected_old_content": source,
+            }],
+            transform_type="flag_pickle_loads",
+            rationale=[f"Flagged unsafe pickle.loads() with a security warning in {rel_path}."],
+        )
     return None
 
 
