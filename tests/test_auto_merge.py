@@ -10,7 +10,7 @@ def test_auto_merger_creates_commit(tmp_path):
 
     (tmp_path / "main.py").write_text("x = 1\n", encoding="utf-8")
     subprocess.run(["git", "add", "main.py"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "-c", "commit.gpgsign=false", "commit", "-m", "initial"], cwd=tmp_path, capture_output=True)
 
     (tmp_path / "main.py").write_text("x = 2\n", encoding="utf-8")
 

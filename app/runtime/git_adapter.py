@@ -42,7 +42,13 @@ class GitAdapter:
         return self.runner.run(CommandSpec(command=["git", "add", "--", *paths], cwd=Path(repo_dir)))
 
     def commit(self, repo_dir: str | Path, message: str) -> CommandResult:
-        return self.runner.run(CommandSpec(command=["git", "commit", "-m", message], cwd=Path(repo_dir)))
+        # Disable GPG signing: machine-generated commits can't satisfy an
+        # interactive/required signing key, so a signing-mandated repo or
+        # sandbox would otherwise reject the commit.
+        return self.runner.run(CommandSpec(
+            command=["git", "-c", "commit.gpgsign=false", "commit", "-m", message],
+            cwd=Path(repo_dir),
+        ))
 
     def push(self, repo_dir: str | Path, remote: str = "origin", branch: str | None = None) -> CommandResult:
         command = ["git", "push", remote]
@@ -51,7 +57,9 @@ class GitAdapter:
         return self.runner.run(CommandSpec(command=command, cwd=Path(repo_dir)))
 
     def tag(self, repo_dir: str | Path, tag_name: str, message: str | None = None) -> CommandResult:
-        command = ["git", "tag", "-a", tag_name] if message else ["git", "tag", tag_name]
+        # Same signing rationale as commit() for annotated tags.
+        base = ["git", "-c", "tag.gpgsign=false"]
+        command = base + (["tag", "-a", tag_name] if message else ["tag", tag_name])
         if message:
             command.extend(["-m", message])
         return self.runner.run(CommandSpec(command=command, cwd=Path(repo_dir)))

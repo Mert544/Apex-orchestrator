@@ -96,7 +96,7 @@ class CheckpointManager:
 
                 msg = f"checkpoint: {mode} run {run_id} at {timestamp}"
                 subprocess.run(
-                    ["git", "commit", "-m", msg],
+                    ["git", "-c", "commit.gpgsign=false", "commit", "-m", msg],
                     cwd=str(self.project_root),
                     capture_output=True,
                     timeout=10,

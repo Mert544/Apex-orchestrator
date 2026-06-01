@@ -57,7 +57,7 @@ class AutoMerger:
             if rc != 0:
                 result.errors.append(f"Failed to stage {f}: {err.strip()}")
 
-        rc, out, err = self._run_git("commit", "-m", message)
+        rc, out, err = self._run_git("-c", "commit.gpgsign=false", "commit", "-m", message)
         if rc != 0:
             if "nothing to commit" in err.lower() or "nothing to commit" in out.lower():
                 result.errors.append("No changes to commit.")
