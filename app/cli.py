@@ -480,6 +480,48 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_maintain(args: argparse.Namespace) -> int:
+    """One-shot maintenance: scan -> ideate -> apply -> verify -> commit -> report."""
+    from app.engine.idea_permutation import IdeaPermutationEngine
+    from app.engine.idea_action_bridge import (
+        IdeaActionBridge,
+        render_maintenance_markdown,
+    )
+    from app.plugins.registry import PluginRegistry
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    plugins = PluginRegistry()
+    plugins.load_all()
+
+    report = IdeaPermutationEngine(
+        config={"max_total_ideas": args.max_ideas, "max_idea_depth": args.depth,
+                "breadth": args.breadth},
+        project_root=str(target),
+        extra_operators=plugins.idea_operators(),
+    ).run(objective=args.objective or None)
+
+    bridge = IdeaActionBridge()
+    plan = bridge.plan_tree(report, mode=args.mode, top=(args.top or None), project_root=str(target))
+    summary = bridge.apply_plan(
+        plan, str(target), mode=args.mode,
+        verify=not args.no_verify,
+        max_apply=(args.max_apply or None) if args.max_apply else None,
+        commit=args.commit,
+    )
+    md = render_maintenance_markdown(summary, str(target), objective=args.objective or "")
+
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(md)
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(md, encoding="utf-8")
+        print(f"\n[maintain] Report written to {out_path}")
+    return 0
+
+
 def cmd_ideate(args: argparse.Namespace) -> int:
     """Generate a permutation tree of development ideas from the codebase."""
     from app.engine.idea_permutation import (
@@ -1103,6 +1145,38 @@ def main() -> int:
     dash_parser.add_argument("--max-ideas", type=int, default=24, dest="max_ideas", help="Idea budget")
     dash_parser.add_argument("--out", default="", help="Output HTML path (default <target>/.apex/dashboard.html)")
     dash_parser.set_defaults(func=cmd_dashboard)
+
+    # maintain — one-shot scan -> ideate -> apply -> verify -> commit -> report
+    maintain_parser = subparsers.add_parser(
+        "maintain",
+        help="One-shot maintenance: scan, generate fixes, apply (verified), commit, report",
+    )
+    maintain_parser.add_argument("--target", default="", help="Target project root")
+    maintain_parser.add_argument("--objective", default="", help="Optional theme to focus on")
+    maintain_parser.add_argument("--depth", type=int, default=2, help="Idea permutation depth")
+    maintain_parser.add_argument("--breadth", type=int, default=4, help="Operators per idea")
+    maintain_parser.add_argument("--max-ideas", type=int, default=40, dest="max_ideas")
+    maintain_parser.add_argument("--top", type=int, default=0, help="Limit plan to top-N ideas")
+    maintain_parser.add_argument(
+        "--mode", default="supervised",
+        choices=["report", "supervised", "autonomous"],
+        help="report=plan only, supervised=apply, autonomous=apply+commit",
+    )
+    maintain_parser.add_argument(
+        "--no-verify", action="store_true",
+        help="Skip running tests + auto-rollback after each applied step",
+    )
+    maintain_parser.add_argument(
+        "--commit", action="store_true",
+        help="Auto-commit each applied step (autonomous mode only)",
+    )
+    maintain_parser.add_argument(
+        "--max-apply", type=int, default=0, dest="max_apply",
+        help="Cap how many steps to apply (0 = no cap)",
+    )
+    maintain_parser.add_argument("--json", action="store_true", help="Emit JSON summary")
+    maintain_parser.add_argument("--out", default="", help="Write the Markdown report to this path")
+    maintain_parser.set_defaults(func=cmd_maintain)
 
     # debug
     debug_parser = subparsers.add_parser(

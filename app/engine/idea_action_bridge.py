@@ -379,3 +379,57 @@ def render_action_markdown(plan: ActionPlan) -> str:
                 f"    ↳ draft `{s.patch_preview.get('transform_type')}` → {files} (preview, not applied)"
             )
     return "\n".join(lines)
+
+
+def render_maintenance_markdown(summary: dict, project_root: str, objective: str = "") -> str:
+    """Render an end-to-end maintenance run as a Markdown report."""
+    from datetime import datetime, timezone
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines = [
+        f"# Apex Maintenance Report — `{project_root}`",
+        "",
+        f"_Generated {ts}_",
+    ]
+    if objective:
+        lines.append(f"_Objective: {objective}_")
+    lines += [
+        "",
+        f"- Mode: **{summary.get('mode')}**"
+        + ("  · verified" if summary.get("verify") else "")
+        + ("  · committed" if summary.get("commit") else ""),
+        f"- Applied: **{summary.get('applied', 0)}** · "
+        f"Rolled back: **{summary.get('rolled_back', 0)}** · "
+        f"Blocked: **{summary.get('blocked', 0)}** "
+        f"of {summary.get('total_executable', 0)} executable steps",
+    ]
+    if summary.get("commit"):
+        lines.append(f"- Commits created: **{summary.get('committed', 0)}**")
+    lines.append("")
+
+    applied = [r for r in summary.get("results", []) if r.get("applied")]
+    rolled = [r for r in summary.get("results", []) if r.get("rolled_back")]
+    blocked = [r for r in summary.get("results", []) if not r.get("applied") and not r.get("rolled_back")]
+
+    if applied:
+        lines.append("## ✅ Applied")
+        for r in applied:
+            extra = ""
+            if r.get("verified") is True:
+                extra += " (tests pass)"
+            if r.get("committed"):
+                extra += f" [commit {r.get('commit_hash', '')}]"
+            files = ", ".join(r.get("changed_files", [])) or r.get("target", "")
+            lines.append(f"- `{r['branch']}` **{r['action']}** — {files}{extra}")
+        lines.append("")
+    if rolled:
+        lines.append("## ↩️ Rolled back (tests failed)")
+        for r in rolled:
+            lines.append(f"- `{r['branch']}` **{r['action']}** — {r.get('target', '')}")
+        lines.append("")
+    if blocked:
+        lines.append("## ⛔ Blocked / not applicable")
+        for r in blocked:
+            lines.append(f"- `{r['branch']}` **{r['action']}** — {r.get('reason', '')}")
+        lines.append("")
+    return "\n".join(lines)
