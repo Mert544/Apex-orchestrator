@@ -257,6 +257,52 @@ class IdeaActionBridge:
         out["reason"] = "tests failed after patch; changes rolled back"
         return out
 
+    def dry_run_plan(self, plan: ActionPlan, project_root: str) -> dict:
+        """Preview a maintenance pass without touching the tree.
+
+        For each executable step, generate its patch and produce a real unified
+        diff against the current file — so you can see exactly what
+        `apply_plan` would change, applied to nothing.
+        """
+        import difflib
+
+        root = Path(project_root)
+        previews: list[dict] = []
+        for step in plan.executable_steps():
+            result = self._generate(step, project_root)
+            if result is None:
+                previews.append({"branch": step.branch_path, "action": step.action_type,
+                                 "target": step.target, "applicable": False})
+                continue
+            diffs: list[str] = []
+            for pr in result.patch_requests:
+                rel = pr.get("path", "")
+                old = ""
+                fp = root / rel
+                if fp.exists():
+                    old = fp.read_text(encoding="utf-8")
+                new = pr.get("new_content", "") or ""
+                diff = "".join(
+                    difflib.unified_diff(
+                        old.splitlines(keepends=True), new.splitlines(keepends=True),
+                        fromfile=f"a/{rel}", tofile=f"b/{rel}",
+                    )
+                )
+                diffs.append(diff or f"(new file) b/{rel}")
+            previews.append({
+                "branch": step.branch_path, "action": step.action_type,
+                "target": step.target, "applicable": True,
+                "transform_type": result.transform_type,
+                "files": [pr.get("path") for pr in result.patch_requests],
+                "diff": "\n".join(diffs),
+            })
+        return {
+            "dry_run": True,
+            "total_executable": len(plan.executable_steps()),
+            "applicable": sum(1 for p in previews if p["applicable"]),
+            "results": previews,
+        }
+
     def apply_plan(
         self,
         plan: ActionPlan,

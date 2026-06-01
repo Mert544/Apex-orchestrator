@@ -502,6 +502,26 @@ def cmd_maintain(args: argparse.Namespace) -> int:
 
     bridge = IdeaActionBridge()
     plan = bridge.plan_tree(report, mode=args.mode, top=(args.top or None), project_root=str(target))
+
+    # Dry-run: preview the diffs without touching anything.
+    if getattr(args, "dry_run", False):
+        preview = bridge.dry_run_plan(plan, str(target))
+        if args.json:
+            print(json.dumps(preview, indent=2))
+        else:
+            print(f"# Apex Maintenance — dry run for `{target}`")
+            print(f"\n{preview['applicable']} of {preview['total_executable']} "
+                  f"executable steps would change files (nothing applied).\n")
+            for p in preview["results"]:
+                if not p["applicable"]:
+                    continue
+                print(f"## `{p['branch']}` {p['action']} → {p['transform_type']} "
+                      f"({', '.join(f for f in p['files'] if f)})")
+                print("```diff")
+                print(p["diff"].rstrip())
+                print("```\n")
+        return 0
+
     summary = bridge.apply_plan(
         plan, str(target), mode=args.mode,
         verify=not args.no_verify,
@@ -1161,6 +1181,10 @@ def main() -> int:
         "--mode", default="supervised",
         choices=["report", "supervised", "autonomous"],
         help="report=plan only, supervised=apply, autonomous=apply+commit",
+    )
+    maintain_parser.add_argument(
+        "--dry-run", action="store_true", dest="dry_run",
+        help="Preview the diffs of every fix without changing anything",
     )
     maintain_parser.add_argument(
         "--no-verify", action="store_true",

@@ -8,7 +8,7 @@ def _ns(tmp_path, **over):
     base = dict(
         target=str(tmp_path), objective="", depth=1, breadth=3, max_ideas=12,
         top=0, mode="supervised", no_verify=False, commit=False, max_apply=0,
-        json=False, out="",
+        json=False, out="", dry_run=False,
     )
     base.update(over)
     return argparse.Namespace(**base)
@@ -52,3 +52,16 @@ def test_maintain_writes_report_file_and_json(tmp_path, capsys):
     assert rc == 0
     assert out_file.exists()
     assert "Apex Maintenance Report" in out_file.read_text()
+
+
+def test_maintain_dry_run_previews_without_changes(tmp_path, capsys):
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "danger.py"
+    src.write_text("def run(e):\n    return eval(e)\n")
+    rc = cmd_maintain(_ns(tmp_path, mode="supervised", dry_run=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "dry run" in out
+    assert "```diff" in out
+    # Nothing on disk changed.
+    assert src.read_text() == "def run(e):\n    return eval(e)\n"
