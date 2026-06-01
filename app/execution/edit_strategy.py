@@ -69,6 +69,9 @@ class EditStrategy:
         if "pickle" in combined:
             reasons.append("Keywords suggest flagging unsafe pickle.loads().")
             return EditStrategyResult(strategy="fix_pickle", confidence=0.8, reasons=reasons)
+        if "sql" in combined or "injection" in combined:
+            reasons.append("Keywords suggest flagging an SQL-injection risk.")
+            return EditStrategyResult(strategy="fix_sql", confidence=0.8, reasons=reasons)
 
         if "import" in combined or "unused" in combined or "cleanup" in combined:
             reasons.append("Keywords suggest import cleanup.")

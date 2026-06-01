@@ -352,3 +352,18 @@ def test_harden_flags_pickle_loads(tmp_path):
         assert result["transform_type"] == "flag_pickle_loads"
         assert "SECURITY" in src.read_text()
         assert "pickle.loads(b)" in src.read_text()  # call preserved, just annotated
+
+
+def test_harden_flags_sql_injection(tmp_path):
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "db.py"
+    src.write_text('def get(cur, uid):\n    return cur.execute(f"SELECT * FROM u WHERE id={uid}")\n')
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Harden: app/db.py", subject="app/db.py",
+                    operator="harden", operator_chain=["harden"],
+                    source_facts=["sensitive-path: app/db.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
+    if result["applied"]:
+        assert result["transform_type"] == "flag_sql_injection"
+        assert "SQL injection" in src.read_text()

@@ -21,6 +21,51 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
         return _patch_bare_except(rel_path, source, tree)
     if "pickle" in issue:
         return _patch_pickle(rel_path, source, tree)
+    if "sql" in issue or "injection" in issue:
+        return _patch_sql_injection(rel_path, source, tree)
+    return None
+
+
+def _patch_sql_injection(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
+    """Flag an f-string passed to .execute()/.cursor() as a SQL-injection risk.
+
+    A correct rewrite needs to extract the interpolated values into bound
+    parameters, which can't be done safely without understanding the query, so
+    we annotate the call site rather than rewrite it.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name not in ("execute", "cursor", "executemany"):
+            continue
+        if not any(isinstance(a, ast.JoinedStr) for a in node.args):
+            continue
+
+        lineno = node.lineno
+        lines = source.splitlines(keepends=True)
+        if lineno > len(lines):
+            continue
+        line_content = lines[lineno - 1]
+        if "Apex: SQL injection" in line_content:
+            continue
+        indent = line_content[: len(line_content) - len(line_content.lstrip())]
+        warning = (
+            f"{indent}# SECURITY (Apex: SQL injection — pass values as query "
+            f"parameters, e.g. execute(sql, (a, b)), not an f-string)\n"
+        )
+        new_lines = list(lines)
+        new_lines.insert(lineno - 1, warning)
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel_path,
+                "new_content": "".join(new_lines),
+                "expected_old_content": source,
+            }],
+            transform_type="flag_sql_injection",
+            rationale=[f"Flagged f-string SQL query with a security warning in {rel_path}."],
+        )
     return None
 
 
