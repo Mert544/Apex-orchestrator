@@ -3,9 +3,14 @@
 Living document. For shipped detail see `CHECKPOINT.md`.
 
 ## Now (shipped)
+- **Autonomous maintenance** — `apex maintain` runs the full guarded loop
+  (scan → ideate → apply → verify with tests → auto-rollback → commit →
+  Markdown report). Modes: report / supervised / autonomous.
 - **Idea Permutation Engine** — `apex ideate` generates a tree of development
   branches from the real codebase and permutes each into operator-sequence
-  sub-ideas. `--actions` bridges them into a supervised, never-applied plan.
+  sub-ideas, plus synthesis (security-test-suite) and module-pair / import-cycle
+  ideas. `--actions` bridges them into a supervised plan; `--apply --verify
+  [--commit]` applies real fixes test-gated with rollback.
   Design: `docs/idea-permutation-engine.md`.
 - Integration hardening — swarm runs every scanner, orphaned reasoning engines
   wired in, plugin hooks fire in the main path.

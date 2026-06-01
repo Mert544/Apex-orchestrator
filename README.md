@@ -147,6 +147,33 @@ applies**. See `docs/idea-permutation-engine.md`.
 
 ---
 
+## 🤖 Autonomous Maintenance (`apex maintain`)
+
+One command runs the whole guarded loop: **scan → generate fixes → apply →
+verify with tests → roll back failures → commit → report.** Every change is
+gated by `ModePolicy` + `SafetyGates`, individually verified against your test
+suite, and automatically rolled back if it breaks anything.
+
+```bash
+# Plan only — never touches the tree (default of report mode)
+apex maintain --target=. --mode=report
+
+# Apply verified fixes, but don't commit (supervised)
+apex maintain --target=. --mode=supervised
+
+# Full autonomy: apply, verify, and commit each fix individually
+apex maintain --target=. --mode=autonomous --commit --out=MAINT.md
+```
+
+Real deterministic fixes it can apply: `eval()` → `ast.literal_eval()`,
+`os.system()` → `subprocess.run()`, bare `except:` → `except Exception:`,
+missing docstrings, import organization, and test stubs. A fix that fails the
+test suite is reverted automatically, so a maintenance run can never leave the
+project broken. The run ends with a Markdown report of what was applied, rolled
+back, or blocked — with per-step commit hashes in autonomous mode.
+
+---
+
 ## 🛡️ Safety First
 
 Apex operates in three modes:
@@ -231,7 +258,10 @@ apex run --plan=full_autonomous_loop --target=.
 ## 🗺️ Roadmap
 
 ### ✅ Completed
-- **Idea Permutation Engine** (`apex ideate`) — generative development-branch tree + supervised action bridge
+- **Autonomous maintenance** (`apex maintain`) — scan → fix → verify → auto-rollback → commit → report
+- **Idea Permutation Engine** (`apex ideate`) — generative development-branch tree + supervised action bridge, with synthesis (security-test-suite) and module-pair / import-cycle ideas
+- **Verified apply** — real security fixes (eval/os.system/bare-except), test-gated with automatic rollback
+- **`apex debug`** (trace + traceback analysis) and **`apex dashboard`** (self-contained HTML)
 - Objective-relevance focus + deterministic deep reasoning (counterfactual stress-test + confidence calibration)
 - Fractal reasoning engine (5-Whys + counter-evidence + meta-analysis)
 - AST-based semantic patch generation (11 transforms)
