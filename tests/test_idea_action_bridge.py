@@ -298,3 +298,41 @@ def test_run_tests_isolates_target_project(tmp_path):
     from app.skills.execution.run_tests import RunTestsSkill
     summary = RunTestsSkill().run(str(tmp_path))
     assert summary.ok
+
+
+def test_apply_plan_no_commit_in_supervised(tmp_path):
+    # commit=True but supervised mode -> cannot commit; summary reflects it.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "danger.py").write_text("def run(e):\n    return eval(e)\n")
+    from app.engine.idea_permutation import IdeaPermutationEngine
+    rep = IdeaPermutationEngine({"max_total_ideas": 12, "max_idea_depth": 1}, tmp_path).run()
+    bridge = IdeaActionBridge()
+    plan = bridge.plan_tree(rep, project_root=str(tmp_path))
+    summary = bridge.apply_plan(plan, str(tmp_path), mode="supervised", commit=True)
+    assert summary["commit"] is False
+    assert summary.get("committed", 0) == 0
+
+
+def test_apply_plan_commits_in_autonomous(tmp_path):
+    import subprocess
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "danger.py").write_text("def run(e):\n    return eval(e)\n")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path)
+    subprocess.run(["git", "-c", "commit.gpgsign=false", "add", "-A"], cwd=tmp_path)
+    subprocess.run(["git", "-c", "commit.gpgsign=false", "commit", "-qm", "init"], cwd=tmp_path)
+
+    from app.engine.idea_permutation import IdeaPermutationEngine
+    rep = IdeaPermutationEngine({"max_total_ideas": 12, "max_idea_depth": 1}, tmp_path).run()
+    bridge = IdeaActionBridge()
+    plan = bridge.plan_tree(rep, project_root=str(tmp_path))
+    summary = bridge.apply_plan(plan, str(tmp_path), mode="autonomous", verify=False, commit=True)
+    assert summary["commit"] is True
+    # If any harden step applied, it should have produced a commit.
+    if summary["applied"] > 0:
+        assert summary["committed"] >= 1
+        log = subprocess.run(
+            ["git", "log", "--oneline"], cwd=tmp_path, capture_output=True, text=True
+        ).stdout
+        assert "Apex auto-fix" in log

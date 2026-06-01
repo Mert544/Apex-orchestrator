@@ -72,8 +72,10 @@ class GitAutoCommit:
         # Create commit message
         msg = self._build_message(finding, action, changed_files)
 
-        # Commit
-        code, stdout, stderr = self._run_git(["commit", "-m", msg])
+        # Commit. Disable GPG signing for machine-generated commits: agents
+        # cannot satisfy an interactive/required signing key, and a repo (or
+        # sandbox) that mandates signing would otherwise block auto-commit.
+        code, stdout, stderr = self._run_git(["-c", "commit.gpgsign=false", "commit", "-m", msg])
         if code != 0:
             return GitCommitResult(success=False, error=stderr)
 

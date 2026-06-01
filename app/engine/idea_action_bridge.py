@@ -264,6 +264,7 @@ class IdeaActionBridge:
         mode: str = "supervised",
         verify: bool = False,
         max_apply: int | None = None,
+        commit: bool = False,
     ) -> dict:
         """Run a whole maintenance pass: apply each executable step in turn,
         verifying + rolling back individually, and return an aggregate summary.
@@ -271,29 +272,57 @@ class IdeaActionBridge:
         Steps are processed in plan order (already value-sorted). Each step is
         independent — a rolled-back step does not abort the run. Honors the
         same gating as apply_step (mode + safety + verify).
+
+        When ``commit`` is set AND the mode permits committing (autonomous),
+        each successfully-applied step is committed individually via
+        GitAutoCommit, so every change is an isolated, revertible commit.
         """
+        from app.policies.mode_policy import ModePolicy, mode_from_string
+
+        can_commit = False
+        committer = None
+        if commit:
+            perms = ModePolicy(mode=mode_from_string(mode)).permissions
+            can_commit = bool(perms.can_commit)
+            if can_commit:
+                from app.engine.git_auto_commit import GitAutoCommit
+
+                committer = GitAutoCommit(project_root)
+
         results: list[dict] = []
-        applied = rolled_back = blocked = 0
+        applied = rolled_back = blocked = committed = 0
         for step in plan.executable_steps():
             if max_apply is not None and applied >= max_apply:
                 break
             r = self.apply_step(step, project_root, mode=mode, verify=verify)
             entry = {"branch": step.branch_path, "action": step.action_type,
                      "target": step.target, **r}
-            results.append(entry)
             if r.get("rolled_back"):
                 rolled_back += 1
             elif r.get("applied"):
                 applied += 1
+                if committer is not None and r.get("changed_files"):
+                    commit_res = committer.commit(
+                        changed_files=r["changed_files"],
+                        finding=step.action_type,
+                        action="fix",
+                    )
+                    entry["committed"] = bool(commit_res.success)
+                    if commit_res.success:
+                        committed += 1
+                        entry["commit_hash"] = commit_res.commit_hash
             else:
                 blocked += 1
+            results.append(entry)
         return {
             "mode": mode,
             "verify": verify,
+            "commit": can_commit,
             "total_executable": len(plan.executable_steps()),
             "applied": applied,
             "rolled_back": rolled_back,
             "blocked": blocked,
+            "committed": committed,
             "results": results,
         }
 

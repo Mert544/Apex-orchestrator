@@ -552,6 +552,7 @@ def cmd_ideate(args: argparse.Namespace) -> int:
                 mode=getattr(args, "mode", None) or "supervised",
                 verify=getattr(args, "verify", False),
                 max_apply=(args.max_apply or None) if getattr(args, "max_apply", 0) else None,
+                commit=getattr(args, "commit", False),
             )
 
     if args.json:
@@ -565,8 +566,12 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         print(render_action_markdown(action_plan))
         if apply_results is not None:
             verify_note = " · verified" if apply_results.get("verify") else ""
+            commit_note = (
+                f" · committed {apply_results.get('committed', 0)}"
+                if apply_results.get("commit") else ""
+            )
             print(
-                f"\n## Maintenance run (mode: {apply_results.get('mode')}{verify_note})\n"
+                f"\n## Maintenance run (mode: {apply_results.get('mode')}{verify_note}{commit_note})\n"
                 f"applied {apply_results['applied']} · rolled back "
                 f"{apply_results['rolled_back']} · blocked {apply_results['blocked']} "
                 f"of {apply_results['total_executable']} executable steps"
@@ -581,6 +586,8 @@ def cmd_ideate(args: argparse.Namespace) -> int:
                 detail = r.get("reason") or ", ".join(r.get("changed_files", []))
                 if r.get("verified") is True:
                     detail += "  (tests pass)"
+                if r.get("committed"):
+                    detail += f"  [committed {r.get('commit_hash', '')}]"
                 print(f"- {status} `{r['branch']}` {r['action']} — {detail}")
     else:
         print(render_markdown(report))
@@ -1053,6 +1060,11 @@ def main() -> int:
         "--verify",
         action="store_true",
         help="After applying, run tests and auto-rollback any step that breaks them",
+    )
+    ideate_parser.add_argument(
+        "--commit",
+        action="store_true",
+        help="Auto-commit each applied step (autonomous mode only)",
     )
     ideate_parser.add_argument(
         "--max-apply",
