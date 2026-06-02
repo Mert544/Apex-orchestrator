@@ -42,3 +42,34 @@ class TestApexEventStreamServer:
         server.emit("security.alert", {"risk": "eval"})
         assert server.stream._queue.qsize() == 1
         server.stop()
+
+
+def test_publish_handles_full_main_queue():
+    import time
+    from app.event_stream import EventStream, StreamEvent
+    es = EventStream(max_size=2)
+    # Fill beyond capacity; publish must not raise on a full main queue.
+    for i in range(5):
+        es.publish(StreamEvent(timestamp=time.time(), topic="t", payload={"i": i}))
+    # Still usable.
+    sq = es.subscribe()
+    es.publish(StreamEvent(timestamp=time.time(), topic="t", payload={}))
+    assert sq.qsize() >= 1
+
+
+def test_publish_handles_full_subscriber_queue():
+    import time
+    from app.event_stream import EventStream, StreamEvent
+    es = EventStream(max_size=1000)
+    sq = es.subscribe()
+    # Subscriber queue caps at 100; publishing more must not raise.
+    for i in range(150):
+        es.publish(StreamEvent(timestamp=time.time(), topic="t", payload={"i": i}))
+    assert sq.qsize() <= 100
+
+
+def test_unsubscribe_unknown_is_safe():
+    import queue
+    from app.event_stream import EventStream
+    es = EventStream()
+    es.unsubscribe(queue.Queue())  # not subscribed -> no error
