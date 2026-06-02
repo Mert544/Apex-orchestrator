@@ -108,15 +108,55 @@ class WikipediaSearchProvider:
 
 
 class CompositeSearchTool:
+    """Try providers in order, returning the first non-empty result.
+
+    Improvements over a naive fan-out:
+    - **Enabled-only**: providers exposing a falsy ``enabled`` are skipped, so we
+      never make a doomed call (and offline-by-default stays truly offline).
+    - **Caching**: identical (query, top_k) lookups are memoized, so repeated
+      searches during a reasoning run don't re-hit the network.
+    - **Observability**: ``last_provider`` and ``stats`` expose hits/misses/
+      cache/errors for telemetry and debugging.
+    """
+
     def __init__(self, providers: list[SearchProvider] | None = None) -> None:
         self.providers = providers or [TavilySearchProvider(), WikipediaSearchProvider()]
+        self.last_provider: str | None = None
+        self._cache: dict[tuple[str, int], list[SearchResult]] = {}
+        self.stats = {"calls": 0, "cache_hits": 0, "provider_hits": 0, "errors": 0, "empty": 0}
+
+    @staticmethod
+    def _provider_name(provider: SearchProvider) -> str:
+        return type(provider).__name__
+
+    @staticmethod
+    def _is_enabled(provider: SearchProvider) -> bool:
+        # Providers may expose `enabled` as a property; default to True if absent.
+        enabled = getattr(provider, "enabled", True)
+        return bool(enabled)
 
     def search(self, query: str, top_k: int = 3) -> list[SearchResult]:
+        self.stats["calls"] += 1
+        key = (query, top_k)
+        if key in self._cache:
+            self.stats["cache_hits"] += 1
+            return self._cache[key]
+
         for provider in self.providers:
+            if not self._is_enabled(provider):
+                continue
             try:
                 results = provider.search(query=query, top_k=top_k)
             except Exception:
+                self.stats["errors"] += 1
                 results = []
             if results:
+                self.last_provider = self._provider_name(provider)
+                self.stats["provider_hits"] += 1
+                self._cache[key] = results
                 return results
+
+        self.stats["empty"] += 1
+        self.last_provider = None
+        self._cache[key] = []
         return []
