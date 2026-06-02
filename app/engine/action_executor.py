@@ -97,6 +97,16 @@ class ActionExecutor:
             )
 
         old_content = sandbox_path.read_text(encoding="utf-8")
+        # A find-replace patch needs concrete old_code to anchor on. Drafts and
+        # whole-file fallbacks can arrive with old_code=None — reject them
+        # gracefully so callers (e.g. the fallback ladder) can move on rather
+        # than crash on a `None in str` comparison.
+        if not patch.old_code:
+            return ActionResult(
+                action_type="patch",
+                success=False,
+                stderr="patch has no old_code to anchor a replacement",
+            )
         if patch.old_code not in old_content:
             return ActionResult(
                 action_type="patch", success=False, stderr="old_code not found in file"

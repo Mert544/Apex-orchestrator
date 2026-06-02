@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from app.engine.action_executor import ActionExecutor, ActionResult
+from app.engine.action_executor import ActionExecutor
 from app.engine.fractal_patch_generator import FractalPatch
 
 
@@ -103,3 +101,13 @@ class TestActionExecutorEdges:
         assert "literal_eval(x)" in (ex.sandbox_dir / "m.py").read_text()
         # rollback_last restores prior content via the journal.
         ex.rollback_last()
+
+    def test_none_old_code_fails_gracefully(self, tmp_path):
+        # A draft/whole-file patch can arrive with old_code=None; it must be
+        # rejected with a clear message, not crash on `None in str`.
+        ex = self._exec(tmp_path)
+        result = ex.execute_patch(self._patch(old_code=None))
+        assert result.success is False
+        assert "old_code" in result.stderr.lower()
+        # Sandbox file is left untouched.
+        assert "eval(x)" in (ex.sandbox_dir / "m.py").read_text()

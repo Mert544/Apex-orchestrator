@@ -41,6 +41,26 @@ class TestFractalSecurityAgent:
         agent.run(project_root=tmp_path)
         assert len(received) >= 1
 
+    def test_auto_patch_applies_and_reports(self, tmp_path):
+        # Drive the auto_patch branch end-to-end: scan -> decide -> execute ->
+        # safety gate -> verify -> feedback. A passing test lets the patch stick.
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "cfg.py").write_text(
+            "import os\ndef purge(p):\n    os.system('rm ' + p)\n", encoding="utf-8"
+        )
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_ok.py").write_text(
+            "def test_ok():\n    assert True\n", encoding="utf-8"
+        )
+        agent = FractalSecurityAgent()
+        agent.auto_patch = True
+        agent.max_fractal_budget = 5
+        result = agent.run(project_root=tmp_path)
+        # The auto_patch accounting keys are present regardless of outcome.
+        assert "patches_applied" in result
+        assert isinstance(result["patches_applied"], int)
+        assert result["findings_count"] >= 1
+
 
 class TestFractalDocstringAgent:
     def test_finds_gaps_and_analyzes(self, tmp_path):
