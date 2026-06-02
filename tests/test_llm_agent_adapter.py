@@ -47,3 +47,71 @@ class TestAgentLLMAdapter:
         adapter = AgentLLMAdapter(router)
         parsed = adapter._parse_json_response('not json')
         assert parsed["verdict"] == "ABSTAIN"
+
+
+class _Resp:
+    def __init__(self, content):
+        self.content = content
+
+
+class _Router:
+    is_enabled = True
+
+    def __init__(self, content):
+        self._content = content
+
+    def complete(self, prompt, system=None):
+        return _Resp(self._content)
+
+
+def test_analyze_claim_with_llm_json():
+    from app.llm.agent_adapter import AgentLLMAdapter
+    adapter = AgentLLMAdapter(router=_Router('{"verdict": "APPROVE", "confidence": 0.8, "reasoning": "ok"}'))
+    result = adapter.analyze_claim("claim", {"k": "v"})
+    assert result["verdict"] == "APPROVE"
+    assert result["confidence"] == 0.8
+
+
+def test_analyze_claim_bad_json_abstains():
+    from app.llm.agent_adapter import AgentLLMAdapter
+    adapter = AgentLLMAdapter(router=_Router("not json"))
+    result = adapter.analyze_claim("claim", {})
+    assert result["verdict"] == "ABSTAIN"
+
+
+def test_analyze_claim_no_router_abstains():
+    from app.llm.agent_adapter import AgentLLMAdapter
+    result = AgentLLMAdapter(router=None).analyze_claim("claim", {})
+    assert result["verdict"] == "ABSTAIN"
+    assert "not configured" in result["reasoning"]
+
+
+def test_generate_patch_returns_content():
+    from app.llm.agent_adapter import AgentLLMAdapter
+    adapter = AgentLLMAdapter(router=_Router("  fixed code  "))
+    assert adapter.generate_patch("eval risk", "eval(x)") == "fixed code"
+
+
+def test_generate_patch_no_router_empty():
+    from app.llm.agent_adapter import AgentLLMAdapter
+    assert AgentLLMAdapter(router=None).generate_patch("i", "c") == ""
+
+
+def test_summarize_results():
+    from app.llm.agent_adapter import AgentLLMAdapter
+    adapter = AgentLLMAdapter(router=_Router("summary text"))
+    out = adapter.summarize_results([{"finding": "x"}])
+    assert out == "summary text"
+
+
+def test_analyze_claim_router_raises_abstains():
+    from app.llm.agent_adapter import AgentLLMAdapter
+
+    class _Boom:
+        is_enabled = True
+        def complete(self, prompt, system=None):
+            raise RuntimeError("net down")
+
+    result = AgentLLMAdapter(router=_Boom()).analyze_claim("c", {})
+    assert result["verdict"] == "ABSTAIN"
+    assert "error" in result["reasoning"].lower()
