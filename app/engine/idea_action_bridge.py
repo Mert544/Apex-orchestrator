@@ -78,25 +78,57 @@ class IdeaActionBridge:
     @staticmethod
     def _detect_security_issue(project_root: str, rel_path: str) -> str | None:
         """Return the concrete security pattern present in a file, if any, so
-        harden_security can pick the real AST fix (eval / os.system / bare
-        except) instead of a generic guard clause."""
+        harden_security can pick the real AST fix (eval / os.system / pickle /
+        yaml / sql / bare-except) instead of a generic guard clause.
+
+        AST-based (single parse) so it ignores matches inside comments/strings —
+        e.g. ``# don't use eval()`` no longer triggers an eval fix. Falls back to
+        a substring scan only if the file can't be parsed.
+        """
+        import ast
+
         try:
             text = (Path(project_root) / rel_path).read_text(encoding="utf-8")
         except OSError:
             return None
-        # Order matters: most dangerous first.
-        if "eval(" in text:
-            return "eval"
-        if "os.system(" in text:
-            return "os.system"
-        if "pickle.loads(" in text:
-            return "pickle"
-        if "yaml.load(" in text:
-            return "yaml"
-        if 'execute(f"' in text or "execute(f'" in text or 'cursor(f"' in text:
-            return "sql"
-        if "except:" in text:
-            return "bare except"
+
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            # Unparseable: conservative substring fallback (order = severity).
+            for needle, label in (
+                ("eval(", "eval"), ("os.system(", "os.system"),
+                ("pickle.loads(", "pickle"), ("yaml.load(", "yaml"),
+                ("except:", "bare except"),
+            ):
+                if needle in text:
+                    return label
+            return None
+
+        found: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ExceptHandler) and node.type is None:
+                found.add("bare except")
+            elif isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id == "eval":
+                    found.add("eval")
+                elif isinstance(func, ast.Attribute):
+                    owner = func.value.id if isinstance(func.value, ast.Name) else ""
+                    if owner == "os" and func.attr == "system":
+                        found.add("os.system")
+                    elif owner == "pickle" and func.attr == "loads":
+                        found.add("pickle")
+                    elif owner == "yaml" and func.attr == "load":
+                        found.add("yaml")
+                    elif func.attr in ("execute", "cursor", "executemany") and any(
+                        isinstance(a, ast.JoinedStr) for a in node.args
+                    ):
+                        found.add("sql")
+        # Most dangerous first.
+        for label in ("eval", "os.system", "pickle", "yaml", "sql", "bare except"):
+            if label in found:
+                return label
         return None
 
     def _generate(self, step: ActionStep, project_root: str):

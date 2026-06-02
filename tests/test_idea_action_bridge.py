@@ -383,3 +383,26 @@ def test_harden_rewrites_yaml_load(tmp_path):
         assert result["transform_type"] == "yaml_load_to_safe_load"
         assert "yaml.safe_load(s)" in src.read_text()
         assert "yaml.load(" not in src.read_text()
+
+
+def test_detect_security_issue_is_ast_based(tmp_path):
+    b = IdeaActionBridge()
+    # A comment mentioning eval() must NOT be detected (AST ignores comments).
+    (tmp_path / "ok.py").write_text("# do not use eval() here\nx = 1\n")
+    assert b._detect_security_issue(str(tmp_path), "ok.py") is None
+    # A string containing 'eval(' must NOT trigger either.
+    (tmp_path / "s.py").write_text("msg = 'call eval() carefully'\n")
+    assert b._detect_security_issue(str(tmp_path), "s.py") is None
+    # Real calls are detected.
+    (tmp_path / "real.py").write_text("def f(c):\n    return eval(c)\n")
+    assert b._detect_security_issue(str(tmp_path), "real.py") == "eval"
+    (tmp_path / "y.py").write_text("import yaml\nyaml.load(s)\n")
+    assert b._detect_security_issue(str(tmp_path), "y.py") == "yaml"
+
+
+def test_detect_security_issue_severity_order(tmp_path):
+    # eval outranks a bare except in the same file.
+    (tmp_path / "m.py").write_text(
+        "def f(c):\n    try:\n        return eval(c)\n    except:\n        pass\n"
+    )
+    assert IdeaActionBridge()._detect_security_issue(str(tmp_path), "m.py") == "eval"
