@@ -62,3 +62,44 @@ class TestActionExecutor:
         assert ok is True
         assert "ast.literal_eval" in (project / "main.py").read_text()
         executor.cleanup()
+
+
+class TestActionExecutorEdges:
+    def _patch(self, **kw):
+        from app.engine.fractal_patch_generator import FractalPatch
+        defaults = dict(file="m.py", finding="eval", action="fix",
+                        old_code="eval(x)", new_code="literal_eval(x)", confidence=0.9)
+        defaults.update(kw)
+        return FractalPatch(**defaults)
+
+    def _exec(self, tmp_path):
+        from app.engine.action_executor import ActionExecutor
+        (tmp_path / "m.py").write_text("y = eval(x)\n")
+        return ActionExecutor(project_root=str(tmp_path))
+
+    def test_dry_run_does_not_write(self, tmp_path):
+        ex = self._exec(tmp_path)
+        result = ex.execute_patch(self._patch(), dry_run=True)
+        assert result.success is True
+        assert "dry-run" in result.stdout.lower()
+        # Sandbox file unchanged.
+        assert "eval(x)" in (ex.sandbox_dir / "m.py").read_text()
+
+    def test_file_not_found_in_sandbox(self, tmp_path):
+        ex = self._exec(tmp_path)
+        result = ex.execute_patch(self._patch(file="missing.py"))
+        assert result.success is False
+        assert "not found" in result.stderr.lower()
+
+    def test_old_code_not_present(self, tmp_path):
+        ex = self._exec(tmp_path)
+        result = ex.execute_patch(self._patch(old_code="not_in_file()"))
+        assert result.success is False
+        assert "old_code" in result.stderr.lower()
+
+    def test_apply_then_rollback_last(self, tmp_path):
+        ex = self._exec(tmp_path)
+        ex.execute_patch(self._patch())
+        assert "literal_eval(x)" in (ex.sandbox_dir / "m.py").read_text()
+        # rollback_last restores prior content via the journal.
+        ex.rollback_last()
