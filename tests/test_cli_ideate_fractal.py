@@ -40,6 +40,10 @@ def _ideate_ns(tmp_path: Path, **overrides) -> argparse.Namespace:
         out="",
         kind="",
         roadmap=False,
+        facets=False,
+        facet_depth=1,
+        shape=False,
+        phase="",
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -111,6 +115,30 @@ def test_ideate_roadmap_writes_out_file(tmp_path):
     rc = cmd_ideate(_ideate_ns(tmp_path, roadmap=True, out=str(out_file)))
     assert rc == 0
     assert "Engineering Roadmap" in out_file.read_text(encoding="utf-8")
+
+
+def test_ideate_shape_report(tmp_path, capsys):
+    _project(tmp_path)
+    rc = cmd_ideate(_ideate_ns(tmp_path, shape=True))
+    assert rc == 0
+    assert "Idea Tree Shape" in capsys.readouterr().out
+
+
+def test_ideate_facets_nested(tmp_path, capsys):
+    _project(tmp_path)
+    rc = cmd_ideate(_ideate_ns(tmp_path, facets=True, facet_depth=2, max_ideas=40))
+    assert rc == 0
+    assert capsys.readouterr().out.strip()
+
+
+def test_ideate_roadmap_actions_plan(tmp_path, capsys):
+    _project(tmp_path)
+    rc = cmd_ideate(_ideate_ns(tmp_path, roadmap=True, actions=True, draft=False))
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Roadmap-ordered action plan tags steps with their phase.
+    assert "Action Plan" in out
+    assert "[Stabilize]" in out or "[Secure]" in out or "[Evolve]" in out
 
 
 def test_fractal_analyze(tmp_path, capsys):

@@ -573,9 +573,10 @@ def cmd_ideate(args: argparse.Namespace) -> int:
     )
     report = engine.run(objective=args.objective or None)
 
-    # --roadmap: sequence the scored idea tree into a prioritized,
-    # phase-ordered engineering plan (built ON the tree, not replacing it).
-    if getattr(args, "roadmap", False):
+    # --roadmap (without --actions): view the prioritized, phase-ordered plan.
+    # With --actions, the roadmap instead drives the *order* of the action plan
+    # below (Stabilize first), so this view-only branch is skipped.
+    if getattr(args, "roadmap", False) and not getattr(args, "actions", False):
         from app.engine.idea_roadmap import (
             RoadmapSynthesizer,
             render_roadmap_markdown,
@@ -636,13 +637,27 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         )
 
         bridge = IdeaActionBridge()
-        action_plan = bridge.plan_tree(
-            report,
-            mode=getattr(args, "mode", None) or "supervised",
-            top=args.top or None,
-            draft=getattr(args, "draft", False) or getattr(args, "apply", False),
-            project_root=str(target),
-        )
+        _plan_mode = getattr(args, "mode", None) or "supervised"
+        _draft = getattr(args, "draft", False) or getattr(args, "apply", False)
+        if getattr(args, "roadmap", False):
+            # Roadmap-ordered plan: apply Stabilize→Secure→Evolve→Refine, with an
+            # optional --phase filter to act on a single phase.
+            action_plan = bridge.plan_roadmap(
+                report,
+                phase=getattr(args, "phase", None) or None,
+                mode=_plan_mode,
+                top=args.top or None,
+                draft=_draft,
+                project_root=str(target),
+            )
+        else:
+            action_plan = bridge.plan_tree(
+                report,
+                mode=_plan_mode,
+                top=args.top or None,
+                draft=_draft,
+                project_root=str(target),
+            )
         # Strictly opt-in apply: only when --apply is passed; gated by mode + safety.
         if getattr(args, "apply", False):
             apply_results = bridge.apply_plan(
@@ -1210,6 +1225,12 @@ def main() -> int:
         "--shape",
         action="store_true",
         help="Analyze the shape/health of the generated idea tree",
+    )
+    ideate_parser.add_argument(
+        "--phase",
+        default="",
+        choices=["", "Stabilize", "Secure", "Evolve", "Refine"],
+        help="With --roadmap --actions: restrict the action plan to one phase",
     )
     ideate_parser.set_defaults(func=cmd_ideate)
 

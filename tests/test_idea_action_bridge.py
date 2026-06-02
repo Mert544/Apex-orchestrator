@@ -2,7 +2,7 @@ from pathlib import Path
 
 from app.engine.idea_action_bridge import IdeaActionBridge, render_action_markdown
 from app.engine.idea_permutation import IdeaPermutationEngine
-from app.models.idea import IdeaNode, IdeaTreeReport
+from app.models.idea import IdeaNode
 
 
 def _project(tmp: Path) -> Path:
@@ -406,3 +406,53 @@ def test_detect_security_issue_severity_order(tmp_path):
         "def f(c):\n    try:\n        return eval(c)\n    except:\n        pass\n"
     )
     assert IdeaActionBridge()._detect_security_issue(str(tmp_path), "m.py") == "eval"
+
+
+def test_plan_roadmap_orders_steps_by_phase(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "danger.py").write_text("def run(e):\n    return eval(e)\n")
+    (tmp_path / "app" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "from app.calc import add\ndef test_add():\n    assert add(2, 3) == 5\n"
+    )
+    rep = IdeaPermutationEngine({"max_total_ideas": 30, "max_idea_depth": 1}, tmp_path).run()
+    plan = IdeaActionBridge().plan_roadmap(rep, project_root=str(tmp_path))
+
+    assert plan.stats["ordered_by"] == "roadmap"
+    assert plan.stats["phase_counts"]
+    # Every step carries the phase it came from.
+    assert all(s.phase for s in plan.steps)
+    # Phases appear in canonical order (Stabilize before Secure before ...).
+    order = ["Stabilize", "Secure", "Evolve", "Refine"]
+    seen = [s.phase for s in plan.steps]
+    rank = {name: i for i, name in enumerate(order)}
+    ranks = [rank[p] for p in seen]
+    assert ranks == sorted(ranks), "steps must be grouped in canonical phase order"
+
+
+def test_plan_roadmap_phase_filter(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "danger.py").write_text("def run(e):\n    return eval(e)\n")
+    rep = IdeaPermutationEngine({"max_total_ideas": 30, "max_idea_depth": 1}, tmp_path).run()
+    plan = IdeaActionBridge().plan_roadmap(rep, phase="Secure", project_root=str(tmp_path))
+    # Filtered to a single phase only.
+    assert plan.steps
+    assert {s.phase for s in plan.steps} == {"Secure"}
+
+
+def test_plan_roadmap_markdown_shows_phase_tags(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "danger.py").write_text("def run(e):\n    return eval(e)\n")
+    rep = IdeaPermutationEngine({"max_total_ideas": 20, "max_idea_depth": 1}, tmp_path).run()
+    plan = IdeaActionBridge().plan_roadmap(rep, project_root=str(tmp_path))
+    md = render_action_markdown(plan)
+    assert "[Stabilize]" in md or "[Secure]" in md
+
+
+def test_plan_roadmap_top_caps_total(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "danger.py").write_text("def run(e):\n    return eval(e)\n")
+    rep = IdeaPermutationEngine({"max_total_ideas": 30, "max_idea_depth": 1}, tmp_path).run()
+    plan = IdeaActionBridge().plan_roadmap(rep, top=3, project_root=str(tmp_path))
+    assert len(plan.steps) <= 3

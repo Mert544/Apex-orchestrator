@@ -442,6 +442,68 @@ class IdeaActionBridge:
             },
         )
 
+    def plan_roadmap(
+        self,
+        report: IdeaTreeReport,
+        roadmap=None,
+        phase: str | None = None,
+        mode: str = "supervised",
+        top: int | None = None,
+        draft: bool = False,
+        project_root: str | None = None,
+    ) -> ActionPlan:
+        """Plan actions in roadmap order (Stabilize→Secure→Evolve→Refine).
+
+        Unlike ``plan_tree`` (pure value ranking), this sequences steps by the
+        roadmap's engineering phases so a guarded ``apply_plan`` builds the
+        safety net before changing risky code. ``phase`` restricts the plan to a
+        single phase; each step is tagged with the phase it came from.
+        """
+        from app.engine.idea_roadmap import RoadmapSynthesizer
+
+        roadmap = roadmap or RoadmapSynthesizer().build(report)
+        idea_by_path = {i.branch_path: i for i in report.ideas}
+
+        steps: list[ActionStep] = []
+        for ph in roadmap.phases:
+            if phase and ph.name.lower() != phase.lower():
+                continue
+            for item in ph.items:
+                idea = idea_by_path.get(item.branch_path)
+                if idea is None:
+                    continue
+                step = self.plan_idea(idea)
+                step.phase = ph.name
+                steps.append(step)
+
+        if top is not None:
+            steps = steps[:top]
+        if draft:
+            root = project_root or report.project_root or "."
+            for step in steps:
+                if step.executable:
+                    step.patch_preview = self.draft_patch(step, root)
+
+        executable = sum(1 for s in steps if s.executable)
+        drafted = sum(1 for s in steps if s.patch_preview)
+        phase_counts: dict[str, int] = {}
+        for s in steps:
+            phase_counts[s.phase] = phase_counts.get(s.phase, 0) + 1
+        return ActionPlan(
+            objective=report.objective,
+            project_root=report.project_root,
+            mode=mode,
+            steps=steps,
+            stats={
+                "total_steps": len(steps),
+                "executable_steps": executable,
+                "design_tasks": len(steps) - executable,
+                "drafted_patches": drafted,
+                "ordered_by": "roadmap",
+                "phase_counts": phase_counts,
+            },
+        )
+
 
 def render_action_markdown(plan: ActionPlan) -> str:
     """Render an action plan as reviewable markdown (supervised — not applied)."""
@@ -456,7 +518,10 @@ def render_action_markdown(plan: ActionPlan) -> str:
     lines.append("")
     for s in plan.steps:
         tag = "🛠️" if s.executable else "📐"
-        lines.append(f"- {tag} `{s.branch_path}` **{s.action_type}** — {s.description}  (v {s.value})")
+        phase = f"[{s.phase}] " if s.phase else ""
+        lines.append(
+            f"- {tag} `{s.branch_path}` {phase}**{s.action_type}** — {s.description}  (v {s.value})"
+        )
         if s.patch_preview:
             files = ", ".join(s.patch_preview.get("files", []))
             lines.append(
