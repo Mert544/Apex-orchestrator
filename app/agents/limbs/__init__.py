@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import json
-import os
 import re
 import subprocess
 from pathlib import Path
@@ -233,7 +232,7 @@ class CoverageLimb(Limb):
 
     def _run_coverage(self, project_path: Path) -> dict[str, Any]:
         try:
-            result = subprocess.run(
+            subprocess.run(
                 ["python", "-m", "pytest", "--cov", "--cov-report=json", "-q"],
                 cwd=str(project_path),
                 capture_output=True,
@@ -262,7 +261,7 @@ class CoverageLimb(Limb):
                     "uncovered_functions": uncovered[:20],
                 }
 
-        except Exception as e:
+        except Exception:
             pass
 
         return {

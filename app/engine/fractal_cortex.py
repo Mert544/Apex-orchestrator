@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.engine.fractal_5whys import Fractal5WhysEngine, FractalNode, MetaAnalysisResult
-from app.engine.fractal_patch_generator import FractalPatchGenerator, FractalPatch
+from app.engine.fractal_5whys import Fractal5WhysEngine
+from app.engine.fractal_patch_generator import FractalPatchGenerator
 from app.execution.semantic_patch_generator import SemanticPatchGenerator
 
 

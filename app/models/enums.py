@@ -35,3 +35,4 @@ class StopReason(str, Enum):
     DUPLICATE_BRANCH = "duplicate_branch"
     NO_HIGH_VALUE_QUESTIONS = "no_high_value_questions"
     TIMEOUT = "timeout"
+    FOCUS_DRIFT = "focus_drift"

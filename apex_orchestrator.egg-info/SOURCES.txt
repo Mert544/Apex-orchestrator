@@ -4,6 +4,7 @@ pyproject.toml
 apex_orchestrator.egg-info/PKG-INFO
 apex_orchestrator.egg-info/SOURCES.txt
 apex_orchestrator.egg-info/dependency_links.txt
+apex_orchestrator.egg-info/entry_points.txt
 apex_orchestrator.egg-info/requires.txt
 apex_orchestrator.egg-info/top_level.txt
 app/__init__.py
@@ -84,7 +85,6 @@ app/engine/planner.py
 app/engine/recursive_reflection.py
 app/engine/reflector.py
 app/engine/rollback_journal.py
-app/engine/router.py
 app/engine/run_comparison.py
 app/engine/self_correction.py
 app/engine/self_healing.py
@@ -188,6 +188,7 @@ app/skills/decomposer.py
 app/skills/evidence_mapper.py
 app/skills/quality_judge.py
 app/skills/question_generator.py
+app/skills/relevance_scorer.py
 app/skills/security_governor.py
 app/skills/spam_guard.py
 app/skills/synthesizer.py
@@ -258,6 +259,7 @@ tests/test_debate.py
 tests/test_debug_engine.py
 tests/test_decomposer.py
 tests/test_dedup.py
+tests/test_deep_reasoning_integration.py
 tests/test_dependency_agent.py
 tests/test_distributed_swarm.py
 tests/test_docstring_agent.py
@@ -292,6 +294,8 @@ tests/test_limbs.py
 tests/test_llm_agent_adapter.py
 tests/test_llm_integration.py
 tests/test_llm_multi_model.py
+tests/test_llm_openai_compatible.py
+tests/test_llm_orchestrator_integration.py
 tests/test_llm_router.py
 tests/test_llm_voter.py
 tests/test_lsp_server.py
@@ -324,6 +328,7 @@ tests/test_recursive_agent.py
 tests/test_recursive_reflection.py
 tests/test_reflector.py
 tests/test_registry_builder.py
+tests/test_relevance_focus.py
 tests/test_repair_loop.py
 tests/test_repo_scanner.py
 tests/test_report_composer.py
@@ -347,6 +352,7 @@ tests/test_spam_guard.py
 tests/test_supervised_patch_loop.py
 tests/test_swarm.py
 tests/test_swarm_coordinator.py
+tests/test_swarm_scan_wiring.py
 tests/test_swarm_stability.py
 tests/test_synthetic_demo_project.py
 tests/test_termination.py

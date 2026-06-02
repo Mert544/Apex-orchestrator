@@ -12,6 +12,9 @@ from app.agents.base import Agent
 class TestStubAgent(Agent):
     """Agent: finds missing tests and generates stubs."""
 
+    # Not a pytest test class despite the "Test" prefix — stop collection.
+    __test__ = False
+
     def __init__(self, name: str = "test_stub", **kwargs: Any) -> None:
         super().__init__(name=name, role="test_coverage_analyst", **kwargs)
         self.project_root: Path | None = None

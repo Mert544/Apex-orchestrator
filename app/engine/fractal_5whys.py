@@ -303,7 +303,7 @@ class Fractal5WhysEngine:
         aggregate = avg_conf * depth_penalty
 
         # Determine action
-        issue = tree.metadata.get("finding", {}).get("issue", "").lower()
+        tree.metadata.get("finding", {}).get("issue", "").lower()
         severity = tree.metadata.get("finding", {}).get("severity", "info")
 
         if severity == "critical" and aggregate > 0.7:

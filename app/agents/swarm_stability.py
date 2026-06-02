@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import signal
 import threading
 from typing import Any, Callable
 

@@ -18,3 +18,8 @@ venv/
 .apex/
 .epistemic/
 *.log
+
+# Test / coverage artifacts
+.coverage
+.coverage.*
+htmlcov/

@@ -5,10 +5,13 @@ from typing import Any, Callable
 
 from app.engine.budget import BudgetController
 from app.engine.compressed_mode import CompressedModeEngine
+from app.engine.confidence_calibration import ConfidenceCalibrator
+from app.engine.counterfactual_generator import CounterfactualGenerator
 from app.engine.debug_engine import DebugEngine
 from app.engine.novelty import NoveltyScorer
 from app.engine.termination import TerminationEngine
 from app.execution.token_telemetry import TokenTelemetry
+from app.llm.agent_adapter import AgentLLMAdapter
 from app.llm.router import LLMRouter
 from app.memory.graph_store import GraphStore
 from app.models.enums import NodeStatus, StopReason
@@ -28,6 +31,7 @@ from app.skills.claim_analyzer import ClaimAnalyzer
 from app.skills.claim_normalizer import ClaimNormalizer
 from app.skills.question_generator import QuestionGenerator
 from app.skills.quality_judge import QualityJudge
+from app.skills.relevance_scorer import RelevanceScorer
 from app.skills.security_governor import SecurityGovernor
 from app.skills.spam_guard import SpamGuard
 from app.utils.branching import make_branch_path
@@ -48,6 +52,7 @@ class FractalResearchOrchestrator:
         budget_limit = int(self.config.get("token_budget_limit", 0))
         self.telemetry = TokenTelemetry(budget_limit=budget_limit)
         self.llm = LLMRouter.from_config(self.config)
+        self.llm_adapter = AgentLLMAdapter(self.llm)
 
         self.graph = GraphStore()
         self.assumption_extractor = AssumptionExtractor()
@@ -72,7 +77,25 @@ class FractalResearchOrchestrator:
             "spam_claims_filtered": 0,
             "focus_branch_hits": 0,
             "focus_branch_misses": 0,
+            "focus_drift_pruned": 0,
+            "counterfactuals_generated": 0,
+            "calibrated_nodes": 0,
         }
+
+        # Relevance-to-objective ("main idea") focus. Configured per run() once
+        # the objective is known; these are safe no-op defaults until then.
+        focus_cfg = self.config.get("focus", {}) or {}
+        self.focus_min_relevance = float(focus_cfg.get("min_relevance", 0.0))
+        self.focus_min_depth = int(focus_cfg.get("min_depth", 1))
+        self.relevance_scorer = RelevanceScorer("")
+
+        # Deep-reasoning engines (deterministic, no LLM). When enabled, each
+        # expanded claim is stress-tested with counterfactual scenarios and its
+        # confidence is statistically calibrated from evidence quality.
+        reasoning_cfg = self.config.get("reasoning", {}) or {}
+        self.deep_reasoning = bool(reasoning_cfg.get("deep", True))
+        self.counterfactual_generator = CounterfactualGenerator()
+        self.confidence_calibrator = ConfidenceCalibrator()
 
     def run(
         self,
@@ -82,6 +105,7 @@ class FractalResearchOrchestrator:
     ):
         run_start = time.perf_counter()
         metrics = PhaseMetrics()
+        self.relevance_scorer = RelevanceScorer(objective)
         self.termination.set_deadline(
             run_start,
             max_run_seconds=float(self.config.get("max_run_seconds", 0.0)),
@@ -150,6 +174,8 @@ class FractalResearchOrchestrator:
             if on_progress:
                 on_progress("expand", idx + 1, total_roots)
 
+        self.debug_stats["mean_relevance"] = self._mean_relevance()
+
         with metrics.context("synthesize"):
             composer = ReportComposer(
                 graph=self.graph,
@@ -167,9 +193,70 @@ class FractalResearchOrchestrator:
             )
         report.phase_metrics = metrics.to_dict()
 
+        self._attach_llm_summary(report)
+
         if on_progress:
             on_progress("complete", self.graph.size(), self.graph.size())
         return report
+
+    def _apply_deep_reasoning(self, node: ResearchNode) -> None:
+        """Stress-test a claim with counterfactuals and calibrate its confidence.
+
+        Wires the previously-orphaned CounterfactualGenerator and
+        ConfidenceCalibrator engines into the live reasoning path. Deterministic,
+        no LLM. Failures are isolated so they never break an expansion.
+        """
+        try:
+            cf = self.counterfactual_generator.generate(
+                {"text": node.claim, "context": " ".join(node.evidence_against)}
+            )
+            node.counterfactuals = cf.scenarios
+            if cf.scenarios:
+                self.debug_stats["counterfactuals_generated"] += len(cf.scenarios)
+
+            evidence = [
+                {"weight": 0.6, "type": "direct", "source": e, "contradicts": False}
+                for e in node.evidence_for
+            ] + [
+                {"weight": 0.6, "type": "indirect", "source": e, "contradicts": True}
+                for e in node.evidence_against
+            ]
+            calib = self.confidence_calibrator.calibrate(
+                {"confidence": node.confidence, "evidence": evidence}
+            )
+            node.confidence = calib.adjusted_confidence
+            node.confidence_reliability = calib.reliability
+            self.debug_stats["calibrated_nodes"] += 1
+        except Exception as exc:  # never let enrichment break a run
+            self.debug.trace("deep_reasoning_error", str(exc), {"node": node.id})
+
+    def _mean_relevance(self) -> float:
+        """Average relevance-to-objective across explored nodes (observability)."""
+        nodes = self.graph.get_all_nodes()
+        if not nodes:
+            return 1.0
+        return round(sum(n.relevance for n in nodes) / len(nodes), 4)
+
+    def _attach_llm_summary(self, report) -> None:
+        """Enrich the report with an LLM executive summary when enabled.
+
+        When no LLM is configured (the default), this is a no-op so runs stay
+        fully deterministic and offline. Any provider error degrades silently
+        back to the deterministic report.
+        """
+        if not self.llm_adapter.is_available():
+            return
+        findings = report.main_findings[:20]
+        if not findings:
+            return
+        try:
+            summary = self.llm_adapter.summarize_results(findings)
+        except Exception as exc:  # never let LLM enrichment break a run
+            self.debug.trace("llm_summary_error", str(exc), {})
+            return
+        if summary:
+            report.llm_summary = summary
+            self.debug.trace("llm_summary", "Attached LLM summary", {"chars": len(summary)})
 
     def _expand(
         self,
@@ -191,6 +278,23 @@ class FractalResearchOrchestrator:
             self.debug.trace("expand_stop", f"Pre-expansion stop: {stop}", {"node": node.id})
             return
 
+        # Focus on the main idea: score this branch's relevance to the objective
+        # and prune it if it has drifted off-topic (only when enabled via config).
+        node.relevance = self.relevance_scorer.score(node.claim)
+        if (
+            self.focus_min_relevance > 0.0
+            and node.depth >= self.focus_min_depth
+            and node.relevance < self.focus_min_relevance
+        ):
+            node.status = NodeStatus.STOPPED
+            node.stop_reason = StopReason.FOCUS_DRIFT
+            self.debug_stats["focus_drift_pruned"] += 1
+            self.debug.trace("focus_drift", f"Pruned off-topic {node.id}", {
+                "relevance": node.relevance,
+                "claim": node.claim[:60],
+            })
+            return
+
         validation = self.validator.validate(node.claim)
         node.evidence_for = validation.get("evidence_for", [])
         node.evidence_against = validation.get("evidence_against", [])
@@ -208,6 +312,9 @@ class FractalResearchOrchestrator:
             evidence_against_count=len(node.evidence_against),
         )
         node = downgrade_if_unsupported(node)
+
+        if self.deep_reasoning:
+            self._apply_deep_reasoning(node)
 
         node.questions = self.question_generator.generate(node.claim, node.assumptions)
         enforce_four_question_types(node.questions)
@@ -237,6 +344,7 @@ class FractalResearchOrchestrator:
                 uncertainty=question.uncertainty,
                 risk=question.risk,
                 novelty=question.novelty,
+                relevance=self.relevance_scorer.score(question.text),
             )
             self.graph.register_question(question.text)
             fresh_questions.append(question)
@@ -280,7 +388,11 @@ class FractalResearchOrchestrator:
                         source_question=question.text,
                     )
                 )
-            child_nodes.sort(key=lambda n: n.claim_priority, reverse=True)
+            for child in child_nodes:
+                child.relevance = self.relevance_scorer.score(child.claim)
+            child_nodes.sort(
+                key=lambda n: n.claim_priority * (0.5 + 0.5 * n.relevance), reverse=True
+            )
 
             for child in child_nodes:
                 if self.budget.exhausted:

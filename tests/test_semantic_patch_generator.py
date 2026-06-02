@@ -375,3 +375,11 @@ def test_extract_class_transform(tmp_path: Path):
     assert "def method_a(self):" in pr["new_content"]
     assert "def method_b(self):" in pr["new_content"]
     assert pr["expected_old_content"] == source
+
+
+def test_security_transform_flags_sql_and_pickle(tmp_path):
+    from app.execution.semantic.transforms import security
+    sql = security.apply("db.py", 'cur.execute(f"SELECT {x}")\n', "fix sql injection")
+    assert sql is not None and sql.transform_type == "flag_sql_injection"
+    pk = security.apply("s.py", "import pickle\npickle.loads(b)\n", "fix pickle")
+    assert pk is not None and pk.transform_type == "flag_pickle_loads"

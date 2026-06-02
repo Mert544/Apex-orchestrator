@@ -106,7 +106,7 @@ class ReportComposer:
         findings_html = []
         fractal_html = []
         for result in self.results:
-            agent_name = result.get("agent", "unknown")
+            result.get("agent", "unknown")
             findings = result.get("findings", [])
             fractal_trees = result.get("fractal_trees", [])
             for f in findings:

@@ -29,8 +29,8 @@ class AutoPlanner:
     """
 
     def plan(self, report: dict[str, Any]) -> AutoPlanResult:
-        actions = report.get("recommended_actions", [])
-        branch_map = report.get("branch_map", {})
+        report.get("recommended_actions", [])
+        report.get("branch_map", {})
         profile = report.get("project_profile", {})
 
         tasks = []

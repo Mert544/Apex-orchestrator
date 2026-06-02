@@ -18,7 +18,9 @@ def tmp_repo(tmp_path: Path):
     runner.run(CommandSpec(command=["git", "config", "user.name", "Test"], cwd=repo))
     (repo / "file.txt").write_text("hello")
     runner.run(CommandSpec(command=["git", "add", "."], cwd=repo))
-    runner.run(CommandSpec(command=["git", "commit", "-m", "initial"], cwd=repo))
+    # Disable signing so the fixture's initial commit works in signing-mandated
+    # environments (matches GitAdapter.commit behavior).
+    runner.run(CommandSpec(command=["git", "-c", "commit.gpgsign=false", "commit", "-m", "initial"], cwd=repo))
     return repo
 
 

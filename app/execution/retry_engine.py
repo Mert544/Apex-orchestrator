@@ -6,7 +6,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.execution.patch_planner import PatchPlanner
 from app.execution.semantic_patch_generator import SemanticPatchGenerator
 from app.execution.verifier import Verifier
 from app.skills.execution.apply_patch import ApplyPatchSkill, FilePatch

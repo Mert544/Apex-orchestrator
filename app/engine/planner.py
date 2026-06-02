@@ -79,7 +79,7 @@ class Planner:
                 max_retries=1,
             )
 
-        confidence_boost = self._get_confidence_boost(issue_type)
+        self._get_confidence_boost(issue_type)
 
         if self.learning_policy:
             adj = self.learning_policy.get_adjustments(issue_type)

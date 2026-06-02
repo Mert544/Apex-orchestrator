@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 
-from typing import Any
 
 from ..result import SemanticPatchResult
 from .base import _get_indent
@@ -63,7 +62,7 @@ def apply(
     new_class_text = "".join(new_class_lines)
 
     class_start = target_class.lineno - 1
-    class_end = getattr(target_class, "end_lineno", target_class.lineno)
+    getattr(target_class, "end_lineno", target_class.lineno)
     new_lines = lines[:class_start] + [new_class_text + "\n"] + lines[class_start:]
     new_source = "".join(new_lines)
 

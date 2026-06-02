@@ -3,16 +3,20 @@ from __future__ import annotations
 import ast
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.agents.base import Agent, AgentMessage
+if TYPE_CHECKING:
+    from app.engine.fractal_5whys import FractalNode
+    from app.engine.planner import Plan
+
+from app.agents.base import Agent
 from app.agents.recursive import RecursiveAgent
 from app.engine.fractal_5whys import Fractal5WhysEngine
-from app.engine.fractal_patch_generator import FractalPatchGenerator, FractalPatch
+from app.engine.fractal_patch_generator import FractalPatch
 from app.engine.fractal_cache import FractalCache
 from app.engine.fractal_cross_run import FractalCrossRunBridge
 from app.engine.fractal_cortex import FractalCortex, CortexDecision
-from app.engine.action_executor import ActionExecutor, ActionResult
+from app.engine.action_executor import ActionExecutor
 from app.engine.feedback_loop import FeedbackLoop
 from app.engine.reflector import Reflector
 from app.engine.planner import Planner
@@ -20,6 +24,22 @@ from app.engine.git_auto_commit import GitAutoCommit
 from app.policies.mode_policy import ModePolicy, ApexMode
 from app.policies.safety_gates import SafetyGates
 from app.policy.learning import LearningPolicy
+
+
+def _minimal_code(code: str) -> str:
+    """Return the minimal form of generated patch code.
+
+    Strips a trailing inline ``# TODO`` annotation if a patch source emitted
+    one, operating only on the final line so legitimate ``# TODO`` markers
+    elsewhere in the snippet are preserved. Replaces the old, fragile
+    ``split("# TODO")[0]`` heuristic that truncated on the first occurrence.
+    """
+    lines = code.rstrip().splitlines()
+    if lines:
+        head, sep, _ = lines[-1].partition("# TODO")
+        if sep:
+            lines[-1] = head.rstrip()
+    return "\n".join(lines).strip()
 
 
 class BaseFractalAgent(RecursiveAgent):
@@ -110,7 +130,7 @@ class BaseFractalAgent(RecursiveAgent):
                     for patch_dict in decision.patches:
                         patch = FractalPatch(**patch_dict)
                         plan = self.planner.plan(decision.finding)
-                        strategy = plan.next_strategy()
+                        plan.next_strategy()
 
                         patch_result = self.executor.execute_patch(
                             patch, run_tests=False
@@ -268,12 +288,10 @@ class BaseFractalAgent(RecursiveAgent):
                 },
             )
             # Cache the tree
-            from app.engine.fractal_5whys import FractalNode
 
             tree = self._rebuild_tree(decision.fractal_tree)
             self.cache.put(finding, tree)
         else:
-            from app.engine.fractal_5whys import FractalNode
 
             tree = self._rebuild_tree(decision.fractal_tree)
             self.cache.put(finding, tree)
@@ -330,8 +348,7 @@ class BaseFractalAgent(RecursiveAgent):
 
         Returns the successful outcome dict or None if all fallbacks failed.
         """
-        file_path = original_patch.file
-        issue = finding.get("issue", "unknown").lower()
+        finding.get("issue", "unknown").lower()
 
         for strategy in ["scope_reduce", "semantic_patch", "split_patches", "test_first", "review_only"]:
             try:
@@ -372,10 +389,8 @@ class BaseFractalAgent(RecursiveAgent):
         issue = finding.get("issue", "").lower()
         file_path = original_patch.file
 
-        if "eval" in issue:
-            new_code = original_patch.new_code.split("# TODO")[0].strip()
-        elif "os.system" in issue:
-            new_code = original_patch.new_code.split("# TODO")[0].strip()
+        if "eval" in issue or "os.system" in issue:
+            new_code = _minimal_code(original_patch.new_code)
         elif "bare except" in issue:
             new_code = "except Exception:  # TODO: add specific exception type"
         else:

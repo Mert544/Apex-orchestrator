@@ -30,6 +30,9 @@ class ResearchNode(BaseModel):
     risk: float = 0.0
     novelty: float = 1.0
     security: float = 1.0
+    relevance: float = 1.0
+    confidence_reliability: str = ""
+    counterfactuals: list[str] = Field(default_factory=list)
 
     status: NodeStatus = NodeStatus.NEW
     stop_reason: Optional[StopReason] = None

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import re
 
 from ..result import SemanticPatchResult
 from .base import _get_indent
@@ -20,6 +19,95 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
         return _patch_os_system(rel_path, source, tree)
     if "bare except" in issue or "bareexcept" in issue:
         return _patch_bare_except(rel_path, source, tree)
+    if "pickle" in issue:
+        return _patch_pickle(rel_path, source, tree)
+    if "sql" in issue or "injection" in issue:
+        return _patch_sql_injection(rel_path, source, tree)
+    return None
+
+
+def _patch_sql_injection(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
+    """Flag an f-string passed to .execute()/.cursor() as a SQL-injection risk.
+
+    A correct rewrite needs to extract the interpolated values into bound
+    parameters, which can't be done safely without understanding the query, so
+    we annotate the call site rather than rewrite it.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name not in ("execute", "cursor", "executemany"):
+            continue
+        if not any(isinstance(a, ast.JoinedStr) for a in node.args):
+            continue
+
+        lineno = node.lineno
+        lines = source.splitlines(keepends=True)
+        if lineno > len(lines):
+            continue
+        line_content = lines[lineno - 1]
+        if "Apex: SQL injection" in line_content:
+            continue
+        indent = line_content[: len(line_content) - len(line_content.lstrip())]
+        warning = (
+            f"{indent}# SECURITY (Apex: SQL injection — pass values as query "
+            f"parameters, e.g. execute(sql, (a, b)), not an f-string)\n"
+        )
+        new_lines = list(lines)
+        new_lines.insert(lineno - 1, warning)
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel_path,
+                "new_content": "".join(new_lines),
+                "expected_old_content": source,
+            }],
+            transform_type="flag_sql_injection",
+            rationale=[f"Flagged f-string SQL query with a security warning in {rel_path}."],
+        )
+    return None
+
+
+def _patch_pickle(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
+    """Flag pickle.loads() with a security warning comment.
+
+    Unlike eval/os.system, there is no safe drop-in replacement (pickle can
+    execute arbitrary code on load, and json/msgpack are not semantically
+    equivalent), so we annotate the call site rather than silently rewriting it.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "loads"):
+            continue
+        if not (isinstance(func.value, ast.Name) and func.value.id == "pickle"):
+            continue
+
+        lineno = node.lineno
+        lines = source.splitlines(keepends=True)
+        if lineno > len(lines):
+            continue
+        line_content = lines[lineno - 1]
+        if "Apex: untrusted pickle" in line_content:
+            continue  # already flagged
+        indent = line_content[: len(line_content) - len(line_content.lstrip())]
+        warning = (
+            f"{indent}# SECURITY (Apex: untrusted pickle.loads can execute "
+            f"arbitrary code; validate the source or use json/msgpack)\n"
+        )
+        new_lines = list(lines)
+        new_lines.insert(lineno - 1, warning)
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel_path,
+                "new_content": "".join(new_lines),
+                "expected_old_content": source,
+            }],
+            transform_type="flag_pickle_loads",
+            rationale=[f"Flagged unsafe pickle.loads() with a security warning in {rel_path}."],
+        )
     return None
 
 
@@ -41,12 +129,11 @@ def _patch_eval(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchRe
         lineno = node.lineno
         lines = source.splitlines(keepends=True)
         line_content = lines[lineno - 1] if lineno <= len(lines) else ""
-        indent = _get_indent(line_content)
+        _get_indent(line_content)
 
         if arg_source.startswith("ast.literal_eval(") or arg_source.startswith("json.loads("):
             return None
 
-        new_call = f"ast.literal_eval({arg_source})"
         new_line = line_content.replace(f"eval({arg_source})", f"ast.literal_eval({arg_source})")
 
         new_lines = list(lines)
@@ -91,7 +178,7 @@ def _patch_os_system(rel_path: str, source: str, tree: ast.Module) -> SemanticPa
         lineno = node.lineno
         lines = source.splitlines(keepends=True)
         line_content = lines[lineno - 1] if lineno <= len(lines) else ""
-        indent = _get_indent(line_content)
+        _get_indent(line_content)
 
         new_line = line_content.replace(
             f"os.system({arg_source})",
@@ -158,9 +245,9 @@ def _get_arg_source(arg_node: ast.expr, source: str) -> str:
     if isinstance(arg_node, ast.Attribute):
         return _get_arg_source(arg_node.value, source)
     if isinstance(arg_node, ast.Call):
-        full_source = source.splitlines()[arg_node.lineno - 1] if arg_node.lineno <= len(source.splitlines()) else ""
+        source.splitlines()[arg_node.lineno - 1] if arg_node.lineno <= len(source.splitlines()) else ""
         start = arg_node.col_offset
-        end = start + len(ast.unparse(arg_node))
+        start + len(ast.unparse(arg_node))
         return ast.unparse(arg_node)
     if isinstance(arg_node, (ast.Str, ast.Constant)):
         if isinstance(arg_node, ast.Str):

@@ -135,8 +135,8 @@ class MCPHTTPServer:
 
     def run(self) -> None:
         print(f"Apex MCP HTTP server listening on http://{self.host}:{self.port}")
-        print(f"  POST /   → JSON-RPC endpoint")
-        print(f"  GET  /sse → SSE stream")
+        print("  POST /   → JSON-RPC endpoint")
+        print("  GET  /sse → SSE stream")
         self.server.serve_forever()
 
     def start_in_thread(self) -> threading.Thread:

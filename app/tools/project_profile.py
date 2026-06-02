@@ -25,6 +25,9 @@ class ProjectProfile:
     untested_modules: list[str] = field(default_factory=list)
     critical_untested_modules: list[str] = field(default_factory=list)
     module_to_tests: dict[str, list[str]] = field(default_factory=dict)
+    dependency_edges: list[tuple[str, str]] = field(default_factory=list)
+    fragile_modules: list[str] = field(default_factory=list)
+    import_cycles: list[list[str]] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -123,6 +126,10 @@ class ProjectProfiler:
 
         graph_builder = DependencyGraphBuilder(self.root)
         profile.dependency_hubs = graph_builder.top_central_modules(limit=5)
+        profile.dependency_edges = [
+            (e.source, e.target) for e in graph_builder.edges()
+        ]
+        profile.import_cycles = graph_builder.find_cycles(limit=5)
 
         symbol_rank = sorted(modules, key=lambda m: len(m.symbols), reverse=True)
         profile.symbol_hubs = [m.path for m in symbol_rank if len(m.symbols) > 0][:5]
@@ -132,3 +139,15 @@ class ProjectProfiler:
         profile.module_to_tests = coverage.module_to_tests
         profile.untested_modules = coverage.untested_modules[:5]
         profile.critical_untested_modules = coverage.critical_untested_modules[:5]
+
+        # Fragility: many modules depend on it (high in-degree) but it has
+        # thin/no test coverage — a high-blast-radius risk worth surfacing.
+        graph = graph_builder.build()
+        thin = {m for m, t in profile.module_to_tests.items() if len(t) <= 1}
+        thin |= set(profile.untested_modules)
+        fragile = sorted(
+            (n for n in graph.values() if n.in_degree >= 2 and n.path in thin),
+            key=lambda n: (n.in_degree, n.path),
+            reverse=True,
+        )
+        profile.fragile_modules = [n.path for n in fragile][:3]

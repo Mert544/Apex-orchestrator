@@ -78,16 +78,34 @@ class SwarmCoordinator:
         # Wire coordinator as the router between agents
         self._wire_coordinator()
 
+    # Roles that produce findings from a project scan. Every such agent runs on
+    # `scan.complete`, not just the security agent — otherwise plans like
+    # `project_scan` (docstring/dependency/coverage) yield zero results.
+    SCANNER_ROLE_HINTS = (
+        "security",
+        "auditor",
+        "docstring",
+        "documentation",
+        "dependency",
+        "architecture",
+        "coverage",
+        "analyst",
+        "scanner",
+    )
+
     def _wire_agent(self, agent: Agent) -> None:
         """Subscribe agent to relevant topics based on its role."""
         role = agent.role.lower()
 
-        if "security" in role:
-            # When scan completes, security agent runs
+        is_scanner = any(hint in role for hint in self.SCANNER_ROLE_HINTS)
+        if is_scanner:
+            # Bind `agent` per-subscription so every scanner runs on scan.complete.
             agent.on(
-                "scan.complete", lambda msg: self._handle_scan_complete(agent, msg)
+                "scan.complete", lambda msg, a=agent: self._handle_scan_complete(a, msg)
             )
-            # When security alert emitted, route to evaluator
+
+        if "security" in role:
+            # Security findings additionally flow into the evaluate→patch pipeline.
             agent.on("security.alert", lambda msg: self._route_to_evaluator(msg))
 
         if "evaluator" in role or "consensus" in role:
@@ -99,7 +117,8 @@ class SwarmCoordinator:
                 "patch.request", lambda msg: self._handle_patch_request(agent, msg)
             )
 
-        if "test" in role:
+        if "test" in role and not is_scanner:
+            # A test *verifier* (not the coverage analyst) runs after a patch.
             agent.on(
                 "patch.applied", lambda msg: self._handle_patch_applied(agent, msg)
             )
@@ -172,7 +191,7 @@ class SwarmCoordinator:
         """Evaluator processes submitted claims."""
         claims = msg.payload.get("claims", [])
         if claims:
-            result = agent.run(claims=claims)
+            agent.run(claims=claims)
             # Results are emitted inside _route_to_evaluator after run
 
     def _route_to_patcher(self, msg: AgentMessage) -> None:

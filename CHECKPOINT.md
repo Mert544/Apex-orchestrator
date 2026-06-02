@@ -1,9 +1,11 @@
 # Apex Autonomous Engineering Organism - Checkpoint
 
-**Date**: 2026-04-25
-**Commit**: 55196bb + autonomy-safety-core
-**Tests**: 633 passing ✅
-**Status**: autonomy-safety-core COMPLETE — Ready for next phase
+**Date**: 2026-05-30
+**Commit**: 7067cf2 (branch `claude/apex-orchestrator-eZbJO`)
+**Tests**: 786 passing ✅ (5 git tests fail only in this sandbox — commit-signing, green in real CI)
+**Status**: Idea engine + action bridge + CI gate shipped — see Phases 8–10
+
+> Previous milestone: autonomy-safety-core (2026-04-25, 633 tests).
 
 ---
 
@@ -523,3 +525,130 @@ Apex Architecture (Brain-Hands-Limbs)
 - **89 core tests passing** (semantic patch, LLM router noop, cost registry, distributed swarm, mode policy, safety gates, agents)
 - **Zero external API dependencies** ✅
 - **Total collected**: 756 tests in suite ✅
+
+---
+
+## Phase 8: Integration Hardening & Evaluation ✅ (2026-05-30)
+
+A holistic audit (3 parallel reviews + manual verification) found the verdict:
+**components are real, but the integration/wiring layer was the weak point.**
+This phase wires the real components into a working end-to-end pipeline and
+closes the highest-leverage gaps. All changes are deterministic; LLM remains
+strictly optional and off by default.
+
+### 8.1 Bug fixes & stability
+- `app/llm/agent_adapter.py` — `json`/`re` moved to module scope (fixed latent
+  `NameError` in `analyze_claim`).
+- `app/engine/fractal_patch_generator.py` — `os.system→subprocess` patch now
+  uses `shlex.split`; placeholder docstring/test templates made usable.
+- `app/engine/self_improvement.py` — real `missing_docstrings` AST count
+  (was hardcoded `0`).
+
+### 8.2 Quality cleanup
+- `app/execution/semantic/generators/stub.py` — misleading `assert True` stub
+  replaced with a skipped `NotImplementedError` placeholder (no false coverage).
+- `app/agents/fractal_agents.py` — fragile `split("# TODO")` replaced with
+  `_minimal_code()`.
+- Removed dead `app/engine/router.py` (`ModelRouter`).
+
+### 8.3 Optional free LLM providers (off by default)
+- `app/llm/router.py` — `OpenAICompatibleProvider` (stdlib `urllib`, zero deps)
+  + presets: **github**, groq, gemini, openrouter, ollama. Keys via env
+  (`api_key_env`); missing key / network error degrades to deterministic logic.
+- Wired into the orchestrator as an *optional* report summary
+  (`FinalReport.llm_summary`); `provider: none` keeps runs fully offline.
+- Docs: `docs/free-llm-setup.md`. Endpoint reachability verified (HTTP 401).
+
+### 8.4 Focus on the main idea (deterministic)
+- `app/skills/relevance_scorer.py` — `RelevanceScorer` scores each claim/branch
+  against the objective. Used three ways: prioritise (always on), prune
+  off-topic drift (`focus.min_relevance` opt-in), observe
+  (`debug_stats.mean_relevance`, `focus_drift_pruned`).
+
+### 8.5 Swarm wiring fix (P0 — biggest functional gap)
+- `app/agents/swarm_coordinator.py` — every scanner role now runs on
+  `scan.complete` (was security-only). `app/main.py` `_build_swarm_for_plan`:
+  `project_scan` registers all four read-only scanners.
+- **Result:** `project_scan` on `examples/flask_mini` went from **0 → 4**
+  scanner results. Locked by `tests/test_swarm_scan_wiring.py`.
+
+### 8.6 Orphaned reasoning engines wired in
+- `CounterfactualGenerator` + `ConfidenceCalibrator` (`app/engine/*`) were
+  implemented + unit-tested but never called (`used_in_app=0`). The
+  orchestrator now stress-tests each claim with counterfactual scenarios
+  (`node.counterfactuals`) and calibrates confidence from evidence quality
+  (`node.confidence_reliability`). Config: `reasoning.deep` (default true).
+
+### 8.7 Deeper, claim-specific questions
+- `app/skills/question_generator.py` — replaced the four identical generic
+  stems with domain-tailored phrasing (security / tests / architecture /
+  config / CI / feature-gap / operations), reusing `ClaimAnalyzer` and
+  anchoring on the detected signal. Deterministic, no LLM.
+
+### 8.8 Packaging & tooling
+- `pyproject.toml` — `[project.scripts]` exposes **`apex`** and **`apex-mcp`**;
+  added `pytest-cov` + `[tool.coverage]`.
+- Fixed pytest collection warning (`TestStubAgent.__test__ = False`).
+- `.gitignore` — ignore `.coverage`/`htmlcov`.
+
+### Notes / honest caveats
+- The "5 missing reasoning engines" claim from one audit pass was **wrong** —
+  the files exist; they were merely unwired (now fixed in 8.6).
+- The bare `except:` flagged in `app/validation/django_mini_factory.py` is
+  **intentional fixture code** (deliberately-flawed Django for the scanner to
+  find) and was left as-is.
+- Still open for a future phase: plugin hooks in the main swarm path (P0.3),
+  CI quality gates (ruff/mypy/coverage), and broader `engine/`+`memory/`+
+  `tools/` test coverage.
+
+---
+
+## Phase 9: Idea Permutation Engine ✅ (2026-05-30)
+
+The project's core vision, now a working feature: a **generative** fractal that
+splits a project into autonomous development branches and permutes each into
+operator-sequence sub-branches — the "abc" of every "a". Derived from the real
+codebase, fully deterministic (no LLM). Design: `docs/idea-permutation-engine.md`.
+
+- **Models** (`app/models/idea.py`): `IdeaNode` (traceable to `source_facts` +
+  `operator_chain`), `IdeaTreeReport`.
+- **Seeder** (`app/engine/idea_permutation.py` `IdeaSeeder`): root development
+  branches from `ProjectProfiler` facts (dependency hubs, untested/sensitive/
+  entrypoint modules, symbol hubs, missing CI).
+- **Engine** (`IdeaPermutationEngine`): best-first expansion applying the
+  `DEVELOPMENT_OPERATORS` alphabet (extend/harden/test/simplify/document/
+  integrate/generalize/observe) each idea hasn't used yet, so every branch path
+  is a unique permutation of lenses over a code subject. Reuses RelevanceScorer,
+  CounterfactualGenerator (per-idea caveats), GraphStore dedup, BudgetController.
+  `value = 0.4*relevance + 0.3*novelty + 0.3*feasibility`.
+- **CLI**: `apex ideate --target=. --depth --breadth --max-ideas --min-relevance
+  --objective --mermaid --json --out` → hierarchical markdown + Mermaid tree.
+- **Tests**: 21 new (seeder rules/limits/dedup, permutation uniqueness & chain
+  integrity, budget, relevance pruning, determinism, rendering, CLI smoke).
+- **Future (P-D)**: MCP `apex_ideate` tool, optional LLM polish of titles, and
+  plugin-contributed operators.
+
+---
+
+## Phase 10: Idea→Action, CI gate, docs (2026-05-30)
+
+Four-theme follow-up to Phase 9.
+
+- **A — Idea→Action bridge** (`app/engine/idea_action_bridge.py`): maps each
+  idea's terminal operator (or a root's fact) to a known action type, marking
+  executable ones (create_test_stub/add_docstring/harden_security/
+  organize_imports) vs design tasks. `apex ideate --actions --top N` prints a
+  value-ordered, supervised plan that is **never applied**.
+- **A2 — Idea engine P-D**: operator/fact-aware counterfactual caveats (relevant,
+  not generic); new MCP tool `apex_ideate` (tree + optional action plan).
+- **B — CI gates**: `[tool.ruff]` config (select E/F/W, ignore E402 intentional
+  `__future__`-first pattern); fixed remaining pyflakes (TYPE_CHECKING forward
+  refs, dead imports, ambiguous name) so `ruff check app/` is green; `ci.yml`
+  gains a ruff lint job + coverage (term + xml).
+- **C — Docs & honesty**: README Idea Permutation Engine section + refreshed
+  roadmap; new `ROADMAP.md`; explicit "Experimental (not production-ready)"
+  labels for the K8s operator, Helm chart, and VS Code extension.
+
+Remaining (ROADMAP): plugin-contributed operators, optional LLM polish of idea
+titles, idea→real-patch drafting, and raising `engine/`/`memory/`/`tools/`
+coverage.

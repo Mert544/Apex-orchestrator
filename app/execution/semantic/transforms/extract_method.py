@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 
-from typing import Any
 
 from ..result import SemanticPatchResult
 from .base import _get_indent

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,9 +26,18 @@ class RunTestsSkill:
         if not selected:
             return summary
 
+        # Run tests in the target project's own isolation. Set PYTHONPATH to the
+        # target root ONLY, dropping the caller's entries, so the project's own
+        # packages resolve and a caller's same-named package (e.g. Apex's own
+        # `app/`) can't shadow the project under test.
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(root)
+        # Force the subprocess to start in the target dir, not inherit ours.
+        env.pop("PYTEST_ADDOPTS", None)
+
         overall_ok = True
         for command in selected:
-            result = self.runner.run(CommandSpec(command=command, cwd=root))
+            result = self.runner.run(CommandSpec(command=command, cwd=root, env=env))
             summary.results.append(self._result_to_dict(result))
             overall_ok = overall_ok and result.ok
         summary.ok = overall_ok

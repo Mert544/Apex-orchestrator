@@ -41,3 +41,4 @@ class FinalReport(BaseModel):
     patches_applied: int = 0
     patches_blocked: int = 0
     feedback_learned_patterns: list[dict[str, Any]] = Field(default_factory=list)
+    llm_summary: str = ""

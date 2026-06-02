@@ -30,10 +30,10 @@ from app.engine.rollback_journal import RollbackJournal
 from app.engine.checkpoint_manager import CheckpointManager
 from app.memory.bridge import CentralMemoryBridge
 from app.memory.persistent_memory import PersistentMemoryStore
-from app.metrics.exporter import MetricsMiddleware, PrometheusExporter
+from app.metrics.exporter import MetricsMiddleware
 from app.orchestrator import FractalResearchOrchestrator
-from app.plugins.registry import PluginRegistry
-from app.policies.mode_policy import ModePolicy, mode_from_string, apply_cli_overrides
+from app.plugins.registry import PluginRegistry, PluginEventBridge
+from app.policies.mode_policy import ModePolicy, mode_from_string
 from app.skills.decomposer import Decomposer
 from app.skills.evidence_mapper import EvidenceMapper
 from app.skills.validator import Validator
@@ -53,34 +53,65 @@ def _build_swarm_for_plan(
     """
     coord = SwarmCoordinator()
 
+    # project_scan is a broad read-only sweep: run every scanner.
+    broad = "project_scan" in plan_name or "full" in plan_name or "self" in plan_name
+
     agents = []
-    if "security" in plan_name or "full" in plan_name or "self" in plan_name:
+    if "security" in plan_name or broad:
         agents.append(FractalSecurityAgent() if use_fractal else SecurityAgent())
-    if (
-        "docstring" in plan_name
-        or "semantic" in plan_name
-        or "full" in plan_name
-        or "self" in plan_name
-    ):
+    if "docstring" in plan_name or "semantic" in plan_name or broad:
         agents.append(FractalDocstringAgent() if use_fractal else DocstringAgent())
     if (
         "test" in plan_name
         or "coverage" in plan_name
         or "semantic" in plan_name
-        or "full" in plan_name
-        or "self" in plan_name
+        or broad
     ):
         agents.append(FractalTestStubAgent() if use_fractal else TestStubAgent())
-    if (
-        "dependency" in plan_name
-        or "project_scan" in plan_name
-        or "full" in plan_name
-        or "self" in plan_name
-    ):
+    if "dependency" in plan_name or broad:
         agents.append(DependencyAgent())
 
     coord.register_agents(agents)
     return coord
+
+
+def _run_swarm_with_plugins(
+    swarm: SwarmCoordinator,
+    plugins: PluginRegistry,
+    *,
+    objective: str,
+    target: str,
+    mode: str,
+    plan_name: str,
+    report_dir: Path,
+):
+    """Run the event-driven swarm with plugin hooks wired into the flow.
+
+    Previously the swarm path bypassed the plugin registry entirely. This fires
+    the before_scan / after_scan / on_report lifecycle hooks and bridges plugin
+    bus subscribers to the swarm bus, so plugins participate in the main path.
+    Returns (results, report_path).
+    """
+    from app.reporting.composer import ReportComposer
+
+    plugins.run_hook(
+        "before_scan", {"objective": objective, "target": target, "plan": plan_name}
+    )
+    # Let plugins react to live agent events during the run.
+    PluginEventBridge(plugins, swarm.bus).wire()
+
+    results = swarm.run_autonomous(goal=objective, target=target, mode=mode)
+
+    plugins.run_hook(
+        "after_scan", {"objective": objective, "plan": plan_name, "results": results}
+    )
+
+    report_dir.mkdir(exist_ok=True)
+    md_path = report_dir / "fractal-report.md"
+    ReportComposer(results).to_markdown(md_path)
+    plugins.run_hook("on_report", {"report_path": str(md_path), "results": results})
+
+    return results, md_path
 
 
 def main() -> None:
@@ -123,11 +154,8 @@ def main() -> None:
                 print(f"[mode] BLOCKED: {result.message}")
                 return
 
-    patches_applied = 0
-    patches_blocked = 0
     if automation_plan and policy.auto_patch:
-        patches_applied = 0
-        patches_blocked = 0
+        pass
 
     # Load plugins from config or environment
     plugin_dirs = config.get("plugin_dirs", [])
@@ -155,21 +183,16 @@ def main() -> None:
                 print(
                     "[main] Fractal deep-analysis enabled (5-Whys + counter-evidence + meta-analysis)"
                 )
-            results = swarm.run_autonomous(
-                goal=objective,
+            results, md_path = _run_swarm_with_plugins(
+                swarm,
+                plugins,
+                objective=objective,
                 target=str(target_root),
                 mode=mode,
+                plan_name=automation_plan,
+                report_dir=target_root / ".apex",
             )
             print(pretty_json({"swarm_results": results, "stats": swarm.stats()}))
-
-            # Auto-generate fractal-aware report
-            from app.reporting.composer import ReportComposer
-
-            composer = ReportComposer(results)
-            report_dir = target_root / ".apex"
-            report_dir.mkdir(exist_ok=True)
-            md_path = report_dir / "fractal-report.md"
-            composer.to_markdown(md_path)
             print(f"[main] Report written to {md_path}")
             return
 
@@ -215,7 +238,6 @@ def main() -> None:
 
     # Record run start
     import time
-    import uuid
     run_id = f"run-{int(time.time())}"
     start_time = time.time()
 
@@ -229,7 +251,7 @@ def main() -> None:
     for key, conf in report.confidence_map.items():
         findings.append({"claim": key, "confidence": conf, "branch": ""})
     memory_bridge.record_run(run_id, claims=findings)
-    checkpoint.save_checkpoint(run_id, mode=policy.mode.value, goal=objective, stats={"claims": claims_count, "duration": duration})
+    checkpoint.save_checkpoint(run_id, mode=policy.mode.value, goal=objective, stats={"claims": len(findings), "duration": duration})
 
     # Record metrics
     patches_applied_val = getattr(report, "patches_applied", 0)
@@ -252,7 +274,7 @@ def main() -> None:
     })
 
     # Persist debug and checkpoint reports
-    debug_report = debug.report()
+    debug.report()
     metrics_text = metrics.render()
     (target_root / ".apex").mkdir(parents=True, exist_ok=True)
     (target_root / ".apex" / "metrics.prom").write_text(metrics_text, encoding="utf-8")

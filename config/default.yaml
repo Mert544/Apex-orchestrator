@@ -1,6 +1,19 @@
 max_depth: 3
 max_total_nodes: 20
 top_k_questions: 2
+
+# Focus on the main idea (objective). Relevance-to-objective always shapes
+# branch/question priority so the tree stays anchored to the main idea.
+# Set focus.min_relevance > 0 to also PRUNE branches that drift off-topic.
+focus:
+  min_relevance: 0.0   # 0 = prioritise only; e.g. 0.15 prunes off-topic drift
+  min_depth: 1         # never prune roots; only branches at/after this depth
+
+# Deep reasoning (deterministic, no LLM): stress-test each claim with
+# counterfactual "what if" scenarios and statistically calibrate its
+# confidence from evidence quality/diversity/conflict.
+reasoning:
+  deep: true
 min_security: 0.80
 min_quality: 0.60
 min_novelty: 0.20
@@ -13,12 +26,23 @@ debug_enabled: false
 # Token budget: 0 means unlimited
 token_budget_limit: 0
 
-# LLM provider: none | openai | local (default none = no external calls)
+# LLM provider. Default `none` makes zero external calls.
+# Free / low-cost options (all OpenAI-compatible, no extra dependency):
+#   github     -> GitHub Models  (free for devs/students; needs GITHUB_TOKEN)
+#   groq       -> Groq           (free tier; needs GROQ_API_KEY)
+#   gemini     -> Google Gemini  (free tier; needs GEMINI_API_KEY)
+#   openrouter -> OpenRouter     (has :free models; needs OPENROUTER_API_KEY)
+#   ollama     -> local Ollama   (fully offline, no key)
+# Keep the key in an env var (api_key_env) instead of committing it here.
 llm:
   provider: none
+  # For GitHub Models, create a token with the `models:read` permission and
+  # export it, e.g.  export GITHUB_TOKEN=ghp_xxx
   api_key: ""
-  base_url: "https://api.openai.com/v1"
-  model: "gpt-4o-mini"
+  api_key_env: "GITHUB_TOKEN"
+  # base_url/model are optional overrides; each preset has sensible defaults.
+  base_url: ""
+  model: ""
   max_tokens: 2048
   temperature: 0.2
   max_tokens_per_call: 2048

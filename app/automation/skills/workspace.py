@@ -6,7 +6,6 @@ from app.automation.models import AutomationContext
 from app.skills.execution.clone_repo import CloneRepoSkill
 from app.skills.execution.prepare_workspace import PrepareWorkspaceSkill
 
-from ._context import _target_root
 
 
 def prepare_workspace_skill(context: AutomationContext):

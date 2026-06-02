@@ -6,8 +6,6 @@ Agents are specialized skills that communicate via a shared message bus.
 They can form teams, share context, and coordinate on complex tasks.
 """
 
-from typing import Any
-
 from .base import Agent, AgentState, AgentMessage
 from .bus import AgentBus
 from .registry import AgentRegistry

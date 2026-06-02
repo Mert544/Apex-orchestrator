@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.automation.planner import DynamicPlan
 
 from app.automation.planner import AutonomousPlanner
 from app.intent.parser import IntentParser
@@ -55,7 +60,24 @@ class SelfImprovementEngine:
             "total_files": profile.total_files,
             "sensitive_paths": len(profile.sensitive_paths),
             "untested_modules": len(profile.untested_modules),
-            "missing_docstrings": 0,  # Would require AST scan; placeholder
+            "missing_docstrings": self._count_missing_docstrings(),
             "dependency_hubs": len(profile.dependency_hubs),
             "test_coverage": 0.0,
         }
+
+    def _count_missing_docstrings(self) -> int:
+        """Count functions/classes lacking a docstring via an AST scan."""
+        skip_dirs = {".venv", "venv", ".git", "node_modules", "__pycache__", "build", "dist"}
+        missing = 0
+        for path in self.project_root.rglob("*.py"):
+            if any(part in skip_dirs for part in path.parts):
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (SyntaxError, OSError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    if not ast.get_docstring(node):
+                        missing += 1
+        return missing

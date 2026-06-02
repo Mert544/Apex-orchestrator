@@ -288,7 +288,7 @@ def cmd_self_audit(args: argparse.Namespace) -> int:
     if args.format == "json":
         print(json.dumps(result, indent=2, default=str))
     else:
-        print(f"# Apex Self-Audit Report")
+        print("# Apex Self-Audit Report")
         print(f"**Target:** {target}")
         print()
         print(f"- Risks found: {len(result.get('findings', []))}")
@@ -412,6 +412,265 @@ def cmd_hook(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_debug(args: argparse.Namespace) -> int:
+    """Trace a run or analyze a traceback using the debug subsystem."""
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+
+    if args.subcommand == "analyze":
+        if args.trace and args.trace != "-":
+            trace_text = Path(args.trace).read_text(encoding="utf-8")
+        else:
+            trace_text = sys.stdin.read()
+        from app.agents.limbs import get_limb
+
+        result = get_limb("debug").run(
+            project_root=str(target),
+            error_trace=trace_text,
+            target_file=getattr(args, "file", "") or "",
+        )
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            rc = result.get("root_cause")
+            print("=== APEX DEBUG ANALYZE ===")
+            print(f"Root cause: {rc['type'] if rc else 'unidentified'}")
+            for s in result.get("suggestions", []):
+                print(f"  - {s}")
+        return 0
+
+    # default subcommand == "trace"
+    from app.engine.debug_engine import DebugEngine
+    from app.tools.project_profile import ProjectProfiler
+
+    debug = DebugEngine(str(target), enabled=True)
+    debug.trace("cli", f"debug trace target={target}")
+    profile = ProjectProfiler(str(target)).profile()
+    debug.snapshot(
+        branch_map={d: 1 for d in profile.top_directories},
+        telemetry={"total_files": profile.total_files},
+    )
+    report = debug.report()
+    debug_files = sorted((target / ".apex" / "debug").glob("debug-*.json"))
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print("=== APEX DEBUG TRACE ===")
+        print(f"Traces: {report['trace_count']}  Anomalies: {len(report['anomalies'])}")
+        if debug_files:
+            print(f"Report: {debug_files[-1]}")
+    return 0
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Generate a self-contained HTML dashboard for the project."""
+    from app.reporting.dashboard import build_dashboard
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    html_doc = build_dashboard(
+        str(target),
+        objective=args.objective or None,
+        max_ideas=args.max_ideas,
+        idea_depth=args.depth,
+        breadth=args.breadth,
+    )
+    out_path = Path(args.out) if args.out else target / ".apex" / "dashboard.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html_doc, encoding="utf-8")
+    print(f"[dashboard] Written to {out_path}")
+    return 0
+
+
+def cmd_maintain(args: argparse.Namespace) -> int:
+    """One-shot maintenance: scan -> ideate -> apply -> verify -> commit -> report."""
+    from app.engine.idea_permutation import IdeaPermutationEngine
+    from app.engine.idea_action_bridge import (
+        IdeaActionBridge,
+        render_maintenance_markdown,
+    )
+    from app.plugins.registry import PluginRegistry
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    plugins = PluginRegistry()
+    plugins.load_all()
+
+    report = IdeaPermutationEngine(
+        config={"max_total_ideas": args.max_ideas, "max_idea_depth": args.depth,
+                "breadth": args.breadth},
+        project_root=str(target),
+        extra_operators=plugins.idea_operators(),
+    ).run(objective=args.objective or None)
+
+    bridge = IdeaActionBridge()
+    plan = bridge.plan_tree(report, mode=args.mode, top=(args.top or None), project_root=str(target))
+
+    # Dry-run: preview the diffs without touching anything.
+    if getattr(args, "dry_run", False):
+        preview = bridge.dry_run_plan(plan, str(target))
+        if args.json:
+            print(json.dumps(preview, indent=2))
+        else:
+            print(f"# Apex Maintenance — dry run for `{target}`")
+            print(f"\n{preview['applicable']} of {preview['total_executable']} "
+                  f"executable steps would change files (nothing applied).\n")
+            for p in preview["results"]:
+                if not p["applicable"]:
+                    continue
+                print(f"## `{p['branch']}` {p['action']} → {p['transform_type']} "
+                      f"({', '.join(f for f in p['files'] if f)})")
+                print("```diff")
+                print(p["diff"].rstrip())
+                print("```\n")
+        return 0
+
+    summary = bridge.apply_plan(
+        plan, str(target), mode=args.mode,
+        verify=not args.no_verify,
+        max_apply=(args.max_apply or None) if args.max_apply else None,
+        commit=args.commit,
+    )
+    md = render_maintenance_markdown(summary, str(target), objective=args.objective or "")
+
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(md)
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(md, encoding="utf-8")
+        print(f"\n[maintain] Report written to {out_path}")
+    return 0
+
+
+def cmd_ideate(args: argparse.Namespace) -> int:
+    """Generate a permutation tree of development ideas from the codebase."""
+    from app.engine.idea_permutation import (
+        IdeaPermutationEngine,
+        render_markdown,
+        render_mermaid,
+    )
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+
+    # Plugins may contribute extra development operators to the alphabet.
+    from app.plugins.registry import PluginRegistry
+
+    plugins = PluginRegistry()
+    plugins.load_all()
+    extra_operators = plugins.idea_operators()
+
+    engine = IdeaPermutationEngine(
+        config={
+            "max_total_ideas": args.max_ideas,
+            "max_idea_depth": args.depth,
+            "breadth": args.breadth,
+            "min_relevance": args.min_relevance,
+        },
+        project_root=str(target),
+        extra_operators=extra_operators,
+    )
+    report = engine.run(objective=args.objective or None)
+
+    # --kind: list only ideas of a given kind (permutation/synthesis/pair),
+    # value-sorted. A focused view onto what the engine surfaced.
+    kind = getattr(args, "kind", "") or ""
+    if kind and kind != "all":
+        selected = sorted(
+            (i for i in report.ideas if i.kind == kind),
+            key=lambda n: n.value,
+            reverse=True,
+        )
+        if args.json:
+            print(json.dumps([i.to_dict() for i in selected], indent=2))
+        else:
+            print(f"# {kind} ideas for `{target}`  ({len(selected)} found)")
+            for i in selected:
+                caveat = f"  ⚠ {i.caveats[0]}" if i.caveats else ""
+                print(f"- `{i.branch_path}` [{i.operator}] {i.title}  (v {i.value}){caveat}")
+        return 0
+
+    # Optionally bridge ideas into a supervised, never-applied action plan.
+    action_plan = None
+    apply_results = None
+    if getattr(args, "actions", False):
+        from app.engine.idea_action_bridge import (
+            IdeaActionBridge,
+            render_action_markdown,
+        )
+
+        bridge = IdeaActionBridge()
+        action_plan = bridge.plan_tree(
+            report,
+            mode=getattr(args, "mode", None) or "supervised",
+            top=args.top or None,
+            draft=getattr(args, "draft", False) or getattr(args, "apply", False),
+            project_root=str(target),
+        )
+        # Strictly opt-in apply: only when --apply is passed; gated by mode + safety.
+        if getattr(args, "apply", False):
+            apply_results = bridge.apply_plan(
+                action_plan,
+                str(target),
+                mode=getattr(args, "mode", None) or "supervised",
+                verify=getattr(args, "verify", False),
+                max_apply=(args.max_apply or None) if getattr(args, "max_apply", 0) else None,
+                commit=getattr(args, "commit", False),
+            )
+
+    if args.json:
+        payload = report.model_dump()
+        if action_plan is not None:
+            payload["action_plan"] = action_plan.model_dump()
+        if apply_results is not None:
+            payload["apply_results"] = apply_results
+        print(json.dumps(payload, indent=2))
+    elif action_plan is not None:
+        print(render_action_markdown(action_plan))
+        if apply_results is not None:
+            verify_note = " · verified" if apply_results.get("verify") else ""
+            commit_note = (
+                f" · committed {apply_results.get('committed', 0)}"
+                if apply_results.get("commit") else ""
+            )
+            print(
+                f"\n## Maintenance run (mode: {apply_results.get('mode')}{verify_note}{commit_note})\n"
+                f"applied {apply_results['applied']} · rolled back "
+                f"{apply_results['rolled_back']} · blocked {apply_results['blocked']} "
+                f"of {apply_results['total_executable']} executable steps"
+            )
+            for r in apply_results["results"]:
+                if r.get("rolled_back"):
+                    status = "↩️"
+                elif r.get("applied"):
+                    status = "✅"
+                else:
+                    status = "⛔"
+                detail = r.get("reason") or ", ".join(r.get("changed_files", []))
+                if r.get("verified") is True:
+                    detail += "  (tests pass)"
+                if r.get("committed"):
+                    detail += f"  [committed {r.get('commit_hash', '')}]"
+                print(f"- {status} `{r['branch']}` {r['action']} — {detail}")
+    else:
+        print(render_markdown(report))
+        if args.mermaid:
+            print()
+            print(render_mermaid(report))
+
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if action_plan is not None:
+            body = render_action_markdown(action_plan)
+        else:
+            body = render_markdown(report)
+            if args.mermaid:
+                body += "\n\n" + render_mermaid(report)
+        out_path.write_text(body, encoding="utf-8")
+        print(f"\n[ideate] Written to {out_path}")
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     from app.reporting.composer import ReportComposer
 
@@ -493,7 +752,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     planner = AutonomousPlanner()
     plan = planner.build_plan(intent)
 
-    print(f"\n=== APEX ORCHESTRATOR — AUTONOMOUS RUN ===")
+    print("\n=== APEX ORCHESTRATOR — AUTONOMOUS RUN ===")
     print(f"Goal: {intent.goal}")
     print(f"Plan: {plan.plan_name}")
     print(f"Steps: {len(plan.steps)}")
@@ -817,6 +1076,153 @@ def main() -> int:
     marketplace_parser.add_argument("--port", type=int, default=8765, help="Marketplace server port")
     marketplace_parser.add_argument("--plugin-dir", default="plugins", help="Plugin directory")
     marketplace_parser.set_defaults(func=cmd_marketplace)
+
+    # ideate
+    ideate_parser = subparsers.add_parser(
+        "ideate",
+        help="Generate a permutation tree of development ideas from the codebase",
+    )
+    ideate_parser.add_argument("--target", default="", help="Target project root")
+    ideate_parser.add_argument(
+        "--objective", default="", help="Optional theme to focus ideas on"
+    )
+    ideate_parser.add_argument("--depth", type=int, default=2, help="Permutation depth")
+    ideate_parser.add_argument(
+        "--breadth", type=int, default=4, help="Operators applied per idea"
+    )
+    ideate_parser.add_argument(
+        "--max-ideas", type=int, default=40, dest="max_ideas", help="Idea budget"
+    )
+    ideate_parser.add_argument(
+        "--min-relevance",
+        type=float,
+        default=0.0,
+        dest="min_relevance",
+        help="Drop ideas below this relevance to the objective (0=off)",
+    )
+    ideate_parser.add_argument(
+        "--actions",
+        action="store_true",
+        help="Bridge ideas into a supervised, never-applied action plan",
+    )
+    ideate_parser.add_argument(
+        "--top", type=int, default=0, help="Limit action plan to top-N ideas by value"
+    )
+    ideate_parser.add_argument(
+        "--draft",
+        action="store_true",
+        help="Draft real patch previews for executable steps (never applied)",
+    )
+    ideate_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply executable steps — gated by mode + safety gates (opt-in)",
+    )
+    ideate_parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="After applying, run tests and auto-rollback any step that breaks them",
+    )
+    ideate_parser.add_argument(
+        "--commit",
+        action="store_true",
+        help="Auto-commit each applied step (autonomous mode only)",
+    )
+    ideate_parser.add_argument(
+        "--max-apply",
+        type=int,
+        default=0,
+        dest="max_apply",
+        help="Cap how many steps a maintenance run applies (0 = no cap)",
+    )
+    ideate_parser.add_argument(
+        "--mode",
+        default="supervised",
+        choices=["report", "supervised", "autonomous"],
+        help="Execution mode for --apply (report cannot patch)",
+    )
+    ideate_parser.add_argument(
+        "--mermaid", action="store_true", help="Also emit a Mermaid diagram"
+    )
+    ideate_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    ideate_parser.add_argument("--out", default="", help="Write markdown to this path")
+    ideate_parser.add_argument(
+        "--kind",
+        default="",
+        choices=["", "all", "permutation", "synthesis", "pair"],
+        help="List only ideas of this kind (value-sorted)",
+    )
+    ideate_parser.set_defaults(func=cmd_ideate)
+
+    # dashboard
+    dash_parser = subparsers.add_parser(
+        "dashboard", help="Generate a self-contained HTML project dashboard"
+    )
+    dash_parser.add_argument("--target", default="", help="Target project root")
+    dash_parser.add_argument("--objective", default="", help="Optional theme to focus ideas on")
+    dash_parser.add_argument("--depth", type=int, default=2, help="Idea permutation depth")
+    dash_parser.add_argument("--breadth", type=int, default=3, help="Operators per idea")
+    dash_parser.add_argument("--max-ideas", type=int, default=24, dest="max_ideas", help="Idea budget")
+    dash_parser.add_argument("--out", default="", help="Output HTML path (default <target>/.apex/dashboard.html)")
+    dash_parser.set_defaults(func=cmd_dashboard)
+
+    # maintain — one-shot scan -> ideate -> apply -> verify -> commit -> report
+    maintain_parser = subparsers.add_parser(
+        "maintain",
+        help="One-shot maintenance: scan, generate fixes, apply (verified), commit, report",
+    )
+    maintain_parser.add_argument("--target", default="", help="Target project root")
+    maintain_parser.add_argument("--objective", default="", help="Optional theme to focus on")
+    maintain_parser.add_argument("--depth", type=int, default=2, help="Idea permutation depth")
+    maintain_parser.add_argument("--breadth", type=int, default=4, help="Operators per idea")
+    maintain_parser.add_argument("--max-ideas", type=int, default=40, dest="max_ideas")
+    maintain_parser.add_argument("--top", type=int, default=0, help="Limit plan to top-N ideas")
+    maintain_parser.add_argument(
+        "--mode", default="supervised",
+        choices=["report", "supervised", "autonomous"],
+        help="report=plan only, supervised=apply, autonomous=apply+commit",
+    )
+    maintain_parser.add_argument(
+        "--dry-run", action="store_true", dest="dry_run",
+        help="Preview the diffs of every fix without changing anything",
+    )
+    maintain_parser.add_argument(
+        "--no-verify", action="store_true",
+        help="Skip running tests + auto-rollback after each applied step",
+    )
+    maintain_parser.add_argument(
+        "--commit", action="store_true",
+        help="Auto-commit each applied step (autonomous mode only)",
+    )
+    maintain_parser.add_argument(
+        "--max-apply", type=int, default=0, dest="max_apply",
+        help="Cap how many steps to apply (0 = no cap)",
+    )
+    maintain_parser.add_argument("--json", action="store_true", help="Emit JSON summary")
+    maintain_parser.add_argument("--out", default="", help="Write the Markdown report to this path")
+    maintain_parser.set_defaults(func=cmd_maintain)
+
+    # debug
+    debug_parser = subparsers.add_parser(
+        "debug", help="Trace a run or analyze a traceback via the debug subsystem"
+    )
+    debug_sub = debug_parser.add_subparsers(dest="subcommand")
+
+    dbg_trace = debug_sub.add_parser(
+        "trace", help="Run with debug tracing; write a .apex/debug report"
+    )
+    dbg_trace.add_argument("--target", default="", help="Target project root")
+    dbg_trace.add_argument("--json", action="store_true", help="Emit JSON")
+    dbg_trace.set_defaults(func=cmd_debug)
+
+    dbg_analyze = debug_sub.add_parser(
+        "analyze", help="Diagnose a traceback (from --trace file or stdin)"
+    )
+    dbg_analyze.add_argument("--target", default="", help="Target project root")
+    dbg_analyze.add_argument("--trace", default="-", help="Traceback file, or - for stdin")
+    dbg_analyze.add_argument("--file", default="", help="Optional source file to scan")
+    dbg_analyze.add_argument("--json", action="store_true", help="Emit JSON")
+    dbg_analyze.set_defaults(func=cmd_debug)
 
     # hook
     hook_parser = subparsers.add_parser("hook", help="Manage git hooks")

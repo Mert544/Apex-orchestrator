@@ -161,7 +161,7 @@ class DebateEngine:
                                     agent_role=vote.agent_role,
                                     verdict=Verdict.ABSTAIN,
                                     confidence=0.3,
-                                    reasoning=f"Softened stance after security concerns raised",
+                                    reasoning="Softened stance after security concerns raised",
                                     weight=vote.weight,
                                 )
                             )
