@@ -54,3 +54,55 @@ class TestApexDaemon:
     def test_stop_running_no_pid(self, tmp_path: Path):
         pid_file = tmp_path / "daemon.pid"
         assert ApexDaemon.stop_running(pid_file) is False
+
+
+class TestDaemonRunAndStop:
+    def _daemon(self, tmp_path):
+        return ApexDaemon(goal="audit", target=str(tmp_path), pid_file=str(tmp_path / "d.pid"))
+
+    def test_stop_sets_flag(self, tmp_path):
+        d = self._daemon(tmp_path)
+        d._running = True
+        d.stop()
+        assert d._running is False
+
+    def test_run_apex_success(self, tmp_path, capsys):
+        from unittest.mock import patch
+        d = self._daemon(tmp_path)
+
+        class _Res:
+            returncode = 0
+            stderr = ""
+
+        with patch("subprocess.run", return_value=_Res()) as m:
+            d._run_apex()
+        cmd = m.call_args[0][0]
+        assert "app.cli" in cmd and "run" in cmd
+        assert "successfully" in capsys.readouterr().out.lower()
+
+    def test_run_apex_failure(self, tmp_path, capsys):
+        from unittest.mock import patch
+        d = self._daemon(tmp_path)
+
+        class _Res:
+            returncode = 2
+            stderr = "boom"
+
+        with patch("subprocess.run", return_value=_Res()):
+            d._run_apex()
+        assert "failed" in capsys.readouterr().out.lower()
+
+    def test_run_apex_timeout(self, tmp_path, capsys):
+        import subprocess
+        from unittest.mock import patch
+        d = self._daemon(tmp_path)
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 300)):
+            d._run_apex()
+        assert "timed out" in capsys.readouterr().out.lower()
+
+    def test_run_apex_generic_error(self, tmp_path, capsys):
+        from unittest.mock import patch
+        d = self._daemon(tmp_path)
+        with patch("subprocess.run", side_effect=RuntimeError("nope")):
+            d._run_apex()
+        assert "error" in capsys.readouterr().out.lower()
