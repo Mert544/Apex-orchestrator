@@ -44,6 +44,12 @@ _FACETS: dict[str, list[str]] = {
     "observe": ["key metrics", "structured logs", "trace spans"],
 }
 
+# Deeper-than-level-1 facets decompose any aspect into the engineering case
+# split that recurs at every grain: the common path, the boundary, the failure.
+# This is what makes the zoom *fractal* — the same decomposition applies however
+# far down you go (bounded by ``facet_depth`` and by not repeating a case).
+_FACET_CASES: list[str] = ["common case", "boundary case", "failure case"]
+
 
 # The fixed permutation alphabet — the "abc" applied to every branch "a".
 # Data-driven so breadth is tunable and plugins can extend it later.
@@ -225,6 +231,9 @@ class IdeaPermutationEngine:
         # larger budget. When on, a dedicated slice is carved for them.
         self.fractal_facets = bool(cfg.get("fractal_facets", False))
         self.facets_per_idea = int(cfg.get("facets_per_idea", 2))
+        # How many self-similar zoom levels facets recurse (1 = aspects only;
+        # 2+ drills each aspect into common/boundary/failure cases, fractally).
+        self.facet_depth = max(1, int(cfg.get("facet_depth", 1)))
         self.budget = BudgetController(max_total_nodes=int(cfg.get("max_total_ideas", 40)))
         # When False, skip the security scan (e.g. tests/perf); weighting stays static.
         self.security_aware = bool(cfg.get("security_aware", True))
@@ -515,46 +524,92 @@ class IdeaPermutationEngine:
             and n.operator in _FACETS
             and n.id not in perm_parents
         ]
-        # Best leaves first; deterministic tie-break on branch path.
-        leaves.sort(key=lambda n: (n.value, n.branch_path), reverse=True)
 
         facet_cap = max(2, int(self.budget.max_total_nodes * 0.12))
         # Never spend the slice reserved for synthesis.
         synth_floor = self.budget.max_total_nodes - getattr(self, "_synth_reserve", 0)
-        added = 0
-        for leaf in leaves:
-            if self.budget.exhausted or added >= facet_cap or len(emitted) >= synth_floor:
+        counter = {"added": 0}
+
+        def _stop() -> bool:
+            return (
+                self.budget.exhausted
+                or counter["added"] >= facet_cap
+                or len(emitted) >= synth_floor
+            )
+
+        # Per-level source cap: split the facet budget across the requested zoom
+        # levels so depth is actually reachable (a few deep dives beat faceting
+        # every leaf one level). Falls back to wide faceting when depth == 1.
+        per_level = max(2, facet_cap // (self.facets_per_idea * self.facet_depth))
+
+        # Level-by-level (BFS) fractal zoom: each level's facets become the next
+        # level's sources, up to ``facet_depth``. Best-first within a level.
+        sources = leaves
+        for level in range(1, self.facet_depth + 1):
+            if _stop():
                 break
-            for j, facet in enumerate(_FACETS[leaf.operator][: self.facets_per_idea]):
-                if self.budget.exhausted or added >= facet_cap or len(emitted) >= synth_floor:
+            sources.sort(key=lambda n: (n.value, n.branch_path), reverse=True)
+            sources = sources[:per_level]
+            next_sources: list[IdeaNode] = []
+            for src in sources:
+                if _stop():
                     break
-                child = IdeaNode(
-                    id=f"{leaf.id}-f{j}",
-                    title=f"{leaf.operator.capitalize()} {leaf.subject} — {facet}",
-                    subject=f"{leaf.subject} :: {facet}",
+                for child in self._facet_children(src, level):
+                    if _stop():
+                        break
+                    if graph.has_similar_claim(child.title):
+                        continue
+                    self._score(child, relevance)
+                    # _score recomputes feasibility only for roots, so the
+                    # inherited feasibility on the facet is preserved.
+                    graph.register_claim(child.title)
+                    self.budget.consume_node()
+                    emitted.append(child)
+                    counter["added"] += 1
+                    next_sources.append(child)
+            sources = next_sources
+        stats["faceted"] = counter["added"]
+
+    def _facet_vocab(self, node: IdeaNode, level: int) -> list[str]:
+        """Facet phrases available to refine ``node`` at the given zoom level.
+
+        Level 1 uses the operator's aspect vocabulary; deeper levels use the
+        common/boundary/failure case split, excluding any case already applied
+        on this branch so a chain never repeats itself.
+        """
+        if level == 1:
+            return _FACETS.get(node.operator, [])
+        used = {
+            f.split("facet:", 1)[1].strip()
+            for f in node.source_facts
+            if f.startswith("facet:")
+        }
+        return [c for c in _FACET_CASES if c not in used]
+
+    def _facet_children(self, node: IdeaNode, level: int) -> list[IdeaNode]:
+        """Build the facet sub-ideas that zoom into ``node`` at ``level``."""
+        children: list[IdeaNode] = []
+        for j, phrase in enumerate(self._facet_vocab(node, level)[: self.facets_per_idea]):
+            children.append(
+                IdeaNode(
+                    id=f"{node.id}-f{j}",
+                    title=f"{node.title} — {phrase}",
+                    subject=f"{node.subject} :: {phrase}",
                     rationale=(
-                        f"Fractal zoom of `{leaf.branch_path}`: refine the "
-                        f"{leaf.operator} of {leaf.subject} down to {facet}."
+                        f"Fractal zoom (L{level}) of `{node.branch_path}`: refine "
+                        f"{node.subject} down to its {phrase}."
                     ),
-                    branch_path=f"{leaf.branch_path}.f{j}",
-                    depth=leaf.depth + 1,
-                    parent_id=leaf.id,
-                    operator=leaf.operator,
-                    operator_chain=list(leaf.operator_chain),
-                    source_facts=list(leaf.source_facts) + [f"facet: {facet}"],
-                    feasibility=leaf.feasibility,
+                    branch_path=f"{node.branch_path}.f{j}",
+                    depth=node.depth + 1,
+                    parent_id=node.id,
+                    operator=node.operator,
+                    operator_chain=list(node.operator_chain),
+                    source_facts=list(node.source_facts) + [f"facet: {phrase}"],
+                    feasibility=node.feasibility,
                     kind="facet",
                 )
-                if graph.has_similar_claim(child.title):
-                    continue
-                self._score(child, relevance)
-                # _score recomputes feasibility only for roots, so the inherited
-                # leaf feasibility above is preserved for facets.
-                graph.register_claim(child.title)
-                self.budget.consume_node()
-                emitted.append(child)
-                added += 1
-        stats["faceted"] = added
+            )
+        return children
 
     def _novelty(self, node: IdeaNode) -> float:
         """Deterministic novelty: deeper / more-repeated lens chains are less novel.

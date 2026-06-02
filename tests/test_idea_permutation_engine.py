@@ -272,6 +272,36 @@ def test_fractal_facets_zoom_leaves_into_subideas(tmp_path):
         assert 0.0 <= f.value <= 1.0
 
 
+def test_facets_recurse_to_requested_depth(tmp_path):
+    # facet_depth>1 drills the top leaves into self-similar sub-facets: a level-2
+    # facet's branch path contains two ".f" hops and its chain of facet labels
+    # is strictly nested (no case repeats on a branch).
+    _project(tmp_path)
+    rep = IdeaPermutationEngine(
+        {
+            "max_total_ideas": 80,
+            "max_idea_depth": 2,
+            "breadth": 4,
+            "fractal_facets": True,
+            "facet_depth": 3,
+        },
+        tmp_path,
+    ).run()
+    facets = [i for i in rep.ideas if i.kind == "facet"]
+    levels = [f.branch_path.count(".f") for f in facets]
+    assert max(levels) >= 2, "expected facets nested at least two zoom levels deep"
+    # A deep facet's case labels never repeat along its branch.
+    deep = max(facets, key=lambda f: f.branch_path.count(".f"))
+    facet_labels = [s.split("facet:", 1)[1].strip() for s in deep.source_facts if s.startswith("facet:")]
+    assert len(facet_labels) == len(set(facet_labels))
+    by_id = {i.id: i for i in rep.ideas}
+    # The whole zoom chain is connected back to a permutation leaf.
+    cur = deep
+    while cur.parent_id in by_id and by_id[cur.parent_id].kind == "facet":
+        cur = by_id[cur.parent_id]
+    assert by_id[cur.parent_id].kind == "permutation"
+
+
 def test_facets_off_by_default(tmp_path):
     _project(tmp_path)
     rep = IdeaPermutationEngine({"max_total_ideas": 40, "max_idea_depth": 2}, tmp_path).run()

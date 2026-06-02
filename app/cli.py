@@ -566,6 +566,7 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             "breadth": args.breadth,
             "min_relevance": args.min_relevance,
             "fractal_facets": getattr(args, "facets", False),
+            "facet_depth": getattr(args, "facet_depth", 1),
         },
         project_root=str(target),
         extra_operators=extra_operators,
@@ -1183,6 +1184,13 @@ def main() -> int:
         "--facets",
         action="store_true",
         help="Fractal zoom: expand the strongest leaves into self-similar sub-ideas",
+    )
+    ideate_parser.add_argument(
+        "--facet-depth",
+        type=int,
+        default=1,
+        dest="facet_depth",
+        help="How many self-similar facet zoom levels to recurse (with --facets)",
     )
     ideate_parser.set_defaults(func=cmd_ideate)
 
