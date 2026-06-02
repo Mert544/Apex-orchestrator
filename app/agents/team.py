@@ -100,7 +100,7 @@ class AgentTeam:
         result = TeamResult(team_name=self.name, bus_stats=self.bus.stats())
         shared_context = kwargs.copy()
 
-        for stage_idx, stage_names in enumerate(stages):
+        for stage_names in stages:
             stage_agents = [self.agents[n] for n in stage_names if n in self.agents]
 
             def run_agent(agent: Agent) -> tuple[str, dict[str, Any]]:

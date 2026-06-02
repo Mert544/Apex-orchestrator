@@ -28,7 +28,7 @@ class VectorStore:
 
     def _build_vocab(self) -> None:
         vocab_set: set[str] = set()
-        for vec, _, text in self._vectors:
+        for _vec, _, text in self._vectors:
             vocab_set.update(self._tokenize(text))
         self._vocab = sorted(vocab_set)
         self._dirty = False
@@ -45,7 +45,7 @@ class VectorStore:
         self._dirty = True
 
     def _cosine(self, a: list[float], b: list[float]) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
+        dot = sum(x * y for x, y in zip(a, b, strict=False))
         norm_a = math.sqrt(sum(x * x for x in a))
         norm_b = math.sqrt(sum(x * x for x in b))
         if norm_a == 0 or norm_b == 0:

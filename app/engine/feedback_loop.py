@@ -119,7 +119,7 @@ class FeedbackLoop:
         for i, e in enumerate(self.entries):
             by_node[e.node_key].append((i, e))
 
-        for node_key, node_entries in by_node.items():
+        for _node_key, node_entries in by_node.items():
             if len(node_entries) > self.max_entries_per_node:
                 entries_to_remove = node_entries[: -self.max_entries_per_node]
                 indices_to_remove = {i for i, _ in entries_to_remove}

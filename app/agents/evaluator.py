@@ -56,7 +56,7 @@ class ClaimEvaluator:
         votes: list[Vote] = []
         ctx = context or {}
 
-        for name, agent in self.agents.items():
+        for _name, agent in self.agents.items():
             vote = self._agent_review(agent, claim, ctx)
             # Apply learned confidence boost if available
             learned = self.memory.get_learned_confidence(vote.agent_role, claim)
@@ -176,7 +176,7 @@ class ClaimEvaluator:
         results = self.evaluate_batch(claims, context)
         return [
             (claim, result)
-            for claim, result in zip(claims, results)
+            for claim, result in zip(claims, results, strict=False)
             if result.final_verdict == Verdict.APPROVE and result.confidence >= min_confidence
         ]
 
