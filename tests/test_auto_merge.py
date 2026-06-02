@@ -45,3 +45,45 @@ def test_commit_aborts_on_staging_failure(tmp_path):
     ).stdout.strip()
     # No new commit was created (HEAD unchanged).
     assert before == after
+
+
+def test_commit_on_new_branch(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, capture_output=True)
+    (tmp_path / "f.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "f.py"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "-c", "commit.gpgsign=false", "commit", "-m", "init"], cwd=tmp_path, capture_output=True)
+
+    (tmp_path / "f.py").write_text("x = 2\n")
+    merger = AutoMerger(tmp_path)
+    result = merger.commit_patches(["f.py"], message="patch", branch="feature-x")
+    assert result.success
+    assert result.branch == "feature-x"
+
+
+def test_commit_nothing_to_commit(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, capture_output=True)
+    (tmp_path / "f.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "f.py"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "-c", "commit.gpgsign=false", "commit", "-m", "init"], cwd=tmp_path, capture_output=True)
+
+    # No changes since last commit -> "nothing to commit".
+    merger = AutoMerger(tmp_path)
+    result = merger.commit_patches(["f.py"], message="noop")
+    assert result.success is False
+    assert any("no changes to commit" in e.lower() for e in result.errors)
+
+
+def test_push_no_remote_fails(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, capture_output=True)
+    (tmp_path / "f.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "f.py"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "-c", "commit.gpgsign=false", "commit", "-m", "init"], cwd=tmp_path, capture_output=True)
+
+    ok, err = AutoMerger(tmp_path).push()
+    assert ok is False  # no remote configured
