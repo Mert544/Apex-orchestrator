@@ -383,3 +383,13 @@ def test_security_transform_flags_sql_and_pickle(tmp_path):
     assert sql is not None and sql.transform_type == "flag_sql_injection"
     pk = security.apply("s.py", "import pickle\npickle.loads(b)\n", "fix pickle")
     assert pk is not None and pk.transform_type == "flag_pickle_loads"
+
+
+def test_security_transform_rewrites_yaml_load():
+    from app.execution.semantic.transforms import security
+    r = security.apply("c.py", "import yaml\nx = yaml.load(s)\n", "fix yaml")
+    assert r is not None and r.transform_type == "yaml_load_to_safe_load"
+    assert "yaml.safe_load(s)" in r.patch_requests[0]["new_content"]
+    # Explicit Loader= is respected (not rewritten).
+    none = security.apply("c.py", "import yaml\nx = yaml.load(s, Loader=yaml.SafeLoader)\n", "fix yaml")
+    assert none is None

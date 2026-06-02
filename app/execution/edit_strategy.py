@@ -72,6 +72,9 @@ class EditStrategy:
         if "sql" in combined or "injection" in combined:
             reasons.append("Keywords suggest flagging an SQL-injection risk.")
             return EditStrategyResult(strategy="fix_sql", confidence=0.8, reasons=reasons)
+        if "yaml" in combined:
+            reasons.append("Keywords suggest a yaml.load() safety fix.")
+            return EditStrategyResult(strategy="fix_yaml", confidence=0.85, reasons=reasons)
 
         if "import" in combined or "unused" in combined or "cleanup" in combined:
             reasons.append("Keywords suggest import cleanup.")

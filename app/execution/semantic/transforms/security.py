@@ -23,6 +23,49 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
         return _patch_pickle(rel_path, source, tree)
     if "sql" in issue or "injection" in issue:
         return _patch_sql_injection(rel_path, source, tree)
+    if "yaml" in issue:
+        return _patch_yaml_load(rel_path, source, tree)
+    return None
+
+
+def _patch_yaml_load(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
+    """Rewrite an unsafe ``yaml.load(x)`` call to ``yaml.safe_load(x)``.
+
+    Unlike pickle/SQL, this has a safe, semantically-equivalent drop-in for the
+    common case (loading untrusted YAML without custom tags), so we rewrite it.
+    A call that already passes an explicit ``Loader=`` is left untouched.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "load"):
+            continue
+        if not (isinstance(func.value, ast.Name) and func.value.id == "yaml"):
+            continue
+        # Respect an explicit Loader=... (caller already chose a loader).
+        if any(kw.arg == "Loader" for kw in node.keywords):
+            continue
+
+        lineno = node.lineno
+        lines = source.splitlines(keepends=True)
+        if lineno > len(lines):
+            continue
+        line_content = lines[lineno - 1]
+        new_line = line_content.replace("yaml.load(", "yaml.safe_load(")
+        if new_line == line_content:
+            continue
+        new_lines = list(lines)
+        new_lines[lineno - 1] = new_line
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel_path,
+                "new_content": "".join(new_lines),
+                "expected_old_content": source,
+            }],
+            transform_type="yaml_load_to_safe_load",
+            rationale=[f"Replaced unsafe yaml.load() with yaml.safe_load() in {rel_path}."],
+        )
     return None
 
 

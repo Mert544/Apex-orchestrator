@@ -147,7 +147,7 @@ class SemanticPatchGenerator:
                     new_class_name=extract_cfg.get("new_class_name", ""),
                     base_class=extract_cfg.get("base_class", None),
                 )
-            elif transform in ("fix_eval", "fix_os_system", "fix_bare_except", "fix_pickle", "fix_sql"):
+            elif transform in ("fix_eval", "fix_os_system", "fix_bare_except", "fix_pickle", "fix_sql", "fix_yaml"):
                 result = security_transforms.apply(rel_path, current, title)
 
             if result:

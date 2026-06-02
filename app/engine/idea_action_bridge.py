@@ -91,6 +91,8 @@ class IdeaActionBridge:
             return "os.system"
         if "pickle.loads(" in text:
             return "pickle"
+        if "yaml.load(" in text:
+            return "yaml"
         if 'execute(f"' in text or "execute(f'" in text or 'cursor(f"' in text:
             return "sql"
         if "except:" in text:

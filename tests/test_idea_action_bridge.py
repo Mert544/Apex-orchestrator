@@ -367,3 +367,19 @@ def test_harden_flags_sql_injection(tmp_path):
     if result["applied"]:
         assert result["transform_type"] == "flag_sql_injection"
         assert "SQL injection" in src.read_text()
+
+
+def test_harden_rewrites_yaml_load(tmp_path):
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "cfg.py"
+    src.write_text("import yaml\ndef load(s):\n    return yaml.load(s)\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Harden: app/cfg.py", subject="app/cfg.py",
+                    operator="harden", operator_chain=["harden"],
+                    source_facts=["sensitive-path: app/cfg.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
+    if result["applied"]:
+        assert result["transform_type"] == "yaml_load_to_safe_load"
+        assert "yaml.safe_load(s)" in src.read_text()
+        assert "yaml.load(" not in src.read_text()
