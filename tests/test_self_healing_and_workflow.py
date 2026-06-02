@@ -53,3 +53,37 @@ def test_workflow_to_orchestrator_memory(tmp_path):
     assert mem["type"] == "apex_debug_workflow"
     assert mem["findings_count"] >= 1
     assert mem["critical_count"] >= 1
+
+
+def test_workflow_with_fix_and_test(tmp_path):
+    # eval project + a test -> run with fix=True exercises the heal + verify path.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "cfg.py").write_text("import yaml\ndef load(s):\n    return yaml.load(s)\n")
+    (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n")
+    result = CrossRepoWorkflow(tmp_path).run(min_severity="low", fix=True)
+    assert isinstance(result.fixed_files, list)
+
+
+def test_workflow_test_only(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "bad.py").write_text("def r(c):\n    return eval(c)\n")
+    (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n")
+    # test=True (without fix) exercises the verification-only branch.
+    result = CrossRepoWorkflow(tmp_path).run(min_severity="low", test=True)
+    assert isinstance(result.test_passed, bool)
+
+
+def test_self_heal_analysis_failure_is_graceful(tmp_path, monkeypatch):
+    # If idea generation raises, heal returns a failure result rather than crashing.
+    import app.engine.idea_permutation as ip
+
+    class _Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("analysis down")
+
+    monkeypatch.setattr(ip, "IdeaPermutationEngine", _Boom)
+    result = SelfHealingAgent(tmp_path).heal(dry_run=True)
+    assert result.success is False
+    assert "failed" in result.message.lower()
