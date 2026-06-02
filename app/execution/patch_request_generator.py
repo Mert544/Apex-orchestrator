@@ -27,7 +27,10 @@ class PatchRequestGenerator:
         patch_requests: list[dict[str, Any]] = []
         rationale: list[str] = []
 
-        for rel_path in target_files[:1]:
+        # Try each target in order; the first inlineable file wins (we return on
+        # the first .md/.txt or .py match). Previously this sliced to [:1], so a
+        # non-inlineable first file forced an unnecessary fallback draft.
+        for rel_path in target_files:
             target = (root / rel_path).resolve()
             if not str(target).startswith(str(root)):
                 continue

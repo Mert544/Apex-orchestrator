@@ -55,7 +55,10 @@ class AutoMerger:
         for f in changed_files:
             rc, _, err = self._run_git("add", f)
             if rc != 0:
+                # Abort before committing: a staging failure would otherwise
+                # produce a partial commit that silently drops files.
                 result.errors.append(f"Failed to stage {f}: {err.strip()}")
+                return result
 
         rc, out, err = self._run_git("-c", "commit.gpgsign=false", "commit", "-m", message)
         if rc != 0:
