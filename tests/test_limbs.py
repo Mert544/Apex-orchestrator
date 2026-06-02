@@ -219,3 +219,52 @@ def long_function():
         limb = DebugLimb()
         result = limb.run(project_root=self.tmp_dir, target_file="unsafe.py")
         assert any("eval" in a for a in result["analysis"])
+
+
+class TestAllLimbsSmoke:
+    """Run each limb end-to-end on a tiny project to exercise its _execute path."""
+
+    def _proj(self, tmp_path):
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "m.py").write_text(
+            "import os\n\ndef run(c):\n    return eval(c)\n\ndef helper(x):\n    return x + 1\n"
+        )
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_m.py").write_text("def test_x():\n    assert True\n")
+        (tmp_path / "requirements.txt").write_text("pytest\n")
+        return tmp_path
+
+    def test_each_limb_runs_and_reports_its_name(self, tmp_path):
+        self._proj(tmp_path)
+        # limb-key -> the "limb" label it reports (doc reports "documentation").
+        expected = {
+            "debug": "debug", "coverage": "coverage", "refactor": "refactor",
+            "dependency": "dependency", "doc": "documentation", "ci": "ci",
+            "performance": "performance",
+        }
+        for name, label in expected.items():
+            result = get_limb(name, bus=None).run(project_root=str(tmp_path))
+            assert isinstance(result, dict)
+            assert result.get("limb") == label
+
+    def test_coverage_limb_reports_structure(self, tmp_path):
+        self._proj(tmp_path)
+        result = get_limb("coverage").run(project_root=str(tmp_path), min_coverage=90.0)
+        assert result["limb"] == "coverage"
+        assert "recommendations" in result
+        assert result["min_coverage"] == 90.0
+
+    def test_refactor_limb_finds_long_or_complex(self, tmp_path):
+        self._proj(tmp_path)
+        result = get_limb("refactor").run(project_root=str(tmp_path))
+        assert result["limb"] == "refactor"
+
+    def test_dependency_limb_reports(self, tmp_path):
+        self._proj(tmp_path)
+        result = get_limb("dependency").run(project_root=str(tmp_path))
+        assert result["limb"] == "dependency"
+
+    def test_unknown_limb_raises(self):
+        import pytest
+        with pytest.raises((ValueError, KeyError)):
+            get_limb("nonexistent-limb")

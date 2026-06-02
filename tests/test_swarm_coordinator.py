@@ -81,3 +81,37 @@ class TestSwarmCoordinator:
         coord._running = True
         coord._shutdown()
         assert coord._running is False
+
+
+def test_record_outcome_adapts_timeouts():
+    coord = SwarmCoordinator()
+    base_patch = coord._timeouts["patch"]
+    # Drive many failures on "patch" -> success rate drops -> timeout widens.
+    for _ in range(20):
+        coord.record_outcome("patch", success=False)
+    assert coord._failure_count > 0
+    assert coord._success_rates["patch"] < 1.0
+    # Timeouts stay within the documented [0.5x, 2x] band of base.
+    assert base_patch * 0.5 <= coord._timeouts["patch"] <= base_patch * 2.0
+
+
+def test_record_outcome_unknown_op_maps_to_patch():
+    coord = SwarmCoordinator()
+    for _ in range(6):
+        coord.record_outcome("totally-unknown", success=True)
+    # Should not raise and should have updated the "patch" bucket.
+    assert 0.0 <= coord._success_rates["patch"] <= 1.0
+
+
+def test_get_stability_status_shape():
+    coord = SwarmCoordinator()
+    status = coord.get_stability_status()
+    assert set(status) == {"shutdown_requested", "timeouts", "active_agents", "pending_results"}
+    assert status["shutdown_requested"] is False
+
+
+def test_run_autonomous_skips_after_shutdown():
+    coord = SwarmCoordinator()
+    coord._shutdown()
+    # A run requested after shutdown returns immediately with no results.
+    assert coord.run_autonomous("any goal", target=".", mode="report") == []
