@@ -37,3 +37,68 @@ def test_get_test_command_returns_list(tmp_path):
     cmd = sel.get_test_command(["tests/test_calc.py"])
     assert isinstance(cmd, list)
     assert any("pytest" in part for part in cmd)
+
+
+def test_select_tests_for_functions(tmp_path):
+    _project(tmp_path)
+    # test_calc.py contains "test_add"; selecting by that function name finds it.
+    sel = TargetedTestSelector(project_root=str(tmp_path))
+    tests = sel.select_tests(uncovered_functions=["test_add"])
+    assert any("test_calc.py" in t for t in tests)
+
+
+def test_get_test_command_no_selection_runs_all(tmp_path):
+    sel = TargetedTestSelector(project_root=str(tmp_path))
+    cmd = sel.get_test_command(changed_files=["nope.py"])
+    assert cmd == ["python", "-m", "pytest", "-q"]
+
+
+def test_test_runner_success(tmp_path):
+    from unittest.mock import patch
+    from app.execution.targeted_test_selector import TestRunner
+
+    class _Res:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    with patch("subprocess.run", return_value=_Res()):
+        result = TestRunner(project_root=str(tmp_path)).run_tests()
+    assert result["passed"] is True
+    assert result["success"] is True
+
+
+def test_test_runner_timeout(tmp_path):
+    import subprocess
+    from unittest.mock import patch
+    from app.execution.targeted_test_selector import TestRunner
+
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("c", 1)):
+        result = TestRunner(project_root=str(tmp_path), timeout=1).run_tests()
+    assert result["passed"] is False
+    assert result.get("timeout") is True
+
+
+def test_test_runner_error(tmp_path):
+    from unittest.mock import patch
+    from app.execution.targeted_test_selector import TestRunner
+
+    with patch("subprocess.run", side_effect=RuntimeError("boom")):
+        result = TestRunner(project_root=str(tmp_path)).run_tests()
+    assert result["success"] is False
+    assert result.get("error") is True
+
+
+def test_test_runner_run_targeted(tmp_path):
+    _project(tmp_path)
+    from unittest.mock import patch
+    from app.execution.targeted_test_selector import TestRunner
+
+    class _Res:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    with patch("subprocess.run", return_value=_Res()):
+        result = TestRunner(project_root=str(tmp_path)).run_targeted(changed_files=["app/calc.py"])
+    assert result["success"] is True
