@@ -1,7 +1,8 @@
-"""Self-Healing Agent Skill — Automatically fixes common code issues.
+"""Self-Healing Agent Skill — auto-fix common issues with Apex's own engines.
 
-Integrates with Apex Debug findings to apply safe transformations,
-then verifies fixes with tests.
+Uses Apex's Idea Permutation Engine + IdeaActionBridge to apply deterministic,
+test-verified fixes (with automatic rollback), then reports what changed. No
+external dependency — fully in-process.
 """
 
 from __future__ import annotations
@@ -23,118 +24,82 @@ class HealingResult:
 
 
 class SelfHealingAgent:
-    """Agent that automatically fixes code issues detected by Apex Debug.
+    """Automatically fix code issues using Apex's verified-apply pipeline.
 
     Usage:
         healer = SelfHealingAgent(project_root="/path/to/code")
-        result = healer.heal()
-        if result.success:
-            print(f"Fixed {len(result.files_modified)} files")
+        result = healer.heal(dry_run=True)
     """
 
     def __init__(self, project_root: str | Path) -> None:
         self.project_root = Path(project_root).resolve()
 
-    def heal(self, dry_run: bool = True) -> HealingResult:
-        """Run Apex Debug autofix on the project.
+    def heal(self, dry_run: bool = True, max_apply: int = 10) -> HealingResult:
+        """Generate fixes and (unless dry_run) apply them, verified with tests.
 
         Args:
-            dry_run: If True, only preview changes without applying
-
-        Returns:
-            HealingResult with details
+            dry_run: If True, only report what would change (nothing applied).
+            max_apply: Cap on the number of fixes to apply.
         """
-        # Step 1: Run Apex Debug with autofix
-        cmd = [
-            "python", "-m", "apex_debug.cli.app",
-            "analyze", str(self.project_root),
-            "--min-severity", "info",
-        ]
-        if dry_run:
-            cmd.append("--fix-dry-run")
-        else:
-            cmd.append("--fix")
+        from app.engine.idea_action_bridge import IdeaActionBridge
+        from app.engine.idea_permutation import IdeaPermutationEngine
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                cwd=str(self.project_root),
-                timeout=120,
-            )
-        except Exception as e:
+            report = IdeaPermutationEngine(
+                {"max_total_ideas": 30, "max_idea_depth": 1, "breadth": 4},
+                str(self.project_root),
+            ).run()
+        except Exception as exc:
+            return HealingResult(success=False, message=f"Analysis failed: {exc}")
+
+        bridge = IdeaActionBridge()
+        plan = bridge.plan_tree(report, project_root=str(self.project_root))
+
+        if dry_run:
+            preview = bridge.dry_run_plan(plan, str(self.project_root))
+            would = [p for p in preview["results"] if p.get("applicable")]
+            files = sorted({f for p in would for f in (p.get("files") or [])})
             return HealingResult(
-                success=False,
-                message=f"Apex Debug failed: {e}",
+                success=True,
+                files_modified=files,
+                message=f"{len(would)} fixes would be applied (dry run).",
             )
 
-        # Step 2: Parse which files would be/have been modified
-        modified: list[str] = []
-        for line in result.stdout.splitlines():
-            if "Would fix" in line or "Fixed" in line:
-                # Extract filename from lines like "  Fixed 3 issue(s) in main.py"
-                parts = line.split(" in ")
-                if len(parts) >= 2:
-                    fname = parts[-1].strip()
-                    modified.append(fname)
-
-        # Step 3: If not dry_run, run tests to verify fixes
-        test_passed = False
-        if not dry_run and modified:
-            test_passed = self._run_tests()
-
+        # Apply, test-verified with automatic rollback per step.
+        summary = bridge.apply_plan(
+            plan, str(self.project_root), mode="supervised",
+            verify=True, max_apply=max_apply,
+        )
+        modified = sorted({
+            f for r in summary["results"] if r.get("applied")
+            for f in (r.get("changed_files") or [])
+        })
         return HealingResult(
             success=True,
             files_modified=modified,
-            test_passed=test_passed,
-            message=result.stdout if result.stdout else "No changes needed",
+            test_passed=summary["rolled_back"] == 0 and summary["applied"] > 0,
+            message=(
+                f"applied {summary['applied']}, rolled back "
+                f"{summary['rolled_back']}, blocked {summary['blocked']}"
+            ),
         )
 
     def _run_tests(self) -> bool:
-        """Run project tests to verify fixes didn't break anything.
+        """Run the project's tests; True if they pass."""
+        from app.skills.execution.run_tests import RunTestsSkill
 
-        Returns:
-            True if tests pass, False otherwise
-        """
-        test_commands = [
-            ["pytest", "-x", "-q"],
-            ["python", "-m", "pytest", "-x", "-q"],
-            ["python", "setup.py", "test"],
-        ]
+        try:
+            return RunTestsSkill().run(str(self.project_root)).ok
+        except Exception:
+            return False
 
-        for cmd in test_commands:
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    cwd=str(self.project_root),
-                    timeout=180,
-                )
-                if result.returncode == 0:
-                    return True
-            except Exception:
-                continue
-
-        return False
-
-    def rollback(self, backup_dir: str | Path) -> bool:
-        """Rollback changes using git restore or backup files.
-
-        Args:
-            backup_dir: Directory containing backups
-
-        Returns:
-            True if rollback succeeded
-        """
+    def rollback(self, backup_dir: str | Path | None = None) -> bool:
+        """Rollback uncommitted changes via git restore."""
         try:
             subprocess.run(
                 ["git", "restore", "."],
-                capture_output=True,
-                text=True,
-                cwd=str(self.project_root),
-                timeout=30,
+                capture_output=True, text=True,
+                cwd=str(self.project_root), timeout=30,
             )
             return True
         except Exception:

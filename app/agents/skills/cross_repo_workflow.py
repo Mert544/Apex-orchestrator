@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from apex_debug.core.finding import Finding
+from app.agents.skills.finding import Finding
 
 
 @dataclass
