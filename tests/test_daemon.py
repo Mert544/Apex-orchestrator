@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from app.daemon import ApexDaemon
 
@@ -106,3 +105,48 @@ class TestDaemonRunAndStop:
         with patch("subprocess.run", side_effect=RuntimeError("nope")):
             d._run_apex()
         assert "error" in capsys.readouterr().out.lower()
+
+    def test_start_runs_one_cycle_then_stops(self, tmp_path, capsys):
+        # Drive the start() loop: stop the daemon from inside the first
+        # _run_apex() so the loop exits after a single cycle. This exercises
+        # PID write, signal-handler registration, the run/sleep loop, and the
+        # graceful-shutdown PID cleanup.
+        d = self._daemon(tmp_path)
+        d.interval = 0.0  # no sleeping between cycles
+        cycles = []
+
+        def _one_cycle():
+            cycles.append(True)
+            d.stop()
+
+        d._run_apex = _one_cycle
+        d.start()
+
+        assert cycles == [True]
+        assert d._running is False
+        # PID file is removed on graceful shutdown.
+        assert not Path(d.pid_file).exists()
+        out = capsys.readouterr().out
+        assert "Started" in out and "Shut down gracefully" in out
+
+    def test_signal_handler_stops_daemon(self, tmp_path):
+        import signal
+        prev_term = signal.getsignal(signal.SIGTERM)
+        prev_int = signal.getsignal(signal.SIGINT)
+        try:
+            d = self._daemon(tmp_path)
+            d._running = True
+            d._register_signal_handlers()
+            handler = signal.getsignal(signal.SIGTERM)
+            handler(signal.SIGTERM, None)  # simulate SIGTERM delivery
+            assert d._running is False
+        finally:
+            signal.signal(signal.SIGTERM, prev_term)
+            signal.signal(signal.SIGINT, prev_int)
+
+    def test_stop_running_corrupt_pid_file(self, tmp_path):
+        pid_file = tmp_path / "d.pid"
+        pid_file.write_text("not-a-number")
+        # Corrupt PID -> ValueError -> file cleaned up, returns False.
+        assert ApexDaemon.stop_running(pid_file) is False
+        assert not pid_file.exists()
