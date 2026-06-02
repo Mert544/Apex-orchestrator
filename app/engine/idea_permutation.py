@@ -28,6 +28,23 @@ class Operator:
     feasibility: float
 
 
+# Fractal facets: the self-similar "zoom" of each lens. Applying a lens to a
+# subject ("Harden auth.py") is itself decomposable into finer sub-directions
+# ("what to harden: input validation, error handling, ..."). These let a leaf
+# idea open into its own miniature idea-tree — the same subject→lens structure
+# recurring at a finer grain. Fixed and deterministic.
+_FACETS: dict[str, list[str]] = {
+    "harden": ["input validation", "error handling", "resource limits", "secret handling"],
+    "extend": ["new inputs", "new outputs", "configuration surface"],
+    "test": ["edge cases", "failure modes", "property invariants"],
+    "simplify": ["dead code", "duplicated logic", "deep nesting"],
+    "document": ["public API", "usage examples", "failure semantics"],
+    "integrate": ["data contract", "error propagation", "version skew"],
+    "generalize": ["parameters", "extension points", "sensible defaults"],
+    "observe": ["key metrics", "structured logs", "trace spans"],
+}
+
+
 # The fixed permutation alphabet — the "abc" applied to every branch "a".
 # Data-driven so breadth is tunable and plugins can extend it later.
 DEVELOPMENT_OPERATORS: list[Operator] = [
@@ -202,6 +219,12 @@ class IdeaPermutationEngine:
         self.max_depth = int(cfg.get("max_idea_depth", 2))
         self.breadth = int(cfg.get("breadth", 4))
         self.min_relevance = float(cfg.get("min_relevance", 0.0))
+        # Fractal facets: zoom the strongest permutation leaves into self-similar
+        # sub-ideas. Opt-in (off by default) because facets share the idea budget
+        # with permutation and synthesis; enabling them is most useful with a
+        # larger budget. When on, a dedicated slice is carved for them.
+        self.fractal_facets = bool(cfg.get("fractal_facets", False))
+        self.facets_per_idea = int(cfg.get("facets_per_idea", 2))
         self.budget = BudgetController(max_total_nodes=int(cfg.get("max_total_ideas", 40)))
         # When False, skip the security scan (e.g. tests/perf); weighting stays static.
         self.security_aware = bool(cfg.get("security_aware", True))
@@ -249,10 +272,17 @@ class IdeaPermutationEngine:
             emitted.append(root)
             frontier.append(root)
 
-        # Reserve a slice of the budget for synthesis so mechanical permutation
-        # can't crowd out the genuinely-new ideas.
-        reserve = max(4, int(self.budget.max_total_nodes * 0.15))
-        perm_cap = max(len(emitted), self.budget.max_total_nodes - reserve)
+        # Reserve budget slices so mechanical permutation can't crowd out the
+        # genuinely-new ideas. Synthesis and (optionally) fractal facets each get
+        # their own slice carved off the top.
+        self._synth_reserve = max(4, int(self.budget.max_total_nodes * 0.15))
+        facet_reserve = (
+            max(2, int(self.budget.max_total_nodes * 0.12)) if self.fractal_facets else 0
+        )
+        perm_cap = max(
+            len(emitted),
+            self.budget.max_total_nodes - self._synth_reserve - facet_reserve,
+        )
 
         # Best-first expansion, but diversity-aware: a subject that has already
         # produced many ideas is temporarily down-ranked so the tree spreads
@@ -286,6 +316,11 @@ class IdeaPermutationEngine:
                 emitted.append(child)
                 emitted_by_subject[child.subject] = emitted_by_subject.get(child.subject, 0) + 1
                 frontier.append(child)
+
+        # Fractal facets: zoom the strongest leaves into self-similar sub-ideas
+        # before synthesis claims the remaining budget.
+        if self.fractal_facets:
+            self._expand_facets(emitted, relevance, graph, stats)
 
         # Synthesis: genuinely new ideas beyond mechanical permutation, drawn
         # from the budget slice reserved above.
@@ -453,6 +488,74 @@ class IdeaPermutationEngine:
             )
         return children
 
+    def _expand_facets(
+        self,
+        emitted: list[IdeaNode],
+        relevance: RelevanceScorer,
+        graph: GraphStore,
+        stats: dict[str, Any],
+    ) -> None:
+        """Zoom the strongest permutation leaves into self-similar facet ideas.
+
+        A leaf (a fully-expanded permutation idea with no permutation children)
+        whose lens has a known facet vocabulary opens into finer sub-directions
+        — e.g. "Harden auth.py" → "...input validation", "...error handling".
+        Facets are parented under their leaf (``kind="facet"``), so they render
+        nested in the tree and never violate the operator-permutation invariant
+        (which applies only to ``kind="permutation"`` ideas).
+        """
+        # A leaf is a permutation idea that produced no permutation children.
+        perm_parents = {
+            n.parent_id for n in emitted if n.kind == "permutation" and n.parent_id
+        }
+        leaves = [
+            n for n in emitted
+            if n.kind == "permutation"
+            and n.operator != "root"
+            and n.operator in _FACETS
+            and n.id not in perm_parents
+        ]
+        # Best leaves first; deterministic tie-break on branch path.
+        leaves.sort(key=lambda n: (n.value, n.branch_path), reverse=True)
+
+        facet_cap = max(2, int(self.budget.max_total_nodes * 0.12))
+        # Never spend the slice reserved for synthesis.
+        synth_floor = self.budget.max_total_nodes - getattr(self, "_synth_reserve", 0)
+        added = 0
+        for leaf in leaves:
+            if self.budget.exhausted or added >= facet_cap or len(emitted) >= synth_floor:
+                break
+            for j, facet in enumerate(_FACETS[leaf.operator][: self.facets_per_idea]):
+                if self.budget.exhausted or added >= facet_cap or len(emitted) >= synth_floor:
+                    break
+                child = IdeaNode(
+                    id=f"{leaf.id}-f{j}",
+                    title=f"{leaf.operator.capitalize()} {leaf.subject} — {facet}",
+                    subject=f"{leaf.subject} :: {facet}",
+                    rationale=(
+                        f"Fractal zoom of `{leaf.branch_path}`: refine the "
+                        f"{leaf.operator} of {leaf.subject} down to {facet}."
+                    ),
+                    branch_path=f"{leaf.branch_path}.f{j}",
+                    depth=leaf.depth + 1,
+                    parent_id=leaf.id,
+                    operator=leaf.operator,
+                    operator_chain=list(leaf.operator_chain),
+                    source_facts=list(leaf.source_facts) + [f"facet: {facet}"],
+                    feasibility=leaf.feasibility,
+                    kind="facet",
+                )
+                if graph.has_similar_claim(child.title):
+                    continue
+                self._score(child, relevance)
+                # _score recomputes feasibility only for roots, so the inherited
+                # leaf feasibility above is preserved for facets.
+                graph.register_claim(child.title)
+                self.budget.consume_node()
+                emitted.append(child)
+                added += 1
+        stats["faceted"] = added
+
     def _novelty(self, node: IdeaNode) -> float:
         """Deterministic novelty: deeper / more-repeated lens chains are less novel.
 
@@ -579,7 +682,9 @@ def render_markdown(report: IdeaTreeReport) -> str:
         by_parent.setdefault(idea.parent_id, []).append(idea)
 
     # Synthesis/pair ideas are parentless-but-not-roots; render them separately.
-    synth = [i for i in report.ideas if i.kind != "permutation"]
+    # Facet ideas are parented under a permutation leaf, so they render nested
+    # via walk() (the fractal zoom) and are excluded from this flat section.
+    synth = [i for i in report.ideas if i.kind != "permutation" and i.parent_id is None]
     synth_ids = {i.id for i in synth}
     perm_roots = [
         i for i in by_parent.get(None, []) if i.kind == "permutation" and i.id not in synth_ids

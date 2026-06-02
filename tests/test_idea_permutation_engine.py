@@ -140,7 +140,9 @@ def test_deep_rationale_references_prior_lenses(tmp_path):
     rep = IdeaPermutationEngine(
         {"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4}, tmp_path
     ).run()
-    deep = [i for i in rep.ideas if i.depth == 2]
+    # Permutation children carry the lens-path rationale; facet ideas are a
+    # separate kind with their own "fractal zoom" rationale.
+    deep = [i for i in rep.ideas if i.depth == 2 and i.kind == "permutation"]
     assert deep and all("building on:" in i.rationale for i in deep)
 
 
@@ -206,7 +208,7 @@ def test_security_pressure_amplifies_harden_test(tmp_path):
     eng = IdeaPermutationEngine(
         {"max_total_ideas": 30, "max_idea_depth": 1, "breadth": 6}, tmp_path
     )
-    rep = eng.run()
+    eng.run()
     # Real findings raise the pressure above the neutral 1.0.
     assert eng._security_pressure > 1.0
     # Clean project stays neutral.
@@ -246,6 +248,55 @@ def test_ideate_kind_filter(tmp_path, capsys):
     assert cmd_ideate(args) == 0
     out = capsys.readouterr().out
     assert "synthesis ideas for" in out
+
+
+def test_fractal_facets_zoom_leaves_into_subideas(tmp_path):
+    # With facets enabled, the strongest permutation leaves open into
+    # self-similar sub-ideas (kind="facet"), parented under their leaf.
+    _project(tmp_path)
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 60, "max_idea_depth": 2, "breadth": 4, "fractal_facets": True},
+        tmp_path,
+    ).run()
+    facets = [i for i in rep.ideas if i.kind == "facet"]
+    assert facets, "expected fractal facet ideas when enabled"
+    assert rep.stats.get("faceted", 0) == len(facets)
+    by_id = {i.id: i for i in rep.ideas}
+    for f in facets:
+        # Parented under a real permutation idea (the fractal zoom).
+        assert f.parent_id in by_id
+        assert by_id[f.parent_id].kind == "permutation"
+        # Self-similar: subject is refined, facet is traceable.
+        assert " :: " in f.subject
+        assert any(fact.startswith("facet:") for fact in f.source_facts)
+        assert 0.0 <= f.value <= 1.0
+
+
+def test_facets_off_by_default(tmp_path):
+    _project(tmp_path)
+    rep = IdeaPermutationEngine({"max_total_ideas": 40, "max_idea_depth": 2}, tmp_path).run()
+    assert not any(i.kind == "facet" for i in rep.ideas)
+
+
+def test_facets_are_deterministic(tmp_path):
+    _project(tmp_path)
+    cfg = {"max_total_ideas": 50, "max_idea_depth": 2, "breadth": 4, "fractal_facets": True}
+    a = IdeaPermutationEngine(cfg, tmp_path).run()
+    b = IdeaPermutationEngine(cfg, tmp_path).run()
+    assert [i.title for i in a.ideas] == [i.title for i in b.ideas]
+
+
+def test_facets_render_nested_not_in_synth_section(tmp_path):
+    _project(tmp_path)
+    from app.engine.idea_permutation import render_markdown
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 60, "max_idea_depth": 2, "breadth": 4, "fractal_facets": True},
+        tmp_path,
+    ).run()
+    md = render_markdown(rep)
+    facets = [i for i in rep.ideas if i.kind == "facet"]
+    # Facet titles appear (nested under their leaf), e.g. "— input validation".
+    assert facets and any(f.title in md for f in facets)
 
 
 def test_detects_indirect_import_cycle(tmp_path):

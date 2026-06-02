@@ -565,6 +565,7 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             "max_idea_depth": args.depth,
             "breadth": args.breadth,
             "min_relevance": args.min_relevance,
+            "fractal_facets": getattr(args, "facets", False),
         },
         project_root=str(target),
         extra_operators=extra_operators,
@@ -1177,6 +1178,11 @@ def main() -> int:
         "--roadmap",
         action="store_true",
         help="Sequence ideas into a prioritized roadmap (Stabilize→Secure→Evolve→Refine)",
+    )
+    ideate_parser.add_argument(
+        "--facets",
+        action="store_true",
+        help="Fractal zoom: expand the strongest leaves into self-similar sub-ideas",
     )
     ideate_parser.set_defaults(func=cmd_ideate)
 
