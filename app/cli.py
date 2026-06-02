@@ -594,6 +594,20 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             print(f"\n[ideate] Roadmap written to {out_path}")
         return 0
 
+    # --shape: report on the shape/health of the tree the engine just produced.
+    if getattr(args, "shape", False):
+        from app.engine.idea_tree_shape import (
+            analyze_tree_shape,
+            render_tree_shape_markdown,
+        )
+
+        shape = analyze_tree_shape(report)
+        if args.json:
+            print(json.dumps(shape.to_dict(), indent=2))
+        else:
+            print(render_tree_shape_markdown(shape))
+        return 0
+
     # --kind: list only ideas of a given kind (permutation/synthesis/pair),
     # value-sorted. A focused view onto what the engine surfaced.
     kind = getattr(args, "kind", "") or ""
@@ -1191,6 +1205,11 @@ def main() -> int:
         default=1,
         dest="facet_depth",
         help="How many self-similar facet zoom levels to recurse (with --facets)",
+    )
+    ideate_parser.add_argument(
+        "--shape",
+        action="store_true",
+        help="Analyze the shape/health of the generated idea tree",
     )
     ideate_parser.set_defaults(func=cmd_ideate)
 
