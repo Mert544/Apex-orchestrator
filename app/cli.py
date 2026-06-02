@@ -571,6 +571,27 @@ def cmd_ideate(args: argparse.Namespace) -> int:
     )
     report = engine.run(objective=args.objective or None)
 
+    # --roadmap: sequence the scored idea tree into a prioritized,
+    # phase-ordered engineering plan (built ON the tree, not replacing it).
+    if getattr(args, "roadmap", False):
+        from app.engine.idea_roadmap import (
+            RoadmapSynthesizer,
+            render_roadmap_markdown,
+        )
+
+        roadmap = RoadmapSynthesizer().build(report)
+        body = render_roadmap_markdown(roadmap)
+        if args.json:
+            print(json.dumps(roadmap.to_dict(), indent=2))
+        else:
+            print(body)
+        if args.out:
+            out_path = Path(args.out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(body, encoding="utf-8")
+            print(f"\n[ideate] Roadmap written to {out_path}")
+        return 0
+
     # --kind: list only ideas of a given kind (permutation/synthesis/pair),
     # value-sorted. A focused view onto what the engine surfaced.
     kind = getattr(args, "kind", "") or ""
@@ -1151,6 +1172,11 @@ def main() -> int:
         default="",
         choices=["", "all", "permutation", "synthesis", "pair"],
         help="List only ideas of this kind (value-sorted)",
+    )
+    ideate_parser.add_argument(
+        "--roadmap",
+        action="store_true",
+        help="Sequence ideas into a prioritized roadmap (Stabilize→Secure→Evolve→Refine)",
     )
     ideate_parser.set_defaults(func=cmd_ideate)
 

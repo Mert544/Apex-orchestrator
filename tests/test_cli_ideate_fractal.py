@@ -39,6 +39,7 @@ def _ideate_ns(tmp_path: Path, **overrides) -> argparse.Namespace:
         json=False,
         out="",
         kind="",
+        roadmap=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -84,6 +85,32 @@ def test_ideate_writes_out_file(tmp_path, capsys):
     assert rc == 0
     assert out_file.exists()
     assert out_file.read_text(encoding="utf-8").strip()
+
+
+def test_ideate_roadmap_markdown(tmp_path, capsys):
+    _project(tmp_path)
+    rc = cmd_ideate(_ideate_ns(tmp_path, roadmap=True))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Engineering Roadmap" in out
+    assert "Phase 1: Stabilize" in out
+
+
+def test_ideate_roadmap_json(tmp_path, capsys):
+    _project(tmp_path)
+    rc = cmd_ideate(_ideate_ns(tmp_path, roadmap=True, json=True))
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "phases" in payload
+    assert "quick_wins" in payload
+
+
+def test_ideate_roadmap_writes_out_file(tmp_path):
+    _project(tmp_path)
+    out_file = tmp_path / "roadmap.md"
+    rc = cmd_ideate(_ideate_ns(tmp_path, roadmap=True, out=str(out_file)))
+    assert rc == 0
+    assert "Engineering Roadmap" in out_file.read_text(encoding="utf-8")
 
 
 def test_fractal_analyze(tmp_path, capsys):
