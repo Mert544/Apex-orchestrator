@@ -27,6 +27,20 @@ def test_dashboard_has_all_sections(tmp_path):
         assert heading in html_doc
 
 
+def test_dashboard_includes_roadmap_and_shape(tmp_path):
+    _project(tmp_path)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=30, idea_depth=2, breadth=3)
+    # Roadmap section: phases + quick wins + ROI bars.
+    assert "Engineering roadmap" in html_doc
+    assert "Phase 1" in html_doc
+    assert "class='roi'" in html_doc
+    # Tree-shape section: telemetry + the engine's own observations.
+    assert "Idea-tree shape" in html_doc
+    assert "Observations" in html_doc
+    # Nav links for both are present.
+    assert "#roadmap" in html_doc and "#shape" in html_doc
+
+
 def test_dashboard_surfaces_security_finding(tmp_path):
     _project(tmp_path)
     html_doc = build_dashboard(str(tmp_path))

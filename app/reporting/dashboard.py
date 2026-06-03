@@ -121,12 +121,26 @@ def build_dashboard(
         extra_operators=extra_ops,
     ).run(objective=objective or None)
     action_plan = IdeaActionBridge().plan_tree(idea_report, top=15)
+    # Roadmap (sequenced plan) + tree-shape telemetry over the same idea tree.
+    try:
+        from app.engine.idea_roadmap import RoadmapSynthesizer
+
+        roadmap = RoadmapSynthesizer().build(idea_report)
+    except Exception:
+        roadmap = None
+    try:
+        from app.engine.idea_tree_shape import analyze_tree_shape
+
+        shape = analyze_tree_shape(idea_report)
+    except Exception:
+        shape = None
     reasoning = _run_reasoning(project_root, objective)
     git = _git_info(project_root)
     debug = _run_debug(project_root, profile)
 
     return _render_html(
-        project_root, profile, findings, idea_report, action_plan, reasoning, git, debug
+        project_root, profile, findings, idea_report, action_plan, reasoning, git, debug,
+        roadmap=roadmap, shape=shape,
     )
 
 
@@ -373,7 +387,8 @@ def _ideas_section(report: IdeaTreeReport) -> str:
     for idea in report.ideas:
         by_parent.setdefault(idea.parent_id, []).append(idea)
 
-    synth = [i for i in report.ideas if i.kind != "permutation"]
+    # Synthesis/pair ideas are parentless; facets are parented (render nested).
+    synth = [i for i in report.ideas if i.kind != "permutation" and i.parent_id is None]
     synth_ids = {i.id for i in synth}
     perm_roots = [
         i for i in by_parent.get(None, [])
@@ -443,6 +458,84 @@ def _actions_section(plan) -> str:
         f"<tbody>{rows}</tbody></table>"
     )
     return _card("actions", "🛠️", "Action plan", inner)
+
+
+_PHASE_TONE = {
+    "Stabilize": "ph-stab", "Secure": "ph-sec", "Evolve": "ph-evo", "Refine": "ph-ref",
+}
+
+
+def _roadmap_section(roadmap) -> str:
+    """Render the sequenced engineering roadmap (phases + quick wins)."""
+    if roadmap is None or not getattr(roadmap, "phases", None):
+        return ""
+    st = roadmap.stats
+    chips = "".join(
+        [_chip("ideas sequenced", st.get("total_items", 0)),
+         _chip("mean ROI", st.get("mean_roi", 0)),
+         _chip("quick wins", st.get("quick_win_count", 0))]
+        + [_chip(p.name, len(p.items)) for p in roadmap.phases]
+    )
+
+    qw = ""
+    if roadmap.quick_wins:
+        items = "".join(
+            f"<li><span class='ibadge b-qw'>⚡ quick win</span> {_esc(i.title)} "
+            f"<span class='val'>ROI {_esc(i.roi)}</span> "
+            f"<span class='muted'>impact {_esc(i.impact)} · effort {_esc(i.effort)}</span></li>"
+            for i in roadmap.quick_wins
+        )
+        qw = f"<h4 style='margin:6px 0 4px'>⚡ Quick wins</h4><ul class='commits'>{items}</ul>"
+
+    phases_html = ""
+    for n, phase in enumerate(roadmap.phases, start=1):
+        tone = _PHASE_TONE.get(phase.name, "")
+        rows = ""
+        for i in phase.items[:8]:
+            roi_pct = max(4, min(100, int(i.roi / 10 * 100)))  # ROI is bounded ~0..10
+            rows += (
+                f"<tr><td><code>{_esc(i.branch_path)}</code></td>"
+                f"<td>{_esc(i.title)}</td>"
+                f"<td class='num'>{_esc(i.impact)}</td>"
+                f"<td class='num'>{_esc(i.effort)}</td>"
+                f"<td><div class='roi'><span style='width:{roi_pct}%'></span></div>"
+                f"<b>{_esc(i.roi)}</b></td></tr>"
+            )
+        phases_html += (
+            f"<div class='phase'><h4><span class='ibadge {tone}'>Phase {n}</span> "
+            f"{_esc(phase.name)} <span class='muted'>— {_esc(phase.theme)}</span></h4>"
+            "<table><thead><tr><th>Branch</th><th>Idea</th><th>Impact</th>"
+            "<th>Effort</th><th>ROI</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div>"
+        )
+
+    inner = f"<div class='chips'>{chips}</div>{qw}{phases_html}"
+    return _card("roadmap", "🗺️", "Engineering roadmap", inner)
+
+
+def _shape_section(shape) -> str:
+    """Render idea-tree shape telemetry + the engine's own observations."""
+    if shape is None or shape.total_ideas == 0:
+        return ""
+    kinds = " · ".join(f"{k} {v}" for k, v in sorted(shape.by_kind.items()))
+    depths = " ".join(f"d{d}:{n}" for d, n in shape.depth_distribution.items())
+    chips = "".join(
+        [_chip("ideas", shape.total_ideas),
+         _chip("max depth", shape.max_depth),
+         _chip("branching", shape.branching_factor),
+         _chip("subjects", shape.distinct_subjects),
+         _chip("facets", f"{int(shape.facet_penetration * 100)}%"),
+         _chip("distinct values", shape.distinct_values)]
+    )
+    obs = "".join(f"<li>{_esc(o)}</li>" for o in shape.observations)
+    inner = (
+        f"<div class='chips'>{chips}</div>"
+        f"<p class='muted'>kinds: {_esc(kinds)} · depth: {_esc(depths)} · "
+        f"top subject <code>{_esc(shape.top_subject)}</code> "
+        f"({int(shape.top_subject_share * 100)}%)</p>"
+        f"<h4 style='margin:6px 0 4px'>Observations</h4><ul class='commits'>{obs}</ul>"
+    )
+    return _card("shape", "📐", "Idea-tree shape", inner)
 
 
 def _reasoning_section(r: dict[str, Any]) -> str:
@@ -524,6 +617,12 @@ ul.tree li{margin:5px 0;font-size:13px}
 .caveat{color:#c77d20;font-size:12px}
 .ibadge{font-size:10px;font-weight:700;border-radius:6px;padding:1px 7px;margin:0 4px;text-transform:uppercase;letter-spacing:.03em}
 .b-synth{background:#e8f0fe;color:#2d5fd0}.b-pair{background:#eef9f0;color:#1c7a48}.b-frag{background:#fdecee;color:#c62828}
+.b-qw{background:#fff5d9;color:#9a7b14}
+.ph-stab{background:#e7f6ee;color:#1c7a48}.ph-sec{background:#fdecee;color:#c62828}
+.ph-evo{background:#e8f0fe;color:#2d5fd0}.ph-ref{background:#f3eefe;color:#7c3aed}
+.phase{margin:10px 0 16px}.phase h4{margin:0 0 6px;font-size:13px;font-weight:600}
+.roi{display:inline-block;width:60px;height:7px;background:#eef1f6;border-radius:5px;overflow:hidden;margin-right:6px;vertical-align:middle}
+.roi span{display:block;height:100%;background:linear-gradient(90deg,#5b6cff,#7c5cff)}
 .cols{display:flex;flex-wrap:wrap;gap:28px}.col h4{margin:6px 0 4px;color:var(--muted);font-size:13px}
 .col ul{margin:0;padding-left:18px;font-size:12px}.commits{margin:8px 0;padding-left:18px;font-size:12px;color:var(--muted)}
 details summary{cursor:pointer;color:var(--muted);font-size:13px;margin-top:10px}
@@ -533,12 +632,17 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:8px 0 36px}
 """
 
 
-def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning, git=None, debug=None) -> str:
+def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning,
+                 git=None, debug=None, roadmap=None, shape=None) -> str:
     git = git or {}
     debug = debug or {}
     nav_links = [("overview", "Overview"), ("findings", "Findings"),
-                 ("architecture", "Architecture"), ("ideas", "Ideas"),
-                 ("actions", "Actions"), ("reasoning", "Reasoning"), ("profile", "Profile")]
+                 ("architecture", "Architecture"), ("ideas", "Ideas")]
+    if shape is not None and getattr(shape, "total_ideas", 0):
+        nav_links.append(("shape", "Shape"))
+    if roadmap is not None and getattr(roadmap, "phases", None):
+        nav_links.append(("roadmap", "Roadmap"))
+    nav_links += [("actions", "Actions"), ("reasoning", "Reasoning"), ("profile", "Profile")]
     if debug:
         nav_links.append(("debug", "Debug"))
     if git:
@@ -552,6 +656,8 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
             _findings_section(findings),
             _architecture_section(profile),
             _ideas_section(idea_report),
+            _shape_section(shape),
+            _roadmap_section(roadmap),
             _actions_section(action_plan),
             _reasoning_section(reasoning),
             _debug_section(debug),
