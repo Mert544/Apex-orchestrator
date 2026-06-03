@@ -41,6 +41,19 @@ def test_dashboard_includes_roadmap_and_shape(tmp_path):
     assert "#roadmap" in html_doc and "#shape" in html_doc
 
 
+def test_dashboard_shows_autonomy_panel(tmp_path):
+    import subprocess
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "svc.py").write_text("def run(e):\n    return eval(e)\n")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20)
+    assert "Autonomy" in html_doc
+    assert "would apply autonomously" in html_doc or "would recommend only" in html_doc
+    assert "#autonomy" in html_doc
+
+
 def test_dashboard_roadmap_shows_measured_signals(tmp_path):
     # core.py is imported by two modules and has real size -> the roadmap
     # surfaces measured fan-in / LOC under the idea.

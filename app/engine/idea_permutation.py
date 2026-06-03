@@ -365,8 +365,11 @@ class IdeaPermutationEngine:
             file_subjects = [m for m in subjects if m.endswith(".py")]
             metrics = CodeMetrics(self.project_root).for_modules(file_subjects)
             stats["metrics"] = {m: mm.to_dict() for m, mm in metrics.items()}
-        except Exception:
+        except (OSError, ImportError) as exc:
+            # Metrics are optional grounding for effort; degrade gracefully but
+            # narrowly (don't mask programming errors inside CodeMetrics).
             stats["metrics"] = {}
+            stats["metrics_error"] = str(exc)
         return IdeaTreeReport(
             objective=objective or "",
             project_root=self.project_root,

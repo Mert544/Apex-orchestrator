@@ -65,6 +65,26 @@ class TestDaemonRunAndStop:
         d.stop()
         assert d._running is False
 
+    def test_autonomous_command_uses_auto(self, tmp_path):
+        d = ApexDaemon(goal="", target=str(tmp_path), mode="supervised",
+                       pid_file=str(tmp_path / "d.pid"))  # autonomous=True default
+        cmd = d._build_command()
+        assert "auto" in cmd and "run" not in cmd
+        assert "--commit" not in cmd  # supervised doesn't commit
+
+    def test_autonomous_command_commits_in_autonomous_mode(self, tmp_path):
+        d = ApexDaemon(goal="harden", target=str(tmp_path), mode="autonomous",
+                       pid_file=str(tmp_path / "d.pid"))
+        cmd = d._build_command()
+        assert "auto" in cmd and "--commit" in cmd
+        assert "harden" in cmd  # goal passed through
+
+    def test_legacy_command_uses_run(self, tmp_path):
+        d = ApexDaemon(goal="scan", target=str(tmp_path), mode="report",
+                       pid_file=str(tmp_path / "d.pid"), autonomous=False)
+        cmd = d._build_command()
+        assert "run" in cmd and "auto" not in cmd
+
     def test_run_apex_success(self, tmp_path, capsys):
         from unittest.mock import patch
         d = self._daemon(tmp_path)
@@ -76,7 +96,8 @@ class TestDaemonRunAndStop:
         with patch("subprocess.run", return_value=_Res()) as m:
             d._run_apex()
         cmd = m.call_args[0][0]
-        assert "app.cli" in cmd and "run" in cmd
+        # Daemon now drives the autonomous `apex auto` each cycle by default.
+        assert "app.cli" in cmd and "auto" in cmd
         assert "successfully" in capsys.readouterr().out.lower()
 
     def test_run_apex_failure(self, tmp_path, capsys):

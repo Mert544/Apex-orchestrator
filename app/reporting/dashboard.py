@@ -138,9 +138,22 @@ def build_dashboard(
     git = _git_info(project_root)
     debug = _run_debug(project_root, profile)
 
+    # What `apex auto` would decide for this project, right now.
+    try:
+        from app.policies.autonomy_policy import AutonomyPolicy
+
+        tree_clean = bool(git) and int(git.get("dirty", 0) or 0) == 0
+        autonomy = AutonomyPolicy().decide(
+            executable_steps=action_plan.stats.get("executable_steps", 0),
+            working_tree_clean=tree_clean,
+        ).to_dict()
+        autonomy["executable"] = action_plan.stats.get("executable_steps", 0)
+    except Exception:
+        autonomy = None
+
     return _render_html(
         project_root, profile, findings, idea_report, action_plan, reasoning, git, debug,
-        roadmap=roadmap, shape=shape,
+        roadmap=roadmap, shape=shape, autonomy=autonomy,
     )
 
 
@@ -547,6 +560,28 @@ def _shape_section(shape) -> str:
     return _card("shape", "📐", "Idea-tree shape", inner)
 
 
+def _autonomy_section(autonomy: dict[str, Any] | None) -> str:
+    """What `apex auto` would do for this project, and why."""
+    if not autonomy:
+        return ""
+    act = autonomy.get("act")
+    verdict = "✅ would apply autonomously" if act else "📋 would recommend only"
+    tone = "ph-stab" if act else "ph-ref"
+    chips = "".join([
+        _chip("decision", "apply" if act else "recommend"),
+        _chip("mode", autonomy.get("mode", "—")),
+        _chip("safe fixes", autonomy.get("executable", 0)),
+    ])
+    body = (
+        f"<div class='chips'>{chips}</div>"
+        f"<p><span class='ibadge {tone}'>{verdict}</span></p>"
+        f"<p class='muted'>{_esc(autonomy.get('reason', ''))}</p>"
+        "<p class='muted'>Run <code>apex auto</code> to act on this · "
+        "<code>apex auto --recommend</code> to keep it read-only.</p>"
+    )
+    return _card("autonomy", "🤖", "Autonomy", body)
+
+
 def _reasoning_section(r: dict[str, Any]) -> str:
     if "error" in r:
         return _card("reasoning", "🧠", "Reasoning &amp; telemetry",
@@ -642,7 +677,7 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:8px 0 36px}
 
 
 def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning,
-                 git=None, debug=None, roadmap=None, shape=None) -> str:
+                 git=None, debug=None, roadmap=None, shape=None, autonomy=None) -> str:
     git = git or {}
     debug = debug or {}
     nav_links = [("overview", "Overview"), ("findings", "Findings"),
@@ -651,6 +686,8 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         nav_links.append(("shape", "Shape"))
     if roadmap is not None and getattr(roadmap, "phases", None):
         nav_links.append(("roadmap", "Roadmap"))
+    if autonomy:
+        nav_links.append(("autonomy", "Autonomy"))
     nav_links += [("actions", "Actions"), ("reasoning", "Reasoning"), ("profile", "Profile")]
     if debug:
         nav_links.append(("debug", "Debug"))
@@ -667,6 +704,7 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
             _ideas_section(idea_report),
             _shape_section(shape),
             _roadmap_section(roadmap),
+            _autonomy_section(autonomy),
             _actions_section(action_plan),
             _reasoning_section(reasoning),
             _debug_section(debug),

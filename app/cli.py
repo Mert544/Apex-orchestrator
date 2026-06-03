@@ -256,6 +256,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             interval_sec=args.interval,
             target=args.target or str(_get_project_root()),
             mode=args.mode,
+            autonomous=not getattr(args, "legacy", False),
         )
         daemon.start()
         return 0
@@ -1262,6 +1263,10 @@ def main() -> int:
         default="report",
         choices=["report", "supervised", "autonomous"],
         help="Execution mode for daemon runs",
+    )
+    daemon_parser.add_argument(
+        "--legacy", action="store_true",
+        help="Use the older goal-driven `apex run` each cycle instead of autonomous `apex auto`",
     )
     daemon_parser.set_defaults(func=cmd_daemon)
 

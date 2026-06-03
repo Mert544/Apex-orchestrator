@@ -25,11 +25,16 @@ class ApexDaemon:
         target: str | None = None,
         mode: str = "supervised",
         pid_file: str | None = None,
+        autonomous: bool = True,
     ) -> None:
         self.goal = goal
         self.interval = interval_sec
         self.target = target or str(Path.cwd())
         self.mode = mode
+        # Autonomous daemons run `apex auto` each cycle, so the AutonomyPolicy
+        # decides per-cycle whether to apply safe fixes (clean tree) or just
+        # review (dirty tree). Legacy daemons run the older `apex run` pipeline.
+        self.autonomous = autonomous
         self.pid_file = Path(pid_file) if pid_file else Path(self.target) / ".apex" / "daemon.pid"
         self._running = False
 
@@ -58,13 +63,28 @@ class ApexDaemon:
     def stop(self) -> None:
         self._running = False
 
+    def _build_command(self) -> list[str]:
+        """The CLI command run each cycle.
+
+        Autonomous: `apex auto` — the AutonomyPolicy only edits a clean working
+        tree (and commits when mode is autonomous), so a periodic run can never
+        clobber work-in-progress. Legacy: the older goal-driven `apex run`.
+        """
+        if not self.autonomous:
+            return [
+                sys.executable, "-m", "app.cli", "run",
+                "--goal", self.goal, "--target", self.target, "--mode", self.mode,
+            ]
+        cmd = [sys.executable, "-m", "app.cli", "auto", "--target", self.target,
+               "--mode", self.mode]
+        if self.goal:
+            cmd.append(self.goal)
+        if self.mode == "autonomous":
+            cmd.append("--commit")
+        return cmd
+
     def _run_apex(self) -> None:
-        cmd = [
-            sys.executable, "-m", "app.cli", "run",
-            "--goal", self.goal,
-            "--target", self.target,
-            "--mode", self.mode,
-        ]
+        cmd = self._build_command()
         print(f"[daemon] Running: {' '.join(cmd)}")
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
