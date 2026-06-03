@@ -111,3 +111,28 @@ def test_to_dict_and_autofix_count(tmp_path):
     d = review(str(tmp_path)).to_dict()
     assert d["auto_fixable_count"] >= 1
     assert "findings" in d
+
+
+def test_scan_detects_swallowed_exception():
+    src = "def f():\n    try:\n        x = 1\n    except Exception:\n        pass\n"
+    msgs = [f.message for f in scan_findings("m.py", src)]
+    assert any("silently swallowed" in m for m in msgs)
+
+
+def test_scan_detects_assert_tuple():
+    src = "def f(x):\n    assert (x, 'msg')\n    return x\n"
+    found = [f for f in scan_findings("m.py", src) if "assert on a tuple" in f.message]
+    assert found and found[0].severity == "high"
+
+
+def test_scan_detects_bool_and_type_comparisons():
+    src = "def f(x):\n    if x == True:\n        return type(x) == int\n    return x\n"
+    msgs = [f.message for f in scan_findings("m.py", src)]
+    assert any("True/False" in m for m in msgs)
+    assert any("isinstance()" in m for m in msgs)
+
+
+def test_no_false_positive_on_numeric_equality():
+    # `x == 5` must NOT be flagged as a True/False comparison (1 == True trap).
+    msgs = [f.message for f in scan_findings("m.py", "def f(x):\n    return x == 5\n")]
+    assert not any("True/False" in m for m in msgs)

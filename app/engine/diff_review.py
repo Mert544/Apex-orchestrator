@@ -111,14 +111,31 @@ def scan_findings(rel_path: str, source: str) -> list[ReviewFinding]:
                     add(node.lineno, "security", "high", "pickle.loads() — unsafe deserialization", False)
                 elif owner == "yaml" and attr == "load":
                     add(node.lineno, "security", "medium", "yaml.load() — prefer yaml.safe_load()", True)
-        elif isinstance(node, ast.ExceptHandler) and node.type is None:
-            add(node.lineno, "security", "medium", "bare except — use except Exception:", True)
+        elif isinstance(node, ast.ExceptHandler):
+            if node.type is None:
+                add(node.lineno, "security", "medium", "bare except — use except Exception:", True)
+            if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
+                add(node.lineno, "bug", "medium",
+                    "exception silently swallowed (except: pass) — log or handle it", False)
+        elif isinstance(node, ast.Assert) and isinstance(node.test, ast.Tuple) and node.test.elts:
+            add(node.lineno, "bug", "high",
+                "assert on a tuple is always true — remove the parentheses", False)
         elif isinstance(node, ast.Compare):
+            operands = [node.left, *node.comparators]
             if any(isinstance(o, (ast.Eq, ast.NotEq)) for o in node.ops) and any(
-                isinstance(x, ast.Constant) and x.value is None
-                for x in (node.left, *node.comparators)
+                isinstance(x, ast.Constant) and x.value is None for x in operands
             ):
                 add(node.lineno, "style", "low", "compare to None with `is` / `is not`", True)
+            if any(isinstance(o, (ast.Eq, ast.NotEq)) for o in node.ops) and any(
+                isinstance(x, ast.Constant) and isinstance(x.value, bool) for x in operands
+            ):
+                add(node.lineno, "style", "low",
+                    "compare to True/False directly (drop `== True` / `== False`)", False)
+            if any(
+                isinstance(x, ast.Call) and isinstance(x.func, ast.Name) and x.func.id == "type"
+                for x in operands
+            ):
+                add(node.lineno, "style", "medium", "use isinstance() instead of comparing type()", False)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for d in list(node.args.defaults) + [k for k in node.args.kw_defaults if k]:
                 if isinstance(d, (ast.List, ast.Dict, ast.Set)) or (
