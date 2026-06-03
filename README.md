@@ -48,12 +48,13 @@ pytest -q
 **One command to remember — `apex`:**
 
 ```bash
-apex                       # autonomous review: state of your project + best next moves
-apex --apply               # safely apply the test-verified fixes (auto-rollback on failure)
+apex                       # autonomous review — and applies safe fixes when it's safe to
 apex "harden security"     # focus the review with a plain-English goal
+apex auto --recommend      # read-only: review and recommend, never touch the tree
+apex auto --apply --commit # full autonomy: apply verified fixes and commit each one
 ```
 
-That's it. `apex` (or `apex auto`) assesses the project, prioritizes the highest‑ROI work, and tells you exactly what it can do — then does it on request. The specialized commands below are there when you want them, but you never *have* to memorize them.
+That's it. `apex` assesses the project, prioritizes the highest‑ROI work, and **decides for itself whether to act**: on a clean git tree with safe, test‑verified fixes available, it applies them autonomously (in roadmap order, capped, auto‑rolled‑back, *not committed* so you review with `git diff`); on a dirty tree — or when nothing is safely auto‑applicable — it recommends instead and tells you the one command to proceed. Use `--recommend` to force read‑only or `--apply` to override the gate. The specialized commands below are there when you want them, but you never *have* to memorize them.
 
 > No API keys, no network, no setup beyond `pip install`. The core never calls out to anything.
 

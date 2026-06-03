@@ -561,21 +561,19 @@ def cmd_auto(args: argparse.Namespace) -> int:
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
     goal = (getattr(args, "goal", "") or "").strip()
-    apply = getattr(args, "apply", False)
+    explicit_apply = getattr(args, "apply", False)
+    explicit_recommend = getattr(args, "recommend", False)
 
-    # Mode: explicit > inferred-from-goal > supervised default. --apply never
-    # runs in report mode (it can't patch), so upgrade report → supervised.
-    mode = getattr(args, "mode", None)
-    if not mode and goal:
+    # An explicit --mode (or one inferred from the goal) is honored; otherwise
+    # the AutonomyPolicy picks the mode based on what's safe to do.
+    explicit_mode = getattr(args, "mode", None)
+    if not explicit_mode and goal:
         try:
             from app.intent.parser import IntentParser
 
-            mode = IntentParser().parse(goal).mode
+            explicit_mode = IntentParser().parse(goal).mode
         except Exception:
-            mode = None
-    mode = mode or "supervised"
-    if apply and mode == "report":
-        mode = "supervised"
+            explicit_mode = None
 
     plugins = PluginRegistry()
     plugins.load_all()
@@ -619,54 +617,95 @@ def cmd_auto(args: argparse.Namespace) -> int:
         print("\n".join(lines))
 
     bridge = IdeaActionBridge()
+    commit = getattr(args, "commit", False)
 
-    # --- Recommend (default): never touch the tree ---------------------------
-    if not apply:
-        plan = bridge.plan_roadmap(report, mode="report", project_root=str(target))
-        execu = plan.stats.get("executable_steps", 0)
+    # How many safe, executable fixes are available, and is the tree clean?
+    scout = bridge.plan_roadmap(report, mode="report", project_root=str(target))
+    executable = scout.stats.get("executable_steps", 0)
+    tree_clean = _working_tree_clean(target)
+
+    # Apex decides — autonomously — whether to act or recommend.
+    from app.policies.autonomy_policy import AutonomyPolicy
+
+    decision = AutonomyPolicy().decide(
+        executable_steps=executable,
+        working_tree_clean=tree_clean,
+        explicit_apply=explicit_apply,
+        explicit_recommend=explicit_recommend,
+        commit=commit,
+    )
+    mode = explicit_mode or decision.mode
+    if decision.act and mode == "report":
+        mode = "supervised"  # acting requires a patch-capable mode
+
+    # --- Recommend: never touch the tree -------------------------------------
+    if not decision.act:
         if emit_json:
             print(json.dumps({
-                "target": str(target),
-                "goal": goal,
-                "ideas": shape.total_ideas,
-                "modules": shape.distinct_subjects,
-                "security_findings": sec_n,
+                "target": str(target), "goal": goal, "ideas": shape.total_ideas,
+                "modules": shape.distinct_subjects, "security_findings": sec_n,
                 "observations": shape.observations,
                 "quick_wins": [{"title": i.title, "roi": i.roi} for i in roadmap.quick_wins],
-                "applicable": execu,
-                "applied": False,
+                "applicable": executable, "applied": False, "decision": decision.to_dict(),
             }, indent=2))
             return 0
+        print(f"_Apex chose not to apply automatically: {decision.reason}._\n")
         print(
-            f"I can safely apply **{execu}** of these automatically — each is "
-            "test-verified and auto-rolled-back if it breaks anything.\n\n"
-            "  • Apply them now:        apex auto --apply\n"
-            "  • Preview as diffs:      apex maintain --dry-run\n"
-            "  • See the full roadmap:  apex ideate --roadmap"
+            f"I can safely apply **{executable}** of these (test-verified, "
+            "auto-rolled-back). When you're ready:\n\n"
+            "  • Apply now:            apex auto --apply\n"
+            "  • Preview as diffs:     apex maintain --dry-run\n"
+            "  • See the full roadmap: apex ideate --roadmap"
         )
         return 0
 
-    # --- Apply: roadmap-ordered, verified, capped for safety -----------------
+    # --- Act: roadmap-ordered, verified, capped for safety -------------------
     plan = bridge.plan_roadmap(report, mode=mode, project_root=str(target), draft=True)
     summary = bridge.apply_plan(
-        plan,
-        str(target),
-        mode=mode,
+        plan, str(target), mode=mode,
         verify=not getattr(args, "no_verify", False),
         max_apply=(getattr(args, "max_apply", 0) or 8),
-        commit=getattr(args, "commit", False),
+        commit=commit,
     )
     md = render_maintenance_markdown(summary, str(target), objective=goal)
     if emit_json:
-        print(json.dumps(summary, indent=2))
+        print(json.dumps({**summary, "decision": decision.to_dict()}, indent=2))
     else:
+        print(f"_Apex is applying autonomously: {decision.reason}._\n")
         print(md)
+        if not commit:
+            print("\n_Applied to your working tree, not committed — "
+                  "review with `git diff`, undo with `git checkout -- .`_")
     if getattr(args, "out", ""):
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(md, encoding="utf-8")
         print(f"\n[auto] Report written to {out_path}")
     return 0
+
+
+def _working_tree_clean(target: Path) -> bool:
+    """True if ``target`` is a git repo with no uncommitted changes.
+
+    A non-repo counts as "not clean" so Apex won't auto-edit a tree it can't
+    help the user review/undo via git.
+    """
+    import subprocess
+
+    try:
+        inside = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=str(target), capture_output=True, text=True, timeout=10,
+        )
+        if inside.returncode != 0 or inside.stdout.strip() != "true":
+            return False
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(target), capture_output=True, text=True, timeout=10,
+        )
+        return status.returncode == 0 and not status.stdout.strip()
+    except Exception:
+        return False
 
 
 def cmd_ideate(args: argparse.Namespace) -> int:
@@ -1038,7 +1077,11 @@ def main() -> int:
     auto_parser.add_argument("--target", default="", help="Target project root")
     auto_parser.add_argument(
         "--apply", action="store_true",
-        help="Apply the safe, test-verified fixes (default: recommend only)",
+        help="Force-apply the safe, test-verified fixes (overrides the autonomy gate)",
+    )
+    auto_parser.add_argument(
+        "--recommend", action="store_true",
+        help="Recommend only — never touch the tree, even if it's safe to act",
     )
     auto_parser.add_argument(
         "--mode", default=None, choices=["report", "supervised", "autonomous"],
@@ -1510,7 +1553,7 @@ def main() -> int:
     # recommend-only). Users shouldn't have to memorize commands — `apex` alone
     # tells you the state of your project and the best next moves.
     return cmd_auto(argparse.Namespace(
-        goal="", target="", apply=False, mode=None, commit=False,
+        goal="", target="", apply=False, recommend=False, mode=None, commit=False,
         no_verify=False, max_apply=0, json=False, out="",
     ))
 

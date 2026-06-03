@@ -8,7 +8,7 @@ from app.cli import cmd_auto
 
 def _ns(tmp_path: Path, **overrides) -> argparse.Namespace:
     base = dict(
-        goal="", target=str(tmp_path), apply=False, mode=None, commit=False,
+        goal="", target=str(tmp_path), apply=False, recommend=False, mode=None, commit=False,
         no_verify=False, max_apply=0, json=False, out="",
     )
     base.update(overrides)
@@ -75,6 +75,50 @@ def test_auto_json_apply(tmp_path, capsys):
     import json
     payload = json.loads(capsys.readouterr().out)
     assert "applied" in payload and "results" in payload
+
+
+def _git_project(tmp_path: Path):
+    import subprocess
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "cfg.py").write_text("import yaml\ndef load(s):\n    return yaml.load(s)\n")
+    (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n")
+    for cmd in (["git", "init", "-q"], ["git", "config", "user.email", "t@t.com"],
+                ["git", "config", "user.name", "t"], ["git", "add", "-A"],
+                ["git", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]):
+        subprocess.run(cmd, cwd=tmp_path, capture_output=True)
+
+
+def test_auto_applies_autonomously_on_clean_tree(tmp_path, capsys):
+    # Clean git tree + a safe verified fix -> Apex applies on its own (no --apply).
+    _git_project(tmp_path)
+    rc = cmd_auto(_ns(tmp_path, max_apply=2))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "applying autonomously" in out.lower()
+    assert "yaml.safe_load" in (tmp_path / "app" / "cfg.py").read_text()
+
+
+def test_auto_recommends_on_dirty_tree(tmp_path, capsys):
+    # Dirty tree -> Apex declines to auto-edit and recommends instead.
+    _git_project(tmp_path)
+    before = (tmp_path / "app" / "cfg.py").read_text()
+    (tmp_path / "app" / "cfg.py").write_text(before + "x = 1\n")  # uncommitted change
+    rc = cmd_auto(_ns(tmp_path))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "chose not to apply" in out.lower()
+    assert "uncommitted" in out.lower()
+    # cfg.py still has the user's edit and was NOT hardened.
+    assert "yaml.safe_load" not in (tmp_path / "app" / "cfg.py").read_text()
+
+
+def test_auto_recommend_flag_forces_no_action_on_clean_tree(tmp_path, capsys):
+    _git_project(tmp_path)
+    rc = cmd_auto(_ns(tmp_path, recommend=True))
+    assert rc == 0
+    # Even on a clean tree, --recommend keeps it read-only.
+    assert "yaml.safe_load" not in (tmp_path / "app" / "cfg.py").read_text()
 
 
 def test_auto_writes_out_file(tmp_path):
