@@ -762,6 +762,22 @@ def cmd_explain(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review(args: argparse.Namespace) -> int:
+    """Review only the lines changed since a base ref — Apex as a PR reviewer."""
+    from app.engine.diff_review import render_review_markdown, review
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    result = review(str(target), base=getattr(args, "base", "HEAD") or "HEAD")
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        print(render_review_markdown(result))
+    # Non-zero exit when high-severity issues land in the diff (CI-friendly).
+    if getattr(args, "fail_on_high", False) and any(f.severity == "high" for f in result.findings):
+        return 1
+    return 0
+
+
 def cmd_evolve(args: argparse.Namespace) -> int:
     """Self-improvement loop: apply guarded fixes cycle by cycle to a fixpoint,
     then prove the project's health improved (before/after + roadmap diff)."""
@@ -1268,6 +1284,18 @@ def main() -> int:
     auto_parser.add_argument("--json", action="store_true", help="Emit JSON")
     auto_parser.add_argument("--out", default="", help="Write the report to this path")
     auto_parser.set_defaults(func=cmd_auto)
+
+    # review — diff-scoped code review (Apex as a PR reviewer)
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Review only the lines changed since a base ref (security/bugs/style/docs)",
+    )
+    review_parser.add_argument("--target", default="", help="Target project root")
+    review_parser.add_argument("--base", default="HEAD", help="Git base ref to diff against")
+    review_parser.add_argument("--fail-on-high", action="store_true", dest="fail_on_high",
+                              help="Exit non-zero if a high-severity issue is in the diff (CI)")
+    review_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    review_parser.set_defaults(func=cmd_review)
 
     # evolve — self-improvement loop: apply → re-measure → prove progress
     evolve_parser = subparsers.add_parser(

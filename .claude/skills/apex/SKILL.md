@@ -48,6 +48,9 @@ without the file). `apex auto` prints what it has learned.
 - `apex explain [BRANCH] --target=.` — show *why* an idea scored what it did: provenance
   (the code fact), the value formula with the weights used, roadmap impact/effort/ROI
   grounded in fan-in + LOC, the action it maps to, and its caveats. Defaults to the top idea.
+- `apex review [--base REF] [--fail-on-high]` — diff-scoped code review (Apex as a PR
+  reviewer): flags security/bug/style/docs issues on the *changed* lines only, noting which
+  Apex can auto-fix. `--fail-on-high` exits non-zero for CI gating.
 - `python -m app.cli maintain --target=. --dry-run` — preview every fix as a unified diff.
   Modes: `--mode report|supervised|autonomous` (+ `--commit`, `--verify` on by default,
   `--no-verify`, `--max-apply N`, `--out MAINT.md`).
