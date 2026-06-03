@@ -21,6 +21,7 @@ from app.execution.semantic.transforms import organize_imports
 from app.execution.semantic.transforms import move_class
 from app.execution.semantic.transforms import extract_class
 from app.execution.semantic.transforms import security as security_transforms
+from app.execution.semantic.transforms import modernize
 
 
 class SemanticPatchGenerator:
@@ -149,6 +150,8 @@ class SemanticPatchGenerator:
                 )
             elif transform in ("fix_eval", "fix_os_system", "fix_bare_except", "fix_pickle", "fix_sql", "fix_yaml"):
                 result = security_transforms.apply(rel_path, current, title)
+            elif transform == "modernize":
+                result = modernize.apply(rel_path, current, title)
 
             if result:
                 return self._attach_metadata(self._estimate_and_return(result), selection, contexts, strategy)

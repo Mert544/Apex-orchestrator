@@ -76,6 +76,10 @@ class EditStrategy:
             reasons.append("Keywords suggest a yaml.load() safety fix.")
             return EditStrategyResult(strategy="fix_yaml", confidence=0.85, reasons=reasons)
 
+        if "modernize" in combined or "none-comparison" in combined or "none comparison" in combined:
+            reasons.append("Keywords suggest behavior-preserving modernization.")
+            return EditStrategyResult(strategy="modernize", confidence=0.85, reasons=reasons)
+
         if "import" in combined or "unused" in combined or "cleanup" in combined:
             reasons.append("Keywords suggest import cleanup.")
             return EditStrategyResult(strategy="organize_imports", confidence=0.7, reasons=reasons)

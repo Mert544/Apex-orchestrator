@@ -148,6 +148,7 @@ Real deterministic, AST‑based fixes it can apply and verify:
 | `os.system(cmd)` | → `subprocess.run(...)` |
 | bare `except:` | → `except Exception:` |
 | `yaml.load(s)` | → `yaml.safe_load(s)` |
+| `x == None` | → `x is None` (PEP 8, behavior‑preserving) |
 | missing docstrings | → generated docstrings |
 | `pickle.loads` / SQL f‑strings | flagged (no unsafe auto‑rewrite) |
 

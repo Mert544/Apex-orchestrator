@@ -131,6 +131,26 @@ class IdeaActionBridge:
                 return label
         return None
 
+    @staticmethod
+    def _detect_modernization(project_root: str, rel_path: str) -> bool:
+        """True if the file has a real ``== None`` / ``!= None`` comparison that a
+        behavior-preserving modernization could clean up (AST-based)."""
+        import ast
+
+        try:
+            tree = ast.parse((Path(project_root) / rel_path).read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            return False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Compare):
+                operands = [node.left, *node.comparators]
+                ops = node.ops
+                if any(isinstance(o, (ast.Eq, ast.NotEq)) for o in ops) and any(
+                    isinstance(x, ast.Constant) and x.value is None for x in operands
+                ):
+                    return True
+        return False
+
     def _generate(self, step: ActionStep, project_root: str):
         """Run the semantic generator for an executable step. Returns the
         SemanticPatchResult (proposed only) or None."""
@@ -160,6 +180,11 @@ class IdeaActionBridge:
             if issue:
                 change_strategy = [f"fix {issue} security"]
                 title = f"Fix {issue} in {step.target}"
+        elif step.action_type == "organize_imports" and self._detect_modernization(project_root, step.target):
+            # A "simplify" idea on a file with `== None` modernizes it (a safe,
+            # behavior-preserving cleanup) instead of only touching imports.
+            change_strategy = ["modernize none-comparison"]
+            title = f"Modernize comparisons in {step.target}"
 
         from app.execution.semantic_patch_generator import SemanticPatchGenerator
 
