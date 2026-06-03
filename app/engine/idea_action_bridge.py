@@ -80,100 +80,38 @@ class IdeaActionBridge:
     }
 
     @staticmethod
-    def _detect_security_issue(project_root: str, rel_path: str) -> str | None:
-        """Return the concrete security pattern present in a file, if any, so
-        harden_security can pick the real AST fix (eval / os.system / pickle /
-        yaml / sql / bare-except) instead of a generic guard clause.
-
-        AST-based (single parse) so it ignores matches inside comments/strings —
-        e.g. ``# don't use eval()`` no longer triggers an eval fix. Falls back to
-        a substring scan only if the file can't be parsed.
-        """
-        import ast
-
+    def _read(project_root: str, rel_path: str) -> str | None:
         try:
-            text = (Path(project_root) / rel_path).read_text(encoding="utf-8")
+            return (Path(project_root) / rel_path).read_text(encoding="utf-8")
         except OSError:
             return None
 
-        try:
-            tree = ast.parse(text)
-        except SyntaxError:
-            # Unparseable: conservative substring fallback (order = severity).
-            for needle, label in (
-                ("eval(", "eval"), ("os.system(", "os.system"),
-                ("pickle.loads(", "pickle"), ("yaml.load(", "yaml"),
-                ("except:", "bare except"),
-            ):
-                if needle in text:
-                    return label
-            return None
+    @classmethod
+    def _detect_security_issue(cls, project_root: str, rel_path: str) -> str | None:
+        """The concrete security pattern in a file (eval/os.system/pickle/yaml/
+        sql/bare-except), most severe first, so harden_security picks the real AST
+        fix. Delegates to the canonical detector (AST-based, ignores comments/
+        strings, substring fallback for unparseable files)."""
+        from app.engine.detectors import security_label
 
-        found: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ExceptHandler) and node.type is None:
-                found.add("bare except")
-            elif isinstance(node, ast.Call):
-                func = node.func
-                if isinstance(func, ast.Name) and func.id == "eval":
-                    found.add("eval")
-                elif isinstance(func, ast.Attribute):
-                    owner = func.value.id if isinstance(func.value, ast.Name) else ""
-                    if owner == "os" and func.attr == "system":
-                        found.add("os.system")
-                    elif owner == "pickle" and func.attr == "loads":
-                        found.add("pickle")
-                    elif owner == "yaml" and func.attr == "load":
-                        found.add("yaml")
-                    elif func.attr in ("execute", "cursor", "executemany") and any(
-                        isinstance(a, ast.JoinedStr) for a in node.args
-                    ):
-                        found.add("sql")
-        # Most dangerous first.
-        for label in ("eval", "os.system", "pickle", "yaml", "sql", "bare except"):
-            if label in found:
-                return label
-        return None
+        text = cls._read(project_root, rel_path)
+        return security_label(text) if text is not None else None
 
-    @staticmethod
-    def _has_mutable_default(project_root: str, rel_path: str) -> bool:
+    @classmethod
+    def _has_mutable_default(cls, project_root: str, rel_path: str) -> bool:
         """True if the file has a function with a mutable default argument."""
-        import ast
+        from app.engine.detectors import has_mutable_default
 
-        try:
-            tree = ast.parse((Path(project_root) / rel_path).read_text(encoding="utf-8"))
-        except (OSError, SyntaxError):
-            return False
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for d in list(node.args.defaults) + [k for k in node.args.kw_defaults if k]:
-                    if isinstance(d, (ast.List, ast.Dict, ast.Set)):
-                        return True
-                    if (isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
-                            and d.func.id in ("list", "dict", "set")
-                            and not d.args and not d.keywords):
-                        return True
-        return False
+        text = cls._read(project_root, rel_path)
+        return has_mutable_default(text) if text is not None else False
 
-    @staticmethod
-    def _detect_modernization(project_root: str, rel_path: str) -> bool:
-        """True if the file has a real ``== None`` / ``!= None`` comparison that a
-        behavior-preserving modernization could clean up (AST-based)."""
-        import ast
+    @classmethod
+    def _detect_modernization(cls, project_root: str, rel_path: str) -> bool:
+        """True if the file has a real ``== None`` / ``!= None`` comparison."""
+        from app.engine.detectors import has_none_comparison
 
-        try:
-            tree = ast.parse((Path(project_root) / rel_path).read_text(encoding="utf-8"))
-        except (OSError, SyntaxError):
-            return False
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Compare):
-                operands = [node.left, *node.comparators]
-                ops = node.ops
-                if any(isinstance(o, (ast.Eq, ast.NotEq)) for o in ops) and any(
-                    isinstance(x, ast.Constant) and x.value is None for x in operands
-                ):
-                    return True
-        return False
+        text = cls._read(project_root, rel_path)
+        return has_none_comparison(text) if text is not None else False
 
     def _generate(self, step: ActionStep, project_root: str):
         """Run the semantic generator for an executable step. Returns the

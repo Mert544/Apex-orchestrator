@@ -12,7 +12,6 @@ Read-only and deterministic (a reviewer proposes, it never applies).
 
 from __future__ import annotations
 
-import ast
 import re
 import subprocess
 from dataclasses import asdict, dataclass, field
@@ -84,69 +83,17 @@ def changed_lines(project_root: str, base: str = "HEAD") -> dict[str, set[int]]:
 
 
 def scan_findings(rel_path: str, source: str) -> list[ReviewFinding]:
-    """All detector findings in a file (line-level), before diff filtering."""
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as exc:
-        return [ReviewFinding(rel_path, exc.lineno or 1, "bug", "high",
-                              f"SyntaxError: {exc.msg}", False)]
+    """All detector findings in a file (line-level), before diff filtering.
 
-    out: list[ReviewFinding] = []
+    Detection logic lives in the canonical :mod:`app.engine.detectors` module;
+    this just attaches the file path.
+    """
+    from app.engine.detectors import detect
 
-    def add(line: int, cat: str, sev: str, msg: str, fix: bool) -> None:
-        out.append(ReviewFinding(rel_path, line, cat, sev, msg, fix))
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            f = node.func
-            if isinstance(f, ast.Name) and f.id == "eval":
-                add(node.lineno, "security", "high", "eval() — code injection risk", True)
-            elif isinstance(f, ast.Name) and f.id == "exec":
-                add(node.lineno, "security", "high", "exec() — code injection risk", False)
-            elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
-                owner, attr = f.value.id, f.attr
-                if owner == "os" and attr == "system":
-                    add(node.lineno, "security", "high", "os.system() — prefer subprocess.run()", True)
-                elif owner == "pickle" and attr == "loads":
-                    add(node.lineno, "security", "high", "pickle.loads() — unsafe deserialization", False)
-                elif owner == "yaml" and attr == "load":
-                    add(node.lineno, "security", "medium", "yaml.load() — prefer yaml.safe_load()", True)
-        elif isinstance(node, ast.ExceptHandler):
-            if node.type is None:
-                add(node.lineno, "security", "medium", "bare except — use except Exception:", True)
-            if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
-                add(node.lineno, "bug", "medium",
-                    "exception silently swallowed (except: pass) — log or handle it", False)
-        elif isinstance(node, ast.Assert) and isinstance(node.test, ast.Tuple) and node.test.elts:
-            add(node.lineno, "bug", "high",
-                "assert on a tuple is always true — remove the parentheses", False)
-        elif isinstance(node, ast.Compare):
-            operands = [node.left, *node.comparators]
-            if any(isinstance(o, (ast.Eq, ast.NotEq)) for o in node.ops) and any(
-                isinstance(x, ast.Constant) and x.value is None for x in operands
-            ):
-                add(node.lineno, "style", "low", "compare to None with `is` / `is not`", True)
-            if any(isinstance(o, (ast.Eq, ast.NotEq)) for o in node.ops) and any(
-                isinstance(x, ast.Constant) and isinstance(x.value, bool) for x in operands
-            ):
-                add(node.lineno, "style", "low",
-                    "compare to True/False directly (drop `== True` / `== False`)", False)
-            if any(
-                isinstance(x, ast.Call) and isinstance(x.func, ast.Name) and x.func.id == "type"
-                for x in operands
-            ):
-                add(node.lineno, "style", "medium", "use isinstance() instead of comparing type()", False)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for d in list(node.args.defaults) + [k for k in node.args.kw_defaults if k]:
-                if isinstance(d, (ast.List, ast.Dict, ast.Set)) or (
-                    isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
-                    and d.func.id in ("list", "dict", "set") and not d.args and not d.keywords
-                ):
-                    add(node.lineno, "bug", "high", "mutable default argument — shared-state bug", True)
-                    break
-            if ast.get_docstring(node) is None and not node.name.startswith("_"):
-                add(node.lineno, "docs", "low", f"public function `{node.name}` lacks a docstring", True)
-    return out
+    return [
+        ReviewFinding(rel_path, i.line, i.category, i.severity, i.message, i.auto_fixable)
+        for i in detect(source)
+    ]
 
 
 def review(project_root: str, base: str = "HEAD") -> ReviewResult:
