@@ -356,6 +356,17 @@ class IdeaPermutationEngine:
             fan_in_all[tgt] = fan_in_all.get(tgt, 0) + 1
         subjects = {i.subject.split(" :: ", 1)[0] for i in emitted}
         stats["fan_in"] = {m: fan_in_all[m] for m in subjects if m in fan_in_all}
+
+        # Measured size/complexity per idea subject (cheap: only the modules the
+        # tree references). Grounds the roadmap's effort estimate in real code.
+        try:
+            from app.tools.code_metrics import CodeMetrics
+
+            file_subjects = [m for m in subjects if m.endswith(".py")]
+            metrics = CodeMetrics(self.project_root).for_modules(file_subjects)
+            stats["metrics"] = {m: mm.to_dict() for m, mm in metrics.items()}
+        except Exception:
+            stats["metrics"] = {}
         return IdeaTreeReport(
             objective=objective or "",
             project_root=self.project_root,

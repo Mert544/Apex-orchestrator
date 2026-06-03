@@ -41,6 +41,19 @@ def test_dashboard_includes_roadmap_and_shape(tmp_path):
     assert "#roadmap" in html_doc and "#shape" in html_doc
 
 
+def test_dashboard_roadmap_shows_measured_signals(tmp_path):
+    # core.py is imported by two modules and has real size -> the roadmap
+    # surfaces measured fan-in / LOC under the idea.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "core.py").write_text(
+        "def core(x):\n    if x:\n        return 1\n    return 0\n"
+    )
+    (tmp_path / "app" / "a.py").write_text("import app.core\ndef a():\n    return app.core.core(1)\n")
+    (tmp_path / "app" / "b.py").write_text("import app.core\ndef b():\n    return app.core.core(2)\n")
+    html_doc = build_dashboard(str(tmp_path), max_ideas=30, idea_depth=2, breadth=3)
+    assert "imported by" in html_doc or "LOC" in html_doc
+
+
 def test_dashboard_surfaces_security_finding(tmp_path):
     _project(tmp_path)
     html_doc = build_dashboard(str(tmp_path))

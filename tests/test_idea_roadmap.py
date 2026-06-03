@@ -45,6 +45,41 @@ def test_impact_grounded_in_measured_fan_in():
     assert estimate_impact(base, fan_in=100) == estimate_impact(base, fan_in=5)
 
 
+def test_effort_uses_report_metrics_stat():
+    # The synthesizer reads per-module metrics from report.stats and inflates the
+    # effort of a large, complex subject relative to a tiny one of equal value.
+    ideas = [
+        _node(id="big", branch_path="x.b", subject="app/big.py", value=0.6,
+              feasibility=0.7, operator="harden", source_facts=["sensitive-path: app/big.py"]),
+        _node(id="small", branch_path="x.s", subject="app/small.py", value=0.6,
+              feasibility=0.7, operator="harden", source_facts=["sensitive-path: app/small.py"]),
+    ]
+    rep = IdeaTreeReport(ideas=ideas, stats={"metrics": {
+        "app/big.py": {"loc": 800, "complexity": 80},
+        "app/small.py": {"loc": 20, "complexity": 1},
+    }})
+    rm = RoadmapSynthesizer().build(rep)
+    items = {i.subject: i for ph in rm.phases for i in ph.items}
+    assert items["app/big.py"].effort > items["app/small.py"].effort
+    assert items["app/big.py"].loc == 800
+    # Equal value + impact, but the cheap module wins on ROI.
+    assert items["app/small.py"].roi > items["app/big.py"].roi
+
+
+def test_end_to_end_engine_attaches_metrics(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "core.py").write_text(
+        "def core(x):\n    if x:\n        return 1\n    return 0\n"
+    )
+    (tmp_path / "app" / "user.py").write_text("import app.core\ndef u():\n    return app.core.core(1)\n")
+    from app.engine.idea_permutation import IdeaPermutationEngine
+    rep = IdeaPermutationEngine({"max_total_ideas": 30, "max_idea_depth": 1}, tmp_path).run()
+    assert "metrics" in rep.stats and "fan_in" in rep.stats
+    rm = RoadmapSynthesizer().build(rep)
+    # At least one roadmap item carries measured LOC from the engine's metrics.
+    assert any(i.loc > 0 for ph in rm.phases for i in ph.items)
+
+
 def test_build_uses_report_fan_in_stat():
     # The synthesizer reads fan-in from report.stats and applies it per subject,
     # stripping any " :: facet" suffix back to the base module.
@@ -67,6 +102,17 @@ def test_effort_is_floored_and_depth_sensitive():
     assert estimate_effort(deep) > estimate_effort(shallow)
     # Floor keeps ROI bounded even for a perfectly-feasible shallow idea.
     assert estimate_effort(_node(feasibility=1.0, depth=0)) >= 0.1
+
+
+def test_effort_grounded_in_size_and_complexity():
+    base = _node(feasibility=0.7, depth=1)
+    small = estimate_effort(base, loc=20, complexity=2)
+    big = estimate_effort(base, loc=800, complexity=80)
+    assert big > small
+    # Both size and complexity contributions are capped (can't exceed ceiling).
+    assert estimate_effort(base, loc=100000, complexity=100000) <= 1.0
+    # A big, branch-heavy module raises effort over the size-less baseline.
+    assert estimate_effort(base, loc=600, complexity=60) > estimate_effort(base)
 
 
 # --- phase classification (the engineering thesis) ----------------------------

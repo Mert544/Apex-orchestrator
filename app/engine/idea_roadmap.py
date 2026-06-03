@@ -75,6 +75,8 @@ class RoadmapItem:
     value: float
     kind: str
     rationale: str
+    fan_in: int = 0          # measured: modules importing the subject
+    loc: int = 0             # measured: subject module size
     source_facts: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -146,11 +148,20 @@ def estimate_impact(node: IdeaNode, fan_in: int = 0) -> float:
     return round(min(1.0, impact), 4)
 
 
-def estimate_effort(node: IdeaNode) -> float:
+def estimate_effort(node: IdeaNode, loc: int = 0, complexity: int = 0) -> float:
     """Relative effort, 0.1..1.0: cheaper (high-feasibility) and shallower ideas
-    cost less. Floored at 0.1 so ROI stays bounded.
+    cost less; larger and more branch-heavy subjects cost more.
+
+    ``loc`` and ``complexity`` are measured from the subject module (see
+    :class:`~app.tools.code_metrics.CodeMetrics`). Both contributions are capped
+    so a single huge file can't peg every idea at max effort. Floored at 0.1 so
+    ROI stays bounded.
     """
     effort = (1.0 - node.feasibility) + 0.1 * node.depth
+    if loc > 0:
+        effort += min(0.3, loc / 600.0 * 0.3)        # ~600+ LOC → full size bump
+    if complexity > 0:
+        effort += min(0.15, complexity / 60.0 * 0.15)  # branch-heavy → extra cost
     return round(max(0.1, min(1.0, effort)), 4)
 
 
@@ -202,13 +213,20 @@ class RoadmapSynthesizer:
         self.quick_win_min_roi = quick_win_min_roi
 
     def build(self, report: IdeaTreeReport) -> Roadmap:
-        # Measured fan-in per subject (from the engine), used to ground impact.
-        fan_in = report.stats.get("fan_in", {}) if report.stats else {}
+        # Measured structural signals from the engine: fan-in (blast radius) and
+        # per-module size/complexity (effort). Both ground the ROI in real code.
+        stats = report.stats or {}
+        fan_in = stats.get("fan_in", {})
+        metrics = stats.get("metrics", {})
         items: list[RoadmapItem] = []
         for node in report.ideas:
             base_subject = node.subject.split(" :: ", 1)[0]
-            impact = estimate_impact(node, fan_in=fan_in.get(base_subject, 0))
-            effort = estimate_effort(node)
+            subj_fan_in = fan_in.get(base_subject, 0)
+            mm = metrics.get(base_subject, {})
+            loc = int(mm.get("loc", 0))
+            complexity = int(mm.get("complexity", 0))
+            impact = estimate_impact(node, fan_in=subj_fan_in)
+            effort = estimate_effort(node, loc=loc, complexity=complexity)
             roi = round(impact / effort, 4)
             items.append(
                 RoadmapItem(
@@ -222,6 +240,8 @@ class RoadmapSynthesizer:
                     value=node.value,
                     kind=node.kind,
                     rationale=node.rationale,
+                    fan_in=subj_fan_in,
+                    loc=loc,
                     source_facts=list(node.source_facts),
                 )
             )
@@ -285,10 +305,15 @@ def render_roadmap_markdown(roadmap: Roadmap) -> str:
         lines.append(f"_{len(phase.items)} ideas · total impact {phase.total_impact}_")
         lines.append("")
         for i in phase.items:
-            facts = f"  _[{', '.join(i.source_facts)}]_" if i.source_facts else ""
+            measured = []
+            if i.fan_in:
+                measured.append(f"imported by {i.fan_in}")
+            if i.loc:
+                measured.append(f"{i.loc} LOC")
+            measured_str = f" · {' · '.join(measured)}" if measured else ""
             lines.append(
                 f"- `{i.branch_path}` {i.title}  "
-                f"(ROI {i.roi} · impact {i.impact} · effort {i.effort}){facts}"
+                f"(ROI {i.roi} · impact {i.impact} · effort {i.effort}{measured_str})"
             )
         lines.append("")
     return "\n".join(lines)

@@ -493,9 +493,15 @@ def _roadmap_section(roadmap) -> str:
         rows = ""
         for i in phase.items[:8]:
             roi_pct = max(4, min(100, int(i.roi / 10 * 100)))  # ROI is bounded ~0..10
+            measured = []
+            if getattr(i, "fan_in", 0):
+                measured.append(f"imported by {i.fan_in}")
+            if getattr(i, "loc", 0):
+                measured.append(f"{i.loc} LOC")
+            sub = f"<div class='muted' style='margin:0'>{_esc(' · '.join(measured))}</div>" if measured else ""
             rows += (
                 f"<tr><td><code>{_esc(i.branch_path)}</code></td>"
-                f"<td>{_esc(i.title)}</td>"
+                f"<td>{_esc(i.title)}{sub}</td>"
                 f"<td class='num'>{_esc(i.impact)}</td>"
                 f"<td class='num'>{_esc(i.effort)}</td>"
                 f"<td><div class='roi'><span style='width:{roi_pct}%'></span></div>"
