@@ -202,6 +202,14 @@ class IdeaPermutationEngine:
         max_idea_depth:  how deep the permutation goes (default 2)
         breadth:         operators applied per node (default 4)
         min_relevance:   drop ideas below this relevance to the objective (0=off)
+        learning:        consult .apex/idea-memory.json to nudge feasibility from
+                         past apply outcomes (default True; no-op without the file)
+        adaptive_depth:  let high-value branches grow past max_idea_depth
+                         (default False); adaptive_depth_bonus (2) and
+                         adaptive_depth_threshold (0.6) tune it
+        fractal_facets:  zoom strong leaves into self-similar sub-ideas
+                         (default False); facet_depth (1) sets the zoom levels
+        security_aware:  scan real findings to bias harden/test (default True)
     """
 
     def __init__(
@@ -268,6 +276,7 @@ class IdeaPermutationEngine:
         except Exception:
             return 1.0
         return round(min(1.3, 1.0 + 0.06 * n), 4)
+
     def run(self, objective: str | None = None) -> IdeaTreeReport:
         profile = self.profiler.profile()
         relevance = RelevanceScorer(objective or "")
