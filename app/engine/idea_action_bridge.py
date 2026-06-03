@@ -28,6 +28,7 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "dependency-hub": ("design_task", "Plan an evolution of central module {s}", False),
     "symbol-hub": ("design_task", "Generalize the symbol-rich module {s}", False),
     "missing-ci": ("add_ci", "Add a CI workflow that runs the test suite", False),
+    "modernization": ("modernize_comparisons", "Modernize None comparisons in {s}", True),
 }
 
 
@@ -73,6 +74,7 @@ class IdeaActionBridge:
         "organize_imports": ["organize imports cleanup unused"],
         "harden_security": ["add guard clause input validation security"],
         "create_test_stub": ["test coverage"],
+        "modernize_comparisons": ["modernize none-comparison"],
     }
 
     @staticmethod

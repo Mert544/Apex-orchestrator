@@ -28,6 +28,7 @@ class ProjectProfile:
     dependency_edges: list[tuple[str, str]] = field(default_factory=list)
     fragile_modules: list[str] = field(default_factory=list)
     import_cycles: list[list[str]] = field(default_factory=list)
+    modernizable_modules: list[str] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -151,3 +152,28 @@ class ProjectProfiler:
             reverse=True,
         )
         profile.fragile_modules = [n.path for n in fragile][:3]
+
+        # Modernization debt: modules with behavior-preserving cleanups available
+        # (currently `== None`/`!= None`), so the engine can propose safe fixes.
+        profile.modernizable_modules = self._scan_modernizable(modules)[:5]
+
+    def _scan_modernizable(self, modules: list) -> list[str]:
+        """Modules that contain a real `== None` / `!= None` comparison (AST)."""
+        import ast
+
+        out: list[str] = []
+        for m in modules:
+            try:
+                tree = ast.parse((self.root / m.path).read_text(encoding="utf-8", errors="ignore"))
+            except (OSError, SyntaxError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Compare) and any(
+                    isinstance(o, (ast.Eq, ast.NotEq)) for o in node.ops
+                ) and any(
+                    isinstance(x, ast.Constant) and x.value is None
+                    for x in (node.left, *node.comparators)
+                ):
+                    out.append(m.path)
+                    break
+        return sorted(out)

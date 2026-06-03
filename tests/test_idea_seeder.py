@@ -110,3 +110,28 @@ def test_seeds_fragile_modules_first():
     # Fragility is highest priority -> dedup keeps it over the hub rule.
     frag = next(r for r in roots if r.source_facts[0].startswith("fragile:"))
     assert "Reduce fragility" in frag.title
+
+
+def test_seeds_modernization_idea():
+    from app.engine.idea_permutation import IdeaSeeder
+    from app.tools.project_profile import ProjectProfile
+
+    profile = ProjectProfile(root="/x", modernizable_modules=["app/legacy.py"])
+    roots = IdeaSeeder().seed(profile)
+    mod = [r for r in roots if r.source_facts and r.source_facts[0].startswith("modernization")]
+    assert mod, "expected a modernization root idea"
+    assert "Modernize comparisons in app/legacy.py" == mod[0].title
+
+
+def test_modernization_idea_maps_to_executable_action():
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.engine.idea_permutation import IdeaSeeder
+    from app.tools.project_profile import ProjectProfile
+
+    profile = ProjectProfile(root="/x", modernizable_modules=["app/legacy.py"])
+    idea = next(r for r in IdeaSeeder().seed(profile)
+                if r.source_facts and r.source_facts[0].startswith("modernization"))
+    step = IdeaActionBridge().plan_idea(idea)
+    assert step.action_type == "modernize_comparisons"
+    assert step.executable is True
+    assert step.target == "app/legacy.py"

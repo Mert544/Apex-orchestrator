@@ -165,6 +165,16 @@ class IdeaSeeder:
                 fact_value=f".py x{exts['.py']}",
             )
 
+        # Modernization debt → a safe, behavior-preserving cleanup direction.
+        for module in (getattr(profile, "modernizable_modules", []) or [])[:2]:
+            self._append_root(
+                roots, seen_subjects,
+                title=f"Modernize comparisons in {module}",
+                subject=module,
+                fact_label="modernization",
+                fact_value=f"{module} (== None / != None)",
+            )
+
         # Dominant top-level directory → structure/boundaries idea.
         for directory in (getattr(profile, "top_directories", []) or [])[:1]:
             self._append_root(
@@ -740,6 +750,7 @@ _FACT_HINTS: dict[str, str] = {
     "fragile": "check validation edge cases complex",
     "extension-py": "type hints lint",
     "top-directory": "structure boundaries",
+    "modernization": "refactor cleanup",
 }
 
 # Root fact labels where reliability/security lenses matter most.

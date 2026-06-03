@@ -34,3 +34,14 @@ def test_project_profiler_extracts_basic_project_signals(tmp_path: Path):
     assert "app/main.py" in _posix(profile.dependency_hubs)
     assert "app/main.py" in _posix(profile.symbol_hubs)
     assert "auth/token_service.py" in _posix(profile.untested_modules)
+
+
+def test_scans_modernizable_modules(tmp_path):
+    from app.tools.project_profile import ProjectProfiler
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "old.py").write_text("def f(x):\n    return x == None\n")
+    (tmp_path / "app" / "clean.py").write_text("def g(x):\n    return x is None\n")
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert "app/old.py" in profile.modernizable_modules
+    assert "app/clean.py" not in profile.modernizable_modules
