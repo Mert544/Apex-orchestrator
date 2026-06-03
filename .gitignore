@@ -23,3 +23,6 @@ venv/
 .coverage
 .coverage.*
 htmlcov/
+
+# Claude Code agent worktrees (ephemeral)
+.claude/worktrees/

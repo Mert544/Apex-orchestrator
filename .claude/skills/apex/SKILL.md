@@ -15,10 +15,20 @@ mode/safety gating. Think of it as brain (reasoning), eyes (scanners), hands (ex
 - `python -m app.cli ideate --target=. --depth=2 --breadth=4 --actions` — idea
   permutation tree + supervised action plan (`--kind synthesis|pair|permutation` to filter,
   `--draft` to preview real patches, `--mermaid`, `--out FILE`).
+  - `--facets [--facet-depth N]` — **fractal zoom**: expand the strongest leaves into
+    self-similar sub-ideas (L1 = operator aspects, L2+ = common/boundary/failure cases).
+  - `--roadmap` — sequence the tree into **Stabilize→Secure→Evolve→Refine** phases with
+    impact/effort/ROI (grounded in measured fan-in + LOC/complexity) and quick wins.
+    `--roadmap --save` snapshots to `.apex/roadmap-snapshot.json`; `--roadmap --diff`
+    reports what changed since (new / no-longer-surfaced / phase-moved / ROI shift).
+    `--roadmap --actions [--phase Secure]` orders the apply plan by phase.
+  - `--shape` — tree-shape telemetry (branching factor, depth dist, subject spread, facet
+    penetration) + the engine's own observations on how to steer the next run.
 - `python -m app.cli maintain --target=. --dry-run` — preview every fix as a unified diff.
   Modes: `--mode report|supervised|autonomous` (+ `--commit`, `--verify` on by default,
   `--no-verify`, `--max-apply N`, `--out MAINT.md`).
-- `python -m app.cli dashboard --target=. --out=.apex/dashboard.html` — self-contained HTML.
+- `python -m app.cli dashboard --target=. --out=.apex/dashboard.html` — self-contained HTML
+  (overview, findings, architecture, idea tree, **shape**, **roadmap**, actions, reasoning).
 - `python -m app.cli debug trace|analyze` — debug subsystem.
 
 Safety model: `report` can't patch; `supervised` patches (test-verified, auto-rollback on
@@ -55,8 +65,33 @@ Compute a field on `ProjectProfile` (`app/tools/project_profile.py`), then emit 
 `IdeaSeeder.seed` via `self._append_root(...)` with a traceable `fact_label`. Add the
 label to `_FACT_HINTS` (and `_SECURITY_LABELS` if reliability-relevant).
 
+### Add a fractal facet vocabulary (deepen the zoom)
+`_FACETS` in `app/engine/idea_permutation.py` maps an operator → its level-1 aspects;
+`_FACET_CASES` is the recursive common/boundary/failure decomposition for deeper levels.
+Facets are parented under their leaf (`kind="facet"`), so they render nested and never
+break the permutation invariant. `_expand_facets` is gated by `fractal_facets`/`facet_depth`
+config and a per-level source cap so depth stays reachable within the budget.
+
+### Add a roadmap dimension (impact / effort / phase)
+`app/engine/idea_roadmap.py`: `estimate_impact` (value + structural-risk boosts + measured
+fan-in) and `estimate_effort` (1−feasibility + depth + measured LOC/complexity) feed
+`ROI = impact/effort`. `classify_phase` routes ideas to Stabilize/Secure/Evolve/Refine by
+lens + fact label. Real metrics come from `report.stats["fan_in"]` and `["metrics"]`, which
+the engine attaches in `run()` (fan-in from `dependency_edges`, size via
+`app/tools/code_metrics.py`). Cross-run comparison lives in
+`app/engine/roadmap_history.py` (snapshot + diff by idea title).
+
+### Add a tree-shape observation
+`analyze_tree_shape` in `app/engine/idea_tree_shape.py` computes shape metrics; `_observe`
+turns thresholds into plain steering advice. Add a metric to `TreeShape` and a matching
+threshold reading in `_observe`, then surface it in `render_tree_shape_markdown`.
+
 ## Invariants to preserve
 - Determinism: same input → same output (no time/random in scoring).
 - `node.value` stays in [0,1]; roots keep `novelty == 1.0`.
-- Synthesis/pair ideas use `kind != "permutation"` and an `x.s*`/`x.p*` branch path.
+- Synthesis/pair ideas use `kind != "permutation"` and an `x.s*`/`x.p*` branch path;
+  facets use `kind == "facet"`, are parented under their leaf, and reuse the leaf's
+  `operator_chain` (they refine the subject, they don't add an operator).
+- New engine features that share the idea budget should be **opt-in** (default off) so
+  existing callers' idea sets don't shift — see `fractal_facets`.
 - Everything stays offline by default; LLM is opt-in.
