@@ -43,12 +43,17 @@ pip install -e .[dev]
 
 # Verify (1100+ tests)
 pytest -q
-
-# Point it at any Python project
-apex ideate   --target=/path/to/project --roadmap     # what to build next, in what order
-apex maintain --target=/path/to/project --dry-run     # preview every fix as a diff
-apex dashboard --target=/path/to/project --out=report.html
 ```
+
+**One command to remember — `apex`:**
+
+```bash
+apex                       # autonomous review: state of your project + best next moves
+apex --apply               # safely apply the test-verified fixes (auto-rollback on failure)
+apex "harden security"     # focus the review with a plain-English goal
+```
+
+That's it. `apex` (or `apex auto`) assesses the project, prioritizes the highest‑ROI work, and tells you exactly what it can do — then does it on request. The specialized commands below are there when you want them, but you never *have* to memorize them.
 
 > No API keys, no network, no setup beyond `pip install`. The core never calls out to anything.
 

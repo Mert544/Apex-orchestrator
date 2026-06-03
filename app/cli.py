@@ -542,6 +542,133 @@ def cmd_maintain(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auto(args: argparse.Namespace) -> int:
+    """One autonomous command — no flags to memorize.
+
+    Assesses the project, decides what matters most (via the roadmap), and either
+    recommends the best next moves (default, no changes) or, with ``--apply``,
+    safely applies the test-verified, auto-rolled-back fixes in roadmap order.
+    An optional natural-language goal focuses the ideas and can hint the mode.
+    """
+    from app.engine.idea_action_bridge import (
+        IdeaActionBridge,
+        render_maintenance_markdown,
+    )
+    from app.engine.idea_permutation import IdeaPermutationEngine
+    from app.engine.idea_roadmap import RoadmapSynthesizer
+    from app.engine.idea_tree_shape import analyze_tree_shape
+    from app.plugins.registry import PluginRegistry
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    goal = (getattr(args, "goal", "") or "").strip()
+    apply = getattr(args, "apply", False)
+
+    # Mode: explicit > inferred-from-goal > supervised default. --apply never
+    # runs in report mode (it can't patch), so upgrade report → supervised.
+    mode = getattr(args, "mode", None)
+    if not mode and goal:
+        try:
+            from app.intent.parser import IntentParser
+
+            mode = IntentParser().parse(goal).mode
+        except Exception:
+            mode = None
+    mode = mode or "supervised"
+    if apply and mode == "report":
+        mode = "supervised"
+
+    plugins = PluginRegistry()
+    plugins.load_all()
+    report = IdeaPermutationEngine(
+        config={"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4},
+        project_root=str(target),
+        extra_operators=plugins.idea_operators(),
+    ).run(objective=goal or None)
+    roadmap = RoadmapSynthesizer().build(report)
+    shape = analyze_tree_shape(report)
+
+    # Best-effort security headline (a failing scanner must not break auto).
+    try:
+        from app.agents.skills import SecurityAgent
+
+        sec_n = int(SecurityAgent().run(project_root=str(target)).get("findings_count", 0) or 0)
+    except Exception:
+        sec_n = 0
+
+    # --- Narrative: the state of the project ---------------------------------
+    lines = [f"# Apex — autonomous review of `{target}`", ""]
+    if goal:
+        lines.append(f"_goal: {goal}_\n")
+    headline = (
+        f"**State:** {shape.total_ideas} development ideas across "
+        f"{shape.distinct_subjects} modules · {sec_n} security finding(s)"
+    )
+    if shape.heaviest_module:
+        headline += f" · heaviest `{shape.heaviest_module}` ({shape.heaviest_loc} LOC)"
+    lines += [headline, ""]
+    if shape.observations:
+        lines.append("**What stands out:**")
+        lines += [f"- {o}" for o in shape.observations[:4]]
+        lines.append("")
+    if roadmap.quick_wins:
+        lines.append("**Best next moves (high impact, low effort):**")
+        lines += [f"- {i.title}  (ROI {i.roi})" for i in roadmap.quick_wins]
+        lines.append("")
+    emit_json = getattr(args, "json", False)
+    if not emit_json:
+        print("\n".join(lines))
+
+    bridge = IdeaActionBridge()
+
+    # --- Recommend (default): never touch the tree ---------------------------
+    if not apply:
+        plan = bridge.plan_roadmap(report, mode="report", project_root=str(target))
+        execu = plan.stats.get("executable_steps", 0)
+        if emit_json:
+            print(json.dumps({
+                "target": str(target),
+                "goal": goal,
+                "ideas": shape.total_ideas,
+                "modules": shape.distinct_subjects,
+                "security_findings": sec_n,
+                "observations": shape.observations,
+                "quick_wins": [{"title": i.title, "roi": i.roi} for i in roadmap.quick_wins],
+                "applicable": execu,
+                "applied": False,
+            }, indent=2))
+            return 0
+        print(
+            f"I can safely apply **{execu}** of these automatically — each is "
+            "test-verified and auto-rolled-back if it breaks anything.\n\n"
+            "  • Apply them now:        apex auto --apply\n"
+            "  • Preview as diffs:      apex maintain --dry-run\n"
+            "  • See the full roadmap:  apex ideate --roadmap"
+        )
+        return 0
+
+    # --- Apply: roadmap-ordered, verified, capped for safety -----------------
+    plan = bridge.plan_roadmap(report, mode=mode, project_root=str(target), draft=True)
+    summary = bridge.apply_plan(
+        plan,
+        str(target),
+        mode=mode,
+        verify=not getattr(args, "no_verify", False),
+        max_apply=(getattr(args, "max_apply", 0) or 8),
+        commit=getattr(args, "commit", False),
+    )
+    md = render_maintenance_markdown(summary, str(target), objective=goal)
+    if emit_json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(md)
+    if getattr(args, "out", ""):
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(md, encoding="utf-8")
+        print(f"\n[auto] Report written to {out_path}")
+    return 0
+
+
 def cmd_ideate(args: argparse.Namespace) -> int:
     """Generate a permutation tree of development ideas from the codebase."""
     from app.engine.idea_permutation import (
@@ -901,6 +1028,30 @@ def cmd_run(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(prog="apex", description="Apex Orchestrator CLI")
     subparsers = parser.add_subparsers(dest="command")
+
+    # auto — the recommended one-command entry point (no flags to memorize)
+    auto_parser = subparsers.add_parser(
+        "auto",
+        help="Autonomous review: assess the project and recommend (or --apply) the best next moves",
+    )
+    auto_parser.add_argument("goal", nargs="?", default="", help="Optional natural-language goal")
+    auto_parser.add_argument("--target", default="", help="Target project root")
+    auto_parser.add_argument(
+        "--apply", action="store_true",
+        help="Apply the safe, test-verified fixes (default: recommend only)",
+    )
+    auto_parser.add_argument(
+        "--mode", default=None, choices=["report", "supervised", "autonomous"],
+        help="Override the execution mode (default: inferred / supervised)",
+    )
+    auto_parser.add_argument("--commit", action="store_true", help="Commit each applied fix (autonomous)")
+    auto_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                             help="Skip test verification (not recommended)")
+    auto_parser.add_argument("--max-apply", type=int, default=0, dest="max_apply",
+                             help="Cap how many fixes to apply (default 8)")
+    auto_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    auto_parser.add_argument("--out", default="", help="Write the report to this path")
+    auto_parser.set_defaults(func=cmd_auto)
 
     # scan
     scan_parser = subparsers.add_parser("scan", help="Run an automation plan")
@@ -1355,8 +1506,13 @@ def main() -> int:
     args = parser.parse_args()
     if hasattr(args, "func"):
         return args.func(args)
-    parser.print_help()
-    return 0
+    # No subcommand: run the autonomous review on the current project (safe,
+    # recommend-only). Users shouldn't have to memorize commands — `apex` alone
+    # tells you the state of your project and the best next moves.
+    return cmd_auto(argparse.Namespace(
+        goal="", target="", apply=False, mode=None, commit=False,
+        no_verify=False, max_apply=0, json=False, out="",
+    ))
 
 
 if __name__ == "__main__":

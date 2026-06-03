@@ -7,13 +7,22 @@ import pytest
 import app.cli as cli
 
 
-def test_main_no_subcommand_prints_help(monkeypatch, capsys):
-    # No subcommand -> build the full parser, print help, return 0.
+def test_main_no_subcommand_runs_auto(monkeypatch, tmp_path):
+    # Bare `apex` (no subcommand) now runs the autonomous review on the project,
+    # so users don't have to memorize commands.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f(x):\n    return eval(x)\n")
+    monkeypatch.setattr(cli, "_get_project_root", lambda: tmp_path)
+    captured = {}
+
+    def _fake_auto(args):
+        captured["ran"] = args
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_auto", _fake_auto)
     monkeypatch.setattr("sys.argv", ["apex"])
-    rc = cli.main()
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "scan" in out and "ideate" in out
+    assert cli.main() == 0
+    assert "ran" in captured  # dispatched to the autonomous review
 
 
 def test_main_dispatches_to_func(monkeypatch):

@@ -12,6 +12,11 @@ mode/safety gating. Think of it as brain (reasoning), eyes (scanners), hands (ex
 
 ## Running Apex (CLI)
 
+- `apex auto [GOAL] [--target=.] [--apply]` — **the recommended entry point**. Assesses the
+  project, prioritizes via the roadmap, and recommends the best next moves (default: no
+  changes); `--apply` runs the safe, test-verified fixes in roadmap order (capped, verified,
+  auto-rollback). Bare `apex` (no subcommand) runs this in recommend-only mode. Use it when
+  you don't want to memorize the specialized commands below.
 - `python -m app.cli ideate --target=. --depth=2 --breadth=4 --actions` — idea
   permutation tree + supervised action plan (`--kind synthesis|pair|permutation` to filter,
   `--draft` to preview real patches, `--mermaid`, `--out FILE`).
