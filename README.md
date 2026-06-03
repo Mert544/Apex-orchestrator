@@ -27,6 +27,7 @@ Most code tools stop at a flat list of issues. Apex goes further — think of it
 | 👁️ **Scan** | Profiles structure, finds security risks, import cycles, fragile/untested modules | built into every run |
 | 💡 **Ideate** | Generates a **fractal tree of grounded development ideas** from real code facts | `apex ideate` |
 | 🗺️ **Prioritize** | Sequences ideas into a **Stabilize → Secure → Evolve → Refine** roadmap with impact/effort/ROI grounded in real structure | `apex ideate --roadmap` |
+| 🔎 **Review** | Reviews a PR diff like a human reviewer — issues on the *changed* lines, with auto‑fix flags; CI‑ready | `apex review` |
 | 🤖 **Fix** | Applies real, **test‑verified** fixes with automatic rollback and safety gates | `apex maintain` |
 | 🔁 **Evolve** | Improves the project cycle by cycle **to a fixpoint**, then proves the gain (before/after + roadmap diff) | `apex evolve` |
 | 📊 **Report** | One self‑contained HTML dashboard of everything above | `apex dashboard` |

@@ -1,0 +1,60 @@
+name: Apex Review
+
+# Deterministic, offline PR review — no API keys, no per-token cost.
+# Flags security/bug/style/docs issues on the *changed* lines and gates on
+# high-severity findings. Drop this file into any Python repo to use it.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  apex-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need the base ref to diff against
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Apex
+        run: pip install -e .
+
+      - name: Run Apex review on the diff
+        id: review
+        run: |
+          BASE="origin/${{ github.base_ref || 'main' }}"
+          # Human-readable review into the job summary (shows in the Actions UI).
+          python -m app.cli review --base "$BASE" | tee review.md >> "$GITHUB_STEP_SUMMARY"
+          # Machine-readable copy for any downstream step.
+          python -m app.cli review --base "$BASE" --json > review.json || true
+
+      - name: Post review as a PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '';
+            try { body = fs.readFileSync('review.md', 'utf8'); } catch (e) { return; }
+            if (!body.trim()) return;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body,
+            });
+
+      - name: Gate on high-severity issues
+        run: |
+          BASE="origin/${{ github.base_ref || 'main' }}"
+          python -m app.cli review --base "$BASE" --fail-on-high
