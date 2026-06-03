@@ -74,7 +74,7 @@ def apply(
         else:
             new_func_lines.append(body_indent + line + "\n")
     if return_var:
-        new_func_lines.append(f"{body_indent}    return {return_var}\n")
+        new_func_lines.append(f"{body_indent}return {return_var}\n")
     new_func_lines.append("\n")
 
     if return_var:

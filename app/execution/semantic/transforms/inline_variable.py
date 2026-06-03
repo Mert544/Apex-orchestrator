@@ -18,7 +18,7 @@ class InlineTransformer(ast.NodeTransformer):
             self.in_target = True
             result = self.generic_visit(node)
             self.in_target = False
-            if self.assignment_node and isinstance(result, ast.FunctionDef):
+            if self.assignment_node and isinstance(result, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 new_body = [s for s in result.body if s is not self.assignment_node]
                 result.body = new_body
                 self.changed = True

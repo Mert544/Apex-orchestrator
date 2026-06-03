@@ -29,7 +29,9 @@ def apply(rel_path: str, source: str, class_name: str, new_module: str) -> Seman
     if not new_module_content.endswith("\n"):
         new_module_content += "\n"
 
-    module_path = new_module.replace('/', '.').replace('\\', '.').rstrip('.py')
+    module_path = new_module.replace('/', '.').replace('\\', '.')
+    if module_path.endswith('.py'):
+        module_path = module_path[:-len('.py')]
     import_line = f"from {module_path} import {class_name}\n"
     new_lines = lines[:start] + [import_line] + lines[end:]
     new_source = "".join(new_lines)
