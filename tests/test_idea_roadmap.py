@@ -36,6 +36,31 @@ def test_impact_boosted_by_cycle_and_kind():
     assert estimate_impact(cyc) >= estimate_impact(_node())
 
 
+def test_impact_grounded_in_measured_fan_in():
+    # A subject imported by many modules has real blast radius.
+    base = _node(value=0.5)
+    assert estimate_impact(base, fan_in=5) > estimate_impact(base, fan_in=0)
+    # Fan-in contribution is capped so it can't dominate the score.
+    assert estimate_impact(base, fan_in=100) <= 1.0
+    assert estimate_impact(base, fan_in=100) == estimate_impact(base, fan_in=5)
+
+
+def test_build_uses_report_fan_in_stat():
+    # The synthesizer reads fan-in from report.stats and applies it per subject,
+    # stripping any " :: facet" suffix back to the base module.
+    ideas = [
+        _node(id="hub", branch_path="x.h", subject="app/core.py", value=0.5,
+              operator="harden", source_facts=["dependency-hub: app/core.py"]),
+        _node(id="leaf", branch_path="x.l", subject="app/leaf.py", value=0.5,
+              operator="harden", source_facts=["sensitive-path: app/leaf.py"]),
+    ]
+    rep = IdeaTreeReport(ideas=ideas, stats={"fan_in": {"app/core.py": 4}})
+    rm = RoadmapSynthesizer().build(rep)
+    items = {i.subject: i for ph in rm.phases for i in ph.items}
+    # The heavily-imported hub outscores the leaf on impact, thanks to fan-in.
+    assert items["app/core.py"].impact > items["app/leaf.py"].impact
+
+
 def test_effort_is_floored_and_depth_sensitive():
     shallow = _node(feasibility=0.9, depth=0)
     deep = _node(feasibility=0.9, depth=3)

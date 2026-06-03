@@ -124,11 +124,14 @@ def _first_label(node: IdeaNode) -> str:
     return node.source_facts[0].split(":")[0].strip() if node.source_facts else ""
 
 
-def estimate_impact(node: IdeaNode) -> float:
-    """Blast radius, 0..1: start from the idea's value, boost by structural risk.
+def estimate_impact(node: IdeaNode, fan_in: int = 0) -> float:
+    """Blast radius, 0..1: start from the idea's value, boost by structural risk
+    and by *measured* fan-in (how many modules import the subject).
 
-    Ideas touching fragile/critical/hub/sensitive code, or breaking real import
-    cycles, move more of the system when done — so they score higher.
+    Ideas touching fragile/critical/hub/sensitive code, breaking real import
+    cycles, or sitting under a heavily-imported module move more of the system
+    when done — so they score higher. ``fan_in`` is the real in-degree from the
+    dependency graph; each importer adds a little, capped so it can't dominate.
     """
     label = _first_label(node)
     impact = node.value
@@ -138,6 +141,8 @@ def estimate_impact(node: IdeaNode) -> float:
         impact += 0.20
     if node.kind in ("synthesis", "pair"):
         impact += 0.10
+    if fan_in > 0:
+        impact += min(0.3, 0.06 * fan_in)
     return round(min(1.0, impact), 4)
 
 
@@ -197,9 +202,12 @@ class RoadmapSynthesizer:
         self.quick_win_min_roi = quick_win_min_roi
 
     def build(self, report: IdeaTreeReport) -> Roadmap:
+        # Measured fan-in per subject (from the engine), used to ground impact.
+        fan_in = report.stats.get("fan_in", {}) if report.stats else {}
         items: list[RoadmapItem] = []
         for node in report.ideas:
-            impact = estimate_impact(node)
+            base_subject = node.subject.split(" :: ", 1)[0]
+            impact = estimate_impact(node, fan_in=fan_in.get(base_subject, 0))
             effort = estimate_effort(node)
             roi = round(impact / effort, 4)
             items.append(

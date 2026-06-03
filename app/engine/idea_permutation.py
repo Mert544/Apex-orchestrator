@@ -348,6 +348,14 @@ class IdeaPermutationEngine:
         stats["mean_value"] = (
             round(sum(i.value for i in emitted) / len(emitted), 4) if emitted else 0.0
         )
+        # Measured fan-in (in-degree) per idea subject: how many modules import
+        # it. A real blast-radius signal downstream consumers (the roadmap) use
+        # to ground impact in structure rather than re-deriving it from value.
+        fan_in_all: dict[str, int] = {}
+        for _src, tgt in (getattr(profile, "dependency_edges", []) or []):
+            fan_in_all[tgt] = fan_in_all.get(tgt, 0) + 1
+        subjects = {i.subject.split(" :: ", 1)[0] for i in emitted}
+        stats["fan_in"] = {m: fan_in_all[m] for m in subjects if m in fan_in_all}
         return IdeaTreeReport(
             objective=objective or "",
             project_root=self.project_root,
