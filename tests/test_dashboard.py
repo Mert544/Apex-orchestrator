@@ -54,6 +54,36 @@ def test_dashboard_shows_autonomy_panel(tmp_path):
     assert "#autonomy" in html_doc
 
 
+def test_dashboard_shows_frontier(tmp_path):
+    _project(tmp_path)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=30, idea_depth=2, breadth=4)
+    assert "Efficient frontier" in html_doc
+    assert "#frontier" in html_doc
+
+
+def test_dashboard_shows_trajectory_and_learned_when_present(tmp_path):
+    import json
+    _project(tmp_path)
+    apex = tmp_path / ".apex"
+    apex.mkdir()
+    # A recorded evolve run -> trajectory section.
+    (apex / "evolution-history.jsonl").write_text(
+        json.dumps({"ts": "2026-06-03 10:00:00 UTC", "applied": 3, "mode": "supervised",
+                    "before": {"security_findings": 4, "executable_fixes": 12},
+                    "after": {"security_findings": 1, "executable_fixes": 9}}) + "\n",
+        encoding="utf-8",
+    )
+    # Learned memory -> "What Apex has learned" section.
+    (apex / "idea-memory.json").write_text(json.dumps({
+        "by_operator": {"harden": {"applied": 5, "rolled_back": 1, "blocked": 0}},
+        "by_label": {},
+    }), encoding="utf-8")
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20)
+    assert "Self-improvement trajectory" in html_doc and "#trajectory" in html_doc
+    assert "What Apex has learned" in html_doc and "#learned" in html_doc
+    assert "harden" in html_doc
+
+
 def test_dashboard_roadmap_shows_measured_signals(tmp_path):
     # core.py is imported by two modules and has real size -> the roadmap
     # surfaces measured fan-in / LOC under the idea.

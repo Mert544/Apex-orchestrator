@@ -134,6 +134,25 @@ def build_dashboard(
         shape = analyze_tree_shape(idea_report)
     except Exception:
         shape = None
+    # Efficient frontier, self-improvement trajectory, and learned memory.
+    try:
+        from app.engine.idea_pareto import frontier_from_roadmap
+
+        pareto = frontier_from_roadmap(roadmap) if roadmap is not None else []
+    except Exception:
+        pareto = []
+    try:
+        from app.engine.evolution import load_history
+
+        trajectory = load_history(project_root)
+    except Exception:
+        trajectory = []
+    try:
+        from app.engine.idea_memory import IdeaMemory
+
+        learned = IdeaMemory.load(project_root).summary()
+    except Exception:
+        learned = None
     reasoning = _run_reasoning(project_root, objective)
     git = _git_info(project_root)
     debug = _run_debug(project_root, profile)
@@ -154,6 +173,7 @@ def build_dashboard(
     return _render_html(
         project_root, profile, findings, idea_report, action_plan, reasoning, git, debug,
         roadmap=roadmap, shape=shape, autonomy=autonomy,
+        pareto=pareto, trajectory=trajectory, learned=learned,
     )
 
 
@@ -582,6 +602,83 @@ def _autonomy_section(autonomy: dict[str, Any] | None) -> str:
     return _card("autonomy", "🤖", "Autonomy", body)
 
 
+def _pareto_section(points: list[Any], total_ideas: int) -> str:
+    """The efficient frontier — ideas not dominated on impact/effort/value."""
+    if not points:
+        return ""
+    dominated = max(0, total_ideas - len(points))
+    chips = "".join([
+        _chip("on the frontier", len(points)),
+        _chip("dominated", dominated),
+        _chip("of total", total_ideas),
+    ])
+    rows = ""
+    for p in points[:12]:
+        rows += (
+            f"<tr><td><code>{_esc(p.branch_path)}</code></td><td>{_esc(p.title)}</td>"
+            f"<td>{_esc(', '.join(p.reasons))}</td>"
+            f"<td class='num'>{_esc(p.impact)}</td><td class='num'>{_esc(p.effort)}</td>"
+            f"<td class='num'>{_esc(p.roi)}</td></tr>"
+        )
+    body = (
+        f"<div class='chips'>{chips}</div>"
+        "<p class='muted'>Each is the best choice for some trade-off; everything else is "
+        "strictly beaten on impact, effort, and value at once.</p>"
+        "<table><thead><tr><th>Branch</th><th>Idea</th><th>Why</th>"
+        "<th>Impact</th><th>Effort</th><th>ROI</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+    )
+    return _card("frontier", "🎯", "Efficient frontier", body)
+
+
+def _trajectory_section(history: list[dict[str, Any]]) -> str:
+    """The project's self-improvement trajectory across recorded evolve runs."""
+    if not history:
+        return ""
+    first, last = history[0], history[-1]
+
+    def _f(e: dict[str, Any], side: str, key: str) -> Any:
+        return (e.get(side) or {}).get(key, "—")
+
+    chips = "".join([
+        _chip("runs", len(history)),
+        _chip("findings", f"{_f(first, 'before', 'security_findings')} → {_f(last, 'after', 'security_findings')}"),
+        _chip("open fixes", f"{_f(first, 'before', 'executable_fixes')} → {_f(last, 'after', 'executable_fixes')}"),
+    ])
+    rows = "".join(
+        f"<tr><td>{_esc(e.get('ts', '?'))}</td><td class='num'>{_esc(e.get('applied', 0))}</td>"
+        f"<td>{_esc(_f(e, 'before', 'security_findings'))}→{_esc(_f(e, 'after', 'security_findings'))}</td>"
+        f"<td>{_esc(e.get('mode', '?'))}</td></tr>"
+        for e in history[-10:]
+    )
+    body = (
+        f"<div class='chips'>{chips}</div>"
+        "<table><thead><tr><th>When</th><th>Applied</th><th>Findings</th><th>Mode</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+    )
+    return _card("trajectory", "📈", "Self-improvement trajectory", body)
+
+
+def _learned_section(learned: dict[str, Any] | None) -> str:
+    """What the engine has learned about which fixes land on this project."""
+    if not learned or not (learned.get("most_reliable") or learned.get("least_reliable")):
+        return ""
+    def _items(rows: list[dict[str, Any]]) -> str:
+        return "".join(
+            f"<li><code>{_esc(r['key'])}</code> — {int(r['success_rate'] * 100)}% "
+            f"<span class='muted'>({r['samples']} samples)</span></li>" for r in rows
+        )
+    body = (
+        f"<div class='chips'>{_chip('lenses tracked', learned.get('operators_tracked', 0))}"
+        f"{_chip('facts tracked', learned.get('labels_tracked', 0))}</div>"
+        "<div class='cols'>"
+        f"<div class='col'><h4>Most reliable here</h4><ul>{_items(learned.get('most_reliable', []))}</ul></div>"
+        f"<div class='col'><h4>Least reliable here</h4><ul>{_items(learned.get('least_reliable', []))}</ul></div>"
+        "</div>"
+    )
+    return _card("learned", "🧠", "What Apex has learned", body)
+
+
 def _reasoning_section(r: dict[str, Any]) -> str:
     if "error" in r:
         return _card("reasoning", "🧠", "Reasoning &amp; telemetry",
@@ -677,17 +774,26 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:8px 0 36px}
 
 
 def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning,
-                 git=None, debug=None, roadmap=None, shape=None, autonomy=None) -> str:
+                 git=None, debug=None, roadmap=None, shape=None, autonomy=None,
+                 pareto=None, trajectory=None, learned=None) -> str:
     git = git or {}
     debug = debug or {}
+    pareto = pareto or []
+    trajectory = trajectory or []
     nav_links = [("overview", "Overview"), ("findings", "Findings"),
                  ("architecture", "Architecture"), ("ideas", "Ideas")]
     if shape is not None and getattr(shape, "total_ideas", 0):
         nav_links.append(("shape", "Shape"))
     if roadmap is not None and getattr(roadmap, "phases", None):
         nav_links.append(("roadmap", "Roadmap"))
+    if pareto:
+        nav_links.append(("frontier", "Frontier"))
     if autonomy:
         nav_links.append(("autonomy", "Autonomy"))
+    if trajectory:
+        nav_links.append(("trajectory", "Trajectory"))
+    if learned and (learned.get("most_reliable") or learned.get("least_reliable")):
+        nav_links.append(("learned", "Learned"))
     nav_links += [("actions", "Actions"), ("reasoning", "Reasoning"), ("profile", "Profile")]
     if debug:
         nav_links.append(("debug", "Debug"))
@@ -704,7 +810,10 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
             _ideas_section(idea_report),
             _shape_section(shape),
             _roadmap_section(roadmap),
+            _pareto_section(pareto, getattr(idea_report, "stats", {}).get("total_ideas", 0)),
             _autonomy_section(autonomy),
+            _trajectory_section(trajectory),
+            _learned_section(learned),
             _actions_section(action_plan),
             _reasoning_section(reasoning),
             _debug_section(debug),
