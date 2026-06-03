@@ -583,6 +583,30 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         )
 
         roadmap = RoadmapSynthesizer().build(report)
+        snapshot_path = target / ".apex" / "roadmap-snapshot.json"
+
+        # --diff: compare this roadmap against the last saved snapshot.
+        if getattr(args, "diff", False):
+            from app.engine.roadmap_history import (
+                diff_roadmaps,
+                load_snapshot,
+                render_diff_markdown,
+            )
+
+            previous = load_snapshot(snapshot_path)
+            if previous is None:
+                print(
+                    "[ideate] No saved roadmap snapshot to diff against. "
+                    "Run with --save first."
+                )
+                return 1
+            diff = diff_roadmaps(previous, roadmap)
+            if args.json:
+                print(json.dumps(diff.to_dict(), indent=2))
+            else:
+                print(render_diff_markdown(diff))
+            return 0
+
         body = render_roadmap_markdown(roadmap)
         if args.json:
             print(json.dumps(roadmap.to_dict(), indent=2))
@@ -593,6 +617,12 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(body, encoding="utf-8")
             print(f"\n[ideate] Roadmap written to {out_path}")
+        # --save: snapshot for future --diff comparisons.
+        if getattr(args, "save", False):
+            from app.engine.roadmap_history import snapshot_roadmap
+
+            saved = snapshot_roadmap(roadmap, snapshot_path)
+            print(f"\n[ideate] Roadmap snapshot saved to {saved}")
         return 0
 
     # --shape: report on the shape/health of the tree the engine just produced.
@@ -1231,6 +1261,16 @@ def main() -> int:
         default="",
         choices=["", "Stabilize", "Secure", "Evolve", "Refine"],
         help="With --roadmap --actions: restrict the action plan to one phase",
+    )
+    ideate_parser.add_argument(
+        "--save",
+        action="store_true",
+        help="With --roadmap: snapshot the roadmap to .apex/roadmap-snapshot.json",
+    )
+    ideate_parser.add_argument(
+        "--diff",
+        action="store_true",
+        help="With --roadmap: show what changed since the last saved snapshot",
     )
     ideate_parser.set_defaults(func=cmd_ideate)
 

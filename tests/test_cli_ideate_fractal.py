@@ -44,6 +44,8 @@ def _ideate_ns(tmp_path: Path, **overrides) -> argparse.Namespace:
         facet_depth=1,
         shape=False,
         phase="",
+        save=False,
+        diff=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -139,6 +141,26 @@ def test_ideate_roadmap_actions_plan(tmp_path, capsys):
     # Roadmap-ordered action plan tags steps with their phase.
     assert "Action Plan" in out
     assert "[Stabilize]" in out or "[Secure]" in out or "[Evolve]" in out
+
+
+def test_ideate_roadmap_save_then_diff(tmp_path, capsys):
+    _project(tmp_path)
+    # Save a snapshot.
+    rc = cmd_ideate(_ideate_ns(tmp_path, roadmap=True, save=True))
+    assert rc == 0
+    assert (tmp_path / ".apex" / "roadmap-snapshot.json").exists()
+    capsys.readouterr()
+    # Diff against it (no code change -> a valid diff report).
+    rc = cmd_ideate(_ideate_ns(tmp_path, roadmap=True, diff=True))
+    assert rc == 0
+    assert "Roadmap Changes Since Last Run" in capsys.readouterr().out
+
+
+def test_ideate_diff_without_snapshot_errors(tmp_path, capsys):
+    _project(tmp_path)
+    rc = cmd_ideate(_ideate_ns(tmp_path, roadmap=True, diff=True))
+    assert rc == 1
+    assert "No saved roadmap snapshot" in capsys.readouterr().out
 
 
 def test_fractal_analyze(tmp_path, capsys):
