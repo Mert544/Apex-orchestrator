@@ -76,9 +76,15 @@ Ask the engine to **show its work** for any idea — provenance, the value formu
 ```bash
 apex explain x.a.c --target=.     # why does this idea score what it does?
 apex explain --target=.           # explain the single highest‑value idea
+apex ideate --target=. --pareto   # the efficient frontier (non‑dominated ideas only)
+apex ideate --target=. --adaptive # value‑guided fractal: high‑value branches grow deeper
 ```
 
-Each idea is **traceable to a concrete project fact**, scored by relevance × novelty × feasibility, and stress‑tested with counterfactual caveats. The engine also synthesizes ideas no single lens yields — e.g. a *security‑focused test suite* for a module that needs both hardening and tests, or *break this import cycle* from the dependency graph.
+Each idea is **traceable to a concrete project fact**, scored by relevance × novelty × feasibility, and stress‑tested with counterfactual caveats.
+
+### It gets wiser over time
+
+Apex is deterministic but not amnesiac. Every time it applies fixes (`auto`, `maintain`, `evolve`), it records which kinds of ideas actually landed cleanly vs. rolled back to `.apex/idea-memory.json`, and on later runs gives a bounded feasibility nudge toward the lenses with a strong track record **on your codebase**. Combined with `--adaptive` depth, the branches it has learned to trust grow deeper — a fractal that sharpens where it pays off. With no memory file, scoring is identical to a fresh engine, so determinism is never compromised. The engine also synthesizes ideas no single lens yields — e.g. a *security‑focused test suite* for a module that needs both hardening and tests, or *break this import cycle* from the dependency graph.
 
 ---
 
@@ -235,8 +241,10 @@ Optional surfaces: an **MCP server** (stdio + HTTP/SSE) for IDE integration, a *
 
 ## 📈 Project status
 
-- ✅ **Idea Permutation Engine** — fractal idea tree (+ recursive facet zoom, synthesis & module‑pair ideas)
-- ✅ **Roadmap mode** — phase sequencing + impact/effort/ROI grounded in fan‑in and measured LOC/complexity, with cross‑run diffing
+- ✅ **Idea Permutation Engine** — fractal idea tree (+ recursive facet zoom, adaptive value‑guided depth, synthesis & module‑pair ideas)
+- ✅ **Roadmap mode** — phase sequencing + impact/effort/ROI grounded in fan‑in and measured LOC/complexity, the Pareto efficient frontier, and cross‑run diffing
+- ✅ **Learning memory** — per‑lens apply outcomes bias future scoring (bounded, opt‑in, deterministic)
+- ✅ **Self‑improvement loop** (`apex evolve`) — converge to a fixpoint with a circuit breaker, prove the gain, and track the trajectory
 - ✅ **Guarded maintenance** — real AST fixes, test‑verified, auto‑rollback, optional per‑fix commits
 - ✅ **Dashboard, debug, self‑audit, MCP, metrics, LSP**
 - ✅ **Deterministic, offline core** — LLM is strictly opt‑in
