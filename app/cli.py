@@ -762,6 +762,21 @@ def cmd_explain(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_grade(args: argparse.Namespace) -> int:
+    """Give the project a single health grade (A–F) with a breakdown."""
+    from app.engine.health_score import grade, render_grade_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    h = grade(str(target))
+    if args.json:
+        print(json.dumps(h.to_dict(), indent=2))
+    else:
+        print(render_grade_markdown(h))
+    if getattr(args, "min_score", 0) and h.score < args.min_score:
+        return 1
+    return 0
+
+
 def cmd_simulate(args: argparse.Namespace) -> int:
     """Preview what autonomous improvement would do — on a disposable copy."""
     from app.engine.simulation import render_simulation_markdown, simulate_evolution
@@ -1302,6 +1317,16 @@ def main() -> int:
     auto_parser.add_argument("--json", action="store_true", help="Emit JSON")
     auto_parser.add_argument("--out", default="", help="Write the report to this path")
     auto_parser.set_defaults(func=cmd_auto)
+
+    # grade — single project health grade (A-F)
+    grade_parser = subparsers.add_parser(
+        "grade", help="Give the project a single health grade (A-F) with a breakdown",
+    )
+    grade_parser.add_argument("--target", default="", help="Target project root")
+    grade_parser.add_argument("--min-score", type=int, default=0, dest="min_score",
+                              help="Exit non-zero if the score is below this (CI gate)")
+    grade_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    grade_parser.set_defaults(func=cmd_grade)
 
     # simulate — preview autonomous improvement on a disposable copy
     sim_parser = subparsers.add_parser(
