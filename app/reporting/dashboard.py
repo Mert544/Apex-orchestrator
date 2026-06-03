@@ -525,14 +525,17 @@ def _shape_section(shape) -> str:
         return ""
     kinds = " · ".join(f"{k} {v}" for k, v in sorted(shape.by_kind.items()))
     depths = " ".join(f"d{d}:{n}" for d, n in shape.depth_distribution.items())
-    chips = "".join(
-        [_chip("ideas", shape.total_ideas),
-         _chip("max depth", shape.max_depth),
-         _chip("branching", shape.branching_factor),
-         _chip("subjects", shape.distinct_subjects),
-         _chip("facets", f"{int(shape.facet_penetration * 100)}%"),
-         _chip("distinct values", shape.distinct_values)]
-    )
+    chip_specs = [
+        _chip("ideas", shape.total_ideas),
+        _chip("max depth", shape.max_depth),
+        _chip("branching", shape.branching_factor),
+        _chip("subjects", shape.distinct_subjects),
+        _chip("facets", f"{int(shape.facet_penetration * 100)}%"),
+        _chip("distinct values", shape.distinct_values),
+    ]
+    if shape.total_measured_loc > 0:
+        chip_specs.append(_chip("heaviest", f"{shape.heaviest_module} ({shape.heaviest_loc} LOC)"))
+    chips = "".join(chip_specs)
     obs = "".join(f"<li>{_esc(o)}</li>" for o in shape.observations)
     inner = (
         f"<div class='chips'>{chips}</div>"

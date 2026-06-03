@@ -35,21 +35,54 @@ class TreeShape:
     mean_value: float
     value_range: float                # max value − min value
     distinct_values: int
+    # Measured code-size telemetry (from report.stats["metrics"]).
+    heaviest_module: str = ""
+    heaviest_loc: int = 0
+    total_measured_loc: int = 0
     observations: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
+def _measured_loc(report: IdeaTreeReport) -> tuple[str, int, int]:
+    """Return ``(heaviest_module, heaviest_loc, total_measured_loc)`` from the
+    engine's per-subject metrics. Deterministic tie-break (loc desc, path asc);
+    missing/empty/malformed metrics yield ``("", 0, 0)``.
+    """
+    metrics = (report.stats or {}).get("metrics", {}) or {}
+    if not isinstance(metrics, dict) or not metrics:
+        return "", 0, 0
+    total = 0
+    best_path = ""
+    best_loc = 0
+    for path in sorted(metrics):  # stable order before the tie-break
+        entry = metrics[path] or {}
+        try:
+            loc = int(entry.get("loc", 0) or 0)
+        except (TypeError, ValueError):
+            loc = 0
+        total += loc
+        if loc > best_loc:
+            best_loc = loc
+            best_path = path
+    if best_loc <= 0:
+        return "", 0, total
+    return best_path, best_loc, total
+
+
 def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
     ideas = report.ideas
     total = len(ideas)
+    heaviest_module, heaviest_loc, total_measured_loc = _measured_loc(report)
     if total == 0:
         return TreeShape(
             total_ideas=0, roots=0, max_depth=0, by_kind={}, depth_distribution={},
             branching_factor=0.0, distinct_subjects=0, top_subject="",
             top_subject_share=0.0, facet_penetration=0.0, mean_value=0.0,
             value_range=0.0, distinct_values=0,
+            heaviest_module=heaviest_module, heaviest_loc=heaviest_loc,
+            total_measured_loc=total_measured_loc,
             observations=["Empty idea tree — nothing was generated."],
         )
 
@@ -90,6 +123,9 @@ def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
         mean_value=mean_value,
         value_range=value_range,
         distinct_values=distinct_values,
+        heaviest_module=heaviest_module,
+        heaviest_loc=heaviest_loc,
+        total_measured_loc=total_measured_loc,
     )
     shape.observations = _observe(shape, by_kind)
     return shape
@@ -117,6 +153,12 @@ def _observe(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
         obs.append(f"Fractal facets are {int(s.facet_penetration * 100)}% of the tree.")
     if s.distinct_values < max(3, s.total_ideas // 3):
         obs.append("Scores are clustered — limited prioritization signal between ideas.")
+    if s.total_measured_loc > 0 and s.heaviest_loc > 0.4 * s.total_measured_loc:
+        pct = round(100 * s.heaviest_loc / s.total_measured_loc)
+        obs.append(
+            f"Most measured code sits in `{s.heaviest_module}` "
+            f"({pct}% of {s.total_measured_loc} LOC) — a refactor/test focus."
+        )
     if not obs:
         obs.append("Well-shaped tree: balanced depth, breadth, and scoring spread.")
     return obs
@@ -136,9 +178,13 @@ def render_tree_shape_markdown(shape: TreeShape) -> str:
         f"- **Fractal facets:** {int(shape.facet_penetration * 100)}% of ideas",
         f"- **Scoring:** mean {shape.mean_value} · range {shape.value_range} · "
         f"{shape.distinct_values} distinct values",
-        "",
-        "## Observations",
     ]
+    if shape.total_measured_loc > 0:
+        lines.append(
+            f"- **Measured size:** {shape.total_measured_loc} LOC across modules · "
+            f"heaviest `{shape.heaviest_module}` ({shape.heaviest_loc} LOC)"
+        )
+    lines += ["", "## Observations"]
     lines += [f"- {o}" for o in shape.observations]
     lines.append("")
     return "\n".join(lines)

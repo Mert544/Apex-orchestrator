@@ -73,6 +73,51 @@ def test_render_markdown_sections():
     assert "Branching factor" in md
 
 
+def test_measured_loc_telemetry_computed():
+    ideas = [
+        _n(id="a", subject="app/big.py", depth=0, value=0.6),
+        _n(id="b", subject="app/small.py", depth=1, parent_id="a", value=0.5),
+    ]
+    rep = IdeaTreeReport(ideas=ideas, stats={"metrics": {
+        "app/big.py": {"loc": 400},
+        "app/small.py": {"loc": 100},
+    }})
+    s = analyze_tree_shape(rep)
+    assert s.heaviest_module == "app/big.py"
+    assert s.heaviest_loc == 400
+    assert s.total_measured_loc == 500
+    md = render_tree_shape_markdown(s)
+    assert "Measured size:" in md and "app/big.py" in md
+
+
+def test_dominant_loc_observation_fires():
+    ideas = [_n(id="a", subject="app/huge.py", depth=0, value=0.6)]
+    rep = IdeaTreeReport(ideas=ideas, stats={"metrics": {
+        "app/huge.py": {"loc": 900},
+        "app/tiny.py": {"loc": 100},
+    }})
+    s = analyze_tree_shape(rep)
+    # huge.py is 90% of measured LOC -> dominant-LOC observation.
+    assert any("Most measured code sits in" in o for o in s.observations)
+
+
+def test_no_metrics_means_zero_loc_telemetry():
+    s = analyze_tree_shape(IdeaTreeReport(ideas=[_n(id="a", subject="x", value=0.5)]))
+    assert s.heaviest_module == "" and s.total_measured_loc == 0
+    # And the empty-tree path is likewise safe.
+    empty = analyze_tree_shape(IdeaTreeReport(ideas=[]))
+    assert empty.total_measured_loc == 0
+
+
+def test_heaviest_tie_break_is_deterministic():
+    ideas = [_n(id="a", subject="app/a.py", value=0.5)]
+    rep = IdeaTreeReport(ideas=ideas, stats={"metrics": {
+        "app/b.py": {"loc": 200}, "app/a.py": {"loc": 200},
+    }})
+    # Equal LOC -> lexicographically smallest path wins.
+    assert analyze_tree_shape(rep).heaviest_module == "app/a.py"
+
+
 def test_end_to_end_from_engine(tmp_path):
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "m.py").write_text("def f(x):\n    return eval(x)\n")
