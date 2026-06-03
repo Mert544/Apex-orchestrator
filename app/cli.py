@@ -709,6 +709,53 @@ def _working_tree_clean(target: Path) -> bool:
         return False
 
 
+def cmd_evolve(args: argparse.Namespace) -> int:
+    """Self-improvement loop: apply guarded fixes cycle by cycle to a fixpoint,
+    then prove the project's health improved (before/after + roadmap diff)."""
+    from app.engine.evolution import EvolutionLoop, render_evolution_markdown
+    from app.engine.idea_action_bridge import IdeaActionBridge
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+
+    # Dry run: preview cycle-1 diffs without applying or looping.
+    if getattr(args, "dry_run", False):
+        from app.engine.idea_permutation import IdeaPermutationEngine
+
+        report = IdeaPermutationEngine(
+            config={"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4},
+            project_root=str(target),
+        ).run()
+        plan = IdeaActionBridge().plan_roadmap(report, mode="report", project_root=str(target))
+        preview = IdeaActionBridge().dry_run_plan(plan, str(target))
+        print(f"# Apex evolve — dry run for `{target}`\n")
+        print(f"{preview['applicable']} of {preview['total_executable']} fixes would apply "
+              "in the first cycle (nothing changed).")
+        return 0
+
+    mode = getattr(args, "mode", None) or ("autonomous" if getattr(args, "commit", False) else "supervised")
+    loop = EvolutionLoop(
+        project_root=str(target),
+        mode=mode,
+        max_cycles=getattr(args, "max_cycles", 3),
+        max_apply_per_cycle=getattr(args, "max_apply", 5) or 5,
+        verify=not getattr(args, "no_verify", False),
+        commit=getattr(args, "commit", False),
+        objective=getattr(args, "objective", "") or None,
+    )
+    result = loop.run()
+    md = render_evolution_markdown(result, str(target))
+    if getattr(args, "json", False):
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        print(md)
+    if getattr(args, "out", ""):
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(md, encoding="utf-8")
+        print(f"\n[evolve] Report written to {out_path}")
+    return 0
+
+
 def cmd_ideate(args: argparse.Namespace) -> int:
     """Generate a permutation tree of development ideas from the codebase."""
     from app.engine.idea_permutation import (
@@ -1096,6 +1143,29 @@ def main() -> int:
     auto_parser.add_argument("--json", action="store_true", help="Emit JSON")
     auto_parser.add_argument("--out", default="", help="Write the report to this path")
     auto_parser.set_defaults(func=cmd_auto)
+
+    # evolve — self-improvement loop: apply → re-measure → prove progress
+    evolve_parser = subparsers.add_parser(
+        "evolve",
+        help="Self-improvement loop: apply guarded fixes to a fixpoint, then prove the gain",
+    )
+    evolve_parser.add_argument("--target", default="", help="Target project root")
+    evolve_parser.add_argument("--objective", default="", help="Optional theme to focus on")
+    evolve_parser.add_argument("--max-cycles", type=int, default=3, dest="max_cycles",
+                               help="Maximum improvement cycles (default 3)")
+    evolve_parser.add_argument("--max-apply", type=int, default=5, dest="max_apply",
+                               help="Max fixes applied per cycle (default 5)")
+    evolve_parser.add_argument("--mode", default=None,
+                               choices=["report", "supervised", "autonomous"],
+                               help="Execution mode (default: supervised, or autonomous with --commit)")
+    evolve_parser.add_argument("--commit", action="store_true", help="Commit each applied fix")
+    evolve_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                               help="Skip test verification (not recommended)")
+    evolve_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
+                               help="Preview the first cycle's fixes without applying")
+    evolve_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    evolve_parser.add_argument("--out", default="", help="Write the report to this path")
+    evolve_parser.set_defaults(func=cmd_evolve)
 
     # scan
     scan_parser = subparsers.add_parser("scan", help="Run an automation plan")

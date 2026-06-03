@@ -28,6 +28,7 @@ Most code tools stop at a flat list of issues. Apex goes further — think of it
 | 💡 **Ideate** | Generates a **fractal tree of grounded development ideas** from real code facts | `apex ideate` |
 | 🗺️ **Prioritize** | Sequences ideas into a **Stabilize → Secure → Evolve → Refine** roadmap with impact/effort/ROI grounded in real structure | `apex ideate --roadmap` |
 | 🤖 **Fix** | Applies real, **test‑verified** fixes with automatic rollback and safety gates | `apex maintain` |
+| 🔁 **Evolve** | Improves the project cycle by cycle **to a fixpoint**, then proves the gain (before/after + roadmap diff) | `apex evolve` |
 | 📊 **Report** | One self‑contained HTML dashboard of everything above | `apex dashboard` |
 
 Everything is **deterministic** (same input → same output) and **traceable** (every idea cites the concrete code fact that produced it). An optional LLM layer exists but is **off by default**.
@@ -138,6 +139,33 @@ Real deterministic, AST‑based fixes it can apply and verify:
 | `pickle.loads` / SQL f‑strings | flagged (no unsafe auto‑rewrite) |
 
 The run ends with a Markdown report of what was applied, rolled back, or blocked — with per‑step commit hashes in autonomous mode.
+
+---
+
+## 🔁 Self‑improvement loop (`apex evolve`)
+
+`apex evolve` closes the loop: it applies guarded fixes **cycle after cycle until it reaches a fixpoint** (no further fix can be safely applied and verified), then **proves the project got healthier** — a before/after of security findings, open safe fixes, and mean ROI, plus a roadmap **diff** of exactly which ideas it resolved.
+
+```bash
+apex evolve --target=. --max-cycles=3          # apply to a fixpoint, prove the gain
+apex evolve --target=. --dry-run               # preview the first cycle, change nothing
+apex evolve --target=. --commit                # commit each verified fix as it lands
+```
+
+```text
+Ran 3 cycle(s) · applied 9 fix(es) · rolled back 0 · mode supervised
+
+## Before → After
+- Security findings: 2 → 0  ✅
+- Open safe fixes:   26 → 24 ✅
+
+## ✅ Ideas resolved (no longer surface)
+- Add a first test layer for app/cfg.py
+- Harden: app/parse.py
+...
+```
+
+Because every fix is test‑verified with automatic rollback, an evolve run converges the codebase toward fewer findings without ever leaving it broken.
 
 ---
 

@@ -80,14 +80,23 @@ def snapshot_roadmap(roadmap, path: str | Path) -> Path:
     """Write a roadmap snapshot (flattened items + timestamp) as JSON."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+    path.write_text(json.dumps(roadmap_to_snapshot(roadmap), indent=2), encoding="utf-8")
+    return path
+
+
+def roadmap_to_snapshot(roadmap) -> dict[str, Any]:
+    """Build the in-memory snapshot dict for a roadmap (no file I/O).
+
+    Same shape ``diff_roadmaps`` expects as ``previous`` — useful for comparing
+    two roadmaps within a single process (e.g. before/after a self-improvement
+    cycle) without touching disk.
+    """
+    return {
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "project_root": roadmap.project_root,
         "objective": roadmap.objective,
         "items": list(_flatten(roadmap).values()),
     }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return path
 
 
 def load_snapshot(path: str | Path) -> dict[str, Any] | None:
