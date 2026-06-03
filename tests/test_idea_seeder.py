@@ -135,3 +135,16 @@ def test_modernization_idea_maps_to_executable_action():
     assert step.action_type == "modernize_comparisons"
     assert step.executable is True
     assert step.target == "app/legacy.py"
+
+
+def test_seeds_mutable_default_idea_and_maps_to_action():
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.engine.idea_permutation import IdeaSeeder
+    from app.tools.project_profile import ProjectProfile
+
+    profile = ProjectProfile(root="/x", mutable_default_modules=["app/svc.py"])
+    idea = next(r for r in IdeaSeeder().seed(profile)
+                if r.source_facts and r.source_facts[0].startswith("mutable-default"))
+    assert "Fix mutable default arguments in app/svc.py" == idea.title
+    step = IdeaActionBridge().plan_idea(idea)
+    assert step.action_type == "fix_mutable_defaults" and step.executable is True

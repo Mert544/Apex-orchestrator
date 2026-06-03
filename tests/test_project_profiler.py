@@ -45,3 +45,14 @@ def test_scans_modernizable_modules(tmp_path):
     profile = ProjectProfiler(str(tmp_path)).profile()
     assert "app/old.py" in profile.modernizable_modules
     assert "app/clean.py" not in profile.modernizable_modules
+
+
+def test_scans_mutable_defaults(tmp_path):
+    from app.tools.project_profile import ProjectProfiler
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "bug.py").write_text("def f(x=[]):\n    return x\n")
+    (tmp_path / "app" / "ok.py").write_text("def g(x=None):\n    return x\n")
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert "app/bug.py" in profile.mutable_default_modules
+    assert "app/ok.py" not in profile.mutable_default_modules

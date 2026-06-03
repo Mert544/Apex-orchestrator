@@ -68,3 +68,17 @@ def test_end_to_end_simplify_modernizes(tmp_path):
     preview = bridge.draft_patch(step, str(tmp_path))
     assert preview is not None
     assert preview.get("transform_type") == "modernize_none_comparison"
+
+
+def test_harden_ladder_fixes_mutable_default(tmp_path):
+    # A 'harden' idea on a file whose only issue is a mutable default fixes it.
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.models.idea import IdeaNode
+
+    (tmp_path / "svc.py").write_text("def f(x=[]):\n    x.append(1)\n    return x\n")
+    idea = IdeaNode(id="i", title="Harden: svc.py", subject="svc.py", operator="harden",
+                    operator_chain=["harden"], source_facts=["sensitive-path: svc.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    preview = IdeaActionBridge().draft_patch(step, str(tmp_path))
+    assert preview is not None
+    assert preview.get("transform_type") == "fix_mutable_default"

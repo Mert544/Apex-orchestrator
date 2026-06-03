@@ -22,6 +22,7 @@ from app.execution.semantic.transforms import move_class
 from app.execution.semantic.transforms import extract_class
 from app.execution.semantic.transforms import security as security_transforms
 from app.execution.semantic.transforms import modernize
+from app.execution.semantic.transforms import mutable_defaults
 
 
 class SemanticPatchGenerator:
@@ -152,6 +153,8 @@ class SemanticPatchGenerator:
                 result = security_transforms.apply(rel_path, current, title)
             elif transform == "modernize":
                 result = modernize.apply(rel_path, current, title)
+            elif transform == "fix_mutable_default":
+                result = mutable_defaults.apply(rel_path, current, title)
 
             if result:
                 return self._attach_metadata(self._estimate_and_return(result), selection, contexts, strategy)

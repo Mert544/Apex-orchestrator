@@ -29,6 +29,7 @@ class ProjectProfile:
     fragile_modules: list[str] = field(default_factory=list)
     import_cycles: list[list[str]] = field(default_factory=list)
     modernizable_modules: list[str] = field(default_factory=list)
+    mutable_default_modules: list[str] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -156,6 +157,34 @@ class ProjectProfiler:
         # Modernization debt: modules with behavior-preserving cleanups available
         # (currently `== None`/`!= None`), so the engine can propose safe fixes.
         profile.modernizable_modules = self._scan_modernizable(modules)[:5]
+        profile.mutable_default_modules = self._scan_mutable_defaults(modules)[:5]
+
+    def _scan_mutable_defaults(self, modules: list) -> list[str]:
+        """Modules with a mutable default argument (list/dict/set literal)."""
+        import ast
+
+        out: list[str] = []
+        for m in modules:
+            try:
+                tree = ast.parse((self.root / m.path).read_text(encoding="utf-8", errors="ignore"))
+            except (OSError, SyntaxError):
+                continue
+            found = False
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    defaults = list(node.args.defaults) + [d for d in node.args.kw_defaults if d]
+                    for d in defaults:
+                        if isinstance(d, (ast.List, ast.Dict, ast.Set)):
+                            found = True
+                        elif (isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
+                              and d.func.id in ("list", "dict", "set")
+                              and not d.args and not d.keywords):
+                            found = True
+                    if found:
+                        break
+            if found:
+                out.append(m.path)
+        return sorted(out)
 
     def _scan_modernizable(self, modules: list) -> list[str]:
         """Modules that contain a real `== None` / `!= None` comparison (AST)."""

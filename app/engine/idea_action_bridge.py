@@ -29,6 +29,7 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "symbol-hub": ("design_task", "Generalize the symbol-rich module {s}", False),
     "missing-ci": ("add_ci", "Add a CI workflow that runs the test suite", False),
     "modernization": ("modernize_comparisons", "Modernize None comparisons in {s}", True),
+    "mutable-default": ("fix_mutable_defaults", "Fix mutable default arguments in {s}", True),
 }
 
 
@@ -75,6 +76,7 @@ class IdeaActionBridge:
         "harden_security": ["add guard clause input validation security"],
         "create_test_stub": ["test coverage"],
         "modernize_comparisons": ["modernize none-comparison"],
+        "fix_mutable_defaults": ["mutable default argument"],
     }
 
     @staticmethod
@@ -134,6 +136,26 @@ class IdeaActionBridge:
         return None
 
     @staticmethod
+    def _has_mutable_default(project_root: str, rel_path: str) -> bool:
+        """True if the file has a function with a mutable default argument."""
+        import ast
+
+        try:
+            tree = ast.parse((Path(project_root) / rel_path).read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            return False
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for d in list(node.args.defaults) + [k for k in node.args.kw_defaults if k]:
+                    if isinstance(d, (ast.List, ast.Dict, ast.Set)):
+                        return True
+                    if (isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
+                            and d.func.id in ("list", "dict", "set")
+                            and not d.args and not d.keywords):
+                        return True
+        return False
+
+    @staticmethod
     def _detect_modernization(project_root: str, rel_path: str) -> bool:
         """True if the file has a real ``== None`` / ``!= None`` comparison that a
         behavior-preserving modernization could clean up (AST-based)."""
@@ -178,10 +200,18 @@ class IdeaActionBridge:
         change_strategy = self._ACTION_STRATEGY[step.action_type]
         title = step.description
         if step.action_type == "harden_security":
+            # Detection ladder: fix the most important *real* issue the file has,
+            # falling back to a generic guard clause only when none is present.
             issue = self._detect_security_issue(project_root, step.target)
             if issue:
                 change_strategy = [f"fix {issue} security"]
                 title = f"Fix {issue} in {step.target}"
+            elif self._has_mutable_default(project_root, step.target):
+                change_strategy = ["mutable default argument"]
+                title = f"Fix mutable default arguments in {step.target}"
+            elif self._detect_modernization(project_root, step.target):
+                change_strategy = ["modernize none-comparison"]
+                title = f"Modernize comparisons in {step.target}"
         elif step.action_type == "organize_imports" and self._detect_modernization(project_root, step.target):
             # A "simplify" idea on a file with `== None` modernizes it (a safe,
             # behavior-preserving cleanup) instead of only touching imports.

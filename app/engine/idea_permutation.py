@@ -165,6 +165,16 @@ class IdeaSeeder:
                 fact_value=f".py x{exts['.py']}",
             )
 
+        # Mutable default arguments → a real bug class with a safe verified fix.
+        for module in (getattr(profile, "mutable_default_modules", []) or [])[:2]:
+            self._append_root(
+                roots, seen_subjects,
+                title=f"Fix mutable default arguments in {module}",
+                subject=module,
+                fact_label="mutable-default",
+                fact_value=f"{module} (def f(x=[]))",
+            )
+
         # Modernization debt → a safe, behavior-preserving cleanup direction.
         for module in (getattr(profile, "modernizable_modules", []) or [])[:2]:
             self._append_root(
@@ -751,6 +761,7 @@ _FACT_HINTS: dict[str, str] = {
     "extension-py": "type hints lint",
     "top-directory": "structure boundaries",
     "modernization": "refactor cleanup",
+    "mutable-default": "shared mutable state bug",
 }
 
 # Root fact labels where reliability/security lenses matter most.

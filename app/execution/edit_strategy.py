@@ -76,6 +76,10 @@ class EditStrategy:
             reasons.append("Keywords suggest a yaml.load() safety fix.")
             return EditStrategyResult(strategy="fix_yaml", confidence=0.85, reasons=reasons)
 
+        if "mutable default" in combined or "mutable-default" in combined:
+            reasons.append("Keywords suggest a mutable-default-argument fix.")
+            return EditStrategyResult(strategy="fix_mutable_default", confidence=0.85, reasons=reasons)
+
         if "modernize" in combined or "none-comparison" in combined or "none comparison" in combined:
             reasons.append("Keywords suggest behavior-preserving modernization.")
             return EditStrategyResult(strategy="modernize", confidence=0.85, reasons=reasons)
