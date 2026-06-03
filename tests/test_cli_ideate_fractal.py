@@ -44,6 +44,8 @@ def _ideate_ns(tmp_path: Path, **overrides) -> argparse.Namespace:
         facet_depth=1,
         shape=False,
         pareto=False,
+        sequence=False,
+        adaptive=False,
         phase="",
         save=False,
         diff=False,
@@ -149,6 +151,15 @@ def test_ideate_pareto_json(tmp_path, capsys):
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert isinstance(payload, list)
+
+
+def test_ideate_sequence_execution_plan(tmp_path, capsys):
+    _project(tmp_path)
+    rc = cmd_ideate(_ideate_ns(tmp_path, sequence=True))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Execution plan" in out
+    assert "critical path" in out
 
 
 def test_ideate_roadmap_actions_plan(tmp_path, capsys):

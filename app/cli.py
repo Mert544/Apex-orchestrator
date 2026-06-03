@@ -909,6 +909,20 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             print(f"\n[ideate] Roadmap snapshot saved to {saved}")
         return 0
 
+    # --sequence: dependency-ordered execution plan (prerequisites first).
+    if getattr(args, "sequence", False):
+        from app.engine.idea_dependencies import (
+            execution_order,
+            render_execution_markdown,
+        )
+
+        steps = execution_order(report.ideas)
+        if args.json:
+            print(json.dumps([s.to_dict() for s in steps], indent=2))
+        else:
+            print(render_execution_markdown(steps))
+        return 0
+
     # --pareto: the efficient frontier of ideas across impact/effort/value.
     if getattr(args, "pareto", False):
         from app.engine.idea_pareto import frontier_from_roadmap, render_pareto_markdown
@@ -1637,6 +1651,11 @@ def main() -> int:
         "--adaptive",
         action="store_true",
         help="Adaptive depth: let high-value branches grow deeper (value-guided fractal)",
+    )
+    ideate_parser.add_argument(
+        "--sequence",
+        action="store_true",
+        help="Dependency-ordered execution plan (prerequisites first) + critical path",
     )
     ideate_parser.add_argument(
         "--phase",
