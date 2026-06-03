@@ -91,8 +91,9 @@ def _patch_sql_injection(rel_path: str, source: str, tree: ast.Module) -> Semant
         if lineno > len(lines):
             continue
         line_content = lines[lineno - 1]
-        if "Apex: SQL injection" in line_content:
-            continue
+        prev_line = lines[lineno - 2] if lineno >= 2 else ""
+        if "Apex: SQL injection" in line_content or "Apex: SQL injection" in prev_line:
+            continue  # already flagged (comment sits on the preceding line)
         indent = line_content[: len(line_content) - len(line_content.lstrip())]
         warning = (
             f"{indent}# SECURITY (Apex: SQL injection — pass values as query "
@@ -133,8 +134,9 @@ def _patch_pickle(rel_path: str, source: str, tree: ast.Module) -> SemanticPatch
         if lineno > len(lines):
             continue
         line_content = lines[lineno - 1]
-        if "Apex: untrusted pickle" in line_content:
-            continue  # already flagged
+        prev_line = lines[lineno - 2] if lineno >= 2 else ""
+        if "Apex: untrusted pickle" in line_content or "Apex: untrusted pickle" in prev_line:
+            continue  # already flagged (comment sits on the preceding line)
         indent = line_content[: len(line_content) - len(line_content.lstrip())]
         warning = (
             f"{indent}# SECURITY (Apex: untrusted pickle.loads can execute "
