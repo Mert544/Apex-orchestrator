@@ -71,6 +71,13 @@ apex ideate --target=. --facets --facet-depth=2           # fractal zoom into sp
 apex ideate --target=. --actions --top=10                 # map ideas → a supervised plan
 ```
 
+Ask the engine to **show its work** for any idea — provenance, the value formula with the weights used, roadmap impact/effort/ROI grounded in fan‑in and LOC, and its caveats:
+
+```bash
+apex explain x.a.c --target=.     # why does this idea score what it does?
+apex explain --target=.           # explain the single highest‑value idea
+```
+
 Each idea is **traceable to a concrete project fact**, scored by relevance × novelty × feasibility, and stress‑tested with counterfactual caveats. The engine also synthesizes ideas no single lens yields — e.g. a *security‑focused test suite* for a module that needs both hardening and tests, or *break this import cycle* from the dependency graph.
 
 ---

@@ -709,6 +709,39 @@ def _working_tree_clean(target: Path) -> bool:
         return False
 
 
+def cmd_explain(args: argparse.Namespace) -> int:
+    """Explain why a specific idea scored what it did — the engine's reasoning."""
+    from app.engine.idea_explain import explain_idea, render_explanation_markdown
+    from app.engine.idea_permutation import IdeaPermutationEngine
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    report = IdeaPermutationEngine(
+        config={"max_total_ideas": args.max_ideas, "max_idea_depth": args.depth,
+                "breadth": args.breadth, "fractal_facets": getattr(args, "facets", False)},
+        project_root=str(target),
+    ).run(objective=args.objective or None)
+
+    branch = getattr(args, "branch", "") or ""
+    if not branch:
+        # --top (default): explain the highest-value idea in the tree.
+        if not report.ideas:
+            print("[explain] No ideas generated for this target.")
+            return 1
+        branch = max(report.ideas, key=lambda i: i.value).branch_path
+
+    exp = explain_idea(report, branch)
+    if exp is None:
+        print(f"[explain] No idea found at branch `{branch}`. "
+              "Run `apex ideate` to see available branch paths.")
+        return 1
+
+    if args.json:
+        print(json.dumps(exp.to_dict(), indent=2))
+    else:
+        print(render_explanation_markdown(exp))
+    return 0
+
+
 def cmd_evolve(args: argparse.Namespace) -> int:
     """Self-improvement loop: apply guarded fixes cycle by cycle to a fixpoint,
     then prove the project's health improved (before/after + roadmap diff)."""
@@ -1166,6 +1199,24 @@ def main() -> int:
     evolve_parser.add_argument("--json", action="store_true", help="Emit JSON")
     evolve_parser.add_argument("--out", default="", help="Write the report to this path")
     evolve_parser.set_defaults(func=cmd_evolve)
+
+    # explain — show why an idea scored what it did
+    explain_parser = subparsers.add_parser(
+        "explain",
+        help="Explain why an idea scored what it did (provenance, score, ROI, caveats)",
+    )
+    explain_parser.add_argument("branch", nargs="?", default="",
+                                help="Branch path to explain (e.g. x.a.c); default: the top idea")
+    explain_parser.add_argument("--target", default="", help="Target project root")
+    explain_parser.add_argument("--objective", default="", help="Optional theme to focus on")
+    explain_parser.add_argument("--depth", type=int, default=2, help="Permutation depth")
+    explain_parser.add_argument("--breadth", type=int, default=4, help="Operators per idea")
+    explain_parser.add_argument("--max-ideas", type=int, default=40, dest="max_ideas",
+                                help="Idea budget")
+    explain_parser.add_argument("--facets", action="store_true",
+                                help="Include fractal facet ideas (for facet branch paths)")
+    explain_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    explain_parser.set_defaults(func=cmd_explain)
 
     # scan
     scan_parser = subparsers.add_parser("scan", help="Run an automation plan")

@@ -32,6 +32,9 @@ mode/safety gating. Think of it as brain (reasoning), eyes (scanners), hands (ex
 - `apex evolve --target=. [--max-cycles N] [--dry-run] [--commit]` — self-improvement
   loop: apply guarded fixes cycle by cycle to a fixpoint, then prove the gain (before/after
   security findings + open fixes + mean ROI, plus a roadmap diff of resolved ideas).
+- `apex explain [BRANCH] --target=.` — show *why* an idea scored what it did: provenance
+  (the code fact), the value formula with the weights used, roadmap impact/effort/ROI
+  grounded in fan-in + LOC, the action it maps to, and its caveats. Defaults to the top idea.
 - `python -m app.cli maintain --target=. --dry-run` — preview every fix as a unified diff.
   Modes: `--mode report|supervised|autonomous` (+ `--commit`, `--verify` on by default,
   `--no-verify`, `--max-apply N`, `--out MAINT.md`).
