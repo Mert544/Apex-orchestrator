@@ -62,6 +62,14 @@ def detect(source: str) -> list[Issue]:
                     isinstance(a, ast.JoinedStr) for a in node.args
                 ):
                     add(node.lineno, "security", "high", "SQL built from an f-string — injection risk", "sql")
+                elif attr in ("run", "call", "Popen", "check_output", "check_call") and any(
+                    kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+                    for kw in node.keywords
+                ):
+                    add(node.lineno, "security", "high", "subprocess with shell=True — command injection risk", "")
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            if _is_hardcoded_secret(node):
+                add(node.lineno, "security", "high", "possible hardcoded secret — load it from the environment", "")
         elif isinstance(node, ast.ExceptHandler):
             if node.type is None:
                 add(node.lineno, "security", "medium", "bare except — use except Exception:", "bare except")
@@ -88,6 +96,31 @@ def detect(source: str) -> list[Issue]:
             if ast.get_docstring(node) is None and not node.name.startswith("_"):
                 add(node.lineno, "docs", "low", f"public function `{node.name}` lacks a docstring", "docstring")
     return out
+
+
+_SECRET_NAMES = ("password", "passwd", "secret", "api_key", "apikey", "token",
+                 "access_key", "private_key", "client_secret")
+_SECRET_PLACEHOLDERS = {"", "changeme", "example", "test", "your_key_here", "xxx", "none", "todo"}
+
+
+def _is_hardcoded_secret(node: ast.AST) -> bool:
+    """True if this assigns a non-trivial string literal to a secret-looking name."""
+    if isinstance(node, ast.AnnAssign):
+        targets = [node.target]
+        value = node.value
+    else:
+        targets = node.targets
+        value = node.value
+    if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+        return False
+    if value.value.strip().lower() in _SECRET_PLACEHOLDERS or len(value.value) < 6:
+        return False
+    for t in targets:
+        name = t.id.lower() if isinstance(t, ast.Name) else (
+            t.attr.lower() if isinstance(t, ast.Attribute) else "")
+        if any(s in name for s in _SECRET_NAMES):
+            return True
+    return False
 
 
 def _has_mutable_default(func: ast.AST) -> bool:

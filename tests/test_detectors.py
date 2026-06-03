@@ -68,3 +68,24 @@ def test_comments_and_strings_ignored():
     src = "x = 'use eval() carefully'  # never eval()\n"
     assert security_label(src) is None
     assert not any(i.fix_kind == "eval" for i in detect(src))
+
+
+def test_detects_shell_true():
+    src = "import subprocess\ndef f(c):\n    subprocess.run(c, shell=True)\n"
+    msgs = [i.message for i in detect(src)]
+    assert any("shell=True" in m for m in msgs)
+
+
+def test_detects_hardcoded_secret_conservatively():
+    # A real-looking secret is flagged; short/placeholder/non-secret names are not.
+    flagged = detect("api_key = 'sk-abc123def456'\n")
+    assert any("hardcoded secret" in i.message for i in flagged)
+    assert not any("secret" in i.message for i in detect("password = 'x'\n"))        # too short
+    assert not any("secret" in i.message for i in detect("api_key = 'example'\n"))   # placeholder
+    assert not any("secret" in i.message for i in detect("timeout = 'short_value'\n"))  # not secret-named
+
+
+def test_shell_true_and_secret_not_auto_fixable():
+    for src in ("import subprocess\nsubprocess.run('x', shell=True)\n", "token = 'abcdef123456'\n"):
+        sec = [i for i in detect(src) if i.category == "security"]
+        assert sec and all(not i.auto_fixable for i in sec)
