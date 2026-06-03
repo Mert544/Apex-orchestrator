@@ -43,6 +43,7 @@ def _ideate_ns(tmp_path: Path, **overrides) -> argparse.Namespace:
         facets=False,
         facet_depth=1,
         shape=False,
+        pareto=False,
         phase="",
         save=False,
         diff=False,
@@ -131,6 +132,23 @@ def test_ideate_facets_nested(tmp_path, capsys):
     rc = cmd_ideate(_ideate_ns(tmp_path, facets=True, facet_depth=2, max_ideas=40))
     assert rc == 0
     assert capsys.readouterr().out.strip()
+
+
+def test_ideate_pareto_frontier(tmp_path, capsys):
+    _project(tmp_path)
+    rc = cmd_ideate(_ideate_ns(tmp_path, pareto=True))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Efficient frontier" in out
+    assert "non-dominated" in out
+
+
+def test_ideate_pareto_json(tmp_path, capsys):
+    _project(tmp_path)
+    rc = cmd_ideate(_ideate_ns(tmp_path, pareto=True, json=True))
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert isinstance(payload, list)
 
 
 def test_ideate_roadmap_actions_plan(tmp_path, capsys):

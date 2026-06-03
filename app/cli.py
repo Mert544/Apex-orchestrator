@@ -888,6 +888,19 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             print(f"\n[ideate] Roadmap snapshot saved to {saved}")
         return 0
 
+    # --pareto: the efficient frontier of ideas across impact/effort/value.
+    if getattr(args, "pareto", False):
+        from app.engine.idea_pareto import frontier_from_roadmap, render_pareto_markdown
+        from app.engine.idea_roadmap import RoadmapSynthesizer
+
+        roadmap = RoadmapSynthesizer().build(report)
+        points = frontier_from_roadmap(roadmap)
+        if args.json:
+            print(json.dumps([p.to_dict() for p in points], indent=2))
+        else:
+            print(render_pareto_markdown(points, total_ideas=len(report.ideas)))
+        return 0
+
     # --shape: report on the shape/health of the tree the engine just produced.
     if getattr(args, "shape", False):
         from app.engine.idea_tree_shape import (
@@ -1593,6 +1606,11 @@ def main() -> int:
         "--shape",
         action="store_true",
         help="Analyze the shape/health of the generated idea tree",
+    )
+    ideate_parser.add_argument(
+        "--pareto",
+        action="store_true",
+        help="Show the efficient frontier: non-dominated ideas across impact/effort/value",
     )
     ideate_parser.add_argument(
         "--phase",

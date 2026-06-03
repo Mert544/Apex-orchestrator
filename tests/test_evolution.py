@@ -116,3 +116,33 @@ def test_render_trajectory_shows_overall_trend(tmp_path):
 def test_render_trajectory_empty():
     md = render_trajectory_markdown([])
     assert "No evolve runs recorded yet" in md
+
+
+def test_circuit_breaker_stops_on_excessive_rollbacks(tmp_path, monkeypatch):
+    # If a cycle rolls back too many fixes, the loop must stop early (thrashing).
+    _git_project(tmp_path)
+    from app.engine.idea_action_bridge import IdeaActionBridge
+
+    def _bad_apply(self, plan, root, **kw):
+        return {"applied": 1, "rolled_back": 5, "blocked": 0, "committed": 0, "results": []}
+
+    monkeypatch.setattr(IdeaActionBridge, "apply_plan", _bad_apply)
+    result = EvolutionLoop(tmp_path, max_cycles=3, max_apply_per_cycle=5,
+                           max_rollbacks_per_cycle=3).run()
+    assert result.circuit_broken is True
+    assert result.cycles_run == 1  # stopped after the first bad cycle
+    assert "circuit breaker" in result.stop_reason.lower()
+
+
+def test_stop_reason_is_fixpoint_when_nothing_applies(tmp_path, monkeypatch):
+    _git_project(tmp_path)
+    from app.engine.idea_action_bridge import IdeaActionBridge
+
+    def _noop_apply(self, plan, root, **kw):
+        return {"applied": 0, "rolled_back": 0, "blocked": 3, "committed": 0, "results": []}
+
+    monkeypatch.setattr(IdeaActionBridge, "apply_plan", _noop_apply)
+    result = EvolutionLoop(tmp_path, max_cycles=3).run()
+    assert result.reached_fixpoint is True
+    assert result.circuit_broken is False
+    assert "fixpoint" in result.stop_reason.lower()

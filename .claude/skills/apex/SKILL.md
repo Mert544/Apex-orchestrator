@@ -29,6 +29,8 @@ mode/safety gating. Think of it as brain (reasoning), eyes (scanners), hands (ex
     `--roadmap --actions [--phase Secure]` orders the apply plan by phase.
   - `--shape` — tree-shape telemetry (branching factor, depth dist, subject spread, facet
     penetration) + the engine's own observations on how to steer the next run.
+  - `--pareto` — the efficient frontier: non-dominated ideas across impact/effort/value
+    (everything else is strictly dominated and safely ignorable).
 - `apex evolve --target=. [--max-cycles N] [--dry-run] [--commit]` — self-improvement
   loop: apply guarded fixes cycle by cycle to a fixpoint, then prove the gain (before/after
   security findings + open fixes + mean ROI, plus a roadmap diff of resolved ideas).

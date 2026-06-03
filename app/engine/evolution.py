@@ -36,6 +36,8 @@ class EvolutionResult:
     per_cycle: list[dict[str, Any]] = field(default_factory=list)
     mode: str = "supervised"
     committed: int = 0
+    circuit_broken: bool = False
+    stop_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -53,6 +55,7 @@ class EvolutionLoop:
         verify: bool = True,
         commit: bool = False,
         objective: str | None = None,
+        max_rollbacks_per_cycle: int = 3,
     ) -> None:
         self.project_root = str(project_root)
         self.mode = mode
@@ -61,6 +64,9 @@ class EvolutionLoop:
         self.verify = verify
         self.commit = commit
         self.objective = objective
+        # Circuit breaker: if a single cycle rolls back this many fixes, the
+        # generated fixes aren't landing cleanly — stop rather than thrash.
+        self.max_rollbacks_per_cycle = max(1, max_rollbacks_per_cycle)
 
     # --- measurement ---------------------------------------------------------
 
@@ -113,6 +119,8 @@ class EvolutionLoop:
         total_committed = 0
         per_cycle: list[dict[str, Any]] = []
         reached_fixpoint = False
+        circuit_broken = False
+        stop_reason = "hit the cycle cap"
         cycles_run = 0
 
         for cycle in range(1, self.max_cycles + 1):
@@ -135,10 +143,17 @@ class EvolutionLoop:
                 "cycle": cycle, "applied": applied, "rolled_back": rolled,
                 "blocked": int(summary.get("blocked", 0)), "committed": committed,
             })
+            # Circuit breaker: too many rollbacks in one cycle means the fixes
+            # aren't landing cleanly — stop before churning the tree further.
+            if rolled >= self.max_rollbacks_per_cycle:
+                circuit_broken = True
+                stop_reason = f"circuit breaker tripped ({rolled} rollbacks in one cycle)"
+                break
             # Fixpoint: a cycle that changed nothing means there's no further
             # safe, verifiable improvement to make.
             if applied == 0:
                 reached_fixpoint = True
+                stop_reason = "reached a fixpoint"
                 break
 
         after_measure = self._measure(self._build_report())
@@ -156,6 +171,8 @@ class EvolutionLoop:
             per_cycle=per_cycle,
             mode=self.mode,
             committed=total_committed,
+            circuit_broken=circuit_broken,
+            stop_reason=stop_reason,
         )
 
 
@@ -163,13 +180,18 @@ def render_evolution_markdown(result: EvolutionResult, project_root: str) -> str
     """Render a self-improvement run as a before/after progress report."""
     b, a = result.before, result.after
     lines = [f"# Apex — self-improvement run on `{project_root}`", ""]
-    fix = "reached a fixpoint" if result.reached_fixpoint else "hit the cycle cap"
+    reason = result.stop_reason or ("reached a fixpoint" if result.reached_fixpoint else "hit the cycle cap")
     lines.append(
-        f"Ran **{result.cycles_run}** cycle(s) ({fix}) · applied **{result.applied}** "
+        f"Ran **{result.cycles_run}** cycle(s) ({reason}) · applied **{result.applied}** "
         f"fix(es) · rolled back {result.rolled_back}"
         + (f" · committed {result.committed}" if result.committed else "")
         + f" · mode {result.mode}"
     )
+    if result.circuit_broken:
+        lines.append("")
+        lines.append("> ⚠️ **Circuit breaker tripped** — fixes weren't landing cleanly, so "
+                     "the loop stopped early to avoid churning the codebase. Nothing broken "
+                     "(every rolled-back fix was reverted).")
     lines.append("")
 
     def _delta(key: str, label: str, lower_is_better: bool = True) -> str:
