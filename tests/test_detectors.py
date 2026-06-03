@@ -89,3 +89,27 @@ def test_shell_true_and_secret_not_auto_fixable():
     for src in ("import subprocess\nsubprocess.run('x', shell=True)\n", "token = 'abcdef123456'\n"):
         sec = [i for i in detect(src) if i.category == "security"]
         assert sec and all(not i.auto_fixable for i in sec)
+
+
+def test_detects_exec_and_pickle():
+    out = detect("def f(c):\n    exec(c)\n")
+    assert any(i.message.startswith("exec()") and not i.auto_fixable for i in out)
+    out2 = detect("import pickle\ndef f(b):\n    return pickle.loads(b)\n")
+    assert any(i.fix_kind == "pickle" for i in out2)
+
+
+def test_secret_via_annotated_assignment():
+    # AnnAssign branch: `api_key: str = "..."`.
+    out = detect("api_key: str = 'sk-abc123def456'\n")
+    assert any("hardcoded secret" in i.message for i in out)
+
+
+def test_security_label_handles_unreadable_gracefully():
+    # security_label on a clean parseable file returns None (no false positive).
+    assert security_label("x = 1\n") is None
+
+
+def test_has_none_comparison_on_syntax_error():
+    # has_* helpers must not raise on unparseable input.
+    assert has_mutable_default("def broken(:\n") is False
+    assert has_none_comparison("def broken(:\n") is False
