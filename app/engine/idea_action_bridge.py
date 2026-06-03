@@ -379,7 +379,9 @@ class IdeaActionBridge:
             if max_apply is not None and applied >= max_apply:
                 break
             r = self.apply_step(step, project_root, mode=mode, verify=verify)
+            label = step.source_facts[0].split(":")[0].strip() if step.source_facts else ""
             entry = {"branch": step.branch_path, "action": step.action_type,
+                     "operator": step.operator, "label": label,
                      "target": step.target, **r}
             if r.get("rolled_back"):
                 rolled_back += 1

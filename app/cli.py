@@ -529,6 +529,9 @@ def cmd_maintain(args: argparse.Namespace) -> int:
         max_apply=(args.max_apply or None) if args.max_apply else None,
         commit=args.commit,
     )
+    from app.engine.idea_memory import IdeaMemory
+
+    IdeaMemory.learn_from(summary, str(target))  # learn from this run's outcomes
     md = render_maintenance_markdown(summary, str(target), objective=args.objective or "")
 
     if args.json:
@@ -613,6 +616,20 @@ def cmd_auto(args: argparse.Namespace) -> int:
         lines.append("**Best next moves (high impact, low effort):**")
         lines += [f"- {i.title}  (ROI {i.roi})" for i in roadmap.quick_wins]
         lines.append("")
+    # What the engine has learned about this project from past runs.
+    try:
+        from app.engine.idea_memory import IdeaMemory
+
+        mem = IdeaMemory.load(str(target)).summary()
+        if mem.get("most_reliable"):
+            best = mem["most_reliable"][0]
+            lines.append(
+                f"_What I've learned here: `{best['key']}` fixes land "
+                f"{int(best['success_rate'] * 100)}% of the time "
+                f"({best['samples']} samples) — I weight that in._\n"
+            )
+    except Exception:
+        pass
     emit_json = getattr(args, "json", False)
     if not emit_json:
         print("\n".join(lines))
@@ -668,6 +685,9 @@ def cmd_auto(args: argparse.Namespace) -> int:
         max_apply=(getattr(args, "max_apply", 0) or 8),
         commit=commit,
     )
+    from app.engine.idea_memory import IdeaMemory
+
+    IdeaMemory.learn_from(summary, str(target))  # the engine gets wiser each run
     md = render_maintenance_markdown(summary, str(target), objective=goal)
     if emit_json:
         print(json.dumps({**summary, "decision": decision.to_dict()}, indent=2))

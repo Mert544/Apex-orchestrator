@@ -225,6 +225,10 @@ class IdeaPermutationEngine:
         self.max_depth = int(cfg.get("max_idea_depth", 2))
         self.breadth = int(cfg.get("breadth", 4))
         self.min_relevance = float(cfg.get("min_relevance", 0.0))
+        # Learning: consult past apply outcomes to nudge feasibility. No-op when
+        # no memory file exists, so a fresh project scores exactly as before.
+        self.learning = bool(cfg.get("learning", True))
+        self._memory = None
         # Fractal facets: zoom the strongest permutation leaves into self-similar
         # sub-ideas. Opt-in (off by default) because facets share the idea budget
         # with permutation and synthesis; enabling them is most useful with a
@@ -267,6 +271,11 @@ class IdeaPermutationEngine:
         # Security pressure: how strongly real findings should bias harden/test
         # weighting. Scales 1.0 (none) → up to 1.3 (many findings). Best-effort.
         self._security_pressure = self._scan_security_pressure()
+        # Learning memory: bounded feasibility nudges from past apply outcomes.
+        if self.learning:
+            from app.engine.idea_memory import IdeaMemory
+
+            self._memory = IdeaMemory.load(self.project_root)
         stats = {"considered": 0, "pruned_relevance": 0, "pruned_duplicate": 0}
 
         emitted: list[IdeaNode] = []
@@ -656,6 +665,13 @@ class IdeaPermutationEngine:
         node.relevance = relevance.score(f"{node.title} {node.subject}")
         if node.operator == "root":
             node.feasibility = node.feasibility or 0.7
+        # Learning nudge: tilt feasibility by this lens/label's past track record
+        # on this project (bounded ±10%, clamped). No-op without a memory file.
+        if self._memory is not None:
+            label = node.source_facts[0].split(":")[0].strip() if node.source_facts else ""
+            factor = self._memory.feasibility_factor(node.operator, label)
+            if factor != 1.0:
+                node.feasibility = round(min(1.0, max(0.0, node.feasibility * factor)), 4)
         node.novelty = self._novelty(node)
         # Weight calibration: relevance only discriminates when an objective is
         # set (otherwise it is constant 1.0 and the 0.4 term is dead, flattening

@@ -107,9 +107,11 @@ class EvolutionLoop:
 
     def run(self) -> EvolutionResult:
         from app.engine.idea_action_bridge import IdeaActionBridge
+        from app.engine.idea_memory import IdeaMemory
         from app.engine.roadmap_history import diff_roadmaps, roadmap_to_snapshot
 
         bridge = IdeaActionBridge()
+        memory = IdeaMemory.load(self.project_root)
         first = self._measure(self._build_report())
         before_snapshot = roadmap_to_snapshot(first["_roadmap"])
         before = self._public(first)
@@ -133,6 +135,7 @@ class EvolutionLoop:
                 plan, self.project_root, mode=self.mode,
                 verify=self.verify, max_apply=self.max_apply_per_cycle, commit=self.commit,
             )
+            memory.record_outcomes(summary)  # learn from every cycle's outcomes
             applied = int(summary.get("applied", 0))
             rolled = int(summary.get("rolled_back", 0))
             committed = int(summary.get("committed", 0))
@@ -156,6 +159,7 @@ class EvolutionLoop:
                 stop_reason = "reached a fixpoint"
                 break
 
+        memory.save(self.project_root)  # persist what this run learned
         after_measure = self._measure(self._build_report())
         after = self._public(after_measure)
         diff = diff_roadmaps(before_snapshot, after_measure["_roadmap"])
