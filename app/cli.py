@@ -745,10 +745,25 @@ def cmd_explain(args: argparse.Namespace) -> int:
 def cmd_evolve(args: argparse.Namespace) -> int:
     """Self-improvement loop: apply guarded fixes cycle by cycle to a fixpoint,
     then prove the project's health improved (before/after + roadmap diff)."""
-    from app.engine.evolution import EvolutionLoop, render_evolution_markdown
+    from app.engine.evolution import (
+        EvolutionLoop,
+        load_history,
+        record_run,
+        render_evolution_markdown,
+        render_trajectory_markdown,
+    )
     from app.engine.idea_action_bridge import IdeaActionBridge
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
+
+    # --history: show the recorded self-improvement trajectory, run nothing.
+    if getattr(args, "history", False):
+        history = load_history(str(target))
+        if args.json:
+            print(json.dumps(history, indent=2))
+        else:
+            print(render_trajectory_markdown(history))
+        return 0
 
     # Dry run: preview cycle-1 diffs without applying or looping.
     if getattr(args, "dry_run", False):
@@ -776,6 +791,7 @@ def cmd_evolve(args: argparse.Namespace) -> int:
         objective=getattr(args, "objective", "") or None,
     )
     result = loop.run()
+    record_run(result, str(target))  # log to the trajectory (.apex/evolution-history.jsonl)
     md = render_evolution_markdown(result, str(target))
     if getattr(args, "json", False):
         print(json.dumps(result.to_dict(), indent=2))
@@ -1196,6 +1212,8 @@ def main() -> int:
                                help="Skip test verification (not recommended)")
     evolve_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                                help="Preview the first cycle's fixes without applying")
+    evolve_parser.add_argument("--history", action="store_true",
+                               help="Show the recorded self-improvement trajectory and exit")
     evolve_parser.add_argument("--json", action="store_true", help="Emit JSON")
     evolve_parser.add_argument("--out", default="", help="Write the report to this path")
     evolve_parser.set_defaults(func=cmd_evolve)

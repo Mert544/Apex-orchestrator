@@ -14,9 +14,14 @@ itself is deterministic given a fixed project state.
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# Where a project's self-improvement trajectory is logged (append-only JSONL).
+HISTORY_REL = ".apex/evolution-history.jsonl"
 
 
 @dataclass
@@ -197,4 +202,79 @@ def render_evolution_markdown(result: EvolutionResult, project_root: str) -> str
                 f"rolled back {c['rolled_back']}, blocked {c['blocked']}"
             )
         lines.append("")
+    return "\n".join(lines)
+
+
+def record_run(result: EvolutionResult, project_root: str | Path,
+               path: str | Path | None = None) -> Path:
+    """Append a compact entry for this evolve run to the project's history log.
+
+    One JSON object per line (append-only audit trail) capturing the before/after
+    health and how much was applied, so a project's improvement trajectory can be
+    reconstructed over time. Returns the log path.
+    """
+    log = Path(path) if path else Path(project_root) / HISTORY_REL
+    log.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "cycles_run": result.cycles_run,
+        "reached_fixpoint": result.reached_fixpoint,
+        "applied": result.applied,
+        "rolled_back": result.rolled_back,
+        "mode": result.mode,
+        "before": result.before,
+        "after": result.after,
+    }
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
+    return log
+
+
+def load_history(project_root: str | Path, path: str | Path | None = None) -> list[dict[str, Any]]:
+    """Load the evolve history (oldest first); empty list if none/unreadable."""
+    log = Path(path) if path else Path(project_root) / HISTORY_REL
+    if not log.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        for line in log.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+    except (OSError, json.JSONDecodeError):
+        return out
+    return out
+
+
+def render_trajectory_markdown(history: list[dict[str, Any]]) -> str:
+    """Render the project's self-improvement trajectory over recorded runs."""
+    lines = ["# Apex — self-improvement trajectory", ""]
+    if not history:
+        lines += ["_No evolve runs recorded yet. Run `apex evolve` to start the log._", ""]
+        return "\n".join(lines)
+
+    first, last = history[0], history[-1]
+
+    def _f(entry: dict[str, Any], side: str, key: str) -> Any:
+        return (entry.get(side) or {}).get(key, "—")
+
+    lines.append(f"**{len(history)} run(s) recorded.**")
+    lines.append(
+        f"- **Security findings:** {_f(first, 'before', 'security_findings')} "
+        f"→ {_f(last, 'after', 'security_findings')} (overall)"
+    )
+    lines.append(
+        f"- **Open safe fixes:** {_f(first, 'before', 'executable_fixes')} "
+        f"→ {_f(last, 'after', 'executable_fixes')} (overall)"
+    )
+    lines.append("")
+    lines.append("## Runs")
+    for e in history:
+        lines.append(
+            f"- `{e.get('ts', '?')}` · applied {e.get('applied', 0)} · "
+            f"findings {_f(e, 'before', 'security_findings')}→{_f(e, 'after', 'security_findings')} · "
+            f"fixes {_f(e, 'before', 'executable_fixes')}→{_f(e, 'after', 'executable_fixes')} · "
+            f"{e.get('mode', '?')}"
+        )
+    lines.append("")
     return "\n".join(lines)
