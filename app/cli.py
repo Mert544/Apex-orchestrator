@@ -909,6 +909,20 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             print(f"\n[ideate] Roadmap snapshot saved to {saved}")
         return 0
 
+    # --invest: the impact-vs-effort investment curve + diminishing-returns knee.
+    if getattr(args, "invest", False):
+        from app.engine.idea_investment import (
+            investment_curve,
+            render_investment_markdown,
+        )
+
+        points = investment_curve(report)
+        if args.json:
+            print(json.dumps([p.to_dict() for p in points], indent=2))
+        else:
+            print(render_investment_markdown(points))
+        return 0
+
     # --budget: optimal portfolio of ideas for an effort budget (knapsack).
     if getattr(args, "budget", 0.0):
         from app.engine.idea_portfolio import (
@@ -1674,6 +1688,10 @@ def main() -> int:
     ideate_parser.add_argument(
         "--budget", type=float, default=0.0,
         help="Optimal idea portfolio for this effort budget (impact-maximizing knapsack)",
+    )
+    ideate_parser.add_argument(
+        "--invest", action="store_true",
+        help="Investment curve: impact achievable per effort budget + diminishing-returns knee",
     )
     ideate_parser.add_argument(
         "--phase",

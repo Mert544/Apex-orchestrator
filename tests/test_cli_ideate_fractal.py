@@ -47,6 +47,7 @@ def _ideate_ns(tmp_path: Path, **overrides) -> argparse.Namespace:
         sequence=False,
         adaptive=False,
         budget=0.0,
+        invest=False,
         phase="",
         save=False,
         diff=False,
@@ -161,6 +162,14 @@ def test_ideate_budget_portfolio(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Optimal portfolio" in out
     assert "effort budget" in out
+
+
+def test_ideate_invest_curve(tmp_path, capsys):
+    _project(tmp_path)
+    rc = cmd_ideate(_ideate_ns(tmp_path, invest=True))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Investment curve" in out
 
 
 def test_ideate_sequence_execution_plan(tmp_path, capsys):
