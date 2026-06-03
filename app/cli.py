@@ -909,6 +909,20 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             print(f"\n[ideate] Roadmap snapshot saved to {saved}")
         return 0
 
+    # --budget: optimal portfolio of ideas for an effort budget (knapsack).
+    if getattr(args, "budget", 0.0):
+        from app.engine.idea_portfolio import (
+            optimize_portfolio,
+            render_portfolio_markdown,
+        )
+
+        portfolio = optimize_portfolio(report, float(args.budget))
+        if args.json:
+            print(json.dumps(portfolio.to_dict(), indent=2))
+        else:
+            print(render_portfolio_markdown(portfolio))
+        return 0
+
     # --sequence: dependency-ordered execution plan (prerequisites first).
     if getattr(args, "sequence", False):
         from app.engine.idea_dependencies import (
@@ -1656,6 +1670,10 @@ def main() -> int:
         "--sequence",
         action="store_true",
         help="Dependency-ordered execution plan (prerequisites first) + critical path",
+    )
+    ideate_parser.add_argument(
+        "--budget", type=float, default=0.0,
+        help="Optimal idea portfolio for this effort budget (impact-maximizing knapsack)",
     )
     ideate_parser.add_argument(
         "--phase",

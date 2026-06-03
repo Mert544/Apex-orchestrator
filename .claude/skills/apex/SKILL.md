@@ -31,6 +31,10 @@ mode/safety gating. Think of it as brain (reasoning), eyes (scanners), hands (ex
     penetration) + the engine's own observations on how to steer the next run.
   - `--pareto` — the efficient frontier: non-dominated ideas across impact/effort/value
     (everything else is strictly dominated and safely ignorable).
+  - `--sequence` — dependency-ordered execution plan (test a module before changing it,
+    document after building, break a cycle before its interface) + the critical path.
+  - `--budget N` — the impact-maximizing *portfolio* of ideas whose total effort fits N
+    (a precedence-constrained knapsack; prerequisites are pulled in automatically).
   - `--adaptive` — value-guided fractal: high-value branches grow deeper than `--depth`
     (pairs well with a larger `--max-ideas`). Learning + adaptive depth compose: as the
     engine learns which lenses are reliable, those branches deepen.
