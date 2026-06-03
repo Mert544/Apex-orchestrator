@@ -302,6 +302,44 @@ def test_facets_recurse_to_requested_depth(tmp_path):
     assert by_id[cur.parent_id].kind == "permutation"
 
 
+def test_adaptive_depth_deepens_high_value_branches(tmp_path):
+    # Several modules + room in the budget: adaptive mode pushes the strongest
+    # branches past the base max_depth, concentrating the fractal where value is.
+    (tmp_path / "app").mkdir()
+    for n in ("a", "b", "c", "d"):
+        (tmp_path / "app" / f"{n}.py").write_text(f"def {n}():\n    return 1\n")
+    cfg = {"max_total_ideas": 200, "max_idea_depth": 2, "breadth": 3}
+    base = IdeaPermutationEngine(cfg, tmp_path).run()
+    adapt = IdeaPermutationEngine({**cfg, "adaptive_depth": True}, tmp_path).run()
+    assert max(i.depth for i in base.ideas) == 2          # base respects the cap
+    assert max(i.depth for i in adapt.ideas) >= 3         # adaptive goes deeper
+    # Each extra-depth node exists because its parent cleared the value bar.
+    by_id = {i.id: i for i in adapt.ideas}
+    for deep in (i for i in adapt.ideas if i.depth > 2):
+        parent = by_id.get(deep.parent_id)
+        assert parent is not None and parent.value >= 0.6
+
+
+def test_adaptive_depth_off_by_default(tmp_path):
+    (tmp_path / "app").mkdir()
+    for n in ("a", "b", "c", "d"):
+        (tmp_path / "app" / f"{n}.py").write_text(f"def {n}():\n    return 1\n")
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 200, "max_idea_depth": 2, "breadth": 3}, tmp_path
+    ).run()
+    assert max(i.depth for i in rep.ideas) == 2  # no deepening without opt-in
+
+
+def test_adaptive_depth_is_deterministic(tmp_path):
+    (tmp_path / "app").mkdir()
+    for n in ("a", "b", "c"):
+        (tmp_path / "app" / f"{n}.py").write_text(f"def {n}():\n    return 1\n")
+    cfg = {"max_total_ideas": 150, "max_idea_depth": 2, "breadth": 3, "adaptive_depth": True}
+    a = IdeaPermutationEngine(cfg, tmp_path).run()
+    b = IdeaPermutationEngine(cfg, tmp_path).run()
+    assert [i.title for i in a.ideas] == [i.title for i in b.ideas]
+
+
 def test_facets_off_by_default(tmp_path):
     _project(tmp_path)
     rep = IdeaPermutationEngine({"max_total_ideas": 40, "max_idea_depth": 2}, tmp_path).run()

@@ -31,6 +31,13 @@ mode/safety gating. Think of it as brain (reasoning), eyes (scanners), hands (ex
     penetration) + the engine's own observations on how to steer the next run.
   - `--pareto` — the efficient frontier: non-dominated ideas across impact/effort/value
     (everything else is strictly dominated and safely ignorable).
+  - `--adaptive` — value-guided fractal: high-value branches grow deeper than `--depth`
+    (pairs well with a larger `--max-ideas`). Learning + adaptive depth compose: as the
+    engine learns which lenses are reliable, those branches deepen.
+
+Learning: `auto`/`maintain`/`evolve` record apply outcomes to `.apex/idea-memory.json`;
+later runs nudge feasibility toward lenses with a good track record (bounded ±10%, no-op
+without the file). `apex auto` prints what it has learned.
 - `apex evolve --target=. [--max-cycles N] [--dry-run] [--commit]` — self-improvement
   loop: apply guarded fixes cycle by cycle to a fixpoint, then prove the gain (before/after
   security findings + open fixes + mean ROI, plus a roadmap diff of resolved ideas).

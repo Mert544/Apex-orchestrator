@@ -229,6 +229,14 @@ class IdeaPermutationEngine:
         # no memory file exists, so a fresh project scores exactly as before.
         self.learning = bool(cfg.get("learning", True))
         self._memory = None
+        # Adaptive depth: let high-value branches grow deeper than max_depth,
+        # concentrating the fractal where value (and learned reliability) lives.
+        # Opt-in; off by default so existing trees are unchanged.
+        self.adaptive_depth = bool(cfg.get("adaptive_depth", False))
+        self.adaptive_depth_bonus = int(cfg.get("adaptive_depth_bonus", 2))
+        # A branch keeps deepening past max_depth only while its value stays above
+        # this bar; novelty decay pulls deep nodes under it, so depth self-limits.
+        self.adaptive_depth_threshold = float(cfg.get("adaptive_depth_threshold", 0.6))
         # Fractal facets: zoom the strongest permutation leaves into self-similar
         # sub-ideas. Opt-in (off by default) because facets share the idea budget
         # with permutation and synthesis; enabling them is most useful with a
@@ -316,7 +324,7 @@ class IdeaPermutationEngine:
         while frontier and not self.budget.exhausted and len(emitted) < perm_cap:
             frontier.sort(key=_priority, reverse=True)
             node = frontier.pop(0)
-            if node.depth >= self.max_depth:
+            if node.depth >= self._effective_max_depth(node):
                 continue
             for child in self._expand(node):
                 if self.budget.exhausted:
@@ -493,6 +501,14 @@ class IdeaPermutationEngine:
                 pidx += 1
 
         return out
+
+    def _effective_max_depth(self, node: IdeaNode) -> int:
+        """How deep this branch may go. Adaptive mode lets high-value branches
+        (where value, and learned reliability, concentrate) exceed the base depth
+        by a bounded bonus, so the fractal deepens exactly where it pays off."""
+        if self.adaptive_depth and node.value >= self.adaptive_depth_threshold:
+            return self.max_depth + self.adaptive_depth_bonus
+        return self.max_depth
 
     def _expand(self, node: IdeaNode) -> list[IdeaNode]:
         """Apply each unused operator to produce permutation children."""

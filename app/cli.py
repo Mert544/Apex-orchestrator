@@ -850,6 +850,7 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             "min_relevance": args.min_relevance,
             "fractal_facets": getattr(args, "facets", False),
             "facet_depth": getattr(args, "facet_depth", 1),
+            "adaptive_depth": getattr(args, "adaptive", False),
         },
         project_root=str(target),
         extra_operators=extra_operators,
@@ -1631,6 +1632,11 @@ def main() -> int:
         "--pareto",
         action="store_true",
         help="Show the efficient frontier: non-dominated ideas across impact/effort/value",
+    )
+    ideate_parser.add_argument(
+        "--adaptive",
+        action="store_true",
+        help="Adaptive depth: let high-value branches grow deeper (value-guided fractal)",
     )
     ideate_parser.add_argument(
         "--phase",
