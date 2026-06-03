@@ -762,6 +762,24 @@ def cmd_explain(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_simulate(args: argparse.Namespace) -> int:
+    """Preview what autonomous improvement would do — on a disposable copy."""
+    from app.engine.simulation import render_simulation_markdown, simulate_evolution
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    result = simulate_evolution(
+        str(target),
+        max_cycles=getattr(args, "max_cycles", 3),
+        max_apply_per_cycle=getattr(args, "max_apply", 5) or 5,
+        objective=getattr(args, "objective", "") or None,
+    )
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        print(render_simulation_markdown(result, str(target)))
+    return 0
+
+
 def cmd_review(args: argparse.Namespace) -> int:
     """Review only the lines changed since a base ref — Apex as a PR reviewer."""
     from app.engine.diff_review import render_review_markdown, review
@@ -1284,6 +1302,20 @@ def main() -> int:
     auto_parser.add_argument("--json", action="store_true", help="Emit JSON")
     auto_parser.add_argument("--out", default="", help="Write the report to this path")
     auto_parser.set_defaults(func=cmd_auto)
+
+    # simulate — preview autonomous improvement on a disposable copy
+    sim_parser = subparsers.add_parser(
+        "simulate",
+        help="Preview what 'apex evolve' would do — run on a throwaway copy, change nothing",
+    )
+    sim_parser.add_argument("--target", default="", help="Target project root")
+    sim_parser.add_argument("--objective", default="", help="Optional theme to focus on")
+    sim_parser.add_argument("--max-cycles", type=int, default=3, dest="max_cycles",
+                            help="Maximum improvement cycles to simulate")
+    sim_parser.add_argument("--max-apply", type=int, default=5, dest="max_apply",
+                            help="Max fixes per cycle")
+    sim_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    sim_parser.set_defaults(func=cmd_simulate)
 
     # review — diff-scoped code review (Apex as a PR reviewer)
     review_parser = subparsers.add_parser(
