@@ -35,10 +35,24 @@ class ReviewFinding:
 
 
 @dataclass
+class ChangeImpact:
+    file: str
+    function: str
+    lineno: int
+    caller_count: int
+    callers: list[str] = field(default_factory=list)  # "module:line" strings
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"file": self.file, "function": self.function, "lineno": self.lineno,
+                "caller_count": self.caller_count, "callers": self.callers}
+
+
+@dataclass
 class ReviewResult:
     base: str
     files_reviewed: int
     findings: list[ReviewFinding] = field(default_factory=list)
+    impacts: list[ChangeImpact] = field(default_factory=list)
 
     @property
     def auto_fixable_count(self) -> int:
@@ -49,6 +63,7 @@ class ReviewResult:
             "base": self.base,
             "files_reviewed": self.files_reviewed,
             "findings": [f.to_dict() for f in self.findings],
+            "impacts": [i.to_dict() for i in self.impacts],
             "auto_fixable_count": self.auto_fixable_count,
         }
 
@@ -100,19 +115,57 @@ def review(project_root: str, base: str = "HEAD") -> ReviewResult:
     """Review only the lines changed since ``base``."""
     changes = changed_lines(project_root, base)
     findings: list[ReviewFinding] = []
+    sources: dict[str, str] = {}
     for rel, lines in sorted(changes.items()):
         path = Path(project_root) / rel
         try:
             source = path.read_text(encoding="utf-8")
         except OSError:
             continue
+        sources[rel] = source
         for f in scan_findings(rel, source):
             if f.line in lines:
                 findings.append(f)
     # Most serious first, then by file/line for stable output.
     sev_rank = {"high": 0, "medium": 1, "low": 2}
     findings.sort(key=lambda f: (sev_rank.get(f.severity, 3), f.file, f.line))
-    return ReviewResult(base=base, files_reviewed=len(changes), findings=findings)
+    impacts = _change_impacts(project_root, changes, sources)
+    return ReviewResult(base=base, files_reviewed=len(changes), findings=findings, impacts=impacts)
+
+
+def _change_impacts(project_root: str, changes: dict[str, set[int]],
+                    sources: dict[str, str]) -> list[ChangeImpact]:
+    """For each changed function, how far its change could ripple (direct callers)."""
+    import ast
+
+    from app.engine.call_graph import CallGraph
+
+    graph = CallGraph.build(project_root)
+    impacts: list[ChangeImpact] = []
+    for rel, lines in sorted(changes.items()):
+        source = sources.get(rel)
+        if not source:
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            end = getattr(node, "end_lineno", node.lineno)
+            if not any(node.lineno <= ln <= end for ln in lines):
+                continue  # this function wasn't touched
+            callers = [c for c in graph.direct_callers(node.name)
+                       if not (c.module == rel and c.lineno == node.lineno)]
+            if callers:
+                impacts.append(ChangeImpact(
+                    file=rel, function=node.name, lineno=node.lineno,
+                    caller_count=len(callers),
+                    callers=[f"{c.module}:{c.lineno}" for c in callers[:8]],
+                ))
+    impacts.sort(key=lambda i: (-i.caller_count, i.file, i.lineno))
+    return impacts
 
 
 def render_review_markdown(result: ReviewResult) -> str:
@@ -124,20 +177,30 @@ def render_review_markdown(result: ReviewResult) -> str:
     if not result.findings:
         lines += [f"Reviewed {result.files_reviewed} changed file(s). "
                   "**No issues found in the changed lines** 🎉", ""]
-        return "\n".join(lines)
-
-    lines.append(
-        f"Reviewed {result.files_reviewed} changed file(s) · "
-        f"**{len(result.findings)} issue(s)** "
-        f"({result.auto_fixable_count} auto-fixable by `apex maintain`)."
-    )
-    lines.append("")
-    icon = {"high": "🔴", "medium": "🟠", "low": "🔵"}
-    for f in result.findings:
-        fix = " · _Apex can auto-fix_" if f.auto_fixable else " · _needs a human_"
+    else:
         lines.append(
-            f"- {icon.get(f.severity, '⚪')} `{f.file}:{f.line}` "
-            f"**[{f.category}]** {f.message}{fix}"
+            f"Reviewed {result.files_reviewed} changed file(s) · "
+            f"**{len(result.findings)} issue(s)** "
+            f"({result.auto_fixable_count} auto-fixable by `apex maintain`)."
         )
-    lines.append("")
+        lines.append("")
+        icon = {"high": "🔴", "medium": "🟠", "low": "🔵"}
+        for f in result.findings:
+            fix = " · _Apex can auto-fix_" if f.auto_fixable else " · _needs a human_"
+            lines.append(
+                f"- {icon.get(f.severity, '⚪')} `{f.file}:{f.line}` "
+                f"**[{f.category}]** {f.message}{fix}"
+            )
+        lines.append("")
+
+    if result.impacts:
+        lines.append("## 🔗 Change impact (review the call sites too)")
+        for im in result.impacts:
+            shown = ", ".join(f"`{c}`" for c in im.callers)
+            more = f" (+{im.caller_count - len(im.callers)} more)" if im.caller_count > len(im.callers) else ""
+            lines.append(
+                f"- `{im.file}:{im.lineno}` **{im.function}()** is called by "
+                f"**{im.caller_count}** function(s): {shown}{more}"
+            )
+        lines.append("")
     return "\n".join(lines)

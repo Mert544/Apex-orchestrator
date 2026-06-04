@@ -136,3 +136,35 @@ def test_no_false_positive_on_numeric_equality():
     # `x == 5` must NOT be flagged as a True/False comparison (1 == True trap).
     msgs = [f.message for f in scan_findings("m.py", "def f(x):\n    return x == 5\n")]
     assert not any("True/False" in m for m in msgs)
+
+
+def test_review_reports_change_impact(tmp_path):
+    # Changing a function that has callers surfaces the blast radius in review.
+    _repo = _git
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "core.py").write_text(
+        "def parse(s):\n    return s\n\ndef a():\n    return parse('x')\n\ndef b():\n    return parse('y')\n"
+    )
+    _git(tmp_path, ["git", "init", "-q"], ["git", "config", "user.email", "t@t.com"],
+         ["git", "config", "user.name", "t"], ["git", "add", "-A"],
+         ["git", "-c", "commit.gpgsign=false", "commit", "-qm", "init"])
+    (tmp_path / "app" / "core.py").write_text(
+        "def parse(s):\n    return s.strip()\n\ndef a():\n    return parse('x')\n\ndef b():\n    return parse('y')\n"
+    )
+    result = review(str(tmp_path))
+    assert result.impacts, "expected a change-impact entry for the modified parse()"
+    parse_impact = next(i for i in result.impacts if i.function == "parse")
+    assert parse_impact.caller_count == 2  # a() and b() call parse
+    md = render_review_markdown(result)
+    assert "Change impact" in md and "parse()" in md
+
+
+def test_review_no_impact_for_uncalled_change(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "core.py").write_text("def lonely():\n    return 1\n")
+    _git(tmp_path, ["git", "init", "-q"], ["git", "config", "user.email", "t@t.com"],
+         ["git", "config", "user.name", "t"], ["git", "add", "-A"],
+         ["git", "-c", "commit.gpgsign=false", "commit", "-qm", "init"])
+    (tmp_path / "app" / "core.py").write_text("def lonely():\n    return 2\n")
+    result = review(str(tmp_path))
+    assert result.impacts == []  # nothing calls lonely()
