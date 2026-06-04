@@ -79,3 +79,23 @@ def test_cmd_grade_json(tmp_path, capsys):
     import json
     payload = json.loads(capsys.readouterr().out)
     assert "score" in payload and "letter" in payload and "components" in payload
+
+
+def test_fixture_paths_excluded_from_security(tmp_path):
+    # Intentional vulnerability fixtures (examples/, tests/) must NOT drag the
+    # project's security grade down — only the project's own code counts.
+    from app.engine.health_score import _is_fixture_path, grade
+
+    assert _is_fixture_path("examples/legacy/app.py") is True
+    assert _is_fixture_path("app/tests/test_x.py") is True
+    assert _is_fixture_path("tests/test_x.py") is True
+    assert _is_fixture_path("app/engine/foo.py") is False
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "examples").mkdir()
+    # Real code is clean; the eval lives only in an examples/ fixture.
+    (tmp_path / "app" / "core.py").write_text("def f(x):\n    return x + 1\n")
+    (tmp_path / "examples" / "bad.py").write_text("def r(c):\n    return eval(c)\n")
+    h = grade(str(tmp_path))
+    sec = next(c for c in h.components if c.name == "Security")
+    assert sec.points_lost == 0  # the fixture eval is not counted

@@ -38,6 +38,16 @@ class HealthScore:
         }
 
 
+def _is_fixture_path(path: str) -> bool:
+    """True for example/test/fixture files, which may carry intentional risks."""
+    p = path.replace("\\", "/").lower()
+    return (
+        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
+        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
+        or Path(p).name.startswith("test_")
+    )
+
+
 def _letter(score: int) -> str:
     table = [(97, "A+"), (93, "A"), (90, "A-"), (87, "B+"), (83, "B"), (80, "B-"),
              (77, "C+"), (73, "C"), (70, "C-"), (67, "D+"), (63, "D"), (60, "D-")]
@@ -55,7 +65,14 @@ def grade(project_root: str | Path) -> HealthScore:
     try:
         from app.agents.skills import SecurityAgent
 
-        findings = int(SecurityAgent().run(project_root=str(project_root)).get("findings_count", 0) or 0)
+        result = SecurityAgent().run(project_root=str(project_root))
+        # A health grade reflects the project's *own* code — not intentional
+        # vulnerability fixtures or test files, which legitimately contain
+        # "risky" patterns. Exclude those from the security count.
+        findings = sum(
+            1 for f in (result.get("findings") or [])
+            if not _is_fixture_path(str(f.get("file", "")))
+        )
     except Exception:
         findings = 0
 
