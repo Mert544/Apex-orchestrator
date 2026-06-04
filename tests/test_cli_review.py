@@ -50,3 +50,23 @@ def test_review_json(tmp_path, capsys):
     import json
     payload = json.loads(capsys.readouterr().out)
     assert "findings" in payload and "auto_fixable_count" in payload
+
+
+def test_impact_command(tmp_path, capsys):
+    import argparse
+    from app.cli import cmd_impact
+    (tmp_path / "m.py").write_text("def core():\n    return 1\n\ndef caller():\n    return core()\n")
+    rc = cmd_impact(argparse.Namespace(function="core", target=str(tmp_path), json=False))
+    assert rc == 0
+    assert "Impact of changing `core()`" in capsys.readouterr().out
+
+
+def test_impact_command_json(tmp_path, capsys):
+    import argparse
+    import json
+    from app.cli import cmd_impact
+    (tmp_path / "m.py").write_text("def core():\n    return 1\n\ndef caller():\n    return core()\n")
+    rc = cmd_impact(argparse.Namespace(function="core", target=str(tmp_path), json=True))
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["function"] == "core" and "blast_radius" in payload

@@ -52,6 +52,8 @@ without the file). `apex auto` prints what it has learned.
   a breakdown + cheapest fixes; `--min-score` gates CI.
 - `apex simulate [--max-cycles N]` — preview what `apex evolve` would do, run on a disposable
   copy so the real tree is never touched.
+- `apex impact <function> [--target=.]` — function-level blast radius: who transitively
+  calls a function (direct callers are precise; transitive is name-based + hub-stopped).
 - `apex review [--base REF] [--fail-on-high]` — diff-scoped code review (Apex as a PR
   reviewer): flags security/bug/style/docs issues on the *changed* lines only, noting which
   Apex can auto-fix. `--fail-on-high` exits non-zero for CI gating.

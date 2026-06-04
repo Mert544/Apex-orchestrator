@@ -795,6 +795,24 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_impact(args: argparse.Namespace) -> int:
+    """Show the blast radius of changing a function: who transitively calls it."""
+    from app.engine.call_graph import CallGraph, render_impact_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    graph = CallGraph.build(str(target))
+    if args.json:
+        print(json.dumps({
+            "function": args.function,
+            "definitions": [d.to_dict() for d in graph.definitions(args.function)],
+            "direct_callers": [d.to_dict() for d in graph.direct_callers(args.function)],
+            "blast_radius": [d.to_dict() for d in graph.blast_radius(args.function)],
+        }, indent=2))
+    else:
+        print(render_impact_markdown(args.function, graph))
+    return 0
+
+
 def cmd_review(args: argparse.Namespace) -> int:
     """Review only the lines changed since a base ref — Apex as a PR reviewer."""
     from app.engine.diff_review import render_review_markdown, review
@@ -1341,6 +1359,16 @@ def main() -> int:
                             help="Max fixes per cycle")
     sim_parser.add_argument("--json", action="store_true", help="Emit JSON")
     sim_parser.set_defaults(func=cmd_simulate)
+
+    # impact — function-level blast radius (who calls this, transitively)
+    impact_parser = subparsers.add_parser(
+        "impact",
+        help="Show the blast radius of changing a function (its transitive callers)",
+    )
+    impact_parser.add_argument("function", help="Function/method name to analyze")
+    impact_parser.add_argument("--target", default="", help="Target project root")
+    impact_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    impact_parser.set_defaults(func=cmd_impact)
 
     # review — diff-scoped code review (Apex as a PR reviewer)
     review_parser = subparsers.add_parser(
