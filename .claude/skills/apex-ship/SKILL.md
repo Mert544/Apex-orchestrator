@@ -45,3 +45,26 @@ For independent work, spawn agents (see the `apex-test-writer` / `apex-engineer`
 on **disjoint file sets** so they never conflict — or give a coding agent
 `isolation: worktree` and integrate its branch afterward (`git worktree list`,
 then merge/cherry-pick onto the feature branch, then run the full suite).
+
+## Lessons from the hard stress test (keep these reflexes)
+
+A full-pipeline stress run found bugs 1600+ green unit tests missed. The reflexes
+that prevent a repeat:
+
+- **Test the seam, not just the parts.** The autonomous loop was fully broken
+  (every fix rolled back) while every component test passed. Keep the end-to-end
+  guard (`tests/test_autonomous_loop_e2e.py`): run the real loop on a real project
+  and assert real outcomes (fixes land, nothing rolls back, source corrected,
+  project tests still pass). Add one whenever a new cross-component flow appears.
+- **Spawn subprocesses with `sys.executable -m <tool>`, never a bare console
+  script** (`pytest`/`python`): a bare name can resolve to a different interpreter
+  without the project's deps → false failures. (Root cause of the verify-always-fails bug.)
+- **Bound every subprocess / test run with a timeout.** An unbounded hang blocks
+  CI for hours. `addopts = "--timeout=120"` (pytest-timeout) names any hanging test.
+- **No hardcoded/absolute paths in tests** (`/tmp/x`, `/abs`): use `tmp_path`.
+  Tests that pass as root can fail on non-root CI (PermissionError on mkdir).
+- **Allowlists match by basename**, so an absolute interpreter path passes when
+  its name is allowed (see CommandRunner).
+- **Mutation-test core logic** (inject a bug, confirm a test fails) to prove tests
+  are substantive, not just coverage-hitting. A fixed bug isn't covered until a
+  test fails without the fix.
