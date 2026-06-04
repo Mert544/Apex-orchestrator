@@ -21,6 +21,7 @@ apex-mcp = "app.mcp.server:main"
 dev = [
   "pytest>=8.0",
   "pytest-cov>=4.0",
+  "pytest-timeout>=2.1",
   "ruff>=0.6",
 ]
 
@@ -40,6 +41,10 @@ ignore = ["E402", "E501", "E741"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Fail any single test that hangs (>120s) with a traceback naming it, instead of
+# letting it block CI for the full job timeout. Surfaced a CI-only hang in the
+# Apex Security Audit workflow that unit runs didn't reproduce.
+addopts = "--timeout=120"
 
 [tool.coverage.run]
 source = ["app"]

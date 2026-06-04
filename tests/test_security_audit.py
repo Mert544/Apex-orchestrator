@@ -16,6 +16,7 @@ def test_security_audit_script_runs_successfully():
         capture_output=True,
         text=True,
         cwd=str(root),
+        timeout=120,  # fail fast instead of hanging CI if the script ever blocks
     )
     # The script may exit 0 or 1 depending on risks found, but should not crash
     assert result.returncode in (0, 1)
