@@ -87,3 +87,16 @@ def test_cleanup_old_records(tmp_path):
     assert removed == 3
     assert len(j.records) == 2
     assert j.cleanup_old_records(keep_last=10) == 0
+
+
+def test_journal_anchored_under_project_root():
+    # Regression: the journal must live under project_root, not a cwd-relative
+    # .apex (which caused cross-project contamination). Absolute log_dir wins.
+    from pathlib import Path
+
+    from app.engine.rollback_journal import RollbackJournal
+
+    j = RollbackJournal(project_root="/tmp/projX")
+    assert j.journal_path == Path("/tmp/projX/.apex/patch_journal.json")
+    j2 = RollbackJournal(project_root="/tmp/projX", log_dir="/abs/.apex")
+    assert j2.journal_path == Path("/abs/.apex/patch_journal.json")

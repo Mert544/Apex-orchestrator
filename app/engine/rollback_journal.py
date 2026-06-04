@@ -56,7 +56,10 @@ class RollbackJournal:
 
     def __init__(self, project_root: str = ".", log_dir: str = ".apex") -> None:
         self.project_root = Path(project_root)
-        self.journal_path = Path(log_dir) / "patch_journal.json"
+        # Anchor the journal under project_root so each target gets its own
+        # journal (no cross-project contamination). An absolute log_dir still
+        # wins via Path's `/` semantics, preserving explicit-path callers.
+        self.journal_path = Path(project_root) / log_dir / "patch_journal.json"
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)
         self.records: list[PatchRecord] = []
         self._load()

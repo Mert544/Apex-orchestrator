@@ -88,14 +88,20 @@ def _patch_mutable_defaults(
                 break
         if not ok:
             continue
+        # Capture each default's *original* source text BEFORE rewriting it, so
+        # the guard preserves the real value (e.g. [1, 2], not a generic []).
+        guard_value = {
+            id(default): lines[default.lineno - 1][default.col_offset:default.end_col_offset]
+            for _arg, default, _lit in mutables
+        }
         for _arg, default, _lit in edits:
             li = default.lineno - 1
             line = lines[li]
             lines[li] = line[:default.col_offset] + "None" + line[default.end_col_offset:]
         # Insert guards just before the first body statement, in arg order.
         guard = "".join(
-            f"{indent}if {arg} is None:\n{indent}    {arg} = {lit}\n"
-            for arg, _d, lit in mutables
+            f"{indent}if {arg} is None:\n{indent}    {arg} = {guard_value[id(default)]}\n"
+            for arg, default, _lit in mutables
         )
         insert_at = first_stmt.lineno - 1
         lines.insert(insert_at, guard)

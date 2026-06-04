@@ -19,10 +19,12 @@ def test_fixes_list_default():
 
 
 def test_fixes_dict_and_set_and_calls():
-    for default, lit in (("{}", "{}"), ("set()", "set()"), ("list()", "[]"), ("dict()", "{}")):
+    # The guard preserves the default's *original* source (behavior-preserving),
+    # so dict()/set()/list() stay as written rather than being normalized.
+    for default in ("{}", "set()", "list()", "dict()"):
         out = _apply(f"def f(a, b={default}):\n    return b\n")
         assert out is not None, default
-        assert "b=None" in out and f"b = {lit}" in out
+        assert "b=None" in out and f"b = {default}" in out
         ast.parse(out)
 
 
@@ -45,10 +47,23 @@ def test_ignores_immutable_and_none_defaults():
 def test_skips_multiline_default_safely():
     # A default spanning multiple lines is left untouched (conservative).
     src = "def f(x=[\n    1,\n    2,\n]):\n    return x\n"
-    # Either no change, or a valid-Python change — never corrupt output.
-    out = _apply(src)
-    if out is not None:
-        ast.parse(out)
+    assert _apply(src) is None  # multi-line default is skipped, not corrupted
+
+
+def test_preserves_nonempty_default_value():
+    # Regression: a non-empty mutable default must keep its real value in the
+    # guard, not be replaced by a generic empty literal (would change behavior).
+    out = _apply("def f(x=[1, 2]):\n    return x\n")
+    assert "x = [1, 2]" in out and "x = []" not in out
+    ast.parse(out)
+    out2 = _apply("def g(a, b={'k': 1}):\n    return b\n")
+    assert "b = {'k': 1}" in out2
+    ast.parse(out2)
+    # Behavior preserved: each call gets a fresh copy of the real default.
+    ns: dict = {}
+    exec(_apply("def acc(i, b=[1, 2]):\n    b.append(i)\n    return b\n"), ns)  # noqa: S102
+    assert ns["acc"](9) == [1, 2, 9]
+    assert ns["acc"](8) == [1, 2, 8]  # not [1, 2, 9, 8] — no shared state
 
 
 def test_kwonly_default():
