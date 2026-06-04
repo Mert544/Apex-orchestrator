@@ -83,3 +83,41 @@ def test_behavior_is_fixed():
 
 def test_syntax_error_returns_none():
     assert md.apply("m.py", "def broken(:\n", "fix") is None
+
+
+def test_annotation_widened_to_optional_under_future_annotations():
+    # With `from __future__ import annotations`, widening to `T | None` is safe
+    # (annotations are strings) and keeps the fix type-checker-clean. (Found
+    # running Apex's fix on real tornado/flask code, where `list[str] = None`
+    # would otherwise be a mypy/pyright type error.)
+    src = (
+        "from __future__ import annotations\n\n"
+        "def f(xs: list[str] = ['a', 'b']):\n    return xs\n"
+    )
+    out = _apply(src)
+    assert out is not None
+    assert "xs: list[str] | None = None" in out
+    assert "xs = ['a', 'b']" in out
+    ast.parse(out)
+
+
+def test_annotation_left_untouched_without_future_annotations():
+    # Without future-annotations, `list[str] | None` could raise at definition
+    # time on Python < 3.10, so we leave the annotation as-is (runtime-safe).
+    src = "def f(xs: list[str] = ['a', 'b']):\n    return xs\n"
+    out = _apply(src)
+    assert out is not None
+    assert "xs: list[str] = None" in out
+    assert "| None" not in out
+    ast.parse(out)
+
+
+def test_already_optional_annotation_not_double_wrapped():
+    src = (
+        "from __future__ import annotations\n\n"
+        "def f(xs: list[str] | None = ['a']):\n    return xs\n"
+    )
+    out = _apply(src)
+    assert out is not None
+    assert out.count("| None") == 1  # not widened again
+    ast.parse(out)
