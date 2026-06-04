@@ -80,8 +80,16 @@ def grade(project_root: str | Path) -> HealthScore:
     fragile = len(getattr(profile, "fragile_modules", []) or [])
     untested = len(getattr(profile, "untested_modules", []) or [])
     total_modules = max(1, len(getattr(profile, "module_to_tests", {}) or {}))
-    debt = (len(getattr(profile, "modernizable_modules", []) or [])
-            + len(getattr(profile, "mutable_default_modules", []) or []))
+    # Code-debt counts the project's *own* code, not test/fixture files — the
+    # same exclusion already applied to security findings above. A mutable
+    # default inside tests/ shouldn't drag down a project's production grade.
+    debt = sum(
+        1 for m in (
+            (getattr(profile, "modernizable_modules", []) or [])
+            + (getattr(profile, "mutable_default_modules", []) or [])
+        )
+        if not _is_fixture_path(str(m))
+    )
 
     components: list[Component] = []
     fixes: list[str] = []

@@ -99,3 +99,30 @@ def test_fixture_paths_excluded_from_security(tmp_path):
     h = grade(str(tmp_path))
     sec = next(c for c in h.components if c.name == "Security")
     assert sec.points_lost == 0  # the fixture eval is not counted
+
+
+def test_code_debt_excludes_test_files(tmp_path):
+    # A mutable-default (or modernization) in a test file must NOT count as the
+    # project's code debt — same exclusion as security. (Found running Apex on
+    # httpie, whose only flagged debt was tests/test_downloads.py.)
+    from app.engine.health_score import grade
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    # Clean production code; the mutable default lives only in a test file.
+    (tmp_path / "app" / "core.py").write_text("def f(x):\n    return x + 1\n")
+    (tmp_path / "tests" / "test_core.py").write_text("def helper(items=[]):\n    return items\n")
+    h = grade(str(tmp_path))
+    debt = next(c for c in h.components if c.name == "Code debt")
+    assert debt.points_lost == 0
+
+
+def test_code_debt_counts_production_files(tmp_path):
+    # A mutable default in real (non-test) code still counts (no regression).
+    from app.engine.health_score import grade
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "core.py").write_text("def f(items=[]):\n    return items\n")
+    h = grade(str(tmp_path))
+    debt = next(c for c in h.components if c.name == "Code debt")
+    assert debt.points_lost > 0
