@@ -105,8 +105,21 @@ class SecurityAgent(Agent):
         except SyntaxError:
             return findings
 
+        # A compile() that is a direct argument to eval()/exec() is the *same*
+        # dynamic-execution risk already reported for the eval/exec — not a
+        # second one. Without this, `eval(compile(...))` / `exec(compile(...))`
+        # (idiomatic config/startup loading in Flask, etc.) double-counts.
+        nested_compiles: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and self._get_call_name(node) in ("eval", "exec"):
+                for arg in node.args:
+                    if isinstance(arg, ast.Call) and self._get_call_name(arg) == "compile":
+                        nested_compiles.add(id(arg))
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
+                if id(node) in nested_compiles:
+                    continue
                 findings.extend(self._check_call(rel_path, node, source))
             elif isinstance(node, ast.ExceptHandler) and node.type is None:
                 line = getattr(node, "lineno", 1)
@@ -169,10 +182,34 @@ class SecurityAgent(Agent):
                 )
         return findings
 
+    def _docstring_interior_lines(self, source: str) -> set[int]:
+        """Line numbers that fall *inside* a multiline string (e.g. a docstring).
+
+        A line that is a continuation of a triple-quoted string is documentation
+        or sample text, not executable code — a `SECRET_KEY = '...'` shown in a
+        docstring example (common in Flask/config docs) must not be flagged as a
+        real hardcoded secret. A genuine one-line assignment's value string has
+        ``lineno == end_lineno`` and is never in this set.
+        """
+        interior: set[int] = set()
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return interior
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                end = getattr(node, "end_lineno", node.lineno) or node.lineno
+                if end > node.lineno:
+                    interior.update(range(node.lineno + 1, end + 1))
+        return interior
+
     def _scan_regex(self, rel_path: str, source: str) -> list[dict[str, Any]]:
         findings: list[dict[str, Any]] = []
         lines = source.splitlines()
+        docstring_lines = self._docstring_interior_lines(source)
         for line_no, line in enumerate(lines, 1):
+            if line_no in docstring_lines:
+                continue
             for pattern, risk_type, severity in self.SECRET_PATTERNS:
                 match = re.search(pattern, line, re.IGNORECASE)
                 if match:
