@@ -132,3 +132,39 @@ def test_real_secret_assignment_is_still_flagged(tmp_path):
     (tmp_path / "m.py").write_text("api_key = 'sk-live-abc123def456'\n")
     r = SecurityAgent().run(project_root=str(tmp_path))
     assert any(f["risk_type"] == "hardcoded_secret" for f in r["findings"])
+
+
+def test_method_named_compile_is_not_the_builtin(tmp_path):
+    # model.compile() (Keras), self.compile() (jinja's template compiler), etc.
+    # are user-defined methods, NOT the builtin compile() — they must not be
+    # flagged. (Found running Apex on jinja, Keras-style ML code.)
+    from app.agents.skills import SecurityAgent
+    (tmp_path / "m.py").write_text(
+        "def build(model, env, src):\n"
+        "    model.compile(optimizer='adam')\n"
+        "    return env.compile(src)\n"
+    )
+    r = SecurityAgent().run(project_root=str(tmp_path))
+    assert r["findings_count"] == 0
+
+
+def test_method_named_eval_is_not_the_builtin(tmp_path):
+    # df.eval() (pandas) / expr.eval() (sympy) are methods, not builtin eval().
+    from app.agents.skills import SecurityAgent
+    (tmp_path / "m.py").write_text(
+        "def q(df, expr):\n    return df.eval(expr)\n"
+    )
+    r = SecurityAgent().run(project_root=str(tmp_path))
+    assert r["findings_count"] == 0
+
+
+def test_bare_builtin_eval_and_compile_still_flagged(tmp_path):
+    # The actual builtins (bare calls) are still real findings (no regression).
+    from app.agents.skills import SecurityAgent
+    (tmp_path / "m.py").write_text(
+        "def run(s):\n    code = compile(s, '<s>', 'exec')\n    return eval(s)\n"
+    )
+    r = SecurityAgent().run(project_root=str(tmp_path))
+    risks = [f["risk_type"] for f in r["findings"]]
+    assert any("eval" in rt for rt in risks)
+    assert any("compile" in rt for rt in risks)

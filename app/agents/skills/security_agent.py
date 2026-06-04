@@ -142,8 +142,17 @@ class SecurityAgent(Agent):
             return findings
 
         for pattern, (risk_type, severity, suggestion) in self.patterns.items():
-            # Exact match: either direct call (eval) or method call (obj.eval)
-            is_match = func_name == pattern or func_name.endswith("." + pattern)
+            if "." in pattern:
+                # Module-qualified sink (os.system, pickle.loads, ...): match the
+                # dotted name or any attribute path ending in it.
+                is_match = func_name == pattern or func_name.endswith("." + pattern)
+            else:
+                # Builtin (eval/exec/compile): ONLY a bare call is the dangerous
+                # builtin. A method call like model.compile() (Keras), df.eval()
+                # (pandas) or self.compile() (jinja's template compiler) is an
+                # unrelated user-defined method — matching it by name is a false
+                # positive that punishes ML/data/template code.
+                is_match = func_name == pattern
             if is_match:
                 # False positive filters
                 if pattern == "compile" and any(safe in func_name for safe in ("re.compile", "regex.compile")):
