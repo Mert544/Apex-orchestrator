@@ -64,3 +64,23 @@ def test_security_agent_empty_project(tmp_path: Path):
     report = agent.scan()
     assert report.findings == []
     assert report.risk_score == 0.0
+
+
+def test_subprocess_call_with_list_is_not_flagged(tmp_path):
+    # Real-world false positive: subprocess.call([...]) with list args is safe;
+    # only shell=True is the injection risk. (Found running Apex on click.)
+    from app.agents.skills import SecurityAgent
+    (tmp_path / "m.py").write_text(
+        "import subprocess\ndef edit(p):\n    subprocess.call(['vim', p])\n"
+    )
+    r = SecurityAgent().run(project_root=str(tmp_path))
+    assert r["findings_count"] == 0
+
+
+def test_subprocess_call_with_shell_true_is_flagged(tmp_path):
+    from app.agents.skills import SecurityAgent
+    (tmp_path / "m.py").write_text(
+        "import subprocess\ndef run(c):\n    subprocess.call(c, shell=True)\n"
+    )
+    r = SecurityAgent().run(project_root=str(tmp_path))
+    assert r["findings_count"] >= 1

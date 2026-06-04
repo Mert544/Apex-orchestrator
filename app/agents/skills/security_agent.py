@@ -11,6 +11,14 @@ from app.agents.base import Agent
 from app.agents.learning import AgentLearning
 
 
+def _has_shell_true(node: ast.Call) -> bool:
+    """True if the call passes shell=True (the actual injection risk)."""
+    return any(
+        kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+        for kw in node.keywords
+    )
+
+
 class SecurityAgent(Agent):
     """Agent: scans code for security anti-patterns with auto-tuning."""
 
@@ -128,6 +136,11 @@ class SecurityAgent(Agent):
                 if pattern == "compile" and any(safe in func_name for safe in ("re.compile", "regex.compile")):
                     continue
                 if pattern == "eval" and "literal_eval" in func_name:
+                    continue
+                # subprocess.call/run with list args is safe; only shell=True is
+                # the injection risk. Without this, mature code that correctly
+                # launches an editor/pager (e.g. click) gets false positives.
+                if pattern == "subprocess.call" and not _has_shell_true(node):
                     continue
                 line = getattr(node, "lineno", 1)
                 findings.append(
