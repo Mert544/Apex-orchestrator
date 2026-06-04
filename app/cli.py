@@ -819,14 +819,66 @@ def cmd_review(args: argparse.Namespace) -> int:
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
     result = review(str(target), base=getattr(args, "base", "HEAD") or "HEAD")
+
+    # --fix: apply the auto-fixable findings on the changed files, test-verified.
+    fix_report = None
+    if getattr(args, "fix", False):
+        fix_report = _apply_review_fixes(str(target), result)
+
     if args.json:
-        print(json.dumps(result.to_dict(), indent=2))
+        payload = result.to_dict()
+        if fix_report is not None:
+            payload["fixes"] = fix_report
+        print(json.dumps(payload, indent=2))
     else:
         print(render_review_markdown(result))
+        if fix_report is not None:
+            print(_render_review_fixes_markdown(fix_report))
     # Non-zero exit when high-severity issues land in the diff (CI-friendly).
     if getattr(args, "fail_on_high", False) and any(f.severity == "high" for f in result.findings):
         return 1
     return 0
+
+
+def _apply_review_fixes(target: str, result) -> dict:
+    """Apply the auto-fixable review findings on the changed files (verified)."""
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.models.idea import ActionStep
+
+    bridge = IdeaActionBridge()
+    files = sorted({f.file for f in result.findings if f.auto_fixable and f.file.endswith(".py")})
+    applied: list[dict] = []
+    # harden_security runs the detection ladder (security → mutable-default →
+    # modernization); add_docstring covers the docs findings. Loop a couple of
+    # passes per file so multiple distinct issues in one file get fixed.
+    for rel in files:
+        # Re-run the harden ladder until it stops finding something to fix (it
+        # fixes one issue per pass: eval, then mutable-default, then == None …),
+        # capped to avoid any loop. Then one docstring pass.
+        for _ in range(4):
+            step = ActionStep(branch_path="review", title=f"fix {rel}", operator="harden",
+                              subject=rel, action_type="harden_security", target=rel, executable=True)
+            r = bridge.apply_step(step, target, mode="supervised", verify=True)
+            if not r.get("applied"):
+                break
+            applied.append({"file": rel, "transform": r.get("transform_type")})
+        doc = ActionStep(branch_path="review", title=f"doc {rel}", operator="document",
+                         subject=rel, action_type="add_docstring", target=rel, executable=True)
+        rd = bridge.apply_step(doc, target, mode="supervised", verify=True)
+        if rd.get("applied"):
+            applied.append({"file": rel, "transform": rd.get("transform_type")})
+    return {"applied": applied, "applied_count": len(applied),
+            "files_touched": sorted({a["file"] for a in applied})}
+
+
+def _render_review_fixes_markdown(fix: dict) -> str:
+    if not fix.get("applied"):
+        return "\n_No auto-fixes applied (nothing verified cleanly, or nothing fixable)._\n"
+    lines = [f"\n## 🔧 Applied {fix['applied_count']} fix(es) (test-verified)"]
+    for a in fix["applied"]:
+        lines.append(f"- `{a['file']}` — {a['transform']}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def cmd_evolve(args: argparse.Namespace) -> int:
@@ -1379,6 +1431,8 @@ def main() -> int:
     review_parser.add_argument("--base", default="HEAD", help="Git base ref to diff against")
     review_parser.add_argument("--fail-on-high", action="store_true", dest="fail_on_high",
                               help="Exit non-zero if a high-severity issue is in the diff (CI)")
+    review_parser.add_argument("--fix", action="store_true",
+                              help="Apply the auto-fixable findings on the changed files (test-verified)")
     review_parser.add_argument("--json", action="store_true", help="Emit JSON")
     review_parser.set_defaults(func=cmd_review)
 

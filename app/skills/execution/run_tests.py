@@ -44,13 +44,33 @@ class RunTestsSkill:
         summary.ok = overall_ok
         return summary
 
+    def _python_for(self, root: Path) -> str:
+        """The interpreter to run the target's tests with.
+
+        Prefer the *target project's own* virtualenv so its dependencies resolve
+        — this is what lets Apex verify fixes on an external project whose deps
+        aren't installed in Apex's environment. Fall back to the current
+        interpreter (sys.executable), never a bare `pytest` that could resolve to
+        an unrelated Python.
+        """
+        candidates = (
+            root / ".venv" / "bin" / "python",
+            root / "venv" / "bin" / "python",
+            root / ".venv" / "Scripts" / "python.exe",
+            root / "venv" / "Scripts" / "python.exe",
+        )
+        for cand in candidates:
+            if cand.exists():
+                return str(cand)
+        return sys.executable
+
     def _detect_commands(self, root: Path) -> list[list[str]]:
         if (root / "pytest.ini").exists() or (root / "tests").exists() or (root / "pyproject.toml").exists():
-            # Invoke pytest via the *current* interpreter, not a bare `pytest`
-            # console script which may resolve to a different Python without the
-            # project's dependencies — causing false test failures that block
-            # every auto-fix (verify always "fails"). Same fix as the sandbox runner.
-            return [[sys.executable, "-m", "pytest", "-q"]]
+            # Run pytest via the target's own venv interpreter when present (so its
+            # deps resolve), else the current interpreter — never a bare `pytest`
+            # console script (which can resolve to a different Python without the
+            # project's deps, making verify always "fail" and blocking every fix).
+            return [[self._python_for(root), "-m", "pytest", "-q"]]
         if (root / "package.json").exists():
             return [["npm", "test", "--", "--runInBand"]]
         return []

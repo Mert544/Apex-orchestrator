@@ -94,3 +94,22 @@ def test_command_runner_still_blocks_disallowed_binary():
     from app.runtime.command_runner import CommandPolicyError, CommandRunner, CommandSpec
     with pytest.raises(CommandPolicyError):
         CommandRunner().run(CommandSpec(command=["/usr/bin/curl", "http://x"]))
+
+
+def test_run_tests_prefers_target_venv(tmp_path):
+    # Apex verifies fixes using the TARGET project's own venv when present, so an
+    # external project's dependencies resolve (key to developing other projects).
+    import os
+    from app.skills.execution.run_tests import RunTestsSkill
+
+    vbin = tmp_path / ".venv" / "bin"
+    vbin.mkdir(parents=True)
+    (vbin / "python").write_text("#!/bin/sh\n")
+    os.chmod(vbin / "python", 0o755)
+    assert RunTestsSkill()._python_for(tmp_path) == str(vbin / "python")
+
+
+def test_run_tests_falls_back_to_current_interpreter(tmp_path):
+    import sys
+    from app.skills.execution.run_tests import RunTestsSkill
+    assert RunTestsSkill()._python_for(tmp_path) == sys.executable
