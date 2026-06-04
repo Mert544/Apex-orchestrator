@@ -89,14 +89,17 @@ def test_cleanup_old_records(tmp_path):
     assert j.cleanup_old_records(keep_last=10) == 0
 
 
-def test_journal_anchored_under_project_root():
+def test_journal_anchored_under_project_root(tmp_path):
     # Regression: the journal must live under project_root, not a cwd-relative
     # .apex (which caused cross-project contamination). Absolute log_dir wins.
-    from pathlib import Path
-
+    # Use writable tmp_path dirs — __init__ mkdir's the journal's parent, so a
+    # hardcoded system path (e.g. /abs) fails on non-root CI runners.
     from app.engine.rollback_journal import RollbackJournal
 
-    j = RollbackJournal(project_root="/tmp/projX")
-    assert j.journal_path == Path("/tmp/projX/.apex/patch_journal.json")
-    j2 = RollbackJournal(project_root="/tmp/projX", log_dir="/abs/.apex")
-    assert j2.journal_path == Path("/abs/.apex/patch_journal.json")
+    proj = tmp_path / "projX"
+    j = RollbackJournal(project_root=str(proj))
+    assert j.journal_path == proj / ".apex" / "patch_journal.json"
+
+    abs_dir = tmp_path / "elsewhere" / ".apex"
+    j2 = RollbackJournal(project_root=str(proj), log_dir=str(abs_dir))
+    assert j2.journal_path == abs_dir / "patch_journal.json"  # absolute log_dir wins
