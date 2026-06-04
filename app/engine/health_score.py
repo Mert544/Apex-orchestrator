@@ -69,12 +69,23 @@ def grade(project_root: str | Path) -> HealthScore:
         # A health grade reflects the project's *own* code — not intentional
         # vulnerability fixtures or test files, which legitimately contain
         # "risky" patterns. Exclude those from the security count.
-        findings = sum(
-            1 for f in (result.get("findings") or [])
+        own_findings = [
+            f for f in (result.get("findings") or [])
             if not _is_fixture_path(str(f.get("file", "")))
+        ]
+        findings = len(own_findings)
+        # Weight by severity so a pile of medium code-smells (e.g. bare-except)
+        # is not graded identically to critical RCEs. A flat count made a
+        # library whose only issues were bare-excepts score the same as one
+        # full of eval() injections — not an honest signal.
+        severity_weight = {"critical": 6, "high": 4, "medium": 2, "low": 1}
+        weighted_findings = sum(
+            severity_weight.get(str(f.get("severity", "medium")), 2)
+            for f in own_findings
         )
     except Exception:
         findings = 0
+        weighted_findings = 0
 
     cycles = len(getattr(profile, "import_cycles", []) or [])
     fragile = len(getattr(profile, "fragile_modules", []) or [])
@@ -99,7 +110,7 @@ def grade(project_root: str | Path) -> HealthScore:
         if lost > 0 and fix:
             fixes.append(fix)
 
-    sec_lost = min(30, findings * 5)
+    sec_lost = min(30, weighted_findings)
     penalize("Security", sec_lost, f"{findings} finding(s)",
              "run `apex maintain` to auto-fix eval/os.system/yaml/bare-except" if sec_lost else None)
 

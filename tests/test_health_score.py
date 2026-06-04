@@ -126,3 +126,31 @@ def test_code_debt_counts_production_files(tmp_path):
     h = grade(str(tmp_path))
     debt = next(c for c in h.components if c.name == "Code debt")
     assert debt.points_lost > 0
+
+
+def test_security_penalty_is_severity_weighted(tmp_path):
+    # One critical finding (eval) must cost more than one medium finding
+    # (bare-except). A flat per-finding count graded code-smells like RCEs —
+    # not honest. (Surfaced grading paramiko, whose issues are all bare-excepts.)
+    from app.engine.health_score import grade
+
+    crit = tmp_path / "crit"
+    med = tmp_path / "med"
+    crit.mkdir()
+    med.mkdir()
+    (crit / "a.py").write_text("def r(c):\n    return eval(c)\n")
+    (med / "a.py").write_text("def f():\n    try:\n        pass\n    except:\n        pass\n")
+
+    crit_sec = next(c for c in grade(str(crit)).components if c.name == "Security")
+    med_sec = next(c for c in grade(str(med)).components if c.name == "Security")
+    assert crit_sec.points_lost > med_sec.points_lost > 0
+
+
+def test_security_penalty_caps_at_30(tmp_path):
+    # Even a flood of critical findings is capped (the grade stays bounded).
+    from app.engine.health_score import grade
+
+    body = "".join(f"def f{i}(c):\n    return eval(c)\n" for i in range(20))
+    (tmp_path / "a.py").write_text(body)
+    sec = next(c for c in grade(str(tmp_path)).components if c.name == "Security")
+    assert sec.points_lost == 30
