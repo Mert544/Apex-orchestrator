@@ -56,3 +56,21 @@ def test_scans_mutable_defaults(tmp_path):
     profile = ProjectProfiler(str(tmp_path)).profile()
     assert "app/bug.py" in profile.mutable_default_modules
     assert "app/ok.py" not in profile.mutable_default_modules
+
+
+def test_sensitive_paths_ignore_docs_matching_hint_substring(tmp_path):
+    # A docs file like docs/api.md matches the "api" hint by substring, but
+    # "hardening" or "testing" a markdown doc is meaningless. Only code files
+    # should be treated as sensitive (regression from running Apex on click,
+    # where docs/api.md was wrongly ranked the #1 sensitive path to test).
+    from app.tools.project_profile import ProjectProfiler
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "docs" / "api.md").write_text("# API reference\n", encoding="utf-8")
+    (tmp_path / "src" / "api_client.py").write_text("def call():\n    return 1\n", encoding="utf-8")
+    profile = ProjectProfiler(str(tmp_path)).profile()
+
+    sensitive = [str(Path(p).as_posix()) for p in profile.sensitive_paths]
+    assert "docs/api.md" not in sensitive
+    assert "src/api_client.py" in sensitive

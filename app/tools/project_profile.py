@@ -60,6 +60,14 @@ class ProjectProfiler:
         "api",
         "credential",
     }
+    # Sensitive-path hints only mean something for actual source code. A docs
+    # file like ``docs/api.md`` matches "api" by substring but hardening or
+    # "testing" a markdown doc is meaningless — restrict to code extensions so
+    # external projects (e.g. click) don't get docs flagged as sensitive.
+    CODE_EXTENSIONS = {
+        ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx",
+        ".go", ".rs", ".java", ".rb", ".php", ".c", ".cc", ".cpp", ".h", ".hpp",
+    }
 
     def __init__(self, root: str | Path, max_files: int = 2000) -> None:
         self.root = Path(root)
@@ -106,7 +114,7 @@ class ProjectProfiler:
                 profile.ci_files.append(rel_str)
             if name_lower in self.CONFIG_NAMES:
                 profile.config_files.append(rel_str)
-            if any(hint in rel_lower for hint in self.SENSITIVE_HINTS):
+            if ext in self.CODE_EXTENSIONS and any(hint in rel_lower for hint in self.SENSITIVE_HINTS):
                 profile.sensitive_paths.append(rel_str)
 
         profile.extension_counts = dict(ext_counter.most_common())
