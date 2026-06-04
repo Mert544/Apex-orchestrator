@@ -168,3 +168,45 @@ def test_bare_builtin_eval_and_compile_still_flagged(tmp_path):
     risks = [f["risk_type"] for f in r["findings"]]
     assert any("eval" in rt for rt in risks)
     assert any("compile" in rt for rt in risks)
+
+
+def test_noqa_security_code_suppresses_finding(tmp_path):
+    # Mature projects annotate intentional risks; respect ruff's flake8-bandit
+    # security codes like Bandit/ruff do. (Found running Apex on scrapy, whose
+    # every finding carried # noqa: S###.)
+    from app.agents.skills import SecurityAgent
+    (tmp_path / "m.py").write_text(
+        "def shell(code, vars):\n    return eval(code, {}, vars)  # noqa: S307\n"
+    )
+    r = SecurityAgent().run(project_root=str(tmp_path))
+    assert r["findings_count"] == 0
+
+
+def test_nosec_and_bare_noqa_suppress(tmp_path):
+    from app.agents.skills import SecurityAgent
+    (tmp_path / "m.py").write_text(
+        "import os\n"
+        "def a(c):\n    return os.system(c)  # nosec\n"
+        "def b(c):\n    return eval(c)  # noqa\n"
+    )
+    r = SecurityAgent().run(project_root=str(tmp_path))
+    assert r["findings_count"] == 0
+
+
+def test_unrelated_noqa_does_not_suppress_security(tmp_path):
+    # A non-security suppression (E501 line length) must NOT hide an eval.
+    from app.agents.skills import SecurityAgent
+    (tmp_path / "m.py").write_text(
+        "def b(c):\n    return eval(c)  # noqa: E501\n"
+    )
+    r = SecurityAgent().run(project_root=str(tmp_path))
+    assert any("eval" in f["risk_type"] for f in r["findings"])
+
+
+def test_noqa_e722_suppresses_only_bare_except(tmp_path):
+    from app.agents.skills import SecurityAgent
+    (tmp_path / "m.py").write_text(
+        "def f():\n    try:\n        pass\n    except:  # noqa: E722\n        pass\n"
+    )
+    r = SecurityAgent().run(project_root=str(tmp_path))
+    assert not any(f["risk_type"] == "bare_except" for f in r["findings"])

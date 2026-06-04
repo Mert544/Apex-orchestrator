@@ -19,6 +19,39 @@ def _has_shell_true(node: ast.Call) -> bool:
     )
 
 
+_SUPPRESS_RE = re.compile(r"#\s*(noqa|nosec)\b(?:\s*[:=]\s*([A-Za-z0-9 ,]+))?", re.IGNORECASE)
+
+
+def _line_suppresses(line: str, risk_type: str) -> bool:
+    """Respect inline security-suppression comments the way Bandit/ruff do.
+
+    A mature project explicitly annotates intentional risks; a grade must honor
+    that acknowledgement rather than re-flag it. We suppress on:
+      - ``# nosec`` (Bandit's security suppression — unambiguous),
+      - a bare ``# noqa`` (disables all lint on the line),
+      - ``# noqa: S###`` (ruff's flake8-bandit security codes, e.g. S307 eval,
+        S605 os.system, S301 pickle, S105 hardcoded password), and
+      - ``# noqa: E722`` for a bare-except finding (that is its own code).
+    Unrelated suppressions (E501, F401, bugbear B###) are NOT treated as
+    security acknowledgements.
+    """
+    m = _SUPPRESS_RE.search(line)
+    if not m:
+        return False
+    directive = m.group(1).lower()
+    if directive == "nosec":
+        return True
+    codes_raw = m.group(2)
+    if not codes_raw:  # bare `# noqa` disables all lint on the line
+        return True
+    codes = {c.strip().upper() for c in codes_raw.replace(",", " ").split()}
+    if any(c[:1] == "S" and c[1:].isdigit() for c in codes):
+        return True
+    if risk_type == "bare_except" and "E722" in codes:
+        return True
+    return False
+
+
 class SecurityAgent(Agent):
     """Agent: scans code for security anti-patterns with auto-tuning."""
 
@@ -133,7 +166,18 @@ class SecurityAgent(Agent):
                         "suggestion": "Use 'except Exception:' or specific exceptions",
                     }
                 )
-        return findings
+        return self._drop_suppressed(findings, source)
+
+    def _drop_suppressed(self, findings: list[dict[str, Any]], source: str) -> list[dict[str, Any]]:
+        """Remove findings whose source line carries a security-suppression comment."""
+        lines = source.splitlines()
+        kept: list[dict[str, Any]] = []
+        for f in findings:
+            line_no = f.get("line", 0)
+            text = lines[line_no - 1] if 1 <= line_no <= len(lines) else ""
+            if not _line_suppresses(text, str(f.get("risk_type", ""))):
+                kept.append(f)
+        return kept
 
     def _check_call(self, rel_path: str, node: ast.Call, source: str) -> list[dict[str, Any]]:
         findings: list[dict[str, Any]] = []
@@ -241,7 +285,7 @@ class SecurityAgent(Agent):
                             "suggestion": "Use environment variables or secret managers",
                         }
                     )
-        return findings
+        return self._drop_suppressed(findings, source)
 
     def _get_call_name(self, node: ast.Call) -> str:
         if isinstance(node.func, ast.Name):
