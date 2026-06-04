@@ -56,8 +56,12 @@ class CommandRunner:
         if not spec.command:
             raise ValueError("Command cannot be empty")
 
+        # Match the allowlist by basename so an absolute interpreter path (e.g.
+        # sys.executable = /usr/local/bin/python) is permitted when "python" is
+        # allowed — without it, robust `sys.executable -m pytest` invocations are
+        # wrongly blocked.
         binary = spec.command[0]
-        if binary not in self.allowed_binaries:
+        if binary not in self.allowed_binaries and Path(binary).name not in self.allowed_binaries:
             raise CommandPolicyError(f"Binary not allowed by command policy: {binary}")
 
         cwd = spec.cwd.resolve() if spec.cwd is not None else Path.cwd()

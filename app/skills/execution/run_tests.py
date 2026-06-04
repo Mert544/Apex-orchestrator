@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,7 +46,11 @@ class RunTestsSkill:
 
     def _detect_commands(self, root: Path) -> list[list[str]]:
         if (root / "pytest.ini").exists() or (root / "tests").exists() or (root / "pyproject.toml").exists():
-            return [["pytest", "-q"]]
+            # Invoke pytest via the *current* interpreter, not a bare `pytest`
+            # console script which may resolve to a different Python without the
+            # project's dependencies — causing false test failures that block
+            # every auto-fix (verify always "fails"). Same fix as the sandbox runner.
+            return [[sys.executable, "-m", "pytest", "-q"]]
         if (root / "package.json").exists():
             return [["npm", "test", "--", "--runInBand"]]
         return []

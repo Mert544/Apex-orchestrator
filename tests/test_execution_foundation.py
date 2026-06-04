@@ -38,7 +38,10 @@ def test_run_tests_skill_executes_pytest_for_python_project(tmp_path: Path):
     _build_demo_project(tmp_path)
     result = RunTestsSkill().run(tmp_path)
 
-    assert result.commands == [["pytest", "-q"]]
+    import sys
+    # pytest is invoked via the current interpreter (robust against a bare
+    # `pytest` resolving to a different Python without the project's deps).
+    assert result.commands == [[sys.executable, "-m", "pytest", "-q"]]
     assert result.ok is True
     assert result.results
     assert result.results[0]["ok"] is True
@@ -72,3 +75,22 @@ def test_verify_project_plan_profiles_and_runs_tests(tmp_path: Path):
     assert [step.step_name for step in result.steps] == ["profile_project", "run_tests"]
     assert all(step.status == "ok" for step in result.steps)
     assert result.final_output["ok"] is True
+
+
+def test_command_runner_allows_interpreter_by_basename():
+    # An absolute interpreter path (sys.executable) must be permitted when its
+    # basename ("python") is allowlisted — otherwise sys.executable -m pytest is
+    # wrongly blocked (this broke autonomous fix verification).
+    import sys
+    from app.runtime.command_runner import CommandRunner, CommandSpec
+
+    runner = CommandRunner()
+    res = runner.run(CommandSpec(command=[sys.executable, "-c", "print('ok')"]))
+    assert res.ok and "ok" in res.stdout
+
+
+def test_command_runner_still_blocks_disallowed_binary():
+    import pytest
+    from app.runtime.command_runner import CommandPolicyError, CommandRunner, CommandSpec
+    with pytest.raises(CommandPolicyError):
+        CommandRunner().run(CommandSpec(command=["/usr/bin/curl", "http://x"]))
