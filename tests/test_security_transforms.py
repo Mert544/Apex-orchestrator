@@ -24,8 +24,18 @@ class TestSecurityTransforms:
         result = security_apply("test.py", source, "os.system() shell injection")
         assert result is not None
         assert result.transform_type == "os_system_to_subprocess"
-        assert "subprocess.run" in result.patch_requests[0]["new_content"]
-        assert "import subprocess" in result.patch_requests[0]["new_content"]
+        content = result.patch_requests[0]["new_content"]
+        assert "subprocess.run" in content
+        assert "import subprocess" in content
+        # The command must be tokenised with shlex.split (os.system runs through
+        # a shell, which splits the string). Wrapping it as [cmd] with
+        # shell=False would seek one executable literally named "ls -la".
+        assert "shlex.split(cmd)" in content
+        assert "import shlex" in content
+        # No spurious `import ast` — the os.system rewrite never uses ast.
+        assert "import ast" not in content
+        import ast as _ast
+        _ast.parse(content)  # result is valid Python
 
     def test_bare_except_to_exception(self):
         source = 'import os\ntry:\n    x\nexcept:\n    pass\n'

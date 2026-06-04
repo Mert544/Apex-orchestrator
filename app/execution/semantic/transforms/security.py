@@ -225,20 +225,25 @@ def _patch_os_system(rel_path: str, source: str, tree: ast.Module) -> SemanticPa
         line_content = lines[lineno - 1] if lineno <= len(lines) else ""
         _get_indent(line_content)
 
+        # os.system runs its argument through a shell, which TOKENISES it. The
+        # equivalent shell-free call must split the command the same way, so we
+        # use shlex.split — wrapping the whole string in a one-element list
+        # (subprocess.run([cmd], shell=False)) would seek a single executable
+        # literally named e.g. "ls -la" and fail at runtime.
         new_line = line_content.replace(
             f"os.system({arg_source})",
-            f"subprocess.run([{arg_source}], shell=False, check=True)"
+            f"subprocess.run(shlex.split({arg_source}), check=True)"
         )
 
         new_lines = list(lines)
         new_lines[lineno - 1] = new_line
 
         needs_subprocess = "import subprocess" not in source
-        needs_ast = "import ast" not in source
+        needs_shlex = "import shlex" not in source
+        if needs_shlex:
+            new_lines.insert(0, "import shlex\n")
         if needs_subprocess:
             new_lines.insert(0, "import subprocess\n")
-        if needs_ast:
-            new_lines.insert(0, "import ast\n")
 
         return SemanticPatchResult(
             patch_requests=[{

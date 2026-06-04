@@ -199,14 +199,15 @@ class TestSecurityOsSystemEdges:
         assert result is None
 
     def test_os_system_existing_imports_not_duplicated(self):
-        # subprocess + ast already imported -> no insertion (lines 236-241 skipped).
-        source = "import subprocess\nimport ast\nos.system(cmd)\n"
+        # subprocess + shlex already imported -> no insertion (skipped).
+        source = "import subprocess\nimport shlex\nos.system(cmd)\n"
         result = security_apply("t.py", source, "os.system")
         assert result is not None
         out = result.patch_requests[0]["new_content"]
         assert out.count("import subprocess") == 1
-        assert out.count("import ast") == 1
-        assert "subprocess.run([cmd]" in out
+        assert out.count("import shlex") == 1
+        # Correct rewrite tokenises with shlex.split, not a [cmd] one-element list.
+        assert "subprocess.run(shlex.split(cmd)" in out
         _parse_ok(out)
 
 
