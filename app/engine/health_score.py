@@ -108,6 +108,7 @@ def grade(project_root: str | Path) -> HealthScore:
     cycles = len(getattr(profile, "import_cycles", []) or [])
     fragile = len(getattr(profile, "fragile_modules", []) or [])
     untested = len(getattr(profile, "untested_modules", []) or [])
+    shallow = len(getattr(profile, "shallow_tested_modules", []) or [])
     total_modules = max(1, len(getattr(profile, "module_to_tests", {}) or {}))
     # Code-debt counts the project's *own* code, not test/fixture files — the
     # same exclusion already applied to security findings above. A mutable
@@ -142,10 +143,18 @@ def grade(project_root: str | Path) -> HealthScore:
     penalize("Architecture", arch_lost, f"{cycles} import cycle(s), {fragile} fragile module(s)",
              "break import cycles and add tests to fragile hubs" if arch_lost else None)
 
-    untested_ratio = untested / total_modules
-    test_lost = min(25, round(untested_ratio * 25))
-    penalize("Testing", test_lost, f"{untested} untested module(s) of ~{total_modules}",
-             "add a first test layer to the untested modules" if test_lost else None)
+    # Shallow-tested modules (covered only by import-smoke / type stubs) get
+    # HALF credit, not full — linkage is not correctness, so a project can't
+    # claim a clean Testing score on shape-only tests.
+    effective_untested = untested + 0.5 * shallow
+    test_lost = min(25, round(effective_untested / total_modules * 25))
+    if shallow:
+        detail = f"{untested} untested + {shallow} shallow-tested module(s) of ~{total_modules}"
+        fix = "add tests to the untested modules and deepen the shallow (type-only) ones"
+    else:
+        detail = f"{untested} untested module(s) of ~{total_modules}"
+        fix = "add a first test layer to the untested modules"
+    penalize("Testing", test_lost, detail, fix if test_lost else None)
 
     debt_lost = min(15, debt * 3)
     penalize("Code debt", debt_lost, f"{debt} module(s) with modernization / mutable-default / reliability debt",

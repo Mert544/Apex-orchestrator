@@ -188,3 +188,22 @@ def test_reliability_debt_excludes_test_files(tmp_path):
     (tmp_path / "pyproject.toml").write_text("[project]\nname='d'\nversion='0'\n", encoding="utf-8")
     debt = next(c for c in grade(str(tmp_path)).components if c.name == "Code debt")
     assert debt.points_lost == 0
+
+
+def test_shallow_tested_modules_are_not_full_credit(tmp_path):
+    # A module covered only by a shape-only stub (isinstance/import) must cost
+    # Testing points — linkage is not correctness, so no clean A+ on stubs.
+    from app.engine.health_score import grade
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "pkg" / "m.py").write_text("def f(x: int) -> int:\n    return x + 1\n")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "import pkg.m\ndef test_m():\n    assert isinstance(pkg.m.f(0), int)\n"
+    )
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='p'\nversion='0'\n")
+    h = grade(str(tmp_path))
+    testing = next(c for c in h.components if c.name == "Testing")
+    assert testing.points_lost > 0
+    assert "shallow" in testing.detail
