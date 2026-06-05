@@ -154,6 +154,18 @@ class IdeaSeeder:
                 fact_value=f"{module} (1 test)",
             )
 
+        # Complexity hotspots: modules combining high cyclomatic complexity with
+        # blast radius and thin tests — the riskiest places to change, so derisk
+        # them with tests/simplification before they cause incidents.
+        for module in (getattr(profile, "hotspot_modules", []) or [])[:3]:
+            self._append_root(
+                roots, seen_subjects,
+                title=f"De-risk the complexity hotspot {module} (simplify and add tests)",
+                subject=module,
+                fact_label="complexity-hotspot",
+                fact_value=f"{module} (high complexity x fan-in, thin tests)",
+            )
+
         # Technical-debt markers: modules carrying a cluster of TODO/FIXME/XXX/
         # HACK comments are concrete, traceable pockets of deferred work.
         for module in (getattr(profile, "debt_marker_modules", []) or [])[:3]:
@@ -774,10 +786,11 @@ _FACT_HINTS: dict[str, str] = {
     "modernization": "refactor cleanup",
     "mutable-default": "shared mutable state bug",
     "debt-markers": "refactor cleanup deferred work",
+    "complexity-hotspot": "complex check validation edge cases simplify",
 }
 
 # Root fact labels where reliability/security lenses matter most.
-_SECURITY_LABELS = {"sensitive-path", "critical-untested", "untested", "partial-coverage", "fragile"}
+_SECURITY_LABELS = {"sensitive-path", "critical-untested", "untested", "partial-coverage", "fragile", "complexity-hotspot"}
 
 
 def _context_weight(node: IdeaNode, op_name: str, security_pressure: float = 1.0) -> float:

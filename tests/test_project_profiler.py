@@ -117,3 +117,20 @@ def test_profiler_flags_modules_with_clustered_debt_markers(tmp_path: Path):
     assert "app/light.py" not in flagged
     assert "app/clean.py" not in flagged
     assert "app/literal.py" not in flagged
+
+
+def test_profiler_flags_complexity_hotspots(tmp_path: Path):
+    # A complex, heavily-imported, untested module is a hotspot; a trivial one
+    # (low complexity) is not, even if imported.
+    (tmp_path / "app").mkdir()
+    branches = "\n".join(f"    if x == {i}:\n        return {i}" for i in range(12))
+    (tmp_path / "app" / "hot.py").write_text(f"def hot(x):\n{branches}\n    return -1\n", encoding="utf-8")
+    for i in range(3):
+        (tmp_path / "app" / f"c{i}.py").write_text(
+            f"from app.hot import hot\n\ndef u{i}():\n    return hot({i})\n", encoding="utf-8"
+        )
+    (tmp_path / "app" / "calm.py").write_text("def calm(x):\n    return x + 1\n", encoding="utf-8")
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    hot = [str(Path(p).as_posix()) for p in profile.hotspot_modules]
+    assert "app/hot.py" in hot
+    assert "app/calm.py" not in hot

@@ -32,6 +32,7 @@ class ProjectProfile:
     modernizable_modules: list[str] = field(default_factory=list)
     mutable_default_modules: list[str] = field(default_factory=list)
     debt_marker_modules: list[str] = field(default_factory=list)
+    hotspot_modules: list[str] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -207,6 +208,33 @@ class ProjectProfiler:
         # (currently `== None`/`!= None`), so the engine can propose safe fixes.
         profile.modernizable_modules = self._scan_modernizable(modules)[:5]
         profile.mutable_default_modules = self._scan_mutable_defaults(modules)[:5]
+
+        # Complexity hotspots: modules combining real cyclomatic complexity with
+        # blast radius and thin tests — the riskiest places to change. Scored
+        # only over a bounded candidate set (high in-degree or symbol-heavy) so
+        # this stays cheap. Shares the risk formula with the hotspots report.
+        profile.hotspot_modules = self._scan_hotspots(modules, graph, profile.module_to_tests)
+
+    def _scan_hotspots(self, modules: list, graph: dict, module_to_tests: dict) -> list[str]:
+        """Top modules by complexity × (1 + fan-in) ÷ (1 + tests), bounded + filtered."""
+        from app.reporting.hotspots import hotspot_risk
+        from app.tools.code_metrics import CodeMetrics
+
+        fan_in = {n.path: n.in_degree for n in graph.values()}
+        symbol_rank = sorted(modules, key=lambda m: len(m.symbols), reverse=True)
+        candidates = {p for p, fi in fan_in.items() if fi >= 2}
+        candidates |= {m.path for m in symbol_rank[:15]}
+        if not candidates:
+            return []
+        metrics = CodeMetrics(self.root).for_modules(sorted(candidates))
+        scored: list[tuple[float, int, str]] = []
+        for path, mm in metrics.items():
+            if mm.complexity < 8:        # a real branching module, not a trivial one
+                continue
+            risk = hotspot_risk(mm.complexity, fan_in.get(path, 0), len(module_to_tests.get(path, [])))
+            scored.append((risk, mm.complexity, path))
+        scored.sort(key=lambda t: (-t[0], -t[1], t[2]))
+        return [p for _risk, _cx, p in scored[:3]]
 
     def _scan_mutable_defaults(self, modules: list) -> list[str]:
         """Modules with a mutable default argument (list/dict/set literal)."""

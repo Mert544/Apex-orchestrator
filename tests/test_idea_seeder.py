@@ -168,3 +168,12 @@ def test_seeds_mutable_default_idea_and_maps_to_action():
     assert "Fix mutable default arguments in app/svc.py" == idea.title
     step = IdeaActionBridge().plan_idea(idea)
     assert step.action_type == "fix_mutable_defaults" and step.executable is True
+
+
+def test_seeds_complexity_hotspot_idea(tmp_path):
+    from app.tools.project_profile import ProjectProfile
+    from app.engine.idea_permutation import IdeaSeeder
+    profile = ProjectProfile(root=str(tmp_path), hotspot_modules=["app/hot.py"])
+    roots = IdeaSeeder().seed(profile)
+    hot = [r for r in roots if any("complexity-hotspot" in f for f in r.source_facts)]
+    assert hot and any("app/hot.py" in r.subject for r in hot)
