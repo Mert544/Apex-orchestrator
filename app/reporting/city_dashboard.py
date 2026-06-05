@@ -231,6 +231,9 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   #detail .meta { font-size:12px; color:#9fb0d4; line-height:1.7; }
   #detail .x { float:right; cursor:pointer; color:#7e8db0; }
   #detail .tag { display:inline-block; padding:1px 8px; border-radius:6px; font-size:11px; font-weight:700; }
+  #minimap { position:fixed; right:16px; bottom:16px; width:188px; padding:8px 8px 6px; }
+  #minimap .cap { font-size:10px; color:#7e8db0; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px; }
+  #minimap canvas { width:172px; height:172px; border-radius:6px; display:block; background:#0c1322; }
   .hl { color:#fff; }
 </style>
 </head>
@@ -268,6 +271,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 <div id="tip"></div>
 <div id="ticker" class="panel"></div>
+<div id="minimap" class="panel"><div class="cap">Floor plan · live</div><canvas id="mm" width="172" height="172"></canvas></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 const DATA = /*__DATA__*/;
@@ -413,6 +417,20 @@ const DATA = /*__DATA__*/;
     const lbl = makeLabel("🏢 "+z.dept, "#bcd2ff", 2.8);
     lbl.position.set(z.cxn, 4.2, z.czn - z.d/2 - 0.5); scene.add(lbl);
   });
+
+  // ---- reception desk + big health-grade sign at the front of the floor ----
+  (function reception(){
+    const fz = -ROOMD/2 + 5;   // near the front wall
+    const counter = new THREE.Mesh(new THREE.BoxGeometry(9, 1.1, 1.6),
+      new THREE.MeshLambertMaterial({ color:0x2b3650 }));
+    counter.position.set(0, 0.55, fz); counter.castShadow = true; counter.receiveShadow = true; scene.add(counter);
+    const top = new THREE.Mesh(new THREE.BoxGeometry(9.4, 0.12, 2.0),
+      new THREE.MeshLambertMaterial({ color:0x6b5640 })); top.position.set(0, 1.16, fz); scene.add(top);
+    const sign = makeLabel("APEX  ·  "+DATA.grade.letter+"  "+DATA.grade.score+"/100", "#bcd2ff", 4.4);
+    sign.position.set(0, 6.4, -ROOMD/2 + 0.6); scene.add(sign);
+    const logo = makeLabel("🏢  THE OFFICE", "#7e8db0", 2.0);
+    logo.position.set(0, 4.2, -ROOMD/2 + 0.6); scene.add(logo);
+  })();
 
   // ---- monitor screen content: a faux code/terminal UI tinted by health ----
   function screenTexture(b, hexcss){
@@ -593,6 +611,26 @@ const DATA = /*__DATA__*/;
   function colorOf(role){ const m = DATA.workers.find(w=>w.role===role); return m?m.color:"#fff"; }
   workers.forEach(newTarget);
 
+  // ---- live minimap (top-down floor plan with moving worker dots) ----
+  const mm = document.getElementById("mm"), mx = mm.getContext("2d");
+  const mmHalfW = ROOMW/2, mmHalfD = ROOMD/2;
+  function mmX(x){ return (x + mmHalfW)/(2*mmHalfW) * mm.width; }
+  function mmY(z){ return (z + mmHalfD)/(2*mmHalfD) * mm.height; }
+  function drawMinimap(){
+    mx.clearRect(0,0,mm.width,mm.height);
+    mx.fillStyle = "#0c1322"; mx.fillRect(0,0,mm.width,mm.height);
+    // desks
+    for(let i=0;i<buildings.length;i++){ const p = pos[i]; if(!p) continue;
+      mx.fillStyle = HEALTH_CSS[buildings[i].health] || "#36c98f";
+      mx.fillRect(mmX(p.x)-1.5, mmY(p.z)-1.5, 3, 3); }
+    // workers (live)
+    workers.forEach(wk=>{ mx.beginPath(); mx.fillStyle = colorOf(wk.role);
+      mx.arc(mmX(wk.g.position.x), mmY(wk.g.position.z), 2.4, 0, 7); mx.fill(); });
+    // camera footprint
+    mx.strokeStyle = "rgba(220,230,255,.5)"; mx.lineWidth = 1;
+    mx.strokeRect(mmX(target.x)-3, mmY(target.z)-3, 6, 6);
+  }
+
   // ---- camera (custom orbit) ----
   let theta = 0.7, phi = 0.82, rad = Math.max(55, WORLD*0.92), autoOrbit=false;
   let drag=false, moved=false, px=0, py=0;
@@ -681,6 +719,7 @@ const DATA = /*__DATA__*/;
       }
     });
     scene.children.forEach(o=>{ if(o.userData && o.userData.pulse){ o.scale.y = 1 + Math.sin(tt*4)*0.4; } });
+    if((tt*60|0) % 3 === 0) drawMinimap();   // ~20fps minimap, cheap
     applyCam(); renderer.render(scene, camera); requestAnimationFrame(tick);
   }
   applyCam(); tick();
