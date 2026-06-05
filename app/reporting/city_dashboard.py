@@ -432,6 +432,32 @@ const DATA = /*__DATA__*/;
     logo.position.set(0, 4.2, -ROOMD/2 + 0.6); scene.add(logo);
   })();
 
+  // ---- glass meeting room in the back-right corner ----
+  (function meetingRoom(){
+    const rw = 11, rd = 8, rh = 3.4;
+    const rx = ROOMW/2 - rw/2 - 2, rz = ROOMD/2 - rd/2 - 2;
+    const glass = new THREE.MeshBasicMaterial({ color:0x6fa8d8, transparent:true, opacity:0.10, side:THREE.DoubleSide });
+    const pane=(w,h,d,x,y,z)=>{ const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d), glass); m.position.set(x,y,z); scene.add(m);
+      const e=new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry), new THREE.LineBasicMaterial({color:0x4f7bb0,transparent:true,opacity:0.55})); e.position.copy(m.position); scene.add(e); };
+    pane(rw,rh,0.12, rx, rh/2, rz-rd/2);
+    pane(0.12,rh,rd, rx-rw/2, rh/2, rz);
+    pane(0.12,rh,rd, rx+rw/2, rh/2, rz);            // open side faces the floor (entrance)
+    // conference table + chairs
+    const table = new THREE.Mesh(new THREE.BoxGeometry(5.2,0.16,2.4), new THREE.MeshLambertMaterial({ color:0x5a4636 }));
+    table.position.set(rx, 1.05, rz); table.castShadow = true; table.receiveShadow = true; scene.add(table);
+    const tleg=(dx,dz)=>{ const l=new THREE.Mesh(new THREE.BoxGeometry(0.18,1.0,0.18), new THREE.MeshLambertMaterial({color:0x20283a}));
+      l.position.set(rx+dx,0.5,rz+dz); scene.add(l); };
+    tleg(-2.2,-0.9); tleg(2.2,-0.9); tleg(-2.2,0.9); tleg(2.2,0.9);
+    const chairMatM = new THREE.MeshLambertMaterial({ color:0x2b3650 });
+    for(let s=-1;s<=1;s++){ [-1,1].forEach(side=>{
+      const seat=new THREE.Mesh(new THREE.BoxGeometry(0.7,0.12,0.7), chairMatM);
+      seat.position.set(rx + s*1.7, 0.66, rz + side*1.7); seat.castShadow=true; scene.add(seat);
+      const back=new THREE.Mesh(new THREE.BoxGeometry(0.7,0.7,0.12), chairMatM);
+      back.position.set(rx + s*1.7, 1.0, rz + side*1.95*0.62*1.0 + side*0.0); back.position.z = rz + side*2.0; scene.add(back);
+    }); }
+    const lbl = makeLabel("📊 Meeting Room", "#bcd2ff", 2.2); lbl.position.set(rx, rh+1.0, rz-rd/2); scene.add(lbl);
+  })();
+
   // ---- monitor screen content: a faux code/terminal UI tinted by health ----
   function screenTexture(b, hexcss){
     const c = document.createElement("canvas"); c.width = 256; c.height = 160; const x = c.getContext("2d");
@@ -585,6 +611,9 @@ const DATA = /*__DATA__*/;
       target:new THREE.Vector3(g.position.x,0,g.position.z), face:0,
       wait:rnd()*2, phase:rnd()*6.28, curName:"", sitting:false };
   });
+  workers.forEach(w=>{ w.g.userData.wk = w; });
+  const workerGroups = workers.map(w=>w.g);
+  let follow = null;   // a worker the camera is currently tracking
   function newTarget(wk){
     wk.ri = (wk.ri + 1) % wk.route.length;
     const bi = wk.route[wk.ri]; const p = plotOf(bi);
@@ -669,7 +698,24 @@ const DATA = /*__DATA__*/;
   }
   dom.addEventListener("click", e=>{
     if(moved) return;            // a drag, not a click
-    const hit = pick(e); if(!hit) return;
+    const hit = pick(e);
+    if(!hit){
+      // maybe a worker was clicked -> follow them; empty space -> release follow
+      mouse.x=(e.clientX/innerWidth)*2-1; mouse.y=-(e.clientY/innerHeight)*2+1; ray.setFromCamera(mouse, camera);
+      const wh = ray.intersectObjects(workerGroups, true)[0];
+      if(wh){ let o = wh.object; while(o && !(o.userData && o.userData.wk)) o = o.parent;
+        if(o){ follow = o.userData.wk; rad = 22;
+          document.getElementById("detail").style.display="block";
+          document.getElementById("dName").textContent = "👤 "+follow.role;
+          document.getElementById("dMeta").innerHTML =
+            "<span class='tag' style='background:"+follow.g.children[0].material.color.getStyle()+";color:#0a0e17'>following</span><br><br>"+
+            "Now servicing: <span class='hl'>"+(follow.curName||"…")+"</span><br>"+
+            "Route length: <span class='hl'>"+follow.route.length+"</span> desk(s)<br><br>"+
+            "<span style='color:#7e8db0'>Click empty floor or Reset to release.</span>";
+          return; } }
+      follow = null; return;
+    }
+    follow = null;
     const u = hit.object.userData, b = u.b;
     target.set(u.x, u.h/2, u.z); rad = Math.max(24, u.h*1.6 + 22);
     const visitors = DATA.workers.filter(w=> w.route.includes(u.i)).map(w=>w.role);
@@ -690,14 +736,15 @@ const DATA = /*__DATA__*/;
   const bOrbit=document.getElementById("btnOrbit"), bRoads=document.getElementById("btnRoads"), bReset=document.getElementById("btnReset");
   bOrbit.onclick = ()=>{ autoOrbit=!autoOrbit; bOrbit.classList.toggle("on",autoOrbit); bOrbit.textContent=(autoOrbit?"⏸":"▶")+" Auto-orbit"; };
   bRoads.onclick = ()=>{ if(roads){ roads.visible=!roads.visible; bRoads.classList.toggle("on",roads.visible); } };
-  bReset.onclick = ()=>{ target.copy(homeTarget); rad=homeRad; theta=0.7; phi=0.82;
+  bReset.onclick = ()=>{ follow=null; target.copy(homeTarget); rad=homeRad; theta=0.7; phi=0.82;
     document.getElementById("detail").style.display="none"; };
 
   // ---- loop ----
   const clock = new THREE.Clock();
   function tick(){
     const dt = Math.min(0.05, clock.getDelta()), tt = clock.elapsedTime;
-    if(autoOrbit) theta += dt*0.12;
+    if(autoOrbit && !follow) theta += dt*0.12;
+    if(follow){ target.lerp(new THREE.Vector3(follow.g.position.x, 1.4, follow.g.position.z), 0.12); }
     workers.forEach(wk=>{
       const pp = wk.g.position, tg = wk.target, u = wk.g.userData;
       const dx = tg.x-pp.x, dz = tg.z-pp.z, d = Math.hypot(dx,dz);
