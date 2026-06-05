@@ -113,6 +113,14 @@ class IdeaActionBridge:
         text = cls._read(project_root, rel_path)
         return has_none_comparison(text) if text is not None else False
 
+    @classmethod
+    def _detect_open_encoding(cls, project_root: str, rel_path: str) -> bool:
+        """True if the file opens text without an explicit ``encoding=``."""
+        from app.engine.detectors import has_open_without_encoding
+
+        text = cls._read(project_root, rel_path)
+        return has_open_without_encoding(text) if text is not None else False
+
     def _generate(self, step: ActionStep, project_root: str):
         """Run the semantic generator for an executable step. Returns the
         SemanticPatchResult (proposed only) or None."""
@@ -150,6 +158,9 @@ class IdeaActionBridge:
             elif self._detect_modernization(project_root, step.target):
                 change_strategy = ["modernize none-comparison"]
                 title = f"Modernize comparisons in {step.target}"
+            elif self._detect_open_encoding(project_root, step.target):
+                change_strategy = ["open-encoding"]
+                title = f"Add explicit open() encoding in {step.target}"
         elif step.action_type == "organize_imports" and self._detect_modernization(project_root, step.target):
             # A "simplify" idea on a file with `== None` modernizes it (a safe,
             # behavior-preserving cleanup) instead of only touching imports.

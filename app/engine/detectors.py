@@ -50,6 +50,10 @@ def detect(source: str) -> list[Issue]:
                 add(node.lineno, "security", "high", "eval() — code injection risk", "eval")
             elif isinstance(f, ast.Name) and f.id == "exec":
                 add(node.lineno, "security", "high", "exec() — code injection risk", "")
+            elif isinstance(f, ast.Name) and f.id == "open" and _is_text_open_without_encoding(node):
+                add(node.lineno, "bug", "low",
+                    "open() without encoding= is locale-dependent — pass encoding=\"utf-8\"",
+                    "open-encoding")
             elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
                 owner, attr = f.value.id, f.attr
                 if owner == "os" and attr == "system":
@@ -123,6 +127,31 @@ def _is_hardcoded_secret(node: ast.AST) -> bool:
     return False
 
 
+def _is_text_open_without_encoding(node: ast.Call) -> bool:
+    """True if ``node`` is a builtin text-mode ``open()`` lacking ``encoding=``.
+
+    Mirrors the open_encoding transform's guard so detection and the fix agree:
+    a dynamic/binary mode or an existing ``encoding=`` (or ``**kwargs``) is left
+    alone.
+    """
+    if not (isinstance(node.func, ast.Name) and node.func.id == "open") or not node.args:
+        return False
+    if any(kw.arg is None for kw in node.keywords):
+        return False
+    if any(kw.arg == "encoding" for kw in node.keywords):
+        return False
+    mode_node: ast.expr | None = node.args[1] if len(node.args) >= 2 else None
+    for kw in node.keywords:
+        if kw.arg == "mode":
+            mode_node = kw.value
+    if mode_node is not None:
+        if not (isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str)):
+            return False
+        if "b" in mode_node.value:
+            return False
+    return True
+
+
 def _has_mutable_default(func: ast.AST) -> bool:
     defaults = list(func.args.defaults) + [k for k in func.args.kw_defaults if k]
     for d in defaults:
@@ -172,3 +201,7 @@ def has_mutable_default(source: str) -> bool:
 
 def has_none_comparison(source: str) -> bool:
     return any(i.fix_kind == "none-comparison" for i in detect(source))
+
+
+def has_open_without_encoding(source: str) -> bool:
+    return any(i.fix_kind == "open-encoding" for i in detect(source))

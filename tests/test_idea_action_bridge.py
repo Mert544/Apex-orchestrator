@@ -186,6 +186,23 @@ def test_harden_applies_bare_except_fix(tmp_path):
         assert "except Exception:" in src.read_text()
 
 
+def test_harden_applies_open_encoding_fix(tmp_path):
+    # A file whose only issue is open() without encoding gets the portability
+    # fix via the harden detection ladder.
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "io.py"
+    src.write_text('def load(p):\n    return open(p).read()\n')
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Harden: app/io.py", subject="app/io.py",
+                    operator="harden", operator_chain=["harden"],
+                    source_facts=["sensitive-path: app/io.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
+    if result["applied"]:
+        assert result["transform_type"] == "add_open_encoding"
+        assert 'encoding="utf-8"' in src.read_text()
+
+
 def test_harden_falls_back_to_guard_when_no_known_issue(tmp_path):
     # No eval/os.system/bare-except -> harden_security still produces *a* patch
     # (guard clause) rather than erroring.
