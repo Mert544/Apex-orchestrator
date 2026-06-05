@@ -481,6 +481,20 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_hotspots(args: argparse.Namespace) -> int:
+    """Rank the modules most worth attention (complexity × blast-radius ÷ tests)."""
+    from app.reporting.hotspots import build_hotspots, render_hotspots_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    rows = build_hotspots(str(target), limit=args.limit)
+    if args.json:
+        import json
+        print(json.dumps(rows, indent=2))
+    else:
+        print(render_hotspots_markdown(rows))
+    return 0
+
+
 def cmd_city(args: argparse.Namespace) -> int:
     """Generate the 3D 'company city' dashboard — modules as buildings, agents as workers."""
     from app.reporting.city_dashboard import build_city
@@ -1902,6 +1916,15 @@ def main() -> int:
     dash_parser.add_argument("--max-ideas", type=int, default=24, dest="max_ideas", help="Idea budget")
     dash_parser.add_argument("--out", default="", help="Output HTML path (default <target>/.apex/dashboard.html)")
     dash_parser.set_defaults(func=cmd_dashboard)
+
+    # hotspots — rank modules by complexity × blast-radius ÷ tests
+    hot_parser = subparsers.add_parser(
+        "hotspots", help="Rank the modules most worth attention (complexity × fan-in ÷ tests)"
+    )
+    hot_parser.add_argument("--target", default="", help="Target project root")
+    hot_parser.add_argument("--limit", type=int, default=15, help="How many hotspots to show")
+    hot_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    hot_parser.set_defaults(func=cmd_hotspots)
 
     # city — 3D "company city": modules as buildings, Apex agents as walking workers
     city_parser = subparsers.add_parser(
