@@ -291,11 +291,22 @@ const DATA = /*__DATA__*/;
   const renderer = new THREE.WebGLRenderer({ antialias:true });
   renderer.setSize(innerWidth, innerHeight);
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  if (THREE.sRGBEncoding !== undefined) renderer.outputEncoding = THREE.sRGBEncoding;
   document.getElementById("scene").appendChild(renderer.domElement);
 
-  scene.add(new THREE.AmbientLight(0x8fa6d6, 0.55));
-  const sun = new THREE.DirectionalLight(0xffffff, 0.85); sun.position.set(60,110,40); scene.add(sun);
-  const rim = new THREE.DirectionalLight(0x4d7bff, 0.3); rim.position.set(-60,40,-50); scene.add(rim);
+  // Soft, warm office lighting: a hemisphere fill + a key light that casts shadows.
+  scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x202838, 0.65));
+  scene.add(new THREE.AmbientLight(0x9fb0d0, 0.28));
+  const sun = new THREE.DirectionalLight(0xfff4e2, 0.7);
+  sun.position.set(60, 120, 50); sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.bias = -0.0004;
+  const sc0 = sun.shadow.camera;
+  sc0.near = 10; sc0.far = 400; sc0.left = -160; sc0.right = 160; sc0.top = 160; sc0.bottom = -160;
+  scene.add(sun);
+  const rim = new THREE.DirectionalLight(0x4d7bff, 0.22); rim.position.set(-60,40,-50); scene.add(rim);
 
   const buildings = DATA.buildings;
   const N = buildings.length;
@@ -328,26 +339,50 @@ const DATA = /*__DATA__*/;
   zones.forEach(z=>{ z.cxn = z.x + z.w/2 + offX; z.czn = z.z + z.d/2 + offZ; });
   const WORLD = Math.max(totalW, totalD);
 
-  // ---- office shell: carpet floor, perimeter walls, ceiling light strips ----
-  const ROOMW = totalW + 26, ROOMD = totalD + 26, WALLH = 11;
+  // ---- office shell: textured carpet floor, walls with windows, ceiling lights ----
+  const ROOMW = totalW + 28, ROOMD = totalD + 28, WALLH = 12;
+  // Procedural carpet texture (subtle tiled noise) — no external assets.
+  function carpetTexture(){
+    const c = document.createElement("canvas"); c.width = c.height = 256; const x = c.getContext("2d");
+    x.fillStyle = "#1b2740"; x.fillRect(0,0,256,256);
+    for(let i=0;i<2600;i++){ const g = 22 + Math.floor(rnd()*26);
+      x.fillStyle = "rgba("+(g)+","+(g+12)+","+(g+30)+",0.5)";
+      x.fillRect(rnd()*256, rnd()*256, 2, 2); }
+    x.strokeStyle = "rgba(40,56,90,0.5)"; x.lineWidth = 1;
+    for(let i=0;i<=256;i+=32){ x.beginPath(); x.moveTo(i,0); x.lineTo(i,256); x.stroke();
+      x.beginPath(); x.moveTo(0,i); x.lineTo(256,i); x.stroke(); }
+    const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(Math.round(ROOMW/8), Math.round(ROOMD/8)); return t;
+  }
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOMW, ROOMD),
-    new THREE.MeshLambertMaterial({ color:0x18223a }));
-  floor.rotation.x = -Math.PI/2; scene.add(floor);
-  const carpet = new THREE.GridHelper(Math.max(ROOMW,ROOMD),
-    Math.max(8, Math.round(Math.max(ROOMW,ROOMD)/6)), 0x243355, 0x1b2740);
-  carpet.position.y = 0.02; scene.add(carpet);
-  const wallMat = new THREE.MeshLambertMaterial({ color:0x2a3a5e, transparent:true, opacity:0.16, side:THREE.DoubleSide });
-  function wall(w,h,d,x,y,z){ const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d), wallMat); m.position.set(x,y,z); scene.add(m); }
-  wall(ROOMW, WALLH, 0.4, 0, WALLH/2, -ROOMD/2);
-  wall(ROOMW, WALLH, 0.4, 0, WALLH/2,  ROOMD/2);
-  wall(0.4, WALLH, ROOMD, -ROOMW/2, WALLH/2, 0);
-  wall(0.4, WALLH, ROOMD,  ROOMW/2, WALLH/2, 0);
-  const stripMat = new THREE.MeshBasicMaterial({ color:0xbcd2ff });
+    new THREE.MeshLambertMaterial({ map: carpetTexture() }));
+  floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; scene.add(floor);
+
+  // Walls with a row of windows (lighter panels) for a real office feel.
+  const wallMat = new THREE.MeshLambertMaterial({ color:0x33456c, transparent:true, opacity:0.22, side:THREE.DoubleSide });
+  const winMat  = new THREE.MeshBasicMaterial({ color:0x9fc4ff, transparent:true, opacity:0.16, side:THREE.DoubleSide });
+  function wall(w,h,d,x,y,z,horiz){
+    const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d), wallMat); m.position.set(x,y,z); scene.add(m);
+    const len = horiz ? w : d; const n = Math.max(2, Math.round(len/12));
+    for(let i=0;i<n;i++){ const f = (i+0.5)/n - 0.5;
+      const win = new THREE.Mesh(new THREE.PlaneGeometry(Math.min(6,len/n*0.7), h*0.5), winMat);
+      if(horiz){ win.position.set(x + f*w, y+0.6, z + (d>0?0:0)); }
+      else { win.position.set(x, y+0.6, z + f*d); win.rotation.y = Math.PI/2; }
+      scene.add(win);
+    }
+  }
+  wall(ROOMW, WALLH, 0.4, 0, WALLH/2, -ROOMD/2, true);
+  wall(ROOMW, WALLH, 0.4, 0, WALLH/2,  ROOMD/2, true);
+  wall(0.4, WALLH, ROOMD, -ROOMW/2, WALLH/2, 0, false);
+  wall(0.4, WALLH, ROOMD,  ROOMW/2, WALLH/2, 0, false);
+
+  // Recessed ceiling light panels.
+  const stripMat = new THREE.MeshBasicMaterial({ color:0xdfe9ff });
   const strips = Math.max(2, Math.round(ROOMD/15));
   for(let s=0;s<strips;s++){ const z=-ROOMD/2 + (s+0.5)*(ROOMD/strips);
     const strip = new THREE.Mesh(new THREE.BoxGeometry(ROOMW*0.66, 0.22, 1.0), stripMat);
     strip.position.set(0, WALLH-0.4, z); scene.add(strip);
-    const pl = new THREE.PointLight(0xbcd2ff, 0.16, 90); pl.position.set(0, WALLH-1.2, z); scene.add(pl);
+    const pl = new THREE.PointLight(0xeef4ff, 0.14, 110); pl.position.set(0, WALLH-1.2, z); scene.add(pl);
   }
 
   // ---- text-sprite labels (self-contained, canvas texture) ----
@@ -379,42 +414,76 @@ const DATA = /*__DATA__*/;
     lbl.position.set(z.cxn, 4.2, z.czn - z.d/2 - 0.5); scene.add(lbl);
   });
 
-  // ---- desks: one workstation per module (monitor screen = health colour) ----
+  // ---- monitor screen content: a faux code/terminal UI tinted by health ----
+  function screenTexture(b, hexcss){
+    const c = document.createElement("canvas"); c.width = 256; c.height = 160; const x = c.getContext("2d");
+    x.fillStyle = "#0c1322"; x.fillRect(0,0,256,160);
+    x.fillStyle = hexcss; x.globalAlpha = 0.14; x.fillRect(0,0,256,160); x.globalAlpha = 1;
+    x.fillStyle = "#16213a"; x.fillRect(0,0,256,18);            // title bar
+    x.fillStyle = hexcss; x.beginPath(); x.arc(10,9,4,0,7); x.fill();
+    x.fillStyle = "#7e8db0"; x.font = "10px monospace";
+    x.fillText((b.name.split("/").pop()||"").slice(0,30), 22, 12);
+    // faux code lines, length varied; a couple highlighted in the health colour
+    for(let r=0;r<11;r++){ const y = 30 + r*11; const w = 30 + rnd()*180;
+      x.fillStyle = (b.findings>0 && r%4===1) ? hexcss : "#33507e";
+      x.globalAlpha = (b.findings>0 && r%4===1) ? 0.9 : 0.55;
+      x.fillRect(12 + (rnd()*16|0), y, w, 4); }
+    x.globalAlpha = 1;
+    const t = new THREE.CanvasTexture(c); t.minFilter = THREE.LinearFilter; return t;
+  }
+
+  // ---- desks: one workstation per module ----
   const meshes = [];
   const maxLoc = Math.max(1, ...buildings.map(b=>b.loc));
-  const deskMat  = new THREE.MeshLambertMaterial({ color:0x3b4a63 });
-  const legMat   = new THREE.MeshLambertMaterial({ color:0x222b3d });
-  const chairMat = new THREE.MeshLambertMaterial({ color:0x2b3650 });
-  const stackMat = new THREE.MeshLambertMaterial({ color:0xccd5ea });
+  const deskMat  = new THREE.MeshLambertMaterial({ color:0x6b5640 });   // wood-toned desktop
+  const frameMat = new THREE.MeshLambertMaterial({ color:0x2b3650 });
+  const legMat   = new THREE.MeshLambertMaterial({ color:0x20283a });
+  const chairMat = new THREE.MeshLambertMaterial({ color:0x1f2940 });
+  const keyMat   = new THREE.MeshLambertMaterial({ color:0x12171f });
+  const stackMat = new THREE.MeshLambertMaterial({ color:0xe8edf6 });
   buildings.forEach((b, i) => {
     const p = pos[i];
     const col = HEALTH_COLOR[b.health] ?? 0x36c98f;
-    // desk surface on four legs
+    const cssCol = HEALTH_CSS[b.health] || "#36c98f";
+    // desk surface on four legs (casts/receives shadow)
     const desk = new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.16, 1.7), deskMat);
-    desk.position.set(p.x, 1.05, p.z); scene.add(desk);
+    desk.position.set(p.x, 1.05, p.z); desk.castShadow = true; desk.receiveShadow = true; scene.add(desk);
     const leg=(dx,dz)=>{ const l=new THREE.Mesh(new THREE.BoxGeometry(0.16,1.05,0.16), legMat);
-      l.position.set(p.x+dx,0.52,p.z+dz); scene.add(l); };
+      l.position.set(p.x+dx,0.52,p.z+dz); l.castShadow = true; scene.add(l); };
     leg(-1.3,-0.7); leg(1.3,-0.7); leg(-1.3,0.7); leg(1.3,0.7);
-    // monitor — the screen is the clickable proxy, lit in the module's health colour
-    const screen = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.8, 0.08),
-      new THREE.MeshBasicMaterial({ color: col }));
-    screen.position.set(p.x, 1.72, p.z-0.45);
+    // monitor: dark bezel + a lit screen showing a faux UI (the clickable proxy)
+    const bezel = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.95, 0.08), frameMat);
+    bezel.position.set(p.x, 1.78, p.z-0.5); bezel.castShadow = true; scene.add(bezel);
+    const screen = new THREE.Mesh(new THREE.BoxGeometry(1.34, 0.8, 0.04),
+      new THREE.MeshBasicMaterial({ map: screenTexture(b, cssCol) }));
+    screen.position.set(p.x, 1.78, p.z-0.45);
     screen.userData = { b, i, x:p.x, z:p.z, h:3, baseColor: col };
     scene.add(screen); meshes.push(screen);
-    const stand = new THREE.Mesh(new THREE.BoxGeometry(0.12,0.35,0.12), legMat);
-    stand.position.set(p.x, 1.33, p.z-0.45); scene.add(stand);
+    // the screen casts a soft coloured glow onto the desk
+    const glow = new THREE.PointLight(col, 0.5, 6); glow.position.set(p.x, 1.7, p.z-0.1); scene.add(glow);
+    const stand = new THREE.Mesh(new THREE.BoxGeometry(0.12,0.42,0.12), frameMat);
+    stand.position.set(p.x, 1.36, p.z-0.5); scene.add(stand);
+    // keyboard + mouse
+    const kb = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.06, 0.4), keyMat);
+    kb.position.set(p.x, 1.16, p.z+0.15); kb.castShadow = true; scene.add(kb);
+    const mouse = new THREE.Mesh(new THREE.BoxGeometry(0.18,0.06,0.28), keyMat);
+    mouse.position.set(p.x+0.75, 1.16, p.z+0.15); scene.add(mouse);
+    // coffee mug
+    const mug = new THREE.Mesh(new THREE.CylinderGeometry(0.13,0.13,0.26,10),
+      new THREE.MeshLambertMaterial({ color:0xcf6a4a })); mug.position.set(p.x-0.95, 1.26, p.z+0.2); mug.castShadow=true; scene.add(mug);
     // a stack of files whose height ∝ LOC keeps the size signal at desk scale
     const sh = 0.12 + 1.2*Math.sqrt(b.loc/maxLoc);
     const stack = new THREE.Mesh(new THREE.BoxGeometry(0.5, sh, 0.7), stackMat);
-    stack.position.set(p.x+1.05, 1.13+sh/2, p.z+0.25); scene.add(stack);
-    // office chair behind the desk
-    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.8,0.12,0.8), chairMat); seat.position.set(p.x,0.66,p.z+1.05); scene.add(seat);
-    const back = new THREE.Mesh(new THREE.BoxGeometry(0.8,0.85,0.12), chairMat); back.position.set(p.x,1.08,p.z+1.45); scene.add(back);
+    stack.position.set(p.x+1.05, 1.13+sh/2, p.z+0.25); stack.castShadow = true; scene.add(stack);
+    // office chair behind the desk (swivel base + seat + back)
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.82,0.14,0.82), chairMat); seat.position.set(p.x,0.7,p.z+1.05); seat.castShadow=true; scene.add(seat);
+    const back = new THREE.Mesh(new THREE.BoxGeometry(0.82,0.9,0.14), chairMat); back.position.set(p.x,1.16,p.z+1.45); back.castShadow=true; scene.add(back);
+    const cbase = new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.06,0.55,8), legMat); cbase.position.set(p.x,0.42,p.z+1.05); scene.add(cbase);
     // a pulsing alert lamp above the monitor for modules with findings
     if (b.findings > 0) {
-      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.22,10,10),
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.2,12,12),
         new THREE.MeshBasicMaterial({ color:0xff5a5a }));
-      cap.position.set(p.x, 2.55, p.z-0.45); cap.userData.pulse = true; scene.add(cap);
+      cap.position.set(p.x, 2.6, p.z-0.5); cap.userData.pulse = true; scene.add(cap);
     }
   });
   function plotOf(i){ const m = meshes[i]; return m ? {x:m.userData.x, z:m.userData.z, h:m.userData.h} : {x:0,z:0,h:4}; }
@@ -433,32 +502,77 @@ const DATA = /*__DATA__*/;
     scene.add(roads);
   }
 
-  // ---- workers ----
+  // ---- potted plants for ambiance (department corners) ----
+  const potMat = new THREE.MeshLambertMaterial({ color:0x4a3528 });
+  const leafMat = new THREE.MeshLambertMaterial({ color:0x2f7d4f });
+  function makePlant(x, z){
+    const grp = new THREE.Group();
+    const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.24,0.5,10), potMat);
+    pot.position.y = 0.25; pot.castShadow = true; grp.add(pot);
+    for(let i=0;i<5;i++){ const leaf = new THREE.Mesh(new THREE.ConeGeometry(0.18,0.9,7), leafMat);
+      leaf.position.set((rnd()-0.5)*0.3, 0.85 + rnd()*0.3, (rnd()-0.5)*0.3);
+      leaf.rotation.set((rnd()-0.5)*0.6, rnd()*6.28, (rnd()-0.5)*0.6); leaf.castShadow = true; grp.add(leaf); }
+    grp.position.set(x, 0, z); scene.add(grp);
+  }
+  zones.forEach(z=>{ makePlant(z.cxn - z.w/2 + 1.2, z.czn - z.d/2 + 1.2);
+                     makePlant(z.cxn + z.w/2 - 1.2, z.czn + z.d/2 - 1.2); });
+
+  // ---- workers: jointed humanoids that walk, then sit & type at a desk ----
+  const HIP = 1.05, SEG = 0.52;
+  function limb(len, w, mat){               // a pivot group with a box hanging down
+    const grp = new THREE.Group();
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, len, w), mat);
+    m.position.y = -len/2; m.castShadow = true; grp.add(m);
+    return grp;
+  }
   function makePerson(hex){
     const g = new THREE.Group();
-    const cm = new THREE.MeshLambertMaterial({ color:new THREE.Color(hex) });
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.45,0.6,1.6,10), cm); body.position.y=1.0; g.add(body);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.42,12,12),
-      new THREE.MeshLambertMaterial({ color:0xf2d9c0 })); head.position.y=2.1; g.add(head);
-    const legM = new THREE.MeshLambertMaterial({ color:0x223 });
-    const l1 = new THREE.Mesh(new THREE.BoxGeometry(0.28,0.9,0.28), legM); l1.position.set(-0.22,0.45,0); g.add(l1);
-    const l2 = new THREE.Mesh(new THREE.BoxGeometry(0.28,0.9,0.28), legM); l2.position.set( 0.22,0.45,0); g.add(l2);
-    g.userData.legs = [l1,l2];
+    const skin = new THREE.MeshLambertMaterial({ color:0xf2d9c0 });
+    const shirt = new THREE.MeshLambertMaterial({ color:new THREE.Color(hex) });
+    const pants = new THREE.MeshLambertMaterial({ color:0x2a3142 });
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.62,0.7,0.34), shirt);
+    torso.position.y = HIP + 0.35; torso.castShadow = true; g.add(torso);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.27,14,14), skin);
+    head.position.y = HIP + 0.95; head.castShadow = true; g.add(head);
+    const thighL = limb(SEG,0.2,pants), thighR = limb(SEG,0.2,pants);
+    thighL.position.set(-0.16,HIP,0); thighR.position.set(0.16,HIP,0); g.add(thighL,thighR);
+    const shinL = limb(SEG,0.18,pants), shinR = limb(SEG,0.18,pants);
+    shinL.position.y = -SEG; thighL.add(shinL); shinR.position.y = -SEG; thighR.add(shinR);
+    const armL = limb(0.62,0.16,shirt), armR = limb(0.62,0.16,shirt);
+    armL.position.set(-0.4,HIP+0.66,0); armR.position.set(0.4,HIP+0.66,0); g.add(armL,armR);
+    const foreL = limb(0.5,0.15,skin), foreR = limb(0.5,0.15,skin);
+    foreL.position.y = -0.62; armL.add(foreL); foreR.position.y = -0.62; armR.add(foreR);
+    g.userData = { thighL,thighR,shinL,shinR,armL,armR,foreL,foreR };
     return g;
+  }
+  function setPose(g, sit){
+    const u = g.userData;
+    if(sit){
+      u.thighL.rotation.x = -1.55; u.thighR.rotation.x = -1.55;   // thighs forward
+      u.shinL.rotation.x = 1.55;  u.shinR.rotation.x = 1.55;      // shins down
+      u.armL.rotation.x = -1.2;   u.armR.rotation.x = -1.2;       // arms to keyboard
+      u.foreL.rotation.x = -0.5;  u.foreR.rotation.x = -0.5;
+      g.position.y = 0.62;
+    } else {
+      u.shinL.rotation.x = u.shinR.rotation.x = 0;
+      u.armL.rotation.z = 0; u.armR.rotation.z = 0;
+      g.position.y = 0;
+    }
   }
   const workers = DATA.workers.map((w, k) => {
     const g = makePerson(w.color);
     const p0 = plotOf(w.route[k % w.route.length]);
-    const ang = rnd()*6.28, r = 1.7 + rnd()*0.9;
-    g.position.set(p0.x + Math.cos(ang)*r, 0, p0.z + Math.sin(ang)*r); scene.add(g);
+    g.position.set(p0.x + (rnd()*4-2), 0, p0.z + 3 + rnd()*2); scene.add(g);
     return { g, route:w.route, role:w.role, ri:k % w.route.length,
-      target:new THREE.Vector3(g.position.x,0,g.position.z), wait:rnd()*2, phase:rnd()*6.28, curName:"" };
+      target:new THREE.Vector3(g.position.x,0,g.position.z), face:0,
+      wait:rnd()*2, phase:rnd()*6.28, curName:"", sitting:false };
   });
   function newTarget(wk){
     wk.ri = (wk.ri + 1) % wk.route.length;
     const bi = wk.route[wk.ri]; const p = plotOf(bi);
-    const ang = rnd()*6.28, r = 1.7 + rnd()*0.9;
-    wk.target.set(p.x + Math.cos(ang)*r, 0, p.z + Math.sin(ang)*r);
+    // walk to the chair (behind the desk), then sit facing the monitor (−z)
+    wk.target.set(p.x + (rnd()*0.5-0.25), 0, p.z + 1.05);
+    wk.face = Math.PI;                 // face toward −z (the screen)
     wk.curName = buildings[bi] ? buildings[bi].name.split("/").pop() : "";
     renderTicker();
   }
@@ -547,12 +661,24 @@ const DATA = /*__DATA__*/;
     const dt = Math.min(0.05, clock.getDelta()), tt = clock.elapsedTime;
     if(autoOrbit) theta += dt*0.12;
     workers.forEach(wk=>{
-      const pp = wk.g.position, tg = wk.target;
+      const pp = wk.g.position, tg = wk.target, u = wk.g.userData;
       const dx = tg.x-pp.x, dz = tg.z-pp.z, d = Math.hypot(dx,dz);
-      if(d < 0.6){ wk.wait -= dt; if(wk.wait<=0){ newTarget(wk); wk.wait = 1.2 + rnd()*2.5; } }
-      else { const v = 5.5*dt/d; pp.x += dx*v; pp.z += dz*v; wk.g.rotation.y = Math.atan2(dx, dz);
-        const sw = Math.sin(tt*9 + wk.phase)*0.5; wk.g.userData.legs[0].rotation.x=sw; wk.g.userData.legs[1].rotation.x=-sw;
-        wk.g.position.y = Math.abs(Math.sin(tt*9 + wk.phase))*0.12; }
+      if(d < 0.5){
+        // arrived: sit and type while the work "happens"
+        if(!wk.sitting){ wk.sitting = true; setPose(wk.g, true); wk.g.rotation.y = wk.face; }
+        const ty = Math.sin(tt*11 + wk.phase)*0.18;           // typing forearm bob
+        u.foreL.rotation.x = -0.5 + ty; u.foreR.rotation.x = -0.5 - ty;
+        wk.wait -= dt;
+        if(wk.wait<=0){ wk.sitting = false; setPose(wk.g, false); newTarget(wk); wk.wait = 2.2 + rnd()*3.0; }
+      } else {
+        if(wk.sitting){ wk.sitting = false; setPose(wk.g, false); }
+        const v = 4.6*dt/d; pp.x += dx*v; pp.z += dz*v; wk.g.rotation.y = Math.atan2(dx, dz);
+        const sw = Math.sin(tt*8 + wk.phase)*0.6;             // walk cycle
+        u.thighL.rotation.x = sw; u.thighR.rotation.x = -sw;
+        u.armL.rotation.x = -sw; u.armR.rotation.x = sw;
+        u.foreL.rotation.x = u.foreR.rotation.x = -0.1;
+        pp.y = Math.abs(Math.sin(tt*8 + wk.phase))*0.06;
+      }
     });
     scene.children.forEach(o=>{ if(o.userData && o.userData.pulse){ o.scale.y = 1 + Math.sin(tt*4)*0.4; } });
     applyCam(); renderer.render(scene, camera); requestAnimationFrame(tick);
