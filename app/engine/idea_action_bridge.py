@@ -86,16 +86,37 @@ class IdeaActionBridge:
         except OSError:
             return None
 
+    # Flag-only fixes annotate the call site but leave the pattern in place, so
+    # the finding persists after fixing. Their marker comment lets the ladder
+    # know an already-handled finding should be skipped (so convergence advances
+    # to the next real issue instead of stalling on a flagged-but-present one).
+    _FLAG_MARKERS = {
+        "pickle": "Apex: untrusted pickle",
+        "sql": "Apex: SQL injection",
+        "tempfile": "Apex: insecure temp file",
+        "weak-hash": "Apex: weak hash",
+    }
+
     @classmethod
     def _detect_security_issue(cls, project_root: str, rel_path: str) -> str | None:
-        """The concrete security pattern in a file (eval/os.system/pickle/yaml/
-        sql/bare-except), most severe first, so harden_security picks the real AST
-        fix. Delegates to the canonical detector (AST-based, ignores comments/
-        strings, substring fallback for unparseable files)."""
-        from app.engine.detectors import security_label
+        """The concrete security pattern to fix next in a file, most severe first.
+
+        Rewrite fixes (eval/os.system/bare-except/yaml) remove the pattern, so
+        they self-clear. Flag-only fixes (pickle/sql/tempfile/weak-hash) don't —
+        so a label whose marker comment is already present is skipped, letting
+        the harden ladder converge through every issue instead of looping on the
+        top flagged one. Delegates to the canonical detector."""
+        from app.engine.detectors import security_labels
 
         text = cls._read(project_root, rel_path)
-        return security_label(text) if text is not None else None
+        if text is None:
+            return None
+        for label in security_labels(text):
+            marker = cls._FLAG_MARKERS.get(label)
+            if marker and marker in text:
+                continue  # already annotated — move on to the next real issue
+            return label
+        return None
 
     @classmethod
     def _has_mutable_default(cls, project_root: str, rel_path: str) -> bool:

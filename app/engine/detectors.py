@@ -239,6 +239,23 @@ def security_label(source: str) -> str | None:
     return None
 
 
+def security_labels(source: str) -> list[str]:
+    """All present security labels, most-severe first.
+
+    Unlike :func:`security_label` (which returns only the top one), this lets a
+    caller advance past a finding it has already handled — important for
+    flag-only fixes (pickle/sql/tempfile/weak-hash) that annotate but do not
+    remove the pattern, so the same label would otherwise be returned forever.
+    """
+    try:
+        ast.parse(source)
+    except SyntaxError:
+        top = security_label(source)
+        return [top] if top else []
+    labels = {i.fix_kind for i in detect(source) if i.category == "security" and i.fix_kind}
+    return [label for label in _SECURITY_ORDER if label in labels]
+
+
 def has_mutable_default(source: str) -> bool:
     try:
         tree = ast.parse(source)

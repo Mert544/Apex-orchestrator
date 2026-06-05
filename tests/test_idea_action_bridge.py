@@ -537,3 +537,28 @@ def test_harden_change_strategy_ladder_priority(tmp_path):
 
     (tmp_path / "app" / "clean.py").write_text("def f(x):\n    return x + 1\n")
     assert bridge._harden_change_strategy(str(tmp_path), "app/clean.py") is None
+
+
+def test_harden_converges_multiple_flag_only_findings(tmp_path):
+    # Flag-only fixes (tempfile + weak-hash) don't remove the pattern, so the
+    # ladder must advance past an already-annotated finding instead of looping
+    # on the top one. One harden pass should flag BOTH md5 and mktemp.
+    from app.models.idea import ActionPlan
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "svc" / "__init__.py").write_text("")
+    (tmp_path / "svc" / "core.py").write_text(
+        "import hashlib\nimport tempfile\n"
+        "def k(d):\n    return hashlib.md5(d).hexdigest()\n"
+        "def t():\n    return tempfile.mktemp()\n"
+    )
+    (tmp_path / "tests" / "test_core.py").write_text("def test_x():\n    import svc.core\n    assert svc.core\n")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='s'\nversion='0'\n")
+    idea = IdeaNode(id="i", title="Harden: svc/core.py", subject="svc/core.py", operator="harden",
+                    operator_chain=["harden"], source_facts=["sensitive-path: svc/core.py"])
+    plan = ActionPlan(steps=[IdeaActionBridge().plan_idea(idea)], stats={}, mode="supervised")
+    res = IdeaActionBridge().apply_plan(plan, str(tmp_path), mode="supervised", verify=True)
+    after = (tmp_path / "svc" / "core.py").read_text()
+    assert res["rolled_back"] == 0
+    assert "Apex: weak hash" in after
+    assert "Apex: insecure temp file" in after
