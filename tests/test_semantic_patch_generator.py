@@ -410,3 +410,37 @@ def test_security_transform_covers_all_six_categories():
         result = security.apply(path, src, title)
         assert result is not None, f"{title} produced no patch"
         assert result.transform_type == expected_transform
+
+
+def test_create_test_stub_generates_real_characterization_test(tmp_path: Path):
+    # When the source module exists, the stub is a REAL test: it imports the
+    # module and exercises its zero-arg public callables — not a skipped
+    # placeholder. (Fixes the finbot weakness: stubs that asserted nothing.)
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "calc.py").write_text(
+        "def ping():\n    return 1\n\ndef needs_arg(x):\n    return x\n", encoding="utf-8"
+    )
+    generator = SemanticPatchGenerator()
+    patch_plan = {"target_files": ["tests/test_calc.py"], "title": "Cover calc", "task_id": "t-9"}
+    result = generator.generate(project_root=tmp_path, patch_plan=patch_plan)
+
+    assert result.transform_type == "create_test_stub"
+    content = result.patch_requests[0]["new_content"]
+    assert "import importlib" in content
+    assert 'importlib.import_module("pkg.calc")' in content
+    assert "mod.ping()" in content          # zero-arg callable is exercised
+    assert "needs_arg" not in content       # arg-requiring function is skipped
+    assert "pytest.mark.skip" not in content
+    import ast as _ast
+    _ast.parse(content)                     # the generated test is valid Python
+
+
+def test_create_test_stub_falls_back_to_skip_when_no_source(tmp_path: Path):
+    # No source module to import -> the safe skip placeholder is still produced.
+    generator = SemanticPatchGenerator()
+    patch_plan = {"target_files": ["tests/test_ghost.py"], "title": "x", "task_id": "t-10"}
+    result = generator.generate(project_root=tmp_path, patch_plan=patch_plan)
+    content = result.patch_requests[0]["new_content"]
+    assert "def test_ghost_exists():" in content
+    assert "pytest.mark.skip" in content
