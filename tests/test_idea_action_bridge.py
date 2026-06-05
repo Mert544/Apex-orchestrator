@@ -519,3 +519,21 @@ def test_harden_step_converges_all_fixes_in_one_pass(tmp_path):
     assert "eval(rule)" not in after.replace("literal_eval", "")
     assert "except Exception:" in after
     assert "except:" not in after
+
+
+def test_harden_change_strategy_ladder_priority(tmp_path):
+    # The extracted harden ladder is now directly testable: it picks the most
+    # severe real issue, and returns None for clean code (no fabricated fix).
+    (tmp_path / "app").mkdir()
+    bridge = IdeaActionBridge()
+
+    (tmp_path / "app" / "danger.py").write_text("def r(c):\n    return eval(c)\n")
+    strat, title = bridge._harden_change_strategy(str(tmp_path), "app/danger.py")
+    assert "eval" in strat[0] and "danger.py" in title
+
+    (tmp_path / "app" / "mut.py").write_text("def f(x=[]):\n    return x\n")
+    strat, _ = bridge._harden_change_strategy(str(tmp_path), "app/mut.py")
+    assert "mutable" in strat[0]
+
+    (tmp_path / "app" / "clean.py").write_text("def f(x):\n    return x + 1\n")
+    assert bridge._harden_change_strategy(str(tmp_path), "app/clean.py") is None

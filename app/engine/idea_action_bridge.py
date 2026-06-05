@@ -129,6 +129,28 @@ class IdeaActionBridge:
         text = cls._read(project_root, rel_path)
         return has_network_call_without_timeout(text) if text is not None else False
 
+    @classmethod
+    def _harden_change_strategy(cls, project_root: str, target: str) -> tuple[list[str], str] | None:
+        """Pick the harden fix for the most important *real* issue in ``target``.
+
+        Detection ladder, most-severe first. Returns ``(change_strategy, title)``
+        for the issue found, or ``None`` when the file has no real, auto-fixable
+        issue — in which case harden makes no change rather than fabricating a
+        speculative guard (trust over activity).
+        """
+        issue = cls._detect_security_issue(project_root, target)
+        if issue:
+            return [f"fix {issue} security"], f"Fix {issue} in {target}"
+        if cls._has_mutable_default(project_root, target):
+            return ["mutable default argument"], f"Fix mutable default arguments in {target}"
+        if cls._detect_modernization(project_root, target):
+            return ["modernize none-comparison"], f"Modernize comparisons in {target}"
+        if cls._detect_open_encoding(project_root, target):
+            return ["open-encoding"], f"Add explicit open() encoding in {target}"
+        if cls._detect_net_timeout(project_root, target):
+            return ["net-timeout"], f"Add request timeouts in {target}"
+        return None
+
     def _generate(self, step: ActionStep, project_root: str):
         """Run the semantic generator for an executable step. Returns the
         SemanticPatchResult (proposed only) or None."""
@@ -154,29 +176,10 @@ class IdeaActionBridge:
         change_strategy = self._ACTION_STRATEGY[step.action_type]
         title = step.description
         if step.action_type == "harden_security":
-            # Detection ladder: fix the most important *real* issue the file has.
-            # If NONE is present, make no change — a developer agent must not
-            # fabricate speculative input-validation (e.g. `if not x: raise`) on
-            # code that has no actual problem; that can reject valid falsy inputs
-            # and erodes trust. The idea is surfaced for a human instead.
-            issue = self._detect_security_issue(project_root, step.target)
-            if issue:
-                change_strategy = [f"fix {issue} security"]
-                title = f"Fix {issue} in {step.target}"
-            elif self._has_mutable_default(project_root, step.target):
-                change_strategy = ["mutable default argument"]
-                title = f"Fix mutable default arguments in {step.target}"
-            elif self._detect_modernization(project_root, step.target):
-                change_strategy = ["modernize none-comparison"]
-                title = f"Modernize comparisons in {step.target}"
-            elif self._detect_open_encoding(project_root, step.target):
-                change_strategy = ["open-encoding"]
-                title = f"Add explicit open() encoding in {step.target}"
-            elif self._detect_net_timeout(project_root, step.target):
-                change_strategy = ["net-timeout"]
-                title = f"Add request timeouts in {step.target}"
-            else:
+            ladder = self._harden_change_strategy(project_root, step.target)
+            if ladder is None:
                 return None  # no real, auto-fixable issue — don't invent one
+            change_strategy, title = ladder
         elif step.action_type == "organize_imports" and self._detect_modernization(project_root, step.target):
             # A "simplify" idea on a file with `== None` modernizes it (a safe,
             # behavior-preserving cleanup) instead of only touching imports.
