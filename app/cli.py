@@ -481,6 +481,19 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_city(args: argparse.Namespace) -> int:
+    """Generate the 3D 'company city' dashboard — modules as buildings, agents as workers."""
+    from app.reporting.city_dashboard import build_city
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    html_doc = build_city(str(target), objective=args.objective or None)
+    out_path = Path(args.out) if args.out else target / ".apex" / "city.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html_doc, encoding="utf-8")
+    print(f"[city] Written to {out_path}")
+    return 0
+
+
 def cmd_maintain(args: argparse.Namespace) -> int:
     """One-shot maintenance: scan -> ideate -> apply -> verify -> commit -> report."""
     from app.engine.idea_permutation import IdeaPermutationEngine
@@ -1889,6 +1902,15 @@ def main() -> int:
     dash_parser.add_argument("--max-ideas", type=int, default=24, dest="max_ideas", help="Idea budget")
     dash_parser.add_argument("--out", default="", help="Output HTML path (default <target>/.apex/dashboard.html)")
     dash_parser.set_defaults(func=cmd_dashboard)
+
+    # city — 3D "company city": modules as buildings, Apex agents as walking workers
+    city_parser = subparsers.add_parser(
+        "city", help="Generate the 3D company-city dashboard (modules as buildings, agents as workers)"
+    )
+    city_parser.add_argument("--target", default="", help="Target project root")
+    city_parser.add_argument("--objective", default="", help="Optional theme to focus on")
+    city_parser.add_argument("--out", default="", help="Output HTML path (default <target>/.apex/city.html)")
+    city_parser.set_defaults(func=cmd_city)
 
     # maintain — one-shot scan -> ideate -> apply -> verify -> commit -> report
     maintain_parser = subparsers.add_parser(
