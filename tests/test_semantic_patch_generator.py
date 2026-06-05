@@ -444,3 +444,26 @@ def test_create_test_stub_falls_back_to_skip_when_no_source(tmp_path: Path):
     content = result.patch_requests[0]["new_content"]
     assert "def test_ghost_exists():" in content
     assert "pytest.mark.skip" in content
+
+
+def test_create_test_stub_asserts_return_type_contracts(tmp_path: Path):
+    # The generator synthesizes safe args from annotations and asserts the
+    # annotated return type — a real behavioural contract, not just a smoke call.
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "m.py").write_text(
+        "def label(x: int) -> str:\n    return str(x)\n"
+        "def merge(a: list, b: list) -> list:\n    return a + b\n"
+        "def mystery(thing):\n    return thing\n",  # unannotated required arg -> skipped
+        encoding="utf-8",
+    )
+    generator = SemanticPatchGenerator()
+    patch_plan = {"target_files": ["tests/test_m.py"], "title": "Cover m", "task_id": "t-11"}
+    content = generator.generate(project_root=tmp_path, patch_plan=patch_plan).patch_requests[0]["new_content"]
+
+    assert "assert isinstance(mod.label(0), str)" in content
+    assert "assert isinstance(mod.merge([], []), list)" in content
+    assert "mystery" not in content          # can't synthesize an unannotated arg
+    assert "pytest.mark.skip" not in content
+    import ast as _ast
+    _ast.parse(content)

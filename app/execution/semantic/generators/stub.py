@@ -23,23 +23,97 @@ def _dotted_name(root: Path, source: Path) -> str:
     return ".".join(rel.parts)
 
 
-def _zero_arg_functions(tree: ast.Module) -> list[str]:
-    """Public top-level functions callable with no arguments (smoke-testable)."""
-    out: list[str] = []
+# Safe "zero value" literal to synthesize for a required argument of each type.
+_ARG_SAMPLE = {
+    "int": "0", "float": "0.0", "bool": "False", "complex": "0j",
+    "str": "''", "bytes": "b''", "bytearray": "bytearray()",
+    "list": "[]", "dict": "{}", "tuple": "()", "set": "set()", "frozenset": "frozenset()",
+}
+_TYPING_CONTAINER = {"List": "list", "Dict": "dict", "Tuple": "tuple", "Set": "set",
+                     "FrozenSet": "frozenset", "Sequence": "list", "Mapping": "dict"}
+# Return types we assert with isinstance. int/float/complex are omitted: the
+# numeric tower (a bool is an int, an int satisfies a float annotation, ...)
+# makes those checks brittle, so for numeric returns we only assert no-crash.
+_RET_ISINSTANCE = {"str", "bytes", "bytearray", "list", "dict", "tuple", "set", "frozenset", "bool"}
+
+
+def _union_has_none(node: ast.AST) -> bool:
+    parts: list[ast.AST] = []
+    def walk(n: ast.AST) -> None:
+        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr):
+            walk(n.left)
+            walk(n.right)
+        else:
+            parts.append(n)
+    walk(node)
+    return any(isinstance(p, ast.Constant) and p.value is None for p in parts)
+
+
+def _arg_literal(ann: ast.expr | None) -> str | None:
+    """A safe sample literal for an annotated argument, or None if not synthesizable."""
+    if ann is None:
+        return None
+    if isinstance(ann, ast.Constant) and ann.value is None:
+        return "None"
+    if isinstance(ann, ast.BinOp) and isinstance(ann.op, ast.BitOr):
+        return "None" if _union_has_none(ann) else None  # X | None -> None is safe
+    if isinstance(ann, ast.Subscript) and isinstance(ann.value, ast.Name):
+        head = ann.value.id
+        if head == "Optional":
+            return "None"
+        base = _TYPING_CONTAINER.get(head, head)
+        return _ARG_SAMPLE.get(base)
+    if isinstance(ann, ast.Name):
+        return _ARG_SAMPLE.get(ann.id)
+    return None
+
+
+def _ret_isinstance(ann: ast.expr | None) -> str | None:
+    """The builtin type to assert the return value is an instance of, or None."""
+    if isinstance(ann, ast.Subscript) and isinstance(ann.value, ast.Name):
+        base = _TYPING_CONTAINER.get(ann.value.id, ann.value.id)
+        return base if base in _RET_ISINSTANCE else None
+    if isinstance(ann, ast.Name) and ann.id in _RET_ISINSTANCE:
+        return ann.id
+    return None
+
+
+def _call_specs(tree: ast.Module) -> list[tuple[str, str, str | None]]:
+    """Public sync functions we can safely call, with synthesized args.
+
+    Returns ``(name, call_args, return_type_or_None)`` for each function whose
+    every *required* parameter has a synthesizable annotation (defaulted params
+    are omitted; ``*args``/``**kwargs`` default to empty). Async functions are
+    excluded — a bare call returns a coroutine, not the annotated value.
+    """
+    specs: list[tuple[str, str, str | None]] = []
     for node in tree.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if node.name.startswith("_"):
+        if not isinstance(node, ast.FunctionDef) or node.name.startswith("_"):
             continue
         a = node.args
-        # Every positional / pos-only / kw-only parameter must have a default,
-        # and there must be no required *args. (**kwargs is fine — it defaults
-        # to empty.) Then `func()` is a safe call.
-        required_pos = len(a.posonlyargs) + len(a.args) - len(a.defaults)
-        required_kw = sum(1 for d in a.kw_defaults if d is None)
-        if required_pos <= 0 and required_kw == 0 and a.vararg is None:
-            out.append(node.name)
-    return sorted(out)
+        positional = a.posonlyargs + a.args
+        n_required = len(positional) - len(a.defaults)
+        literals: list[str] = []
+        ok = True
+        for p in positional[:n_required]:
+            lit = _arg_literal(p.annotation)
+            if lit is None:
+                ok = False
+                break
+            literals.append(lit)
+        if not ok:
+            continue
+        for kwarg, kdef in zip(a.kwonlyargs, a.kw_defaults):
+            if kdef is None:  # required keyword-only arg
+                lit = _arg_literal(kwarg.annotation)
+                if lit is None:
+                    ok = False
+                    break
+                literals.append(f"{kwarg.arg}={lit}")
+        if not ok:
+            continue
+        specs.append((node.name, ", ".join(literals), _ret_isinstance(node.returns)))
+    return sorted(specs)[:12]
 
 
 def _skip_stub(rel_path: str, module_name: str, title: str, task_id: str) -> SemanticPatchResult:
@@ -88,7 +162,7 @@ def try_create_stub(root: Path, rel_path: str, title: str, task_id: str) -> Sema
         return _skip_stub(rel_path, module_name, title, task_id)
 
     dotted = _dotted_name(root, source)
-    smoke = _zero_arg_functions(tree)
+    specs = _call_specs(tree)
 
     lines = [
         "# Generated by Apex Orchestrator",
@@ -103,19 +177,28 @@ def try_create_stub(root: Path, rel_path: str, title: str, task_id: str) -> Sema
         f'    mod = importlib.import_module("{dotted}")',
         "    assert mod is not None",
     ]
-    if smoke:
+    asserts = sum(1 for _n, _a, ret in specs if ret)
+    if specs:
         lines += [
             "",
             "",
-            f"def test_{module_name}_zero_arg_callables_run():",
-            '    """Public no-argument callables run without raising (characterization)."""',
+            f"def test_{module_name}_callable_contracts():",
+            '    """Public callables run on synthesized inputs; annotated return types are checked."""',
             f'    mod = importlib.import_module("{dotted}")',
         ]
-        for fn in smoke:
-            lines.append(f"    mod.{fn}()")
+        for name, call_args, ret in specs:
+            if ret:
+                lines.append(f"    assert isinstance(mod.{name}({call_args}), {ret})")
+            else:
+                lines.append(f"    mod.{name}({call_args})")
     content = "\n".join(lines) + "\n"
 
-    note = f"({len(smoke)} no-arg callable(s) exercised)" if smoke else "(import smoke test)"
+    if asserts:
+        note = f"({len(specs)} callable(s) exercised, {asserts} return-type contract(s) asserted)"
+    elif specs:
+        note = f"({len(specs)} callable(s) exercised)"
+    else:
+        note = "(import smoke test)"
     return SemanticPatchResult(
         patch_requests=[{"path": rel_path, "new_content": content, "expected_old_content": None}],
         transform_type="create_test_stub",
