@@ -80,6 +80,10 @@ class EditStrategy:
             reasons.append("Keywords suggest flagging an insecure tempfile.mktemp().")
             return EditStrategyResult(strategy="fix_tempfile", confidence=0.8, reasons=reasons)
 
+        if "weak-hash" in combined or "hashlib" in combined:
+            reasons.append("Keywords suggest flagging a weak hashlib.md5()/sha1().")
+            return EditStrategyResult(strategy="fix_weak_hash", confidence=0.8, reasons=reasons)
+
         if "mutable default" in combined or "mutable-default" in combined:
             reasons.append("Keywords suggest a mutable-default-argument fix.")
             return EditStrategyResult(strategy="fix_mutable_default", confidence=0.85, reasons=reasons)

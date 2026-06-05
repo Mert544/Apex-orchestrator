@@ -15,7 +15,15 @@ import ast
 from dataclasses import dataclass
 
 # Security labels in descending severity (the bridge's contract relies on this).
-_SECURITY_ORDER = ("eval", "os.system", "pickle", "yaml", "sql", "tempfile", "bare except")
+_SECURITY_ORDER = ("eval", "os.system", "pickle", "yaml", "sql", "tempfile", "weak-hash", "bare except")
+
+
+def _has_usedforsecurity_false(node: ast.Call) -> bool:
+    """True if the call passes ``usedforsecurity=False`` (declared non-security)."""
+    return any(
+        kw.arg == "usedforsecurity" and isinstance(kw.value, ast.Constant) and kw.value.value is False
+        for kw in node.keywords
+    )
 
 
 @dataclass(frozen=True)
@@ -68,6 +76,10 @@ def detect(source: str) -> list[Issue]:
                 elif owner == "tempfile" and attr == "mktemp":
                     add(node.lineno, "security", "medium",
                         "tempfile.mktemp() — TOCTOU race; use mkstemp()/NamedTemporaryFile", "tempfile")
+                elif owner == "hashlib" and attr in ("md5", "sha1") and not _has_usedforsecurity_false(node):
+                    add(node.lineno, "security", "medium",
+                        f"hashlib.{attr}() is weak for security — use sha256, or pass "
+                        "usedforsecurity=False if non-security", "weak-hash")
                 elif attr in ("execute", "executemany", "cursor") and any(
                     isinstance(a, ast.JoinedStr) for a in node.args
                 ):

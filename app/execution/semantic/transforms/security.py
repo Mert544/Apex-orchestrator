@@ -27,6 +27,55 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
         return _patch_yaml_load(rel_path, source, tree)
     if "tempfile" in issue or "mktemp" in issue:
         return _patch_mktemp(rel_path, source, tree)
+    if "weak-hash" in issue or "hashlib" in issue:
+        return _patch_weak_hash(rel_path, source, tree)
+    return None
+
+
+def _patch_weak_hash(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
+    """Flag a weak ``hashlib.md5()``/``sha1()`` used for security with a comment.
+
+    There is no safe automatic rewrite: switching to sha256 changes the digest
+    (breaking any stored/compared hash), and adding ``usedforsecurity=False`` is
+    only correct when the caller really isn't using it for security — a judgment
+    the tool can't make. So we annotate the call site, like the pickle/SQL flags.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr in ("md5", "sha1")):
+            continue
+        if not (isinstance(func.value, ast.Name) and func.value.id == "hashlib"):
+            continue
+        if any(kw.arg == "usedforsecurity" and isinstance(kw.value, ast.Constant)
+               and kw.value.value is False for kw in node.keywords):
+            continue  # caller already declared this non-security
+
+        lineno = node.lineno
+        lines = source.splitlines(keepends=True)
+        if lineno > len(lines):
+            continue
+        line_content = lines[lineno - 1]
+        prev_line = lines[lineno - 2] if lineno >= 2 else ""
+        if "Apex: weak hash" in line_content or "Apex: weak hash" in prev_line:
+            continue  # already flagged
+        indent = line_content[: len(line_content) - len(line_content.lstrip())]
+        warning = (
+            f"{indent}# SECURITY (Apex: weak hash for security — use hashlib.sha256(), "
+            f"or pass usedforsecurity=False if this isn't security-related)\n"
+        )
+        new_lines = list(lines)
+        new_lines.insert(lineno - 1, warning)
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel_path,
+                "new_content": "".join(new_lines),
+                "expected_old_content": source,
+            }],
+            transform_type="flag_weak_hash",
+            rationale=[f"Flagged weak hashlib.md5()/sha1() with a security warning in {rel_path}."],
+        )
     return None
 
 
