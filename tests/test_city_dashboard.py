@@ -43,6 +43,17 @@ def test_city_model_is_grounded_in_real_signals(tmp_path: Path):
     assert isinstance(model["grade"]["letter"], str) and model["grade"]["letter"]
 
 
+def test_city_edges_are_real_dependency_links(tmp_path: Path):
+    _project(tmp_path)
+    model = build_city_model(str(tmp_path))
+    n = len(model["buildings"])
+    # core.py imports util.py -> there is at least one dependency road, and
+    # every edge references valid, distinct building indices.
+    assert model["edges"], "core imports util, so an edge should exist"
+    for a, b in model["edges"]:
+        assert 0 <= a < n and 0 <= b < n and a != b
+
+
 def test_city_assigns_security_worker_to_finding_site(tmp_path: Path):
     _project(tmp_path)
     model = build_city_model(str(tmp_path))
