@@ -169,13 +169,12 @@ def try_create_stub(root: Path, rel_path: str, title: str, task_id: str) -> Sema
         f"# task: {task_id}",
         f"# title: {title}",
         "",
-        "import importlib",
+        f"import {dotted}",
         "",
         "",
         f"def test_{module_name}_imports():",
         f'    """The {module_name} module imports cleanly (smoke test)."""',
-        f'    mod = importlib.import_module("{dotted}")',
-        "    assert mod is not None",
+        f"    assert {dotted} is not None",
     ]
     asserts = sum(1 for _n, _a, ret in specs if ret)
     if specs:
@@ -184,13 +183,12 @@ def try_create_stub(root: Path, rel_path: str, title: str, task_id: str) -> Sema
             "",
             f"def test_{module_name}_callable_contracts():",
             '    """Public callables run on synthesized inputs; annotated return types are checked."""',
-            f'    mod = importlib.import_module("{dotted}")',
         ]
         for name, call_args, ret in specs:
             if ret:
-                lines.append(f"    assert isinstance(mod.{name}({call_args}), {ret})")
+                lines.append(f"    assert isinstance({dotted}.{name}({call_args}), {ret})")
             else:
-                lines.append(f"    mod.{name}({call_args})")
+                lines.append(f"    {dotted}.{name}({call_args})")
     content = "\n".join(lines) + "\n"
 
     if asserts:

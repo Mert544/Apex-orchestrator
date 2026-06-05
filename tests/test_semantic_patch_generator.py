@@ -427,9 +427,9 @@ def test_create_test_stub_generates_real_characterization_test(tmp_path: Path):
 
     assert result.transform_type == "create_test_stub"
     content = result.patch_requests[0]["new_content"]
-    assert "import importlib" in content
-    assert 'importlib.import_module("pkg.calc")' in content
-    assert "mod.ping()" in content          # zero-arg callable is exercised
+    assert "import pkg.calc" in content              # static import -> linker can resolve it
+    assert "pkg.calc.ping()" in content              # zero-arg callable is exercised
+    assert "importlib" not in content
     assert "needs_arg" not in content       # arg-requiring function is skipped
     assert "pytest.mark.skip" not in content
     import ast as _ast
@@ -461,8 +461,8 @@ def test_create_test_stub_asserts_return_type_contracts(tmp_path: Path):
     patch_plan = {"target_files": ["tests/test_m.py"], "title": "Cover m", "task_id": "t-11"}
     content = generator.generate(project_root=tmp_path, patch_plan=patch_plan).patch_requests[0]["new_content"]
 
-    assert "assert isinstance(mod.label(0), str)" in content
-    assert "assert isinstance(mod.merge([], []), list)" in content
+    assert "assert isinstance(pkg.m.label(0), str)" in content
+    assert "assert isinstance(pkg.m.merge([], []), list)" in content
     assert "mystery" not in content          # can't synthesize an unannotated arg
     assert "pytest.mark.skip" not in content
     import ast as _ast
