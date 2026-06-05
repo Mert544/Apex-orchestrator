@@ -76,6 +76,10 @@ class EditStrategy:
             reasons.append("Keywords suggest a yaml.load() safety fix.")
             return EditStrategyResult(strategy="fix_yaml", confidence=0.85, reasons=reasons)
 
+        if "tempfile" in combined or "mktemp" in combined:
+            reasons.append("Keywords suggest flagging an insecure tempfile.mktemp().")
+            return EditStrategyResult(strategy="fix_tempfile", confidence=0.8, reasons=reasons)
+
         if "mutable default" in combined or "mutable-default" in combined:
             reasons.append("Keywords suggest a mutable-default-argument fix.")
             return EditStrategyResult(strategy="fix_mutable_default", confidence=0.85, reasons=reasons)

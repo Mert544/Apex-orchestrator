@@ -15,7 +15,7 @@ import ast
 from dataclasses import dataclass
 
 # Security labels in descending severity (the bridge's contract relies on this).
-_SECURITY_ORDER = ("eval", "os.system", "pickle", "yaml", "sql", "bare except")
+_SECURITY_ORDER = ("eval", "os.system", "pickle", "yaml", "sql", "tempfile", "bare except")
 
 
 @dataclass(frozen=True)
@@ -65,6 +65,9 @@ def detect(source: str) -> list[Issue]:
                     add(node.lineno, "security", "high", "pickle.loads() — unsafe deserialization", "pickle")
                 elif owner == "yaml" and attr == "load":
                     add(node.lineno, "security", "medium", "yaml.load() — prefer yaml.safe_load()", "yaml")
+                elif owner == "tempfile" and attr == "mktemp":
+                    add(node.lineno, "security", "medium",
+                        "tempfile.mktemp() — TOCTOU race; use mkstemp()/NamedTemporaryFile", "tempfile")
                 elif attr in ("execute", "executemany", "cursor") and any(
                     isinstance(a, ast.JoinedStr) for a in node.args
                 ):

@@ -25,6 +25,53 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
         return _patch_sql_injection(rel_path, source, tree)
     if "yaml" in issue:
         return _patch_yaml_load(rel_path, source, tree)
+    if "tempfile" in issue or "mktemp" in issue:
+        return _patch_mktemp(rel_path, source, tree)
+    return None
+
+
+def _patch_mktemp(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
+    """Flag ``tempfile.mktemp()`` with a security warning comment.
+
+    mktemp only returns a *name*; whatever opens it afterwards is a TOCTOU race.
+    The safe replacements (mkstemp returns an open fd; NamedTemporaryFile returns
+    a file object) have different return contracts, so there is no safe drop-in
+    rewrite — we annotate the call site rather than silently change behavior,
+    exactly like the pickle/SQL flags.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "mktemp"):
+            continue
+        if not (isinstance(func.value, ast.Name) and func.value.id == "tempfile"):
+            continue
+
+        lineno = node.lineno
+        lines = source.splitlines(keepends=True)
+        if lineno > len(lines):
+            continue
+        line_content = lines[lineno - 1]
+        prev_line = lines[lineno - 2] if lineno >= 2 else ""
+        if "Apex: insecure temp file" in line_content or "Apex: insecure temp file" in prev_line:
+            continue  # already flagged (comment sits on the preceding line)
+        indent = line_content[: len(line_content) - len(line_content.lstrip())]
+        warning = (
+            f"{indent}# SECURITY (Apex: insecure temp file — tempfile.mktemp() is a TOCTOU "
+            f"race; use tempfile.mkstemp() or NamedTemporaryFile)\n"
+        )
+        new_lines = list(lines)
+        new_lines.insert(lineno - 1, warning)
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel_path,
+                "new_content": "".join(new_lines),
+                "expected_old_content": source,
+            }],
+            transform_type="flag_insecure_tempfile",
+            rationale=[f"Flagged insecure tempfile.mktemp() with a security warning in {rel_path}."],
+        )
     return None
 
 
