@@ -392,28 +392,49 @@ class IdeaActionBridge:
 
         results: list[dict] = []
         applied = rolled_back = blocked = committed = 0
+        def _commit(r: dict) -> tuple[bool, str | None]:
+            if committer is None or not r.get("changed_files"):
+                return False, None
+            cres = committer.commit(changed_files=r["changed_files"], finding=step.action_type, action="fix")
+            return bool(cres.success), getattr(cres, "commit_hash", None)
+
         for step in plan.executable_steps():
             if max_apply is not None and applied >= max_apply:
                 break
+            # The first apply classifies the step (applied / rolled-back / blocked),
+            # exactly one result row per step.
             r = self.apply_step(step, project_root, mode=mode, verify=verify)
             label = step.source_facts[0].split(":")[0].strip() if step.source_facts else ""
             entry = {"branch": step.branch_path, "action": step.action_type,
                      "operator": step.operator, "label": label,
                      "target": step.target, **r}
+            real_fix = bool(r.get("applied")) and step.target in (r.get("changed_files") or [])
             if r.get("rolled_back"):
                 rolled_back += 1
             elif r.get("applied"):
                 applied += 1
-                if committer is not None and r.get("changed_files"):
-                    commit_res = committer.commit(
-                        changed_files=r["changed_files"],
-                        finding=step.action_type,
-                        action="fix",
-                    )
-                    entry["committed"] = bool(commit_res.success)
-                    if commit_res.success:
-                        committed += 1
-                        entry["commit_hash"] = commit_res.commit_hash
+                ok, h = _commit(r)
+                entry["committed"] = ok
+                if ok:
+                    committed += 1
+                    entry["commit_hash"] = h
+                # CONVERGENCE: a harden_security step then fixes EVERY remaining
+                # auto-fixable issue in the same file (the detection ladder
+                # advances as each is fixed). These extra verified fixes don't
+                # create new rows — they're tracked on the step's entry — so one
+                # maintenance pass cleans the file instead of one fix per pass.
+                if step.action_type == "harden_security" and real_fix:
+                    extra = 0
+                    for _ in range(5):
+                        r2 = self.apply_step(step, project_root, mode=mode, verify=verify)
+                        if not (r2.get("applied") and step.target in (r2.get("changed_files") or [])):
+                            break
+                        extra += 1
+                        ok2, _h2 = _commit(r2)
+                        if ok2:
+                            committed += 1
+                    if extra:
+                        entry["converged_fixes"] = extra
             else:
                 blocked += 1
             results.append(entry)

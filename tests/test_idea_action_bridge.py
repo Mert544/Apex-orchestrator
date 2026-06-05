@@ -489,3 +489,32 @@ def test_harden_applies_net_timeout_flag(tmp_path):
     result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
     if result["applied"]:
         assert "timeout" in src.read_text().lower()
+
+
+def test_harden_step_converges_all_fixes_in_one_pass(tmp_path):
+    # A single harden_security step now fixes EVERY auto-fixable issue in its
+    # file in one maintenance pass (the detection ladder advances as each issue
+    # is fixed), not one fix per pass. (Fixes the finbot convergence weakness.)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    src = tmp_path / "app" / "svc.py"
+    src.write_text("def run(rule):\n    try:\n        return eval(rule)\n    except:\n        return 0\n")
+    (tmp_path / "tests" / "test_svc.py").write_text(
+        "def test_import():\n    import app.svc\n    assert app.svc is not None\n"
+    )
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='c'\nversion='0'\n")
+
+    from app.models.idea import ActionPlan
+    idea = IdeaNode(id="i", title="Harden: app/svc.py", subject="app/svc.py", operator="harden",
+                    operator_chain=["harden"], source_facts=["sensitive-path: app/svc.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    plan = ActionPlan(steps=[step], stats={}, mode="supervised")
+    res = IdeaActionBridge().apply_plan(plan, str(tmp_path), mode="supervised", verify=True)
+
+    assert res["rolled_back"] == 0
+    after = src.read_text()
+    # Both the eval AND the bare-except were fixed in the one pass.
+    assert "ast.literal_eval(rule)" in after
+    assert "eval(rule)" not in after.replace("literal_eval", "")
+    assert "except Exception:" in after
+    assert "except:" not in after
