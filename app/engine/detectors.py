@@ -45,6 +45,9 @@ def detect(source: str) -> list[Issue]:
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
+            if _is_network_call_without_timeout(node):
+                add(node.lineno, "bug", "medium",
+                    "network call without timeout= can hang forever — pass timeout=...", "net-timeout")
             f = node.func
             if isinstance(f, ast.Name) and f.id == "eval":
                 add(node.lineno, "security", "high", "eval() — code injection risk", "eval")
@@ -127,6 +130,39 @@ def _is_hardcoded_secret(node: ast.AST) -> bool:
     return False
 
 
+# Network verbs shared by ``requests`` and ``httpx`` (and the bare urllib call).
+_NET_VERBS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "request"})
+
+
+def _is_network_call_without_timeout(node: ast.Call) -> bool:
+    """True if ``node`` is a blocking network call lacking a ``timeout=`` kwarg.
+
+    Conservative, high-precision detection of Bandit B113 — only the clear cases,
+    so an ambiguous ``session.get(...)`` is never flagged:
+      - ``requests.<verb>(...)`` / ``httpx.<verb>(...)`` (get/post/.../request),
+      - ``urllib.request.urlopen(...)`` and a bare ``urlopen(...)``.
+    A call already passing ``timeout=`` (any value) — or smuggling one via
+    ``**kwargs`` — is left alone. There is no universally-safe default timeout to
+    inject, so this is flag-only (a comment), like the pickle/SQL transforms.
+    """
+    func = node.func
+    if any(kw.arg is None for kw in node.keywords):       # **kwargs could carry timeout
+        return False
+    if any(kw.arg == "timeout" for kw in node.keywords):
+        return False
+    if isinstance(func, ast.Name):
+        return func.id == "urlopen"
+    if not isinstance(func, ast.Attribute):
+        return False
+    attr, value = func.attr, func.value
+    if attr == "urlopen":
+        return (isinstance(value, ast.Attribute) and value.attr == "request"
+                and isinstance(value.value, ast.Name) and value.value.id == "urllib")
+    if attr in _NET_VERBS and isinstance(value, ast.Name):
+        return value.id in ("requests", "httpx")
+    return False
+
+
 def _is_text_open_without_encoding(node: ast.Call) -> bool:
     """True if ``node`` is a builtin text-mode ``open()`` lacking ``encoding=``.
 
@@ -205,3 +241,7 @@ def has_none_comparison(source: str) -> bool:
 
 def has_open_without_encoding(source: str) -> bool:
     return any(i.fix_kind == "open-encoding" for i in detect(source))
+
+
+def has_network_call_without_timeout(source: str) -> bool:
+    return any(i.fix_kind == "net-timeout" for i in detect(source))

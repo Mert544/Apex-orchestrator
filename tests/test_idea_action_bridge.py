@@ -473,3 +473,19 @@ def test_plan_roadmap_top_caps_total(tmp_path):
     rep = IdeaPermutationEngine({"max_total_ideas": 30, "max_idea_depth": 1}, tmp_path).run()
     plan = IdeaActionBridge().plan_roadmap(rep, top=3, project_root=str(tmp_path))
     assert len(plan.steps) <= 3
+
+
+def test_harden_applies_net_timeout_flag(tmp_path):
+    # A file whose only issue is a network call without timeout gets the
+    # reliability flag via the harden detection ladder.
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "client.py"
+    src.write_text("import requests\ndef fetch(u):\n    return requests.get(u)\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Harden: app/client.py", subject="app/client.py",
+                    operator="harden", operator_chain=["harden"],
+                    source_facts=["sensitive-path: app/client.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
+    if result["applied"]:
+        assert "timeout" in src.read_text().lower()

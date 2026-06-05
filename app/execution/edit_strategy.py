@@ -88,6 +88,10 @@ class EditStrategy:
             reasons.append("Keywords suggest adding an explicit open() encoding.")
             return EditStrategyResult(strategy="fix_open_encoding", confidence=0.85, reasons=reasons)
 
+        if "net-timeout" in combined or "timeout" in combined or "hang" in combined:
+            reasons.append("Keywords suggest flagging a network call without a timeout.")
+            return EditStrategyResult(strategy="fix_net_timeout", confidence=0.8, reasons=reasons)
+
         if "import" in combined or "unused" in combined or "cleanup" in combined:
             reasons.append("Keywords suggest import cleanup.")
             return EditStrategyResult(strategy="organize_imports", confidence=0.7, reasons=reasons)
