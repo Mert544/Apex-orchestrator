@@ -98,6 +98,26 @@ def test_seeds_extension_and_directory_signals():
     assert any(f.startswith("top-directory:") for f in facts)
 
 
+def test_seeds_debt_marker_modules():
+    profile = _profile(
+        debt_marker_modules=["app/legacy.py"],
+        ci_files=["ci.yml"],
+    )
+    roots = IdeaSeeder().seed(profile)
+    facts = [f for r in roots for f in r.source_facts]
+    assert any(f.startswith("debt-markers: app/legacy.py") for f in facts)
+    debt = next(r for r in roots if r.source_facts[0].startswith("debt-markers:"))
+    assert debt.subject == "app/legacy.py"
+    assert "debt markers" in debt.title
+
+
+def test_no_debt_root_when_no_marker_modules():
+    profile = _profile(dependency_hubs=["app/a.py"], ci_files=["ci.yml"])
+    roots = IdeaSeeder().seed(profile)
+    facts = [f for r in roots for f in r.source_facts]
+    assert not any(f.startswith("debt-markers:") for f in facts)
+
+
 def test_seeds_fragile_modules_first():
     profile = _profile(
         fragile_modules=["app/core.py"],

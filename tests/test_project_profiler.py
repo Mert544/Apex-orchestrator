@@ -74,3 +74,46 @@ def test_sensitive_paths_ignore_docs_matching_hint_substring(tmp_path):
     sensitive = [str(Path(p).as_posix()) for p in profile.sensitive_paths]
     assert "docs/api.md" not in sensitive
     assert "src/api_client.py" in sensitive
+
+
+def test_profiler_flags_modules_with_clustered_debt_markers(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+
+    # 3+ debt markers in comments -> flagged.
+    (tmp_path / "app" / "debt.py").write_text(
+        "def f():\n"
+        "    pass  # TODO finish this\n"
+        "    # FIXME broken edge case\n"
+        "    # xxx revisit\n",  # lower-case marker -> case-insensitive
+        encoding="utf-8",
+    )
+    # Only 1 marker -> below threshold, not flagged.
+    (tmp_path / "app" / "light.py").write_text(
+        "def g():\n    pass  # TODO one thing\n",
+        encoding="utf-8",
+    )
+    # No markers at all -> clean.
+    (tmp_path / "app" / "clean.py").write_text(
+        "def h():\n    return 1\n",
+        encoding="utf-8",
+    )
+    # The word TODO appears only inside a string literal / identifier, never in
+    # a comment -> must NOT be flagged (precision: comment context only).
+    (tmp_path / "app" / "literal.py").write_text(
+        "TODO_MESSAGE = 'TODO write docs'\n"
+        "def todo_handler():\n"
+        "    return 'FIXME later and XXX and HACK'\n"
+        "label = 'TODO FIXME XXX'\n",
+        encoding="utf-8",
+    )
+
+    profile = ProjectProfiler(tmp_path).profile()
+
+    def _posix(paths: list[str]) -> list[str]:
+        return [str(Path(p).as_posix()) for p in paths]
+
+    flagged = _posix(profile.debt_marker_modules)
+    assert "app/debt.py" in flagged
+    assert "app/light.py" not in flagged
+    assert "app/clean.py" not in flagged
+    assert "app/literal.py" not in flagged

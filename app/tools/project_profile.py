@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,7 @@ class ProjectProfile:
     import_cycles: list[list[str]] = field(default_factory=list)
     modernizable_modules: list[str] = field(default_factory=list)
     mutable_default_modules: list[str] = field(default_factory=list)
+    debt_marker_modules: list[str] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -68,6 +70,15 @@ class ProjectProfiler:
         ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx",
         ".go", ".rs", ".java", ".rb", ".php", ".c", ".cc", ".cpp", ".h", ".hpp",
     }
+    # Technical-debt markers, matched only inside comments: a ``#`` then optional
+    # whitespace then one of the marker words as a whole word (case-insensitive).
+    # Anchoring to ``#`` keeps the signal precise — it won't fire on the bare
+    # string "TODO" inside a literal or an identifier, only on real comments.
+    DEBT_MARKER_RE = re.compile(r"#\s*(TODO|FIXME|XXX|HACK)\b", re.IGNORECASE)
+    # A module needs at least this many markers to be flagged. >= 3 keeps the
+    # signal meaningful (modules with a single stray TODO are noise); a cluster
+    # of three or more is a real, surface-worthy pocket of deferred work.
+    DEBT_MARKER_THRESHOLD = 3
 
     def __init__(self, root: str | Path, max_files: int = 2000) -> None:
         self.root = Path(root)
@@ -80,6 +91,7 @@ class ProjectProfiler:
 
         ext_counter: Counter[str] = Counter()
         dir_counter: Counter[str] = Counter()
+        debt_counts: Counter[str] = Counter()
 
         skipped_dirs = {".git", "__pycache__", ".apex", ".epistemic", "node_modules", ".venv", "venv", "dist", "build", ".turbo", ".next"}
         scanned = 0
@@ -117,6 +129,13 @@ class ProjectProfiler:
             if ext in self.CODE_EXTENSIONS and any(hint in rel_lower for hint in self.SENSITIVE_HINTS):
                 profile.sensitive_paths.append(rel_str)
 
+            # Count technical-debt markers in Python comments, folded into the
+            # existing walk so we don't add a second full-tree pass.
+            if ext == ".py":
+                count = self._count_debt_markers(path)
+                if count:
+                    debt_counts[rel_str] = count
+
         profile.extension_counts = dict(ext_counter.most_common())
         profile.top_directories = [name for name, _count in dir_counter.most_common(5)]
         profile.entrypoints = sorted(dict.fromkeys(profile.entrypoints))
@@ -125,8 +144,30 @@ class ProjectProfiler:
         profile.config_files = sorted(dict.fromkeys(profile.config_files))
         profile.sensitive_paths = sorted(dict.fromkeys(profile.sensitive_paths))
 
+        # Modules with a meaningful cluster of debt markers, ranked by count
+        # then path (stable/deterministic), capped like the other profile lists.
+        flagged = [
+            module for module, count in debt_counts.items()
+            if count >= self.DEBT_MARKER_THRESHOLD
+        ]
+        profile.debt_marker_modules = sorted(
+            flagged, key=lambda m: (-debt_counts[m], m)
+        )[:5]
+
         self._populate_python_structure(profile)
         return profile
+
+    def _count_debt_markers(self, path: Path) -> int:
+        """Count ``# TODO/FIXME/XXX/HACK`` comment markers in a Python file.
+
+        Matches only the comment form (anchored to ``#``) so the bare word
+        appearing in a string literal or identifier is never counted.
+        """
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return 0
+        return len(self.DEBT_MARKER_RE.findall(text))
 
     def _populate_python_structure(self, profile: ProjectProfile) -> None:
         analyzer = PythonStructureAnalyzer(self.root)

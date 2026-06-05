@@ -154,6 +154,17 @@ class IdeaSeeder:
                 fact_value=f"{module} (1 test)",
             )
 
+        # Technical-debt markers: modules carrying a cluster of TODO/FIXME/XXX/
+        # HACK comments are concrete, traceable pockets of deferred work.
+        for module in (getattr(profile, "debt_marker_modules", []) or [])[:3]:
+            self._append_root(
+                roots, seen_subjects,
+                title=f"Address the TODO/FIXME debt markers in {module}",
+                subject=module,
+                fact_label="debt-markers",
+                fact_value=f"{module} (clustered TODO/FIXME/XXX/HACK comments)",
+            )
+
         # Dominant language → tooling idea (type hints / lint config).
         exts = getattr(profile, "extension_counts", {}) or {}
         if exts.get(".py", 0) >= 1:
@@ -762,6 +773,7 @@ _FACT_HINTS: dict[str, str] = {
     "top-directory": "structure boundaries",
     "modernization": "refactor cleanup",
     "mutable-default": "shared mutable state bug",
+    "debt-markers": "refactor cleanup deferred work",
 }
 
 # Root fact labels where reliability/security lenses matter most.
