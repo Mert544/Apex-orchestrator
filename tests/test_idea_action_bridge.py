@@ -203,9 +203,10 @@ def test_harden_applies_open_encoding_fix(tmp_path):
         assert 'encoding="utf-8"' in src.read_text()
 
 
-def test_harden_falls_back_to_guard_when_no_known_issue(tmp_path):
-    # No eval/os.system/bare-except -> harden_security still produces *a* patch
-    # (guard clause) rather than erroring.
+def test_harden_makes_no_change_when_no_real_issue(tmp_path):
+    # Clean code with no eval/os.system/bare-except/mutable/modernize/encoding/
+    # timeout issue: harden_security must NOT fabricate a speculative guard — it
+    # makes no change and the file is left untouched (trust over activity).
     (tmp_path / "app").mkdir()
     src = tmp_path / "app" / "ok.py"
     src.write_text("def f(x):\n    return x + 1\n")
@@ -214,9 +215,9 @@ def test_harden_falls_back_to_guard_when_no_known_issue(tmp_path):
                     operator="harden", operator_chain=["harden"],
                     source_facts=["sensitive-path: app/ok.py"])
     step = IdeaActionBridge().plan_idea(idea)
-    # Should not raise; may or may not apply depending on guard applicability.
     result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
-    assert "applied" in result
+    assert result["applied"] is False
+    assert src.read_text() == "def f(x):\n    return x + 1\n"  # untouched
 
 
 def test_verify_keeps_patch_when_tests_pass(tmp_path):

@@ -154,8 +154,11 @@ class IdeaActionBridge:
         change_strategy = self._ACTION_STRATEGY[step.action_type]
         title = step.description
         if step.action_type == "harden_security":
-            # Detection ladder: fix the most important *real* issue the file has,
-            # falling back to a generic guard clause only when none is present.
+            # Detection ladder: fix the most important *real* issue the file has.
+            # If NONE is present, make no change — a developer agent must not
+            # fabricate speculative input-validation (e.g. `if not x: raise`) on
+            # code that has no actual problem; that can reject valid falsy inputs
+            # and erodes trust. The idea is surfaced for a human instead.
             issue = self._detect_security_issue(project_root, step.target)
             if issue:
                 change_strategy = [f"fix {issue} security"]
@@ -172,6 +175,8 @@ class IdeaActionBridge:
             elif self._detect_net_timeout(project_root, step.target):
                 change_strategy = ["net-timeout"]
                 title = f"Add request timeouts in {step.target}"
+            else:
+                return None  # no real, auto-fixable issue — don't invent one
         elif step.action_type == "organize_imports" and self._detect_modernization(project_root, step.target):
             # A "simplify" idea on a file with `== None` modernizes it (a safe,
             # behavior-preserving cleanup) instead of only touching imports.
