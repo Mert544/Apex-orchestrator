@@ -207,3 +207,13 @@ def test_roadmap_to_dict_roundtrips():
     assert d["objective"] == "harden auth"
     assert isinstance(d["phases"], list) and d["phases"]
     assert "items" in d["phases"][0]
+
+
+def test_complexity_hotspot_is_high_impact_and_stabilize():
+    # A de-risk-the-hotspot idea is high structural impact and belongs in the
+    # Stabilize phase (make it safe before changing it).
+    plain = _node(source_facts=["top-directory: app"])
+    hot = _node(operator="root",
+                source_facts=["complexity-hotspot: app/core.py (high complexity x fan-in, thin tests)"])
+    assert estimate_impact(hot) > estimate_impact(plain)
+    assert classify_phase(hot) == STABILIZE
