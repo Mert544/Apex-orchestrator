@@ -113,3 +113,19 @@ def test_has_none_comparison_on_syntax_error():
     # has_* helpers must not raise on unparseable input.
     assert has_mutable_default("def broken(:\n") is False
     assert has_none_comparison("def broken(:\n") is False
+
+
+def test_substantive_vs_shallow_assertions():
+    from app.engine.detectors import test_has_substantive_assertions as subst
+    # Shallow: import-smoke + isinstance/type contracts only.
+    shallow = (
+        "import pkg.m\n"
+        "def test_imports():\n    assert pkg.m is not None\n"
+        "def test_contracts():\n    assert isinstance(pkg.m.f(0), str)\n    assert callable(pkg.m.g)\n"
+    )
+    assert subst(shallow) is False
+    # Substantive: a real value assertion.
+    real = "from pkg.m import add\ndef test_add():\n    assert add(2, 3) == 5\n"
+    assert subst(real) is True
+    # `in` / relational comparisons are substantive too.
+    assert subst("def t():\n    assert 1 in [1, 2]\n") is True

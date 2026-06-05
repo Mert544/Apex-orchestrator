@@ -33,6 +33,7 @@ class ProjectProfile:
     mutable_default_modules: list[str] = field(default_factory=list)
     debt_marker_modules: list[str] = field(default_factory=list)
     hotspot_modules: list[str] = field(default_factory=list)
+    shallow_tested_modules: list[str] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -192,6 +193,11 @@ class ProjectProfiler:
         profile.untested_modules = coverage.untested_modules[:5]
         profile.critical_untested_modules = coverage.critical_untested_modules[:5]
 
+        # Shallow coverage: a module whose only linked tests are characterization
+        # stubs (import-smoke + isinstance contracts) — "covered" but not verified
+        # correct. Surfaced so the grade/engine don't mistake linkage for depth.
+        profile.shallow_tested_modules = self._scan_shallow_tests(profile.module_to_tests)
+
         # Fragility: many modules depend on it (high in-degree) but it has
         # thin/no test coverage — a high-blast-radius risk worth surfacing.
         graph = graph_builder.build()
@@ -214,6 +220,27 @@ class ProjectProfiler:
         # only over a bounded candidate set (high in-degree or symbol-heavy) so
         # this stays cheap. Shares the risk formula with the hotspots report.
         profile.hotspot_modules = self._scan_hotspots(modules, graph, profile.module_to_tests)
+
+    def _scan_shallow_tests(self, module_to_tests: dict) -> list[str]:
+        """Modules whose linked tests exist but assert no real behaviour (shallow)."""
+        from app.engine.detectors import test_has_substantive_assertions
+
+        out: list[str] = []
+        for module, tests in sorted(module_to_tests.items()):
+            if not tests:
+                continue  # genuinely untested — handled by untested_modules
+            substantive = False
+            for rel in tests:
+                try:
+                    text = (self.root / rel).read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                if test_has_substantive_assertions(text):
+                    substantive = True
+                    break
+            if not substantive:
+                out.append(module)
+        return out[:5]
 
     def _scan_hotspots(self, modules: list, graph: dict, module_to_tests: dict) -> list[str]:
         """Top modules by complexity × (1 + fan-in) ÷ (1 + tests), bounded + filtered."""

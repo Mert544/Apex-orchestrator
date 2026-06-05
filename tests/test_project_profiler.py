@@ -134,3 +134,24 @@ def test_profiler_flags_complexity_hotspots(tmp_path: Path):
     hot = [str(Path(p).as_posix()) for p in profile.hotspot_modules]
     assert "app/hot.py" in hot
     assert "app/calm.py" not in hot
+
+
+def test_profiler_flags_shallow_only_coverage(tmp_path: Path):
+    # A module whose only linked test is a shape-only stub is 'shallow', not
+    # fully tested; a real value assertion clears it.
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "pkg" / "shallow.py").write_text("def f(x: int) -> int:\n    return x + 1\n")
+    (tmp_path / "pkg" / "deep.py").write_text("def g(x: int) -> int:\n    return x * 2\n")
+    (tmp_path / "tests" / "test_shallow.py").write_text(
+        "import pkg.shallow\ndef test_s():\n    assert isinstance(pkg.shallow.f(0), int)\n"
+    )
+    (tmp_path / "tests" / "test_deep.py").write_text(
+        "from pkg.deep import g\ndef test_d():\n    assert g(3) == 6\n"
+    )
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='p'\nversion='0'\n")
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    shallow = [str(Path(p).as_posix()) for p in profile.shallow_tested_modules]
+    assert "pkg/shallow.py" in shallow
+    assert "pkg/deep.py" not in shallow

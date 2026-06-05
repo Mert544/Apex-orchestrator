@@ -154,6 +154,18 @@ class IdeaSeeder:
                 fact_value=f"{module} (1 test)",
             )
 
+        # Shallow coverage: modules "covered" only by characterization stubs
+        # (import-smoke + isinstance), which prove shape, not correctness — so the
+        # engine asks for real behavioural assertions instead of calling it done.
+        for module in (getattr(profile, "shallow_tested_modules", []) or [])[:3]:
+            self._append_root(
+                roots, seen_subjects,
+                title=f"Deepen the shallow tests of {module} (assert real behaviour, not just types)",
+                subject=module,
+                fact_label="shallow-coverage",
+                fact_value=f"{module} (only smoke/type assertions)",
+            )
+
         # Complexity hotspots: modules combining high cyclomatic complexity with
         # blast radius and thin tests — the riskiest places to change, so derisk
         # them with tests/simplification before they cause incidents.
@@ -787,10 +799,11 @@ _FACT_HINTS: dict[str, str] = {
     "mutable-default": "shared mutable state bug",
     "debt-markers": "refactor cleanup deferred work",
     "complexity-hotspot": "complex check validation edge cases simplify",
+    "shallow-coverage": "check validation edge cases assert behaviour",
 }
 
 # Root fact labels where reliability/security lenses matter most.
-_SECURITY_LABELS = {"sensitive-path", "critical-untested", "untested", "partial-coverage", "fragile", "complexity-hotspot"}
+_SECURITY_LABELS = {"sensitive-path", "critical-untested", "untested", "partial-coverage", "fragile", "complexity-hotspot", "shallow-coverage"}
 
 
 def _context_weight(node: IdeaNode, op_name: str, security_pressure: float = 1.0) -> float:

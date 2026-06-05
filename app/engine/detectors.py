@@ -271,6 +271,53 @@ def has_none_comparison(source: str) -> bool:
     return any(i.fix_kind == "none-comparison" for i in detect(source))
 
 
+def _assert_is_substantive(test: ast.expr) -> bool:
+    """True if an assert checks real behaviour, not just that code loads/has a type.
+
+    Shallow (NOT substantive): a bare truthiness check (``assert mod``), an
+    ``is/is not None`` check, or ``isinstance()/callable()/hasattr()``. These
+    prove a module imports and returns the right *shape* but not that it is
+    *correct*. A value/relational comparison (``==``, ``<``, ``in``, ...), a
+    plain function-call assertion, or a negation of any of these is substantive.
+    """
+    if isinstance(test, (ast.Name, ast.Attribute, ast.Constant)):
+        return False
+    if isinstance(test, ast.Compare):
+        only_none_identity = (
+            all(isinstance(op, (ast.Is, ast.IsNot)) for op in test.ops)
+            and any(isinstance(c, ast.Constant) and c.value is None
+                    for c in [test.left, *test.comparators])
+        )
+        return not only_none_identity
+    if isinstance(test, ast.Call):
+        func = test.func
+        name = func.id if isinstance(func, ast.Name) else (
+            func.attr if isinstance(func, ast.Attribute) else "")
+        return name not in ("isinstance", "callable", "hasattr")
+    if isinstance(test, ast.BoolOp):
+        return any(_assert_is_substantive(v) for v in test.values)
+    if isinstance(test, ast.UnaryOp):
+        return _assert_is_substantive(test.operand)
+    return True
+
+
+def test_has_substantive_assertions(source: str) -> bool:
+    """True if a test module asserts real behaviour, not just imports/types.
+
+    Lets callers tell a genuine test from a shallow characterization stub
+    (import-smoke + ``isinstance`` contracts), so 'covered' doesn't get confused
+    with 'verified correct'.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    return any(
+        isinstance(n, ast.Assert) and _assert_is_substantive(n.test)
+        for n in ast.walk(tree)
+    )
+
+
 def has_open_without_encoding(source: str) -> bool:
     return any(i.fix_kind == "open-encoding" for i in detect(source))
 

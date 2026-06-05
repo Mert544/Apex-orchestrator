@@ -177,3 +177,12 @@ def test_seeds_complexity_hotspot_idea(tmp_path):
     roots = IdeaSeeder().seed(profile)
     hot = [r for r in roots if any("complexity-hotspot" in f for f in r.source_facts)]
     assert hot and any("app/hot.py" in r.subject for r in hot)
+
+
+def test_seeds_deepen_shallow_coverage_idea(tmp_path):
+    from app.tools.project_profile import ProjectProfile
+    from app.engine.idea_permutation import IdeaSeeder
+    profile = ProjectProfile(root=str(tmp_path), shallow_tested_modules=["pkg/shallow.py"])
+    roots = IdeaSeeder().seed(profile)
+    sc = [r for r in roots if any("shallow-coverage" in f for f in r.source_facts)]
+    assert sc and any("pkg/shallow.py" in r.subject for r in sc)
