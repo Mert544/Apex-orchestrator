@@ -146,3 +146,23 @@ def test_identity_comparison_with_literal_is_flagged():
     assert not has_identity_bug("def f(x):\n    return x is None\n")
     assert not has_identity_bug("def f(x):\n    return x is True\n")
     assert not has_identity_bug("def f(a, b):\n    return a is b\n")
+
+
+def test_frozen_dataclass_self_assignment_is_flagged():
+    from app.engine.detectors import detect
+
+    def frozen_bug(src):
+        return any("FrozenInstanceError" in i.message and i.severity == "high" for i in detect(src))
+
+    frozen = ("from dataclasses import dataclass\n"
+              "@dataclass(frozen=True)\nclass C:\n    x: int\n"
+              "    def bump(self):\n        self.x = self.x + 1\n")
+    assert frozen_bug(frozen)
+    # AugAssign too
+    aug = ("from dataclasses import dataclass\n"
+           "@dataclass(frozen=True)\nclass C:\n    x: int\n"
+           "    def bump(self):\n        self.x += 1\n")
+    assert frozen_bug(aug)
+    # A normal (mutable) dataclass is fine; a read-only frozen one is fine.
+    assert not frozen_bug("from dataclasses import dataclass\n@dataclass\nclass C:\n    x: int\n    def s(self):\n        self.x = 1\n")
+    assert not frozen_bug("from dataclasses import dataclass\n@dataclass(frozen=True)\nclass C:\n    x: int\n    def d(self):\n        return self.x * 2\n")

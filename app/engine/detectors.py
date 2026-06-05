@@ -116,6 +116,19 @@ def detect(source: str) -> list[Issue]:
                any(_is_identity_literal(x) for x in node.comparators):
                 add(node.lineno, "bug", "medium",
                     "identity check against a literal (`is`/`is not`) is a bug — use ==/!=", "")
+        elif isinstance(node, ast.ClassDef):
+            if _is_frozen_dataclass(node):
+                for sub in ast.walk(node):
+                    targets: list[ast.expr] = []
+                    if isinstance(sub, ast.Assign):
+                        targets = list(sub.targets)
+                    elif isinstance(sub, (ast.AugAssign, ast.AnnAssign)):
+                        targets = [sub.target]
+                    if any(isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)
+                           and t.value.id == "self" for t in targets):
+                        add(sub.lineno, "bug", "high",
+                            "assignment to a frozen dataclass field raises FrozenInstanceError "
+                            "at runtime — use dataclasses.replace()", "")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if _has_mutable_default(node):
                 add(node.lineno, "bug", "high", "mutable default argument — shared-state bug", "mutable-default")
@@ -205,6 +218,21 @@ def _is_text_open_without_encoding(node: ast.Call) -> bool:
         if "b" in mode_node.value:
             return False
     return True
+
+
+def _is_frozen_dataclass(node: ast.ClassDef) -> bool:
+    """True if the class is decorated ``@dataclass(frozen=True)`` (or dataclasses.dataclass)."""
+    for dec in node.decorator_list:
+        if not isinstance(dec, ast.Call):
+            continue
+        f = dec.func
+        name = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else "")
+        if name == "dataclass" and any(
+            kw.arg == "frozen" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+            for kw in dec.keywords
+        ):
+            return True
+    return False
 
 
 def _is_identity_literal(node: ast.AST) -> bool:
