@@ -62,6 +62,31 @@ That's it. `apex` assesses the project, prioritizes the highest‑ROI work, and 
 
 > No API keys, no network, no setup beyond `pip install`. The core never calls out to anything.
 
+## 🛡️ Use Apex in CI (drop-in GitHub Action)
+
+Gate any repo on a deterministic, test-verified health grade — no API keys, no cost:
+
+```yaml
+# .github/workflows/apex.yml
+name: Apex health gate
+on: [pull_request]
+jobs:
+  apex:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }            # full history for the diff review
+      - uses: mert544/apex-orchestrator@main
+        with:
+          min-score: "80"                   # fail the PR if the grade drops below 80
+          base: origin/${{ github.base_ref }}
+          fail-on-high: "true"              # fail if a high-severity issue is in the diff
+```
+
+The action grades the project (`apex grade --min-score`) and runs a diff-scoped
+review of the PR (`apex review --fail-on-high`). Both are offline and
+deterministic, so the gate is fast and reproducible.
+
 ---
 
 ## 💡 The Idea Engine

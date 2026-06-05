@@ -1,0 +1,54 @@
+name: "Apex Code Health Gate"
+description: "Deterministic, test-verified code health for Python — grade the project and review the PR diff. Offline, no LLM, free."
+author: "Apex Orchestrator"
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  target:
+    description: "Path to the project root to analyze."
+    required: false
+    default: "."
+  min-score:
+    description: "Fail the job if the health grade is below this 0-100 score (0 disables the gate)."
+    required: false
+    default: "0"
+  base:
+    description: "Git base ref for a diff-scoped review (e.g. origin/main). Empty skips the review step."
+    required: false
+    default: ""
+  fail-on-high:
+    description: "When a base is given, fail the job if a high-severity issue appears in the diff."
+    required: false
+    default: "false"
+  python-version:
+    description: "Python version to set up for running Apex."
+    required: false
+    default: "3.11"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Apex
+      shell: bash
+      run: pip install --quiet "${{ github.action_path }}"
+
+    - name: Health grade gate
+      shell: bash
+      run: apex grade --target "${{ inputs.target }}" --min-score "${{ inputs.min-score }}"
+
+    - name: Diff review gate
+      if: ${{ inputs.base != '' }}
+      shell: bash
+      run: |
+        if [ "${{ inputs.fail-on-high }}" = "true" ]; then
+          apex review --target "${{ inputs.target }}" --base "${{ inputs.base }}" --fail-on-high
+        else
+          apex review --target "${{ inputs.target }}" --base "${{ inputs.base }}"
+        fi
