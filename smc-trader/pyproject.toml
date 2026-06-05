@@ -1,0 +1,8 @@
+[project]
+name = "smc-trader"
+version = "0.1.0"
+description = "A Smart Money Concepts / ICT algorithmic trading bot (structure, order blocks, FVG, liquidity, PO3, killzones)."
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
