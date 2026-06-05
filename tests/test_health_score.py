@@ -154,3 +154,37 @@ def test_security_penalty_caps_at_30(tmp_path):
     (tmp_path / "a.py").write_text(body)
     sec = next(c for c in grade(str(tmp_path)).components if c.name == "Security")
     assert sec.points_lost == 30
+
+
+def test_reliability_debt_counts_in_grade(tmp_path):
+    # open() without encoding / a network call without timeout are auto-fixable
+    # reliability debt that must show in the headline grade, not only in review.
+    from app.engine.health_score import grade
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "io.py").write_text(
+        "def load(p):\n    f = open(p)\n    return f.read()\n", encoding="utf-8"
+    )
+    (tmp_path / "tests" / "test_io.py").write_text(
+        "from app.io import load\n\ndef test_load():\n    assert callable(load)\n", encoding="utf-8"
+    )
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='d'\nversion='0'\n", encoding="utf-8")
+    debt = next(c for c in grade(str(tmp_path)).components if c.name == "Code debt")
+    assert debt.points_lost > 0
+
+
+def test_reliability_debt_excludes_test_files(tmp_path):
+    # The same exclusion as the rest of code-debt: a no-encoding open() inside a
+    # test file does not count against the project's grade.
+    from app.engine.health_score import grade
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "clean.py").write_text("def f(x):\n    return x + 1\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_clean.py").write_text(
+        "def test_open():\n    f = open('x')\n    f.close()\n", encoding="utf-8"
+    )
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='d'\nversion='0'\n", encoding="utf-8")
+    debt = next(c for c in grade(str(tmp_path)).components if c.name == "Code debt")
+    assert debt.points_lost == 0

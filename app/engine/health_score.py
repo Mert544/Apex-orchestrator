@@ -48,6 +48,24 @@ def _is_fixture_path(path: str) -> bool:
     )
 
 
+def _reliability_debt_modules(project_root: str | Path, profile: Any) -> set[str]:
+    """Project-own modules with an auto-fixable reliability issue (no-encoding open / no-timeout net call)."""
+    from app.engine.detectors import detect
+
+    root = Path(project_root)
+    out: set[str] = set()
+    for m in (getattr(profile, "module_to_tests", {}) or {}):
+        if not isinstance(m, str) or not m.endswith(".py") or _is_fixture_path(m):
+            continue
+        try:
+            text = (root / m).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if any(i.fix_kind in ("open-encoding", "net-timeout") for i in detect(text)):
+            out.add(m)
+    return out
+
+
 def _letter(score: int) -> str:
     table = [(97, "A+"), (93, "A"), (90, "A-"), (87, "B+"), (83, "B"), (80, "B-"),
              (77, "C+"), (73, "C"), (70, "C-"), (67, "D+"), (63, "D"), (60, "D-")]
@@ -94,13 +112,19 @@ def grade(project_root: str | Path) -> HealthScore:
     # Code-debt counts the project's *own* code, not test/fixture files — the
     # same exclusion already applied to security findings above. A mutable
     # default inside tests/ shouldn't drag down a project's production grade.
-    debt = sum(
-        1 for m in (
+    debt_modules = {
+        str(m) for m in (
             (getattr(profile, "modernizable_modules", []) or [])
             + (getattr(profile, "mutable_default_modules", []) or [])
         )
         if not _is_fixture_path(str(m))
-    )
+    }
+    # Reliability debt: auto-fixable bug-class issues (open() without encoding,
+    # network calls without a timeout) that the canonical detector surfaces in
+    # `apex review` but used to be invisible in the headline grade. Scanned only
+    # here, on the grade path, so the cost stays out of the common profiler call.
+    debt_modules |= _reliability_debt_modules(project_root, profile)
+    debt = len(debt_modules)
 
     components: list[Component] = []
     fixes: list[str] = []
@@ -124,8 +148,8 @@ def grade(project_root: str | Path) -> HealthScore:
              "add a first test layer to the untested modules" if test_lost else None)
 
     debt_lost = min(15, debt * 3)
-    penalize("Code debt", debt_lost, f"{debt} module(s) with modernization/mutable-default debt",
-             "run `apex maintain` to modernize comparisons and fix mutable defaults" if debt_lost else None)
+    penalize("Code debt", debt_lost, f"{debt} module(s) with modernization / mutable-default / reliability debt",
+             "run `apex maintain` to modernize, fix mutable defaults, and add encodings/timeouts" if debt_lost else None)
 
     score = max(0, 100 - (sec_lost + arch_lost + test_lost + debt_lost))
     return HealthScore(score=score, letter=_letter(score), components=components, fixes=fixes)
