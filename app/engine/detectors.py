@@ -112,6 +112,10 @@ def detect(source: str) -> list[Issue]:
             if any(isinstance(x, ast.Call) and isinstance(x.func, ast.Name) and x.func.id == "type"
                    for x in operands):
                 add(node.lineno, "style", "medium", "use isinstance() instead of comparing type()", "")
+            if any(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops) and \
+               any(_is_identity_literal(x) for x in node.comparators):
+                add(node.lineno, "bug", "medium",
+                    "identity check against a literal (`is`/`is not`) is a bug — use ==/!=", "")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if _has_mutable_default(node):
                 add(node.lineno, "bug", "high", "mutable default argument — shared-state bug", "mutable-default")
@@ -201,6 +205,18 @@ def _is_text_open_without_encoding(node: ast.Call) -> bool:
         if "b" in mode_node.value:
             return False
     return True
+
+
+def _is_identity_literal(node: ast.AST) -> bool:
+    """True if ``node`` is a literal that must never be compared with ``is``.
+
+    ``x is 5`` / ``name is "admin"`` only ever work by accident of CPython
+    interning — equality (``==``) is meant. ``None`` and bools are excluded:
+    ``is None`` / ``is True`` are the correct, idiomatic forms.
+    """
+    if isinstance(node, ast.Constant):
+        return node.value is not None and not isinstance(node.value, bool)
+    return isinstance(node, (ast.Tuple, ast.List, ast.Dict, ast.Set))
 
 
 def _has_mutable_default(func: ast.AST) -> bool:

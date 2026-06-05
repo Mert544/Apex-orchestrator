@@ -129,3 +129,20 @@ def test_substantive_vs_shallow_assertions():
     assert subst(real) is True
     # `in` / relational comparisons are substantive too.
     assert subst("def t():\n    assert 1 in [1, 2]\n") is True
+
+
+def test_identity_comparison_with_literal_is_flagged():
+    from app.engine.detectors import detect
+
+    def has_identity_bug(src):
+        return any("identity check against a literal" in i.message and i.category == "bug"
+                   for i in detect(src))
+
+    assert has_identity_bug("def f(x):\n    return x is 5\n")
+    assert has_identity_bug('def f(n):\n    return n is "admin"\n')
+    assert has_identity_bug("def f(x):\n    return x is not 0\n")
+    assert has_identity_bug("def f(x):\n    return x is ()\n")
+    # Correct identity uses must NOT be flagged.
+    assert not has_identity_bug("def f(x):\n    return x is None\n")
+    assert not has_identity_bug("def f(x):\n    return x is True\n")
+    assert not has_identity_bug("def f(a, b):\n    return a is b\n")
