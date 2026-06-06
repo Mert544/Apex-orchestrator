@@ -481,6 +481,20 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_deadcode(args: argparse.Namespace) -> int:
+    """Report module-level symbols defined but referenced nowhere in the project."""
+    from app.reporting.deadcode import find_dead_code, render_dead_code_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    rows = find_dead_code(str(target), limit=args.limit)
+    if args.json:
+        import json
+        print(json.dumps(rows, indent=2))
+    else:
+        print(render_dead_code_markdown(rows))
+    return 0
+
+
 def cmd_hotspots(args: argparse.Namespace) -> int:
     """Rank the modules most worth attention (complexity × blast-radius ÷ tests)."""
     from app.reporting.hotspots import build_hotspots, render_hotspots_markdown
@@ -1925,6 +1939,15 @@ def main() -> int:
     hot_parser.add_argument("--limit", type=int, default=15, help="How many hotspots to show")
     hot_parser.add_argument("--json", action="store_true", help="Emit JSON")
     hot_parser.set_defaults(func=cmd_hotspots)
+
+    # deadcode — cross-file: symbols defined but referenced nowhere
+    dead_parser = subparsers.add_parser(
+        "deadcode", help="Report module-level symbols defined but never referenced (cross-file)"
+    )
+    dead_parser.add_argument("--target", default="", help="Target project root")
+    dead_parser.add_argument("--limit", type=int, default=40, help="How many to show")
+    dead_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    dead_parser.set_defaults(func=cmd_deadcode)
 
     # city — 3D "company city": modules as buildings, Apex agents as walking workers
     city_parser = subparsers.add_parser(
