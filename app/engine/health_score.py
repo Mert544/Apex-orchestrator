@@ -48,28 +48,24 @@ def _is_fixture_path(path: str) -> bool:
     )
 
 
-# Severity -> grade weight (shared with the SecurityAgent-based count below).
+# Severity -> grade weight: a pile of medium smells must not score like RCEs.
 _SEVERITY_WEIGHT = {"critical": 6, "high": 4, "medium": 2, "low": 1}
-# Security fix_kinds the canonical detector finds but the SecurityAgent (which
-# the grade's Security count is built from) does NOT — so the grade would miss
-# them without this bridge. eval/os.system/pickle/yaml/sql/bare-except are
-# covered by both, so they are excluded to avoid double counting.
-_DETECT_ONLY_SECURITY = {"tempfile", "weak-hash"}
 
 
 def _scan_own_modules(project_root: str | Path, profile: Any) -> tuple[set[str], int, int, int]:
-    """One detect() pass over the project's own modules.
+    """One detect() pass over the project's own modules — the single grade source.
 
-    Returns ``(reliability_debt_modules, correctness_bug_count, security_supplement)``:
+    Returns ``(reliability_debt_modules, correctness_bug_count, security_count,
+    security_weight)``:
     - reliability debt = modules with an auto-fixable reliability issue
       (open() without encoding / network call without timeout);
     - correctness bugs = high-severity *logic* bugs that are likely/guaranteed
       crashes or dead code (frozen-dataclass mutation, return-in-finally,
-      unreachable except, assert-on-a-tuple). ``mutable-default`` is excluded —
-      it already counts under code-debt;
-    - security supplement = severity-weighted detect() security findings the
-      SecurityAgent misses (tempfile.mktemp, weak hash), so the grade's Security
-      score reflects them too. Fixtures/tests are skipped throughout.
+      unreachable except, assert-on-a-tuple, comparison-with-itself).
+      ``mutable-default`` is excluded — it already counts under code-debt;
+    - security = every security-category finding (count + severity weight), so
+      the grade and ``apex review`` are built on the same detector (and the same
+      inline-suppression rules). Fixtures/tests are skipped throughout.
     """
     from app.engine.detectors import detect
 
@@ -90,10 +86,9 @@ def _scan_own_modules(project_root: str | Path, profile: Any) -> tuple[set[str],
             reliability.add(m)
         bugs += sum(1 for i in issues
                     if i.category == "bug" and i.severity == "high" and not i.fix_kind)
-        extra = [i for i in issues
-                 if i.category == "security" and i.fix_kind in _DETECT_ONLY_SECURITY]
-        sec_count += len(extra)
-        sec_weight += sum(_SEVERITY_WEIGHT.get(i.severity, 1) for i in extra)
+        security = [i for i in issues if i.category == "security"]
+        sec_count += len(security)
+        sec_weight += sum(_SEVERITY_WEIGHT.get(i.severity, 1) for i in security)
     return reliability, bugs, sec_count, sec_weight
 
 
@@ -111,38 +106,13 @@ def grade(project_root: str | Path) -> HealthScore:
     from app.tools.project_profile import ProjectProfiler
 
     profile = ProjectProfiler(str(project_root)).profile()
-    try:
-        from app.agents.skills import SecurityAgent
-
-        result = SecurityAgent().run(project_root=str(project_root))
-        # A health grade reflects the project's *own* code — not intentional
-        # vulnerability fixtures or test files, which legitimately contain
-        # "risky" patterns. Exclude those from the security count.
-        own_findings = [
-            f for f in (result.get("findings") or [])
-            if not _is_fixture_path(str(f.get("file", "")))
-        ]
-        findings = len(own_findings)
-        # Weight by severity so a pile of medium code-smells (e.g. bare-except)
-        # is not graded identically to critical RCEs. A flat count made a
-        # library whose only issues were bare-excepts score the same as one
-        # full of eval() injections — not an honest signal.
-        severity_weight = {"critical": 6, "high": 4, "medium": 2, "low": 1}
-        weighted_findings = sum(
-            severity_weight.get(str(f.get("severity", "medium")), 2)
-            for f in own_findings
-        )
-    except Exception:
-        findings = 0
-        weighted_findings = 0
 
     cycles = len(getattr(profile, "import_cycles", []) or [])
     fragile = len(getattr(profile, "fragile_modules", []) or [])
     untested = len(getattr(profile, "untested_modules", []) or [])
     shallow = len(getattr(profile, "shallow_tested_modules", []) or [])
     total_modules = max(1, len(getattr(profile, "module_to_tests", {}) or {}))
-    # Code-debt counts the project's *own* code, not test/fixture files — the
-    # same exclusion already applied to security findings above. A mutable
+    # Code-debt counts the project's *own* code, not test/fixture files. A mutable
     # default inside tests/ shouldn't drag down a project's production grade.
     debt_modules = {
         str(m) for m in (
@@ -151,17 +121,14 @@ def grade(project_root: str | Path) -> HealthScore:
         )
         if not _is_fixture_path(str(m))
     }
-    # One detect() pass over the project's own code (grade path only, so the
-    # cost stays out of the common profiler call): reliability debt folds into
-    # code-debt; high-severity logic bugs feed the Correctness component below.
-    reliability_modules, correctness_bugs, sec_extra_count, sec_extra_weight = _scan_own_modules(project_root, profile)
+    # ONE detect() pass over the project's own code is the single source for the
+    # grade (same detector + suppression rules as `apex review`): it yields the
+    # severity-weighted Security count, the reliability debt (folded into
+    # code-debt), and the Correctness logic-bug count. Grade path only, so the
+    # cost stays out of the common profiler call.
+    reliability_modules, correctness_bugs, findings, weighted_findings = _scan_own_modules(project_root, profile)
     debt_modules |= reliability_modules
     debt = len(debt_modules)
-    # Bridge the two detection systems: the SecurityAgent-based count above misses
-    # tempfile.mktemp / weak hashes that the canonical detector catches — add both
-    # the count (for the detail) and the severity weight (for the penalty).
-    findings += sec_extra_count
-    weighted_findings += sec_extra_weight
 
     components: list[Component] = []
     fixes: list[str] = []
