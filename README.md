@@ -36,6 +36,21 @@ Most code tools stop at a flat list of issues. Apex goes further — think of it
 
 Everything is **deterministic** (same input → same output) and **traceable** (every idea cites the concrete code fact that produced it). An optional LLM layer exists but is **off by default**.
 
+### What Apex detects & fixes
+
+One canonical AST detector powers both `apex review` and the health grade (and it
+honours inline `# noqa` / `# nosec` suppression, just like Bandit/ruff).
+
+| Category | Detected | Auto-fixed? |
+|---|---|---|
+| **Security** | `eval`/`exec`, `os.system`, `subprocess(shell=True)`, `pickle.loads`, `yaml.load`, f-string SQL, `tempfile.mktemp` (B306), weak `hashlib.md5/sha1` (B324), hardcoded secrets, bare `except` | eval→`literal_eval`, `os.system`→`subprocess.run(shlex.split(...))`, bare-except→`except Exception`; pickle/sql/tempfile/weak-hash **flagged** (no safe drop-in) |
+| **Correctness (logic bugs)** | frozen-dataclass mutation (`FrozenInstanceError`), `return`/`break`/`continue` in `finally`, unreachable `except`, identity-vs-literal (`x is 5`, F632), comparison-with-itself, `assert` on a tuple | `x is 5`→`x == 5` |
+| **Reliability** | `open()` without `encoding=`, network call without `timeout=` | `open(...)`→`encoding="utf-8"`; timeout flagged |
+| **Code debt** | `== None`→`is None`, mutable default args (value-preserving guard, `T \| None` when safe) | yes |
+| **Coverage** | untested modules, **shallow-only tests** (smoke/type stubs that assert no behaviour), complexity hotspots, TODO/FIXME debt clusters | generates real characterization tests (import + return-type contracts) |
+
+The grade rolls these into five components — **Security · Architecture · Testing · Code debt · Correctness** — each severity-weighted, with test/fixture code excluded and shallow tests given only half credit (so a clean A+ can't be faked with stub tests).
+
 ---
 
 ## 🚀 Quick Start
