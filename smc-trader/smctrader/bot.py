@@ -8,6 +8,7 @@ from typing import Any
 from .backtest import BacktestReport, backtest
 from .candles import Candle
 from .data import synthetic_candles
+from .feed import load_csv
 from .fvg import find_fvgs
 from .liquidity import equal_levels, find_sweeps
 from .order_blocks import find_order_blocks
@@ -40,6 +41,10 @@ class SMCBot:
     def load_synthetic(self, seed: int = 7, n: int = 240) -> list[Candle]:
         """A deterministic offline candle series for demos/backtests."""
         return synthetic_candles(seed=seed, n=n)
+
+    def load_csv(self, path: str) -> list[Candle]:
+        """Load real OHLC candles from a CSV file (open/high/low/close[/volume])."""
+        return load_csv(path)
 
     def analyze(self, candles: list[Candle]) -> Analysis:
         """Full read of the chart: structure, blocks, gaps, liquidity, PO3, setups."""
