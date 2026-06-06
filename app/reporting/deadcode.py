@@ -113,8 +113,15 @@ def find_dead_code(project_root: str, limit: int = 40) -> list[dict[str, Any]]:
         for name, kind, lineno in _candidates(tree):
             if name in referenced or name in exported:
                 continue
-            dead.append({"module": rel, "symbol": name, "kind": kind, "line": lineno})
-    dead.sort(key=lambda d: (d["module"], d["line"]))
+            # A private (underscore-prefixed) symbol that nothing references is
+            # internal-by-convention dead code — high confidence to remove. A
+            # public one might still be intended API (imported by a downstream
+            # consumer this scan can't see), so flag it for review instead.
+            confidence = "high" if name.startswith("_") else "review"
+            dead.append({"module": rel, "symbol": name, "kind": kind,
+                         "line": lineno, "confidence": confidence})
+    # High-confidence (private) findings first — they're the safe, actionable ones.
+    dead.sort(key=lambda d: (0 if d["confidence"] == "high" else 1, d["module"], d["line"]))
     return dead[:limit]
 
 
@@ -122,16 +129,26 @@ def render_dead_code_markdown(rows: list[dict[str, Any]]) -> str:
     """Render the dead-code report as markdown."""
     if not rows:
         return "# Dead code\n\n_No unreferenced module-level symbols found._\n"
+    high = sum(1 for r in rows if r.get("confidence") == "high")
+    summary = (
+        f"{len(rows)} module-level symbol(s) defined but referenced nowhere in the project "
+        "(tests included). Dynamic use can't be seen statically — verify before removing."
+    )
+    if high:
+        summary += (
+            f" {high} are private (underscore-prefixed) and high-confidence to remove; "
+            "the rest are public and may be intended API."
+        )
     lines = [
         "# Dead code (possibly unused)",
         "",
-        f"{len(rows)} module-level symbol(s) defined but referenced nowhere in the project "
-        "(tests included). Dynamic use can't be seen statically — verify before removing.",
+        summary,
         "",
-        "| Module | Symbol | Kind | Line |",
-        "|---|---|---|---:|",
+        "| Module | Symbol | Kind | Line | Confidence |",
+        "|---|---|---|---:|---|",
     ]
     for r in rows:
-        lines.append(f"| {r['module']} | `{r['symbol']}` | {r['kind']} | {r['line']} |")
+        conf = r.get("confidence", "review")
+        lines.append(f"| {r['module']} | `{r['symbol']}` | {r['kind']} | {r['line']} | {conf} |")
     lines.append("")
     return "\n".join(lines)

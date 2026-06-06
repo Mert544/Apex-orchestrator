@@ -47,5 +47,31 @@ def test_decorated_and_exported_and_dunder_excluded(tmp_path: Path):
     assert "registered" not in names     # decorated
 
 
+def test_private_symbol_is_high_confidence_and_public_is_review(tmp_path: Path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "pkg" / "m.py").write_text(
+        "def _hidden():\n    return 1\n\ndef public():\n    return 2\n"
+    )
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='p'\nversion='0'\n")
+    rows = find_dead_code(str(tmp_path))
+    by_name = {r["symbol"]: r["confidence"] for r in rows}
+    assert by_name["_hidden"] == "high"
+    assert by_name["public"] == "review"
+    # high-confidence (private) findings are ordered first
+    assert rows[0]["symbol"] == "_hidden"
+
+
+def test_render_includes_confidence_column_and_summary(tmp_path: Path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "pkg" / "m.py").write_text("def _hidden():\n    return 1\n")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='p'\nversion='0'\n")
+    md = render_dead_code_markdown(find_dead_code(str(tmp_path)))
+    assert "Confidence" in md
+    assert "high-confidence" in md
+    assert "| high |" in md
+
+
 def test_empty_render():
     assert "No unreferenced" in render_dead_code_markdown([])

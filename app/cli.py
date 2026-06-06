@@ -18,16 +18,10 @@ import urllib.request
 from pathlib import Path
 
 from app.plugins.registry import PluginRegistry
-from app.utils.yaml_utils import load_yaml
 
 
 def _get_project_root() -> Path:
     return Path(__file__).resolve().parents[2]
-
-
-def _load_config() -> dict:
-    root = _get_project_root()
-    return load_yaml(root / "config" / "default.yaml")
 
 
 def cmd_agents(args: argparse.Namespace) -> int:
