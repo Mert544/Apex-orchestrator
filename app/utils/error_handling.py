@@ -4,7 +4,6 @@ import functools
 import logging
 import sys
 import traceback
-from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 
@@ -17,22 +16,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("apex")
-
-
-def setup_logging(log_dir: str = ".apex/logs", level: int = logging.INFO) -> None:
-    """Setup logging to file and console."""
-    log_path = Path(log_dir)
-    log_path.mkdir(parents=True, exist_ok=True)
-
-    file_handler = logging.FileHandler(log_path / "apex.log")
-    file_handler.setLevel(level)
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s | %(name)-20s | %(levelname)-8s | %(message)s")
-    )
-
-    root_logger = logging.getLogger()
-    root_logger.setLevel(level)
-    root_logger.addHandler(file_handler)
 
 
 T = TypeVar("T")
