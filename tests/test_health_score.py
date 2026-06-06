@@ -228,3 +228,21 @@ def test_logic_bug_lowers_grade_via_correctness(tmp_path):
     h = grade(str(tmp_path))
     corr = next(c for c in h.components if c.name == "Correctness")
     assert corr.points_lost > 0
+
+
+def test_grade_security_reflects_detect_only_findings(tmp_path):
+    # tempfile.mktemp / weak hashes are found by the canonical detector but not
+    # the SecurityAgent — the grade's Security score must still reflect them.
+    from app.engine.health_score import grade
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "m.py").write_text(
+        "import tempfile, hashlib\n"
+        "def t():\n    return tempfile.mktemp()\n"
+        "def h(b):\n    return hashlib.md5(b).hexdigest()\n"
+    )
+    (tmp_path / "tests" / "test_m.py").write_text("from app.m import t\ndef test_t():\n    assert callable(t)\n")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='p'\nversion='0'\n")
+    sec = next(c for c in grade(str(tmp_path)).components if c.name == "Security")
+    assert sec.points_lost > 0

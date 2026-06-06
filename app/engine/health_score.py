@@ -48,22 +48,36 @@ def _is_fixture_path(path: str) -> bool:
     )
 
 
-def _scan_own_modules(project_root: str | Path, profile: Any) -> tuple[set[str], int]:
+# Severity -> grade weight (shared with the SecurityAgent-based count below).
+_SEVERITY_WEIGHT = {"critical": 6, "high": 4, "medium": 2, "low": 1}
+# Security fix_kinds the canonical detector finds but the SecurityAgent (which
+# the grade's Security count is built from) does NOT — so the grade would miss
+# them without this bridge. eval/os.system/pickle/yaml/sql/bare-except are
+# covered by both, so they are excluded to avoid double counting.
+_DETECT_ONLY_SECURITY = {"tempfile", "weak-hash"}
+
+
+def _scan_own_modules(project_root: str | Path, profile: Any) -> tuple[set[str], int, int, int]:
     """One detect() pass over the project's own modules.
 
-    Returns ``(reliability_debt_modules, correctness_bug_count)``:
+    Returns ``(reliability_debt_modules, correctness_bug_count, security_supplement)``:
     - reliability debt = modules with an auto-fixable reliability issue
       (open() without encoding / network call without timeout);
     - correctness bugs = high-severity *logic* bugs that are likely/guaranteed
       crashes or dead code (frozen-dataclass mutation, return-in-finally,
       unreachable except, assert-on-a-tuple). ``mutable-default`` is excluded —
-      it already counts under code-debt — and fixtures/tests are skipped.
+      it already counts under code-debt;
+    - security supplement = severity-weighted detect() security findings the
+      SecurityAgent misses (tempfile.mktemp, weak hash), so the grade's Security
+      score reflects them too. Fixtures/tests are skipped throughout.
     """
     from app.engine.detectors import detect
 
     root = Path(project_root)
     reliability: set[str] = set()
     bugs = 0
+    sec_count = 0
+    sec_weight = 0
     for m in (getattr(profile, "module_to_tests", {}) or {}):
         if not isinstance(m, str) or not m.endswith(".py") or _is_fixture_path(m):
             continue
@@ -76,7 +90,11 @@ def _scan_own_modules(project_root: str | Path, profile: Any) -> tuple[set[str],
             reliability.add(m)
         bugs += sum(1 for i in issues
                     if i.category == "bug" and i.severity == "high" and not i.fix_kind)
-    return reliability, bugs
+        extra = [i for i in issues
+                 if i.category == "security" and i.fix_kind in _DETECT_ONLY_SECURITY]
+        sec_count += len(extra)
+        sec_weight += sum(_SEVERITY_WEIGHT.get(i.severity, 1) for i in extra)
+    return reliability, bugs, sec_count, sec_weight
 
 
 def _letter(score: int) -> str:
@@ -136,9 +154,14 @@ def grade(project_root: str | Path) -> HealthScore:
     # One detect() pass over the project's own code (grade path only, so the
     # cost stays out of the common profiler call): reliability debt folds into
     # code-debt; high-severity logic bugs feed the Correctness component below.
-    reliability_modules, correctness_bugs = _scan_own_modules(project_root, profile)
+    reliability_modules, correctness_bugs, sec_extra_count, sec_extra_weight = _scan_own_modules(project_root, profile)
     debt_modules |= reliability_modules
     debt = len(debt_modules)
+    # Bridge the two detection systems: the SecurityAgent-based count above misses
+    # tempfile.mktemp / weak hashes that the canonical detector catches — add both
+    # the count (for the detail) and the severity weight (for the penalty).
+    findings += sec_extra_count
+    weighted_findings += sec_extra_weight
 
     components: list[Component] = []
     fixes: list[str] = []
