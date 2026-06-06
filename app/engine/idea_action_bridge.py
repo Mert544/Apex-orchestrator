@@ -151,6 +151,14 @@ class IdeaActionBridge:
         return has_network_call_without_timeout(text) if text is not None else False
 
     @classmethod
+    def _detect_identity_literal(cls, project_root: str, rel_path: str) -> bool:
+        """True if the file compares with ``is``/``is not`` against a literal (a bug)."""
+        from app.engine.detectors import has_identity_literal
+
+        text = cls._read(project_root, rel_path)
+        return has_identity_literal(text) if text is not None else False
+
+    @classmethod
     def _harden_change_strategy(cls, project_root: str, target: str) -> tuple[list[str], str] | None:
         """Pick the harden fix for the most important *real* issue in ``target``.
 
@@ -170,6 +178,8 @@ class IdeaActionBridge:
             return ["open-encoding"], f"Add explicit open() encoding in {target}"
         if cls._detect_net_timeout(project_root, target):
             return ["net-timeout"], f"Add request timeouts in {target}"
+        if cls._detect_identity_literal(project_root, target):
+            return ["identity-literal"], f"Fix identity-vs-literal comparisons in {target}"
         return None
 
     def _generate(self, step: ActionStep, project_root: str):

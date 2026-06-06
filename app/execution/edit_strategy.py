@@ -100,6 +100,10 @@ class EditStrategy:
             reasons.append("Keywords suggest flagging a network call without a timeout.")
             return EditStrategyResult(strategy="fix_net_timeout", confidence=0.8, reasons=reasons)
 
+        if "identity-literal" in combined or "identity comparison" in combined:
+            reasons.append("Keywords suggest fixing an identity-vs-literal comparison.")
+            return EditStrategyResult(strategy="fix_identity_literal", confidence=0.85, reasons=reasons)
+
         if "import" in combined or "unused" in combined or "cleanup" in combined:
             reasons.append("Keywords suggest import cleanup.")
             return EditStrategyResult(strategy="organize_imports", confidence=0.7, reasons=reasons)

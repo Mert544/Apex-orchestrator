@@ -25,6 +25,7 @@ from app.execution.semantic.transforms import modernize
 from app.execution.semantic.transforms import mutable_defaults
 from app.execution.semantic.transforms import net_timeout
 from app.execution.semantic.transforms import open_encoding
+from app.execution.semantic.transforms import identity_literal
 
 
 class SemanticPatchGenerator:
@@ -161,6 +162,8 @@ class SemanticPatchGenerator:
                 result = open_encoding.apply(rel_path, current, title)
             elif transform == "fix_net_timeout":
                 result = net_timeout.apply(rel_path, current, title)
+            elif transform == "fix_identity_literal":
+                result = identity_literal.apply(rel_path, current, title)
 
             if result:
                 return self._attach_metadata(self._estimate_and_return(result), selection, contexts, strategy)

@@ -158,7 +158,8 @@ def detect(source: str) -> list[Issue]:
             if any(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops) and \
                any(_is_identity_literal(x) for x in node.comparators):
                 add(node.lineno, "bug", "medium",
-                    "identity check against a literal (`is`/`is not`) is a bug — use ==/!=", "")
+                    "identity check against a literal (`is`/`is not`) is a bug — use ==/!=",
+                    "identity-literal")
             for i, op in enumerate(node.ops):
                 # Comparing a pure reference with itself is always constant — a
                 # likely typo (meant a different operand). `!=`/`==` are excluded:
@@ -457,6 +458,10 @@ def has_mutable_default(source: str) -> bool:
 
 def has_none_comparison(source: str) -> bool:
     return any(i.fix_kind == "none-comparison" for i in detect(source))
+
+
+def has_identity_literal(source: str) -> bool:
+    return any(i.fix_kind == "identity-literal" for i in detect(source))
 
 
 def _assert_is_substantive(test: ast.expr) -> bool:
