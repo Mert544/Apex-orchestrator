@@ -159,6 +159,14 @@ class IdeaActionBridge:
         return has_identity_literal(text) if text is not None else False
 
     @classmethod
+    def _detect_negated_comparison(cls, project_root: str, rel_path: str) -> bool:
+        """True if the file has a `not x in y` / `not x is y` to simplify."""
+        from app.engine.detectors import has_negated_comparison
+
+        text = cls._read(project_root, rel_path)
+        return has_negated_comparison(text) if text is not None else False
+
+    @classmethod
     def _harden_change_strategy(cls, project_root: str, target: str) -> tuple[list[str], str] | None:
         """Pick the harden fix for the most important *real* issue in ``target``.
 
@@ -180,6 +188,8 @@ class IdeaActionBridge:
             return ["net-timeout"], f"Add request timeouts in {target}"
         if cls._detect_identity_literal(project_root, target):
             return ["identity-literal"], f"Fix identity-vs-literal comparisons in {target}"
+        if cls._detect_negated_comparison(project_root, target):
+            return ["negated-comparison"], f"Simplify negated comparisons in {target}"
         return None
 
     def _generate(self, step: ActionStep, project_root: str):

@@ -148,6 +148,13 @@ def detect(source: str) -> list[Issue]:
         elif isinstance(node, ast.Assert) and isinstance(node.test, ast.Tuple) and node.test.elts:
             add(node.lineno, "bug", "high",
                 "assert on a tuple is always true — remove the parentheses", "")
+        elif (isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)
+              and isinstance(node.operand, ast.Compare) and len(node.operand.ops) == 1
+              and isinstance(node.operand.ops[0], (ast.In, ast.Is))):
+            kind = "not in" if isinstance(node.operand.ops[0], ast.In) else "is not"
+            add(node.lineno, "style", "low",
+                f"use `{kind}` instead of negating the comparison (`not ... "
+                f"{'in' if kind == 'not in' else 'is'}`)", "negated-comparison")
         elif isinstance(node, ast.Compare):
             operands = [node.left, *node.comparators]
             has_eq = any(isinstance(o, (ast.Eq, ast.NotEq)) for o in node.ops)
@@ -489,6 +496,10 @@ def has_none_comparison(source: str) -> bool:
 
 def has_identity_literal(source: str) -> bool:
     return any(i.fix_kind == "identity-literal" for i in detect(source))
+
+
+def has_negated_comparison(source: str) -> bool:
+    return any(i.fix_kind == "negated-comparison" for i in detect(source))
 
 
 def _assert_is_substantive(test: ast.expr) -> bool:
