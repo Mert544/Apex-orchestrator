@@ -197,3 +197,19 @@ def test_unreachable_except_is_flagged():
     assert not unr("def f():\n    try:\n        pass\n    except Exception:\n        pass\n    except KeyboardInterrupt:\n        pass\n")
     # Correct order (specific before broad) is fine.
     assert not unr("def f():\n    try:\n        pass\n    except ValueError:\n        pass\n    except Exception:\n        pass\n")
+
+
+def test_comparison_with_itself_is_flagged():
+    from app.engine.detectors import detect
+
+    def sc(src):
+        return any("comparison with itself" in i.message and i.category == "bug" for i in detect(src))
+
+    assert sc("def f(x):\n    return x < x\n")
+    assert sc("def f(s):\n    return s.a >= s.a\n")
+    assert sc("def f(x):\n    return x is x\n")
+    # NaN idioms (!= / ==) and genuinely different / side-effecting operands are fine.
+    assert not sc("def f(x):\n    return x != x\n")
+    assert not sc("def f(x):\n    return x == x\n")
+    assert not sc("def f(a, b):\n    return a < b\n")
+    assert not sc("def f(g):\n    return g() < g()\n")

@@ -124,6 +124,14 @@ def detect(source: str) -> list[Issue]:
                any(_is_identity_literal(x) for x in node.comparators):
                 add(node.lineno, "bug", "medium",
                     "identity check against a literal (`is`/`is not`) is a bug — use ==/!=", "")
+            for i, op in enumerate(node.ops):
+                # Comparing a pure reference with itself is always constant — a
+                # likely typo (meant a different operand). `!=`/`==` are excluded:
+                # `x != x` / `x == x` are the idiomatic NaN checks.
+                if not isinstance(op, (ast.Eq, ast.NotEq)) and _same_ref(operands[i], operands[i + 1]):
+                    add(node.lineno, "bug", "medium",
+                        "comparison with itself is always constant — likely a typo", "")
+                    break
         elif isinstance(node, ast.ClassDef):
             if _is_frozen_dataclass(node):
                 for sub in ast.walk(node):
@@ -315,6 +323,17 @@ def _is_frozen_dataclass(node: ast.ClassDef) -> bool:
         ):
             return True
     return False
+
+
+def _same_ref(a: ast.AST, b: ast.AST) -> bool:
+    """True if a and b are the *same* pure reference (a name or attribute chain).
+
+    Restricted to Name/Attribute so side-effecting operands (calls, subscripts)
+    are never treated as identical — ``f() < f()`` may legitimately differ.
+    """
+    if not (isinstance(a, (ast.Name, ast.Attribute)) and isinstance(b, (ast.Name, ast.Attribute))):
+        return False
+    return ast.dump(a) == ast.dump(b)
 
 
 def _is_identity_literal(node: ast.AST) -> bool:
