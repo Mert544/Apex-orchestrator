@@ -800,6 +800,7 @@ _FACT_HINTS: dict[str, str] = {
     "debt-markers": "refactor cleanup deferred work",
     "complexity-hotspot": "complex check validation edge cases simplify",
     "shallow-coverage": "check validation edge cases assert behaviour",
+    "missing-ci": "ci workflow run tests automation",
 }
 
 # Root fact labels where reliability/security lenses matter most.
