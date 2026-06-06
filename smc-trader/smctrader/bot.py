@@ -7,7 +7,7 @@ from typing import Any
 
 from .backtest import BacktestReport, backtest
 from .candles import Candle
-from .dashboard import build_dashboard
+from .dashboard import build_dashboard, build_live_dashboard
 from .data import synthetic_candles
 from .feed import load_csv
 from .fvg import find_fvgs
@@ -66,6 +66,17 @@ class SMCBot:
     def dashboard(self, candles: list[Candle]) -> str:
         """Render a self-contained HTML chart with the SMC analysis + backtest."""
         return build_dashboard(candles, risk_pct=self.risk_pct, min_rr=self.min_rr)
+
+    def live_dashboard(
+        self, symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 300
+    ) -> str:
+        """Render a self-contained HTML dashboard that fetches LIVE market data
+        (Binance public API, no key) in the browser and runs SMC detection on it.
+
+        Unlike :meth:`dashboard`, no candles are baked in — the chart pulls real,
+        auto-refreshing klines client-side and mirrors the SMC analysis in JS.
+        """
+        return build_live_dashboard(symbol=symbol, interval=interval, limit=limit)
 
     def summary(self, candles: list[Candle]) -> dict[str, Any]:
         """A compact dict report (handy for a CLI or JSON output)."""
