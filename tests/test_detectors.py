@@ -181,3 +181,19 @@ def test_control_flow_in_finally_is_flagged():
     assert not fin("def f():\n    try:\n        pass\n    finally:\n        def g():\n            return 1\n")
     assert not fin("def f():\n    try:\n        pass\n    finally:\n        for i in range(2):\n            break\n")
     assert not fin("def f():\n    try:\n        return 1\n    finally:\n        pass\n")
+
+
+def test_unreachable_except_is_flagged():
+    from app.engine.detectors import detect
+
+    def unr(src):
+        return any("unreachable except" in i.message and i.severity == "high" for i in detect(src))
+
+    # Exception above a narrower handler -> the narrower one is dead.
+    assert unr("def f():\n    try:\n        pass\n    except Exception:\n        pass\n    except ValueError:\n        pass\n")
+    # BaseException shadows everything after it.
+    assert unr("def f():\n    try:\n        pass\n    except BaseException:\n        pass\n    except KeyboardInterrupt:\n        pass\n")
+    # Reachable: KeyboardInterrupt is NOT caught by except Exception.
+    assert not unr("def f():\n    try:\n        pass\n    except Exception:\n        pass\n    except KeyboardInterrupt:\n        pass\n")
+    # Correct order (specific before broad) is fine.
+    assert not unr("def f():\n    try:\n        pass\n    except ValueError:\n        pass\n    except Exception:\n        pass\n")

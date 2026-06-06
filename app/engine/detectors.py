@@ -103,6 +103,9 @@ def detect(source: str) -> list[Issue]:
                 add(lineno, "bug", "high",
                     "return/break/continue in a finally block swallows exceptions and "
                     "overrides control flow", "")
+            for lineno in _unreachable_handlers(node.handlers):
+                add(lineno, "bug", "high",
+                    "unreachable except — a broader handler above already catches this", "")
         elif isinstance(node, ast.Assert) and isinstance(node.test, ast.Tuple) and node.test.elts:
             add(node.lineno, "bug", "high",
                 "assert on a tuple is always true — remove the parentheses", "")
@@ -223,6 +226,48 @@ def _is_text_open_without_encoding(node: ast.Call) -> bool:
         if "b" in mode_node.value:
             return False
     return True
+
+
+# BaseException subclasses that ``except Exception`` does NOT catch — so a later
+# handler for one of these stays reachable.
+_BASE_TIER = {"BaseException", "KeyboardInterrupt", "SystemExit", "GeneratorExit"}
+
+
+def _exc_names(type_node: ast.expr | None) -> list[str]:
+    """Simple names of the exception type(s) a handler catches ([] if unknown/bare)."""
+    if type_node is None:
+        return []
+    elts = type_node.elts if isinstance(type_node, ast.Tuple) else [type_node]
+    names: list[str] = []
+    for e in elts:
+        if isinstance(e, ast.Name):
+            names.append(e.id)
+        elif isinstance(e, ast.Attribute):
+            names.append(e.attr)
+    return names
+
+
+def _unreachable_handlers(handlers: list) -> list[int]:
+    """Line numbers of except clauses shadowed by a broader handler above them.
+
+    ``except BaseException`` shadows everything after it; ``except Exception``
+    shadows everything except the BaseException-tier classes it can't catch.
+    Handlers whose type we can't read are left alone (no false positives).
+    """
+    found: list[int] = []
+    broad = ""  # "" | "Exception" | "BaseException"
+    for h in handlers:
+        names = _exc_names(h.type)
+        if broad == "BaseException" or (
+            broad == "Exception" and names and not all(n in _BASE_TIER for n in names)
+        ):
+            found.append(h.lineno)
+        if h.type is not None:
+            if "BaseException" in names:
+                broad = "BaseException"
+            elif "Exception" in names and broad != "BaseException":
+                broad = "Exception"
+    return found
 
 
 def _escapes_finally(finalbody: list) -> list[int]:
