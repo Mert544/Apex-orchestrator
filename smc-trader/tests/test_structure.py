@@ -1,5 +1,5 @@
 from smctrader.candles import Candle
-from smctrader.structure import swing_highs, swing_lows, market_structure
+from smctrader.structure import swing_highs, market_structure
 
 
 def _c(i, o, h, low, c):

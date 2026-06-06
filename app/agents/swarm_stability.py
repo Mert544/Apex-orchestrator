@@ -149,16 +149,3 @@ def with_timeout(timeout: float, default_return: Any = None):
         return wrapper
 
     return decorator
-
-
-def with_graceful_shutdown(func: Callable) -> Callable:
-    """Decorator to add graceful shutdown support to a function."""
-
-    def wrapper(self, *args, **kwargs):
-        try:
-            return func(self, *args, **kwargs)
-        finally:
-            if hasattr(self, "_stability") and self._stability:
-                self._stability.shutdown_manager.request_shutdown()
-
-    return wrapper
