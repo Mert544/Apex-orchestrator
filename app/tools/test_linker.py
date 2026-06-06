@@ -1,7 +1,28 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def count_test_functions(root: str | Path, test_files: list[str]) -> int:
+    """Total ``test*`` functions/methods across the given linked test files.
+
+    A depth-aware coverage proxy: one file with many real tests covers a module
+    far better than a single thin one, so risk/fragility signals should weigh
+    this, not the linked-*file* count (which a single stub would inflate).
+    """
+    root = Path(root)
+    total = 0
+    for rel in test_files:
+        try:
+            tree = ast.parse((root / rel).read_text(encoding="utf-8", errors="ignore"))
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
+                total += 1
+    return total
 
 
 @dataclass

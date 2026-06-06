@@ -58,6 +58,27 @@ def test_risk_formula_is_consistent(tmp_path: Path):
         assert r["risk"] == expected
 
 
+def test_risk_counts_test_functions_not_files(tmp_path: Path):
+    # Two projects, identical module, but one has a single test file with MANY
+    # real test functions. Depth must lower the risk — file count would not.
+    def make(root: Path, n_tests: int) -> dict:
+        (root / "app").mkdir(parents=True)
+        (root / "tests").mkdir()
+        (root / "app" / "hot.py").write_text(_branchy("hot", 12), encoding="utf-8")
+        fns = "\n".join(f"def test_h{i}():\n    assert hot({i}) == {i}" for i in range(n_tests))
+        (root / "tests" / "test_hot.py").write_text(
+            f"from app.hot import hot\n{fns}\n", encoding="utf-8"
+        )
+        (root / "pyproject.toml").write_text("[project]\nname='d'\nversion='0'\n", encoding="utf-8")
+        return {Path(r["module"]).name: r for r in build_hotspots(str(root))}
+
+    thin = make(tmp_path / "thin", 1)
+    deep = make(tmp_path / "deep", 8)
+    assert deep["hot.py"]["tests"] == 8          # counts functions in the one file
+    assert thin["hot.py"]["tests"] == 1
+    assert deep["hot.py"]["risk"] < thin["hot.py"]["risk"]
+
+
 def test_limit_is_respected(tmp_path: Path):
     _project(tmp_path)
     assert len(build_hotspots(str(tmp_path), limit=2)) <= 2

@@ -1,6 +1,29 @@
 from pathlib import Path
 
-from app.tools.test_linker import TestLinker
+from app.tools.test_linker import TestLinker, count_test_functions
+
+
+def test_count_test_functions_counts_across_files_and_methods(tmp_path: Path):
+    (tmp_path / "a.py").write_text(
+        "def test_one():\n    pass\n"
+        "def test_two():\n    pass\n"
+        "def helper():\n    pass\n"          # not a test -> not counted
+        "class TestThings:\n"
+        "    def test_method(self):\n        pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "b.py").write_text("def test_three():\n    pass\n", encoding="utf-8")
+    assert count_test_functions(tmp_path, ["a.py", "b.py"]) == 4
+
+
+def test_count_test_functions_tolerates_missing_or_broken_files(tmp_path: Path):
+    (tmp_path / "ok.py").write_text("def test_ok():\n    pass\n", encoding="utf-8")
+    (tmp_path / "bad.py").write_text("def test_oops(:\n", encoding="utf-8")  # syntax error
+    assert count_test_functions(tmp_path, ["ok.py", "bad.py", "gone.py"]) == 1
+
+
+def test_count_test_functions_empty_is_zero(tmp_path: Path):
+    assert count_test_functions(tmp_path, []) == 0
 
 
 def test_test_linker_maps_modules_to_tests_and_critical_gaps(tmp_path: Path):

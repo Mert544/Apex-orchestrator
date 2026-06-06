@@ -22,6 +22,7 @@ def build_hotspots(project_root: str, limit: int = 15) -> list[dict[str, Any]]:
     """Rank named modules by a complexity × blast-radius ÷ tests risk score."""
     from app.tools.code_metrics import CodeMetrics
     from app.tools.project_profile import ProjectProfiler
+    from app.tools.test_linker import count_test_functions
 
     profile = ProjectProfiler(project_root).profile()
     coverage = getattr(profile, "module_to_tests", {}) or {}
@@ -40,7 +41,9 @@ def build_hotspots(project_root: str, limit: int = 15) -> list[dict[str, Any]]:
         if mm is None:
             continue
         fi = fan_in.get(m, 0)
-        tests = len(coverage.get(m, []) or [])
+        # Depth-aware: count linked test *functions*, not files — a single file
+        # with many real tests should pull risk down, a lone stub should not.
+        tests = count_test_functions(project_root, coverage.get(m, []) or [])
         risk = hotspot_risk(mm.complexity, fi, tests)
         rows.append({
             "module": m,

@@ -253,6 +253,7 @@ class ProjectProfiler:
         """Top modules by complexity × (1 + fan-in) ÷ (1 + tests), bounded + filtered."""
         from app.tools.code_metrics import hotspot_risk
         from app.tools.code_metrics import CodeMetrics
+        from app.tools.test_linker import count_test_functions
 
         fan_in = {n.path: n.in_degree for n in graph.values()}
         symbol_rank = sorted(modules, key=lambda m: len(m.symbols), reverse=True)
@@ -265,7 +266,9 @@ class ProjectProfiler:
         for path, mm in metrics.items():
             if mm.complexity < 8:        # a real branching module, not a trivial one
                 continue
-            risk = hotspot_risk(mm.complexity, fan_in.get(path, 0), len(module_to_tests.get(path, [])))
+            # depth-aware coverage: test functions, not linked files
+            tests = count_test_functions(self.root, module_to_tests.get(path, []) or [])
+            risk = hotspot_risk(mm.complexity, fan_in.get(path, 0), tests)
             scored.append((risk, mm.complexity, path))
         scored.sort(key=lambda t: (-t[0], -t[1], t[2]))
         return [p for _risk, _cx, p in scored[:3]]
