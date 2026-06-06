@@ -48,7 +48,7 @@ def test_score_clamped_and_components_present(tmp_path):
     (tmp_path / "app" / "lots.py").write_text(body + "\n")
     h = grade(str(tmp_path))
     assert 0 <= h.score <= 100
-    assert {c.name for c in h.components} == {"Security", "Architecture", "Testing", "Code debt"}
+    assert {c.name for c in h.components} == {"Security", "Architecture", "Testing", "Code debt", "Correctness"}
 
 
 def test_render_markdown(tmp_path):
@@ -207,3 +207,24 @@ def test_shallow_tested_modules_are_not_full_credit(tmp_path):
     testing = next(c for c in h.components if c.name == "Testing")
     assert testing.points_lost > 0
     assert "shallow" in testing.detail
+
+
+def test_logic_bug_lowers_grade_via_correctness(tmp_path):
+    # A guaranteed-crash logic bug (frozen-dataclass mutation) must cost the
+    # grade through the Correctness component, not just show up in review.
+    from app.engine.health_score import grade
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "m.py").write_text(
+        "from dataclasses import dataclass\n"
+        "@dataclass(frozen=True)\nclass C:\n    x: int\n"
+        "    def bump(self):\n        self.x = self.x + 1\n"
+    )
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "from app.m import C\ndef test_c():\n    assert C(1).x == 1\n"
+    )
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='p'\nversion='0'\n")
+    h = grade(str(tmp_path))
+    corr = next(c for c in h.components if c.name == "Correctness")
+    assert corr.points_lost > 0

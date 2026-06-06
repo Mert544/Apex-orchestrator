@@ -48,12 +48,22 @@ def _is_fixture_path(path: str) -> bool:
     )
 
 
-def _reliability_debt_modules(project_root: str | Path, profile: Any) -> set[str]:
-    """Project-own modules with an auto-fixable reliability issue (no-encoding open / no-timeout net call)."""
+def _scan_own_modules(project_root: str | Path, profile: Any) -> tuple[set[str], int]:
+    """One detect() pass over the project's own modules.
+
+    Returns ``(reliability_debt_modules, correctness_bug_count)``:
+    - reliability debt = modules with an auto-fixable reliability issue
+      (open() without encoding / network call without timeout);
+    - correctness bugs = high-severity *logic* bugs that are likely/guaranteed
+      crashes or dead code (frozen-dataclass mutation, return-in-finally,
+      unreachable except, assert-on-a-tuple). ``mutable-default`` is excluded —
+      it already counts under code-debt — and fixtures/tests are skipped.
+    """
     from app.engine.detectors import detect
 
     root = Path(project_root)
-    out: set[str] = set()
+    reliability: set[str] = set()
+    bugs = 0
     for m in (getattr(profile, "module_to_tests", {}) or {}):
         if not isinstance(m, str) or not m.endswith(".py") or _is_fixture_path(m):
             continue
@@ -61,9 +71,12 @@ def _reliability_debt_modules(project_root: str | Path, profile: Any) -> set[str
             text = (root / m).read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        if any(i.fix_kind in ("open-encoding", "net-timeout") for i in detect(text)):
-            out.add(m)
-    return out
+        issues = detect(text)
+        if any(i.fix_kind in ("open-encoding", "net-timeout") for i in issues):
+            reliability.add(m)
+        bugs += sum(1 for i in issues
+                    if i.category == "bug" and i.severity == "high" and not i.fix_kind)
+    return reliability, bugs
 
 
 def _letter(score: int) -> str:
@@ -120,11 +133,11 @@ def grade(project_root: str | Path) -> HealthScore:
         )
         if not _is_fixture_path(str(m))
     }
-    # Reliability debt: auto-fixable bug-class issues (open() without encoding,
-    # network calls without a timeout) that the canonical detector surfaces in
-    # `apex review` but used to be invisible in the headline grade. Scanned only
-    # here, on the grade path, so the cost stays out of the common profiler call.
-    debt_modules |= _reliability_debt_modules(project_root, profile)
+    # One detect() pass over the project's own code (grade path only, so the
+    # cost stays out of the common profiler call): reliability debt folds into
+    # code-debt; high-severity logic bugs feed the Correctness component below.
+    reliability_modules, correctness_bugs = _scan_own_modules(project_root, profile)
+    debt_modules |= reliability_modules
     debt = len(debt_modules)
 
     components: list[Component] = []
@@ -160,7 +173,15 @@ def grade(project_root: str | Path) -> HealthScore:
     penalize("Code debt", debt_lost, f"{debt} module(s) with modernization / mutable-default / reliability debt",
              "run `apex maintain` to modernize, fix mutable defaults, and add encodings/timeouts" if debt_lost else None)
 
-    score = max(0, 100 - (sec_lost + arch_lost + test_lost + debt_lost))
+    # Correctness: high-severity logic bugs (likely/guaranteed crashes or dead
+    # code) the detector finds but that no other component reflected — so a real
+    # bug now visibly costs the grade, not just a review note.
+    corr_lost = min(20, correctness_bugs * 5)
+    penalize("Correctness", corr_lost, f"{correctness_bugs} likely-crash / dead-code bug(s)",
+             "fix the logic bugs flagged by `apex review` (frozen-dataclass mutation, "
+             "return-in-finally, unreachable except, ...)" if corr_lost else None)
+
+    score = max(0, 100 - (sec_lost + arch_lost + test_lost + debt_lost + corr_lost))
     return HealthScore(score=score, letter=_letter(score), components=components, fixes=fixes)
 
 
