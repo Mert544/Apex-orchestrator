@@ -138,21 +138,10 @@ class IdeaSeeder:
                     fact_value=subject,
                 )
 
-        # Coverage DEPTH: modules with exactly one linked test are shallowly
-        # covered — they need "deepen", not "first test layer".
-        untested = set(getattr(profile, "untested_modules", []) or [])
-        partial = sorted(
-            m for m, tests in (getattr(profile, "module_to_tests", {}) or {}).items()
-            if 0 < len(tests) <= 1 and m not in untested
-        )
-        for module in partial[:2]:
-            self._append_root(
-                roots, seen_subjects,
-                title=f"Deepen the thin test coverage of {module}",
-                subject=module,
-                fact_label="partial-coverage",
-                fact_value=f"{module} (1 test)",
-            )
+        # Coverage DEPTH is handled by the substance-based shallow-coverage signal
+        # below (tests that assert no behaviour), not by counting test files: a
+        # module with a single *substantive* test is adequately covered, so the
+        # old "1 test file = thin" heuristic only produced noise and is dropped.
 
         # Shallow coverage: modules "covered" only by characterization stubs
         # (import-smoke + isinstance), which prove shape, not correctness — so the

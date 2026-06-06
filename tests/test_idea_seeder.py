@@ -74,7 +74,10 @@ def test_idea_tree_report_helpers():
     assert report.children_of("idea-0") == [b]
 
 
-def test_seeds_partial_coverage_distinct_from_untested():
+def test_coverage_depth_is_substance_based_not_file_count():
+    # A module with one test (app/a.py) is not nagged by a crude file-count
+    # heuristic; only genuinely untested code is seeded. Coverage DEPTH is now
+    # the substance-based shallow-coverage signal, not "1 test file = thin".
     profile = _profile(
         module_to_tests={"app/a.py": ["t1"], "app/b.py": []},
         untested_modules=["app/b.py"],
@@ -82,8 +85,8 @@ def test_seeds_partial_coverage_distinct_from_untested():
     )
     roots = IdeaSeeder().seed(profile)
     facts = [f for r in roots for f in r.source_facts]
-    # a.py has 1 test -> partial-coverage; b.py has 0 -> untested (different idea)
-    assert any(f.startswith("partial-coverage: app/a.py") for f in facts)
+    assert not any(f.startswith("partial-coverage") for f in facts)
+    assert not any(f.startswith("untested: app/a.py") for f in facts)
 
 
 def test_seeds_extension_and_directory_signals():
