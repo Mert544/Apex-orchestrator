@@ -12,10 +12,45 @@ Deterministic, stdlib-only (ast).
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass
 
 # Security labels in descending severity (the bridge's contract relies on this).
 _SECURITY_ORDER = ("eval", "os.system", "pickle", "yaml", "sql", "tempfile", "weak-hash", "bare except")
+
+# Inline suppression: respect the same comments Bandit/ruff do, so `apex review`
+# and the health grade (both built on this detector) agree with the developer's
+# explicit acknowledgement instead of re-flagging a line they already silenced.
+_SUPPRESS_RE = re.compile(r"#\s*(noqa|nosec)\b(?:\s*[:=]\s*([A-Za-z0-9 ,]+))?", re.IGNORECASE)
+# Lint codes that, when named in `# noqa: ...`, suppress a specific finding.
+_FIXKIND_NOQA = {"bare except": "E722"}
+
+
+def _suppressed(line: str, category: str, fix_kind: str, message: str) -> bool:
+    """True if ``line`` carries a suppression comment covering this finding.
+
+    ``# nosec`` silences security findings; a bare ``# noqa`` silences everything
+    on the line; ``# noqa: <codes>`` silences a security finding when an S-code
+    is present, a bare-except when E722 is present, and the identity-literal bug
+    when F632 is present.
+    """
+    m = _SUPPRESS_RE.search(line)
+    if not m:
+        return False
+    directive = m.group(1).lower()
+    codes_raw = m.group(2)
+    if directive == "nosec":
+        return category == "security"
+    if not codes_raw:  # bare `# noqa` disables all lint on the line
+        return True
+    codes = {c.strip().upper() for c in codes_raw.replace(",", " ").split()}
+    if category == "security" and any(c[:1] == "S" and c[1:].isdigit() for c in codes):
+        return True
+    if _FIXKIND_NOQA.get(fix_kind) in codes:
+        return True
+    if "F632" in codes and "identity check against a literal" in message:
+        return True
+    return False
 
 
 def _has_usedforsecurity_false(node: ast.Call) -> bool:
@@ -150,7 +185,15 @@ def detect(source: str) -> list[Issue]:
                 add(node.lineno, "bug", "high", "mutable default argument — shared-state bug", "mutable-default")
             if ast.get_docstring(node) is None and not node.name.startswith("_"):
                 add(node.lineno, "docs", "low", f"public function `{node.name}` lacks a docstring", "docstring")
-    return out
+
+    # Drop findings the developer explicitly suppressed inline (noqa / nosec).
+    lines = source.splitlines()
+    kept = [
+        i for i in out
+        if not (1 <= i.line <= len(lines)
+                and _suppressed(lines[i.line - 1], i.category, i.fix_kind, i.message))
+    ]
+    return kept
 
 
 _SECRET_NAMES = ("password", "passwd", "secret", "api_key", "apikey", "token",

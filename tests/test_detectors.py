@@ -213,3 +213,23 @@ def test_comparison_with_itself_is_flagged():
     assert not sc("def f(x):\n    return x == x\n")
     assert not sc("def f(a, b):\n    return a < b\n")
     assert not sc("def f(g):\n    return g() < g()\n")
+
+
+def test_detect_respects_inline_suppression():
+    from app.engine.detectors import detect
+
+    def sec_kinds(src):
+        return [i.fix_kind for i in detect(src) if i.category == "security"]
+
+    # nosec / noqa:S### / bare noqa silence the security finding...
+    assert sec_kinds("def f(c):\n    return eval(c)  # noqa: S307\n") == []
+    assert sec_kinds("def f(c):\n    return eval(c)  # nosec\n") == []
+    assert sec_kinds("def f(c):\n    return eval(c)  # noqa\n") == []
+    # ...but an unrelated code does NOT.
+    assert sec_kinds("def f(c):\n    return eval(c)  # noqa: E501\n") == ["eval"]
+    # E722 silences the bare-except security finding.
+    bare = detect("def f():\n    try:\n        x = 1\n    except:  # noqa: E722\n        pass\n")
+    assert not any(i.fix_kind == "bare except" for i in bare)
+    # F632 silences the identity-literal bug.
+    assert not any("identity check" in i.message
+                   for i in detect("def f(x):\n    return x is 5  # noqa: F632\n"))
