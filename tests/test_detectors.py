@@ -233,3 +233,18 @@ def test_detect_respects_inline_suppression():
     # F632 silences the identity-literal bug.
     assert not any("identity check" in i.message
                    for i in detect("def f(x):\n    return x is 5  # noqa: F632\n"))
+
+
+def test_raise_without_from_is_flagged():
+    from app.engine.detectors import detect
+
+    def b904(src):
+        return any("original cause" in i.message and i.category == "bug" for i in detect(src))
+
+    base = "def f():\n    try:\n        x = 1\n    except Exception%s:\n        %s\n"
+    assert b904(base % ("", 'raise ValueError("bad")'))           # new exc, no from
+    # All the correct forms are left alone.
+    assert not b904(base % (" as e", 'raise ValueError("bad") from e'))
+    assert not b904(base % ("", 'raise ValueError("bad") from None'))
+    assert not b904(base % ("", "raise"))                          # bare re-raise
+    assert not b904(base % (" as e", "raise e"))                   # re-raise by name

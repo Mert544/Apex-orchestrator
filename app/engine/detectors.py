@@ -133,6 +133,10 @@ def detect(source: str) -> list[Issue]:
             if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
                 add(node.lineno, "bug", "medium",
                     "exception silently swallowed (except: pass) — log or handle it", "")
+            for lineno in _raise_without_from(node.body):
+                add(lineno, "bug", "low",
+                    "raising a new exception in an except block without `from` loses the "
+                    "original cause — use `raise ... from err` (or `from None`)", "")
         elif isinstance(node, ast.Try):
             for lineno in _escapes_finally(node.finalbody):
                 add(lineno, "bug", "high",
@@ -297,6 +301,29 @@ def _exc_names(type_node: ast.expr | None) -> list[str]:
         elif isinstance(e, ast.Attribute):
             names.append(e.attr)
     return names
+
+
+def _raise_without_from(body: list) -> list[int]:
+    """Lines where an except block constructs+raises a NEW exception without `from`.
+
+    ``raise ValueError(...)`` inside ``except`` discards the original traceback
+    chain (flake8-bugbear B904). Only a *constructed* exception (a call) is
+    flagged — a bare ``raise`` or ``raise err`` (re-raising the caught value) is
+    fine — and nested functions/classes/try blocks have their own context.
+    """
+    found: list[int] = []
+
+    def walk(stmts: list) -> None:
+        for s in stmts:
+            if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Try)):
+                continue
+            if isinstance(s, ast.Raise) and isinstance(s.exc, ast.Call) and s.cause is None:
+                found.append(s.lineno)
+            elif isinstance(s, (ast.If, ast.For, ast.While, ast.With, ast.AsyncFor, ast.AsyncWith)):
+                walk(s.body)
+                walk(getattr(s, "orelse", []))
+    walk(body)
+    return found
 
 
 def _unreachable_handlers(handlers: list) -> list[int]:
