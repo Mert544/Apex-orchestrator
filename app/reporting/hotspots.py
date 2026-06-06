@@ -15,14 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def hotspot_risk(complexity: int, fan_in: int, tests: int) -> float:
-    """The hotspot risk score: complexity × blast-radius ÷ test coverage.
-
-    High cyclomatic complexity and many importers raise it; linked tests lower
-    it. Pure and deterministic so both the report and the profiler can share it
-    without a circular import (this module's heavier imports are function-local).
-    """
-    return round(complexity * (1 + fan_in) / (1 + tests), 2)
+from app.tools.code_metrics import hotspot_risk  # re-export (single source)
 
 
 def build_hotspots(project_root: str, limit: int = 15) -> list[dict[str, Any]]:

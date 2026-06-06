@@ -244,7 +244,7 @@ class ProjectProfiler:
 
     def _scan_hotspots(self, modules: list, graph: dict, module_to_tests: dict) -> list[str]:
         """Top modules by complexity × (1 + fan-in) ÷ (1 + tests), bounded + filtered."""
-        from app.reporting.hotspots import hotspot_risk
+        from app.tools.code_metrics import hotspot_risk
         from app.tools.code_metrics import CodeMetrics
 
         fan_in = {n.path: n.in_degree for n in graph.values()}

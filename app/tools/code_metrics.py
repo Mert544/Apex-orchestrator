@@ -16,6 +16,16 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+
+def hotspot_risk(complexity: int, fan_in: int, tests: int) -> float:
+    """Risk score for a module: complexity x blast-radius / test coverage.
+
+    High cyclomatic complexity and many importers raise it; linked tests lower
+    it. Lives here (a stdlib-only metrics module) so both the hotspots report and
+    the profiler can share it without an import cycle.
+    """
+    return round(complexity * (1 + fan_in) / (1 + tests), 2)
+
 # AST node types counted as a branch (a cheap cyclomatic-complexity proxy).
 _BRANCH_NODES = (
     ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.ExceptHandler,
