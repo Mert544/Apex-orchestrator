@@ -199,10 +199,13 @@ class ProjectProfiler:
         profile.shallow_tested_modules = self._scan_shallow_tests(profile.module_to_tests)
 
         # Fragility: many modules depend on it (high in-degree) but it has
-        # thin/no test coverage — a high-blast-radius risk worth surfacing.
+        # weak coverage — a high-blast-radius risk worth surfacing. Coverage
+        # weakness is measured by *depth* (untested, or linked tests that assert
+        # nothing real), not by linked-test-file count: a single file with many
+        # substantive tests fully covers a hub, so file-count is the wrong proxy.
         graph = graph_builder.build()
-        thin = {m for m, t in profile.module_to_tests.items() if len(t) <= 1}
-        thin |= set(profile.untested_modules)
+        thin = set(profile.untested_modules)
+        thin |= set(self._scan_shallow_tests(profile.module_to_tests, limit=None))
         fragile = sorted(
             (n for n in graph.values() if n.in_degree >= 2 and n.path in thin),
             key=lambda n: (n.in_degree, n.path),
@@ -221,8 +224,12 @@ class ProjectProfiler:
         # this stays cheap. Shares the risk formula with the hotspots report.
         profile.hotspot_modules = self._scan_hotspots(modules, graph, profile.module_to_tests)
 
-    def _scan_shallow_tests(self, module_to_tests: dict) -> list[str]:
-        """Modules whose linked tests exist but assert no real behaviour (shallow)."""
+    def _scan_shallow_tests(self, module_to_tests: dict, limit: int | None = 5) -> list[str]:
+        """Modules whose linked tests exist but assert no real behaviour (shallow).
+
+        ``limit=None`` returns the full set (used by the fragility scan, which
+        needs every shallow hub, not just the top few surfaced in the profile).
+        """
         from app.engine.detectors import test_has_substantive_assertions
 
         out: list[str] = []
@@ -240,7 +247,7 @@ class ProjectProfiler:
                     break
             if not substantive:
                 out.append(module)
-        return out[:5]
+        return out if limit is None else out[:limit]
 
     def _scan_hotspots(self, modules: list, graph: dict, module_to_tests: dict) -> list[str]:
         """Top modules by complexity × (1 + fan-in) ÷ (1 + tests), bounded + filtered."""

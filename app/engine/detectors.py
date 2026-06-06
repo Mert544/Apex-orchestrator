@@ -22,7 +22,7 @@ _SECURITY_ORDER = ("eval", "os.system", "pickle", "yaml", "sql", "tempfile", "we
 # and the health grade (both built on this detector) agree with the developer's
 # explicit acknowledgement instead of re-flagging a line they already silenced.
 _SUPPRESS_RE = re.compile(r"#\s*(noqa|nosec)\b(?:\s*[:=]\s*([A-Za-z0-9 ,]+))?", re.IGNORECASE)
-# Lint codes that, when named in `# noqa: ...`, suppress a specific finding.
+# Lint codes that, when named in a suppression comment, suppress a finding.
 _FIXKIND_NOQA = {"bare except": "E722"}
 
 
@@ -41,7 +41,7 @@ def _suppressed(line: str, category: str, fix_kind: str, message: str) -> bool:
     codes_raw = m.group(2)
     if directive == "nosec":
         return category == "security"
-    if not codes_raw:  # bare `# noqa` disables all lint on the line
+    if not codes_raw:  # a bare directive (no codes) disables all lint on the line
         return True
     codes = {c.strip().upper() for c in codes_raw.replace(",", " ").split()}
     if category == "security" and any(c[:1] == "S" and c[1:].isdigit() for c in codes):

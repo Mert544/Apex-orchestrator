@@ -42,7 +42,7 @@ def _line_suppresses(line: str, risk_type: str) -> bool:
     if directive == "nosec":
         return True
     codes_raw = m.group(2)
-    if not codes_raw:  # bare `# noqa` disables all lint on the line
+    if not codes_raw:  # a bare directive (no codes) disables all lint on the line
         return True
     codes = {c.strip().upper() for c in codes_raw.replace(",", " ").split()}
     if any(c[:1] == "S" and c[1:].isdigit() for c in codes):
