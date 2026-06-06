@@ -7,6 +7,7 @@ from typing import Any
 
 from .backtest import BacktestReport, backtest
 from .candles import Candle
+from .dashboard import build_dashboard
 from .data import synthetic_candles
 from .feed import load_csv
 from .fvg import find_fvgs
@@ -61,6 +62,10 @@ class SMCBot:
             po3_direction=po3.distribution_direction,
             report=report,
         )
+
+    def dashboard(self, candles: list[Candle]) -> str:
+        """Render a self-contained HTML chart with the SMC analysis + backtest."""
+        return build_dashboard(candles, risk_pct=self.risk_pct, min_rr=self.min_rr)
 
     def summary(self, candles: list[Candle]) -> dict[str, Any]:
         """A compact dict report (handy for a CLI or JSON output)."""
