@@ -166,3 +166,18 @@ def test_frozen_dataclass_self_assignment_is_flagged():
     # A normal (mutable) dataclass is fine; a read-only frozen one is fine.
     assert not frozen_bug("from dataclasses import dataclass\n@dataclass\nclass C:\n    x: int\n    def s(self):\n        self.x = 1\n")
     assert not frozen_bug("from dataclasses import dataclass\n@dataclass(frozen=True)\nclass C:\n    x: int\n    def d(self):\n        return self.x * 2\n")
+
+
+def test_control_flow_in_finally_is_flagged():
+    from app.engine.detectors import detect
+
+    def fin(src):
+        return any("finally block" in i.message and i.severity == "high" for i in detect(src))
+
+    assert fin("def f():\n    try:\n        x = 1\n    finally:\n        return 0\n")
+    assert fin("def f():\n    for i in range(3):\n        try:\n            pass\n        finally:\n            break\n")
+    # Correct: return in a nested function, break inside a loop within finally,
+    # return in the try body — none escape the finally.
+    assert not fin("def f():\n    try:\n        pass\n    finally:\n        def g():\n            return 1\n")
+    assert not fin("def f():\n    try:\n        pass\n    finally:\n        for i in range(2):\n            break\n")
+    assert not fin("def f():\n    try:\n        return 1\n    finally:\n        pass\n")

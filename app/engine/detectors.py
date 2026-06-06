@@ -98,6 +98,11 @@ def detect(source: str) -> list[Issue]:
             if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
                 add(node.lineno, "bug", "medium",
                     "exception silently swallowed (except: pass) — log or handle it", "")
+        elif isinstance(node, ast.Try):
+            for lineno in _escapes_finally(node.finalbody):
+                add(lineno, "bug", "high",
+                    "return/break/continue in a finally block swallows exceptions and "
+                    "overrides control flow", "")
         elif isinstance(node, ast.Assert) and isinstance(node.test, ast.Tuple) and node.test.elts:
             add(node.lineno, "bug", "high",
                 "assert on a tuple is always true — remove the parentheses", "")
@@ -218,6 +223,38 @@ def _is_text_open_without_encoding(node: ast.Call) -> bool:
         if "b" in mode_node.value:
             return False
     return True
+
+
+def _escapes_finally(finalbody: list) -> list[int]:
+    """Line numbers of return/break/continue that escape a ``finally`` block.
+
+    A ``return`` in ``finally`` always swallows a pending exception and discards
+    the function's real return; a bare ``break``/``continue`` does the same to a
+    loop. Nested functions/classes are separate scopes (their ``return`` is
+    fine), break/continue inside a loop *within* the finally are fine, and nested
+    ``try`` blocks are reported when ast.walk reaches them (no double counting).
+    """
+    found: list[int] = []
+
+    def walk_stmts(stmts: list, loop_depth: int) -> None:
+        for s in stmts:
+            if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Try)):
+                continue  # separate scope, or handled when ast.walk reaches it
+            if isinstance(s, ast.Return):
+                found.append(s.lineno)
+            elif isinstance(s, (ast.Break, ast.Continue)) and loop_depth == 0:
+                found.append(s.lineno)
+            elif isinstance(s, (ast.For, ast.While, ast.AsyncFor)):
+                walk_stmts(s.body, loop_depth + 1)
+                walk_stmts(s.orelse, loop_depth + 1)
+            elif isinstance(s, ast.If):
+                walk_stmts(s.body, loop_depth)
+                walk_stmts(s.orelse, loop_depth)
+            elif isinstance(s, (ast.With, ast.AsyncWith)):
+                walk_stmts(s.body, loop_depth)
+
+    walk_stmts(finalbody, 0)
+    return found
 
 
 def _is_frozen_dataclass(node: ast.ClassDef) -> bool:
