@@ -24,6 +24,7 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "critical-untested": ("create_test_stub", "Create a safety-net test for {s}", True),
     "hotspot-function": ("create_test_stub", "Write behavioral tests for the complex function {s}", True),
     "sensitive-path": ("harden_security", "Harden the sensitive path {s}", True),
+    "security-finding": ("harden_security", "Fix the security findings in {s}", True),
     "config": ("design_task", "Make configuration {s} environment-aware", False),
     "entrypoint": ("design_task", "Grow capability behind entrypoint {s}", False),
     "dependency-hub": ("design_task", "Plan an evolution of central module {s}", False),
@@ -624,17 +625,22 @@ class IdeaActionBridge:
 
         steps: list[ActionStep] = []
         for ph in roadmap.phases:
-            if phase and ph.name.lower() != phase.lower():
-                continue
             for item in ph.items:
                 idea = idea_by_path.get(item.branch_path)
                 if idea is None:
                     continue
-                # Convergence ideas carry their own phased sub-steps; other
-                # ideas inherit this roadmap phase.
+                # Convergence ideas carry their own phased sub-steps (a Stabilize
+                # test before a Secure harden), so they may emit a phase other
+                # than where the parent idea was placed; other ideas inherit this
+                # roadmap phase.
                 steps.extend(self._expand_idea(idea, default_phase=ph.name))
 
         steps = self._dedupe_steps(steps)
+        # The phase filter applies to each *step's own* phase, so a convergence
+        # idea's Secure sub-step is kept under --phase=Secure even though its
+        # parent sat in Stabilize (and vice-versa).
+        if phase:
+            steps = [s for s in steps if s.phase.lower() == phase.lower()]
         if top is not None:
             steps = steps[:top]
         if draft:

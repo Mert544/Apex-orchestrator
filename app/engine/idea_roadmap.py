@@ -51,14 +51,14 @@ _HIGH_IMPACT_LABELS = {
     "critical-untested",
     "dependency-hub",
     "sensitive-path",
+    "security-finding",
     "complexity-hotspot",
     "hotspot-function",
-    "convergence",
 }
 
 # Lens / fact routing for phase assignment. Checked most-specific first.
 _STABILIZE_LABELS = {"untested", "critical-untested", "partial-coverage", "shallow-coverage", "fragile", "missing-ci", "complexity-hotspot", "hotspot-function", "convergence"}
-_SECURE_LABELS = {"sensitive-path"}
+_SECURE_LABELS = {"sensitive-path", "security-finding"}
 _EVOLVE_LABELS = {"dependency-hub", "symbol-hub", "entrypoint", "top-directory"}
 _REFINE_OPS = {"document", "observe", "simplify"}
 _EVOLVE_OPS = {"extend", "generalize", "integrate"}
@@ -130,8 +130,21 @@ def _first_label(node: IdeaNode) -> str:
 
 
 def estimate_impact(node: IdeaNode, fan_in: int = 0) -> float:
-    """Blast radius, 0..1: start from the idea's value, boost by structural risk
-    and by *measured* fan-in (how many modules import the subject).
+    """Blast radius, 0..1: seed from the idea's *structural* signals, then boost
+    by structural risk and by *measured* fan-in (how many modules import the
+    subject).
+
+    Decoupled-from-feasibility design (chosen: option (a) from the audit).
+    ``node.value`` is deliberately *not* used as the seed: it already folds in a
+    feasibility term (``0.3``/``0.4 * feasibility`` in IdeaPermutationEngine
+    ``_score``). Effort already carries the ``(1 - feasibility)`` axis, so seeding
+    impact from ``node.value`` would let feasibility raise impact AND lower effort
+    at once — counting the same property twice with the same sign in ROI (this is
+    why low-effort ideas dominated quick-win lists unjustifiably). Here we seed
+    impact only from the feasibility-free structural axes that ``_score`` blends
+    into value: ``relevance`` (objective alignment) and ``novelty``. An equal
+    blend keeps the seed bounded in [0, 1] and independent of which weight set
+    (objective / no-objective) produced ``value``.
 
     Ideas touching fragile/critical/hub/sensitive code, breaking real import
     cycles, or sitting under a heavily-imported module move more of the system
@@ -139,13 +152,23 @@ def estimate_impact(node: IdeaNode, fan_in: int = 0) -> float:
     dependency graph; each importer adds a little, capped so it can't dominate.
     """
     label = _first_label(node)
-    impact = node.value
+    # Structural seed only — no feasibility term (that lives in estimate_effort).
+    impact = 0.5 * node.relevance + 0.5 * node.novelty
     if label in _HIGH_IMPACT_LABELS:
         impact += 0.25
     if any("dependency-cycle" in f for f in node.source_facts):
         impact += 0.20
     if node.kind in ("synthesis", "pair"):
         impact += 0.10
+    # Convergence: impact scales with the number of independent analyses that
+    # agree — that *is* leverage. This reaches the ceiling for a 3+-signal
+    # agreement, so the convergence idea lands in the top-impact tier instead of
+    # being dragged down by the novelty penalty of sitting on a much-mined hot
+    # subject (novelty measures exploration, not impact).
+    conv = next((f for f in node.source_facts if f.startswith("convergence:")), "")
+    if conv:
+        n_signals = len([p for p in conv.split(":", 1)[1].split("+") if p.strip()])
+        impact += 0.15 * n_signals
     if fan_in > 0:
         impact += min(0.3, 0.06 * fan_in)
     return round(min(1.0, impact), 4)

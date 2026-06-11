@@ -244,3 +244,41 @@ def test_hotspot_functions_credit_wrappers_classes_and_init_modules(tmp_path: Pa
     assert "_helper" not in flagged          # wrapper-credit: public() names it
     assert "Engine.crunch" not in flagged    # class-credit: Engine is driven
     assert "Limb.execute" not in flagged     # __init__ fallback: whole-suite text
+
+
+def test_security_finding_modules_from_content_not_filename(tmp_path: Path):
+    # A blandly-named file containing eval is flagged by content; a clean file
+    # with a "sensitive" name is not a content finding.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "report.py").write_text("def run(s):\n    return eval(s)\n")
+    (tmp_path / "app" / "auth.py").write_text("def ok():\n    return 1\n")  # sensitive NAME, clean content
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    sec = [str(Path(m).as_posix()) for m in profile.security_finding_modules]
+    assert "app/report.py" in sec
+    assert "app/auth.py" not in sec
+
+
+def test_security_findings_exclude_test_files(tmp_path: Path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("def test_e():\n    eval('1')\n")
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert profile.security_finding_modules == []
+
+
+def test_exercised_uses_word_boundaries_not_substring(tmp_path: Path):
+    # A complex, untested function `run` must NOT be marked covered just because
+    # the word 'rerun' appears in the test corpus (the old substring bug).
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    branches = "\n".join(f"    if x == {i}:\n        return {i}" for i in range(10))
+    (tmp_path / "app" / "core.py").write_text(f"def run(x):\n{branches}\n    return -1\n")
+    for i in range(3):
+        (tmp_path / "app" / f"c{i}.py").write_text(
+            "from app.core import run\n\ndef u():\n    return run(1)\n"
+        )
+    # The test corpus mentions 'rerun' and 'prerun' but never the word 'run'.
+    (tmp_path / "tests" / "test_core.py").write_text(
+        "def test_misc():\n    rerun = 1\n    prerun_flag = 2\n    assert rerun + prerun_flag == 3\n"
+    )
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert any(f["function"] == "run" for f in profile.hotspot_functions)

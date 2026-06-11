@@ -21,6 +21,9 @@ class ProjectProfile:
     ci_files: list[str] = field(default_factory=list)
     config_files: list[str] = field(default_factory=list)
     sensitive_paths: list[str] = field(default_factory=list)
+    # Modules where the *content* detector found real security issues (eval,
+    # os.system, pickle, ...), independent of the filename heuristic above.
+    security_finding_modules: list[str] = field(default_factory=list)
     dependency_hubs: list[str] = field(default_factory=list)
     symbol_hubs: list[str] = field(default_factory=list)
     untested_modules: list[str] = field(default_factory=list)
@@ -97,6 +100,7 @@ class ProjectProfiler:
         ext_counter: Counter[str] = Counter()
         dir_counter: Counter[str] = Counter()
         debt_counts: Counter[str] = Counter()
+        security_finding_modules: list[str] = []
 
         skipped_dirs = {".git", "__pycache__", ".apex", ".epistemic", "node_modules", ".venv", "venv", "dist", "build", ".turbo", ".next"}
         scanned = 0
@@ -136,10 +140,18 @@ class ProjectProfiler:
 
             # Count technical-debt markers in Python comments, folded into the
             # existing walk so we don't add a second full-tree pass.
-            if ext == ".py":
+            if ext == ".py" and not (
+                name_lower.startswith("test_") or "/tests/" in f"/{rel_lower}/"
+                or rel_lower.startswith("tests/")
+            ):
                 count = self._count_debt_markers(path)
                 if count:
                     debt_counts[rel_str] = count
+                # Content-based security findings (eval/os.system/pickle/...),
+                # so the idea engine can point at the *actual* dangerous file —
+                # not only files whose name matches a sensitive hint.
+                if self._has_security_finding(path):
+                    security_finding_modules.append(rel_str)
 
         profile.extension_counts = dict(ext_counter.most_common())
         profile.top_directories = [name for name, _count in dir_counter.most_common(5)]
@@ -148,6 +160,7 @@ class ProjectProfiler:
         profile.ci_files = sorted(dict.fromkeys(profile.ci_files))
         profile.config_files = sorted(dict.fromkeys(profile.config_files))
         profile.sensitive_paths = sorted(dict.fromkeys(profile.sensitive_paths))
+        profile.security_finding_modules = sorted(dict.fromkeys(security_finding_modules))[:5]
 
         # Modules with a meaningful cluster of debt markers, ranked by count
         # then path (stable/deterministic), capped like the other profile lists.
@@ -173,6 +186,20 @@ class ProjectProfiler:
         except OSError:
             return 0
         return len(self.DEBT_MARKER_RE.findall(text))
+
+    def _has_security_finding(self, path: Path) -> bool:
+        """True if the content detector flags a real security issue in this file.
+
+        Uses the same canonical detector as ``apex review`` and the grade, so the
+        idea engine agrees with them on *where* the danger is — not just files
+        whose name happens to match a sensitive hint.
+        """
+        from app.engine.detectors import security_labels
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return False
+        return bool(security_labels(text))
 
     def _populate_python_structure(self, profile: ProjectProfile) -> None:
         analyzer = PythonStructureAnalyzer(self.root)
@@ -304,12 +331,17 @@ class ProjectProfiler:
             except SyntaxError:
                 refs_by_func = {}
 
+            def _named(token: str) -> bool:
+                # Whole-word match, not substring: 'run' must not be "covered"
+                # by 'rerun'/'prerun_hook', nor 'add' by 'self.address'.
+                return re.search(rf"\b{re.escape(token)}\b", test_text) is not None
+
             def _exercised(qualified: str) -> bool:
                 simple = qualified.rsplit(".", 1)[-1]
-                if simple in test_text:
+                if _named(simple):
                     return True  # named directly
                 if any(          # a test-named sibling calls this helper
-                    caller != simple and caller in test_text and simple in refs
+                    caller != simple and _named(caller) and simple in refs
                     for caller, refs in refs_by_func.items()
                 ):
                     return True

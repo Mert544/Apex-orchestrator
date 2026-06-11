@@ -212,3 +212,22 @@ def test_seeds_hotspot_function_idea_with_symbol_caveat(tmp_path):
     engine = IdeaPermutationEngine(config={}, project_root=str(tmp_path))
     engine._score(root, RelevanceScorer(objective=""))
     assert root.caveats and "crunch()" in root.caveats[0]
+
+
+def test_seeds_security_finding_module():
+    from app.tools.project_profile import ProjectProfile
+    from app.engine.idea_permutation import IdeaSeeder
+    profile = ProjectProfile(root=".", security_finding_modules=["app/report.py"])
+    roots = IdeaSeeder().seed(profile)
+    sf = [r for r in roots if r.source_facts and r.source_facts[0].startswith("security-finding:")]
+    assert sf and sf[0].subject == "app/report.py"
+
+
+def test_security_finding_maps_to_executable_harden():
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Fix the security findings in app/report.py",
+                    subject="app/report.py", operator="root",
+                    source_facts=["security-finding: app/report.py (eval/... detected)"])
+    step = IdeaActionBridge().plan_idea(idea)
+    assert step.action_type == "harden_security" and step.executable is True

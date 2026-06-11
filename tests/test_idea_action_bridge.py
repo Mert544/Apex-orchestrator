@@ -658,7 +658,6 @@ def test_roadmap_plan_expands_convergence_and_dedupes(tmp_path):
 
 
 def test_dedupe_keeps_design_tasks_and_first_executable():
-    from app.models.idea import IdeaNode
     bridge = IdeaActionBridge()
 
     def step(action, subject, executable, phase=""):

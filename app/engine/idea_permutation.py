@@ -155,6 +155,18 @@ class IdeaSeeder:
                 fact_value=f"{module} (only smoke/type assertions)",
             )
 
+        # Content-based security findings: the file actually contains eval/
+        # os.system/pickle/... — point harden straight at it, regardless of
+        # whether its *name* matched a sensitive hint.
+        for module in (getattr(profile, "security_finding_modules", []) or [])[:3]:
+            self._append_root(
+                roots, seen_subjects,
+                title=f"Fix the security findings in {module}",
+                subject=module,
+                fact_label="security-finding",
+                fact_value=f"{module} (eval/os.system/pickle/... detected)",
+            )
+
         # Complexity hotspots: modules combining high cyclomatic complexity with
         # blast radius and thin tests — the riskiest places to change, so derisk
         # them with tests/simplification before they cause incidents.
@@ -469,6 +481,7 @@ class IdeaPermutationEngine:
     # and shallow), resolved to its most-severe present label below.
     _CONVERGENCE_DIMS = [
         ("sensitive_paths", "security-sensitive"),
+        ("security_finding_modules", "security-sensitive"),
         ("hotspot_modules", "a complexity hotspot"),
         ("fragile_modules", "fragile"),
         ("dependency_hubs", "a central dependency hub"),
@@ -485,7 +498,11 @@ class IdeaPermutationEngine:
         dims_by_subject: dict[str, list[str]] = defaultdict(list)
         for attr, label in self._CONVERGENCE_DIMS:
             for subject in (getattr(profile, attr, []) or []):
-                dims_by_subject[subject].append(label)
+                # Distinct dimensions only: two signals that mean the same thing
+                # (name-sensitive AND content-finding both → "security-sensitive")
+                # count as one, so they can't fake a convergence by themselves.
+                if label not in dims_by_subject[subject]:
+                    dims_by_subject[subject].append(label)
 
         # Coverage is one dimension; take the most-severe label a subject carries.
         crit = set(getattr(profile, "critical_untested_modules", []) or [])
@@ -845,6 +862,14 @@ class IdeaPermutationEngine:
             node.value = round(
                 0.2 * node.relevance + 0.4 * node.novelty + 0.4 * node.feasibility, 4
             )
+        # Convergence bonus: a node where N independent analyses agree is, by its
+        # own definition, the highest-leverage target — so make the *number*
+        # agree with the prose. Each extra agreeing signal lifts value (clamped
+        # to <= 1.0), so convergence sorts to the top of the value-ordered plan
+        # instead of contradicting its "highest-leverage" rationale.
+        conv = convergence_labels(node)
+        if len(conv) >= 2:
+            node.value = round(min(1.0, node.value + 0.08 * (len(conv) - 1)), 4)
         # Feed operator/fact context so counterfactual caveats are relevant to
         # the development direction, not generic. Symbol-granular subjects
         # (``mod.py::Class.func``) also pass the symbol so caveats can name the
@@ -870,6 +895,7 @@ _OPERATOR_HINTS: dict[str, str] = {
 }
 _FACT_HINTS: dict[str, str] = {
     "sensitive-path": "guard validation secret check",
+    "security-finding": "eval exec os.system pickle secret guard validation",
     "untested": "check validation edge cases",
     "critical-untested": "check validation edge cases",
     "partial-coverage": "check validation edge cases",
@@ -891,7 +917,7 @@ _FACT_HINTS: dict[str, str] = {
 }
 
 # Root fact labels where reliability/security lenses matter most.
-_SECURITY_LABELS = {"sensitive-path", "critical-untested", "untested", "partial-coverage", "fragile", "complexity-hotspot", "shallow-coverage", "hotspot-function", "convergence"}
+_SECURITY_LABELS = {"sensitive-path", "security-finding", "critical-untested", "untested", "partial-coverage", "fragile", "complexity-hotspot", "shallow-coverage", "hotspot-function", "convergence"}
 
 
 def _context_weight(node: IdeaNode, op_name: str, security_pressure: float = 1.0) -> float:

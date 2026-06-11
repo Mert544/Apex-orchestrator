@@ -206,9 +206,11 @@ def test_convergence_needs_two_distinct_dimensions():
     assert eng._convergence_ideas(profile, RelevanceScorer(""), GraphStore()) == []
 
 
-def test_convergence_idea_is_the_highest_impact_in_roadmap(tmp_path):
-    # End-to-end: a sensitive + untested module should produce a convergence
-    # idea that the roadmap ranks as the single highest-impact item.
+def test_convergence_idea_is_top_impact_tier_in_roadmap(tmp_path):
+    # End-to-end: a sensitive + untested module produces a convergence idea the
+    # roadmap places in the top-impact tier (its impact equals the plan max).
+    # (Impact is feasibility-decoupled, so several high-leverage roots can tie
+    # at the ceiling — convergence must be AT that ceiling, not below it.)
     from app.engine.idea_roadmap import RoadmapSynthesizer
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "auth.py").write_text(
@@ -222,8 +224,10 @@ def test_convergence_idea_is_the_highest_impact_in_roadmap(tmp_path):
     assert conv, "expected a convergence idea for the sensitive+untested module"
     roadmap = RoadmapSynthesizer().build(rep)
     all_items = [it for ph in roadmap.phases for it in ph.items]
-    top_impact = max(all_items, key=lambda it: it.impact)
-    assert top_impact.subject == "app/auth.py"
+    max_impact = max(it.impact for it in all_items)
+    conv_items = [it for it in all_items if it.subject == "app/auth.py"
+                  and "converge" in it.title]
+    assert conv_items and conv_items[0].impact == max_impact
 
 
 def test_module_pair_ideas_from_dependency_edges(tmp_path):
@@ -465,3 +469,60 @@ def test_convergence_renders_nested_mini_roadmap(tmp_path):
     assert "[Stabilize]" in md and "[Secure]" in md
     # Stabilize must be listed before Secure (safety net before hardening).
     assert md.index("[Stabilize]") < md.index("[Secure]")
+
+
+def test_content_security_finding_adds_a_convergence_dimension():
+    # A file flagged ONLY by a content security finding (not by name) plus an
+    # untested signal should converge with a "security-sensitive" dimension.
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+    profile = ProjectProfile(
+        root=".",
+        security_finding_modules=["app/report.py"],   # eval inside, bland name
+        untested_modules=["app/report.py"],
+    )
+    eng = IdeaPermutationEngine({"max_total_ideas": 40, "max_idea_depth": 1, "breadth": 3}, ".")
+    eng._has_objective = False
+    eng._chain_counts, eng._subject_counts = {}, {}
+    ideas = eng._convergence_ideas(profile, RelevanceScorer(""), GraphStore())
+    assert len(ideas) == 1
+    assert "security-sensitive" in ideas[0].title
+
+
+def test_name_and_content_security_are_one_dimension_not_two():
+    # Same file matched by BOTH sensitive name and content finding must not fake
+    # a 2-dimension convergence on the security axis alone.
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+    profile = ProjectProfile(
+        root=".",
+        sensitive_paths=["app/auth.py"],
+        security_finding_modules=["app/auth.py"],
+    )
+    eng = IdeaPermutationEngine({"max_total_ideas": 40, "max_idea_depth": 1, "breadth": 3}, ".")
+    eng._has_objective = False
+    eng._chain_counts, eng._subject_counts = {}, {}
+    assert eng._convergence_ideas(profile, RelevanceScorer(""), GraphStore()) == []  # only 1 distinct dim
+
+
+def test_convergence_value_bonus_makes_it_lead():
+    # The convergence value gains a bonus per agreeing signal, so a 3-signal
+    # convergence outscores a 2-signal one (the prose-vs-number fix).
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+    eng = IdeaPermutationEngine({"max_total_ideas": 40, "max_idea_depth": 1, "breadth": 3}, ".")
+    eng._has_objective = False
+
+    def conv_value(**lists):
+        eng._chain_counts, eng._subject_counts = {}, {}
+        ideas = eng._convergence_ideas(ProjectProfile(root=".", **lists),
+                                       RelevanceScorer(""), GraphStore())
+        return ideas[0].value
+
+    three = conv_value(sensitive_paths=["app/a.py"], hotspot_modules=["app/a.py"],
+                       untested_modules=["app/a.py"])
+    two = conv_value(sensitive_paths=["app/b.py"], untested_modules=["app/b.py"])
+    assert three > two
