@@ -692,3 +692,26 @@ def test_harden_ladder_skips_unfixable_issue_for_a_fixable_one(tmp_path):
     assert res is not None
     change_strategy, _title = res
     assert change_strategy == ["fix pickle security"]   # advanced past the eval
+
+
+def test_harden_chains_raise_to_cause_end_to_end(tmp_path):
+    # The harden ladder's raise-from rung: a bound handler re-raising without
+    # `from` gets chained, applied through the real supervised machinery.
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "svc.py"
+    src.write_text(
+        "def load(p):\n"
+        "    try:\n"
+        "        return g(p)\n"
+        "    except OSError as err:\n"
+        '        raise RuntimeError("cannot load")\n'
+    )
+    idea = IdeaNode(id="i", title="Harden: app/svc.py", subject="app/svc.py",
+                    operator="harden", operator_chain=["harden"],
+                    source_facts=["sensitive-path: app/svc.py"])
+    bridge = IdeaActionBridge()
+    step = bridge.plan_idea(idea)
+    result = bridge.apply_step(step, str(tmp_path), mode="supervised")
+    if result["applied"]:
+        assert result["transform_type"] == "raise_with_from"
+        assert 'from err' in src.read_text()

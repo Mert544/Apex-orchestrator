@@ -27,6 +27,7 @@ from app.execution.semantic.transforms import net_timeout
 from app.execution.semantic.transforms import open_encoding
 from app.execution.semantic.transforms import identity_literal
 from app.execution.semantic.transforms import negated_comparison
+from app.execution.semantic.transforms import raise_from
 
 
 class SemanticPatchGenerator:
@@ -167,6 +168,8 @@ class SemanticPatchGenerator:
                 result = identity_literal.apply(rel_path, current, title)
             elif transform == "fix_negated_comparison":
                 result = negated_comparison.apply(rel_path, current, title)
+            elif transform == "fix_raise_from":
+                result = raise_from.apply(rel_path, current, title)
 
             if result:
                 return self._attach_metadata(self._estimate_and_return(result), selection, contexts, strategy)

@@ -23,7 +23,7 @@ _SECURITY_ORDER = ("eval", "os.system", "pickle", "yaml", "sql", "tempfile", "we
 # explicit acknowledgement instead of re-flagging a line they already silenced.
 _SUPPRESS_RE = re.compile(r"#\s*(noqa|nosec)\b(?:\s*[:=]\s*([A-Za-z0-9 ,]+))?", re.IGNORECASE)
 # Lint codes that, when named in a suppression comment, suppress a finding.
-_FIXKIND_NOQA = {"bare except": "E722", "base-exception": "B036"}
+_FIXKIND_NOQA = {"bare except": "E722", "base-exception": "B036", "raise-from": "B904"}
 
 
 def _suppressed(line: str, category: str, fix_kind: str, message: str) -> bool:
@@ -140,9 +140,12 @@ def detect(source: str) -> list[Issue]:
                 add(node.lineno, "bug", "medium",
                     "exception silently swallowed (except: pass) — log or handle it", "")
             for lineno in _raise_without_from(node.body):
+                # Auto-fixable only when the handler binds the exception
+                # (`except E as err:`) — then `from err` is a pure, safe append.
                 add(lineno, "bug", "low",
                     "raising a new exception in an except block without `from` loses the "
-                    "original cause — use `raise ... from err` (or `from None`)", "")
+                    "original cause — use `raise ... from err` (or `from None`)",
+                    "raise-from" if node.name else "")
         elif isinstance(node, ast.Try):
             for lineno in _escapes_finally(node.finalbody):
                 add(lineno, "bug", "high",
@@ -519,6 +522,10 @@ def has_none_comparison(source: str) -> bool:
 
 def has_base_exception(source: str) -> bool:
     return any(i.fix_kind == "base-exception" for i in detect(source))
+
+
+def has_fixable_raise_without_from(source: str) -> bool:
+    return any(i.fix_kind == "raise-from" for i in detect(source))
 
 
 def has_identity_literal(source: str) -> bool:

@@ -235,6 +235,15 @@ class IdeaActionBridge:
         return has_identity_literal(text) if text is not None else False
 
     @classmethod
+    def _detect_raise_from(cls, project_root: str, rel_path: str) -> bool:
+        """True if the file re-raises a new exception without `from` in a handler
+        that binds the caught exception (the auto-fixable B904 shape)."""
+        from app.engine.detectors import has_fixable_raise_without_from
+
+        text = cls._read(project_root, rel_path)
+        return has_fixable_raise_without_from(text) if text is not None else False
+
+    @classmethod
     def _detect_negated_comparison(cls, project_root: str, rel_path: str) -> bool:
         """True if the file has a `not x in y` / `not x is y` to simplify."""
         from app.engine.detectors import has_negated_comparison
@@ -266,6 +275,8 @@ class IdeaActionBridge:
             return ["identity-literal"], f"Fix identity-vs-literal comparisons in {target}"
         if cls._detect_negated_comparison(project_root, target):
             return ["negated-comparison"], f"Simplify negated comparisons in {target}"
+        if cls._detect_raise_from(project_root, target):
+            return ["raise-from"], f"Chain re-raised exceptions to their cause in {target}"
         return None
 
     def _generate(self, step: ActionStep, project_root: str):
