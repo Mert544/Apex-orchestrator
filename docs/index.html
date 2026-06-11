@@ -87,9 +87,18 @@ pre.code .k{color:var(--purple)} pre.code .s{color:var(--green)} pre.code .c{col
 
 footer{margin-top:80px;padding:34px 0 44px;border-top:1px solid var(--line);text-align:center;color:var(--dim);font-size:14px}
 footer a{color:var(--muted)}
+.lang{position:fixed;top:16px;right:18px;z-index:10;display:flex;gap:4px;background:var(--bg2);border:1px solid var(--line);border-radius:999px;padding:3px}
+.lang a{font-size:12.5px;padding:4px 11px;border-radius:999px;color:var(--muted)}
+.lang a.on{background:linear-gradient(90deg,#1f6feb,#8957e5);color:#fff}
+.lang a:hover{text-decoration:none;color:var(--ink)}
 </style>
 </head>
 <body>
+
+<div class="lang">
+  <a class="on" href="index.html">EN</a>
+  <a href="tr.html">TR</a>
+</div>
 
 <div class="hero">
   <div class="wrap">
