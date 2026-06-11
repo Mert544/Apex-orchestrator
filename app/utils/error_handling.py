@@ -62,7 +62,7 @@ def with_timeout(
             def target():
                 try:
                     result.append(func(*args, **kwargs))
-                except BaseException as e:
+                except BaseException as e:  # noqa: B036 — captured to re-raise on the calling thread (line below)
                     exception.append(e)
 
             thread = threading.Thread(target=target)
