@@ -19,6 +19,8 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
         return _patch_os_system(rel_path, source, tree)
     if "bare except" in issue or "bareexcept" in issue:
         return _patch_bare_except(rel_path, source, tree)
+    if "base-exception" in issue or "baseexception" in issue:
+        return _patch_base_exception(rel_path, source, tree)
     if "pickle" in issue:
         return _patch_pickle(rel_path, source, tree)
     if "sql" in issue or "injection" in issue:
@@ -349,6 +351,47 @@ def _patch_os_system(rel_path: str, source: str, tree: ast.Module) -> SemanticPa
             }],
             transform_type="os_system_to_subprocess",
             rationale=[f"Replaced os.system() with subprocess.run() for safety in {rel_path}."],
+        )
+
+    return None
+
+
+def _patch_base_exception(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
+    """Narrow ``except BaseException:`` to ``except Exception:``.
+
+    Only handlers that don't re-raise are rewritten (a bare ``raise`` means the
+    broad catch is the intentional cleanup pattern) — mirroring the detector.
+    """
+    from app.engine.detectors import _exc_names, _reraises
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler) or node.type is None:
+            continue
+        if "BaseException" not in _exc_names(node.type) or _reraises(node.body):
+            continue
+
+        lineno = node.lineno
+        lines = source.splitlines(keepends=True)
+        line_content = lines[lineno - 1] if lineno <= len(lines) else ""
+
+        new_line = line_content.replace("BaseException", "Exception", 1)
+        if new_line == line_content:
+            continue
+
+        new_lines = list(lines)
+        new_lines[lineno - 1] = new_line
+
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel_path,
+                "new_content": "".join(new_lines),
+                "expected_old_content": source,
+            }],
+            transform_type="base_exception_to_exception",
+            rationale=[
+                f"Narrowed except BaseException to except Exception in {rel_path} "
+                "(was swallowing KeyboardInterrupt/SystemExit)."
+            ],
         )
 
     return None

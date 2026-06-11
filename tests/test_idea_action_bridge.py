@@ -186,6 +186,22 @@ def test_harden_applies_bare_except_fix(tmp_path):
         assert "except Exception:" in src.read_text()
 
 
+def test_harden_narrows_except_base_exception(tmp_path):
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "w.py"
+    src.write_text("def f():\n    try:\n        g()\n    except BaseException:\n        log()\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Harden: app/w.py", subject="app/w.py",
+                    operator="harden", operator_chain=["harden"],
+                    source_facts=["sensitive-path: app/w.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
+    if result["applied"]:
+        assert result["transform_type"] == "base_exception_to_exception"
+        text = src.read_text()
+        assert "except Exception:" in text and "BaseException" not in text
+
+
 def test_harden_applies_open_encoding_fix(tmp_path):
     # A file whose only issue is open() without encoding gets the portability
     # fix via the harden detection ladder.

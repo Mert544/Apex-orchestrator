@@ -16,14 +16,14 @@ import re
 from dataclasses import dataclass
 
 # Security labels in descending severity (the bridge's contract relies on this).
-_SECURITY_ORDER = ("eval", "os.system", "pickle", "yaml", "sql", "tempfile", "weak-hash", "bare except")
+_SECURITY_ORDER = ("eval", "os.system", "pickle", "yaml", "sql", "tempfile", "weak-hash", "bare except", "base-exception")
 
 # Inline suppression: respect the same comments Bandit/ruff do, so `apex review`
 # and the health grade (both built on this detector) agree with the developer's
 # explicit acknowledgement instead of re-flagging a line they already silenced.
 _SUPPRESS_RE = re.compile(r"#\s*(noqa|nosec)\b(?:\s*[:=]\s*([A-Za-z0-9 ,]+))?", re.IGNORECASE)
 # Lint codes that, when named in a suppression comment, suppress a finding.
-_FIXKIND_NOQA = {"bare except": "E722"}
+_FIXKIND_NOQA = {"bare except": "E722", "base-exception": "B036"}
 
 
 def _suppressed(line: str, category: str, fix_kind: str, message: str) -> bool:
@@ -130,6 +130,12 @@ def detect(source: str) -> list[Issue]:
         elif isinstance(node, ast.ExceptHandler):
             if node.type is None:
                 add(node.lineno, "security", "medium", "bare except — use except Exception:", "bare except")
+            elif "BaseException" in _exc_names(node.type) and not _reraises(node.body):
+                # B036: swallows KeyboardInterrupt/SystemExit. A handler that
+                # re-raises (bare `raise`) is the legitimate cleanup pattern.
+                add(node.lineno, "security", "medium",
+                    "except BaseException also catches KeyboardInterrupt/SystemExit — "
+                    "use except Exception: (or re-raise)", "base-exception")
             if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
                 add(node.lineno, "bug", "medium",
                     "exception silently swallowed (except: pass) — log or handle it", "")
@@ -333,6 +339,23 @@ def _raise_without_from(body: list) -> list[int]:
     return found
 
 
+def _reraises(body: list) -> bool:
+    """True if the handler body re-raises the active exception (bare ``raise``).
+
+    Nested functions are separate scopes — a ``raise`` inside one fires later,
+    not during the handler — so they don't count as re-raising.
+    """
+    stack = list(body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        if isinstance(node, ast.Raise) and node.exc is None:
+            return True
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
 def _unreachable_handlers(handlers: list) -> list[int]:
     """Line numbers of except clauses shadowed by a broader handler above them.
 
@@ -492,6 +515,10 @@ def has_mutable_default(source: str) -> bool:
 
 def has_none_comparison(source: str) -> bool:
     return any(i.fix_kind == "none-comparison" for i in detect(source))
+
+
+def has_base_exception(source: str) -> bool:
+    return any(i.fix_kind == "base-exception" for i in detect(source))
 
 
 def has_identity_literal(source: str) -> bool:

@@ -248,3 +248,35 @@ def test_raise_without_from_is_flagged():
     assert not b904(base % ("", 'raise ValueError("bad") from None'))
     assert not b904(base % ("", "raise"))                          # bare re-raise
     assert not b904(base % (" as e", "raise e"))                   # re-raise by name
+
+
+def test_detects_except_base_exception_without_reraise():
+    from app.engine.detectors import detect, has_base_exception
+
+    bad = "def f():\n    try:\n        g()\n    except BaseException:\n        log()\n"
+    found = [i for i in detect(bad) if i.fix_kind == "base-exception"]
+    assert len(found) == 1
+    assert found[0].line == 4 and found[0].category == "security"
+    assert "KeyboardInterrupt" in found[0].message
+    assert has_base_exception(bad)
+    # tuple form is caught too
+    tup = "def f():\n    try:\n        g()\n    except (ValueError, BaseException):\n        log()\n"
+    assert has_base_exception(tup)
+
+
+def test_base_exception_with_reraise_or_noqa_is_exempt():
+    from app.engine.detectors import detect, has_base_exception
+
+    # a bare `raise` makes the broad catch the legitimate cleanup pattern
+    reraise = ("def f():\n    try:\n        g()\n    except BaseException:\n"
+               "        cleanup()\n        raise\n")
+    assert not has_base_exception(reraise)
+    # ...but a raise inside a nested function does NOT count as re-raising
+    nested = ("def f():\n    try:\n        g()\n    except BaseException:\n"
+              "        def h():\n            raise\n        log()\n")
+    assert has_base_exception(nested)
+    # noqa: B036 silences it
+    silenced = "def f():\n    try:\n        g()\n    except BaseException:  # noqa: B036\n        log()\n"
+    assert not any(i.fix_kind == "base-exception" for i in detect(silenced))
+    # plain `except Exception:` is fine
+    assert not has_base_exception("def f():\n    try:\n        g()\n    except Exception:\n        log()\n")
