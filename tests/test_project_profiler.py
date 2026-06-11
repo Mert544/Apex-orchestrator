@@ -155,3 +155,50 @@ def test_profiler_flags_shallow_only_coverage(tmp_path: Path):
     shallow = [str(Path(p).as_posix()) for p in profile.shallow_tested_modules]
     assert "pkg/shallow.py" in shallow
     assert "pkg/deep.py" not in shallow
+
+
+def test_profiler_names_hotspot_functions(tmp_path: Path):
+    # Inside a risky module, the *function* with heavy branching and no test
+    # mentioning its name is surfaced; a function a test names is not.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    branches = "\n".join(f"    if x == {i}:\n        return {i}" for i in range(10))
+    (tmp_path / "app" / "hot.py").write_text(
+        f"def gnarly(x):\n{branches}\n    return -1\n\n"
+        f"def covered(x):\n{branches}\n    return -2\n",
+        encoding="utf-8",
+    )
+    for i in range(3):
+        (tmp_path / "app" / f"c{i}.py").write_text(
+            f"from app.hot import covered\n\ndef u{i}():\n    return covered({i})\n",
+            encoding="utf-8",
+        )
+    (tmp_path / "tests" / "test_hot.py").write_text(
+        "from app.hot import covered\n\ndef test_c():\n    assert covered(1) == 1\n",
+        encoding="utf-8",
+    )
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    by_fn = {f["function"]: f for f in profile.hotspot_functions}
+    assert "gnarly" in by_fn
+    assert by_fn["gnarly"]["module"].endswith("hot.py")
+    assert by_fn["gnarly"]["complexity"] >= 10
+    assert "covered" not in by_fn          # a linked test names it
+
+
+def test_hotspot_scans_never_flag_test_files(tmp_path: Path):
+    # A branchy, heavily-imported *test* file is not a de-risking target — not
+    # as a hotspot module, and never descended into for hotspot functions.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    branches = "\n".join(f"    if x == {i}:\n        return {i}" for i in range(12))
+    (tmp_path / "tests" / "test_branchy.py").write_text(
+        f"def helper(x):\n{branches}\n    return -1\n", encoding="utf-8"
+    )
+    for i in range(3):
+        (tmp_path / "app" / f"c{i}.py").write_text(
+            f"from tests.test_branchy import helper\n\ndef u{i}():\n    return helper({i})\n",
+            encoding="utf-8",
+        )
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert not any("test_branchy" in m for m in profile.hotspot_modules)
+    assert not any("test_branchy" in f["module"] for f in profile.hotspot_functions)

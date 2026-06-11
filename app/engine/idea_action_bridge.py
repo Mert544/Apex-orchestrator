@@ -22,6 +22,7 @@ _OPERATOR_ACTIONS: dict[str, tuple[str, str, bool]] = {
 _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "untested": ("create_test_stub", "Create a first test stub for {s}", True),
     "critical-untested": ("create_test_stub", "Create a safety-net test for {s}", True),
+    "hotspot-function": ("create_test_stub", "Write behavioral tests for the complex function {s}", True),
     "sensitive-path": ("harden_security", "Harden the sensitive path {s}", True),
     "config": ("design_task", "Make configuration {s} environment-aware", False),
     "entrypoint": ("design_task", "Grow capability behind entrypoint {s}", False),
@@ -50,13 +51,16 @@ class IdeaActionBridge:
             action_type, desc_tmpl, executable = _OPERATOR_ACTIONS.get(
                 idea.operator, ("design_task", "Develop {s}", False)
             )
+        # Symbol-granular subjects ("mod.py::Class.func") act on the module file;
+        # the function name stays in the title/description for the test author.
+        file_part = idea.subject.split("::", 1)[0]
         return ActionStep(
             branch_path=idea.branch_path,
             title=idea.title,
             operator=idea.operator,
             subject=idea.subject,
             action_type=action_type,
-            target=idea.subject if "/" in idea.subject or idea.subject.endswith(".py") else "",
+            target=file_part if "/" in file_part or file_part.endswith(".py") else "",
             description=desc_tmpl.format(s=idea.subject),
             executable=executable,
             value=idea.value,

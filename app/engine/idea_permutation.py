@@ -167,6 +167,21 @@ class IdeaSeeder:
                 fact_value=f"{module} (high complexity x fan-in, thin tests)",
             )
 
+        # Symbol granularity: the riskiest *functions* — heavy branching that no
+        # linked test ever names. A subject like ``mod.py::func`` keeps the idea
+        # distinct from its module's, so both levels can coexist in the tree.
+        for fn in (getattr(profile, "hotspot_functions", []) or [])[:3]:
+            simple = fn["function"].rsplit(".", 1)[-1]
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Write behavioral tests for {simple}() in {fn['module']} "
+                       f"(complexity {fn['complexity']}, never named by a test)"),
+                subject=f"{fn['module']}::{fn['function']}",
+                fact_label="hotspot-function",
+                fact_value=(f"{fn['module']}::{fn['function']} "
+                            f"(complexity {fn['complexity']}, line {fn['line']}, no direct tests)"),
+            )
+
         # Technical-debt markers: modules carrying a cluster of TODO/FIXME/XXX/
         # HACK comments are concrete, traceable pockets of deferred work.
         for module in (getattr(profile, "debt_marker_modules", []) or [])[:3]:
@@ -755,9 +770,14 @@ class IdeaPermutationEngine:
                 0.2 * node.relevance + 0.4 * node.novelty + 0.4 * node.feasibility, 4
             )
         # Feed operator/fact context so counterfactual caveats are relevant to
-        # the development direction, not generic.
+        # the development direction, not generic. Symbol-granular subjects
+        # (``mod.py::Class.func``) also pass the symbol so caveats can name the
+        # actual function instead of reciting a template.
         cf_text = f"{node.title} {_caveat_hint(node)}".strip()
-        node.caveats = self.counterfactual.generate({"text": cf_text}).scenarios[:2]
+        claim: dict = {"text": cf_text}
+        if "::" in node.subject:
+            claim["symbol"] = node.subject.split("::", 1)[1].rsplit(".", 1)[-1]
+        node.caveats = self.counterfactual.generate(claim).scenarios[:2]
 
 
 # Keyword-rich context per development lens so the CounterfactualGenerator
@@ -788,12 +808,13 @@ _FACT_HINTS: dict[str, str] = {
     "mutable-default": "shared mutable state bug",
     "debt-markers": "refactor cleanup deferred work",
     "complexity-hotspot": "complex check validation edge cases simplify",
+    "hotspot-function": "complex check validation edge cases",
     "shallow-coverage": "check validation edge cases assert behaviour",
     "missing-ci": "ci workflow run tests automation",
 }
 
 # Root fact labels where reliability/security lenses matter most.
-_SECURITY_LABELS = {"sensitive-path", "critical-untested", "untested", "partial-coverage", "fragile", "complexity-hotspot", "shallow-coverage"}
+_SECURITY_LABELS = {"sensitive-path", "critical-untested", "untested", "partial-coverage", "fragile", "complexity-hotspot", "shallow-coverage", "hotspot-function"}
 
 
 def _context_weight(node: IdeaNode, op_name: str, security_pressure: float = 1.0) -> float:

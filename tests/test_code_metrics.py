@@ -56,3 +56,43 @@ def test_comprehension_and_bool_op_count_as_complexity(tmp_path):
     m = CodeMetrics(tmp_path).for_module("c.py")
     # comprehension + its `if` + the BoolOp -> at least 2 branch nodes.
     assert m.complexity >= 2
+
+
+def test_function_complexities_qualifies_methods_and_counts_branches():
+    from app.tools.code_metrics import function_complexities
+
+    src = (
+        "def plain(x):\n"
+        "    if x:\n"
+        "        return 1\n"
+        "    return 0\n"
+        "class C:\n"
+        "    def method(self, y):\n"
+        "        for i in range(y):\n"
+        "            if i:\n"
+        "                pass\n"
+        "    def trivial(self):\n"
+        "        return 1\n"
+    )
+    out = {name: cx for name, _line, cx in function_complexities(src)}
+    assert out["plain"] == 1
+    assert out["C.method"] == 2
+    assert out["C.trivial"] == 0
+
+
+def test_function_complexities_nested_defs_and_bad_source():
+    from app.tools.code_metrics import function_complexities
+
+    src = (
+        "def outer(x):\n"
+        "    if x:\n"
+        "        pass\n"
+        "    def inner(y):\n"
+        "        while y:\n"
+        "            y -= 1\n"
+        "    return inner\n"
+    )
+    out = {name: cx for name, _line, cx in function_complexities(src)}
+    assert "outer.inner" in out and out["outer.inner"] == 1
+    assert out["outer"] >= 2          # inner's branch counts toward outer too
+    assert function_complexities("def broken(:\n") == []

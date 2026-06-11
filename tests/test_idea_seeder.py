@@ -189,3 +189,26 @@ def test_seeds_deepen_shallow_coverage_idea(tmp_path):
     roots = IdeaSeeder().seed(profile)
     sc = [r for r in roots if any("shallow-coverage" in f for f in r.source_facts)]
     assert sc and any("pkg/shallow.py" in r.subject for r in sc)
+
+
+def test_seeds_hotspot_function_idea_with_symbol_caveat(tmp_path):
+    from app.tools.project_profile import ProjectProfile
+    from app.engine.idea_permutation import IdeaSeeder, IdeaPermutationEngine
+
+    profile = ProjectProfile(
+        root=str(tmp_path),
+        hotspot_functions=[{"module": "app/core.py", "function": "Engine.crunch",
+                            "line": 40, "complexity": 14}],
+    )
+    roots = IdeaSeeder().seed(profile)
+    hot = [r for r in roots if any(f.startswith("hotspot-function:") for f in r.source_facts)]
+    assert hot
+    root = hot[0]
+    assert root.subject == "app/core.py::Engine.crunch"     # symbol-granular subject
+    assert "crunch()" in root.title and "complexity 14" in root.title
+
+    # Scoring attaches a caveat that names the actual function, not a template.
+    from app.skills.relevance_scorer import RelevanceScorer
+    engine = IdeaPermutationEngine(config={}, project_root=str(tmp_path))
+    engine._score(root, RelevanceScorer(objective=""))
+    assert root.caveats and "crunch()" in root.caveats[0]

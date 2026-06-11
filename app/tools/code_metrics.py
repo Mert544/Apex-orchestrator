@@ -26,6 +26,35 @@ def hotspot_risk(complexity: int, fan_in: int, tests: int) -> float:
     """
     return round(complexity * (1 + fan_in) / (1 + tests), 2)
 
+def function_complexities(source: str) -> list[tuple[str, int, int]]:
+    """Per-function ``(qualified_name, lineno, complexity)`` for a source string.
+
+    Methods are qualified (``Class.method``); nested defs extend the chain
+    (``outer.inner``) and their branches also count toward the enclosing
+    function, mirroring how the module-level number aggregates. The symbol
+    granularity the idea engine needs: *which* function is the risk, not
+    just which file. Unparseable source yields ``[]``.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    out: list[tuple[str, int, int]] = []
+
+    def visit(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = f"{prefix}{child.name}"
+                complexity = sum(1 for n in ast.walk(child) if isinstance(n, _BRANCH_NODES))
+                out.append((name, child.lineno, complexity))
+                visit(child, f"{name}.")
+            elif isinstance(child, ast.ClassDef):
+                visit(child, f"{prefix}{child.name}.")
+
+    visit(tree, "")
+    return out
+
+
 # AST node types counted as a branch (a cheap cyclomatic-complexity proxy).
 _BRANCH_NODES = (
     ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.ExceptHandler,

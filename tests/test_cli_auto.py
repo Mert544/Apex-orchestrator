@@ -128,3 +128,18 @@ def test_auto_writes_out_file(tmp_path):
     rc = cmd_auto(_ns(tmp_path, apply=True, out=str(out_file), max_apply=2))
     assert rc == 0
     assert out_file.exists() and out_file.read_text().strip()
+
+
+def test_auto_headline_excludes_fixture_findings_like_the_grade(tmp_path, capsys):
+    # Project code is clean; an examples/ fixture carries an intentional eval.
+    # The headline must report 0 project findings and disclose the fixture ones
+    # separately — one consistent story with the grade.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "clean.py").write_text("def ok():\n    return 1\n")
+    (tmp_path / "examples" / "demo").mkdir(parents=True)
+    (tmp_path / "examples" / "demo" / "vuln.py").write_text("def run(e):\n    return eval(e)\n")
+    rc = cmd_auto(_ns(tmp_path))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "0 security finding(s)" in out
+    assert "in example/fixture code" in out

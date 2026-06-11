@@ -34,6 +34,9 @@ class ProjectProfile:
     debt_marker_modules: list[str] = field(default_factory=list)
     hotspot_modules: list[str] = field(default_factory=list)
     shallow_tested_modules: list[str] = field(default_factory=list)
+    # Symbol granularity: complex functions no linked test ever names.
+    # Each entry: {"module", "function", "line", "complexity"}.
+    hotspot_functions: list[dict] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -224,6 +227,52 @@ class ProjectProfiler:
         # this stays cheap. Shares the risk formula with the hotspots report.
         profile.hotspot_modules = self._scan_hotspots(modules, graph, profile.module_to_tests)
 
+        # Symbol granularity: descend into the riskiest modules and name the
+        # *functions* that combine real branching with zero direct test mentions
+        # — so ideas can target a symbol, not just a file. Bounded to modules
+        # already surfaced as risky, so this stays cheap.
+        candidates = list(dict.fromkeys(
+            [*profile.hotspot_modules, *profile.fragile_modules, *profile.dependency_hubs[:5]]
+        ))
+        profile.hotspot_functions = self._scan_hotspot_functions(candidates, profile.module_to_tests)
+
+    @staticmethod
+    def _is_test_path(rel: str) -> bool:
+        r = rel.replace("\\", "/").lower()
+        return (r.startswith(("tests/", "test/")) or "/tests/" in f"/{r}"
+                or Path(r).stem.startswith("test_"))
+
+    def _scan_hotspot_functions(self, candidates: list[str], module_to_tests: dict) -> list[dict]:
+        """Complex functions inside risky modules that no linked test names."""
+        from app.tools.code_metrics import function_complexities
+
+        out: list[dict] = []
+        for module in candidates:
+            if not module.endswith(".py") or self._is_test_path(module):
+                continue
+            try:
+                source = (self.root / module).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            test_text = ""
+            for rel in module_to_tests.get(module, []) or []:
+                try:
+                    test_text += (self.root / rel).read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+            for name, lineno, complexity in function_complexities(source):
+                if complexity < 8:
+                    continue  # a real branching function, not a trivial one
+                simple = name.rsplit(".", 1)[-1]
+                if simple.startswith("__") and simple.endswith("__"):
+                    continue
+                if simple in test_text:
+                    continue  # a linked test names it — it has direct coverage
+                out.append({"module": module, "function": name,
+                            "line": lineno, "complexity": complexity})
+        out.sort(key=lambda d: (-d["complexity"], d["module"], d["function"]))
+        return out[:5]
+
     def _scan_shallow_tests(self, module_to_tests: dict, limit: int | None = 5) -> list[str]:
         """Modules whose linked tests exist but assert no real behaviour (shallow).
 
@@ -266,6 +315,8 @@ class ProjectProfiler:
         for path, mm in metrics.items():
             if mm.complexity < 8:        # a real branching module, not a trivial one
                 continue
+            if self._is_test_path(path):
+                continue  # a branchy test file is not a de-risking target
             # depth-aware coverage: test functions, not linked files
             tests = count_test_functions(self.root, module_to_tests.get(path, []) or [])
             risk = hotspot_risk(mm.complexity, fan_in.get(path, 0), tests)

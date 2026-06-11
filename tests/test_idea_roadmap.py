@@ -217,3 +217,10 @@ def test_complexity_hotspot_is_high_impact_and_stabilize():
                 source_facts=["complexity-hotspot: app/core.py (high complexity x fan-in, thin tests)"])
     assert estimate_impact(hot) > estimate_impact(plain)
     assert classify_phase(hot) == STABILIZE
+
+
+def test_hotspot_function_routes_to_stabilize_with_high_impact():
+    f = _node(source_facts=["hotspot-function: app/core.py::Engine.crunch (complexity 14, line 40, no direct tests)"])
+    plain = _node()
+    assert classify_phase(f) == "Stabilize"
+    assert estimate_impact(f) > estimate_impact(plain)

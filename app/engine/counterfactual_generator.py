@@ -32,7 +32,18 @@ class CounterfactualGenerator:
     def generate(self, claim: dict[str, Any]) -> CounterfactualResult:
         text = claim.get("text", "").lower()
         context = claim.get("context", "").lower()
+        symbol = claim.get("symbol", "")
         scenarios = []
+
+        # Symbol-grounded scenarios come first: when the claim names an actual
+        # function, the caveat should interrogate *it*, not recite a template.
+        if symbol:
+            scenarios.append(
+                f"What if {symbol}() hits its rarest branch with an input no test has ever exercised?"
+            )
+            scenarios.append(
+                f"What if a caller depends on an undocumented behavior of {symbol}() that a refactor silently changes?"
+            )
 
         # Pattern: missing validation / no guard
         if any(k in text for k in ("validation", "guard", "check", "sanitize")):

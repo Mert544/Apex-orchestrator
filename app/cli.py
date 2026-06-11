@@ -625,12 +625,21 @@ def cmd_auto(args: argparse.Namespace) -> int:
     shape = analyze_tree_shape(report)
 
     # Best-effort security headline (a failing scanner must not break auto).
+    # Split project code from example/fixture code with the same predicate the
+    # grade uses, so auto and grade tell one consistent story: demo fixtures
+    # carry intentional vulnerabilities and must not inflate the headline.
+    sec_n = fixture_n = 0
     try:
         from app.agents.skills import SecurityAgent
+        from app.engine.health_score import _is_fixture_path
 
-        sec_n = int(SecurityAgent().run(project_root=str(target)).get("findings_count", 0) or 0)
+        for finding in SecurityAgent().run(project_root=str(target)).get("findings", []) or []:
+            if _is_fixture_path(str(finding.get("file", ""))):
+                fixture_n += 1
+            else:
+                sec_n += 1
     except Exception:
-        sec_n = 0
+        sec_n = fixture_n = 0
 
     # --- Narrative: the state of the project ---------------------------------
     lines = [f"# Apex — autonomous review of `{target}`", ""]
@@ -640,6 +649,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
         f"**State:** {shape.total_ideas} development ideas across "
         f"{shape.distinct_subjects} modules · {sec_n} security finding(s)"
     )
+    if fixture_n:
+        headline += f" (+{fixture_n} in example/fixture code, excluded like the grade does)"
     if shape.heaviest_module:
         headline += f" · heaviest `{shape.heaviest_module}` ({shape.heaviest_loc} LOC)"
     lines += [headline, ""]

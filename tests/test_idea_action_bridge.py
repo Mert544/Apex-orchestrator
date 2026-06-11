@@ -578,3 +578,20 @@ def test_harden_converges_multiple_flag_only_findings(tmp_path):
     assert res["rolled_back"] == 0
     assert "Apex: weak hash" in after
     assert "Apex: insecure temp file" in after
+
+
+def test_hotspot_function_idea_targets_the_module_file():
+    # A symbol-granular subject ("mod.py::Class.func") plans an executable
+    # test action against the module *file*, keeping the symbol in the title.
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(
+        id="i", title="Write behavioral tests for crunch() in app/core.py",
+        subject="app/core.py::Engine.crunch", operator="root", branch_path="x.h",
+        depth=0,
+        source_facts=["hotspot-function: app/core.py::Engine.crunch (complexity 14, line 40, no direct tests)"],
+    )
+    step = IdeaActionBridge().plan_idea(idea)
+    assert step.action_type == "create_test_stub"
+    assert step.executable is True
+    assert step.target == "app/core.py"           # "::" stripped for the file target
+    assert "Engine.crunch" in step.description    # symbol kept for the test author
