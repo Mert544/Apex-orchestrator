@@ -265,6 +265,15 @@ def _patch_eval(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchRe
         if not node.args:
             continue
         arg_node = node.args[0]
+        # A string-literal argument is only safe to narrow to ast.literal_eval
+        # if the string itself is a Python literal. eval("a * b") /
+        # eval("acc['x']") are runtime *expressions* that literal_eval raises on,
+        # so rewriting them would ship code that crashes — leave them for a human.
+        if isinstance(arg_node, ast.Constant) and isinstance(arg_node.value, str):
+            try:
+                ast.literal_eval(arg_node.value)
+            except (ValueError, SyntaxError, TypeError):
+                continue
         arg_source = _get_arg_source(arg_node, source)
         if not arg_source:
             continue

@@ -157,14 +157,15 @@ class TestSecurityEvalEdges:
         assert "ast.literal_eval(get_input())" in out
         _parse_ok(out)
 
-    def test_eval_string_literal_arg_rewritten_valid(self):
-        # _get_arg_source Constant str branch (lines 300-301).
-        source = "x = eval('1+1')\n"
-        result = security_apply("t.py", source, "eval")
-        assert result is not None
-        out = result.patch_requests[0]["new_content"]
-        assert "ast.literal_eval('1+1')" in out
-        _parse_ok(out)
+    def test_eval_string_expression_arg_is_declined(self):
+        # eval('1+1') must NOT become ast.literal_eval('1+1'): "1+1" is an
+        # expression, and literal_eval raises ValueError on it, so the rewrite
+        # would ship code that crashes at runtime. The transform declines it.
+        import ast as _ast
+        import pytest
+        with pytest.raises(ValueError):
+            _ast.literal_eval("1+1")            # proves the rewrite would crash
+        assert security_apply("t.py", "x = eval('1+1')\n", "eval") is None
 
 
 class TestSecurityOsSystemEdges:
