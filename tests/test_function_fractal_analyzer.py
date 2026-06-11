@@ -106,3 +106,51 @@ def test_analyzer_cross_file_impact(tmp_path: Path):
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def test_analyze_function_risk_branches(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    src = (
+        "def dangers(x):\n"
+        "    exec(x)\n"
+        "    __import__('os')\n"
+        "    import pickle, yaml, subprocess\n"
+        "    pickle.loads(x)\n"
+        "    yaml.load(x)\n"
+        "    subprocess.call(x)\n"
+    )
+    (tmp_path / "app" / "d.py").write_text(src, encoding="utf-8")
+    res = {r["name"]: r for r in FunctionFractalAnalyzer().analyze_file(tmp_path / "app" / "d.py")}
+    risks = str(res["dangers"]["risks"])
+    assert "exec()" in risks
+    assert "Dynamic import" in risks
+    assert "pickle.loads()" in risks
+    assert "yaml.load()" in risks
+    assert "subprocess" in risks
+    # Many distinct 0.3 risks, but the score is capped at 1.0.
+    assert res["dangers"]["risk_score"] == 1.0
+    assert res["dangers"]["full_name"].endswith("::dangers")
+
+
+def test_analyze_function_size_and_arg_and_except_heuristics(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    body = "\n".join(f'    x{i} = {i}' for i in range(35))      # > 30 lines
+    src = (
+        '"""mod."""\n'
+        "def big(a, b, c, d, e, f):\n"                          # > 5 args
+        '    """Has a docstring so that risk is not docstring-driven."""\n'
+        f"{body}\n"
+        "    try:\n"
+        "        pass\n"
+        "    except:\n"                                          # bare except
+        "        pass\n"
+    )
+    (tmp_path / "app" / "big.py").write_text(src, encoding="utf-8")
+    info = FunctionFractalAnalyzer().analyze_file(tmp_path / "app" / "big.py")[0]
+    risks = str(info["risks"])
+    assert info["has_docstring"] is True
+    assert "long_function" in risks
+    assert "too_many_arguments (6)" in risks
+    assert "bare_except" in risks
+    assert info["arg_count"] == 6
+    assert info["line_count"] > 30

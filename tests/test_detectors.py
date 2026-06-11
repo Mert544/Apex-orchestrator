@@ -131,6 +131,50 @@ def test_substantive_vs_shallow_assertions():
     assert subst("def t():\n    assert 1 in [1, 2]\n") is True
 
 
+def test_assert_substantive_branch_coverage():
+    from app.engine.detectors import test_has_substantive_assertions as subst
+
+    # Bare truthiness / attribute / constant asserts are shallow.
+    assert subst("def t():\n    assert mod\n") is False
+    assert subst("def t():\n    assert mod.attr\n") is False
+    assert subst("def t():\n    assert True\n") is False
+    # `is None` / `is not None` identity-with-None is shallow...
+    assert subst("def t():\n    assert x is None\n") is False
+    assert subst("def t():\n    assert x is not None\n") is False
+    # ...but `is` against a non-None value is a real check.
+    assert subst("def t():\n    assert x is SOME_SENTINEL\n") is True
+    # BoolOp is substantive iff any operand is.
+    assert subst("def t():\n    assert mod and other\n") is False
+    assert subst("def t():\n    assert mod and a == 1\n") is True
+    # UnaryOp delegates to its operand.
+    assert subst("def t():\n    assert not isinstance(x, int)\n") is False
+    assert subst("def t():\n    assert not (a == b)\n") is True
+    # A plain function-call assertion (not isinstance/callable/hasattr) is real.
+    assert subst("def t():\n    assert verify(x)\n") is True
+    assert subst("def t():\n    assert hasattr(x, 'y')\n") is False
+
+
+def test_open_without_encoding_branch_coverage():
+    from app.engine.detectors import has_open_without_encoding as needs_enc
+
+    # Plain text open() with no encoding -> flagged.
+    assert needs_enc("open('f.txt')") is True
+    assert needs_enc("open('f.txt', 'r')") is True
+    assert needs_enc("open('f.txt', mode='r')") is True
+    # encoding= present (positional-after or keyword) -> fine.
+    assert needs_enc("open('f.txt', encoding='utf-8')") is False
+    # Binary mode never needs a text encoding.
+    assert needs_enc("open('f.txt', 'rb')") is False
+    assert needs_enc("open('f.txt', mode='wb')") is False
+    # A dynamic (non-constant) mode is left alone — can't prove it's text.
+    assert needs_enc("open('f.txt', the_mode)") is False
+    # **kwargs might carry encoding -> don't flag.
+    assert needs_enc("open('f.txt', **opts)") is False
+    # No args, or not the builtin open, -> not flagged.
+    assert needs_enc("open()") is False
+    assert needs_enc("obj.open('f.txt')") is False
+
+
 def test_identity_comparison_with_literal_is_flagged():
     from app.engine.detectors import detect
 
