@@ -49,7 +49,12 @@ class DependencyGraphBuilder:
             source = structure.path
             for import_name in structure.imports:
                 target = self._resolve_internal_import(import_name, module_map)
-                if target is None or target == source:
+                # ``module_map`` is built from every .py on disk, but the graph's
+                # nodes come from the structure analyzer, which can legitimately
+                # exclude a file (e.g. one that fails to parse). When an import
+                # resolves to such an un-analyzed module it is not a graph node,
+                # so skip the edge instead of KeyError-ing on ``graph[target]``.
+                if target is None or target == source or target not in graph:
                     continue
                 graph[source].imports.add(target)
                 graph[target].imported_by.add(source)

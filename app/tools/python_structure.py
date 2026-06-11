@@ -23,7 +23,11 @@ class PythonStructureAnalyzer:
 
         results: list[ModuleStructure] = []
         scanned = 0
-        for path in self.root.rglob("*.py"):
+        # Sort before applying max_files: rglob order is filesystem-dependent, so
+        # an unsorted cap would analyze a *different* 500 files on different
+        # machines (CI vs local) — non-deterministic, and it desynced this view
+        # from the all-files module map (a KeyError in the dependency graph).
+        for path in sorted(self.root.rglob("*.py")):
             if scanned >= self.max_files:
                 break
             if not path.is_file():
