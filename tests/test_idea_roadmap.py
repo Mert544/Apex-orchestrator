@@ -290,3 +290,18 @@ def test_theme_impact_scales_with_module_count_and_phases_by_lens():
     assert classify_phase(theme("coverage-theme", "test", 6)) == "Stabilize"
     assert classify_phase(theme("security-theme", "harden", 3)) == "Secure"
     assert classify_phase(theme("debt-theme", "simplify", 3)) == "Refine"
+
+
+def test_impact_discriminates_hub_from_leaf():
+    # The saturation fix: a heavily-imported hub must clearly outrank a leaf
+    # with the same fact label — impact is earned by structure, not granted to
+    # every root by relevance/novelty defaults.
+    hub = _node(source_facts=["dependency-hub: app/cli.py"])
+    leaf = _node(source_facts=["untested: app/tiny.py"])
+    hub_impact = estimate_impact(hub, fan_in=17)
+    leaf_impact = estimate_impact(leaf, fan_in=1)
+    assert hub_impact > leaf_impact + 0.2          # a real gap, not a rounding artifact
+    assert hub_impact <= 1.0
+    # And a plain idea with no structural signal sits at the low base.
+    plain = _node()
+    assert estimate_impact(plain) < 0.5

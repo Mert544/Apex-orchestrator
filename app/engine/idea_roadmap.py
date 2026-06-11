@@ -132,30 +132,26 @@ def _first_label(node: IdeaNode) -> str:
 
 
 def estimate_impact(node: IdeaNode, fan_in: int = 0) -> float:
-    """Blast radius, 0..1: seed from the idea's *structural* signals, then boost
-    by structural risk and by *measured* fan-in (how many modules import the
-    subject).
+    """Blast radius, 0..1 — built from *structural* signals only.
 
-    Decoupled-from-feasibility design (chosen: option (a) from the audit).
-    ``node.value`` is deliberately *not* used as the seed: it already folds in a
-    feasibility term (``0.3``/``0.4 * feasibility`` in IdeaPermutationEngine
-    ``_score``). Effort already carries the ``(1 - feasibility)`` axis, so seeding
-    impact from ``node.value`` would let feasibility raise impact AND lower effort
-    at once — counting the same property twice with the same sign in ROI (this is
-    why low-effort ideas dominated quick-win lists unjustifiably). Here we seed
-    impact only from the feasibility-free structural axes that ``_score`` blends
-    into value: ``relevance`` (objective alignment) and ``novelty``. An equal
-    blend keeps the seed bounded in [0, 1] and independent of which weight set
-    (objective / no-objective) produced ``value``.
+    Impact answers "how much of the system moves when this is done" and is
+    deliberately independent of every value axis:
 
-    Ideas touching fragile/critical/hub/sensitive code, breaking real import
-    cycles, or sitting under a heavily-imported module move more of the system
-    when done — so they score higher. ``fan_in`` is the real in-degree from the
-    dependency graph; each importer adds a little, capped so it can't dominate.
+    - not ``feasibility`` (that is the effort axis; using it here would count
+      the same property twice in ROI — the audit's double-count finding);
+    - not ``relevance``/``novelty`` (alignment with an objective and how
+      explored a branch is say nothing about blast radius — and since roots
+      score 1.0 on both, seeding from them pinned nearly every idea at the
+      1.0 ceiling, flattening a 1700-LOC 17-importer hub and an 11-LOC leaf
+      into the same "impact").
+
+    Instead, impact starts from a low base and is earned by structure: the
+    risk class of the seeding fact, real measured fan-in, breadth (themes),
+    agreement (convergence), and cycle membership.
     """
     label = _first_label(node)
-    # Structural seed only — no feasibility term (that lives in estimate_effort).
-    impact = 0.5 * node.relevance + 0.5 * node.novelty
+    # Low base; everything above it must be earned by a structural signal.
+    impact = 0.35
     if label in _HIGH_IMPACT_LABELS:
         impact += 0.25
     if any("dependency-cycle" in f for f in node.source_facts):
@@ -163,10 +159,7 @@ def estimate_impact(node: IdeaNode, fan_in: int = 0) -> float:
     if node.kind in ("synthesis", "pair"):
         impact += 0.10
     # Convergence: impact scales with the number of independent analyses that
-    # agree — that *is* leverage. This reaches the ceiling for a 3+-signal
-    # agreement, so the convergence idea lands in the top-impact tier instead of
-    # being dragged down by the novelty penalty of sitting on a much-mined hot
-    # subject (novelty measures exploration, not impact).
+    # agree — that *is* leverage, so a 3+-signal agreement reaches the top tier.
     conv = next((f for f in node.source_facts if f.startswith("convergence:")), "")
     if conv:
         n_signals = len([p for p in conv.split(":", 1)[1].split("+") if p.strip()])
