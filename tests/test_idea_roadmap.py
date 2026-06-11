@@ -272,3 +272,21 @@ def test_hotspot_function_routes_to_stabilize_with_high_impact():
     plain = _node()
     assert classify_phase(f) == "Stabilize"
     assert estimate_impact(f) > estimate_impact(plain)
+
+
+def test_theme_impact_scales_with_module_count_and_phases_by_lens():
+    from app.engine.idea_roadmap import estimate_impact, classify_phase
+    from app.models.idea import IdeaNode
+
+    def theme(label, lens, n):
+        return IdeaNode(id="t", title="t", subject="s", operator="synthesis",
+                        kind="synthesis", operator_chain=[lens],
+                        source_facts=[f"theme: {label} ({n} modules)"],
+                        relevance=0.5, novelty=0.5)
+
+    big = estimate_impact(theme("coverage-theme", "test", 8))
+    small = estimate_impact(theme("coverage-theme", "test", 3))
+    assert big > small                                   # breadth raises impact
+    assert classify_phase(theme("coverage-theme", "test", 6)) == "Stabilize"
+    assert classify_phase(theme("security-theme", "harden", 3)) == "Secure"
+    assert classify_phase(theme("debt-theme", "simplify", 3)) == "Refine"

@@ -23,6 +23,7 @@ the roadmap is a *reasoned* plan, not an opaque ranking.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -169,6 +170,13 @@ def estimate_impact(node: IdeaNode, fan_in: int = 0) -> float:
     if conv:
         n_signals = len([p for p in conv.split(":", 1)[1].split("+") if p.strip()])
         impact += 0.15 * n_signals
+    # Theme: a systemic initiative's blast radius is the number of modules it
+    # spans — the more it touches, the more of the system it moves.
+    theme = next((f for f in node.source_facts if f.startswith("theme:")), "")
+    if theme:
+        m = re.search(r"\((\d+) modules\)", theme)
+        if m:
+            impact += min(0.4, 0.06 * int(m.group(1)))
     if fan_in > 0:
         impact += min(0.3, 0.06 * fan_in)
     return round(min(1.0, impact), 4)
@@ -201,9 +209,25 @@ def classify_phase(node: IdeaNode) -> str:
     label = _first_label(node)
     op = node.operator
 
-    # Synthesis = a dedicated security test suite -> Secure. Pair = interface /
-    # cycle work -> Evolve (architecture).
+    # Synthesis ideas route by their nature, not a blanket phase:
+    #  - convergence starts with the safety net (its mini-roadmap is test-first)
+    #    -> Stabilize;
+    #  - a theme routes by its lens (coverage -> Stabilize, security -> Secure,
+    #    cleanup -> Refine);
+    #  - a cross-lens security test suite -> Secure.
+    # Pair = interface / cycle work -> Evolve (architecture).
     if node.kind == "synthesis":
+        if any(f.startswith("convergence:") for f in node.source_facts):
+            return STABILIZE
+        if any(f.startswith("theme:") for f in node.source_facts):
+            lens = node.operator_chain[-1] if node.operator_chain else ""
+            if lens == "test":
+                return STABILIZE
+            if lens == "harden":
+                return SECURE
+            if lens in _REFINE_OPS:
+                return REFINE
+            return EVOLVE
         return SECURE
     if node.kind == "pair":
         return EVOLVE

@@ -488,6 +488,59 @@ class IdeaPermutationEngine:
         ("debt_marker_modules", "debt-laden"),
     ]
 
+    # Themes: one signal spread across many modules is a systemic initiative, not
+    # N chores. (profile attribute, min modules, fact label, title verb, lens).
+    _THEMES = [
+        ("security_finding_modules", 3, "security-theme",
+         "Run a security-hardening pass across", "harden"),
+        ("modernizable_modules", 3, "modernize-theme",
+         "Modernize the None comparisons across", "simplify"),
+        ("mutable_default_modules", 3, "mutable-theme",
+         "Fix mutable default arguments across", "harden"),
+        ("untested_modules", 4, "coverage-theme",
+         "Establish baseline test coverage across", "test"),
+        ("shallow_tested_modules", 3, "depth-theme",
+         "Deepen the shallow tests across", "test"),
+        ("debt_marker_modules", 3, "debt-theme",
+         "Clear the clustered TODO/FIXME debt across", "simplify"),
+    ]
+
+    def _thematic_ideas(
+        self, profile: ProjectProfile, relevance: RelevanceScorer, graph: GraphStore
+    ) -> list[IdeaNode]:
+        """One signal affecting many modules -> a single systemic initiative.
+
+        The horizontal complement to convergence: instead of N separate
+        per-module chores, name the pattern once and list every module it
+        touches, so a project-wide issue reads as a project-wide decision.
+        """
+        out: list[IdeaNode] = []
+        for idx, (attr, threshold, label, verb, lens) in enumerate(self._THEMES):
+            modules = list(dict.fromkeys(getattr(profile, attr, []) or []))
+            if len(modules) < threshold:
+                continue
+            shown = ", ".join(modules[:4]) + (", ..." if len(modules) > 4 else "")
+            node = IdeaNode(
+                id=f"theme-{idx}",
+                title=f"{verb} {len(modules)} modules ({shown})",
+                subject=modules[0],          # a real target for the action bridge
+                rationale=(
+                    f"Synthesized theme: {len(modules)} modules share this signal "
+                    f"({shown}) - treat it as one systemic pass, not scattered fixes."
+                ),
+                branch_path=f"x.t{idx}",
+                depth=1,
+                operator="synthesis",
+                operator_chain=[lens],
+                source_facts=[f"theme: {label} ({len(modules)} modules)"],
+                kind="synthesis",
+                feasibility=0.6,
+            )
+            self._score(node, relevance)
+            if not graph.has_similar_claim(node.title):
+                out.append(node)
+        return out
+
     def _convergence_ideas(
         self, profile: ProjectProfile, relevance: RelevanceScorer, graph: GraphStore
     ) -> list[IdeaNode]:
@@ -575,6 +628,13 @@ class IdeaPermutationEngine:
         # target than any one signal implies. This reasons across the profile's
         # signals instead of mining one fact at a time.
         out.extend(self._convergence_ideas(profile, relevance, graph))
+
+        # 0b. Thematic synthesis — the horizontal complement to convergence: a
+        # *single* signal affecting *many* modules is a systemic theme, not N
+        # scattered chores. The engine surfaces it as one initiative naming the
+        # whole affected set, so a project-wide pattern reads as a project-wide
+        # decision.
+        out.extend(self._thematic_ideas(profile, relevance, graph))
 
         # 1. Cross-lens synthesis per subject.
         lenses_by_subject: dict[str, set[str]] = {}

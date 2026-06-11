@@ -526,3 +526,35 @@ def test_convergence_value_bonus_makes_it_lead():
                        untested_modules=["app/a.py"])
     two = conv_value(sensitive_paths=["app/b.py"], untested_modules=["app/b.py"])
     assert three > two
+
+
+def test_thematic_idea_when_one_signal_spans_many_modules():
+    # The horizontal complement to convergence: a single signal (untested)
+    # across enough modules yields ONE systemic theme naming the count.
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+    profile = ProjectProfile(
+        root=".",
+        untested_modules=[f"app/m{i}.py" for i in range(6)],
+    )
+    eng = IdeaPermutationEngine({"max_total_ideas": 40, "max_idea_depth": 1, "breadth": 3}, ".")
+    eng._has_objective = False
+    eng._chain_counts, eng._subject_counts = {}, {}
+    ideas = eng._thematic_ideas(profile, RelevanceScorer(""), GraphStore())
+    themes = [i for i in ideas if i.source_facts[0].startswith("theme: coverage-theme")]
+    assert len(themes) == 1
+    assert "6 modules" in themes[0].title
+    assert themes[0].kind == "synthesis"
+
+
+def test_thematic_idea_needs_enough_modules():
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+    # Only 2 untested modules — below the coverage-theme threshold of 4.
+    profile = ProjectProfile(root=".", untested_modules=["app/a.py", "app/b.py"])
+    eng = IdeaPermutationEngine({"max_total_ideas": 40, "max_idea_depth": 1, "breadth": 3}, ".")
+    eng._has_objective = False
+    eng._chain_counts, eng._subject_counts = {}, {}
+    assert eng._thematic_ideas(profile, RelevanceScorer(""), GraphStore()) == []

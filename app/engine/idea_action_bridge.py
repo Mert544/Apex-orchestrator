@@ -644,6 +644,13 @@ class IdeaActionBridge:
                 steps.extend(self._expand_idea(idea, default_phase=ph.name))
 
         steps = self._dedupe_steps(steps)
+        # A convergence idea sits in one phase but emits sub-steps in others (a
+        # Stabilize test then a Secure harden). Stable-sort by canonical phase so
+        # every step joins its true phase group — which also preserves the
+        # test-before-harden order for free, since Stabilize precedes Secure.
+        from app.engine.idea_roadmap import PHASE_ORDER
+        phase_rank = {name: i for i, name in enumerate(PHASE_ORDER)}
+        steps.sort(key=lambda s: phase_rank.get(s.phase, len(PHASE_ORDER)))
         # The phase filter applies to each *step's own* phase, so a convergence
         # idea's Secure sub-step is kept under --phase=Secure even though its
         # parent sat in Stabilize (and vice-versa).
