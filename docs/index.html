@@ -3,50 +3,76 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Apex Orchestrator — deterministic engineering agent</title>
+<title>Apex Orchestrator — the deterministic engineering agent</title>
 <meta name="description" content="Scan a codebase, generate a grounded roadmap, and apply test-verified fixes — offline, no LLM, no API keys, free."/>
 <style>
 :root{
-  --bg:#0b0f1a; --bg2:#0f1524; --card:#121a2e; --line:#22304d;
-  --ink:#e6ecff; --muted:#8b9bbd; --dim:#5b6b8c;
-  --blue:#58a6ff; --purple:#bc8cff; --green:#3fb950; --gold:#e3b341; --red:#ff7b72;
+  --bg:#070a12; --bg2:#0c1120; --card:rgba(20,28,48,.55); --line:rgba(80,110,170,.22);
+  --ink:#eaf0ff; --muted:#93a4c8; --dim:#5b6b8c;
+  --blue:#58a6ff; --purple:#bc8cff; --gold:#e3b341; --green:#3fb950; --red:#ff7b72;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
-body{background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6}
+body{background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;line-height:1.6;overflow-x:hidden}
 a{color:var(--blue);text-decoration:none}
 a:hover{text-decoration:underline}
-.wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px;position:relative;z-index:2}
 code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 
+/* 3D canvas backdrop */
+#scene{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}
+.veil{position:fixed;inset:0;z-index:1;pointer-events:none;
+  background:radial-gradient(1200px 700px at 50% -8%, rgba(88,166,255,.10), transparent 60%),
+             linear-gradient(180deg, rgba(7,10,18,0) 40%, rgba(7,10,18,.55) 78%, rgba(7,10,18,.92) 100%)}
+
+/* language switch */
+.lang{position:fixed;top:16px;right:18px;z-index:20;display:flex;gap:4px;background:rgba(12,17,32,.7);border:1px solid var(--line);border-radius:999px;padding:3px;backdrop-filter:blur(8px)}
+.lang a{font-size:12.5px;padding:4px 11px;border-radius:999px;color:var(--muted)}
+.lang a.on{background:linear-gradient(90deg,#1f6feb,#8957e5);color:#fff}
+.lang a:hover{text-decoration:none;color:var(--ink)}
+
 /* hero */
-.hero{padding:84px 0 48px;text-align:center;background:
-  radial-gradient(800px 400px at 50% -10%, rgba(88,166,255,.18), transparent 60%),
-  radial-gradient(600px 300px at 80% 0%, rgba(188,140,255,.12), transparent 60%)}
-.hero h1{font-size:clamp(34px,6vw,58px);letter-spacing:-1px}
-.hero h1 .gx{background:linear-gradient(90deg,var(--blue),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
-.tag{margin:14px auto 0;max-width:740px;font-size:clamp(16px,2.4vw,20px);color:var(--muted)}
-.badges{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:26px 0 8px}
-.badge{font-size:12.5px;padding:5px 12px;border:1px solid var(--line);border-radius:999px;color:var(--muted);background:var(--bg2)}
+.hero{position:relative;z-index:2;padding:120px 0 40px;text-align:center}
+.eyebrow{display:inline-block;font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:6px 14px;background:rgba(12,17,32,.5);backdrop-filter:blur(6px)}
+.hero h1{font-size:clamp(40px,7.5vw,76px);letter-spacing:-2px;line-height:1.02;margin:20px 0 0;font-weight:800}
+.hero h1 .gx{background:linear-gradient(100deg,var(--blue),var(--purple) 55%,#ff9ed8);-webkit-background-clip:text;background-clip:text;color:transparent}
+.tag{margin:18px auto 0;max-width:680px;font-size:clamp(16px,2.3vw,20px);color:#c2cee8}
+.badges{display:flex;gap:9px;justify-content:center;flex-wrap:wrap;margin:26px 0 0}
+.badge{font-size:12.5px;padding:5px 12px;border:1px solid var(--line);border-radius:999px;color:var(--muted);background:rgba(12,17,32,.5);backdrop-filter:blur(6px)}
 .badge b{color:var(--ink)}
 .badge.grade{border-color:rgba(63,185,80,.5);color:var(--green)}
 .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:30px}
-.btn{display:inline-block;padding:12px 22px;border-radius:10px;font-weight:600;font-size:15px}
-.btn.primary{background:linear-gradient(90deg,#1f6feb,#8957e5);color:#fff}
-.btn.primary:hover{filter:brightness(1.12);text-decoration:none}
-.btn.ghost{border:1px solid var(--line);color:var(--ink);background:var(--bg2)}
-.btn.ghost:hover{border-color:var(--blue);text-decoration:none}
+.btn{display:inline-block;padding:13px 24px;border-radius:12px;font-weight:600;font-size:15px;transition:transform .15s,box-shadow .15s,filter .15s}
+.btn.primary{background:linear-gradient(90deg,#1f6feb,#8957e5);color:#fff;box-shadow:0 10px 30px -8px rgba(88,87,229,.6)}
+.btn.primary:hover{filter:brightness(1.12);text-decoration:none;transform:translateY(-2px)}
+.btn.ghost{border:1px solid var(--line);color:var(--ink);background:rgba(12,17,32,.5);backdrop-filter:blur(6px)}
+.btn.ghost:hover{border-color:var(--blue);text-decoration:none;transform:translateY(-2px)}
 
-/* install bar */
-.install{margin:34px auto 0;max-width:560px;display:flex;align-items:center;gap:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#0a0f1d}
-.install .ps1{padding:13px 0 13px 16px;color:var(--green)}
-.install input{flex:1;background:none;border:none;color:var(--ink);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14.5px;padding:13px 8px;outline:none}
-.install button{border:none;background:var(--bg2);color:var(--muted);padding:13px 16px;cursor:pointer;border-left:1px solid var(--line);font-size:13px}
+.install{margin:34px auto 0;max-width:520px;display:flex;align-items:center;border:1px solid var(--line);border-radius:13px;overflow:hidden;background:rgba(6,9,17,.7);backdrop-filter:blur(8px)}
+.install .ps1{padding:14px 0 14px 16px;color:var(--green)}
+.install input{flex:1;background:none;border:none;color:var(--ink);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14.5px;padding:14px 8px;outline:none}
+.install button{border:none;background:rgba(30,42,72,.7);color:var(--muted);padding:14px 16px;cursor:pointer;border-left:1px solid var(--line);font-size:13px}
 .install button:hover{color:var(--ink)}
 
-/* pipeline */
-.pipe{display:flex;gap:8px;justify-content:center;align-items:stretch;flex-wrap:wrap;margin:54px 0 0}
-.stage{flex:1;min-width:130px;max-width:185px;padding:14px 10px;border-radius:12px;text-align:center;border:1px solid var(--line);background:var(--card)}
+/* sections */
+section{position:relative;z-index:2;padding:70px 0 8px}
+h2{font-size:clamp(26px,3.8vw,36px);letter-spacing:-.6px;margin-bottom:10px;font-weight:800}
+.sub{color:var(--muted);max-width:740px;margin-bottom:32px}
+
+/* 3D tilt cards */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:18px;perspective:1200px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px;backdrop-filter:blur(10px);
+  transform-style:preserve-3d;transition:transform .25s cubic-bezier(.2,.7,.3,1),box-shadow .25s,border-color .25s;will-change:transform}
+.card:hover{border-color:rgba(120,150,220,.45);box-shadow:0 24px 60px -24px rgba(60,90,180,.55)}
+.card .ico{font-size:26px;display:inline-block;transform:translateZ(40px)}
+.card h3{font-size:17px;margin:12px 0 6px;transform:translateZ(26px)}
+.card p{font-size:14px;color:var(--muted);transform:translateZ(14px)}
+.card code{font-size:12.5px;color:var(--blue);background:rgba(6,9,17,.7);padding:2px 7px;border-radius:6px}
+
+/* pipeline floating chips */
+.pipe{display:flex;gap:8px;justify-content:center;align-items:stretch;flex-wrap:wrap;margin:46px 0 0;perspective:900px}
+.stage{flex:1;min-width:128px;max-width:180px;padding:16px 10px;border-radius:14px;text-align:center;border:1px solid var(--line);background:var(--card);backdrop-filter:blur(10px);transition:transform .2s}
+.stage:hover{transform:translateY(-6px) rotateX(6deg)}
 .stage .ico{font-size:22px}
 .stage b{display:block;margin-top:4px;font-size:14px}
 .stage span{font-size:12px;color:var(--muted)}
@@ -55,60 +81,43 @@ code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .stage.s5{border-top:3px solid var(--red)}
 .arrow{align-self:center;color:var(--dim);font-size:18px}
 
-/* sections */
-section{padding:64px 0 8px}
-h2{font-size:clamp(24px,3.6vw,32px);letter-spacing:-.5px;margin-bottom:8px}
-.sub{color:var(--muted);max-width:720px;margin-bottom:30px}
-
-/* feature grid */
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px}
-.card .ico{font-size:24px}
-.card h3{font-size:16.5px;margin:10px 0 6px}
-.card p{font-size:14px;color:var(--muted)}
-.card code{font-size:12.5px;color:var(--blue);background:#0a0f1d;padding:2px 7px;border-radius:6px}
-
 /* terminal */
-.term{background:#0a0f1d;border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:8px}
-.term .bar{display:flex;gap:7px;padding:11px 14px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.term{background:rgba(6,9,17,.82);border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-top:8px;backdrop-filter:blur(10px);box-shadow:0 30px 80px -40px rgba(40,70,160,.6)}
+.term .bar{display:flex;gap:7px;padding:12px 15px;border-bottom:1px solid var(--line);background:rgba(20,28,48,.6)}
 .term .dot{width:11px;height:11px;border-radius:50%}
 .term pre{padding:20px 22px;font-size:13.5px;line-height:1.75;overflow-x:auto;color:#c9d6f2}
 .term .c{color:var(--dim)} .term .g{color:var(--green)} .term .b{color:var(--blue)}
 .term .y{color:var(--gold)} .term .p{color:var(--purple)} .term .r{color:var(--red)}
 
-/* demo banner */
-.demo{margin-top:26px;display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;background:linear-gradient(90deg,rgba(31,111,235,.14),rgba(137,87,229,.14));border:1px solid var(--line);border-radius:14px;padding:24px 26px}
-.demo b{font-size:17px}
-.demo p{color:var(--muted);font-size:14px}
+.demo{margin-top:26px;display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;background:linear-gradient(90deg,rgba(31,111,235,.16),rgba(137,87,229,.16));border:1px solid var(--line);border-radius:16px;padding:24px 26px;backdrop-filter:blur(8px)}
+.demo b{font-size:17px}.demo p{color:var(--muted);font-size:14px}
 
-/* action yaml */
-pre.code{background:#0a0f1d;border:1px solid var(--line);border-radius:14px;padding:20px 22px;font-size:13.5px;line-height:1.7;overflow-x:auto;color:#c9d6f2}
+pre.code{background:rgba(6,9,17,.82);border:1px solid var(--line);border-radius:16px;padding:20px 22px;font-size:13.5px;line-height:1.7;overflow-x:auto;color:#c9d6f2;backdrop-filter:blur(8px)}
 pre.code .k{color:var(--purple)} pre.code .s{color:var(--green)} pre.code .c{color:var(--dim)}
 
-footer{margin-top:80px;padding:34px 0 44px;border-top:1px solid var(--line);text-align:center;color:var(--dim);font-size:14px}
+footer{position:relative;z-index:2;margin-top:80px;padding:34px 0 48px;border-top:1px solid var(--line);text-align:center;color:var(--dim);font-size:14px}
 footer a{color:var(--muted)}
-.lang{position:fixed;top:16px;right:18px;z-index:10;display:flex;gap:4px;background:var(--bg2);border:1px solid var(--line);border-radius:999px;padding:3px}
-.lang a{font-size:12.5px;padding:4px 11px;border-radius:999px;color:var(--muted)}
-.lang a.on{background:linear-gradient(90deg,#1f6feb,#8957e5);color:#fff}
-.lang a:hover{text-decoration:none;color:var(--ink)}
+@media (prefers-reduced-motion: reduce){ #scene{opacity:.5} }
 </style>
 </head>
 <body>
+<canvas id="scene"></canvas>
+<div class="veil"></div>
 
 <div class="lang">
   <a class="on" href="index.html">EN</a>
   <a href="tr.html">TR</a>
 </div>
 
-<div class="hero">
+<header class="hero">
   <div class="wrap">
-    <h1>🧠 <span class="gx">Apex Orchestrator</span></h1>
-    <p class="tag">A deterministic engineering agent that <b>reasons</b> about your codebase — scan, get a grounded roadmap, and apply <b>test-verified fixes</b>. Offline. No LLM. No API keys. Free.</p>
+    <span class="eyebrow">deterministic · offline · no LLM</span>
+    <h1>The engineering agent<br/>that <span class="gx">reasons</span> about code</h1>
+    <p class="tag">Apex scans your project, proposes a grounded roadmap, and applies <b>test-verified fixes</b> — its core is a deterministic reasoning engine, so it's free to run, reproducible in CI, and your code never leaves the machine.</p>
     <div class="badges">
       <span class="badge grade">🏆 self-grade <b>A+ (100)</b></span>
-      <span class="badge">✅ <b>1790+</b> tests</span>
+      <span class="badge">✅ <b>1830+</b> tests</span>
       <span class="badge">🔌 <b>zero</b> API keys</span>
-      <span class="badge">♻️ deterministic — same input, same output</span>
       <span class="badge">⚖️ Apache-2.0</span>
     </div>
     <div class="install">
@@ -120,64 +129,67 @@ footer a{color:var(--muted)}
       <a class="btn primary" href="demo.html">📊 See the live demo report</a>
       <a class="btn ghost" href="https://github.com/Mert544/Apex-orchestrator">⭐ Star on GitHub</a>
     </div>
-
     <div class="pipe">
       <div class="stage s1"><div class="ico">👁️</div><b>Scan</b><span>security · cycles · coverage</span></div>
       <div class="arrow">→</div>
-      <div class="stage s2"><div class="ico">💡</div><b>Ideate</b><span>fractal tree of grounded ideas</span></div>
+      <div class="stage s2"><div class="ico">💡</div><b>Ideate</b><span>grounded idea tree</span></div>
       <div class="arrow">→</div>
       <div class="stage s3"><div class="ico">🗺️</div><b>Prioritize</b><span>impact / effort / ROI</span></div>
       <div class="arrow">→</div>
-      <div class="stage s4"><div class="ico">🤖</div><b>Fix</b><span>AST patch, verified by your tests</span></div>
+      <div class="stage s4"><div class="ico">🤖</div><b>Fix</b><span>verified by your tests</span></div>
       <div class="arrow">→</div>
-      <div class="stage s5"><div class="ico">🔁</div><b>Prove</b><span>before / after, to a fixpoint</span></div>
+      <div class="stage s5"><div class="ico">🔁</div><b>Prove</b><span>to a fixpoint</span></div>
     </div>
   </div>
-</div>
+</header>
 
 <div class="wrap">
 
 <section id="why">
   <h2>Why Apex?</h2>
-  <p class="sub">LLM review tools cost money on every PR and answer differently every run. Apex's core is a <b>deterministic reasoning engine</b> — it's free to run forever, reproducible in CI, and your code never leaves the machine.</p>
-  <div class="grid">
-    <div class="card"><div class="ico">🔒</div><h3>Finds what matters</h3><p>One canonical AST detector: <code>eval</code>/<code>exec</code>, shell &amp; SQL injection, unsafe pickle/yaml, weak hashes, swallowed exceptions, logic bugs like <code>x is 5</code> — with inline <code># noqa</code>/<code># nosec</code> respected.</p></div>
-    <div class="card"><div class="ico">🧪</div><h3>Fixes are proven</h3><p>Every auto-fix is applied in a sandbox, <b>verified against your test suite</b>, and rolled back automatically if anything breaks. A maintenance run can never leave the project broken.</p></div>
-    <div class="card"><div class="ico">💡</div><h3>Ideas, not just issues</h3><p>The Idea Permutation Engine proposes <i>how to develop</i> the project — down to the <b>function</b>: “write behavioral tests for <code>_expand()</code> (complexity 23, never named by a test)”.</p></div>
-    <div class="card"><div class="ico">🎓</div><h3>One honest grade</h3><p>Security · Architecture · Testing · Code debt · Correctness — severity-weighted, fixture-aware, and shallow stub tests only get half credit. An A+ can't be faked.</p></div>
+  <p class="sub">LLM review tools cost money on every PR and answer differently every run. Apex's core is a <b>deterministic reasoning engine</b> — free forever, reproducible, private.</p>
+  <div class="grid" data-tilt>
+    <div class="card"><div class="ico">🔒</div><h3>Finds what matters</h3><p>One canonical AST detector: <code>eval</code>/<code>exec</code>, shell &amp; SQL injection, unsafe pickle/yaml, weak hashes, swallowed exceptions, logic bugs like <code>x is 5</code> — respecting inline <code>#&nbsp;noqa</code>/<code>#&nbsp;nosec</code>.</p></div>
+    <div class="card"><div class="ico">🧪</div><h3>Fixes are proven</h3><p>Every auto-fix is applied in a sandbox, <b>verified against your test suite</b>, and rolled back automatically if anything breaks.</p></div>
+    <div class="card"><div class="ico">💡</div><h3>Ideas, not just issues</h3><p>The Idea Permutation Engine proposes <i>how to develop</i> the project — down to the <b>function</b>: “write behavioral tests for <code>_expand()</code>, complexity 23, never named by a test”.</p></div>
+    <div class="card"><div class="ico">🎓</div><h3>One honest grade</h3><p>Security · Architecture · Testing · Code debt · Correctness — severity-weighted, fixture-aware, and shallow stub tests get only half credit. An A+ can't be faked.</p></div>
+  </div>
+</section>
+
+<section id="idea">
+  <h2>The main idea: it reasons about relationships</h2>
+  <p class="sub">A linter hands you separate warnings. Apex sees where problems <b>converge</b> and where they <b>spread</b> — that's the difference between a linter and a brain.</p>
+  <div class="grid" data-tilt>
+    <div class="card"><div class="ico">🎯</div><h3>Convergence (vertical)</h3><p>When several independent analyses flag the <i>same</i> module — <code>auth.py</code> is security-sensitive <b>and</b> a hotspot <b>and</b> untested — Apex emits one <b>highest-leverage target</b> and opens it into a phased mini-roadmap.</p></div>
+    <div class="card"><div class="ico">🌐</div><h3>Theme (horizontal)</h3><p>When one signal spans <i>many</i> modules — 6 untested files — Apex names it once as a <b>systemic initiative</b> listing the whole affected set, not 6 scattered chores.</p></div>
+    <div class="card"><div class="ico">🪜</div><h3>Phased roadmap</h3><p><b>Stabilize → Secure → Evolve → Refine</b>: a safety net before you change risky code, secure what's exposed, then grow, then polish — impact/effort/ROI grounded in measured structure.</p></div>
+    <div class="card"><div class="ico">🧬</div><h3>It gets wiser</h3><p>Each applied fix records which idea kinds land cleanly, nudging future scoring toward the lenses with a track record <b>on your codebase</b> — without ever breaking determinism.</p></div>
   </div>
 </section>
 
 <section id="see">
   <h2>See it think</h2>
-  <p class="sub">This is real output. Every idea cites the code fact that produced it, and the caveat names the actual function.</p>
+  <p class="sub">Real output. Every idea cites the code fact that produced it; the caveat names the actual function.</p>
   <div class="term">
     <div class="bar"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span></div>
     <pre>
 <span class="c">$</span> <span class="g">apex</span> ideate --target=. --depth=2
 
-<span class="b">## x.p — Write behavioral tests for _expand() in app/orchestrator/core.py</span>
-<span class="b">        (complexity 23, never named by a test)   (value 0.8)</span>
-   <span class="c">facts: hotspot-function: app/orchestrator/core.py::FractalResearchOrchestrator._expand</span>
-   <span class="y">⚠ What if _expand() hits its rarest branch with an input no test has ever exercised?</span>
+<span class="b">## x.c0 — Prioritize app/auth.py — 3 independent analyses converge</span>
+<span class="b">        (security-sensitive, a complexity hotspot and untested)</span>
+   <span class="p">1. [Stabilize] ⚙️ Add a safety-net test layer first</span>
+   <span class="p">2. [Secure]    ⚙️ Harden inputs and fix risky patterns</span>
+
+<span class="b">## x.t0 — Establish baseline test coverage across 6 modules</span>
+   <span class="c">theme: coverage-theme (6 modules) — one systemic pass, not scattered fixes</span>
 
 <span class="c">$</span> <span class="g">apex</span> grade
-
 <span class="p"># Project health: 🏆 A+  (100/100)</span>
   Security −0 · Architecture −0 · Testing −0 · Code debt −0 · Correctness −0
-
-<span class="c">$</span> <span class="g">apex</span> maintain --mode=supervised
-  <span class="g">✔</span> eval(cmd) → ast.literal_eval(cmd)        <span class="c">verified · 1793 tests green</span>
-  <span class="g">✔</span> except: → except Exception:              <span class="c">verified</span>
-  <span class="r">↩</span> risky patch rolled back automatically    <span class="c">tests failed → reverted</span>
 </pre>
   </div>
-
   <div class="demo">
-    <div>
-      <b>📊 Live demo: Apex grading itself</b>
-      <p>This very site regenerates the report from the latest commit — the dashboard below is Apex analyzing its own codebase.</p>
-    </div>
+    <div><b>📊 Live demo: Apex grading itself</b><p>This site regenerates the report from the latest commit — Apex analyzing its own codebase.</p></div>
     <a class="btn primary" href="demo.html">Open the report →</a>
   </div>
 </section>
@@ -196,14 +208,14 @@ footer a{color:var(--muted)}
         <span class="k">with:</span> { fetch-depth: 0 }
       - <span class="k">uses:</span> <span class="s">Mert544/Apex-orchestrator@v1</span>
         <span class="k">with:</span>
-          <span class="k">min-score:</span> <span class="s">"80"</span>          <span class="c"># fail the PR if the grade drops below 80</span>
+          <span class="k">min-score:</span> <span class="s">"80"</span>
           <span class="k">base:</span> <span class="s">origin/${{ github.base_ref }}</span>
-          <span class="k">fail-on-high:</span> <span class="s">"true"</span>   <span class="c"># fail on a high-severity issue in the diff</span></pre>
+          <span class="k">fail-on-high:</span> <span class="s">"true"</span></pre>
 </section>
 
 <section id="start">
   <h2>Start now</h2>
-  <div class="grid">
+  <div class="grid" data-tilt>
     <div class="card"><div class="ico">1️⃣</div><h3>Install</h3><p><code>pip install apex-orchestrator</code></p></div>
     <div class="card"><div class="ico">2️⃣</div><h3>Run</h3><p><code>apex</code> — it assesses, prioritizes, and applies safe fixes only when it's safe to.</p></div>
     <div class="card"><div class="ico">3️⃣</div><h3>Explore</h3><p><code>apex ideate --roadmap</code> · <code>apex review</code> · <code>apex dashboard</code></p></div>
@@ -218,9 +230,96 @@ footer a{color:var(--muted)}
     <a href="https://github.com/Mert544/Apex-orchestrator">GitHub</a> ·
     <a href="https://pypi.org/project/apex-orchestrator/">PyPI</a> ·
     <a href="demo.html">Live demo</a> ·
-    Apache-2.0
+    <a href="tr.html">Türkçe</a> · Apache-2.0
   </div>
 </footer>
 
+<script>
+/* Self-contained 3D idea-graph: nodes in 3D space, phase-coloured, connected,
+   rotating with perspective projection + gentle mouse parallax. No libraries. */
+(function(){
+  const cv = document.getElementById('scene'), ctx = cv.getContext('2d');
+  const COLORS = ['#58a6ff','#bc8cff','#e3b341','#3fb950','#ff7b72'];
+  let W,H,DPR, nodes=[], edges=[], t=0, mx=0, my=0, tmx=0, tmy=0;
+  const N = 78, R = 320;
+
+  function resize(){
+    DPR = Math.min(2, window.devicePixelRatio||1);
+    W = cv.clientWidth; H = cv.clientHeight;
+    cv.width = W*DPR; cv.height = H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+  }
+  function build(){
+    nodes = [];
+    for(let i=0;i<N;i++){
+      // fibonacci-sphere distribution for an even, organic cloud
+      const k=i+0.5, phi=Math.acos(1-2*k/N), th=Math.PI*(1+Math.sqrt(5))*k;
+      const r = R*(0.55+0.45*Math.random());
+      nodes.push({
+        x:r*Math.sin(phi)*Math.cos(th), y:r*Math.sin(phi)*Math.sin(th), z:r*Math.cos(phi),
+        c:COLORS[i%COLORS.length], s:1.1+Math.random()*2.1, pulse:Math.random()*6.28
+      });
+    }
+    edges = [];
+    for(let i=0;i<N;i++){
+      // connect each node to its 2 nearest neighbours -> a graph, not noise
+      const d=[];
+      for(let j=0;j<N;j++) if(j!==i){
+        const dx=nodes[i].x-nodes[j].x, dy=nodes[i].y-nodes[j].y, dz=nodes[i].z-nodes[j].z;
+        d.push([dx*dx+dy*dy+dz*dz, j]);
+      }
+      d.sort((a,b)=>a[0]-b[0]);
+      for(let n=0;n<2;n++) if(d[n] && i<d[n][1]) edges.push([i,d[n][1]]);
+    }
+  }
+  function project(p, ay, ax){
+    // rotate around Y then X, then perspective
+    let x=p.x*Math.cos(ay)-p.z*Math.sin(ay), z=p.x*Math.sin(ay)+p.z*Math.cos(ay), y=p.y;
+    let y2=y*Math.cos(ax)-z*Math.sin(ax), z2=y*Math.sin(ax)+z*Math.cos(ax);
+    const fov=720, sc=fov/(fov+z2+R);
+    return {x:W/2+x*sc, y:H*0.46+y2*sc, z:z2, sc};
+  }
+  function frame(){
+    t+=0.0016; mx+=(tmx-mx)*0.05; my+=(tmy-my)*0.05;
+    const ay=t + mx*0.6, ax=-0.32 + my*0.5;
+    ctx.clearRect(0,0,W,H);
+    const pts = nodes.map(p=>project(p,ay,ax));
+    // edges (depth-faded)
+    for(const [a,b] of edges){
+      const pa=pts[a], pb=pts[b];
+      const depth=(pa.z+pb.z)/2;
+      const al=Math.max(0, 0.16 - depth/5200);
+      if(al<=0) continue;
+      ctx.strokeStyle='rgba(120,150,230,'+al.toFixed(3)+')';
+      ctx.lineWidth=Math.max(.4, pa.sc*0.7);
+      ctx.beginPath(); ctx.moveTo(pa.x,pa.y); ctx.lineTo(pb.x,pb.y); ctx.stroke();
+    }
+    // nodes sorted back-to-front
+    const order=[...pts.keys()].sort((i,j)=>pts[j].z-pts[i].z);
+    for(const i of order){
+      const p=pts[i], n=nodes[i];
+      const a=Math.min(1, 0.35+p.sc*0.7);
+      const rad=Math.max(.6, n.s*p.sc*(0.9+0.18*Math.sin(t*2+n.pulse)));
+      ctx.beginPath(); ctx.arc(p.x,p.y,rad*3.4,0,6.283);
+      ctx.fillStyle=n.c+'14'; ctx.fill();                 // glow
+      ctx.beginPath(); ctx.arc(p.x,p.y,rad,0,6.283);
+      ctx.fillStyle=n.c; ctx.globalAlpha=a; ctx.fill(); ctx.globalAlpha=1;
+    }
+    requestAnimationFrame(frame);
+  }
+  addEventListener('resize', ()=>{resize();});
+  addEventListener('pointermove', e=>{ tmx=(e.clientX/innerWidth-.5)*2; tmy=(e.clientY/innerHeight-.5)*2; });
+  resize(); build(); frame();
+
+  /* 3D tilt on feature cards */
+  document.querySelectorAll('[data-tilt] .card').forEach(card=>{
+    card.addEventListener('pointermove', e=>{
+      const r=card.getBoundingClientRect();
+      const px=(e.clientX-r.left)/r.width-.5, py=(e.clientY-r.top)/r.height-.5;
+      card.style.transform='rotateY('+(px*12)+'deg) rotateX('+(-py*12)+'deg) translateZ(8px)';
+    });
+    card.addEventListener('pointerleave', ()=>{ card.style.transform=''; });
+  });
+})();
+</script>
 </body>
 </html>

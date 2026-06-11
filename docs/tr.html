@@ -7,52 +7,66 @@
 <meta name="description" content="Kod tabanını tara, gerekçeli bir yol haritası üret ve test-doğrulamalı düzeltmeler uygula — çevrimdışı, LLM yok, API anahtarı yok, ücretsiz."/>
 <style>
 :root{
-  --bg:#0b0f1a; --bg2:#0f1524; --card:#121a2e; --line:#22304d;
-  --ink:#e6ecff; --muted:#8b9bbd; --dim:#5b6b8c;
-  --blue:#58a6ff; --purple:#bc8cff; --green:#3fb950; --gold:#e3b341; --red:#ff7b72;
+  --bg:#070a12; --bg2:#0c1120; --card:rgba(20,28,48,.55); --line:rgba(80,110,170,.22);
+  --ink:#eaf0ff; --muted:#93a4c8; --dim:#5b6b8c;
+  --blue:#58a6ff; --purple:#bc8cff; --gold:#e3b341; --green:#3fb950; --red:#ff7b72;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
-body{background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6}
+body{background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;line-height:1.6;overflow-x:hidden}
 a{color:var(--blue);text-decoration:none}
 a:hover{text-decoration:underline}
-.wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px;position:relative;z-index:2}
 code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 
-/* language switch */
-.lang{position:fixed;top:16px;right:18px;z-index:10;display:flex;gap:4px;background:var(--bg2);border:1px solid var(--line);border-radius:999px;padding:3px}
+#scene{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}
+.veil{position:fixed;inset:0;z-index:1;pointer-events:none;
+  background:radial-gradient(1200px 700px at 50% -8%, rgba(88,166,255,.10), transparent 60%),
+             linear-gradient(180deg, rgba(7,10,18,0) 40%, rgba(7,10,18,.55) 78%, rgba(7,10,18,.92) 100%)}
+
+.lang{position:fixed;top:16px;right:18px;z-index:20;display:flex;gap:4px;background:rgba(12,17,32,.7);border:1px solid var(--line);border-radius:999px;padding:3px;backdrop-filter:blur(8px)}
 .lang a{font-size:12.5px;padding:4px 11px;border-radius:999px;color:var(--muted)}
 .lang a.on{background:linear-gradient(90deg,#1f6feb,#8957e5);color:#fff}
 .lang a:hover{text-decoration:none;color:var(--ink)}
 
-/* hero */
-.hero{padding:84px 0 48px;text-align:center;background:
-  radial-gradient(800px 400px at 50% -10%, rgba(88,166,255,.18), transparent 60%),
-  radial-gradient(600px 300px at 80% 0%, rgba(188,140,255,.12), transparent 60%)}
-.hero h1{font-size:clamp(34px,6vw,58px);letter-spacing:-1px}
-.hero h1 .gx{background:linear-gradient(90deg,var(--blue),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
-.tag{margin:14px auto 0;max-width:760px;font-size:clamp(16px,2.4vw,20px);color:var(--muted)}
-.badges{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:26px 0 8px}
-.badge{font-size:12.5px;padding:5px 12px;border:1px solid var(--line);border-radius:999px;color:var(--muted);background:var(--bg2)}
+.hero{position:relative;z-index:2;padding:120px 0 40px;text-align:center}
+.eyebrow{display:inline-block;font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:6px 14px;background:rgba(12,17,32,.5);backdrop-filter:blur(6px)}
+.hero h1{font-size:clamp(40px,7.5vw,76px);letter-spacing:-2px;line-height:1.02;margin:20px 0 0;font-weight:800}
+.hero h1 .gx{background:linear-gradient(100deg,var(--blue),var(--purple) 55%,#ff9ed8);-webkit-background-clip:text;background-clip:text;color:transparent}
+.tag{margin:18px auto 0;max-width:700px;font-size:clamp(16px,2.3vw,20px);color:#c2cee8}
+.badges{display:flex;gap:9px;justify-content:center;flex-wrap:wrap;margin:26px 0 0}
+.badge{font-size:12.5px;padding:5px 12px;border:1px solid var(--line);border-radius:999px;color:var(--muted);background:rgba(12,17,32,.5);backdrop-filter:blur(6px)}
 .badge b{color:var(--ink)}
 .badge.grade{border-color:rgba(63,185,80,.5);color:var(--green)}
 .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:30px}
-.btn{display:inline-block;padding:12px 22px;border-radius:10px;font-weight:600;font-size:15px}
-.btn.primary{background:linear-gradient(90deg,#1f6feb,#8957e5);color:#fff}
-.btn.primary:hover{filter:brightness(1.12);text-decoration:none}
-.btn.ghost{border:1px solid var(--line);color:var(--ink);background:var(--bg2)}
-.btn.ghost:hover{border-color:var(--blue);text-decoration:none}
+.btn{display:inline-block;padding:13px 24px;border-radius:12px;font-weight:600;font-size:15px;transition:transform .15s,box-shadow .15s,filter .15s}
+.btn.primary{background:linear-gradient(90deg,#1f6feb,#8957e5);color:#fff;box-shadow:0 10px 30px -8px rgba(88,87,229,.6)}
+.btn.primary:hover{filter:brightness(1.12);text-decoration:none;transform:translateY(-2px)}
+.btn.ghost{border:1px solid var(--line);color:var(--ink);background:rgba(12,17,32,.5);backdrop-filter:blur(6px)}
+.btn.ghost:hover{border-color:var(--blue);text-decoration:none;transform:translateY(-2px)}
 
-/* install bar */
-.install{margin:34px auto 0;max-width:560px;display:flex;align-items:center;gap:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#0a0f1d}
-.install .ps1{padding:13px 0 13px 16px;color:var(--green)}
-.install input{flex:1;background:none;border:none;color:var(--ink);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14.5px;padding:13px 8px;outline:none}
-.install button{border:none;background:var(--bg2);color:var(--muted);padding:13px 16px;cursor:pointer;border-left:1px solid var(--line);font-size:13px}
+.install{margin:34px auto 0;max-width:520px;display:flex;align-items:center;border:1px solid var(--line);border-radius:13px;overflow:hidden;background:rgba(6,9,17,.7);backdrop-filter:blur(8px)}
+.install .ps1{padding:14px 0 14px 16px;color:var(--green)}
+.install input{flex:1;background:none;border:none;color:var(--ink);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14.5px;padding:14px 8px;outline:none}
+.install button{border:none;background:rgba(30,42,72,.7);color:var(--muted);padding:14px 16px;cursor:pointer;border-left:1px solid var(--line);font-size:13px}
 .install button:hover{color:var(--ink)}
 
-/* pipeline */
-.pipe{display:flex;gap:8px;justify-content:center;align-items:stretch;flex-wrap:wrap;margin:54px 0 0}
-.stage{flex:1;min-width:130px;max-width:185px;padding:14px 10px;border-radius:12px;text-align:center;border:1px solid var(--line);background:var(--card)}
+section{position:relative;z-index:2;padding:70px 0 8px}
+h2{font-size:clamp(26px,3.8vw,36px);letter-spacing:-.6px;margin-bottom:10px;font-weight:800}
+.sub{color:var(--muted);max-width:760px;margin-bottom:32px}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:18px;perspective:1200px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px;backdrop-filter:blur(10px);
+  transform-style:preserve-3d;transition:transform .25s cubic-bezier(.2,.7,.3,1),box-shadow .25s,border-color .25s;will-change:transform}
+.card:hover{border-color:rgba(120,150,220,.45);box-shadow:0 24px 60px -24px rgba(60,90,180,.55)}
+.card .ico{font-size:26px;display:inline-block;transform:translateZ(40px)}
+.card h3{font-size:17px;margin:12px 0 6px;transform:translateZ(26px)}
+.card p{font-size:14px;color:var(--muted);transform:translateZ(14px)}
+.card code{font-size:12.5px;color:var(--blue);background:rgba(6,9,17,.7);padding:2px 7px;border-radius:6px}
+
+.pipe{display:flex;gap:8px;justify-content:center;align-items:stretch;flex-wrap:wrap;margin:46px 0 0;perspective:900px}
+.stage{flex:1;min-width:128px;max-width:180px;padding:16px 10px;border-radius:14px;text-align:center;border:1px solid var(--line);background:var(--card);backdrop-filter:blur(10px);transition:transform .2s}
+.stage:hover{transform:translateY(-6px) rotateX(6deg)}
 .stage .ico{font-size:22px}
 .stage b{display:block;margin-top:4px;font-size:14px}
 .stage span{font-size:12px;color:var(--muted)}
@@ -61,56 +75,42 @@ code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .stage.s5{border-top:3px solid var(--red)}
 .arrow{align-self:center;color:var(--dim);font-size:18px}
 
-/* sections */
-section{padding:64px 0 8px}
-h2{font-size:clamp(24px,3.6vw,32px);letter-spacing:-.5px;margin-bottom:8px}
-.sub{color:var(--muted);max-width:760px;margin-bottom:30px}
-
-/* feature grid */
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px}
-.card .ico{font-size:24px}
-.card h3{font-size:16.5px;margin:10px 0 6px}
-.card p{font-size:14px;color:var(--muted)}
-.card code{font-size:12.5px;color:var(--blue);background:#0a0f1d;padding:2px 7px;border-radius:6px}
-
-/* terminal */
-.term{background:#0a0f1d;border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:8px}
-.term .bar{display:flex;gap:7px;padding:11px 14px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.term{background:rgba(6,9,17,.82);border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-top:8px;backdrop-filter:blur(10px);box-shadow:0 30px 80px -40px rgba(40,70,160,.6)}
+.term .bar{display:flex;gap:7px;padding:12px 15px;border-bottom:1px solid var(--line);background:rgba(20,28,48,.6)}
 .term .dot{width:11px;height:11px;border-radius:50%}
 .term pre{padding:20px 22px;font-size:13.5px;line-height:1.75;overflow-x:auto;color:#c9d6f2}
 .term .c{color:var(--dim)} .term .g{color:var(--green)} .term .b{color:var(--blue)}
 .term .y{color:var(--gold)} .term .p{color:var(--purple)} .term .r{color:var(--red)}
 
-/* demo banner */
-.demo{margin-top:26px;display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;background:linear-gradient(90deg,rgba(31,111,235,.14),rgba(137,87,229,.14));border:1px solid var(--line);border-radius:14px;padding:24px 26px}
-.demo b{font-size:17px}
-.demo p{color:var(--muted);font-size:14px}
+.demo{margin-top:26px;display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;background:linear-gradient(90deg,rgba(31,111,235,.16),rgba(137,87,229,.16));border:1px solid var(--line);border-radius:16px;padding:24px 26px;backdrop-filter:blur(8px)}
+.demo b{font-size:17px}.demo p{color:var(--muted);font-size:14px}
 
-/* yaml */
-pre.code{background:#0a0f1d;border:1px solid var(--line);border-radius:14px;padding:20px 22px;font-size:13.5px;line-height:1.7;overflow-x:auto;color:#c9d6f2}
+pre.code{background:rgba(6,9,17,.82);border:1px solid var(--line);border-radius:16px;padding:20px 22px;font-size:13.5px;line-height:1.7;overflow-x:auto;color:#c9d6f2;backdrop-filter:blur(8px)}
 pre.code .k{color:var(--purple)} pre.code .s{color:var(--green)} pre.code .c{color:var(--dim)}
 
-footer{margin-top:80px;padding:34px 0 44px;border-top:1px solid var(--line);text-align:center;color:var(--dim);font-size:14px}
+footer{position:relative;z-index:2;margin-top:80px;padding:34px 0 48px;border-top:1px solid var(--line);text-align:center;color:var(--dim);font-size:14px}
 footer a{color:var(--muted)}
+@media (prefers-reduced-motion: reduce){ #scene{opacity:.5} }
 </style>
 </head>
 <body>
+<canvas id="scene"></canvas>
+<div class="veil"></div>
 
 <div class="lang">
   <a href="index.html">EN</a>
   <a class="on" href="tr.html">TR</a>
 </div>
 
-<div class="hero">
+<header class="hero">
   <div class="wrap">
-    <h1>🧠 <span class="gx">Apex Orchestrator</span></h1>
-    <p class="tag">Kod tabanın hakkında <b>akıl yürüten</b> deterministik bir mühendislik ajanı — tara, gerekçeli bir yol haritası al ve <b>test-doğrulamalı düzeltmeler</b> uygula. Çevrimdışı. LLM yok. API anahtarı yok. Ücretsiz.</p>
+    <span class="eyebrow">deterministik · çevrimdışı · LLM yok</span>
+    <h1>Kod hakkında <span class="gx">akıl yürüten</span><br/>mühendislik ajanı</h1>
+    <p class="tag">Apex projeni tarar, gerekçeli bir yol haritası önerir ve <b>test-doğrulamalı düzeltmeler</b> uygular — çekirdeği deterministik bir akıl-yürütme motoru, yani ücretsiz çalışır, CI'da tekrar üretilebilir ve kodun makineden hiç çıkmaz.</p>
     <div class="badges">
       <span class="badge grade">🏆 öz-not <b>A+ (100)</b></span>
       <span class="badge">✅ <b>1830+</b> test</span>
       <span class="badge">🔌 <b>sıfır</b> API anahtarı</span>
-      <span class="badge">♻️ deterministik — aynı girdi, aynı çıktı</span>
       <span class="badge">⚖️ Apache-2.0</span>
     </div>
     <div class="install">
@@ -122,7 +122,6 @@ footer a{color:var(--muted)}
       <a class="btn primary" href="demo.html">📊 Canlı demo raporunu gör</a>
       <a class="btn ghost" href="https://github.com/Mert544/Apex-orchestrator">⭐ GitHub'da yıldızla</a>
     </div>
-
     <div class="pipe">
       <div class="stage s1"><div class="ico">👁️</div><b>Tara</b><span>güvenlik · döngüler · kapsam</span></div>
       <div class="arrow">→</div>
@@ -130,68 +129,61 @@ footer a{color:var(--muted)}
       <div class="arrow">→</div>
       <div class="stage s3"><div class="ico">🗺️</div><b>Önceliklendir</b><span>etki / çaba / ROI</span></div>
       <div class="arrow">→</div>
-      <div class="stage s4"><div class="ico">🤖</div><b>Düzelt</b><span>AST yaması, testinle doğrulanmış</span></div>
+      <div class="stage s4"><div class="ico">🤖</div><b>Düzelt</b><span>testinle doğrulanmış</span></div>
       <div class="arrow">→</div>
-      <div class="stage s5"><div class="ico">🔁</div><b>Kanıtla</b><span>önce/sonra, sabit-noktaya kadar</span></div>
+      <div class="stage s5"><div class="ico">🔁</div><b>Kanıtla</b><span>sabit-noktaya kadar</span></div>
     </div>
   </div>
-</div>
+</header>
 
 <div class="wrap">
 
 <section id="neden">
   <h2>Neden Apex?</h2>
-  <p class="sub">LLM tabanlı inceleme araçları her PR'da para yakar ve her çalışmada farklı cevap verir. Apex'in çekirdeği <b>deterministik bir akıl-yürütme motoru</b> — sonsuza dek ücretsiz çalışır, CI'da tekrar üretilebilir ve kodun makineden hiç çıkmaz.</p>
-  <div class="grid">
+  <p class="sub">LLM tabanlı araçlar her PR'da para yakar ve her çalışmada farklı cevap verir. Apex'in çekirdeği <b>deterministik bir akıl-yürütme motoru</b> — sonsuza dek ücretsiz, tekrar üretilebilir, gizli.</p>
+  <div class="grid" data-tilt>
     <div class="card"><div class="ico">🔒</div><h3>Önemli olanı bulur</h3><p>Tek kanonik AST detektörü: <code>eval</code>/<code>exec</code>, shell &amp; SQL enjeksiyonu, güvensiz pickle/yaml, zayıf hash'ler, yutulan istisnalar, <code>x is 5</code> gibi mantık hataları — satır içi <code>#&nbsp;noqa</code>/<code>#&nbsp;nosec</code>'e saygılı.</p></div>
-    <div class="card"><div class="ico">🧪</div><h3>Düzeltmeler kanıtlı</h3><p>Her otomatik düzeltme bir sandbox'ta uygulanır, <b>test paketinle doğrulanır</b> ve bir şey bozulursa otomatik geri alınır. Bir bakım çalışması projeni asla bozuk bırakamaz.</p></div>
-    <div class="card"><div class="ico">💡</div><h3>Sorun değil, fikir</h3><p>Idea Permutation Engine <i>nasıl geliştirileceğini</i> önerir — <b>fonksiyon</b> düzeyine kadar: "<code>_expand()</code> için davranışsal test yaz (karmaşıklık 23, hiçbir testin anmadığı)".</p></div>
+    <div class="card"><div class="ico">🧪</div><h3>Düzeltmeler kanıtlı</h3><p>Her otomatik düzeltme bir sandbox'ta uygulanır, <b>test paketinle doğrulanır</b> ve bir şey bozulursa otomatik geri alınır.</p></div>
+    <div class="card"><div class="ico">💡</div><h3>Sorun değil, fikir</h3><p>Idea Permutation Engine <i>nasıl geliştirileceğini</i> önerir — <b>fonksiyon</b> düzeyine kadar: "<code>_expand()</code> için davranışsal test yaz, karmaşıklık 23, hiçbir testin anmadığı".</p></div>
     <div class="card"><div class="ico">🎓</div><h3>Tek dürüst not</h3><p>Güvenlik · Mimari · Test · Kod borcu · Doğruluk — şiddet-ağırlıklı, fixture-farkında ve sığ stub testler yalnızca yarım kredi alır. Bir A+ taklit edilemez.</p></div>
-  </div>
-</section>
-
-<section id="gor">
-  <h2>Düşünüşünü gör</h2>
-  <p class="sub">Bu gerçek çıktı. Her fikir onu üreten kod gerçeğine dayanır ve uyarı gerçek fonksiyonu adıyla anar.</p>
-  <div class="term">
-    <div class="bar"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span></div>
-    <pre>
-<span class="c">$</span> <span class="g">apex</span> ideate --target=. --depth=2
-
-<span class="b">## x.p — app/orchestrator/core.py içindeki _expand() için davranışsal test yaz</span>
-<span class="b">        (karmaşıklık 23, hiçbir testin anmadığı)   (değer 0.8)</span>
-   <span class="c">gerçek: hotspot-function: app/orchestrator/core.py::FractalResearchOrchestrator._expand</span>
-   <span class="y">⚠ Ya _expand() hiçbir testin denemediği bir girdiyle en nadir dalına girerse?</span>
-
-<span class="b">## x.c0 — app/auth.py'yi önceliklendir — 3 bağımsız analiz burada birleşiyor</span>
-<span class="b">        (güvenlik-hassas, karmaşıklık-merkezi ve test edilmemiş)</span>
-   <span class="p">1. [Stabilize] ⚙️ Önce bir güvenlik ağı testi ekle</span>
-   <span class="p">2. [Secure]    ⚙️ Girdileri sertleştir, riskli kalıpları düzelt</span>
-
-<span class="c">$</span> <span class="g">apex</span> grade
-
-<span class="p"># Proje sağlığı: 🏆 A+  (100/100)</span>
-  Güvenlik −0 · Mimari −0 · Test −0 · Kod borcu −0 · Doğruluk −0
-</pre>
-  </div>
-
-  <div class="demo">
-    <div>
-      <b>📊 Canlı demo: Apex kendini notluyor</b>
-      <p>Bu site raporu en son commit'ten yeniden üretir — aşağıdaki pano, Apex'in kendi kod tabanını analiz etmesidir.</p>
-    </div>
-    <a class="btn primary" href="demo.html">Raporu aç →</a>
   </div>
 </section>
 
 <section id="anafikir">
   <h2>Ana fikir: ilişkiler hakkında akıl yürütür</h2>
-  <p class="sub">Bir linter sana ayrı uyarılar verir. Apex, sorunların <b>nerede birleştiğini</b> görür — bu da onu bir linter'dan ayıran şeydir.</p>
-  <div class="grid">
-    <div class="card"><div class="ico">🎯</div><h3>Convergence (dikey)</h3><p>Birden çok bağımsız analiz <i>aynı</i> modülü işaretlediğinde — <code>auth.py</code> hem güvenlik-hassas hem karmaşıklık-merkezi hem test edilmemiş — Apex bunu tek bir <b>en yüksek-kaldıraçlı hedef</b> olarak çıkarır ve fazlı bir mini yol haritasına açar.</p></div>
-    <div class="card"><div class="ico">🌐</div><h3>Tema (yatay)</h3><p>Tek bir sinyal <i>birçok</i> modülü etkilediğinde — 6 modülde test eksik — Apex onu dağınık angaryalar değil, etkilenen tüm seti adlandıran tek bir <b>sistemik girişim</b> olarak sunar.</p></div>
-    <div class="card"><div class="ico">🪜</div><h3>Fazlı yol haritası</h3><p><b>Stabilize → Secure → Evolve → Refine</b>: riskli kodu değiştirmeden önce güvenlik ağı kur, açığı kapat, sonra geliştir, en son cilala — etki/çaba/ROI ölçülmüş yapıya dayalı.</p></div>
-    <div class="card"><div class="ico">🧬</div><h3>Zamanla akıllanır</h3><p>Her düzeltmede hangi fikir türünün temiz oturduğunu kaydeder ve sonraki çalışmalarda <b>senin kod tabanında</b> iyi sicili olan merceklere doğru sınırlı bir eğilim verir — determinizmi asla bozmadan.</p></div>
+  <p class="sub">Bir linter sana ayrı uyarılar verir. Apex sorunların nerede <b>birleştiğini</b> ve nereye <b>yayıldığını</b> görür — bir linter'dan ayıran şey budur.</p>
+  <div class="grid" data-tilt>
+    <div class="card"><div class="ico">🎯</div><h3>Convergence (dikey)</h3><p>Birden çok bağımsız analiz <i>aynı</i> modülü işaretlediğinde — <code>auth.py</code> hem güvenlik-hassas hem hotspot hem test edilmemiş — Apex bunu tek bir <b>en yüksek-kaldıraçlı hedef</b> olarak çıkarıp fazlı bir mini yol haritasına açar.</p></div>
+    <div class="card"><div class="ico">🌐</div><h3>Tema (yatay)</h3><p>Tek bir sinyal <i>birçok</i> modülü etkilediğinde — 6 test edilmemiş dosya — Apex onu dağınık 6 angarya değil, etkilenen tüm seti adlandıran tek bir <b>sistemik girişim</b> olarak sunar.</p></div>
+    <div class="card"><div class="ico">🪜</div><h3>Fazlı yol haritası</h3><p><b>Stabilize → Secure → Evolve → Refine</b>: riskli kodu değiştirmeden önce güvenlik ağı, açığı kapat, sonra geliştir, en son cilala — etki/çaba/ROI ölçülmüş yapıya dayalı.</p></div>
+    <div class="card"><div class="ico">🧬</div><h3>Zamanla akıllanır</h3><p>Her düzeltmede hangi fikir türünün temiz oturduğunu kaydeder ve <b>senin kod tabanında</b> iyi sicili olan merceklere doğru sınırlı bir eğilim verir — determinizmi asla bozmadan.</p></div>
+  </div>
+</section>
+
+<section id="gor">
+  <h2>Düşünüşünü gör</h2>
+  <p class="sub">Gerçek çıktı. Her fikir onu üreten kod gerçeğine dayanır; uyarı gerçek fonksiyonu adıyla anar.</p>
+  <div class="term">
+    <div class="bar"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span></div>
+    <pre>
+<span class="c">$</span> <span class="g">apex</span> ideate --target=. --depth=2
+
+<span class="b">## x.c0 — app/auth.py'yi önceliklendir — 3 bağımsız analiz birleşiyor</span>
+<span class="b">        (güvenlik-hassas, karmaşıklık-merkezi ve test edilmemiş)</span>
+   <span class="p">1. [Stabilize] ⚙️ Önce bir güvenlik ağı testi ekle</span>
+   <span class="p">2. [Secure]    ⚙️ Girdileri sertleştir, riskli kalıpları düzelt</span>
+
+<span class="b">## x.t0 — 6 modülde temel test kapsamı oluştur</span>
+   <span class="c">tema: coverage-theme (6 modül) — dağınık değil, tek sistemik geçiş</span>
+
+<span class="c">$</span> <span class="g">apex</span> grade
+<span class="p"># Proje sağlığı: 🏆 A+  (100/100)</span>
+  Güvenlik −0 · Mimari −0 · Test −0 · Kod borcu −0 · Doğruluk −0
+</pre>
+  </div>
+  <div class="demo">
+    <div><b>📊 Canlı demo: Apex kendini notluyor</b><p>Bu site raporu en son commit'ten yeniden üretir — Apex kendi kod tabanını analiz ediyor.</p></div>
+    <a class="btn primary" href="demo.html">Raporu aç →</a>
   </div>
 </section>
 
@@ -209,14 +201,14 @@ footer a{color:var(--muted)}
         <span class="k">with:</span> { fetch-depth: 0 }
       - <span class="k">uses:</span> <span class="s">Mert544/Apex-orchestrator@v1</span>
         <span class="k">with:</span>
-          <span class="k">min-score:</span> <span class="s">"80"</span>          <span class="c"># not 80'in altına düşerse PR'ı düşür</span>
+          <span class="k">min-score:</span> <span class="s">"80"</span>
           <span class="k">base:</span> <span class="s">origin/${{ github.base_ref }}</span>
-          <span class="k">fail-on-high:</span> <span class="s">"true"</span>   <span class="c"># diff'te yüksek-şiddetli sorun varsa düşür</span></pre>
+          <span class="k">fail-on-high:</span> <span class="s">"true"</span></pre>
 </section>
 
 <section id="basla">
   <h2>Hemen başla</h2>
-  <div class="grid">
+  <div class="grid" data-tilt>
     <div class="card"><div class="ico">1️⃣</div><h3>Kur</h3><p><code>pip install apex-orchestrator</code></p></div>
     <div class="card"><div class="ico">2️⃣</div><h3>Çalıştır</h3><p><code>apex</code> — değerlendirir, önceliklendirir ve yalnızca güvenli olduğunda güvenli düzeltmeleri uygular.</p></div>
     <div class="card"><div class="ico">3️⃣</div><h3>Keşfet</h3><p><code>apex ideate --roadmap</code> · <code>apex review</code> · <code>apex dashboard</code></p></div>
@@ -231,10 +223,84 @@ footer a{color:var(--muted)}
     <a href="https://github.com/Mert544/Apex-orchestrator">GitHub</a> ·
     <a href="https://pypi.org/project/apex-orchestrator/">PyPI</a> ·
     <a href="demo.html">Canlı demo</a> ·
-    <a href="index.html">English</a> ·
-    Apache-2.0
+    <a href="index.html">English</a> · Apache-2.0
   </div>
 </footer>
 
+<script>
+(function(){
+  const cv = document.getElementById('scene'), ctx = cv.getContext('2d');
+  const COLORS = ['#58a6ff','#bc8cff','#e3b341','#3fb950','#ff7b72'];
+  let W,H,DPR, nodes=[], edges=[], t=0, mx=0, my=0, tmx=0, tmy=0;
+  const N = 78, R = 320;
+  function resize(){
+    DPR = Math.min(2, window.devicePixelRatio||1);
+    W = cv.clientWidth; H = cv.clientHeight;
+    cv.width = W*DPR; cv.height = H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+  }
+  function build(){
+    nodes = [];
+    for(let i=0;i<N;i++){
+      const k=i+0.5, phi=Math.acos(1-2*k/N), th=Math.PI*(1+Math.sqrt(5))*k;
+      const r = R*(0.55+0.45*Math.random());
+      nodes.push({x:r*Math.sin(phi)*Math.cos(th), y:r*Math.sin(phi)*Math.sin(th), z:r*Math.cos(phi),
+        c:COLORS[i%COLORS.length], s:1.1+Math.random()*2.1, pulse:Math.random()*6.28});
+    }
+    edges = [];
+    for(let i=0;i<N;i++){
+      const d=[];
+      for(let j=0;j<N;j++) if(j!==i){
+        const dx=nodes[i].x-nodes[j].x, dy=nodes[i].y-nodes[j].y, dz=nodes[i].z-nodes[j].z;
+        d.push([dx*dx+dy*dy+dz*dz, j]);
+      }
+      d.sort((a,b)=>a[0]-b[0]);
+      for(let n=0;n<2;n++) if(d[n] && i<d[n][1]) edges.push([i,d[n][1]]);
+    }
+  }
+  function project(p, ay, ax){
+    let x=p.x*Math.cos(ay)-p.z*Math.sin(ay), z=p.x*Math.sin(ay)+p.z*Math.cos(ay), y=p.y;
+    let y2=y*Math.cos(ax)-z*Math.sin(ax), z2=y*Math.sin(ax)+z*Math.cos(ax);
+    const fov=720, sc=fov/(fov+z2+R);
+    return {x:W/2+x*sc, y:H*0.46+y2*sc, z:z2, sc};
+  }
+  function frame(){
+    t+=0.0016; mx+=(tmx-mx)*0.05; my+=(tmy-my)*0.05;
+    const ay=t + mx*0.6, ax=-0.32 + my*0.5;
+    ctx.clearRect(0,0,W,H);
+    const pts = nodes.map(p=>project(p,ay,ax));
+    for(const [a,b] of edges){
+      const pa=pts[a], pb=pts[b];
+      const depth=(pa.z+pb.z)/2;
+      const al=Math.max(0, 0.16 - depth/5200);
+      if(al<=0) continue;
+      ctx.strokeStyle='rgba(120,150,230,'+al.toFixed(3)+')';
+      ctx.lineWidth=Math.max(.4, pa.sc*0.7);
+      ctx.beginPath(); ctx.moveTo(pa.x,pa.y); ctx.lineTo(pb.x,pb.y); ctx.stroke();
+    }
+    const order=[...pts.keys()].sort((i,j)=>pts[j].z-pts[i].z);
+    for(const i of order){
+      const p=pts[i], n=nodes[i];
+      const a=Math.min(1, 0.35+p.sc*0.7);
+      const rad=Math.max(.6, n.s*p.sc*(0.9+0.18*Math.sin(t*2+n.pulse)));
+      ctx.beginPath(); ctx.arc(p.x,p.y,rad*3.4,0,6.283);
+      ctx.fillStyle=n.c+'14'; ctx.fill();
+      ctx.beginPath(); ctx.arc(p.x,p.y,rad,0,6.283);
+      ctx.fillStyle=n.c; ctx.globalAlpha=a; ctx.fill(); ctx.globalAlpha=1;
+    }
+    requestAnimationFrame(frame);
+  }
+  addEventListener('resize', ()=>{resize();});
+  addEventListener('pointermove', e=>{ tmx=(e.clientX/innerWidth-.5)*2; tmy=(e.clientY/innerHeight-.5)*2; });
+  resize(); build(); frame();
+  document.querySelectorAll('[data-tilt] .card').forEach(card=>{
+    card.addEventListener('pointermove', e=>{
+      const r=card.getBoundingClientRect();
+      const px=(e.clientX-r.left)/r.width-.5, py=(e.clientY-r.top)/r.height-.5;
+      card.style.transform='rotateY('+(px*12)+'deg) rotateX('+(-py*12)+'deg) translateZ(8px)';
+    });
+    card.addEventListener('pointerleave', ()=>{ card.style.transform=''; });
+  });
+})();
+</script>
 </body>
 </html>
