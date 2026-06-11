@@ -61,3 +61,41 @@ def test_insight_generated():
     result = gen.generate(claim)
     assert result.insight != ""
     assert len(result.scenarios) >= 2
+
+
+def test_caveats_are_distinct_per_lens():
+    # The core "fake reasoning" fix: different development lenses must NOT all
+    # collapse onto the same "malformed input" scenario.
+    gen = CounterfactualGenerator()
+    first = {
+        op: gen.generate({"text": f"{op} app/x.py", "operator": op}).scenarios[0]
+        for op in ("extend", "harden", "test", "simplify", "document",
+                   "integrate", "generalize", "observe")
+    }
+    assert len(set(first.values())) == 8          # all eight lenses differ
+    assert "attacker" in first["harden"].lower()  # harden keeps the security flavor
+    assert "regression" in first["test"].lower() or "asserted" in first["test"].lower()
+    assert "refactor" in first["simplify"].lower() or "silently change" in first["simplify"].lower()
+
+
+def test_root_caveats_discriminate_by_fact_label():
+    gen = CounterfactualGenerator()
+    sec = gen.generate({"text": "harden x", "fact_label": "security-finding"}).scenarios[0]
+    unt = gen.generate({"text": "test x", "fact_label": "untested"}).scenarios[0]
+    assert sec != unt
+    assert "attacker" in sec.lower() or "execute" in sec.lower()
+
+
+def test_symbol_grounded_scenario_takes_precedence():
+    gen = CounterfactualGenerator()
+    res = gen.generate({"text": "test x", "operator": "test", "symbol": "crunch"})
+    assert "crunch()" in res.scenarios[0]
+
+
+def test_backward_compatible_without_operator_or_fact():
+    # The orchestrator calls generate({"text": ...}) with no operator — the old
+    # keyword behavior must still apply.
+    gen = CounterfactualGenerator()
+    res = gen.generate({"text": "Function lacks input validation guard"})
+    assert res.scenarios and any("attacker" in s.lower() or "input" in s.lower()
+                                 for s in res.scenarios)

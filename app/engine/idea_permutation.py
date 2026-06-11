@@ -839,7 +839,13 @@ class IdeaPermutationEngine:
         return max(0.2, round(nov, 4))
 
     def _score(self, node: IdeaNode, relevance: RelevanceScorer) -> None:
-        node.relevance = relevance.score(f"{node.title} {node.subject}")
+        # Score relevance against the idea's *grounding* — its title, subject,
+        # fact labels, and lens chain — not just the rendered title. A "security"
+        # objective should match a harden/sensitive-path/security-finding idea
+        # via concept expansion, even though those words never appear in the
+        # generated title.
+        grounding = " ".join(node.source_facts + node.operator_chain + [node.operator])
+        node.relevance = relevance.score(f"{node.title} {node.subject} {grounding}")
         if node.operator == "root":
             node.feasibility = node.feasibility or 0.7
         # Learning nudge: tilt feasibility by this lens/label's past track record
@@ -876,6 +882,14 @@ class IdeaPermutationEngine:
         # actual function instead of reciting a template.
         cf_text = f"{node.title} {_caveat_hint(node)}".strip()
         claim: dict = {"text": cf_text}
+        # The terminal lens drives a lens-specific caveat (a 'simplify' idea is
+        # stress-tested for silent behavior change, not for malformed input).
+        terminal_lens = node.operator_chain[-1] if node.operator_chain else node.operator
+        if terminal_lens and terminal_lens != "root":
+            claim["operator"] = terminal_lens
+        elif node.source_facts:
+            # A root idea: discriminate its caveat by the seeding fact label.
+            claim["fact_label"] = node.source_facts[0].split(":", 1)[0].strip()
         if "::" in node.subject:
             claim["symbol"] = node.subject.split("::", 1)[1].rsplit(".", 1)[-1]
         node.caveats = self.counterfactual.generate(claim).scenarios[:2]

@@ -4,6 +4,92 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# Distinct stress-test scenarios per development lens. Each lens introduces its
+# own class of risk, so the counterfactual that pressure-tests it differs — this
+# is what stops every idea collapsing onto one generic "malformed input" caveat.
+_LENS_SCENARIOS: dict[str, list[str]] = {
+    "extend": [
+        "What new failure mode does this capability add that nothing exercises yet?",
+        "What if the new path interacts with an existing one in a way no test covers?",
+    ],
+    "harden": [
+        "What if an attacker provides None, malformed, or maximum-size input?",
+        "What legitimate edge case might the new guard wrongly reject?",
+    ],
+    "test": [
+        "What behavior is asserted nowhere, so a regression would pass silently?",
+        "What boundary (empty, single, maximum) does the current suite skip?",
+    ],
+    "simplify": [
+        "What subtle behavior could silently change when this is refactored?",
+        "What currently depends on the exact structure a cleanup would remove?",
+    ],
+    "document": [
+        "What contract do callers assume that is written down nowhere?",
+        "What breaks when the behavior changes but the documentation does not?",
+    ],
+    "integrate": [
+        "What if the other subsystem is down, slow, or returns an unexpected shape?",
+        "What version skew or contract mismatch could break this seam?",
+    ],
+    "generalize": [
+        "What assumption breaks when a second caller uses this with different config?",
+        "What hard-coded default becomes wrong once this is reused elsewhere?",
+    ],
+    "observe": [
+        "What failure currently happens invisibly, with no metric or log to catch it?",
+        "What early signal would reveal this degrading before it fails outright?",
+    ],
+}
+
+
+# Root ideas have no lens yet — their discriminator is the fact that seeded them.
+# Keying caveats on that fact stops every security/coverage root collapsing onto
+# the same generic "malformed input" scenario.
+_FACT_SCENARIOS: dict[str, list[str]] = {
+    "untested": [
+        "What breaks the moment someone changes this, with no test to catch it?",
+        "What current behavior would a rewrite silently alter, undetected?",
+    ],
+    "critical-untested": [
+        "What production failure would land first if this safety-critical path regressed?",
+        "What behavior is relied on here that no test currently pins down?",
+    ],
+    "sensitive-path": [
+        "What can an attacker do by reaching this path with crafted input?",
+        "What sensitive data leaks if this path fails open instead of closed?",
+    ],
+    "security-finding": [
+        "What can an attacker execute by reaching the eval/exec/deserialize call here?",
+        "What untrusted input flows into this dangerous call unchecked?",
+    ],
+    "fragile": [
+        "What downstream module breaks if this heavily-depended-on hub changes behavior?",
+        "What untested edge here cascades across everything that imports it?",
+    ],
+    "dependency-hub": [
+        "What ripples through the system if this central module's contract shifts?",
+        "What hidden coupling does this hub's blast radius conceal?",
+    ],
+    "complexity-hotspot": [
+        "What rare branch in this complex module is exercised by no test?",
+        "What second-developer change could collide inside this complexity?",
+    ],
+    "shallow-coverage": [
+        "What real behavior do these shape-only (isinstance/None) tests fail to pin down?",
+        "What regression slips silently past an assertion that only checks types?",
+    ],
+    "convergence": [
+        "Which converging risk do you fix first, and what does deferring the rest cost?",
+        "What happens if you harden this before the safety-net tests are in place?",
+    ],
+    "missing-ci": [
+        "What broken change merges undetected with no automated gate to stop it?",
+        "What passes locally but fails in a clean environment nobody checks?",
+    ],
+}
+
+
 @dataclass
 class CounterfactualResult:
     scenarios: list[str] = field(default_factory=list)
@@ -33,6 +119,7 @@ class CounterfactualGenerator:
         text = claim.get("text", "").lower()
         context = claim.get("context", "").lower()
         symbol = claim.get("symbol", "")
+        operator = claim.get("operator", "")
         scenarios = []
 
         # Symbol-grounded scenarios come first: when the claim names an actual
@@ -43,6 +130,27 @@ class CounterfactualGenerator:
             )
             scenarios.append(
                 f"What if a caller depends on an undocumented behavior of {symbol}() that a refactor silently changes?"
+            )
+
+        # Lens-specific stress test: each development lens fails in a different
+        # way, so the caveat must interrogate *that* lens — not route every idea
+        # through the validation-keyword branch below (which made 'extend',
+        # 'test', and 'generalize' all emit the same "attacker provides None"
+        # scenario). When the claim names its operator, branch on it directly.
+        if operator in _LENS_SCENARIOS:
+            scenarios.extend(_LENS_SCENARIOS[operator])
+            insight = self._generate_insight(operator or text, scenarios)
+            return CounterfactualResult(
+                scenarios=scenarios[:5], insight=insight, claim_text=claim.get("text", ""),
+            )
+
+        # A root idea (no lens) is discriminated by the fact that seeded it.
+        fact_label = claim.get("fact_label", "")
+        if fact_label in _FACT_SCENARIOS:
+            scenarios.extend(_FACT_SCENARIOS[fact_label])
+            insight = self._generate_insight(fact_label, scenarios)
+            return CounterfactualResult(
+                scenarios=scenarios[:5], insight=insight, claim_text=claim.get("text", ""),
             )
 
         # Pattern: missing validation / no guard

@@ -88,3 +88,25 @@ def test_pruning_off_does_not_prune_same_objective():
     orch = _make_orchestrator()  # no focus config -> pruning off
     report = orch.run("Investigate database query performance and indexing")
     assert report.debug_stats["focus_drift_pruned"] == 0
+
+
+def test_concept_expansion_matches_related_grounding():
+    from app.skills.relevance_scorer import RelevanceScorer
+    r = RelevanceScorer("improve the security of the bank")
+    # A harden/finding-grounded idea scores > 0 for a "security" objective even
+    # though "security" never appears in its text — via concept expansion.
+    assert r.score("Harden the sensitive path app/accounts.py security-finding") > 0.0
+    # An unrelated idea stays at 0.
+    assert r.score("Add type hints and a lint config") == 0.0
+
+
+def test_concept_expansion_does_not_break_pruning():
+    from app.skills.relevance_scorer import RelevanceScorer
+    # An unrelated objective must still prune a generic idea (no false matches).
+    r = RelevanceScorer("database indexing performance")
+    assert r.score("Evolve the central module app/main.py") == 0.0
+
+
+def test_no_objective_is_all_relevant():
+    from app.skills.relevance_scorer import RelevanceScorer
+    assert RelevanceScorer("").score("anything at all") == 1.0
