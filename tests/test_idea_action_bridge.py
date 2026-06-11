@@ -595,3 +595,42 @@ def test_hotspot_function_idea_targets_the_module_file():
     assert step.executable is True
     assert step.target == "app/core.py"           # "::" stripped for the file target
     assert "Engine.crunch" in step.description    # symbol kept for the test author
+
+
+def test_convergence_expands_into_phased_mini_roadmap():
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(
+        id="c0", title="Prioritize app/auth.py — 3 independent analyses converge",
+        subject="app/auth.py", operator="synthesis", kind="synthesis", branch_path="x.c0",
+        source_facts=["convergence: security-sensitive+a complexity hotspot+untested"],
+    )
+    steps = IdeaActionBridge().plan_convergence(idea)
+    # untested + hotspot collapse to one test step; sensitive adds a harden step.
+    assert [s.phase for s in steps] == ["Stabilize", "Secure"]      # safety net BEFORE hardening
+    assert [s.action_type for s in steps] == ["create_test_stub", "harden_security"]
+    assert all(s.executable for s in steps)
+    assert all(s.target == "app/auth.py" for s in steps)
+    assert all("app/auth.py" in s.description for s in steps)
+
+
+def test_convergence_steps_use_known_executable_action_types():
+    # Every executable convergence step must map to an action the bridge can
+    # actually generate, or "executable" is a lie.
+    from app.models.idea import IdeaNode
+    from app.engine.idea_permutation import _CONVERGENCE_STEPS
+    bridge = IdeaActionBridge()
+    idea = IdeaNode(
+        id="c", title="t", subject="app/x.py", operator="synthesis", kind="synthesis",
+        branch_path="x.c0",
+        source_facts=["convergence: " + "+".join(_CONVERGENCE_STEPS.keys())],
+    )
+    for s in bridge.plan_convergence(idea):
+        if s.executable:
+            assert s.action_type in bridge._ACTION_STRATEGY
+
+
+def test_plan_convergence_empty_for_non_convergence_idea():
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="r", title="t", subject="app/x.py", operator="root",
+                    source_facts=["untested: app/x.py"])
+    assert IdeaActionBridge().plan_convergence(idea) == []

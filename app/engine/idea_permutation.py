@@ -927,6 +927,54 @@ def _join_phrase(labels: list[str]) -> str:
     return f"{', '.join(labels[:-1])} and {labels[-1]}"
 
 
+# Convergence remediation: each risk dimension maps to one concrete, phased step.
+# (phase_rank, phase, step text, action_type, executable). The rank encodes the
+# Stabilize -> Secure -> Evolve -> Refine thesis: a safety net (tests) ALWAYS
+# precedes changing risky code (hardening) — you don't harden what you can't
+# re-verify. Coverage labels share the create_test_stub action, so they collapse.
+_CONVERGENCE_STEPS: dict[str, tuple[int, str, str, str, bool]] = {
+    "critically untested":      (1, "Stabilize", "Add a safety-net test layer first", "create_test_stub", True),
+    "untested":                 (1, "Stabilize", "Add a first test layer first", "create_test_stub", True),
+    "only shallowly tested":    (1, "Stabilize", "Deepen the shallow tests to assert real behaviour", "create_test_stub", True),
+    "fragile":                  (1, "Stabilize", "Cover this heavily-depended-on hub with tests", "create_test_stub", True),
+    "a complexity hotspot":     (1, "Stabilize", "Cover the complex branches before changing them", "create_test_stub", True),
+    "security-sensitive":       (2, "Secure", "Harden inputs and fix risky patterns", "harden_security", True),
+    "a central dependency hub": (3, "Evolve", "Reduce coupling and clarify the interface", "design_task", False),
+    "debt-laden":               (4, "Refine", "Clear the clustered TODO/FIXME debt", "design_task", False),
+}
+
+
+def convergence_labels(node: IdeaNode) -> list[str]:
+    """The risk-dimension labels a convergence idea was built from."""
+    for fact in node.source_facts:
+        if fact.startswith("convergence:"):
+            return [p.strip() for p in fact.split(":", 1)[1].split("+") if p.strip()]
+    return []
+
+
+def convergence_plan(labels: list[str]) -> list[dict[str, Any]]:
+    """An ordered, deduped mini-roadmap for a convergence idea.
+
+    Turns the converging risk dimensions into phased steps (Stabilize before
+    Secure before the rest), collapsing dimensions that share an action so a
+    subject that is both untested and a hotspot gets one test step, not two.
+    """
+    chosen: dict[str, tuple[int, str, str, str, bool]] = {}
+    for label in labels:
+        spec = _CONVERGENCE_STEPS.get(label)
+        if spec is None:
+            continue
+        action = spec[3]
+        # First label wins per action; coverage labels are pre-ordered by
+        # severity at construction, so the most-severe phrasing is kept.
+        chosen.setdefault(action, spec)
+    ordered = sorted(chosen.values(), key=lambda s: (s[0], s[1]))
+    return [
+        {"phase": phase, "step": text, "action_type": action, "executable": executable}
+        for _rank, phase, text, action, executable in ordered
+    ]
+
+
 def _caveat_hint(node: IdeaNode) -> str:
     if node.kind != "permutation":
         return _KIND_HINTS.get(node.kind, "interface boundary")
@@ -986,6 +1034,12 @@ def render_markdown(report: IdeaTreeReport) -> str:
         for idea in sorted(synth, key=lambda n: n.value, reverse=True):
             tag = "synthesis" if idea.kind == "synthesis" else "module-pair"
             lines.append(f"- [{tag}] {idea.title}  (v {idea.value})")
+            # Convergence ideas auto-expand into a phased mini-roadmap so the
+            # "highest-leverage target" comes with an ordered plan, not just a label.
+            plan = convergence_plan(convergence_labels(idea))
+            for i, step in enumerate(plan, 1):
+                mark = "⚙️" if step["executable"] else "✋"
+                lines.append(f"    {i}. [{step['phase']}] {mark} {step['step']}")
         lines.append("")
     return "\n".join(lines)
 

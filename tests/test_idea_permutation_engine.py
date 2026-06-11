@@ -448,3 +448,20 @@ def test_detects_indirect_import_cycle(tmp_path):
     # The cycle idea references all three modules.
     cyc = next(i for i in pairs if "import cycle" in i.title)
     assert "a.py" in cyc.title and "b.py" in cyc.title and "c.py" in cyc.title
+
+
+def test_convergence_renders_nested_mini_roadmap(tmp_path):
+    # A sensitive + untested module's convergence idea renders with an ordered,
+    # phased mini-roadmap (Stabilize step before Secure step).
+    from app.engine.idea_permutation import render_markdown
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "auth.py").write_text("import os\ndef login(pw):\n    return os.system(pw)\n")
+    (tmp_path / "app" / "calm.py").write_text("def calm():\n    return 1\n")
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 60, "max_idea_depth": 1, "breadth": 4}, tmp_path
+    ).run()
+    md = render_markdown(rep)
+    assert "independent analyses converge" in md
+    assert "[Stabilize]" in md and "[Secure]" in md
+    # Stabilize must be listed before Secure (safety net before hardening).
+    assert md.index("[Stabilize]") < md.index("[Secure]")

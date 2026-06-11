@@ -165,7 +165,7 @@ apex ideate --target=. --pareto                   # the efficient frontier (non-
 
 Every idea is **traceable to a concrete project fact**, scored by relevance × novelty × feasibility, and stress‑tested with **caveats that name the actual code** — including down to the *function*: Apex finds the heaviest‑branching functions no test ever names and asks for behavioral tests on *them*, not just the file.
 
-> **It reasons about where problems converge.** When several independent analyses flag the *same* module — `app/auth.py` is security‑sensitive **and** a complexity hotspot **and** untested — Apex doesn't list three separate items. It emits one **convergence** idea that names the agreement and ranks it the highest‑leverage target, exactly how a senior engineer prioritizes ("everything points here"). That's the difference between a linter and a brain.
+> **It reasons about where problems converge.** When several independent analyses flag the *same* module — `app/auth.py` is security‑sensitive **and** a complexity hotspot **and** untested — Apex doesn't list three separate items. It emits one **convergence** idea that names the agreement, ranks it the highest‑leverage target, and **auto‑expands it into a phased mini‑roadmap** — *Stabilize* (add the safety‑net tests) **before** *Secure* (harden the risky code), because you don't change what you can't re‑verify. Each step is executable where a deterministic fix exists. That's the difference between a linter and a brain.
 
 <details>
 <summary><b>🧠 It gets wiser over time</b></summary>

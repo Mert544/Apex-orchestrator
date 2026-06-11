@@ -44,6 +44,37 @@ class IdeaActionBridge:
     proposes, it never applies.
     """
 
+    def plan_convergence(self, idea: IdeaNode) -> list[ActionStep]:
+        """Expand a convergence idea into an ordered, phased mini-roadmap.
+
+        Returns one ActionStep per remediation phase (Stabilize before Secure
+        before the rest), all targeting the converged module, executable where a
+        deterministic transform exists. Empty for a non-convergence idea.
+        """
+        from app.engine.idea_permutation import convergence_labels, convergence_plan
+
+        labels = convergence_labels(idea)
+        if not labels:
+            return []
+        target = idea.subject.split("::", 1)[0]
+        target = target if "/" in target or target.endswith(".py") else ""
+        steps: list[ActionStep] = []
+        for n, step in enumerate(convergence_plan(labels)):
+            steps.append(ActionStep(
+                branch_path=f"{idea.branch_path}.{n}",
+                title=f"{step['phase']}: {step['step']} in {idea.subject}",
+                operator="synthesis",
+                subject=idea.subject,
+                action_type=step["action_type"],
+                target=target,
+                description=f"{step['step']} ({idea.subject})",
+                executable=step["executable"],
+                value=idea.value,
+                source_facts=idea.source_facts,
+                phase=step["phase"],
+            ))
+        return steps
+
     def plan_idea(self, idea: IdeaNode) -> ActionStep:
         if idea.operator == "root":
             action_type, desc_tmpl, executable = self._root_action(idea)
