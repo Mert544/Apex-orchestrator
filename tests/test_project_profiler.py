@@ -282,3 +282,27 @@ def test_exercised_uses_word_boundaries_not_substring(tmp_path: Path):
     )
     profile = ProjectProfiler(str(tmp_path)).profile()
     assert any(f["function"] == "run" for f in profile.hotspot_functions)
+
+
+def test_correctness_bug_modules_flags_high_severity_logic_bugs(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    # return-in-finally is a high-severity logic bug (swallows exceptions).
+    (tmp_path / "app" / "buggy.py").write_text(
+        "def f():\n    try:\n        g()\n    finally:\n        return 1\n"
+    )
+    (tmp_path / "app" / "clean.py").write_text("def ok():\n    return 1\n")
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    flagged = [str(Path(m).as_posix()) for m in profile.correctness_bug_modules]
+    assert "app/buggy.py" in flagged
+    assert "app/clean.py" not in flagged
+
+
+def test_correctness_bug_excludes_syntax_errors_and_tests(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "broken.py").write_text("def f(:\n    pass\n")     # syntax error
+    (tmp_path / "tests" / "test_x.py").write_text(
+        "def test():\n    try:\n        pass\n    finally:\n        return 1\n"
+    )
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert profile.correctness_bug_modules == []     # syntax error + test file both excluded

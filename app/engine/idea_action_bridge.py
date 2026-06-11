@@ -25,6 +25,7 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "hotspot-function": ("create_test_stub", "Write behavioral tests for the complex function {s}", True),
     "sensitive-path": ("harden_security", "Harden the sensitive path {s}", True),
     "security-finding": ("harden_security", "Fix the security findings in {s}", True),
+    "correctness-bug": ("harden_security", "Fix the likely logic bug in {s}", True),
     "config": ("design_task", "Make configuration {s} environment-aware", False),
     "entrypoint": ("design_task", "Grow capability behind entrypoint {s}", False),
     "dependency-hub": ("design_task", "Plan an evolution of central module {s}", False),

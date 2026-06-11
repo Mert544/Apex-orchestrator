@@ -116,6 +116,30 @@ class IdeaSeeder:
         roots: list[IdeaNode] = []
         seen_subjects: set[str] = set()
 
+        # High-severity content signals claim their subject first: a guaranteed
+        # crash or a real vulnerability is more urgent than "this file is a hub"
+        # or "untested", so they are framed by the bug/finding, not the generic
+        # rule. (A module flagged by several signals still converges below.)
+        for module in (getattr(profile, "correctness_bug_modules", []) or [])[:3]:
+            self._append_root(
+                roots, seen_subjects,
+                title=f"Fix the likely crash/logic bug in {module}",
+                subject=module,
+                fact_label="correctness-bug",
+                fact_value=f"{module} (high-severity logic bug detected)",
+            )
+        # Content-based security findings: the file actually contains eval/
+        # os.system/pickle/... — point harden straight at it, regardless of
+        # whether its *name* matched a sensitive hint.
+        for module in (getattr(profile, "security_finding_modules", []) or [])[:3]:
+            self._append_root(
+                roots, seen_subjects,
+                title=f"Fix the security findings in {module}",
+                subject=module,
+                fact_label="security-finding",
+                fact_value=f"{module} (eval/os.system/pickle/... detected)",
+            )
+
         # Fragility first (highest priority): heavily-depended-on but thinly
         # tested modules — the biggest blast-radius risk.
         for module in (getattr(profile, "fragile_modules", []) or [])[:3]:
@@ -153,18 +177,6 @@ class IdeaSeeder:
                 subject=module,
                 fact_label="shallow-coverage",
                 fact_value=f"{module} (only smoke/type assertions)",
-            )
-
-        # Content-based security findings: the file actually contains eval/
-        # os.system/pickle/... — point harden straight at it, regardless of
-        # whether its *name* matched a sensitive hint.
-        for module in (getattr(profile, "security_finding_modules", []) or [])[:3]:
-            self._append_root(
-                roots, seen_subjects,
-                title=f"Fix the security findings in {module}",
-                subject=module,
-                fact_label="security-finding",
-                fact_value=f"{module} (eval/os.system/pickle/... detected)",
             )
 
         # Complexity hotspots: modules combining high cyclomatic complexity with
@@ -482,6 +494,7 @@ class IdeaPermutationEngine:
     _CONVERGENCE_DIMS = [
         ("sensitive_paths", "security-sensitive"),
         ("security_finding_modules", "security-sensitive"),
+        ("correctness_bug_modules", "a likely crash bug"),
         ("hotspot_modules", "a complexity hotspot"),
         ("fragile_modules", "fragile"),
         ("dependency_hubs", "a central dependency hub"),
@@ -970,6 +983,7 @@ _OPERATOR_HINTS: dict[str, str] = {
 _FACT_HINTS: dict[str, str] = {
     "sensitive-path": "guard validation secret check",
     "security-finding": "eval exec os.system pickle secret guard validation",
+    "correctness-bug": "crash bug logic frozen dataclass finally exception edge cases",
     "untested": "check validation edge cases",
     "critical-untested": "check validation edge cases",
     "partial-coverage": "check validation edge cases",
@@ -991,7 +1005,7 @@ _FACT_HINTS: dict[str, str] = {
 }
 
 # Root fact labels where reliability/security lenses matter most.
-_SECURITY_LABELS = {"sensitive-path", "security-finding", "critical-untested", "untested", "partial-coverage", "fragile", "complexity-hotspot", "shallow-coverage", "hotspot-function", "convergence"}
+_SECURITY_LABELS = {"sensitive-path", "security-finding", "correctness-bug", "critical-untested", "untested", "partial-coverage", "fragile", "complexity-hotspot", "shallow-coverage", "hotspot-function", "convergence"}
 
 
 def _context_weight(node: IdeaNode, op_name: str, security_pressure: float = 1.0) -> float:

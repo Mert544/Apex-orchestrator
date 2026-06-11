@@ -231,3 +231,29 @@ def test_security_finding_maps_to_executable_harden():
                     source_facts=["security-finding: app/report.py (eval/... detected)"])
     step = IdeaActionBridge().plan_idea(idea)
     assert step.action_type == "harden_security" and step.executable is True
+
+
+def test_correctness_bug_seeds_and_claims_subject_over_untested():
+    # A module that is BOTH untested and has a crash bug is framed by the more
+    # urgent crash bug, not "untested" — the high-severity signal claims it.
+    from app.tools.project_profile import ProjectProfile
+    from app.engine.idea_permutation import IdeaSeeder
+    profile = ProjectProfile(
+        root=".",
+        correctness_bug_modules=["app/buggy.py"],
+        untested_modules=["app/buggy.py"],
+    )
+    roots = IdeaSeeder().seed(profile)
+    buggy = [r for r in roots if r.subject == "app/buggy.py"]
+    assert len(buggy) == 1
+    assert buggy[0].source_facts[0].startswith("correctness-bug:")
+
+
+def test_correctness_bug_maps_to_executable_harden():
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Fix the likely crash/logic bug in app/b.py",
+                    subject="app/b.py", operator="root",
+                    source_facts=["correctness-bug: app/b.py (high-severity logic bug detected)"])
+    step = IdeaActionBridge().plan_idea(idea)
+    assert step.action_type == "harden_security" and step.executable is True

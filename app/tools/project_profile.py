@@ -24,6 +24,9 @@ class ProjectProfile:
     # Modules where the *content* detector found real security issues (eval,
     # os.system, pickle, ...), independent of the filename heuristic above.
     security_finding_modules: list[str] = field(default_factory=list)
+    # Modules with a high-severity logic bug (frozen-dataclass mutation, return
+    # in finally, unreachable except, ...) — a likely/guaranteed crash.
+    correctness_bug_modules: list[str] = field(default_factory=list)
     dependency_hubs: list[str] = field(default_factory=list)
     symbol_hubs: list[str] = field(default_factory=list)
     untested_modules: list[str] = field(default_factory=list)
@@ -101,6 +104,7 @@ class ProjectProfiler:
         dir_counter: Counter[str] = Counter()
         debt_counts: Counter[str] = Counter()
         security_finding_modules: list[str] = []
+        correctness_bug_modules: list[str] = []
 
         skipped_dirs = {".git", "__pycache__", ".apex", ".epistemic", "node_modules", ".venv", "venv", "dist", "build", ".turbo", ".next"}
         scanned = 0
@@ -152,6 +156,11 @@ class ProjectProfiler:
                 # not only files whose name matches a sensitive hint.
                 if self._has_security_finding(path):
                     security_finding_modules.append(rel_str)
+                # High-severity logic bugs (frozen-dataclass mutation, return in
+                # finally, unreachable except, ...) — likely/guaranteed crashes
+                # the idea engine should surface as a top fix, not just the grade.
+                if self._has_correctness_bug(path):
+                    correctness_bug_modules.append(rel_str)
 
         profile.extension_counts = dict(ext_counter.most_common())
         profile.top_directories = [name for name, _count in dir_counter.most_common(5)]
@@ -161,6 +170,7 @@ class ProjectProfiler:
         profile.config_files = sorted(dict.fromkeys(profile.config_files))
         profile.sensitive_paths = sorted(dict.fromkeys(profile.sensitive_paths))
         profile.security_finding_modules = sorted(dict.fromkeys(security_finding_modules))[:5]
+        profile.correctness_bug_modules = sorted(dict.fromkeys(correctness_bug_modules))[:5]
 
         # Modules with a meaningful cluster of debt markers, ranked by count
         # then path (stable/deterministic), capped like the other profile lists.
@@ -200,6 +210,19 @@ class ProjectProfiler:
         except OSError:
             return False
         return bool(security_labels(text))
+
+    def _has_correctness_bug(self, path: Path) -> bool:
+        """True if the detector finds a high-severity logic bug (likely crash)."""
+        from app.engine.detectors import detect
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return False
+        return any(
+            i.category == "bug" and i.severity == "high"
+            and not i.message.startswith("SyntaxError")
+            for i in detect(text)
+        )
 
     def _populate_python_structure(self, profile: ProjectProfile) -> None:
         analyzer = PythonStructureAnalyzer(self.root)
