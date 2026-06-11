@@ -2,54 +2,87 @@
 
 # 🧠 Apex Orchestrator
 
-### **A deterministic engineering agent that reasons about your codebase — and helps you act on it.**
+### A deterministic engineering agent that *reasons* about your codebase — and helps you act on it.
 
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-1100%2B%20passing-brightgreen)]()
-[![Coverage](https://img.shields.io/badge/coverage-~88%25-brightgreen)]()
-[![License](https://img.shields.io/badge/license-Apache%202.0-black)](LICENSE)
-[![No LLM required](https://img.shields.io/badge/LLM-optional-blueviolet)]()
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-1780%2B%20passing-2ea44f)]()
+[![Health grade](https://img.shields.io/badge/apex%20grade-A%2B%20(100)-2ea44f)]()
+[![No LLM required](https://img.shields.io/badge/LLM-optional%20·%20offline%20core-8957e5)]()
+[![License](https://img.shields.io/badge/license-Apache%202.0-24292f)](LICENSE)
 
-**Apex scans your project, proposes a grounded, prioritized engineering roadmap, and applies real, test‑verified fixes under strict safety gates.** Its core runs **deterministically — no LLM required, fully offline** — so it's cheap, reproducible, and safe to put in CI.
+<br/>
 
-[🚀 Quick Start](#-quick-start) · [💡 The Idea Engine](#-the-idea-engine) · [🗺️ Roadmap Mode](#️-roadmap-grounded-prioritization) · [🤖 Guarded Maintenance](#-guarded-autonomous-maintenance) · [🛡️ Safety](#️-safety-model) · [🧩 Claude Code](#-claude-code-integration)
+**Scan → Ideate → Prioritize → Fix → Prove.**
+Apex profiles your project, proposes a grounded engineering roadmap, and applies **real, test‑verified fixes** under strict safety gates — its core runs **deterministically, offline, with no LLM**, so it's cheap, reproducible, and safe to drop into CI.
+
+<br/>
+
+[**🚀 Quick Start**](#-quick-start) · [**💡 Idea Engine**](#-the-idea-engine) · [**🗺️ Roadmap**](#️-roadmap-grounded-prioritization) · [**🤖 Maintenance**](#-guarded-autonomous-maintenance) · [**🛡️ Safety**](#️-safety-model) · [**🧩 Claude Code**](#-claude-code-integration)
 
 </div>
 
 ---
 
+## ⚡ In 30 seconds
+
+```bash
+pip install -e .[dev]
+apex                    # assess the project, prioritize the work, apply safe fixes when it's safe to
+```
+
+> One command. No API keys, no network, no config. On a clean git tree it applies safe, test‑verified
+> fixes (and leaves them *uncommitted* so you review with `git diff`); on a dirty tree it just recommends.
+
+---
+
 ## 🎯 What it does
 
-Most code tools stop at a flat list of issues. Apex goes further — think of it as a small engineering brain with **eyes** (scanners), a **brain** (a deterministic reasoning engine), and **hands** (a sandboxed, test‑verified executor):
+Most code tools stop at a flat list of issues. Apex is a small engineering brain — **eyes** that see your code, a **brain** that reasons about how to develop it, and **hands** that change it safely.
+
+```mermaid
+flowchart LR
+    A["👁️ SCAN<br/>profile · security<br/>cycles · coverage"] --> B["💡 IDEATE<br/>fractal tree of<br/>grounded ideas"]
+    B --> C["🗺️ PRIORITIZE<br/>Stabilize→Secure→<br/>Evolve→Refine"]
+    C --> D["🤖 FIX<br/>AST patch · verify<br/>with your tests"]
+    D --> E["🔁 PROVE<br/>before/after +<br/>roadmap diff"]
+    E -.re-scan to a fixpoint.-> A
+    style A fill:#1f6feb,color:#fff,stroke:none
+    style B fill:#8957e5,color:#fff,stroke:none
+    style C fill:#bf8700,color:#fff,stroke:none
+    style D fill:#2ea44f,color:#fff,stroke:none
+    style E fill:#cf222e,color:#fff,stroke:none
+```
 
 | Stage | What Apex does | Command |
 |---|---|---|
-| 👁️ **Scan** | Profiles structure, finds security risks, import cycles, fragile/untested modules | built into every run |
+| 👁️ **Scan** | Profiles structure; finds security risks, import cycles, fragile/untested modules | every run |
 | 💡 **Ideate** | Generates a **fractal tree of grounded development ideas** from real code facts | `apex ideate` |
-| 🗺️ **Prioritize** | Sequences ideas into a **Stabilize → Secure → Evolve → Refine** roadmap with impact/effort/ROI grounded in real structure | `apex ideate --roadmap` |
-| 🔎 **Review** | Reviews a PR diff like a human reviewer — issues on the *changed* lines, with auto‑fix flags; CI‑ready | `apex review` |
-| 🤖 **Fix** | Applies real, **test‑verified** fixes with automatic rollback and safety gates | `apex maintain` |
-| 🔁 **Evolve** | Improves the project cycle by cycle **to a fixpoint**, then proves the gain (before/after + roadmap diff) | `apex evolve` |
-| 🧪 **Simulate** | Preview what autonomous improvement would do — on a throwaway copy, changing nothing | `apex simulate` |
-| 🎓 **Grade** | One memorable health grade (A–F) from all signals, with the cheapest ways to climb | `apex grade` |
+| 🗺️ **Prioritize** | Sequences ideas into a phased roadmap with **impact / effort / ROI** from measured structure | `apex ideate --roadmap` |
+| 🔎 **Review** | Reviews a PR diff like a human — issues on the *changed* lines, auto‑fix flags, CI‑ready | `apex review` |
+| 🤖 **Fix** | Applies real, **test‑verified** fixes with automatic rollback + safety gates | `apex maintain` |
+| 🔁 **Evolve** | Improves cycle by cycle **to a fixpoint**, then proves the gain | `apex evolve` |
+| 🧪 **Simulate** | Previews autonomous improvement — on a throwaway copy, changing nothing | `apex simulate` |
+| 🎓 **Grade** | One memorable health grade (A–F), with the cheapest ways to climb | `apex grade` |
 | 📊 **Report** | One self‑contained HTML dashboard of everything above | `apex dashboard` |
 
 Everything is **deterministic** (same input → same output) and **traceable** (every idea cites the concrete code fact that produced it). An optional LLM layer exists but is **off by default**.
 
-### What Apex detects & fixes
+<details>
+<summary><b>🔬 What Apex detects &amp; fixes</b> — one canonical AST detector powers both <code>review</code> and the grade (and honours inline <code>#&nbsp;noqa</code> / <code>#&nbsp;nosec</code>)</summary>
 
-One canonical AST detector powers both `apex review` and the health grade (and it
-honours inline `# noqa` / `# nosec` suppression, just like Bandit/ruff).
+<br/>
 
-| Category | Detected | Auto-fixed? |
+| Category | Detected | Auto‑fixed? |
 |---|---|---|
-| **Security** | `eval`/`exec`, `os.system`, `subprocess(shell=True)`, `pickle.loads`, `yaml.load`, f-string SQL, `tempfile.mktemp` (B306), weak `hashlib.md5/sha1` (B324), hardcoded secrets, bare `except` | eval→`literal_eval`, `os.system`→`subprocess.run(shlex.split(...))`, bare-except→`except Exception`; pickle/sql/tempfile/weak-hash **flagged** (no safe drop-in) |
-| **Correctness (logic bugs)** | frozen-dataclass mutation (`FrozenInstanceError`), `return`/`break`/`continue` in `finally`, unreachable `except`, identity-vs-literal (`x is 5`, F632), comparison-with-itself, `assert` on a tuple | `x is 5`→`x == 5` |
-| **Reliability** | `open()` without `encoding=`, network call without `timeout=` | `open(...)`→`encoding="utf-8"`; timeout flagged |
-| **Code debt** | `== None`→`is None`, mutable default args (value-preserving guard, `T \| None` when safe) | yes |
-| **Coverage** | untested modules, **shallow-only tests** (smoke/type stubs that assert no behaviour), complexity hotspots, TODO/FIXME debt clusters | generates real characterization tests (import + return-type contracts) |
+| **🔒 Security** | `eval`/`exec`, `os.system`, `subprocess(shell=True)`, `pickle.loads`, `yaml.load`, f‑string SQL, `tempfile.mktemp` (B306), weak `hashlib.md5/sha1` (B324), hardcoded secrets, bare `except`, `except BaseException` (B036) | eval→`literal_eval`, `os.system`→`subprocess.run(shlex.split(...))`, bare‑except→`except Exception`, `except BaseException`→`except Exception`; pickle/sql/tempfile/weak‑hash **flagged** |
+| **🐛 Correctness** | frozen‑dataclass mutation, `return`/`break`/`continue` in `finally`, unreachable `except`, identity‑vs‑literal (`x is 5`, F632), comparison‑with‑itself, raise‑without‑`from` (B904), `assert` on a tuple | `x is 5`→`x == 5`, negated membership/identity (E713/E714) |
+| **🧱 Reliability** | `open()` without `encoding=`, network call without `timeout=` | `open(...)`→`encoding="utf-8"`; timeout flagged |
+| **🧹 Code debt** | `== None`→`is None`, mutable default args (value‑preserving, `T \| None` when safe) | yes |
+| **🧪 Coverage** | untested modules, **shallow‑only tests** (smoke/type stubs), complexity **hotspots down to the function**, TODO/FIXME clusters, dead code (confidence‑ranked) | generates real characterization tests |
 
-The grade rolls these into five components — **Security · Architecture · Testing · Code debt · Correctness** — each severity-weighted, with test/fixture code excluded and shallow tests given only half credit (so a clean A+ can't be faked with stub tests).
+The grade rolls these into five components — **Security · Architecture · Testing · Code debt · Correctness** — each severity‑weighted, with test/fixture code excluded and shallow tests given only **half credit** (so a clean A+ can't be faked with stub tests).
+
+</details>
 
 ---
 
@@ -57,29 +90,29 @@ The grade rolls these into five components — **Security · Architecture · Tes
 
 ```bash
 # Install
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -e .[dev]
 
-# Verify (1100+ tests)
+# Verify (1780+ tests, fully offline)
 pytest -q
 ```
 
 **One command to remember — `apex`:**
 
 ```bash
-apex                       # autonomous review — and applies safe fixes when it's safe to
-apex "harden security"     # focus the review with a plain-English goal
-apex auto --recommend      # read-only: review and recommend, never touch the tree
-apex auto --apply --commit # full autonomy: apply verified fixes and commit each one
+apex                        # autonomous review — applies safe fixes when it's safe to
+apex "harden security"      # focus the review with a plain-English goal
+apex auto --recommend       # read-only: review and recommend, never touch the tree
+apex auto --apply --commit  # full autonomy: apply verified fixes and commit each one
 ```
 
-That's it. `apex` assesses the project, prioritizes the highest‑ROI work, and **decides for itself whether to act**: on a clean git tree with safe, test‑verified fixes available, it applies them autonomously (in roadmap order, capped, auto‑rolled‑back, *not committed* so you review with `git diff`); on a dirty tree — or when nothing is safely auto‑applicable — it recommends instead and tells you the one command to proceed. Use `--recommend` to force read‑only or `--apply` to override the gate. The specialized commands below are there when you want them, but you never *have* to memorize them.
+`apex` assesses the project, prioritizes the highest‑ROI work, and **decides for itself whether to act**: on a clean git tree with safe, verified fixes available it applies them (in roadmap order, capped, auto‑rolled‑back, *not committed*); on a dirty tree — or when nothing is safely auto‑applicable — it recommends and tells you the one command to proceed. The specialized commands below are there when you want them; you never *have* to memorize them.
 
-> No API keys, no network, no setup beyond `pip install`. The core never calls out to anything.
+---
 
-## 🛡️ Use Apex in CI (drop-in GitHub Action)
+## 🛡️ Use Apex in CI (drop‑in GitHub Action)
 
-Gate any repo on a deterministic, test-verified health grade — no API keys, no cost:
+Gate any repo on a deterministic, test‑verified health grade — no API keys, no cost:
 
 ```yaml
 # .github/workflows/apex.yml
@@ -98,49 +131,75 @@ jobs:
           fail-on-high: "true"              # fail if a high-severity issue is in the diff
 ```
 
-The action grades the project (`apex grade --min-score`) and runs a diff-scoped
-review of the PR (`apex review --fail-on-high`). Both are offline and
-deterministic, so the gate is fast and reproducible.
+The action grades the project (`apex grade --min-score`) and runs a diff‑scoped review (`apex review --fail-on-high`). Both are offline and deterministic, so the gate is fast and reproducible.
 
 ---
 
 ## 💡 The Idea Engine
 
-Apex doesn't only *analyze* code — it proposes **how to develop it**. The **Idea Permutation Engine** splits a project into development branches derived from its real structure, then permutes each branch through development "lenses" (extend, harden, test, simplify, document, integrate, generalize, observe) — the *"abc"* of every *"a"*. Optionally it **zooms fractally**: any idea can open into self‑similar sub‑ideas.
+Apex doesn't only *analyze* code — it proposes **how to develop it**. The **Idea Permutation Engine** splits a project into development branches derived from its real structure, then permutes each through development "lenses" — the *"abc"* applied to every *"a"*:
 
-```bash
-apex ideate --target=. --depth=2 --breadth=4              # the idea tree
-apex ideate --target=. --facets --facet-depth=2           # fractal zoom into specifics
-apex ideate --target=. --actions --top=10                 # map ideas → a supervised plan
+```mermaid
+flowchart TD
+    R["📦 your codebase"] --> F["grounded facts<br/>(hubs · risks · untested<br/>functions · debt)"]
+    F --> S1["🌱 root idea<br/>app/auth.py"]
+    F --> S2["🌱 root idea<br/>parser.py::tokenize()"]
+    S1 --> L1["🛡️ harden"]
+    S1 --> L2["🧪 test"]
+    S1 --> L3["📖 document"]
+    L1 --> Z["🔍 fractal zoom<br/>input validation ·<br/>error handling · limits"]
+    style R fill:#24292f,color:#fff,stroke:none
+    style F fill:#1f6feb,color:#fff,stroke:none
+    style S1 fill:#8957e5,color:#fff,stroke:none
+    style S2 fill:#8957e5,color:#fff,stroke:none
+    style Z fill:#bf8700,color:#fff,stroke:none
 ```
 
-Ask the engine to **show its work** for any idea — provenance, the value formula with the weights used, roadmap impact/effort/ROI grounded in fan‑in and LOC, and its caveats:
-
 ```bash
-apex explain x.a.c --target=.     # why does this idea score what it does?
-apex explain --target=.           # explain the single highest‑value idea
-apex ideate --target=. --pareto   # the efficient frontier (non‑dominated ideas only)
-apex ideate --target=. --adaptive # value‑guided fractal: high‑value branches grow deeper
+apex ideate --target=. --depth=2 --breadth=4      # the idea tree
+apex ideate --target=. --facets --facet-depth=2   # fractal zoom into specifics
+apex ideate --target=. --actions --top=10         # map ideas → a supervised plan
+apex explain x.a.c --target=.                      # why does this idea score what it does?
+apex ideate --target=. --pareto                   # the efficient frontier (non-dominated only)
 ```
 
-Each idea is **traceable to a concrete project fact**, scored by relevance × novelty × feasibility, and stress‑tested with counterfactual caveats.
+Every idea is **traceable to a concrete project fact**, scored by relevance × novelty × feasibility, and stress‑tested with **caveats that name the actual code** — including down to the *function*: Apex finds the heaviest‑branching functions no test ever names and asks for behavioral tests on *them*, not just the file.
 
-### It gets wiser over time
+<details>
+<summary><b>🧠 It gets wiser over time</b></summary>
 
-Apex is deterministic but not amnesiac. Every time it applies fixes (`auto`, `maintain`, `evolve`), it records which kinds of ideas actually landed cleanly vs. rolled back to `.apex/idea-memory.json`, and on later runs gives a bounded feasibility nudge toward the lenses with a strong track record **on your codebase**. Combined with `--adaptive` depth, the branches it has learned to trust grow deeper — a fractal that sharpens where it pays off. With no memory file, scoring is identical to a fresh engine, so determinism is never compromised. The engine also synthesizes ideas no single lens yields — e.g. a *security‑focused test suite* for a module that needs both hardening and tests, or *break this import cycle* from the dependency graph.
+<br/>
+
+Apex is deterministic but not amnesiac. Each time it applies fixes (`auto`, `maintain`, `evolve`), it records which kinds of ideas landed cleanly vs. rolled back to `.apex/idea-memory.json`, and on later runs gives a **bounded feasibility nudge** toward the lenses with a strong track record **on your codebase**. With `--adaptive` depth, the branches it has learned to trust grow deeper — a fractal that sharpens where it pays off. With no memory file, scoring is identical to a fresh engine, so determinism is never compromised. The engine also **synthesizes** ideas no single lens yields — e.g. a *security‑focused test suite* for a module needing both hardening and tests, or *break this import cycle* from the dependency graph.
+
+</details>
 
 ---
 
 ## 🗺️ Roadmap: grounded prioritization
 
-A list of ideas is noise without an order. `--roadmap` sequences the whole tree into the phases an experienced engineer would follow — **you build a safety net before you change risky code, secure what's exposed, then evolve, then polish** — and scores each idea with **impact, effort, and ROI grounded in measured structure**:
+A list of ideas is noise without an order. `--roadmap` sequences the whole tree into the phases an experienced engineer follows — **build a safety net before changing risky code, secure what's exposed, then evolve, then polish** — scoring each idea with **impact, effort, and ROI grounded in measured structure**:
+
+```mermaid
+flowchart LR
+    S["🩹 Stabilize<br/>safety net"] --> Se["🔒 Secure<br/>exposed paths"]
+    Se --> E["🚀 Evolve<br/>new capability"]
+    E --> R["✨ Refine<br/>polish"]
+    style S fill:#cf222e,color:#fff,stroke:none
+    style Se fill:#bf8700,color:#fff,stroke:none
+    style E fill:#1f6feb,color:#fff,stroke:none
+    style R fill:#2ea44f,color:#fff,stroke:none
+```
 
 - **Impact** = real *blast radius* (how many modules import the subject) + structural risk.
 - **Effort** = real *size* (measured LOC + branch complexity) + how deep the idea is.
 - **Quick wins** = high impact, low effort — surfaced across all phases.
 
 ```bash
-apex ideate --target=. --roadmap
+apex ideate --target=. --roadmap                                  # the phased plan
+apex ideate --target=. --roadmap --save                          # snapshot today's roadmap
+apex ideate --target=. --roadmap --diff                          # what's new / resolved / shifted?
+apex ideate --target=. --roadmap --actions --phase=Secure --apply --verify
 ```
 
 ```text
@@ -153,60 +212,44 @@ apex ideate --target=. --roadmap
 ## Phase 1: Stabilize — Build a safety net before changing risky code
 - x.a.c  Test: app/engine/debug_engine.py    (ROI 2.41 · imported by 6 · 330 LOC)
 - x.c    Reduce fragility of claim_analyzer.py (ROI 1.86 · imported by 4 · 50 LOC)
-...
-## Phase 2: Secure   ## Phase 3: Evolve   ## Phase 4: Refine
-```
-
-**Track progress across runs** — the engine remembers its own recommendations:
-
-```bash
-apex ideate --target=. --roadmap --save     # snapshot today's roadmap
-# ...do some work...
-apex ideate --target=. --roadmap --diff     # what's new / resolved / shifted ROI?
-```
-
-**Or turn a phase straight into a guarded apply plan:**
-
-```bash
-apex ideate --target=. --roadmap --actions --phase=Secure --apply --verify
 ```
 
 ---
 
 ## 🤖 Guarded autonomous maintenance
 
-One command runs the whole guarded loop: **scan → generate fixes → apply → verify with your tests → roll back failures → commit → report.** Every change is gated by `ModePolicy` + `SafetyGates`, individually verified against your test suite, and **automatically rolled back if it breaks anything** — a maintenance run can never leave your project broken.
+One command runs the whole guarded loop: **scan → generate fixes → apply → verify with your tests → roll back failures → commit → report.** Every change is gated by `ModePolicy` + `SafetyGates`, individually verified, and **automatically rolled back if it breaks anything** — a maintenance run can never leave your project broken.
 
 ```bash
-apex maintain --target=. --mode=report                      # plan only, no changes
-apex maintain --target=. --mode=supervised                  # apply verified fixes, no commit
+apex maintain --target=. --mode=report                  # plan only, no changes
+apex maintain --target=. --mode=supervised              # apply verified fixes, no commit
 apex maintain --target=. --mode=autonomous --commit --out=MAINT.md
 ```
-
-Real deterministic, AST‑based fixes it can apply and verify:
 
 | Risk | Fix |
 |---|---|
 | `eval(s)` | → `ast.literal_eval(s)` |
-| `os.system(cmd)` | → `subprocess.run(...)` |
-| bare `except:` | → `except Exception:` |
+| `os.system(cmd)` | → `subprocess.run(shlex.split(cmd))` |
+| bare `except:` / `except BaseException:` | → `except Exception:` |
 | `yaml.load(s)` | → `yaml.safe_load(s)` |
-| `x == None` | → `x is None` (PEP 8, behavior‑preserving) |
+| `x == None` | → `x is None` (behavior‑preserving) |
+| `x is 5` | → `x == 5` |
 | missing docstrings | → generated docstrings |
 | `pickle.loads` / SQL f‑strings | flagged (no unsafe auto‑rewrite) |
 
 The run ends with a Markdown report of what was applied, rolled back, or blocked — with per‑step commit hashes in autonomous mode.
 
----
+<details>
+<summary><b>🔁 Self‑improvement loop (<code>apex evolve</code>)</b> — converge to a fixpoint, then prove the gain</summary>
 
-## 🔁 Self‑improvement loop (`apex evolve`)
+<br/>
 
-`apex evolve` closes the loop: it applies guarded fixes **cycle after cycle until it reaches a fixpoint** (no further fix can be safely applied and verified), then **proves the project got healthier** — a before/after of security findings, open safe fixes, and mean ROI, plus a roadmap **diff** of exactly which ideas it resolved.
+`apex evolve` applies guarded fixes **cycle after cycle until a fixpoint** (no further fix can be safely applied and verified), then **proves the project got healthier** — a before/after of security findings, open safe fixes, and mean ROI, plus a roadmap **diff** of exactly which ideas it resolved.
 
 ```bash
-apex evolve --target=. --max-cycles=3          # apply to a fixpoint, prove the gain
-apex evolve --target=. --dry-run               # preview the first cycle, change nothing
-apex evolve --target=. --commit                # commit each verified fix as it lands
+apex evolve --target=. --max-cycles=3      # apply to a fixpoint, prove the gain
+apex evolve --target=. --dry-run           # preview the first cycle, change nothing
+apex evolve --target=. --commit            # commit each verified fix as it lands
 ```
 
 ```text
@@ -219,20 +262,9 @@ Ran 3 cycle(s) · applied 9 fix(es) · rolled back 0 · mode supervised
 ## ✅ Ideas resolved (no longer surface)
 - Add a first test layer for app/cfg.py
 - Harden: app/parse.py
-...
 ```
 
-Because every fix is test‑verified with automatic rollback, an evolve run converges the codebase toward fewer findings without ever leaving it broken.
-
----
-
-## 📊 Dashboard
-
-```bash
-apex dashboard --target=. --out=report.html
-```
-
-A single self‑contained HTML file (no external assets): project overview, scan findings, **architecture health** (import cycles, fragile modules), the **idea tree**, **tree‑shape telemetry**, the **engineering roadmap** with ROI bars, the action plan, and reasoning telemetry.
+</details>
 
 ---
 
@@ -250,33 +282,47 @@ Apex operates in three explicit modes, enforced by `ModePolicy`:
 
 ---
 
+## 📊 Dashboard
+
+```bash
+apex dashboard --target=. --out=report.html
+```
+
+A single self‑contained HTML file (no external assets): project overview, scan findings, **architecture health** (import cycles, fragile modules), the **idea tree**, **tree‑shape telemetry**, the **engineering roadmap** with ROI bars, the action plan, and reasoning telemetry.
+
+---
+
 ## 🧩 Claude Code integration
 
 This repo ships first‑class [Claude Code](https://code.claude.com) customizations in `.claude/`, so you (and Claude) can drive *and extend* Apex from your editor:
 
-- **Slash commands**: `/apex-ideate`, `/apex-roadmap`, `/apex-maintain` (safe dry‑run default), `/apex-dashboard`
-- **Subagents**: `apex-auditor` (read‑only health report), `apex-test-writer` (parallel coverage specialist), `apex-engineer` (builds a deterministic engine feature end‑to‑end)
-- **Skills**: `apex` (run & extend), `apex-cover` (coverage recipe), `apex-ship` (commit/verify discipline)
+- **Slash commands** — `/apex-ideate`, `/apex-roadmap`, `/apex-maintain` (safe dry‑run default), `/apex-dashboard`
+- **Subagents** — `apex-auditor` (read‑only health report), `apex-test-writer` (parallel coverage specialist), `apex-engineer` (builds a deterministic engine feature end‑to‑end)
+- **Skills** — `apex` (run & extend), `apex-cover` (coverage recipe), `apex-ship` (commit/verify discipline)
 
 ---
 
 ## 🏗️ Architecture
 
-```text
-┌──────────────────────────────────────────────────────────────────┐
-│                        APEX ORCHESTRATOR                          │
-├──────────────────────────────────────────────────────────────────┤
-│  Eyes (Scanners)     │  Brain (Engine)        │  Hands (Executor) │
-│  ────────────────    │  ──────────────        │  ──────────────── │
-│  Project profiler    │  Idea permutation tree │  Action executor  │
-│  Security / AST scan │  Roadmap (impact/effort│  Semantic patches │
-│  Dependency graph    │   /ROI from real code) │  Safety gates     │
-│  Code metrics        │  Tree‑shape telemetry  │  Verify+rollback  │
-├──────────────────────────────────────────────────────────────────┤
-│  Memory & Feedback   │  Policy                │  Reports          │
-│  Cross‑run tracker   │  Mode policy           │  Markdown / HTML  │
-│  Roadmap history     │  Safety gates          │  SARIF / Mermaid  │
-└──────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph EYES["👁️ EYES · Scanners"]
+        direction LR
+        E1["Project profiler"] ~~~ E2["Security / AST scan"] ~~~ E3["Dependency graph"] ~~~ E4["Code metrics"]
+    end
+    subgraph BRAIN["🧠 BRAIN · Engine"]
+        direction LR
+        B1["Idea permutation tree"] ~~~ B2["Roadmap<br/>impact / effort / ROI"] ~~~ B3["Tree-shape telemetry"]
+    end
+    subgraph HANDS["✋ HANDS · Executor"]
+        direction LR
+        H1["Semantic AST patches"] ~~~ H2["Safety gates"] ~~~ H3["Verify + rollback"]
+    end
+    EYES --> BRAIN --> HANDS
+    HANDS -.learning memory + roadmap history.-> BRAIN
+    style EYES fill:#0d1117,color:#58a6ff,stroke:#1f6feb
+    style BRAIN fill:#0d1117,color:#bc8cff,stroke:#8957e5
+    style HANDS fill:#0d1117,color:#3fb950,stroke:#2ea44f
 ```
 
 Optional surfaces: an **MCP server** (stdio + HTTP/SSE) for IDE integration, a **Prometheus** metrics endpoint, an **LSP** server, and a plugin system with hook points and runtime‑contributed idea operators.
@@ -285,14 +331,14 @@ Optional surfaces: an **MCP server** (stdio + HTTP/SSE) for IDE integration, a *
 
 ## 📈 Project status
 
-- ✅ **Idea Permutation Engine** — fractal idea tree (+ recursive facet zoom, adaptive value‑guided depth, synthesis & module‑pair ideas)
-- ✅ **Roadmap mode** — phase sequencing + impact/effort/ROI grounded in fan‑in and measured LOC/complexity, the Pareto efficient frontier, and cross‑run diffing
+- ✅ **Idea Permutation Engine** — fractal idea tree, recursive facet zoom, adaptive value‑guided depth, **function‑level** targets, synthesis & module‑pair ideas
+- ✅ **Roadmap mode** — phase sequencing + impact/effort/ROI grounded in fan‑in and measured LOC/complexity, the Pareto frontier, cross‑run diffing
 - ✅ **Learning memory** — per‑lens apply outcomes bias future scoring (bounded, opt‑in, deterministic)
-- ✅ **Self‑improvement loop** (`apex evolve`) — converge to a fixpoint with a circuit breaker, prove the gain, and track the trajectory
+- ✅ **Self‑improvement loop** (`apex evolve`) — converge to a fixpoint, prove the gain, track the trajectory
 - ✅ **Guarded maintenance** — real AST fixes, test‑verified, auto‑rollback, optional per‑fix commits
-- ✅ **Dashboard, debug, self‑audit, MCP, metrics, LSP**
+- ✅ **Dashboard, debug, deadcode, hotspots, self‑audit, MCP, metrics, LSP**
 - ✅ **Deterministic, offline core** — LLM is strictly opt‑in
-- ✅ **1100+ tests**, ~88% coverage, ruff‑linted, CI‑gated
+- ✅ **1780+ tests**, ruff‑linted, CI‑gated, self‑graded **A+**
 
 **Experimental (not production‑ready):** the Kubernetes operator, Helm chart, and VS Code extension are skeletal.
 
@@ -315,6 +361,7 @@ ruff check app/    # lint
 Licensed under **Apache‑2.0**. See [LICENSE](LICENSE).
 
 <div align="center">
+<br/>
 
 **Built for engineers who believe a codebase deserves real reasoning — not just a linter.**
 
