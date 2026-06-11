@@ -159,6 +159,73 @@ def test_synthesis_creates_security_test_suite_idea(tmp_path):
     assert "synthesized" in rep.stats
 
 
+def test_convergence_idea_when_signals_agree_on_one_subject():
+    # A subject flagged by two *different* risk dimensions (sensitive + untested)
+    # yields a single high-priority convergence idea naming both.
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+
+    profile = ProjectProfile(
+        root=".",
+        sensitive_paths=["app/auth.py"],
+        untested_modules=["app/auth.py", "app/util.py"],   # util only untested -> no convergence
+        hotspot_modules=["app/auth.py"],                   # third dimension on auth
+    )
+    eng = IdeaPermutationEngine({"max_total_ideas": 40, "max_idea_depth": 1, "breadth": 3}, ".")
+    eng._has_objective = False
+    eng._chain_counts, eng._subject_counts = {}, {}
+    ideas = eng._convergence_ideas(profile, RelevanceScorer(""), GraphStore())
+    assert len(ideas) == 1                                 # only auth.py converges
+    idea = ideas[0]
+    assert idea.subject == "app/auth.py"
+    assert "3 independent analyses converge" in idea.title
+    for phrase in ("security-sensitive", "a complexity hotspot", "untested"):
+        assert phrase in idea.title
+    assert idea.kind == "synthesis"
+    assert idea.source_facts[0].startswith("convergence:")
+    # More agreeing signals -> higher feasibility than a 2-signal convergence.
+    assert idea.feasibility >= 0.9
+
+
+def test_convergence_needs_two_distinct_dimensions():
+    # critically-untested + untested are the SAME dimension (coverage), so a
+    # subject carrying only those does NOT converge.
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+
+    profile = ProjectProfile(
+        root=".",
+        untested_modules=["app/x.py"],
+        critical_untested_modules=["app/x.py"],
+    )
+    eng = IdeaPermutationEngine({"max_total_ideas": 40, "max_idea_depth": 1, "breadth": 3}, ".")
+    eng._has_objective = False
+    eng._chain_counts, eng._subject_counts = {}, {}
+    assert eng._convergence_ideas(profile, RelevanceScorer(""), GraphStore()) == []
+
+
+def test_convergence_idea_is_the_highest_impact_in_roadmap(tmp_path):
+    # End-to-end: a sensitive + untested module should produce a convergence
+    # idea that the roadmap ranks as the single highest-impact item.
+    from app.engine.idea_roadmap import RoadmapSynthesizer
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "auth.py").write_text(
+        "import os\ndef login(pw):\n    return os.system(pw)\n"   # sensitive name + risky
+    )
+    (tmp_path / "app" / "calm.py").write_text("def calm():\n    return 1\n")
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 60, "max_idea_depth": 1, "breadth": 4}, tmp_path
+    ).run()
+    conv = [i for i in rep.ideas if i.source_facts and i.source_facts[0].startswith("convergence:")]
+    assert conv, "expected a convergence idea for the sensitive+untested module"
+    roadmap = RoadmapSynthesizer().build(rep)
+    all_items = [it for ph in roadmap.phases for it in ph.items]
+    top_impact = max(all_items, key=lambda it: it.impact)
+    assert top_impact.subject == "app/auth.py"
+
+
 def test_module_pair_ideas_from_dependency_edges(tmp_path):
     # app/b.py imports app/a.py -> a dependency edge -> a "standardize interface" pair idea.
     (tmp_path / "app").mkdir()

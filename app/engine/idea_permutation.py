@@ -463,6 +463,75 @@ class IdeaPermutationEngine:
             stats=stats,
         )
 
+    # Risk dimensions a module can be flagged by. Each is an *independent*
+    # concern, so a subject triggering two of them is genuinely higher-leverage
+    # than one. Coverage is a single dimension (a module can't be both untested
+    # and shallow), resolved to its most-severe present label below.
+    _CONVERGENCE_DIMS = [
+        ("sensitive_paths", "security-sensitive"),
+        ("hotspot_modules", "a complexity hotspot"),
+        ("fragile_modules", "fragile"),
+        ("dependency_hubs", "a central dependency hub"),
+        ("debt_marker_modules", "debt-laden"),
+    ]
+
+    def _convergence_ideas(
+        self, profile: ProjectProfile, relevance: RelevanceScorer, graph: GraphStore
+    ) -> list[IdeaNode]:
+        """Subjects independently flagged by >=2 risk dimensions — the engine's
+        highest-leverage targets, where multiple analyses agree."""
+        from collections import defaultdict
+
+        dims_by_subject: dict[str, list[str]] = defaultdict(list)
+        for attr, label in self._CONVERGENCE_DIMS:
+            for subject in (getattr(profile, attr, []) or []):
+                dims_by_subject[subject].append(label)
+
+        # Coverage is one dimension; take the most-severe label a subject carries.
+        crit = set(getattr(profile, "critical_untested_modules", []) or [])
+        untested = set(getattr(profile, "untested_modules", []) or [])
+        shallow = set(getattr(profile, "shallow_tested_modules", []) or [])
+        for subject in sorted(crit | untested | shallow):
+            if subject in crit:
+                dims_by_subject[subject].append("critically untested")
+            elif subject in untested:
+                dims_by_subject[subject].append("untested")
+            else:
+                dims_by_subject[subject].append("only shallowly tested")
+
+        converged = [
+            (subject, labels) for subject, labels in dims_by_subject.items()
+            if len(labels) >= 2
+        ]
+        # Strongest convergence first (more agreeing signals → higher priority).
+        converged.sort(key=lambda t: (-len(t[1]), t[0]))
+
+        out: list[IdeaNode] = []
+        for idx, (subject, labels) in enumerate(converged[:3]):
+            n = len(labels)
+            node = IdeaNode(
+                id=f"conv-{idx}",
+                title=f"Prioritize {subject} — {n} independent analyses converge ({_join_phrase(labels)})",
+                subject=subject,
+                rationale=(
+                    f"Synthesized: {n} independent signals flag this same module, so "
+                    "convergence marks it the highest-leverage target — stabilize and "
+                    "secure it before lower-agreement work."
+                ),
+                branch_path=f"x.c{idx}",
+                depth=1,
+                operator="synthesis",
+                operator_chain=["harden"],
+                source_facts=[f"convergence: {'+'.join(labels)}"],
+                kind="synthesis",
+                # More converging signals = a clearer, higher-priority mandate.
+                feasibility=min(0.95, 0.7 + 0.1 * n),
+            )
+            self._score(node, relevance)
+            if not graph.has_similar_claim(node.title):
+                out.append(node)
+        return out
+
     def _synthesize(
         self,
         emitted: list[IdeaNode],
@@ -482,6 +551,13 @@ class IdeaPermutationEngine:
         non-conflicting branch path (`x.s*` / `x.p*`).
         """
         out: list[IdeaNode] = []
+
+        # 0. Convergence synthesis (highest priority) — the engine's own
+        # "everything points here" insight: a single subject independently
+        # flagged by two or more *different* risk dimensions is a higher-leverage
+        # target than any one signal implies. This reasons across the profile's
+        # signals instead of mining one fact at a time.
+        out.extend(self._convergence_ideas(profile, relevance, graph))
 
         # 1. Cross-lens synthesis per subject.
         lenses_by_subject: dict[str, set[str]] = {}
@@ -809,12 +885,13 @@ _FACT_HINTS: dict[str, str] = {
     "debt-markers": "refactor cleanup deferred work",
     "complexity-hotspot": "complex check validation edge cases simplify",
     "hotspot-function": "complex check validation edge cases",
+    "convergence": "complex secret guard validation check edge cases",
     "shallow-coverage": "check validation edge cases assert behaviour",
     "missing-ci": "ci workflow run tests automation",
 }
 
 # Root fact labels where reliability/security lenses matter most.
-_SECURITY_LABELS = {"sensitive-path", "critical-untested", "untested", "partial-coverage", "fragile", "complexity-hotspot", "shallow-coverage", "hotspot-function"}
+_SECURITY_LABELS = {"sensitive-path", "critical-untested", "untested", "partial-coverage", "fragile", "complexity-hotspot", "shallow-coverage", "hotspot-function", "convergence"}
 
 
 def _context_weight(node: IdeaNode, op_name: str, security_pressure: float = 1.0) -> float:
@@ -841,6 +918,13 @@ _KIND_HINTS: dict[str, str] = {
     "synthesis": "check validation edge cases security",
     "pair": "interface boundary coupling refactor",
 }
+
+
+def _join_phrase(labels: list[str]) -> str:
+    """Readable English join: ['a', 'b', 'c'] -> 'a, b and c'."""
+    if len(labels) <= 1:
+        return labels[0] if labels else ""
+    return f"{', '.join(labels[:-1])} and {labels[-1]}"
 
 
 def _caveat_hint(node: IdeaNode) -> str:
