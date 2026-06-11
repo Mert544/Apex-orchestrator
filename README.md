@@ -17,7 +17,7 @@ Apex profiles your project, proposes a grounded engineering roadmap, and applies
 
 <br/>
 
-[**🚀 Quick Start**](#-quick-start) · [**💡 Idea Engine**](#-the-idea-engine) · [**🗺️ Roadmap**](#️-roadmap-grounded-prioritization) · [**🤖 Maintenance**](#-guarded-autonomous-maintenance) · [**🛡️ Safety**](#️-safety-model) · [**🧩 Claude Code**](#-claude-code-integration)
+[**🌐 Website**](https://mert544.github.io/Apex-orchestrator/) · [**📊 Live demo**](https://mert544.github.io/Apex-orchestrator/demo.html) · [**🚀 Quick Start**](#-quick-start) · [**💡 Idea Engine**](#-the-idea-engine) · [**🗺️ Roadmap**](#️-roadmap-grounded-prioritization) · [**🤖 Maintenance**](#-guarded-autonomous-maintenance) · [**🛡️ Safety**](#️-safety-model)
 
 </div>
 
@@ -26,8 +26,8 @@ Apex profiles your project, proposes a grounded engineering roadmap, and applies
 ## ⚡ In 30 seconds
 
 ```bash
-pip install -e .[dev]
-apex                    # assess the project, prioritize the work, apply safe fixes when it's safe to
+pip install apex-orchestrator   # from a clone: pip install -e .[dev]
+apex                            # assess, prioritize, apply safe fixes when it's safe to
 ```
 
 > One command. No API keys, no network, no config. On a clean git tree it applies safe, test‑verified
@@ -124,7 +124,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }            # full history for the diff review
-      - uses: mert544/apex-orchestrator@main
+      - uses: Mert544/Apex-orchestrator@v1
         with:
           min-score: "80"                   # fail the PR if the grade drops below 80
           base: origin/${{ github.base_ref }}

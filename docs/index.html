@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Apex Orchestrator — deterministic engineering agent</title>
+<meta name="description" content="Scan a codebase, generate a grounded roadmap, and apply test-verified fixes — offline, no LLM, no API keys, free."/>
+<style>
+:root{
+  --bg:#0b0f1a; --bg2:#0f1524; --card:#121a2e; --line:#22304d;
+  --ink:#e6ecff; --muted:#8b9bbd; --dim:#5b6b8c;
+  --blue:#58a6ff; --purple:#bc8cff; --green:#3fb950; --gold:#e3b341; --red:#ff7b72;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6}
+a{color:var(--blue);text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+/* hero */
+.hero{padding:84px 0 48px;text-align:center;background:
+  radial-gradient(800px 400px at 50% -10%, rgba(88,166,255,.18), transparent 60%),
+  radial-gradient(600px 300px at 80% 0%, rgba(188,140,255,.12), transparent 60%)}
+.hero h1{font-size:clamp(34px,6vw,58px);letter-spacing:-1px}
+.hero h1 .gx{background:linear-gradient(90deg,var(--blue),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+.tag{margin:14px auto 0;max-width:740px;font-size:clamp(16px,2.4vw,20px);color:var(--muted)}
+.badges{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:26px 0 8px}
+.badge{font-size:12.5px;padding:5px 12px;border:1px solid var(--line);border-radius:999px;color:var(--muted);background:var(--bg2)}
+.badge b{color:var(--ink)}
+.badge.grade{border-color:rgba(63,185,80,.5);color:var(--green)}
+.cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:30px}
+.btn{display:inline-block;padding:12px 22px;border-radius:10px;font-weight:600;font-size:15px}
+.btn.primary{background:linear-gradient(90deg,#1f6feb,#8957e5);color:#fff}
+.btn.primary:hover{filter:brightness(1.12);text-decoration:none}
+.btn.ghost{border:1px solid var(--line);color:var(--ink);background:var(--bg2)}
+.btn.ghost:hover{border-color:var(--blue);text-decoration:none}
+
+/* install bar */
+.install{margin:34px auto 0;max-width:560px;display:flex;align-items:center;gap:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#0a0f1d}
+.install .ps1{padding:13px 0 13px 16px;color:var(--green)}
+.install input{flex:1;background:none;border:none;color:var(--ink);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14.5px;padding:13px 8px;outline:none}
+.install button{border:none;background:var(--bg2);color:var(--muted);padding:13px 16px;cursor:pointer;border-left:1px solid var(--line);font-size:13px}
+.install button:hover{color:var(--ink)}
+
+/* pipeline */
+.pipe{display:flex;gap:8px;justify-content:center;align-items:stretch;flex-wrap:wrap;margin:54px 0 0}
+.stage{flex:1;min-width:130px;max-width:185px;padding:14px 10px;border-radius:12px;text-align:center;border:1px solid var(--line);background:var(--card)}
+.stage .ico{font-size:22px}
+.stage b{display:block;margin-top:4px;font-size:14px}
+.stage span{font-size:12px;color:var(--muted)}
+.stage.s1{border-top:3px solid var(--blue)} .stage.s2{border-top:3px solid var(--purple)}
+.stage.s3{border-top:3px solid var(--gold)} .stage.s4{border-top:3px solid var(--green)}
+.stage.s5{border-top:3px solid var(--red)}
+.arrow{align-self:center;color:var(--dim);font-size:18px}
+
+/* sections */
+section{padding:64px 0 8px}
+h2{font-size:clamp(24px,3.6vw,32px);letter-spacing:-.5px;margin-bottom:8px}
+.sub{color:var(--muted);max-width:720px;margin-bottom:30px}
+
+/* feature grid */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px}
+.card .ico{font-size:24px}
+.card h3{font-size:16.5px;margin:10px 0 6px}
+.card p{font-size:14px;color:var(--muted)}
+.card code{font-size:12.5px;color:var(--blue);background:#0a0f1d;padding:2px 7px;border-radius:6px}
+
+/* terminal */
+.term{background:#0a0f1d;border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:8px}
+.term .bar{display:flex;gap:7px;padding:11px 14px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.term .dot{width:11px;height:11px;border-radius:50%}
+.term pre{padding:20px 22px;font-size:13.5px;line-height:1.75;overflow-x:auto;color:#c9d6f2}
+.term .c{color:var(--dim)} .term .g{color:var(--green)} .term .b{color:var(--blue)}
+.term .y{color:var(--gold)} .term .p{color:var(--purple)} .term .r{color:var(--red)}
+
+/* demo banner */
+.demo{margin-top:26px;display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;background:linear-gradient(90deg,rgba(31,111,235,.14),rgba(137,87,229,.14));border:1px solid var(--line);border-radius:14px;padding:24px 26px}
+.demo b{font-size:17px}
+.demo p{color:var(--muted);font-size:14px}
+
+/* action yaml */
+pre.code{background:#0a0f1d;border:1px solid var(--line);border-radius:14px;padding:20px 22px;font-size:13.5px;line-height:1.7;overflow-x:auto;color:#c9d6f2}
+pre.code .k{color:var(--purple)} pre.code .s{color:var(--green)} pre.code .c{color:var(--dim)}
+
+footer{margin-top:80px;padding:34px 0 44px;border-top:1px solid var(--line);text-align:center;color:var(--dim);font-size:14px}
+footer a{color:var(--muted)}
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="wrap">
+    <h1>🧠 <span class="gx">Apex Orchestrator</span></h1>
+    <p class="tag">A deterministic engineering agent that <b>reasons</b> about your codebase — scan, get a grounded roadmap, and apply <b>test-verified fixes</b>. Offline. No LLM. No API keys. Free.</p>
+    <div class="badges">
+      <span class="badge grade">🏆 self-grade <b>A+ (100)</b></span>
+      <span class="badge">✅ <b>1790+</b> tests</span>
+      <span class="badge">🔌 <b>zero</b> API keys</span>
+      <span class="badge">♻️ deterministic — same input, same output</span>
+      <span class="badge">⚖️ Apache-2.0</span>
+    </div>
+    <div class="install">
+      <span class="ps1 mono">$</span>
+      <input class="mono" id="pipcmd" value="pip install apex-orchestrator" readonly/>
+      <button onclick="navigator.clipboard.writeText(document.getElementById('pipcmd').value);this.textContent='copied!';setTimeout(()=>this.textContent='copy',1400)">copy</button>
+    </div>
+    <div class="cta">
+      <a class="btn primary" href="demo.html">📊 See the live demo report</a>
+      <a class="btn ghost" href="https://github.com/Mert544/Apex-orchestrator">⭐ Star on GitHub</a>
+    </div>
+
+    <div class="pipe">
+      <div class="stage s1"><div class="ico">👁️</div><b>Scan</b><span>security · cycles · coverage</span></div>
+      <div class="arrow">→</div>
+      <div class="stage s2"><div class="ico">💡</div><b>Ideate</b><span>fractal tree of grounded ideas</span></div>
+      <div class="arrow">→</div>
+      <div class="stage s3"><div class="ico">🗺️</div><b>Prioritize</b><span>impact / effort / ROI</span></div>
+      <div class="arrow">→</div>
+      <div class="stage s4"><div class="ico">🤖</div><b>Fix</b><span>AST patch, verified by your tests</span></div>
+      <div class="arrow">→</div>
+      <div class="stage s5"><div class="ico">🔁</div><b>Prove</b><span>before / after, to a fixpoint</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+<section id="why">
+  <h2>Why Apex?</h2>
+  <p class="sub">LLM review tools cost money on every PR and answer differently every run. Apex's core is a <b>deterministic reasoning engine</b> — it's free to run forever, reproducible in CI, and your code never leaves the machine.</p>
+  <div class="grid">
+    <div class="card"><div class="ico">🔒</div><h3>Finds what matters</h3><p>One canonical AST detector: <code>eval</code>/<code>exec</code>, shell &amp; SQL injection, unsafe pickle/yaml, weak hashes, swallowed exceptions, logic bugs like <code>x is 5</code> — with inline <code># noqa</code>/<code># nosec</code> respected.</p></div>
+    <div class="card"><div class="ico">🧪</div><h3>Fixes are proven</h3><p>Every auto-fix is applied in a sandbox, <b>verified against your test suite</b>, and rolled back automatically if anything breaks. A maintenance run can never leave the project broken.</p></div>
+    <div class="card"><div class="ico">💡</div><h3>Ideas, not just issues</h3><p>The Idea Permutation Engine proposes <i>how to develop</i> the project — down to the <b>function</b>: “write behavioral tests for <code>_expand()</code> (complexity 23, never named by a test)”.</p></div>
+    <div class="card"><div class="ico">🎓</div><h3>One honest grade</h3><p>Security · Architecture · Testing · Code debt · Correctness — severity-weighted, fixture-aware, and shallow stub tests only get half credit. An A+ can't be faked.</p></div>
+  </div>
+</section>
+
+<section id="see">
+  <h2>See it think</h2>
+  <p class="sub">This is real output. Every idea cites the code fact that produced it, and the caveat names the actual function.</p>
+  <div class="term">
+    <div class="bar"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span></div>
+    <pre>
+<span class="c">$</span> <span class="g">apex</span> ideate --target=. --depth=2
+
+<span class="b">## x.p — Write behavioral tests for _expand() in app/orchestrator/core.py</span>
+<span class="b">        (complexity 23, never named by a test)   (value 0.8)</span>
+   <span class="c">facts: hotspot-function: app/orchestrator/core.py::FractalResearchOrchestrator._expand</span>
+   <span class="y">⚠ What if _expand() hits its rarest branch with an input no test has ever exercised?</span>
+
+<span class="c">$</span> <span class="g">apex</span> grade
+
+<span class="p"># Project health: 🏆 A+  (100/100)</span>
+  Security −0 · Architecture −0 · Testing −0 · Code debt −0 · Correctness −0
+
+<span class="c">$</span> <span class="g">apex</span> maintain --mode=supervised
+  <span class="g">✔</span> eval(cmd) → ast.literal_eval(cmd)        <span class="c">verified · 1793 tests green</span>
+  <span class="g">✔</span> except: → except Exception:              <span class="c">verified</span>
+  <span class="r">↩</span> risky patch rolled back automatically    <span class="c">tests failed → reverted</span>
+</pre>
+  </div>
+
+  <div class="demo">
+    <div>
+      <b>📊 Live demo: Apex grading itself</b>
+      <p>This very site regenerates the report from the latest commit — the dashboard below is Apex analyzing its own codebase.</p>
+    </div>
+    <a class="btn primary" href="demo.html">Open the report →</a>
+  </div>
+</section>
+
+<section id="ci">
+  <h2>Gate your PRs — free, in 2 minutes</h2>
+  <p class="sub">A drop-in GitHub Action: grade the project and review the diff on every pull request. Deterministic, so the gate is fast and reproducible.</p>
+  <pre class="code"><span class="c"># .github/workflows/apex.yml</span>
+<span class="k">name:</span> Apex health gate
+<span class="k">on:</span> [pull_request]
+<span class="k">jobs:</span>
+  <span class="k">apex:</span>
+    <span class="k">runs-on:</span> ubuntu-latest
+    <span class="k">steps:</span>
+      - <span class="k">uses:</span> <span class="s">actions/checkout@v4</span>
+        <span class="k">with:</span> { fetch-depth: 0 }
+      - <span class="k">uses:</span> <span class="s">Mert544/Apex-orchestrator@v1</span>
+        <span class="k">with:</span>
+          <span class="k">min-score:</span> <span class="s">"80"</span>          <span class="c"># fail the PR if the grade drops below 80</span>
+          <span class="k">base:</span> <span class="s">origin/${{ github.base_ref }}</span>
+          <span class="k">fail-on-high:</span> <span class="s">"true"</span>   <span class="c"># fail on a high-severity issue in the diff</span></pre>
+</section>
+
+<section id="start">
+  <h2>Start now</h2>
+  <div class="grid">
+    <div class="card"><div class="ico">1️⃣</div><h3>Install</h3><p><code>pip install apex-orchestrator</code></p></div>
+    <div class="card"><div class="ico">2️⃣</div><h3>Run</h3><p><code>apex</code> — it assesses, prioritizes, and applies safe fixes only when it's safe to.</p></div>
+    <div class="card"><div class="ico">3️⃣</div><h3>Explore</h3><p><code>apex ideate --roadmap</code> · <code>apex review</code> · <code>apex dashboard</code></p></div>
+  </div>
+</section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    🧠 <b>Apex Orchestrator</b> — built for engineers who believe a codebase deserves real reasoning, not just a linter.<br/>
+    <a href="https://github.com/Mert544/Apex-orchestrator">GitHub</a> ·
+    <a href="https://pypi.org/project/apex-orchestrator/">PyPI</a> ·
+    <a href="demo.html">Live demo</a> ·
+    Apache-2.0
+  </div>
+</footer>
+
+</body>
+</html>

@@ -5,13 +5,40 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "apex-orchestrator"
 version = "0.1.0"
-description = "Agents for fractal codebase intelligence, memory-aware reasoning, and branch-focused engineering workflows"
+description = "Deterministic engineering agent: scan a codebase, generate a grounded roadmap, and apply test-verified fixes — offline, no LLM, no API keys."
 readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Mert544", email = "mertelgul@gmail.com" }]
+keywords = [
+  "code-quality", "static-analysis", "security", "ast", "refactoring",
+  "developer-tools", "ci", "code-review", "autofix", "deterministic",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Quality Assurance",
+  "Topic :: Software Development :: Testing",
+  "Topic :: Security",
+]
 dependencies = [
   "pydantic>=2.7,<3",
   "PyYAML>=6.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Mert544/Apex-orchestrator"
+Documentation = "https://mert544.github.io/Apex-orchestrator/"
+Source = "https://github.com/Mert544/Apex-orchestrator"
+Issues = "https://github.com/Mert544/Apex-orchestrator/issues"
+Changelog = "https://github.com/Mert544/Apex-orchestrator/releases"
 
 [project.scripts]
 apex = "app.cli:main"

@@ -26,3 +26,8 @@ htmlcov/
 
 # Claude Code agent worktrees (ephemeral)
 .claude/worktrees/
+
+# build artifacts
+dist/
+build/
+*.egg-info/
