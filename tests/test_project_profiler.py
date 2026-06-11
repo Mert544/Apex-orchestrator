@@ -306,3 +306,31 @@ def test_correctness_bug_excludes_syntax_errors_and_tests(tmp_path: Path):
     )
     profile = ProjectProfiler(str(tmp_path)).profile()
     assert profile.correctness_bug_modules == []     # syntax error + test file both excluded
+
+
+def test_fixture_paths_excluded_from_seeding_signals(tmp_path: Path):
+    # examples/ and tests/ carry intentional flaws / are throwaway — they must
+    # not seed development ideas about the real project.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "examples" / "demo").mkdir(parents=True)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "real.py").write_text("def run(s):\n    return eval(s)\n")
+    (tmp_path / "examples" / "demo" / "vuln.py").write_text("def run(s):\n    return eval(s)\n")
+    (tmp_path / "tests" / "test_x.py").write_text("def run(s):\n    return eval(s)\n")
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    sec = [str(Path(m).as_posix()) for m in profile.security_finding_modules]
+    assert "app/real.py" in sec
+    assert not any("examples/" in m for m in sec)
+    assert not any(m.startswith("tests/") or "test_x" in m for m in sec)
+    # untested_modules likewise excludes the fixture/example/test files.
+    assert not any("examples/" in str(m) or str(m).startswith("tests/")
+                   for m in profile.untested_modules)
+
+
+def test_example_dir_as_target_still_surfaces_its_own_code(tmp_path: Path):
+    # When the example dir IS the target, its modules are the project — not
+    # fixtures relative to that root — so they must still be surfaced.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "accounts.py").write_text("import os\ndef r(c):\n    os.system(c)\n")
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert any("accounts.py" in str(m) for m in profile.security_finding_modules)

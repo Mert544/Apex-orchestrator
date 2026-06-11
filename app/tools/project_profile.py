@@ -183,7 +183,44 @@ class ProjectProfiler:
         )[:5]
 
         self._populate_python_structure(profile)
+        self._drop_fixture_signals(profile)
         return profile
+
+    # Mirrors app.engine.health_score._is_fixture_path (kept local to avoid a
+    # project_profile <-> health_score import cycle). Example/fixture/test code
+    # carries intentional flaws and is throwaway, so it must not seed development
+    # ideas about the *real* project — exactly as the grade already excludes it.
+    @staticmethod
+    def _is_fixture_path(path: str) -> bool:
+        p = path.replace("\\", "/").lower()
+        return (
+            p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
+            or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
+            or Path(p).name.startswith("test_")
+        )
+
+    # Seeding-signal fields the idea engine reads; filtered so fixtures never
+    # become development ideas. (The grade applies the same predicate itself, so
+    # pre-filtering here leaves grade results identical.)
+    _SIGNAL_LIST_FIELDS = (
+        "untested_modules", "critical_untested_modules", "sensitive_paths",
+        "dependency_hubs", "symbol_hubs", "fragile_modules", "modernizable_modules",
+        "mutable_default_modules", "debt_marker_modules", "hotspot_modules",
+        "shallow_tested_modules", "security_finding_modules", "correctness_bug_modules",
+        "entrypoints", "config_files",
+    )
+
+    def _drop_fixture_signals(self, profile: ProjectProfile) -> None:
+        for field_name in self._SIGNAL_LIST_FIELDS:
+            vals = getattr(profile, field_name, None)
+            if vals:
+                setattr(profile, field_name,
+                        [m for m in vals if not self._is_fixture_path(str(m))])
+        if profile.hotspot_functions:
+            profile.hotspot_functions = [
+                f for f in profile.hotspot_functions
+                if not self._is_fixture_path(str(f.get("module", "")))
+            ]
 
     def _count_debt_markers(self, path: Path) -> int:
         """Count ``# TODO/FIXME/XXX/HACK`` comment markers in a Python file.
