@@ -172,8 +172,14 @@ class IdeaActionBridge:
         they self-clear. Flag-only fixes (pickle/sql/tempfile/weak-hash) don't —
         so a label whose marker comment is already present is skipped, letting
         the harden ladder converge through every issue instead of looping on the
-        top flagged one. Delegates to the canonical detector."""
+        top flagged one. Delegates to the canonical detector.
+
+        Returns the most-severe label whose transform *can actually act* on this
+        file: an unfixable finding (e.g. an eval of a non-literal expression that
+        the transform soundly declines) must not block hardening a fixable
+        os.system/pickle later in the same file."""
         from app.engine.detectors import security_labels
+        from app.execution.semantic.transforms import security as security_transforms
 
         text = cls._read(project_root, rel_path)
         if text is None:
@@ -182,6 +188,8 @@ class IdeaActionBridge:
             marker = cls._FLAG_MARKERS.get(label)
             if marker and marker in text:
                 continue  # already annotated — move on to the next real issue
+            if security_transforms.apply(rel_path, text, f"fix {label}") is None:
+                continue  # transform declines this one — try the next real issue
             return label
         return None
 

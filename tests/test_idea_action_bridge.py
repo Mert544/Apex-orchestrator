@@ -676,3 +676,19 @@ def test_dedupe_keeps_design_tasks_and_first_executable():
     exec_actions = [(s.action_type, s.phase) for s in out if s.executable]
     assert exec_actions == [("create_test_stub", "Stabilize"), ("harden_security", "")]
     assert sum(1 for s in out if not s.executable) == 2
+
+
+def test_harden_ladder_skips_unfixable_issue_for_a_fixable_one(tmp_path):
+    # A non-literal eval (which the transform soundly declines) must not block
+    # hardening a fixable issue (pickle) later in the same file.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text(
+        "import pickle\n"
+        "def load(b):\n"
+        "    x = eval(\"a['k']\")\n"          # non-literal -> transform declines
+        "    return pickle.loads(b)\n"        # fixable (flag annotation)
+    )
+    res = IdeaActionBridge._harden_change_strategy(str(tmp_path), "app/m.py")
+    assert res is not None
+    change_strategy, _title = res
+    assert change_strategy == ["fix pickle security"]   # advanced past the eval
