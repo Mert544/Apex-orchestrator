@@ -265,6 +265,10 @@ def _patch_eval(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchRe
         if not node.args:
             continue
         arg_node = node.args[0]
+        # An f-string argument is never a Python literal, so narrowing
+        # eval(f"...") to ast.literal_eval(f"...") would always crash — decline.
+        if isinstance(arg_node, ast.JoinedStr):
+            continue
         # A string-literal argument is only safe to narrow to ast.literal_eval
         # if the string itself is a Python literal. eval("a * b") /
         # eval("acc['x']") are runtime *expressions* that literal_eval raises on,
@@ -452,6 +456,10 @@ def _get_arg_source(arg_node: ast.expr, source: str) -> str:
         start = arg_node.col_offset
         start + len(ast.unparse(arg_node))
         return ast.unparse(arg_node)
+    if isinstance(arg_node, ast.JoinedStr):
+        # f-string: extract the exact source so the line replacement matches
+        # verbatim (reconstructing it could change quote/space style).
+        return ast.get_source_segment(source, arg_node) or ""
     if isinstance(arg_node, (ast.Str, ast.Constant)):
         if isinstance(arg_node, ast.Str):
             return repr(arg_node.s)

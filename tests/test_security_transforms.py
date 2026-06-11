@@ -62,3 +62,22 @@ class TestSecurityTransforms:
         result = security_apply("test.py", source, "eval() usage")
         assert result is not None
         assert result.patch_requests[0]["new_content"].count("import ast") == 1
+
+
+class TestOsSystemFString:
+    def test_fstring_command_is_hardened_to_subprocess(self):
+        # os.system(f"cmd {x}") is a classic shell-injection sink. The fix runs
+        # it shell-free (no shell=True), neutralizing injection, while shlex.split
+        # preserves the shell's whitespace tokenization.
+        import ast
+        src = 'import os\ndef run(f):\n    os.system(f"backup.sh {f}")\n'
+        result = security_apply("t.py", src, "Fix os.system")
+        assert result is not None
+        out = result.patch_requests[0]["new_content"]
+        assert 'subprocess.run(shlex.split(f"backup.sh {f}"), check=True)' in out
+        assert "os.system" not in out
+        ast.parse(out)                       # generated code is valid
+
+    def test_eval_fstring_is_declined(self):
+        # eval(f"...") is never a literal -> literal_eval would crash -> decline.
+        assert security_apply("t.py", 'def g(x):\n    return eval(f"{x}+1")\n', "Fix eval") is None
