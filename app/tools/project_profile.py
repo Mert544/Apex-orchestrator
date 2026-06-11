@@ -243,8 +243,33 @@ class ProjectProfiler:
                 or Path(r).stem.startswith("test_"))
 
     def _scan_hotspot_functions(self, candidates: list[str], module_to_tests: dict) -> list[dict]:
-        """Complex functions inside risky modules that no linked test names."""
+        """Complex functions inside risky modules that no linked test exercises.
+
+        "Exercises" is name-based but wrapper-aware: a function counts as
+        covered when a linked test names it directly, names its enclosing
+        class (tests driving ``Limb.run()`` exercise ``Limb._execute``), or
+        names a sibling function that references it (a private helper tested
+        through its public wrapper). Direct-name-only was too strict — it kept
+        flagging code that real tests already drive.
+        """
+        import ast
         from app.tools.code_metrics import function_complexities
+
+        all_tests_text: str | None = None  # lazy fallback corpus, read once
+
+        def _whole_suite_text() -> str:
+            nonlocal all_tests_text
+            if all_tests_text is None:
+                parts: list[str] = []
+                for p in sorted(self.root.rglob("*.py")):
+                    rel = str(p.relative_to(self.root))
+                    if self._is_test_path(rel):
+                        try:
+                            parts.append(p.read_text(encoding="utf-8", errors="ignore"))
+                        except OSError:
+                            continue
+                all_tests_text = "\n".join(parts)
+            return all_tests_text
 
         out: list[dict] = []
         for module in candidates:
@@ -254,20 +279,54 @@ class ProjectProfiler:
                 source = (self.root / module).read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
-            test_text = ""
-            for rel in module_to_tests.get(module, []) or []:
-                try:
-                    test_text += (self.root / rel).read_text(encoding="utf-8", errors="ignore")
-                except OSError:
-                    continue
+            if module in module_to_tests:
+                test_text = ""
+                for rel in module_to_tests.get(module, []) or []:
+                    try:
+                        test_text += (self.root / rel).read_text(encoding="utf-8", errors="ignore")
+                    except OSError:
+                        continue
+            else:
+                # The linker doesn't track this module (e.g. code living in an
+                # __init__.py) — check the whole suite before accusing it.
+                test_text = _whole_suite_text()
+
+            # Map each function in the module to the simple names it references,
+            # so a private helper inherits coverage from a test-named wrapper.
+            refs_by_func: dict[str, set[str]] = {}
+            try:
+                tree = ast.parse(source)
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+                        names |= {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+                        refs_by_func[node.name] = names
+            except SyntaxError:
+                refs_by_func = {}
+
+            def _exercised(qualified: str) -> bool:
+                simple = qualified.rsplit(".", 1)[-1]
+                if simple in test_text:
+                    return True  # named directly
+                if any(          # a test-named sibling calls this helper
+                    caller != simple and caller in test_text and simple in refs
+                    for caller, refs in refs_by_func.items()
+                ):
+                    return True
+                # Coverage flows down the nesting chain: a method is exercised
+                # when its class is, a closure when its enclosing function is.
+                if "." in qualified:
+                    return _exercised(qualified.rsplit(".", 1)[0])
+                return False
+
             for name, lineno, complexity in function_complexities(source):
                 if complexity < 8:
                     continue  # a real branching function, not a trivial one
                 simple = name.rsplit(".", 1)[-1]
                 if simple.startswith("__") and simple.endswith("__"):
                     continue
-                if simple in test_text:
-                    continue  # a linked test names it — it has direct coverage
+                if _exercised(name):
+                    continue
                 out.append({"module": module, "function": name,
                             "line": lineno, "complexity": complexity})
         out.sort(key=lambda d: (-d["complexity"], d["module"], d["function"]))

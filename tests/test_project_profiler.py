@@ -202,3 +202,45 @@ def test_hotspot_scans_never_flag_test_files(tmp_path: Path):
     profile = ProjectProfiler(str(tmp_path)).profile()
     assert not any("test_branchy" in m for m in profile.hotspot_modules)
     assert not any("test_branchy" in f["module"] for f in profile.hotspot_functions)
+
+
+def test_hotspot_functions_credit_wrappers_classes_and_init_modules(tmp_path: Path):
+    # Three coverage routes that direct-name matching used to miss:
+    # a private helper tested through its public wrapper, a method tested
+    # through its class, and code living in an __init__.py (which the test
+    # linker doesn't track) exercised by the suite at large.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "pkg").mkdir()
+    (tmp_path / "tests").mkdir()
+    branches = "\n".join(f"    if x == {i}:\n        return {i}" for i in range(10))
+    method_branches = "\n".join(f"        if x == {i}:\n            return {i}" for i in range(10))
+    (tmp_path / "app" / "core.py").write_text(
+        f"def _helper(x):\n{branches}\n    return -1\n\n"
+        "def public(x):\n    return _helper(x)\n\n"
+        f"class Engine:\n    def crunch(self, x):\n{method_branches}\n        return -1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "app" / "pkg" / "__init__.py").write_text(
+        f"class Limb:\n    def execute(self, x):\n{method_branches}\n        return -1\n",
+        encoding="utf-8",
+    )
+    for i in range(3):  # fan-in so both land in the risky-candidate set
+        (tmp_path / "app" / f"c{i}.py").write_text(
+            "from app.core import public\nimport app.pkg\n\ndef u():\n    return public(1)\n",
+            encoding="utf-8",
+        )
+    (tmp_path / "tests" / "test_core.py").write_text(
+        "from app.core import public\nfrom app.core import Engine\n"
+        "def test_p():\n    assert public(1) == 1\n"
+        "def test_e():\n    assert Engine().crunch(1) == 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_other.py").write_text(
+        "from app.pkg import Limb\ndef test_l():\n    assert Limb().execute(1) == 1\n",
+        encoding="utf-8",
+    )
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    flagged = {f["function"] for f in profile.hotspot_functions}
+    assert "_helper" not in flagged          # wrapper-credit: public() names it
+    assert "Engine.crunch" not in flagged    # class-credit: Engine is driven
+    assert "Limb.execute" not in flagged     # __init__ fallback: whole-suite text

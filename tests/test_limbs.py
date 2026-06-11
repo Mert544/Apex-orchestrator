@@ -150,10 +150,7 @@ class TestLimbWithRealCode:
 
     def teardown_method(self):
         os.chdir(self.original_dir)
-        try:
-            shutil.rmtree(self.tmp_dir, ignore_errors=True)
-        except:
-            pass
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_refactor_limb_finds_long_functions(self):
         (Path(self.tmp_dir) / "sample.py").write_text("""
@@ -268,3 +265,40 @@ class TestAllLimbsSmoke:
         import pytest
         with pytest.raises((ValueError, KeyError)):
             get_limb("nonexistent-limb")
+
+
+class TestDocLimbBehavior:
+    """Behavioral coverage for DocLimb._execute on a real tree (not just smoke)."""
+
+    def _project(self, tmp_path):
+        (tmp_path / "pkg").mkdir()
+        # module WITH a docstring but an undocumented function + class
+        (tmp_path / "pkg" / "documented.py").write_text(
+            '"""Module doc."""\n\ndef bare():\n    pass\n\nclass Bare:\n    pass\n',
+            encoding="utf-8",
+        )
+        # module WITHOUT a module docstring
+        (tmp_path / "pkg" / "naked.py").write_text("def f():\n    pass\n", encoding="utf-8")
+        # test file must be ignored entirely
+        (tmp_path / "pkg" / "test_skip.py").write_text("def g():\n    pass\n", encoding="utf-8")
+        (tmp_path / "README.md").write_text("# hi\n", encoding="utf-8")
+        return tmp_path
+
+    def test_counts_missing_docs_and_skips_tests(self, tmp_path):
+        result = DocLimb().run(project_root=str(self._project(tmp_path)), target="all")
+        # naked.py has no module docstring; documented.py does.
+        missing = [m.replace("\\", "/") for m in result["missing_docs"]]
+        assert "pkg/naked.py" in missing
+        assert "pkg/documented.py" not in missing
+        assert not any("test_skip" in m for m in missing)
+        # bare() + Bare + f() = 3 undocumented symbols (test file excluded)
+        assert "Found 3 missing function/class docs" in str(result["generated_docs"])
+
+    def test_target_routing(self, tmp_path):
+        root = str(self._project(tmp_path))
+        api = DocLimb().run(project_root=root, target="api")
+        assert any("API docs" in d for d in api["generated_docs"])
+        assert api["updated_docs"] == []          # readme not in target
+        readme = DocLimb().run(project_root=root, target="readme")
+        assert "README.md exists" in readme["updated_docs"]
+        assert not any("API docs" in d for d in readme["generated_docs"])

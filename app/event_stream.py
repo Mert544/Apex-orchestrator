@@ -64,15 +64,20 @@ class _SseHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _serve_sse(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-
+        # Subscribe BEFORE sending headers: a client treats the completed
+        # response start as "connected", so an event emitted right after must
+        # already have a queue to land in. Subscribing afterwards left a gap
+        # in which events were silently dropped (a real race that surfaced as
+        # a flaky test under full-suite load).
         sq = self.stream.subscribe()
         try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
             while True:
                 event = sq.get(timeout=1.0)
                 data = json.dumps({

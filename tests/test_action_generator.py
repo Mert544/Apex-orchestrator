@@ -19,3 +19,87 @@ def test_profile_actions_are_generated_and_deduped():
 
 def test_no_profile_yields_no_profile_actions():
     assert ActionGenerator().generate(nodes=[], profile=None) == []
+
+
+def _node(claim, ctype=None, priority=0.5, nid="n1"):
+    from app.models.enums import ClaimType
+    from app.models.node import ResearchNode
+    return ResearchNode(id=nid, claim=claim,
+                        claim_type=ctype or ClaimType.GENERAL,
+                        claim_priority=priority)
+
+
+def test_meta_claims_are_skipped():
+    gen = ActionGenerator()
+    for prefix in ActionGenerator.META_PREFIXES:
+        assert gen._action_for_node(_node(f"{prefix} something about app/x.py")) is None
+
+
+def test_keyword_claims_with_paths_route_to_specific_actions():
+    gen = ActionGenerator()
+    cases = {
+        "Untested module claim: app/a.py lacks tests": "test coverage",
+        "Dependency hub claim: app/b.py is centrally imported": "architectural coupling",
+        "Sensitive surface claim: app/auth.py handles tokens": "security-focused review",
+        "Configuration claim: config/dev.yaml has unsafe defaults": "configuration handling",
+        "Automation claim: ci.yml does not run tests": "CI or workflow",
+    }
+    for claim, fragment in cases.items():
+        action = gen._action_for_node(_node(claim))
+        assert action and fragment in action, (claim, action)
+
+
+def test_claim_type_with_paths_routes_by_type():
+    from app.models.enums import ClaimType
+    gen = ActionGenerator()
+    cases = {
+        ClaimType.SECURITY: "secrets, auth",
+        ClaimType.VALIDATION: "Strengthen or add tests",
+        ClaimType.AUTOMATION: "Expand automated checks",
+        ClaimType.CONFIGURATION: "configuration boundaries",
+        ClaimType.ARCHITECTURE: "high-centrality modules",
+        ClaimType.OPERATIONS: "observability",
+    }
+    for ctype, fragment in cases.items():
+        action = gen._action_for_node(_node("The file app/thing.py is implicated.", ctype))
+        assert action and fragment in action and "app/thing.py" in action, (ctype, action)
+
+
+def test_claim_type_without_paths_falls_back_to_claim_text():
+    from app.models.enums import ClaimType
+    gen = ActionGenerator()
+    claim = "Input validation is inconsistent across handlers"
+    action = gen._action_for_node(_node(claim, ClaimType.VALIDATION))
+    assert action and claim in action
+    gap = gen._action_for_node(_node("There is no export feature", ClaimType.FEATURE_GAP))
+    assert gap and "acceptance criteria" in gap
+
+
+def test_general_claim_without_signal_yields_nothing():
+    assert ActionGenerator()._action_for_node(_node("Something vague happened.")) is None
+
+
+def test_generate_orders_by_priority_dedupes_and_caps_at_ten():
+    from app.models.enums import ClaimType
+    gen = ActionGenerator()
+    # Two nodes produce the SAME action -> deduped; higher priority comes first.
+    low = _node("The file app/low.py is implicated.", ClaimType.SECURITY, priority=0.1, nid="lo")
+    high = _node("Check app/high.py carefully.", ClaimType.SECURITY, priority=0.9, nid="hi")
+    dup = _node("Check app/high.py carefully.", ClaimType.SECURITY, priority=0.8, nid="dup")
+    actions = gen.generate([low, high, dup], profile=None)
+    assert len(actions) == 2
+    assert "app/high.py" in actions[0] and "app/low.py" in actions[1]
+
+    many = [
+        _node(f"The file app/m{i}.py is implicated.", ClaimType.VALIDATION, priority=1 - i / 100, nid=f"m{i}")
+        for i in range(15)
+    ]
+    assert len(gen.generate(many, profile=None)) == 10   # capped
+
+
+def test_extract_paths_normalizes_and_dedupes():
+    gen = ActionGenerator()
+    paths = gen._extract_paths("See app/x.py and app/x.py plus conf/dev.yaml and notes.md")
+    assert paths.count(str(__import__('pathlib').Path('app/x.py'))) == 1
+    assert any(p.endswith("dev.yaml") for p in paths)
+    assert any(p.endswith("notes.md") for p in paths)
