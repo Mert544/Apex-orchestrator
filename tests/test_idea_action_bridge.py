@@ -634,3 +634,46 @@ def test_plan_convergence_empty_for_non_convergence_idea():
     idea = IdeaNode(id="r", title="t", subject="app/x.py", operator="root",
                     source_facts=["untested: app/x.py"])
     assert IdeaActionBridge().plan_convergence(idea) == []
+
+
+def test_roadmap_plan_expands_convergence_and_dedupes(tmp_path):
+    # A sensitive + risky module yields a convergence idea; the roadmap apply
+    # plan must expand it into executable steps (test before harden), each
+    # (module, action) appearing once despite overlapping root Test/Harden ideas.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "auth.py").write_text("import os\ndef login(pw):\n    return os.system(pw)\n")
+    (tmp_path / "app" / "calm.py").write_text("def calm():\n    return 1\n")
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 60, "max_idea_depth": 1, "breadth": 4}, tmp_path
+    ).run()
+    plan = IdeaActionBridge().plan_roadmap(rep, project_root=str(tmp_path))
+
+    auth = [s for s in plan.steps if s.subject == "app/auth.py" and s.executable]
+    actions = [s.action_type for s in auth]
+    # Each fix is planned exactly once for the module.
+    assert actions.count("create_test_stub") == 1
+    assert actions.count("harden_security") == 1
+    # Safety net before hardening.
+    assert actions.index("create_test_stub") < actions.index("harden_security")
+
+
+def test_dedupe_keeps_design_tasks_and_first_executable():
+    from app.models.idea import IdeaNode
+    bridge = IdeaActionBridge()
+
+    def step(action, subject, executable, phase=""):
+        from app.models.idea import ActionStep
+        return ActionStep(branch_path="x", title="t", operator="o", subject=subject,
+                          action_type=action, executable=executable, phase=phase)
+
+    steps = [
+        step("create_test_stub", "app/a.py", True, "Stabilize"),
+        step("create_test_stub", "app/a.py", True, "Secure"),     # dup -> dropped
+        step("design_task", "app/a.py", False),                   # kept (not executable)
+        step("design_task", "app/a.py", False),                   # kept (informational)
+        step("harden_security", "app/a.py", True),                # distinct action -> kept
+    ]
+    out = bridge._dedupe_steps(steps)
+    exec_actions = [(s.action_type, s.phase) for s in out if s.executable]
+    assert exec_actions == [("create_test_stub", "Stabilize"), ("harden_security", "")]
+    assert sum(1 for s in out if not s.executable) == 2

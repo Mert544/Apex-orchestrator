@@ -75,6 +75,37 @@ class IdeaActionBridge:
             ))
         return steps
 
+    @staticmethod
+    def _dedupe_steps(steps: list[ActionStep]) -> list[ActionStep]:
+        """Drop a later executable step that repeats an earlier one's
+        (module, action) — e.g. a convergence test sub-step and a separate
+        'Test: that module' root idea are the same work. Keeps the first
+        (so the higher-ranked / phased one wins); design tasks pass through."""
+        seen: set[tuple[str, str]] = set()
+        out: list[ActionStep] = []
+        for s in steps:
+            if not s.executable:
+                out.append(s)
+                continue
+            key = (s.subject.split("::", 1)[0], s.action_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(s)
+        return out
+
+    def _expand_idea(self, idea: IdeaNode, default_phase: str = "") -> list[ActionStep]:
+        """One idea -> one or more steps. A convergence idea becomes its phased
+        mini-roadmap (executable test step before the harden step); every other
+        idea is a single planned step."""
+        conv = self.plan_convergence(idea)
+        if conv:
+            return conv
+        step = self.plan_idea(idea)
+        if default_phase:
+            step.phase = default_phase
+        return [step]
+
     def plan_idea(self, idea: IdeaNode) -> ActionStep:
         if idea.operator == "root":
             action_type, desc_tmpl, executable = self._root_action(idea)
@@ -545,7 +576,10 @@ class IdeaActionBridge:
         ideas = sorted(report.ideas, key=lambda i: i.value, reverse=True)
         if top is not None:
             ideas = ideas[:top]
-        steps = [self.plan_idea(i) for i in ideas]
+        steps: list[ActionStep] = []
+        for i in ideas:
+            steps.extend(self._expand_idea(i))
+        steps = self._dedupe_steps(steps)
         if draft:
             root = project_root or report.project_root or "."
             for step in steps:
@@ -596,10 +630,11 @@ class IdeaActionBridge:
                 idea = idea_by_path.get(item.branch_path)
                 if idea is None:
                     continue
-                step = self.plan_idea(idea)
-                step.phase = ph.name
-                steps.append(step)
+                # Convergence ideas carry their own phased sub-steps; other
+                # ideas inherit this roadmap phase.
+                steps.extend(self._expand_idea(idea, default_phase=ph.name))
 
+        steps = self._dedupe_steps(steps)
         if top is not None:
             steps = steps[:top]
         if draft:
