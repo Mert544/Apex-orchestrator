@@ -27,10 +27,20 @@ class SecretDetectionResult:
 
 
 def detect_secrets_in_patch(old_code: str, new_code: str) -> SecretDetectionResult:
+    """Flag only secrets the patch *introduces or changes*.
+
+    A secret that already exists, unchanged, in ``old_code`` is pre-existing —
+    it is a separate finding (the detector surfaces it), not this patch's doing —
+    so it must not block an unrelated fix (e.g. an eval→literal_eval rewrite in a
+    file that happens to also contain a hardcoded password elsewhere). Only a
+    secret present in ``new_code`` but not already verbatim in ``old_code`` is the
+    patch's responsibility, and only that blocks.
+    """
     detected: list[dict[str, Any]] = []
-    combined = old_code + "\n" + new_code
     for pattern in SECRET_PATTERNS:
-        for match in re.finditer(pattern, combined):
+        for match in re.finditer(pattern, new_code):
+            if match.group() in old_code:
+                continue  # pre-existing, untouched by this patch
             detected.append(
                 {
                     "pattern": pattern,

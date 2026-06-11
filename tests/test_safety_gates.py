@@ -180,3 +180,22 @@ class TestSafetyGatesReport:
         )
         assert report.blocked is True
         assert report.all_passed is False
+
+
+class TestSecretDetectionPreExisting:
+    def test_preexisting_secret_does_not_block_unrelated_fix(self):
+        # A file already containing a secret; the patch only changes an unrelated
+        # line (eval -> literal_eval). The pre-existing secret is present in BOTH
+        # old and new, unchanged, so it must NOT be flagged.
+        secret = 'DB_PASSWORD = "legacy_bank_123456"'
+        old = f'{secret}\nx = eval(s)\n'
+        new = f'{secret}\nx = ast.literal_eval(s)\n'
+        result = detect_secrets_in_patch(old, new)
+        assert result.passed is True
+        assert result.detected_secrets == []
+
+    def test_newly_introduced_secret_is_still_blocked(self):
+        old = "x = 1\n"
+        new = 'x = 1\napi_key = "sk_introduced_1234567890abcd"\n'
+        result = detect_secrets_in_patch(old, new)
+        assert result.passed is False

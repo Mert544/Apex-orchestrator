@@ -278,6 +278,11 @@ def _patch_eval(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchRe
             return None
 
         new_line = line_content.replace(f"eval({arg_source})", f"ast.literal_eval({arg_source})")
+        if new_line == line_content:
+            # The argument source didn't match the line verbatim (e.g. a string
+            # literal that isn't a Python literal). Don't emit a no-op patch that
+            # would add a spurious, unused `import ast`; try the next eval.
+            continue
 
         new_lines = list(lines)
         new_lines[lineno - 1] = new_line

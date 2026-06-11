@@ -14,6 +14,14 @@ class TestSecurityTransforms:
         assert "ast.literal_eval" in result.patch_requests[0]["new_content"]
         assert "import ast" in result.patch_requests[0]["new_content"]
 
+    def test_eval_of_nonliteral_string_is_not_rewritten(self):
+        # eval("a * b") is a runtime expression, not a Python literal —
+        # ast.literal_eval would crash on it, so the transform must NOT rewrite
+        # it, and must NOT add a spurious unused `import ast`.
+        source = 'def f():\n    return eval("principal * (1 + rate)")\n'
+        result = security_apply("test.py", source, "eval() usage is unsafe")
+        assert result is None
+
     def test_eval_already_safe(self):
         source = 'import ast\nx = ast.literal_eval(user_input)\n'
         result = security_apply("test.py", source, "eval() usage is unsafe")
