@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 
 from ..result import SemanticPatchResult
-from .base import _get_indent
+from .base import _get_indent, import_insert_index
 
 
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
@@ -302,7 +302,7 @@ def _patch_eval(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchRe
 
         import_needed = "import ast" not in source
         if import_needed:
-            new_lines.insert(0, "import ast\n")
+            new_lines.insert(import_insert_index(tree), "import ast\n")
 
         return SemanticPatchResult(
             patch_requests=[{
@@ -356,10 +356,11 @@ def _patch_os_system(rel_path: str, source: str, tree: ast.Module) -> SemanticPa
 
         needs_subprocess = "import subprocess" not in source
         needs_shlex = "import shlex" not in source
+        at = import_insert_index(tree)
         if needs_shlex:
-            new_lines.insert(0, "import shlex\n")
+            new_lines.insert(at, "import shlex\n")
         if needs_subprocess:
-            new_lines.insert(0, "import subprocess\n")
+            new_lines.insert(at, "import subprocess\n")
 
         return SemanticPatchResult(
             patch_requests=[{

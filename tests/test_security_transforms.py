@@ -81,3 +81,23 @@ class TestOsSystemFString:
     def test_eval_fstring_is_declined(self):
         # eval(f"...") is never a literal -> literal_eval would crash -> decline.
         assert security_apply("t.py", 'def g(x):\n    return eval(f"{x}+1")\n', "Fix eval") is None
+
+
+class TestImportInsertionFutureSafe:
+    def test_eval_import_lands_after_future_import(self):
+        # Inserting `import ast` at line 0 would break a file that opens with
+        # `from __future__ import annotations` (must be the first statement).
+        src = "from __future__ import annotations\ndef f(s):\n    return eval(s)\n"
+        out = security_apply("t.py", src, "Fix eval").patch_requests[0]["new_content"]
+        compile(out, "t.py", "exec")                 # the real test: it compiles
+        assert "ast.literal_eval(s)" in out
+
+    def test_os_system_imports_land_after_docstring_and_future(self):
+        src = ('"""Mod."""\nfrom __future__ import annotations\nimport os\n'
+               'def run(f):\n    os.system(f"x {f}")\n')
+        out = security_apply("t.py", src, "Fix os.system").patch_requests[0]["new_content"]
+        compile(out, "t.py", "exec")
+        # docstring and future import stay first
+        lines = [l for l in out.splitlines() if l.strip()]
+        assert lines[0] == '"""Mod."""'
+        assert lines[1] == "from __future__ import annotations"
