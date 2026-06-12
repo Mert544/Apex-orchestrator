@@ -63,18 +63,27 @@ def cmd_rename(args: argparse.Namespace) -> int:
 
 
 def cmd_signature(args: argparse.Namespace) -> int:
-    """Signature family: ``drop`` removes an UNUSED parameter project-wide.
+    """Signature family: ``drop`` removes an UNUSED parameter project-wide;
+    ``add`` introduces one with a safe default (no call site can break).
 
-    The def site is rebuilt without it and every keyword call site loses the
-    argument; positional callers block (no silent repositioning). Apply is
+    Positional callers of a dropped param block (no silent repositioning);
+    a caller already passing an added param's keyword blocks. Apply is
     test-verified with rollback, like every Apex change.
     """
     from app.execution.cross_file_rename import apply_rename
-    from app.execution.param_drop import plan_param_drop
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
-    plan = plan_param_drop(str(target), args.function, args.param)
-    label = f"drop `{args.param}` from `{args.function}()`"
+    if args.op == "add":
+        from app.execution.param_add import plan_param_add
+
+        default = getattr(args, "default", "") or "None"
+        plan = plan_param_add(str(target), args.function, args.param, default)
+        label = f"add `{args.param}={default}` to `{args.function}()`"
+    else:
+        from app.execution.param_drop import plan_param_drop
+
+        plan = plan_param_drop(str(target), args.function, args.param)
+        label = f"drop `{args.param}` from `{args.function}()`"
 
     if plan.blockers:
         print(f"# Signature change blocked: {label}\n")
@@ -96,7 +105,7 @@ def cmd_signature(args: argparse.Namespace) -> int:
         print(json.dumps(res, indent=2))
         return 0 if res.get("applied") else 1
     if res.get("applied"):
-        print(f"✅ Dropped `{args.param}` from `{args.function}()`: {res['edits']} edit(s) in "
+        print(f"✅ Signature changed — {label}: {res['edits']} edit(s) in "
               f"{len(res['changed_files'])} file(s): {', '.join(res['changed_files'])}")
         if res.get("verified") is True:
             print("   tests pass — change is verified")

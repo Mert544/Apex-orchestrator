@@ -84,6 +84,11 @@ without the file). `apex auto` prints what it has learned.
   keyword call site loses the argument, project-wide. Positional callers block ("convert
   to keywords first" — no silent repositioning), `**kwargs` sites warn, a comment inside
   the signature blocks (comment-preservation promise). Test-verified with rollback.
+- `apex signature add FUNC PARAM --default EXPR [--dry-run] [--no-verify]` — introduce a
+  parameter with a safe default (no call site can break by construction). Placement is
+  safety-chosen: appended positionally, or keyword-only after `*args`/existing kwonly
+  params (a trailing default before `*args` would absorb positionals). A caller already
+  passing that keyword blocks; `f(**…)` sites warn. Test-verified with rollback.
 - `apex move SRC.py DST.py [--target=.] [--dry-run] [--no-verify]` — move/rename a module;
   every import form (`import x.y`, `from x.y import f`, `from x import y`, aliases) is
   rewritten project-wide, missing `__init__.py` created, relative-import cases block.

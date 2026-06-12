@@ -61,7 +61,7 @@ flowchart LR
 | 🔎 **Review** | Reviews a PR diff like a human — issues on the *changed* lines, with a **suggested‑fix diff** for clean one‑liners, CI‑ready | `apex review` |
 | 🤖 **Fix** | Applies real, **test‑verified** fixes with automatic rollback + safety gates | `apex maintain` |
 | 📐 **Brief** | Turns a **design‑level idea** into an actionable work order — grounding facts, measured context, the fractal vocabulary as a checklist, and a definition‑of‑done the engine itself verifies next run | `apex brief` |
-| ♻️ **Refactor** | **Cross‑file rename, parameter rename/drop & module move**: definitions, imports, call sites and keyword arguments rewritten across the whole project, comment‑preserving, blocked on any ambiguity, test‑verified | `apex rename old new [--param func]` · `apex signature drop func param` · `apex move a/old.py b/new.py` |
+| ♻️ **Refactor** | **Cross‑file rename, parameter rename/drop/add & module move**: definitions, imports, call sites and keyword arguments rewritten across the whole project, comment‑preserving, blocked on any ambiguity, test‑verified | `apex rename old new [--param func]` · `apex signature drop\|add func param` · `apex move a/old.py b/new.py` |
 | 🔁 **Evolve** | Improves cycle by cycle **to a fixpoint**, then proves the gain | `apex evolve` |
 | 🧪 **Simulate** | Previews autonomous improvement — on a throwaway copy, changing nothing | `apex simulate` |
 | 🎓 **Grade** | One memorable health grade (A–F), with the cheapest ways to climb | `apex grade` |

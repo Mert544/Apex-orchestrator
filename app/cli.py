@@ -286,16 +286,20 @@ def main() -> int:
     move_parser.add_argument("--json", action="store_true", help="Emit JSON")
     move_parser.set_defaults(func=cmd_move)
 
-    # signature — signature-family refactors (drop an unused parameter), verified
+    # signature — signature-family refactors (drop/add a parameter), verified
     sig_parser = subparsers.add_parser(
         "signature",
-        help="Change a function's signature project-wide: drop an unused parameter (test-verified)",
+        help="Change a function's signature project-wide: drop an unused parameter, "
+             "or add one with a safe default (test-verified)",
     )
-    sig_parser.add_argument("op", choices=["drop"],
-                            help="Operation (drop: remove a parameter the body never reads)")
+    sig_parser.add_argument("op", choices=["drop", "add"],
+                            help="drop: remove a parameter the body never reads; "
+                                 "add: introduce a parameter with a safe default")
     # NB: dest must not be "func" — that's the dispatch slot set_defaults uses.
     sig_parser.add_argument("function", help="Function whose signature changes")
-    sig_parser.add_argument("param", help="Parameter to drop")
+    sig_parser.add_argument("param", help="Parameter to drop/add")
+    sig_parser.add_argument("--default", default="None",
+                            help="Default expression for `add` (e.g. 0, None, \"utf-8\")")
     sig_parser.add_argument("--target", default="", help="Target project root")
     sig_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                             help="Preview the unified diff without changing files")
