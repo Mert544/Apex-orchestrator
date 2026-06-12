@@ -54,3 +54,17 @@ def test_parser_dispatches_to_family_modules(tmp_path):
                                              "--target", str(tmp_path), "--dry-run"]):
             rc = cli.main()
         assert rc == 1  # blocked (no such symbol) — but dispatched and ran
+
+
+def test_engine_family_reexports_are_the_same_objects():
+    # The idea_permutation split (its own 4-signal confluence target) must
+    # never fork behavior: re-exports ARE the family modules' objects.
+    import app.engine.idea_facets as facets
+    import app.engine.idea_permutation as engine
+    import app.engine.idea_seeder as seeder
+
+    assert engine.IdeaSeeder is seeder.IdeaSeeder
+    assert engine._FACETS is facets._FACETS
+    assert engine._FACET_SUBASPECTS is facets._FACET_SUBASPECTS
+    assert engine._FACET_CASES is facets._FACET_CASES
+    assert engine._FACET_CAVEAT_RULES is facets._FACET_CAVEAT_RULES
