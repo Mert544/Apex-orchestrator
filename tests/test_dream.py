@@ -194,3 +194,21 @@ def test_promise_ledger_narrates_kept_and_broken(tmp_path):
     # Third dream: nothing new on this front — no repetition.
     third = dream(tmp_path)
     assert not any("app/ghost.py" in p for p in third.patterns)
+
+
+def test_zero_rate_lens_is_never_praised(tmp_path):
+    # "Most reliable" is relative: with few lenses a 0% one can top the list.
+    # The dream must not advise "keep leading" with a lens that never lands.
+    import json
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f():\n    return 1\n")
+    apex = tmp_path / ".apex"
+    apex.mkdir()
+    (apex / "idea-memory.json").write_text(json.dumps({
+        "by_operator": {"harden": {"applied": 0, "rolled_back": 0, "blocked": 3}},
+        "by_label": {},
+    }))
+    report = dream(tmp_path, write_digest=False)
+    praised = [p for p in report.patterns if "keep leading" in p]
+    assert not any("harden" in p for p in praised)

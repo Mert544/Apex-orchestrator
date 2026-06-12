@@ -59,9 +59,12 @@ def _review_outcome_memory(root: Path, report: DreamReport, curate: bool) -> Non
     mem = IdeaMemory.load(root)
     info = mem.summary()
     for row in info.get("most_reliable", [])[:2]:
-        report.patterns.append(
-            f"`{row['key']}` fixes land {int(row['success_rate'] * 100)}% of the time "
-            f"({row['samples']} samples) — keep leading with them.")
+        # "Most reliable" is relative — with few lenses a 0% one can top the
+        # list, and telling the reader to "keep leading" with it is a lie.
+        if row["success_rate"] >= 0.5:
+            report.patterns.append(
+                f"`{row['key']}` fixes land {int(row['success_rate'] * 100)}% of the time "
+                f"({row['samples']} samples) — keep leading with them.")
     for row in info.get("least_reliable", [])[:2]:
         if row["success_rate"] < 0.5:
             report.patterns.append(
