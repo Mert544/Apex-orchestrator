@@ -690,3 +690,45 @@ def test_high_churn_convergence_plan_has_evolve_step():
     # Stabilize (cover the hotspot) always precedes Evolve (smooth the change path).
     assert phases == ["Stabilize", "Evolve"]
     assert any("change path" in s["step"] for s in plan)
+
+
+def test_facet_vocab_stays_content_aware_at_level_3():
+    # The zoom carries real engineering content for a third level ("harden →
+    # resource limits → time and timeout bounds → deadline propagation")
+    # instead of falling straight to the generic case triple.
+    from app.models.idea import IdeaNode
+
+    eng = IdeaPermutationEngine({"max_total_ideas": 10}, ".")
+    node = IdeaNode(
+        id="i", title="t",
+        subject="app/m.py :: resource limits :: time and timeout bounds",
+        operator="harden", operator_chain=["harden"],
+        source_facts=["sensitive-path: app/m.py",
+                      "facet: resource limits",
+                      "facet: time and timeout bounds"],
+    )
+    vocab = eng._facet_vocab(node, level=3)
+    assert "deadline propagation" in vocab
+    assert "common case" not in vocab
+
+
+def test_facet_vocab_falls_to_case_split_when_no_finer_vocab():
+    from app.models.idea import IdeaNode
+
+    eng = IdeaPermutationEngine({"max_total_ideas": 10}, ".")
+    node = IdeaNode(
+        id="i", title="t", subject="app/m.py :: trace spans :: attributes",
+        operator="observe", operator_chain=["observe"],
+        source_facts=["entrypoint: app/m.py", "facet: trace spans", "facet: attributes"],
+    )
+    assert eng._facet_vocab(node, level=3) == ["common case", "boundary case", "failure case"]
+
+
+def test_facet_subaspects_never_self_reference():
+    # A phrase must not list itself (or its key) as its own sub-concern,
+    # or the zoom could loop on one label forever.
+    from app.engine.idea_permutation import _FACET_SUBASPECTS
+
+    for key, subs in _FACET_SUBASPECTS.items():
+        assert key not in subs
+        assert len(subs) == len(set(subs))

@@ -89,6 +89,74 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "key metrics": ["counters", "latency histograms", "error rates"],
     "structured logs": ["correlation ids", "level discipline", "no secret leakage"],
     "trace spans": ["span boundaries", "attributes", "error recording"],
+    # ---- level-3 vocabulary: the level-2 sub-concerns decompose once more ----
+    # Same lookup, one key deeper: the zoom stays content-aware for a third
+    # level ("harden → resource limits → time and timeout bounds → deadline
+    # propagation") before falling to the universal case split. Pure data —
+    # _facet_vocab already keys on the most recent facet label.
+    # harden ladder
+    "type and shape checks": ["explicit type rejection", "nested structure shape", "coercion rules"],
+    "range and length bounds": ["minimum and maximum values", "off-by-one at the limit", "unbounded growth"],
+    "null or empty handling": ["None versus missing", "empty collection semantics", "whitespace-only input"],
+    "catch specificity": ["narrowest exception type", "no silent swallowing", "log before re-raise"],
+    "cleanup on failure": ["resource release", "temporary state removal", "rollback of partial writes"],
+    "size caps": ["payload size limit", "collection growth bound", "file size ceiling"],
+    "time and timeout bounds": ["connect versus read timeout", "retry backoff budget", "deadline propagation"],
+    "concurrency limits": ["max parallel workers", "queue depth bound", "lock contention"],
+    "no plaintext at rest": ["config files", "logs and tracebacks", "serialized state"],
+    "load from env or secret store": ["startup-time validation", "missing secret behavior", "local development path"],
+    "rotation and scope": ["expiry handling", "least-privilege scope", "revocation path"],
+    # extend ladder
+    "accepted formats": ["format detection", "malformed input rejection", "format version marker"],
+    "backward compatibility": ["existing caller contract", "deprecation window", "migration shim"],
+    "output contract": ["stable field ordering", "optional field semantics", "versioned output"],
+    "error and empty results": ["empty versus error distinction", "partial result shape", "error detail surface"],
+    "environment override": ["precedence order", "type parsing from strings", "unknown variable detection"],
+    "validation of config": ["fail-fast at startup", "helpful error messages", "unknown key handling"],
+    # test ladder
+    "empty input": ["empty string versus None", "empty collection", "zero value"],
+    "maximum size": ["the documented limit", "just past the limit", "memory pressure"],
+    "dependency unavailable": ["connection refused", "name resolution failure", "slow versus down"],
+    "partial or interrupted operation": ["mid-write interruption", "resume or restart", "duplicate side effects"],
+    "timeout": ["timeout during connect", "timeout mid-stream", "cleanup after timeout"],
+    "idempotence": ["repeated apply", "retry after partial success", "natural idempotency key"],
+    "ordering independence": ["shuffled input", "stable output ordering", "concurrent arrival"],
+    "round-trip stability": ["serialize then parse", "unicode and encoding", "precision loss"],
+    # simplify ladder
+    "unreferenced symbols": ["exported but unused", "dynamic references", "test-only usage"],
+    "unreachable branches": ["constant conditions", "shadowed cases", "dead error paths"],
+    "redundant guards": ["already-validated input", "duplicate null checks", "tautological conditions"],
+    "extract a shared helper": ["naming the concept", "the parameter surface", "where it lives"],
+    "parameterize the variants": ["the varying dimension", "flag versus strategy", "the default variant"],
+    "single source of truth": ["which copy wins", "derivation direction", "drift detection"],
+    "early returns": ["precondition exits", "error exits first", "happy path last"],
+    "extract inner blocks": ["loop body extraction", "nested conditional extraction", "naming the step"],
+    # document ladder
+    "signatures and types": ["parameter meanings", "return type and None", "raised exceptions list"],
+    "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
+    "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown"],
+    "raised exceptions": ["which type when", "recoverable versus fatal", "error message contract"],
+    "partial-failure behavior": ["what completed", "what rolled back", "how callers detect it"],
+    "retry guidance": ["safe-to-retry conditions", "backoff recommendation", "idempotency requirement"],
+    # integrate ladder
+    "schema and types": ["field types and nullability", "unknown field policy", "size limits"],
+    "required vs optional fields": ["absence semantics", "default values", "validation timing"],
+    "evolution rules": ["additive-only changes", "deprecation process", "version negotiation"],
+    "mapped error types": ["upstream-to-domain mapping", "lost error detail", "wrapped cause chain"],
+    "retry vs fail-fast": ["which errors retry", "the retry budget", "user-visible latency"],
+    "compatibility window": ["oldest supported version", "the test matrix", "sunset policy"],
+    # generalize ladder
+    "the hook interface": ["arguments passed", "return contract", "error isolation"],
+    "registration": ["discovery mechanism", "ordering of plugins", "duplicate registration"],
+    "a default no-op": ["silent versus logged", "capability detection", "documented absence"],
+    # observe ladder
+    "counters": ["naming convention", "label cardinality", "reset semantics"],
+    "latency histograms": ["bucket boundaries", "percentile targets", "outlier capture"],
+    "error rates": ["error classification", "alert thresholds", "burn-rate window"],
+    "correlation ids": ["generation point", "propagation across calls", "log field consistency"],
+    "level discipline": ["error versus warning", "the noise budget", "debug gating"],
+    "no secret leakage": ["redaction rules", "exception payloads", "URL and query params"],
+    "span boundaries": ["the unit of work", "async continuation", "batch operations"],
 }
 
 # A facet's caveat should interrogate *its* sub-concern, not recite the lens's
