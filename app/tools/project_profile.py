@@ -52,6 +52,9 @@ class ProjectProfile:
     # Age (days) of the OLDEST security finding per flagged module — how long
     # the risk has been sitting in the code (its exposure window).
     security_finding_ages: dict[str, int] = field(default_factory=dict)
+    # Documentation drift: backticked file references in README/docs that don't
+    # exist on disk. Each entry: {"doc", "reference", "line"}.
+    doc_drift: list[dict] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -200,8 +203,71 @@ class ProjectProfiler:
         self._scan_churn(profile)
         self._scan_debt_age(profile)
         self._scan_security_exposure_age(profile)
+        self._scan_doc_drift(profile)
         self._drop_fixture_signals(profile)
         return profile
+
+    # Backticked tokens that look like file paths. No spaces (so command lines
+    # with flags never match), and either a path separator or a .py suffix.
+    _DOC_REF_RE = re.compile(r"`([^`\s]+)`")
+    _DOC_PLACEHOLDERS = ("path/to", "your", "<", ">", "{", "}", "*", "...", "$")
+
+    def _scan_doc_drift(self, profile: ProjectProfile) -> None:
+        """Backticked file references in README/docs that don't exist on disk.
+
+        Documentation is the project's promise surface: a README that points
+        at `app/foo.py` while no such file exists is concrete, traceable
+        drift — either the doc lies or the capability is missing. Runtime
+        artifact dirs (.apex/…) and placeholder-looking tokens are skipped so
+        the signal stays precise.
+        """
+        docs = [p for p in [self.root / "README.md", *sorted((self.root / "docs").glob("*.md"))]
+                if p.exists()][:10]
+        skipped_roots = {".git", "__pycache__", ".apex", ".epistemic", "node_modules",
+                         ".venv", "venv", "dist", "build"}
+        drift: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for doc in docs:
+            rel_doc = doc.relative_to(self.root).as_posix()
+            try:
+                text = doc.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                for ref in self._DOC_REF_RE.findall(line):
+                    ref = ref.strip()
+                    while ref.startswith("./"):
+                        ref = ref[2:]
+                    # Path-like = has a separator, doesn't start with one
+                    # (slash-commands), and its final segment carries a real
+                    # file extension (so `hashlib.md5/sha1` never matches).
+                    if "/" not in ref or ref.startswith("/"):
+                        continue
+                    last = ref.split(":", 1)[0].rsplit("/", 1)[-1]
+                    if "." not in last or last.rsplit(".", 1)[-1].lower() not in {
+                        "py", "md", "json", "yml", "yaml", "toml", "txt",
+                        "html", "css", "js", "sh", "cfg", "ini",
+                    }:
+                        continue
+                    low = ref.lower()
+                    if (low.startswith(("http://", "https://"))
+                            or any(t in low for t in self._DOC_PLACEHOLDERS)):
+                        continue
+                    path_part = ref.split(":", 1)[0]  # allow `app/x.py:12`
+                    first_seg = path_part.split("/", 1)[0]
+                    if first_seg in skipped_roots or not path_part:
+                        continue
+                    if (self.root / path_part).exists():
+                        continue
+                    key = (rel_doc, path_part)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    drift.append({"doc": rel_doc, "reference": path_part, "line": lineno})
+                    if len(drift) >= 5:
+                        profile.doc_drift = drift
+                        return
+        profile.doc_drift = drift
 
     def _scan_security_exposure_age(self, profile: ProjectProfile) -> None:
         """How long each flagged module's OLDEST security finding has existed.

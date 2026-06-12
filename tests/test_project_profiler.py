@@ -442,3 +442,27 @@ def test_security_finding_age_measures_exposure_window(tmp_path: Path):
     profile = ProjectProfiler(str(tmp_path)).profile()
     age = profile.security_finding_ages.get("app/danger.py")
     assert age is not None and 358 <= age <= 372  # ~1 year exposure window
+
+
+def test_doc_drift_flags_missing_references_only(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "real.py").write_text("def f():\n    return 1\n")
+    (tmp_path / "README.md").write_text(
+        "See `app/real.py` for the core.\n"            # exists -> not drift
+        "The parser lives in `app/parser.py`.\n"        # missing -> drift
+        "Run `apex ideate --roadmap` daily.\n"          # command (spaces) -> skipped
+        "Use `path/to/project` as target.\n"            # placeholder -> skipped
+        "Evidence goes to `.apex/proof.json`.\n"        # runtime dir -> skipped
+        "Docs: `https://example.com/app/x.py`.\n"       # URL -> skipped
+    )
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    refs = [(d["doc"], d["reference"]) for d in profile.doc_drift]
+    assert refs == [("README.md", "app/parser.py")]
+    assert profile.doc_drift[0]["line"] == 2
+
+
+def test_doc_drift_handles_line_anchored_refs_and_docs_dir(tmp_path: Path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "guide.md").write_text("Check `app/ghost.py:42` for details.\n")
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert profile.doc_drift == [{"doc": "docs/guide.md", "reference": "app/ghost.py", "line": 1}]

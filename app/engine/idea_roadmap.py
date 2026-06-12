@@ -63,6 +63,7 @@ _STABILIZE_LABELS = {"untested", "critical-untested", "partial-coverage", "shall
 _SECURE_LABELS = {"sensitive-path", "security-finding", "correctness-bug"}
 _EVOLVE_LABELS = {"dependency-hub", "symbol-hub", "entrypoint", "top-directory", "churn-hotspot"}
 _REFINE_OPS = {"document", "observe", "simplify"}
+_REFINE_LABELS = {"doc-drift"}
 _EVOLVE_OPS = {"extend", "generalize", "integrate"}
 
 
@@ -241,7 +242,7 @@ def classify_phase(node: IdeaNode) -> str:
         return SECURE
     if op in _EVOLVE_OPS or label in _EVOLVE_LABELS:
         return EVOLVE
-    if op in _REFINE_OPS:
+    if op in _REFINE_OPS or label in _REFINE_LABELS:
         return REFINE
     # Roots with no decisive lens default to Evolve (a capability direction).
     return EVOLVE

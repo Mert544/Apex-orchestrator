@@ -320,3 +320,31 @@ def test_fresh_security_finding_keeps_plain_title():
     )
     root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/danger.py")
     assert root.title == "Fix the security findings in app/danger.py"
+
+
+def test_doc_drift_seeds_one_root_per_doc():
+    profile = _profile(
+        doc_drift=[
+            {"doc": "README.md", "reference": "app/a.py", "line": 3},
+            {"doc": "README.md", "reference": "app/b.py", "line": 9},
+            {"doc": "docs/guide.md", "reference": "app/c.py", "line": 1},
+        ],
+        ci_files=["ci.yml"],
+    )
+    roots = IdeaSeeder().seed(profile)
+    readme = next(r for r in roots if r.subject == "README.md")
+    assert "references `app/a.py`, which doesn't exist (+1 more)" in readme.title
+    assert readme.source_facts[0].startswith("doc-drift:")
+    guide = next(r for r in roots if r.subject == "docs/guide.md")
+    assert "(+0 more)" not in guide.title and "+1 more" not in guide.title
+
+
+def test_doc_drift_routes_to_refine_phase():
+    from app.engine.idea_roadmap import REFINE, classify_phase
+
+    profile = _profile(
+        doc_drift=[{"doc": "README.md", "reference": "app/a.py", "line": 3}],
+        ci_files=["ci.yml"],
+    )
+    root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "README.md")
+    assert classify_phase(root) == REFINE

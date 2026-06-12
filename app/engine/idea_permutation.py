@@ -393,6 +393,22 @@ class IdeaSeeder:
                 fact_value=f"{spot['module']} ({spot['commits']} commits in recent history)",
             )
 
+        # Documentation drift: the README/docs promise files that don't exist.
+        # One root per doc file — you fix the doc (or build the promise), not
+        # chase scattered references.
+        drift_by_doc: dict[str, list[str]] = {}
+        for d in (getattr(profile, "doc_drift", []) or []):
+            drift_by_doc.setdefault(d["doc"], []).append(d["reference"])
+        for doc, refs in drift_by_doc.items():
+            more = f" (+{len(refs) - 1} more)" if len(refs) > 1 else ""
+            self._append_root(
+                roots, seen_subjects,
+                title=f"True up {doc}: it references `{refs[0]}`, which doesn't exist{more}",
+                subject=doc,
+                fact_label="doc-drift",
+                fact_value=f"{doc} -> {', '.join(refs[:3])} (missing)",
+            )
+
         # Dominant language → tooling idea (type hints / lint config).
         exts = getattr(profile, "extension_counts", {}) or {}
         if exts.get(".py", 0) >= 1:
@@ -1327,6 +1343,7 @@ _FACT_HINTS: dict[str, str] = {
     "complexity-hotspot": "complex check validation edge cases simplify",
     "hotspot-function": "complex check validation edge cases",
     "churn-hotspot": "refactor interface boundary coupling simplify",
+    "doc-drift": "documentation drift broken reference promise",
     "convergence": "complex secret guard validation check edge cases",
     "shallow-coverage": "check validation edge cases assert behaviour",
     "missing-ci": "ci workflow run tests automation",
