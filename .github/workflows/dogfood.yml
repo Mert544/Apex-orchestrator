@@ -38,7 +38,7 @@ jobs:
           python -m app.cli auto --apply --max-apply 4 --out .apex/dogfood-report.md
 
       - name: Apex dreams (curate memory, extract patterns, write the digest)
-        run: python -m app.cli dream
+        run: python -m app.cli dream --curate
 
       - name: Suite still green after self-maintenance
         run: python -m pytest -q

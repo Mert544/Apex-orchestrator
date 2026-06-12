@@ -156,7 +156,7 @@ def cmd_dream(args: argparse.Namespace) -> int:
     from app.engine.dream import dream, render_dream_markdown
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
-    report = dream(str(target))
+    report = dream(str(target), curate=getattr(args, "curate", False))
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
     else:
@@ -451,6 +451,8 @@ def main() -> int:
         help="Review memory stores, extract patterns, curate, and write the dream digest",
     )
     dream_parser.add_argument("--target", default="", help="Target project root")
+    dream_parser.add_argument("--curate", action="store_true",
+                              help="Apply the curation (default only reports; inputs untouched)")
     dream_parser.add_argument("--json", action="store_true", help="Emit JSON")
     dream_parser.set_defaults(func=cmd_dream)
 

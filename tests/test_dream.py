@@ -36,7 +36,7 @@ def test_dream_extracts_patterns_and_curates_memory(tmp_path):
     (tmp_path / "app" / "m.py").write_text("def f():\n    return 1\n")
     _seed_stores(tmp_path)
 
-    report = dream(tmp_path)
+    report = dream(tmp_path, curate=True)
     text = " | ".join(report.patterns)
     assert "`document` fixes land 100%" in text
     assert "`harden` lands only 0%" in text
@@ -52,6 +52,35 @@ def test_dream_extracts_patterns_and_curates_memory(tmp_path):
     assert "zero tokens" in digest
 
 
+def test_default_dream_proposes_but_never_touches_inputs(tmp_path):
+    # Parity with the real Dreams API: the input stores are never modified by
+    # default — curation is reported as a proposal until --curate.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f():\n    return 1\n")
+    _seed_stores(tmp_path)
+    before = (tmp_path / ".apex" / "idea-memory.json").read_text()
+
+    report = dream(tmp_path)
+    assert report.curated == []
+    assert any("would drop" in p for p in report.proposed)
+    assert (tmp_path / ".apex" / "idea-memory.json").read_text() == before
+    assert "Proposed curation" in render_dream_markdown(report)
+
+
+def test_recurring_patterns_consolidate_across_dreams(tmp_path):
+    # The deterministic analogue of reading 100 sessions: a pattern that
+    # appears dream after dream is annotated with its streak.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f():\n    return 1\n")
+    _seed_stores(tmp_path)
+    first = dream(tmp_path)
+    assert not any("consecutive dreams" in p for p in first.patterns)
+    second = dream(tmp_path)
+    assert any("seen in 2 consecutive dreams" in p for p in second.patterns)
+    third = dream(tmp_path)
+    assert any("seen in 3 consecutive dreams" in p for p in third.patterns)
+
+
 def test_dream_archives_fully_resolved_briefs(tmp_path):
     (tmp_path / "app").mkdir()
     # Subject is clean NOW; the saved brief remembers old evidence -> resolved.
@@ -64,7 +93,7 @@ def test_dream_archives_fully_resolved_briefs(tmp_path):
         "branch_path": "x.a", "title": "Harden core", "subject": "app/core.py",
         "evidence": {"error handling": [[4, "bare except swallows errors"]]},
     }))
-    report = dream(tmp_path)
+    report = dream(tmp_path, curate=True)
     assert any("fully resolved (1/1" in p for p in report.patterns)
     assert not (briefs / "x.a.json").exists()
     assert (briefs / "archive" / "x.a.json").exists()
@@ -84,7 +113,7 @@ def test_cli_dream(tmp_path, capsys):
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "m.py").write_text("def f():\n    return 1\n")
     _seed_stores(tmp_path)
-    rc = cmd_dream(argparse.Namespace(target=str(tmp_path), json=False))
+    rc = cmd_dream(argparse.Namespace(target=str(tmp_path), json=False, curate=False))
     out = capsys.readouterr().out
     assert rc == 0
     assert "Dream digest" in out and "Digest written to" in out

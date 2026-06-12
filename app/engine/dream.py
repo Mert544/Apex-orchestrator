@@ -35,15 +35,16 @@ MEMORY_KEY_CAP = 20
 @dataclass
 class DreamReport:
     patterns: list[str] = field(default_factory=list)   # what the dream noticed
-    curated: list[str] = field(default_factory=list)    # what it tidied
+    curated: list[str] = field(default_factory=list)    # what it tidied (--curate)
+    proposed: list[str] = field(default_factory=list)   # what it WOULD tidy (default)
     digest_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {"patterns": self.patterns, "curated": self.curated,
-                "digest_path": self.digest_path}
+                "proposed": self.proposed, "digest_path": self.digest_path}
 
 
-def _review_outcome_memory(root: Path, report: DreamReport) -> None:
+def _review_outcome_memory(root: Path, report: DreamReport, curate: bool) -> None:
     from app.engine.idea_memory import IdeaMemory
 
     mem = IdeaMemory.load(root)
@@ -66,11 +67,16 @@ def _review_outcome_memory(root: Path, report: DreamReport) -> None:
             table.clear()
             table.update(keep)
     if trimmed:
-        mem.save(root)
-        report.curated.append(f"outcome memory trimmed: {trimmed} low-evidence key(s) dropped")
+        if curate:
+            mem.save(root)
+            report.curated.append(
+                f"outcome memory trimmed: {trimmed} low-evidence key(s) dropped")
+        else:
+            report.proposed.append(
+                f"trim outcome memory: {trimmed} low-evidence key(s) would drop")
 
 
-def _review_briefs(root: Path, report: DreamReport) -> None:
+def _review_briefs(root: Path, report: DreamReport, curate: bool) -> None:
     from app.engine.idea_brief import check_brief
 
     briefs_dir = root / ".apex" / "briefs"
@@ -84,11 +90,14 @@ def _review_briefs(root: Path, report: DreamReport) -> None:
             continue
         done, total = len(check["resolved"]), check["measured_total"]
         if not check["open"]:
-            archive.mkdir(parents=True, exist_ok=True)
-            path.rename(archive / path.name)
             report.patterns.append(
-                f"brief `{branch}` fully resolved ({done}/{total} evidence gone) — archived.")
-            report.curated.append(f"brief `{branch}` → archive (work landed)")
+                f"brief `{branch}` fully resolved ({done}/{total} evidence gone).")
+            if curate:
+                archive.mkdir(parents=True, exist_ok=True)
+                path.rename(archive / path.name)
+                report.curated.append(f"brief `{branch}` → archive (work landed)")
+            else:
+                report.proposed.append(f"archive brief `{branch}` (work landed)")
         else:
             report.patterns.append(
                 f"brief `{branch}` in progress: {done}/{total} measured item(s) resolved.")
@@ -146,15 +155,30 @@ def _review_pulse(root: Path, report: DreamReport) -> None:
             "that don't exist — the docs drifted.")
 
 
-def dream(project_root: str | Path, write_digest: bool = True) -> DreamReport:
-    """Run the full curation pass; returns what was noticed and tidied."""
+def dream(project_root: str | Path, write_digest: bool = True,
+          curate: bool = False) -> DreamReport:
+    """Run the full pass; returns what was noticed (and, with ``curate``, tidied).
+
+    Like the real Dreams API, the default NEVER modifies the input stores —
+    it reports what it would curate; ``curate=True`` applies it (the mode
+    automation like the nightly dogfood runs in).
+    """
     root = Path(project_root)
     report = DreamReport()
-    for review in (_review_outcome_memory, _review_briefs, _review_proof, _review_pulse):
+    for review in (_review_outcome_memory, _review_briefs):
         try:
-            review(root, report)
+            review(root, report, curate)
         except Exception:  # a missing/corrupt store must never break the dream
             continue
+    for review in (_review_proof, _review_pulse):
+        try:
+            review(root, report)
+        except Exception:
+            continue
+    try:
+        _consolidate(root, report)
+    except Exception:
+        pass
     if write_digest:
         path = root / ".apex" / "dream-digest.md"
         try:
@@ -164,6 +188,51 @@ def dream(project_root: str | Path, write_digest: bool = True) -> DreamReport:
         except OSError:
             pass
     return report
+
+
+# --- cross-dream consolidation -------------------------------------------
+# The real Dreams pipeline reads up to 100 past sessions so "the same mistake,
+# 12 times" becomes visible. Our deterministic analogue: an append-only dream
+# journal — a pattern that keeps appearing dream after dream is consolidated
+# ("seen in N consecutive dreams"), because persistence IS the signal.
+_JOURNAL_CAP = 30
+
+
+def _pattern_key(text: str) -> str:
+    """A stable identity for a pattern across dreams (magnitudes change,
+    the subject doesn't): the text up to the first em-dash/colon/paren."""
+    for sep in (" — ", " (", ":"):
+        if sep in text:
+            text = text.split(sep, 1)[0]
+    return text.strip()
+
+
+def _consolidate(root: Path, report: DreamReport) -> None:
+    journal_path = root / ".apex" / "dream-journal.json"
+    history: list[list[str]] = []
+    if journal_path.exists():
+        try:
+            history = json.loads(journal_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            history = []
+    keys = [_pattern_key(p) for p in report.patterns]
+    # Streak per key: how many consecutive past dreams (newest first) saw it.
+    for i, key in enumerate(keys):
+        streak = 1
+        for past in reversed(history):
+            if key in past:
+                streak += 1
+            else:
+                break
+        if streak >= 2:
+            report.patterns[i] += f"  ⟲ seen in {streak} consecutive dreams"
+    history.append(keys)
+    try:
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        journal_path.write_text(json.dumps(history[-_JOURNAL_CAP:], indent=1),
+                                encoding="utf-8")
+    except OSError:
+        pass
 
 
 def render_dream_markdown(report: DreamReport) -> str:
@@ -180,5 +249,9 @@ def render_dream_markdown(report: DreamReport) -> str:
     if report.curated:
         lines.append("## Curated")
         lines += [f"- 🧹 {c}" for c in report.curated]
+        lines.append("")
+    if report.proposed:
+        lines.append("## Proposed curation — inputs untouched (apply with `apex dream --curate`)")
+        lines += [f"- 💤 {p}" for p in report.proposed]
         lines.append("")
     return "\n".join(lines)

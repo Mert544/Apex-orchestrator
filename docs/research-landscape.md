@@ -16,7 +16,8 @@
 | **SonarQube** | Metric vocabulary: **cognitive complexity** (published spec, 77% dev acceptance) vs raw cyclomatic | Spec published; formula = method, not copyrightable | **BUILD**: stdlib cognitive complexity to upgrade hotspot-function, effort estimation and facet evidence |
 | **GitHub Spec-Kit** | Promise→code direction: spec → plan → tasks artifacts as the source of truth (LLM-centric) | MIT | **MIRROR**: we are its deterministic complement (ideas → roadmap → briefs, evidence-grounded). Possible interop: emit `apex brief` in a tasks-file format |
 | **tree-sitter** | Multi-language parsing (incremental, queries), powers GitHub code nav | MIT | **DEFER, keep warm**: the BS-1 (beyond-Python) path when we open it — optional dependency, core stays stdlib |
-| **Truck-factor research (Avelino/DOA)** | Knowledge concentration from git authorship — who solely owns which file | Published algorithm (papers) | **BUILD**: "knowledge-risk" seeding signal — a hub with one author is a different fact than a shared one |
+| **Truck-factor research (Avelino/DOA)** | Knowledge concentration from git authorship — who solely owns which file | Published algorithm (papers) | ✅ **BUILT**: knowledge-risk signal (≥85% single-author, two genuinely active authors required) |
+| **Anthropic Dreams** (Managed Agents, research preview) | Scheduled memory curation: an LLM reads a memory store + up to 100 session transcripts, outputs a NEW reorganized store (input untouched); merges duplicates, drops stale entries, surfaces cross-session patterns; billed per token, minutes per run | Separate product/API (beta headers, access form) | ✅ **REBUILT deterministically** (`apex dream`): artifact stores instead of transcripts, rules instead of an LLM, seconds instead of minutes, zero tokens. Adopted their two superior design calls: inputs never modified by default (curation is a reviewed proposal until `--curate`) and cross-run consolidation (the dream journal annotates patterns "seen in N consecutive dreams") |
 
 **Conclusion the map supports:** nobody combines *reasoning about what to build*
 (idea tree) + *verified execution* (tiered, shielded, proof-of-fix) +
@@ -76,3 +77,4 @@ stdlib-only; anything external enters as an *optional* integration.
 - Truck factor / DOA: <https://homepages.dcc.ufmg.br/~mtov/pub/2019-sqj.pdf>, <https://github.com/aserg-ufmg/Truck-Factor>
 - Spec-Kit: <https://github.com/github/spec-kit>
 - tree-sitter: <https://github.com/tree-sitter/tree-sitter>, <https://tree-sitter.github.io/>
+- Anthropic Dreams: <https://platform.claude.com/docs/en/managed-agents/dreams>, <https://claude.com/blog/new-in-claude-managed-agents>
