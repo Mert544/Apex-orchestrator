@@ -298,7 +298,7 @@ class ProjectProfiler:
         if not profile.security_finding_modules:
             return
         from app.engine.detectors import detect
-        from app.engine.exposure import blame_age_days
+        from app.tools.git_history import blame_age_days
 
         ages: dict[str, int] = {}
         for module in profile.security_finding_modules:

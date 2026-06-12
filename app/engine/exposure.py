@@ -19,7 +19,6 @@ it matters*. Deterministic, stdlib-only; non-git targets simply get no age.
 from __future__ import annotations
 
 import ast
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -71,25 +70,14 @@ def _enclosing_function(source: str, line: int) -> str:
 
 
 def blame_age_days(project_root: str | Path, rel: str, line: int) -> int | None:
-    """Days since the flagged line's commit, anchored to HEAD's commit time."""
-    def _git(*args: str):
-        return subprocess.run(["git", *args], cwd=project_root,
-                              capture_output=True, text=True, timeout=15)
+    """Days since the flagged line's commit, anchored to HEAD's commit time.
 
-    try:
-        head = _git("log", "-1", "--format=%ct")
-        if head.returncode != 0 or not head.stdout.strip():
-            return None
-        blame = _git("blame", "-L", f"{line},{line}", "--porcelain", "--", rel)
-        if blame.returncode != 0:
-            return None
-        for text_line in blame.stdout.splitlines():
-            if text_line.startswith("committer-time "):
-                then = int(text_line.split()[1])
-                return max(0, (int(head.stdout.strip()) - then) // 86400)
-    except Exception:
-        return None
-    return None
+    Thin re-export of :func:`app.tools.git_history.blame_age_days`, kept so
+    existing callers (and the exposure analysis below) need no change.
+    """
+    from app.tools.git_history import blame_age_days as _impl
+
+    return _impl(project_root, rel, line)
 
 
 def _reachable_entrypoints(graph, module: str, func_name: str,
