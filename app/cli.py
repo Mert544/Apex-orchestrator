@@ -955,11 +955,21 @@ def _render_review_fixes_markdown(fix: dict) -> str:
 
 
 def cmd_rename(args: argparse.Namespace) -> int:
-    """Cross-file rename: definition + imports + call sites, test-verified."""
+    """Cross-file rename: definition + imports + call sites, test-verified.
+
+    With ``--param FUNC``, renames a *parameter* of FUNC instead: the def
+    site, the body uses, and every keyword call site project-wide.
+    """
     from app.execution.cross_file_rename import apply_rename, plan_rename
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
-    plan = plan_rename(str(target), args.old, args.new)
+    param_of = getattr(args, "param", "") or ""
+    if param_of:
+        from app.execution.param_rename import plan_param_rename
+
+        plan = plan_param_rename(str(target), param_of, args.old, args.new)
+    else:
+        plan = plan_rename(str(target), args.old, args.new)
 
     if plan.blockers:
         print(f"# Rename blocked: `{args.old}` → `{args.new}`\n")
@@ -1598,6 +1608,9 @@ def main() -> int:
     )
     rename_parser.add_argument("old", help="Current symbol name")
     rename_parser.add_argument("new", help="New symbol name")
+    rename_parser.add_argument("--param", default="",
+                               help="Rename a PARAMETER of this function instead "
+                                    "(def site + body + keyword call sites)")
     rename_parser.add_argument("--target", default="", help="Target project root")
     rename_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                                help="Preview the unified diff without changing files")

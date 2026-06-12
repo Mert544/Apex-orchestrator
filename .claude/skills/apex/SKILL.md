@@ -60,6 +60,8 @@ without the file). `apex auto` prints what it has learned.
 - `apex rename OLD NEW [--target=.] [--dry-run] [--no-verify]` — cross-file rename of a
   top-level function/class: definition + imports + call sites, comment-preserving span
   edits, conservative blockers (ambiguity/shadow/collision), test-verified with rollback.
+  With `--param FUNC`: renames a *parameter* of FUNC instead — def site, body uses, and
+  every keyword call site project-wide (positional calls untouched; `**kwargs` sites warn).
 - `apex move SRC.py DST.py [--target=.] [--dry-run] [--no-verify]` — move/rename a module;
   every import form (`import x.y`, `from x.y import f`, `from x import y`, aliases) is
   rewritten project-wide, missing `__init__.py` created, relative-import cases block.
