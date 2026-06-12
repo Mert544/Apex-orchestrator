@@ -890,19 +890,32 @@ class IdeaPermutationEngine:
                 or len(emitted) >= synth_floor
             )
 
-        # Per-level source cap: split the facet budget across the requested zoom
-        # levels so depth is actually reachable (a few deep dives beat faceting
-        # every leaf one level). Falls back to wide faceting when depth == 1.
-        per_level = max(2, facet_cap // (self.facets_per_idea * self.facet_depth))
+        # Adaptive zoom: high-value branches grow past the base facet_depth by a
+        # bounded bonus, so the fractal *sharpens where it pays off* instead of
+        # faceting every leaf uniformly. The base levels stay wide; each extra
+        # adaptive level narrows to the single strongest branch — a deep spike on
+        # the most valuable leaf rather than shallow breadth everywhere.
+        bonus = self.adaptive_depth_bonus if self.adaptive_depth else 0
+        max_level = self.facet_depth + bonus
+
+        # Per-level source cap: split the facet budget across ALL the zoom levels
+        # (including the adaptive bonus) so the wide base levels leave room for
+        # the deep spike — otherwise level 1 alone would exhaust the cap.
+        per_level = max(2, facet_cap // (self.facets_per_idea * max_level))
 
         # Level-by-level (BFS) fractal zoom: each level's facets become the next
-        # level's sources, up to ``facet_depth``. Best-first within a level.
+        # level's sources, up to ``max_level``. Best-first within a level.
         sources = leaves
-        for level in range(1, self.facet_depth + 1):
+        for level in range(1, max_level + 1):
             if _stop():
                 break
             sources.sort(key=lambda n: (n.value, n.branch_path), reverse=True)
-            sources = sources[:per_level]
+            # Base levels: facet the top `per_level`. Adaptive extra levels: keep
+            # only the single strongest branch (and only while it stays valuable).
+            if level <= self.facet_depth:
+                sources = sources[:per_level]
+            else:
+                sources = [s for s in sources[:1] if s.value >= self.adaptive_depth_threshold]
             next_sources: list[IdeaNode] = []
             for src in sources:
                 if _stop():

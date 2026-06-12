@@ -618,3 +618,26 @@ def test_facet_caveats_interrogate_the_subconcern(tmp_path):
     inv = caveat_for("property invariants")
     if inv:
         assert "twice" in inv or "reorder" in inv or "round trip" in inv
+
+
+def test_adaptive_facets_spike_on_the_strongest_branch(tmp_path):
+    # "Sharpen where it pays off": with adaptive_depth on, the facet zoom grows
+    # past the base facet_depth on the single strongest leaf, while non-adaptive
+    # keeps every faceted branch at the uniform depth.
+    _project(tmp_path)
+    cfg = dict(max_total_ideas=400, max_idea_depth=1, breadth=3,
+               fractal_facets=True, facet_depth=1, facets_per_idea=2)
+    base = IdeaPermutationEngine(cfg, tmp_path).run()
+    base_levels = {i.branch_path.count(".f") for i in base.ideas if i.kind == "facet"}
+    assert base_levels == {1}                       # uniform: nothing past facet_depth
+
+    adaptive = IdeaPermutationEngine(
+        {**cfg, "adaptive_depth": True, "adaptive_depth_bonus": 2,
+         "adaptive_depth_threshold": 0.3}, tmp_path
+    ).run()
+    facets = [i for i in adaptive.ideas if i.kind == "facet"]
+    levels = {f.branch_path.count(".f") for f in facets}
+    assert max(levels) > 1                           # spiked past the base depth
+    # the deep spike narrows: at most one facet branch reaches the deepest level
+    deepest = max(levels)
+    assert sum(1 for f in facets if f.branch_path.count(".f") == deepest) <= 2
