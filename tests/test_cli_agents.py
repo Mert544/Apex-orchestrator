@@ -101,9 +101,10 @@ def test_cmd_hook_unknown_action(tmp_path, capsys):
 
 
 def test_cmd_plugin_list_empty(tmp_path, capsys, monkeypatch):
-    import app.cli as cli
+    import app.cli_plugins as cli_plugins
     from app.cli import cmd_plugin_list
     # Point project root at an empty dir -> "No plugins" path.
-    monkeypatch.setattr(cli, "_get_project_root", lambda: tmp_path)
+    # Patch where the function is USED (the plugin family module).
+    monkeypatch.setattr(cli_plugins, "_get_project_root", lambda: tmp_path)
     assert cmd_plugin_list(argparse.Namespace()) == 0
     assert "No plugins" in capsys.readouterr().out
