@@ -134,17 +134,24 @@ class IdeaActionBridge:
         step = self.plan_idea(idea)
         if default_phase:
             step.phase = default_phase
-        if (project_root and step.executable and step.target
-                and step.action_type == "create_test_stub"):
-            from app.engine.verification_strength import module_referenced_by_suite
+        if project_root and step.executable and step.target:
+            if step.action_type == "create_test_stub":
+                from app.engine.verification_strength import module_referenced_by_suite
 
-            # A stub can only ever be the FIRST test layer. On a module the
-            # suite already references, generation either refuses (the test
-            # file exists -> nightly "blocked") or writes a redundant smoke
-            # stub. Either way the honest shape is a work order.
-            if module_referenced_by_suite(project_root, step.target):
-                step.executable = False
-                step.description += " — linked tests already exist; deepen them by hand"
+                # A stub can only ever be the FIRST test layer. On a module the
+                # suite already references, generation either refuses (the test
+                # file exists -> nightly "blocked") or writes a redundant smoke
+                # stub. Either way the honest shape is a work order.
+                if module_referenced_by_suite(project_root, step.target):
+                    step.executable = False
+                    step.description += " — linked tests already exist; deepen them by hand"
+            elif step.action_type == "harden_security":
+                # Same reality check the convergence path applies: when no
+                # ladder rung fires there is nothing the hands can do, and an
+                # executable step would just re-block every night.
+                if self._harden_change_strategy(project_root, step.target) is None:
+                    step.executable = False
+                    step.description += " — no auto-fixable pattern found; human review"
         return [step]
 
     def plan_idea(self, idea: IdeaNode) -> ActionStep:

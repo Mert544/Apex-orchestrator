@@ -467,3 +467,31 @@ def test_create_test_stub_asserts_return_type_contracts(tmp_path: Path):
     assert "pytest.mark.skip" not in content
     import ast as _ast
     _ast.parse(content)
+
+
+def test_organize_imports_never_touches_future_or_noqa(tmp_path: Path):
+    # Found by dogfooding: the transform stripped `from __future__ import
+    # annotations` (a compiler directive, not a binding) from live modules,
+    # and would equally strip noqa-marked re-export imports.
+    source = (
+        "from __future__ import annotations\n"
+        "import os  # noqa: F401  (re-export)\n"
+        "import sys\n"
+        "import json\n"
+        "\n"
+        "def load():\n"
+        "    return json.loads('{}')\n"
+    )
+    _write(tmp_path / "app" / "loader.py", source)
+    generator = SemanticPatchGenerator()
+    patch_plan = {
+        "target_files": ["app/loader.py"],
+        "change_strategy": ["organize imports cleanup unused"],
+        "title": "Tidy imports",
+        "task_id": "t",
+    }
+    result = generator.generate(project_root=tmp_path, patch_plan=patch_plan)
+    new = result.patch_requests[0]["new_content"]
+    assert "from __future__ import annotations" in new
+    assert "import os  # noqa: F401" in new   # human-marked: intentional
+    assert "import sys" not in new            # genuinely unused: still removed

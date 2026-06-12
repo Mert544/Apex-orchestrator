@@ -19,9 +19,21 @@ def apply(rel_path: str, source: str) -> SemanticPatchResult | None:
             if isinstance(node.value, ast.Name):
                 used_names.add(node.value.id)
 
+    src_lines = source.splitlines()
     unused_lines: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
+            # __future__ imports are compiler directives, not bindings — they
+            # are never "unused" (found by dogfooding: this transform stripped
+            # `from __future__ import annotations` from three live modules).
+            if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+                continue
+            # A noqa marker is a human saying "this import is intentional"
+            # (re-export surfaces, side-effect imports) — honour it.
+            if any("noqa" in src_lines[i - 1]
+                   for i in range(node.lineno,
+                                  getattr(node, "end_lineno", node.lineno) + 1)):
+                continue
             all_unused = True
             if isinstance(node, ast.Import):
                 for alias in node.names:

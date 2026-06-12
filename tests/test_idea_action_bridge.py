@@ -807,3 +807,25 @@ def test_expand_idea_demotes_stub_on_already_tested_module(tmp_path):
     (tmp_path / "tests" / "test_core.py").unlink()
     step = bridge._expand_idea(idea, project_root=str(tmp_path))[0]
     assert step.executable is True
+
+
+def test_expand_idea_demotes_harden_with_no_fixable_pattern(tmp_path):
+    # The other half of the nightly cyclic-blocked lesson: a harden step on a
+    # file where NO ladder rung fires can only re-block — it demotes to a
+    # work order. A real fixable pattern keeps it executable.
+    (tmp_path / "app").mkdir()
+    clean = tmp_path / "app" / "token_store.py"
+    clean.write_text("def get(k):\n    return k\n")
+    idea = IdeaNode(
+        id="i", title="Harden: app/token_store.py", subject="app/token_store.py",
+        operator="harden", operator_chain=["harden"],
+        source_facts=["sensitive-path: app/token_store.py"],
+    )
+    bridge = IdeaActionBridge()
+    step = bridge._expand_idea(idea, project_root=str(tmp_path))[0]
+    assert step.executable is False
+    assert "no auto-fixable pattern" in step.description
+
+    clean.write_text("def get(k):\n    return eval(k)\n")
+    step = bridge._expand_idea(idea, project_root=str(tmp_path))[0]
+    assert step.executable is True
