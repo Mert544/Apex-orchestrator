@@ -108,6 +108,9 @@ def _fix_record(r: dict) -> dict:
     }
     if r.get("commit_hash"):
         record["commit_hash"] = r["commit_hash"]
+    if r.get("shield_test"):
+        # Test-first: the characterization test generated to protect this fix.
+        record["shield_test"] = r["shield_test"]
     if r.get("converged_fixes"):
         record["converged_fixes"] = r["converged_fixes"]
     if outcome == "blocked" and r.get("reason"):

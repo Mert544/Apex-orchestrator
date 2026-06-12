@@ -114,3 +114,71 @@ def test_maintenance_markdown_says_what_the_suite_proves():
     md = render_maintenance_markdown(summary, ".")
     assert "name the changed function" in md
     assert "⚠️ no test references this module" in md
+
+
+def _shield_project(tmp_path, with_test_for_danger: bool = False):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "danger.py").write_text("def run(e):\n    return eval(e)\n")
+    (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n")
+    if with_test_for_danger:
+        (tmp_path / "tests" / "test_danger.py").write_text(
+            "import app.danger\ndef test_d():\n    assert app.danger is not None\n"
+        )
+    return tmp_path
+
+
+def _harden_plan(tmp_path):
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.models.idea import ActionPlan, ActionStep
+
+    step = ActionStep(branch_path="x.a", title="fix app/danger.py", operator="harden",
+                      subject="app/danger.py", action_type="harden_security",
+                      target="app/danger.py", executable=True,
+                      source_facts=["security-finding: app/danger.py"])
+    return IdeaActionBridge(), ActionPlan(objective="", steps=[step])
+
+
+def test_uncovered_fix_is_shielded_by_generated_test_first(tmp_path):
+    # No test references app/danger.py -> the pass generates a
+    # characterization test FIRST, then fixes eval under its protection.
+    _shield_project(tmp_path)
+    bridge, plan = _harden_plan(tmp_path)
+    summary = bridge.apply_plan(plan, str(tmp_path), mode="supervised", verify=True)
+    entry = summary["results"][0]
+    assert entry["applied"] is True
+    assert entry["shield_test"] == "tests/test_danger.py"
+    assert (tmp_path / "tests" / "test_danger.py").exists()
+    # The shield upgraded what the green suite proves about the fix.
+    assert entry["verification_strength"]["level"] in ("module", "function")
+    # The shield is support work: exactly one result row, one applied fix.
+    assert summary["total_executable"] == 1 and summary["applied"] == 1
+    assert "ast.literal_eval" in (tmp_path / "app" / "danger.py").read_text()
+
+
+def test_already_referenced_target_is_not_shielded(tmp_path):
+    _shield_project(tmp_path, with_test_for_danger=True)
+    bridge, plan = _harden_plan(tmp_path)
+    summary = bridge.apply_plan(plan, str(tmp_path), mode="supervised", verify=True)
+    assert "shield_test" not in summary["results"][0]
+
+
+def test_shield_disabled_by_flag(tmp_path):
+    _shield_project(tmp_path)
+    bridge, plan = _harden_plan(tmp_path)
+    summary = bridge.apply_plan(plan, str(tmp_path), mode="supervised",
+                                verify=True, test_first=False)
+    assert "shield_test" not in summary["results"][0]
+    assert not (tmp_path / "tests" / "test_danger.py").exists()
+
+
+def test_shield_recorded_in_proof_and_markdown(tmp_path):
+    from app.engine.idea_action_bridge import render_maintenance_markdown
+    from app.engine.proof_of_fix import build_proof
+
+    _shield_project(tmp_path)
+    bridge, plan = _harden_plan(tmp_path)
+    summary = bridge.apply_plan(plan, str(tmp_path), mode="supervised", verify=True)
+    record = build_proof(summary, str(tmp_path))["fixes"][0]
+    assert record["shield_test"] == "tests/test_danger.py"
+    assert "🛡️ shielded first by `tests/test_danger.py`" in render_maintenance_markdown(summary, str(tmp_path))

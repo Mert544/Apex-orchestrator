@@ -534,6 +534,7 @@ class IdeaActionBridge:
         verify: bool = False,
         max_apply: int | None = None,
         commit: bool = False,
+        test_first: bool = True,
     ) -> dict:
         """Run a whole maintenance pass: apply each executable step in turn,
         verifying + rolling back individually, and return an aggregate summary.
@@ -541,6 +542,13 @@ class IdeaActionBridge:
         Steps are processed in plan order (already value-sorted). Each step is
         independent — a rolled-back step does not abort the run. Honors the
         same gating as apply_step (mode + safety + verify).
+
+        TEST-FIRST SHIELD: when ``verify`` and ``test_first`` are on and a
+        code fix targets a module NO test references, the pass first generates
+        a characterization test for that module (itself verified), then applies
+        the fix under its protection — so "verified" never silently means
+        "the suite wasn't looking". The shield doesn't add a result row or
+        consume ``max_apply``; it's tracked on the step's entry.
 
         When ``commit`` is set AND the mode permits committing (autonomous),
         each successfully-applied step is committed individually via
@@ -560,15 +568,42 @@ class IdeaActionBridge:
 
         results: list[dict] = []
         applied = rolled_back = blocked = committed = 0
-        def _commit(r: dict) -> tuple[bool, str | None]:
+        def _commit(r: dict, action_label: str | None = None) -> tuple[bool, str | None]:
             if committer is None or not r.get("changed_files"):
                 return False, None
-            cres = committer.commit(changed_files=r["changed_files"], finding=step.action_type, action="fix")
+            cres = committer.commit(changed_files=r["changed_files"],
+                                    finding=action_label or step.action_type, action="fix")
             return bool(cres.success), getattr(cres, "commit_hash", None)
+
+        shield_attempted: set[str] = set()
+
+        def _shield(step: ActionStep) -> dict | None:
+            """Generate a characterization test for an unreferenced target
+            before fixing it. Returns the shield's apply result, or None when
+            no shield is needed/possible."""
+            if not (test_first and verify):
+                return None
+            target = step.target
+            if (step.action_type == "create_test_stub" or not target
+                    or target in shield_attempted):
+                return None
+            from app.engine.verification_strength import module_referenced_by_suite
+
+            if module_referenced_by_suite(project_root, target):
+                return None
+            shield_attempted.add(target)
+            shield_step = ActionStep(
+                branch_path=f"{step.branch_path}.shield",
+                title=f"Shield {target} with a characterization test before fixing it",
+                operator="test", subject=target,
+                action_type="create_test_stub", target=target, executable=True,
+            )
+            return self.apply_step(shield_step, project_root, mode=mode, verify=verify)
 
         for step in plan.executable_steps():
             if max_apply is not None and applied >= max_apply:
                 break
+            shield_result = _shield(step)
             # The first apply classifies the step (applied / rolled-back / blocked),
             # exactly one result row per step.
             r = self.apply_step(step, project_root, mode=mode, verify=verify)
@@ -576,6 +611,11 @@ class IdeaActionBridge:
             entry = {"branch": step.branch_path, "action": step.action_type,
                      "operator": step.operator, "label": label,
                      "target": step.target, **r}
+            if shield_result is not None and shield_result.get("applied"):
+                entry["shield_test"] = (shield_result.get("changed_files") or [""])[0]
+                ok_s, _h = _commit(shield_result, action_label="create_test_stub")
+                if ok_s:
+                    committed += 1
             real_fix = bool(r.get("applied")) and step.target in (r.get("changed_files") or [])
             if r.get("rolled_back"):
                 rolled_back += 1
@@ -797,6 +837,8 @@ def render_maintenance_markdown(summary: dict, project_root: str, objective: str
                     "none": " (tests pass — ⚠️ no test references this module)",
                     "test-change": " (tests pass)",
                 }.get(level, " (tests pass)")
+            if r.get("shield_test"):
+                extra += f" 🛡️ shielded first by `{r['shield_test']}`"
             if r.get("committed"):
                 extra += f" [commit {r.get('commit_hash', '')}]"
             files = ", ".join(r.get("changed_files", [])) or r.get("target", "")

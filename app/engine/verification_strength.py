@@ -86,6 +86,15 @@ def _references_module(text: str, rel_path: str) -> bool:
     return bool(re.search(rf"(?:^|\n)\s*(?:from|import)\s+[\w.]*\b{re.escape(stem)}\b", text))
 
 
+def module_referenced_by_suite(project_root: str | Path, rel_path: str) -> bool:
+    """Does ANY test file reference this module? (The cheap pre-check the
+    test-first shield uses before touching an uncovered module.)"""
+    if not rel_path.endswith(".py") or _is_test_path(rel_path):
+        return True  # test files and non-Python targets never need a shield
+    return any(_references_module(text, rel_path)
+               for _rel, text in _test_files(Path(project_root)))
+
+
 def assess_strength(
     project_root: str | Path,
     changed_files: list[str],
