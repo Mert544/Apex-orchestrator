@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from app.engine.idea_action_bridge import IdeaActionBridge
@@ -892,6 +893,35 @@ def _roadmap_changes_section(project_root: str, roadmap) -> str:
     return _card("changes", "📈", "Roadmap changes since last snapshot", "".join(parts))
 
 
+def _dream_section(project_root: str) -> str:
+    """Pin the latest dream: what the organism discovered while you were away —
+    the new/resolved flow first, then patterns and open-ended discoveries.
+    Best-effort: no digest yet renders nothing."""
+    import re as _re
+    from pathlib import Path as _Path
+
+    path = _Path(project_root) / ".apex" / "dream-digest.md"
+    if not path.exists():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    # Pull the bullet lines under each section into a compact list, preserving
+    # the leading emoji so the new/resolved flow reads at a glance.
+    items: list[str] = []
+    for line in text.splitlines():
+        m = _re.match(r"^- (.+)$", line.strip())
+        if m:
+            items.append(m.group(1))
+    if not items:
+        return ""
+    lis = "".join(f"<li>{_esc(i)}</li>" for i in items[:14])
+    body = (f"<p class='muted'>From <code>.apex/dream-digest.md</code> — "
+            f"curated deterministically, zero tokens.</p><ul class='dream'>{lis}</ul>")
+    return _card("dream", "💤", "Last dream — discovered while you were away", body)
+
+
 def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning,
                  git=None, debug=None, roadmap=None, shape=None, autonomy=None,
                  pareto=None, trajectory=None, learned=None) -> str:
@@ -913,6 +943,8 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         nav_links.append(("trajectory", "Trajectory"))
     if learned and (learned.get("most_reliable") or learned.get("least_reliable")):
         nav_links.append(("learned", "Learned"))
+    if (Path(project_root) / ".apex" / "dream-digest.md").exists():
+        nav_links.append(("dream", "Dream"))
     nav_links += [("actions", "Actions"), ("reasoning", "Reasoning"), ("profile", "Profile")]
     if debug:
         nav_links.append(("debug", "Debug"))
@@ -931,6 +963,7 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
             _roadmap_section(roadmap),
             _roadmap_changes_section(project_root, roadmap),
             _proof_section(project_root),
+            _dream_section(project_root),
             _pareto_section(pareto, getattr(idea_report, "stats", {}).get("total_ideas", 0)),
             _autonomy_section(autonomy),
             _trajectory_section(trajectory),

@@ -117,3 +117,60 @@ def test_cli_dream(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "Dream digest" in out and "Digest written to" in out
+
+
+def test_dream_flow_new_then_standing_no_cyclic_repetition(tmp_path):
+    # The core anti-bug guarantee: a standing observation is announced 'new'
+    # exactly once, never re-announced dream after dream.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f():\n    return 1\n")
+    _seed_stores(tmp_path)
+
+    first = dream(tmp_path, curate=True)
+    assert first.new_since, "first dream should surface everything as new"
+    assert first.resolved_since == []
+
+    # Second dream, same stores -> nothing new, nothing resolved (stable).
+    second = dream(tmp_path, curate=True)
+    assert second.new_since == []
+    assert second.resolved_since == []
+    # And the standing items now carry the streak annotation.
+    assert any("consecutive dreams" in p for p in second.patterns)
+
+
+def test_dream_flow_reports_resolved_once(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f():\n    return 1\n")
+    _seed_stores(tmp_path)
+    dream(tmp_path, curate=True)  # establishes baseline (proof patterns present)
+
+    # Remove the proof store -> its patterns vanish -> resolved exactly once.
+    (tmp_path / ".apex" / "proof-of-fix.json").unlink()
+    after = dream(tmp_path, curate=True)
+    assert any("blocked for the same reason" in t for t in after.resolved_since)
+    md = render_dream_markdown(after)
+    assert "no longer surfaces" in md
+
+    # Next dream: it's already gone from the baseline -> NOT resolved again.
+    again = dream(tmp_path, curate=True)
+    assert not any("blocked for the same reason" in t for t in again.resolved_since)
+
+
+def test_dashboard_pins_the_last_dream(tmp_path):
+    from app.reporting.dashboard import _dream_section
+
+    apex = tmp_path / ".apex"
+    apex.mkdir()
+    (apex / "dream-digest.md").write_text(
+        "# Dream digest\n\n## Since the last dream\n"
+        "- 🆕 `app/x.py` is a confluence — 4 distinct signals\n"
+        "## Discoveries\n- 🔍 80% of high-churn modules are also co-change\n")
+    html_doc = _dream_section(str(tmp_path))
+    assert "Last dream" in html_doc
+    assert "confluence" in html_doc and "co-change" in html_doc
+
+
+def test_dashboard_dream_section_empty_without_digest(tmp_path):
+    from app.reporting.dashboard import _dream_section
+
+    assert _dream_section(str(tmp_path)) == ""

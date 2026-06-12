@@ -36,12 +36,15 @@ MEMORY_KEY_CAP = 20
 class DreamReport:
     patterns: list[str] = field(default_factory=list)     # what the dream noticed
     discoveries: list[str] = field(default_factory=list)  # open-ended associations
+    new_since: list[str] = field(default_factory=list)    # surfaced this dream, not last
+    resolved_since: list[str] = field(default_factory=list)  # in last dream, gone now
     curated: list[str] = field(default_factory=list)      # what it tidied (--curate)
     proposed: list[str] = field(default_factory=list)     # what it WOULD tidy (default)
     digest_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {"patterns": self.patterns, "discoveries": self.discoveries,
+                "new_since": self.new_since, "resolved_since": self.resolved_since,
                 "curated": self.curated, "proposed": self.proposed,
                 "digest_path": self.digest_path}
 
@@ -215,31 +218,53 @@ def _pattern_key(text: str) -> str:
 
 
 def _consolidate(root: Path, report: DreamReport) -> None:
+    """One journal, three jobs — streaks, the new/resolved flow, persistence.
+
+    A single source of truth (the dream journal) drives everything, so a
+    standing observation can never be re-announced as "new" (the root of
+    cyclic-repetition bugs): "new" means *absent from the previous dream*,
+    and a standing item is by definition present in it. Entries are
+    ``{key: text}`` maps so a resolved item can be shown with the words it
+    had; legacy bare-list entries are still read.
+    """
     journal_path = root / ".apex" / "dream-journal.json"
-    history: list[list[str]] = []
+    history: list[Any] = []
     if journal_path.exists():
         try:
             history = json.loads(journal_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             history = []
+
+    def _present(entry: Any, key: str) -> bool:
+        return key in entry  # dict membership or list membership, both work
+
     def _streak(key: str) -> int:
         streak = 1
         for past in reversed(history):
-            if key in past:
+            if _present(past, key):
                 streak += 1
             else:
                 break
         return streak
 
-    keys: list[str] = []
+    current: dict[str, str] = {}
     for bucket in (report.patterns, report.discoveries):
         for i, text in enumerate(bucket):
             key = _pattern_key(text)
-            keys.append(key)
+            current[key] = text
             n = _streak(key)
             if n >= 2:
                 bucket[i] += f"  ⟲ seen in {n} consecutive dreams"
-    history.append(keys)
+
+    prev = history[-1] if history else {}
+    prev_keys = set(prev.keys()) if isinstance(prev, dict) else set(prev)
+    for key, text in current.items():
+        if key not in prev_keys:
+            report.new_since.append(text)
+    for key in sorted(prev_keys - set(current)):
+        report.resolved_since.append(prev[key] if isinstance(prev, dict) else key)
+
+    history.append(current)
     try:
         journal_path.parent.mkdir(parents=True, exist_ok=True)
         journal_path.write_text(json.dumps(history[-_JOURNAL_CAP:], indent=1),
@@ -252,6 +277,11 @@ def render_dream_markdown(report: DreamReport) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = ["# Dream digest — what the organism learned while you were away",
              "", f"_Curated {ts} · deterministic · zero tokens_", ""]
+    if report.new_since or report.resolved_since:
+        lines.append("## Since the last dream")
+        lines += [f"- 🆕 {t}" for t in report.new_since]
+        lines += [f"- ✅ no longer surfaces: {t}" for t in report.resolved_since]
+        lines.append("")
     if report.patterns:
         lines.append("## Patterns")
         lines += [f"- {p}" for p in report.patterns]
