@@ -214,7 +214,11 @@ class IdeaSeeder:
     downstream idea is traceable to actual code.
     """
 
-    def __init__(self, project_root: str = ".") -> None:
+    def __init__(self, project_root: str = "") -> None:
+        # Empty by default ON PURPOSE: a bare seeder must be hermetic — it
+        # reads no cwd-relative state (a real .apex/dream-promotions.json in
+        # the working directory leaked into "empty profile" tests). Promotions
+        # are only read when the engine wires an explicit root.
         self.project_root = str(project_root)
 
     # (profile attribute, max seeds, subject label, title template, fact label)
@@ -271,7 +275,9 @@ class IdeaSeeder:
         import json
         from pathlib import Path
 
-        root = getattr(self, "project_root", "") or "."
+        root = getattr(self, "project_root", "")
+        if not root:
+            return []  # hermetic without an explicit root — never read cwd
         path = Path(root) / ".apex" / "dream-promotions.json"
         if not path.exists():
             return []
