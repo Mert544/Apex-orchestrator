@@ -165,7 +165,91 @@ def _brief_resolved(root: Path, value: Any) -> CriterionResult:
                       f"{branch} --check` names them with today's lines")
 
 
+def _edges(root: Path) -> list[tuple[str, str]]:
+    from app.tools.project_profile import ProjectProfiler
+
+    return [(str(a).replace("\\", "/"), str(b).replace("\\", "/"))
+            for a, b in (ProjectProfiler(root).profile().dependency_edges or [])]
+
+
+def _arch_forbidden(root: Path, value: Any) -> CriterionResult:
+    """Fitness function: modules under `from` must not import modules under
+    `to` (the import-linter "forbidden" contract, on our own edge data)."""
+    src_p, dst_p = str(value.get("from", "")), str(value.get("to", ""))
+    bad = [f"{a} → {b}" for a, b in _edges(root)
+           if a.startswith(src_p) and b.startswith(dst_p)]
+    ok = not bad
+    return CriterionResult(
+        "arch_forbidden", ok,
+        (f"no `{src_p}` → `{dst_p}` imports" if ok
+         else f"{len(bad)} forbidden import(s): {'; '.join(bad[:3])}"),
+        "" if ok else "invert the dependency or extract a neutral module "
+                      "(`apex move` rewrites the imports project-wide)")
+
+
+def _arch_layers(root: Path, value: Any) -> CriterionResult:
+    """Fitness function: ordered layers, highest first — a lower layer must
+    never import a higher one (the import-linter "layers" contract)."""
+    layers = [str(p) for p in (value or [])]
+    rank = {p: i for i, p in enumerate(layers)}  # 0 = highest
+
+    def layer_of(module: str) -> int | None:
+        for prefix, i in rank.items():
+            if module.startswith(prefix):
+                return i
+        return None
+
+    bad = []
+    for a, b in _edges(root):
+        la, lb = layer_of(a), layer_of(b)
+        if la is not None and lb is not None and la > lb:  # lower imports higher
+            bad.append(f"{a} (layer {la}) → {b} (layer {lb})")
+    ok = not bad
+    return CriterionResult(
+        "arch_layers", ok,
+        (f"layering holds across {len(layers)} layer(s)" if ok
+         else f"{len(bad)} upward import(s): {'; '.join(bad[:3])}"),
+        "" if ok else "a lower layer reaches upward — move the shared piece "
+                      "down or invert the dependency")
+
+
+def _arch_independence(root: Path, value: Any) -> CriterionResult:
+    """Fitness function: these sibling packages must not import each other
+    (the import-linter "independence" contract)."""
+    groups = [str(p) for p in (value or [])]
+    bad = []
+    for a, b in _edges(root):
+        ga = next((g for g in groups if a.startswith(g)), None)
+        gb = next((g for g in groups if b.startswith(g)), None)
+        if ga and gb and ga != gb:
+            bad.append(f"{a} → {b}")
+    ok = not bad
+    return CriterionResult(
+        "arch_independence", ok,
+        (f"{len(groups)} package(s) are mutually independent" if ok
+         else f"{len(bad)} cross-import(s): {'; '.join(bad[:3])}"),
+        "" if ok else "siblings are entangled — extract the shared piece into "
+                      "a module both may import")
+
+
+def _no_import_cycles(root: Path, _value: Any) -> CriterionResult:
+    from app.tools.project_profile import ProjectProfiler
+
+    cycles = ProjectProfiler(root).profile().import_cycles or []
+    ok = not cycles
+    return CriterionResult(
+        "no_import_cycles", ok,
+        ("the import graph is acyclic" if ok
+         else f"{len(cycles)} cycle(s), e.g. {' → '.join(cycles[0])}"),
+        "" if ok else "extract the shared piece into a neutral module both "
+                      "sides import (exactly how apex fixed its own)")
+
+
 _GRADERS = {
+    "arch_forbidden": _arch_forbidden,
+    "arch_layers": _arch_layers,
+    "arch_independence": _arch_independence,
+    "no_import_cycles": _no_import_cycles,
     "grade_min": _grade_min,
     "max_security_modules": _max_security_modules,
     "no_rollbacks": _no_rollbacks,

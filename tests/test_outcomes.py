@@ -96,3 +96,62 @@ def test_cli_outcomes_without_rubric_points_to_init(tmp_path, capsys):
     rc = cmd_outcomes(argparse.Namespace(target=str(tmp_path), init=False, json=False))
     assert rc == 1
     assert "--init" in capsys.readouterr().out
+
+
+def _layered_project(tmp_path: Path) -> Path:
+    # ui (top) -> core -> tools (bottom); plus one upward violation to catch.
+    for pkg in ("ui", "core", "tools"):
+        (tmp_path / pkg).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tools" / "util.py").write_text("def u():\n    return 1\n")
+    (tmp_path / "core" / "svc.py").write_text(
+        "from tools.util import u\n\ndef s():\n    return u()\n")
+    (tmp_path / "ui" / "view.py").write_text(
+        "from core.svc import s\n\ndef v():\n    return s()\n")
+    return tmp_path
+
+
+def test_arch_layers_holds_then_catches_upward_import(tmp_path):
+    _layered_project(tmp_path)
+    rubric = {"criteria": [{"type": "arch_layers",
+                            "value": ["ui", "core", "tools"]}]}
+    assert evaluate(tmp_path, rubric).passed
+
+    # tools reaching up into ui = the violation the contract exists for.
+    (tmp_path / "tools" / "naughty.py").write_text(
+        "from ui.view import v\n\ndef n():\n    return v()\n")
+    report = evaluate(tmp_path, rubric)
+    assert not report.passed
+    assert "upward import" in report.criteria[0].detail
+
+
+def test_arch_forbidden_contract(tmp_path):
+    _layered_project(tmp_path)
+    rubric = {"criteria": [{"type": "arch_forbidden",
+                            "value": {"from": "tools", "to": "core"}}]}
+    assert evaluate(tmp_path, rubric).passed
+    (tmp_path / "tools" / "bad.py").write_text("from core.svc import s\n")
+    report = evaluate(tmp_path, rubric)
+    assert not report.passed
+    assert "apex move" in report.criteria[0].gap  # the gap names the tool
+
+
+def test_arch_independence_contract(tmp_path):
+    _layered_project(tmp_path)
+    rubric = {"criteria": [{"type": "arch_independence",
+                            "value": ["ui", "tools"]}]}
+    assert evaluate(tmp_path, rubric).passed
+    (tmp_path / "ui" / "entangled.py").write_text("from tools.util import u\n")
+    assert not evaluate(tmp_path, rubric).passed
+
+
+def test_no_import_cycles_criterion(tmp_path):
+    _layered_project(tmp_path)
+    rubric = {"criteria": [{"type": "no_import_cycles"}]}
+    assert evaluate(tmp_path, rubric).passed
+    # Introduce a cycle: tools <-> core.
+    (tmp_path / "tools" / "loop.py").write_text("from core.svc import s\n")
+    (tmp_path / "core" / "svc.py").write_text(
+        "from tools.loop import s as _s\n\ndef s():\n    return 1\n")
+    report = evaluate(tmp_path, rubric)
+    assert not report.passed
+    assert "neutral module" in report.criteria[0].gap
