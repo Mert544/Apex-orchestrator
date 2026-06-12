@@ -434,8 +434,17 @@ def test_facets_render_nested_not_in_synth_section(tmp_path):
     ).run()
     md = render_markdown(rep)
     facets = [i for i in rep.ideas if i.kind == "facet"]
-    # Facet titles appear (nested under their leaf), e.g. "— input validation".
-    assert facets and any(f.title in md for f in facets)
+    assert facets
+    # Communication contract: a facet renders as a zoom-marked DELTA (just its
+    # sub-concern phrase), not the full repeated parent title — the nesting
+    # already provides the context.
+    for f in facets[:3]:
+        phrase = f.source_facts[-1].split("facet:", 1)[-1].strip()
+        assert f"🔍 `{f.branch_path}` {phrase}" in md
+        assert f"`{f.branch_path}` [{f.operator}] {f.title}" not in md  # no repetition
+    # And it appears nested (indented) under its parent leaf, not in synth.
+    line = next(line for line in md.splitlines() if f"`{facets[0].branch_path}`" in line)
+    assert line.startswith("  ")
 
 
 def test_detects_indirect_import_cycle(tmp_path):

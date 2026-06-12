@@ -974,15 +974,23 @@ class IdeaPermutationEngine:
     def _facet_children(self, node: IdeaNode, level: int) -> list[IdeaNode]:
         """Build the facet sub-ideas that zoom into ``node`` at ``level``."""
         children: list[IdeaNode] = []
+        # The zoom path so far ("failure modes → partial or interrupted
+        # operation") — the rationale should narrate the descent, not recite ids.
+        zoom_path = [
+            f.split("facet:", 1)[1].strip()
+            for f in node.source_facts if f.startswith("facet:")
+        ]
         for j, phrase in enumerate(self._facet_vocab(node, level)[: self.facets_per_idea]):
+            trail = " → ".join([*zoom_path, phrase])
             children.append(
                 IdeaNode(
                     id=f"{node.id}-f{j}",
                     title=f"{node.title} — {phrase}",
                     subject=f"{node.subject} :: {phrase}",
                     rationale=(
-                        f"Fractal zoom (L{level}) of `{node.branch_path}`: refine "
-                        f"{node.subject} down to its {phrase}."
+                        f"Fractal zoom L{level} on {node.subject.split(' :: ', 1)[0]}: "
+                        f"{trail} — each level narrows the work to one concern an "
+                        f"engineer can act on."
                     ),
                     branch_path=f"{node.branch_path}.f{j}",
                     depth=node.depth + 1,
@@ -1246,6 +1254,15 @@ def render_markdown(report: IdeaTreeReport) -> str:
             lines.append(f"## {idea.branch_path} — {idea.title}  (value {idea.value})")
             if idea.source_facts:
                 lines.append(f"{indent}- _facts: {', '.join(idea.source_facts)}_")
+        elif idea.kind == "facet":
+            # A facet is nested under the idea it refines, so the parent already
+            # gives the context — repeating the whole title at every zoom level
+            # buries the signal. Show only the *delta* (this level's sub-concern),
+            # marked as a zoom.
+            phrase = (idea.source_facts[-1].split("facet:", 1)[-1].strip()
+                      if idea.source_facts else idea.title)
+            caveat = f"  ⚠ {idea.caveats[0]}" if idea.caveats else ""
+            lines.append(f"{indent}- 🔍 `{idea.branch_path}` {phrase}  (v {idea.value}){caveat}")
         else:
             caveat = f"  ⚠ {idea.caveats[0]}" if idea.caveats else ""
             lines.append(
@@ -1277,7 +1294,13 @@ def render_mermaid(report: IdeaTreeReport) -> str:
     """Render the idea tree as a Mermaid flowchart."""
     lines = ["```mermaid", "flowchart TD"]
     for idea in report.ideas:
-        label = idea.title.replace('"', "'")
+        if idea.kind == "facet" and idea.source_facts:
+            # The edge to the parent already carries the context; a facet node
+            # shows just its sub-concern, marked as a zoom.
+            phrase = idea.source_facts[-1].split("facet:", 1)[-1].strip()
+            label = f"🔍 {phrase}".replace('"', "'")
+        else:
+            label = idea.title.replace('"', "'")
         lines.append(f'    {idea.branch_path.replace(".", "_")}["{label}"]')
     for idea in report.ideas:
         if idea.parent_id:
