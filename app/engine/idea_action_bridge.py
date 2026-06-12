@@ -46,12 +46,21 @@ class IdeaActionBridge:
     proposes, it never applies.
     """
 
-    def plan_convergence(self, idea: IdeaNode) -> list[ActionStep]:
+    def plan_convergence(self, idea: IdeaNode,
+                         project_root: str = "") -> list[ActionStep]:
         """Expand a convergence idea into an ordered, phased mini-roadmap.
 
         Returns one ActionStep per remediation phase (Stabilize before Secure
         before the rest), all targeting the converged module, executable where a
         deterministic transform exists. Empty for a non-convergence idea.
+
+        With ``project_root``, each executable step is REALITY-CHECKED before
+        it enters the plan — a step whose precondition is already satisfied
+        must not be re-attempted (and re-blocked) night after night:
+          - a test step on a module the suite already references becomes a
+            work order (the stub transform would rightly refuse);
+          - a harden step with no actual finding in the file is dropped
+            (the label came from a path hint; there is nothing to do).
         """
         from app.engine.idea_permutation import convergence_labels, convergence_plan
 
@@ -61,20 +70,38 @@ class IdeaActionBridge:
         target = idea.subject.split("::", 1)[0]
         target = target if "/" in target or target.endswith(".py") else ""
         steps: list[ActionStep] = []
-        for n, step in enumerate(convergence_plan(labels)):
+        n = 0
+        for step in convergence_plan(labels):
+            action = step["action_type"]
+            executable = step["executable"] and bool(target)
+            text = step["step"]
+            if project_root and executable:
+                if action == "create_test_stub":
+                    from app.engine.verification_strength import module_referenced_by_suite
+
+                    if module_referenced_by_suite(project_root, target):
+                        executable = False
+                        text += " — linked tests already exist; deepen them by hand"
+                elif action == "harden_security":
+                    # The full ladder, not just security findings: harden also
+                    # acts on encodings/timeouts/etc. Only when NO rung fires
+                    # is there truly nothing for the hands to do.
+                    if self._harden_change_strategy(project_root, target) is None:
+                        continue  # nothing to harden — precondition satisfied
             steps.append(ActionStep(
                 branch_path=f"{idea.branch_path}.{n}",
-                title=f"{step['phase']}: {step['step']} in {idea.subject}",
+                title=f"{step['phase']}: {text} in {idea.subject}",
                 operator="synthesis",
                 subject=idea.subject,
-                action_type=step["action_type"],
+                action_type=action,
                 target=target,
-                description=f"{step['step']} ({idea.subject})",
-                executable=step["executable"],
+                description=f"{text} ({idea.subject})",
+                executable=executable,
                 value=idea.value,
                 source_facts=idea.source_facts,
                 phase=step["phase"],
             ))
+            n += 1
         return steps
 
     @staticmethod
@@ -96,16 +123,28 @@ class IdeaActionBridge:
             out.append(s)
         return out
 
-    def _expand_idea(self, idea: IdeaNode, default_phase: str = "") -> list[ActionStep]:
+    def _expand_idea(self, idea: IdeaNode, default_phase: str = "",
+                     project_root: str = "") -> list[ActionStep]:
         """One idea -> one or more steps. A convergence idea becomes its phased
         mini-roadmap (executable test step before the harden step); every other
         idea is a single planned step."""
-        conv = self.plan_convergence(idea)
+        conv = self.plan_convergence(idea, project_root=project_root)
         if conv:
             return conv
         step = self.plan_idea(idea)
         if default_phase:
             step.phase = default_phase
+        if (project_root and step.executable and step.target
+                and step.action_type == "create_test_stub"):
+            from app.engine.verification_strength import module_referenced_by_suite
+
+            # A stub can only ever be the FIRST test layer. On a module the
+            # suite already references, generation either refuses (the test
+            # file exists -> nightly "blocked") or writes a redundant smoke
+            # stub. Either way the honest shape is a work order.
+            if module_referenced_by_suite(project_root, step.target):
+                step.executable = False
+                step.description += " — linked tests already exist; deepen them by hand"
         return [step]
 
     def plan_idea(self, idea: IdeaNode) -> ActionStep:
@@ -118,15 +157,18 @@ class IdeaActionBridge:
         # Symbol-granular subjects ("mod.py::Class.func") act on the module file;
         # the function name stays in the title/description for the test author.
         file_part = idea.subject.split("::", 1)[0]
+        target = file_part if "/" in file_part or file_part.endswith(".py") else ""
         return ActionStep(
             branch_path=idea.branch_path,
             title=idea.title,
             operator=idea.operator,
             subject=idea.subject,
             action_type=action_type,
-            target=file_part if "/" in file_part or file_part.endswith(".py") else "",
+            target=target,
             description=desc_tmpl.format(s=idea.subject),
-            executable=executable,
+            # No file target = nothing a transform can patch: the step stays a
+            # work order instead of becoming a guaranteed nightly "blocked".
+            executable=executable and bool(target),
             value=idea.value,
             source_facts=idea.source_facts,
         )
@@ -702,9 +744,10 @@ class IdeaActionBridge:
         ideas = sorted(report.ideas, key=lambda i: i.value, reverse=True)
         if top is not None:
             ideas = ideas[:top]
+        root_for_checks = project_root or report.project_root or ""
         steps: list[ActionStep] = []
         for i in ideas:
-            steps.extend(self._expand_idea(i))
+            steps.extend(self._expand_idea(i, project_root=root_for_checks))
         steps = self._dedupe_steps(steps)
         if draft:
             root = project_root or report.project_root or "."
@@ -748,6 +791,7 @@ class IdeaActionBridge:
         roadmap = roadmap or RoadmapSynthesizer().build(report)
         idea_by_path = {i.branch_path: i for i in report.ideas}
 
+        root_for_checks = project_root or report.project_root or ""
         steps: list[ActionStep] = []
         for ph in roadmap.phases:
             for item in ph.items:
@@ -758,7 +802,8 @@ class IdeaActionBridge:
                 # test before a Secure harden), so they may emit a phase other
                 # than where the parent idea was placed; other ideas inherit this
                 # roadmap phase.
-                steps.extend(self._expand_idea(idea, default_phase=ph.name))
+                steps.extend(self._expand_idea(idea, default_phase=ph.name,
+                                               project_root=root_for_checks))
 
         steps = self._dedupe_steps(steps)
         # A convergence idea sits in one phase but emits sub-steps in others (a

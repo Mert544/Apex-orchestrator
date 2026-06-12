@@ -636,6 +636,60 @@ def test_plan_convergence_empty_for_non_convergence_idea():
     assert IdeaActionBridge().plan_convergence(idea) == []
 
 
+def _convergence_idea(subject: str, labels: str):
+    from app.models.idea import IdeaNode
+    return IdeaNode(
+        id="c0", title=f"Prioritize {subject}", subject=subject,
+        operator="synthesis", kind="synthesis", branch_path="x.c0",
+        source_facts=[f"convergence: {labels}"],
+    )
+
+
+def test_convergence_reality_check_demotes_satisfied_test_step(tmp_path):
+    # The nightly cyclic-blocked lesson: a module the suite ALREADY references
+    # must not get a create_test_stub apply attempt every night (the stub
+    # transform rightly refuses) — the intent survives as a work order.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "core.py").write_text("def f():\n    return 1\n")
+    (tmp_path / "tests" / "test_core.py").write_text(
+        "from app.core import f\ndef test_f():\n    assert f() == 1\n")
+
+    idea = _convergence_idea("app/core.py", "a complexity hotspot+high-churn")
+    steps = IdeaActionBridge().plan_convergence(idea, project_root=str(tmp_path))
+    stub = next(s for s in steps if s.action_type == "create_test_stub")
+    assert stub.executable is False
+    assert "linked tests already exist" in stub.description
+    # Without the root the plan is built blind, exactly as before.
+    blind = IdeaActionBridge().plan_convergence(idea)
+    assert next(s for s in blind if s.action_type == "create_test_stub").executable
+
+
+def test_convergence_reality_check_drops_findingless_harden(tmp_path):
+    # "security-sensitive" can come from a path hint alone — with no actual
+    # finding in the file there is nothing to harden, so no step (and no
+    # nightly re-block) is produced. A real finding keeps the step.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "auth.py").write_text("def check(t):\n    return bool(t)\n")
+    idea = _convergence_idea("app/auth.py", "security-sensitive+untested")
+    steps = IdeaActionBridge().plan_convergence(idea, project_root=str(tmp_path))
+    assert [s.action_type for s in steps] == ["create_test_stub"]
+
+    (tmp_path / "app" / "auth.py").write_text(
+        "def check(t):\n    return eval(t)\n")
+    steps = IdeaActionBridge().plan_convergence(idea, project_root=str(tmp_path))
+    assert [s.action_type for s in steps] == ["create_test_stub", "harden_security"]
+    assert all(s.executable for s in steps)
+
+
+def test_convergence_without_file_target_is_never_executable():
+    # A convergence subject that isn't a file path ("Python type coverage")
+    # has no patchable target — its steps must not enter the apply pipeline.
+    idea = _convergence_idea("type coverage", "untested+security-sensitive")
+    steps = IdeaActionBridge().plan_convergence(idea)
+    assert steps and all(s.executable is False for s in steps)
+
+
 def test_roadmap_plan_expands_convergence_and_dedupes(tmp_path):
     # A sensitive + risky module yields a convergence idea; the roadmap apply
     # plan must expand it into executable steps (test before harden), each
@@ -715,3 +769,41 @@ def test_harden_chains_raise_to_cause_end_to_end(tmp_path):
     if result["applied"]:
         assert result["transform_type"] == "raise_with_from"
         assert 'from err' in src.read_text()
+
+
+def test_plan_idea_without_file_target_is_never_executable():
+    # "Add type hints" on subject "Python type coverage": no file, no patch —
+    # marking it executable guarantees a nightly blocked entry (the dream
+    # flagged exactly this as cyclic noise).
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(
+        id="t0", title="Add a test layer", subject="project structure",
+        operator="test", kind="permutation", branch_path="x.1.a",
+        source_facts=["top-directory: app"],
+    )
+    step = IdeaActionBridge().plan_idea(idea)
+    assert step.target == ""
+    assert step.executable is False
+
+
+def test_expand_idea_demotes_stub_on_already_tested_module(tmp_path):
+    # A stub is only ever the FIRST test layer: on a module the suite already
+    # references, the step becomes a work order instead of a nightly blocked
+    # apply attempt (or a redundant smoke stub).
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "core.py").write_text("def f():\n    return 1\n")
+    (tmp_path / "tests" / "test_core.py").write_text(
+        "from app.core import f\ndef test_f():\n    assert f() == 1\n")
+    idea = IdeaNode(
+        id="i", title="Test: app/core.py", subject="app/core.py", operator="test",
+        operator_chain=["test"], source_facts=["hotspot-function: app/core.py::f"],
+    )
+    bridge = IdeaActionBridge()
+    step = bridge._expand_idea(idea, project_root=str(tmp_path))[0]
+    assert step.executable is False
+    assert "linked tests already exist" in step.description
+    # An untested module keeps its executable stub step.
+    (tmp_path / "tests" / "test_core.py").unlink()
+    step = bridge._expand_idea(idea, project_root=str(tmp_path))[0]
+    assert step.executable is True
