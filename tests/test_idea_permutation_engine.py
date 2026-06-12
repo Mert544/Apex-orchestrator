@@ -558,3 +558,31 @@ def test_thematic_idea_needs_enough_modules():
     eng._has_objective = False
     eng._chain_counts, eng._subject_counts = {}, {}
     assert eng._thematic_ideas(profile, RelevanceScorer(""), GraphStore()) == []
+
+
+def test_facet_level2_uses_aspect_specific_subconcerns(tmp_path):
+    # The fractal deepening: a level-2 facet decomposes its level-1 aspect into
+    # that aspect's OWN sub-concerns, not the generic common/boundary/failure
+    # triple. e.g. "... failure modes -> partial or interrupted operation".
+    from app.engine.idea_permutation import _FACET_SUBASPECTS, _FACET_CASES
+    _project(tmp_path)
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 120, "max_idea_depth": 1, "breadth": 6,
+         "fractal_facets": True, "facet_depth": 2, "facets_per_idea": 2},
+        tmp_path,
+    ).run()
+    facets = [i for i in rep.ideas if i.kind == "facet"]
+    l2 = [f for f in facets if f.branch_path.count(".f") == 2]
+    assert l2, "expected level-2 facets"
+    # at least one L2 facet's label is a real sub-aspect, not a generic case
+    all_subaspects = {s for subs in _FACET_SUBASPECTS.values() for s in subs}
+    l2_labels = [f.source_facts[-1].split("facet:", 1)[1].strip() for f in l2]
+    assert any(lbl in all_subaspects for lbl in l2_labels)
+    # and each such facet's parent label is the aspect it decomposes
+    by_id = {i.id: i for i in rep.ideas}
+    for f in l2:
+        lbl = f.source_facts[-1].split("facet:", 1)[1].strip()
+        if lbl in all_subaspects:
+            parent_lbl = by_id[f.parent_id].source_facts[-1].split("facet:", 1)[1].strip()
+            assert lbl in _FACET_SUBASPECTS.get(parent_lbl, []) or parent_lbl in _FACET_SUBASPECTS
+            assert lbl not in _FACET_CASES        # genuinely not the generic triple

@@ -50,6 +50,47 @@ _FACETS: dict[str, list[str]] = {
 # far down you go (bounded by ``facet_depth`` and by not repeating a case).
 _FACET_CASES: list[str] = ["common case", "boundary case", "failure case"]
 
+# Level-2 vocabulary: each level-1 aspect decomposes into *its own* concrete
+# sub-concerns, so the zoom keeps carrying real engineering content ("harden →
+# input validation → range and length bounds") instead of falling straight to a
+# generic case triple. Self-similar but content-aware: the floor is _FACET_CASES
+# once an aspect has no finer vocabulary of its own.
+_FACET_SUBASPECTS: dict[str, list[str]] = {
+    # harden
+    "input validation": ["type and shape checks", "range and length bounds", "null or empty handling"],
+    "error handling": ["catch specificity", "cleanup on failure", "error propagation"],
+    "resource limits": ["size caps", "time and timeout bounds", "concurrency limits"],
+    "secret handling": ["no plaintext at rest", "load from env or secret store", "rotation and scope"],
+    # extend
+    "new inputs": ["accepted formats", "validation of the new input", "backward compatibility"],
+    "new outputs": ["output contract", "error and empty results", "consumer migration"],
+    "configuration surface": ["sane defaults", "environment override", "validation of config"],
+    # test
+    "edge cases": ["empty input", "single element", "maximum size"],
+    "failure modes": ["dependency unavailable", "partial or interrupted operation", "timeout"],
+    "property invariants": ["idempotence", "ordering independence", "round-trip stability"],
+    # simplify
+    "dead code": ["unreferenced symbols", "unreachable branches", "redundant guards"],
+    "duplicated logic": ["extract a shared helper", "parameterize the variants", "single source of truth"],
+    "deep nesting": ["early returns", "guard clauses", "extract inner blocks"],
+    # document
+    "public API": ["signatures and types", "pre and postconditions", "worked examples"],
+    "usage examples": ["happy path", "error handling", "edge usage"],
+    "failure semantics": ["raised exceptions", "partial-failure behavior", "retry guidance"],
+    # integrate
+    "data contract": ["schema and types", "required vs optional fields", "evolution rules"],
+    "error propagation": ["mapped error types", "retry vs fail-fast", "partial-failure surfacing"],
+    "version skew": ["compatibility window", "feature detection", "graceful degradation"],
+    # generalize
+    "parameters": ["sensible defaults", "validation", "naming and types"],
+    "extension points": ["the hook interface", "registration", "a default no-op"],
+    "sensible defaults": ["the safe default", "the override path", "documented rationale"],
+    # observe
+    "key metrics": ["counters", "latency histograms", "error rates"],
+    "structured logs": ["correlation ids", "level discipline", "no secret leakage"],
+    "trace spans": ["span boundaries", "attributes", "error recording"],
+}
+
 
 # The fixed permutation alphabet — the "abc" applied to every branch "a".
 # Data-driven so breadth is tunable and plugins can extend it later.
@@ -860,11 +901,19 @@ class IdeaPermutationEngine:
         """
         if level == 1:
             return _FACETS.get(node.operator, [])
-        used = {
+        facet_labels = [
             f.split("facet:", 1)[1].strip()
             for f in node.source_facts
             if f.startswith("facet:")
-        }
+        ]
+        used = set(facet_labels)
+        # Prefer the most-recent aspect's own sub-concerns, so the zoom keeps
+        # descending into specifics; only fall to the universal case split once
+        # an aspect has no finer vocabulary of its own.
+        last = facet_labels[-1] if facet_labels else ""
+        subs = [s for s in _FACET_SUBASPECTS.get(last, []) if s not in used]
+        if subs:
+            return subs
         return [c for c in _FACET_CASES if c not in used]
 
     def _facet_children(self, node: IdeaNode, level: int) -> list[IdeaNode]:
