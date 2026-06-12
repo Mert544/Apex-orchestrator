@@ -466,3 +466,43 @@ def test_doc_drift_handles_line_anchored_refs_and_docs_dir(tmp_path: Path):
     (tmp_path / "docs" / "guide.md").write_text("Check `app/ghost.py:42` for details.\n")
     profile = ProjectProfiler(str(tmp_path)).profile()
     assert profile.doc_drift == [{"doc": "docs/guide.md", "reference": "app/ghost.py", "line": 1}]
+
+
+def test_change_coupling_finds_co_changing_pairs(tmp_path: Path):
+    import os
+    import subprocess
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "a.py").write_text("A = 0\n")
+    (tmp_path / "app" / "b.py").write_text("B = 0\n")
+    (tmp_path / "app" / "solo.py").write_text("S = 0\n")
+
+    def _git(*args: str) -> None:
+        env = dict(os.environ)
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, env=env)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@t.com")
+    _git("config", "user.name", "t")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "init")
+    # a.py and b.py change together three times; solo.py changes alone.
+    for i in range(3):
+        (tmp_path / "app" / "a.py").write_text(f"A = {i + 1}\n")
+        (tmp_path / "app" / "b.py").write_text(f"B = {i + 1}\n")
+        _git("add", "-A")
+        _git("-c", "commit.gpgsign=false", "commit", "-qm", f"pair {i}")
+    (tmp_path / "app" / "solo.py").write_text("S = 1\n")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "solo")
+
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    # 3 pair commits + the init commit (all three files together) = 4;
+    # a-solo / b-solo pairs stay below the threshold and never surface.
+    assert profile.change_coupling == [{"a": "app/a.py", "b": "app/b.py", "commits": 4}]
+
+
+def test_change_coupling_empty_outside_git(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("M = 1\n")
+    assert ProjectProfiler(str(tmp_path)).profile().change_coupling == []

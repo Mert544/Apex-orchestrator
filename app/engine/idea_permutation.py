@@ -922,9 +922,39 @@ class IdeaPermutationEngine:
                 out.append(node)
                 pidx += 1
 
+        # Co-change pairs (temporal coupling): modules that repeatedly change
+        # in the SAME commits are factually coupled, whether or not an import
+        # connects them — the hidden seam static analysis can't see. Measured
+        # evidence, so these outrank plain dependency-edge pairs below.
+        seen_pairs: set[tuple[str, str]] = set()
+        for cc in (getattr(profile, "change_coupling", []) or []):
+            if pidx >= 5:
+                break
+            a, b, n = cc.get("a", ""), cc.get("b", ""), cc.get("commits", 0)
+            key = tuple(sorted((a, b)))
+            if not a or not b or key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            node = IdeaNode(
+                id=f"pair-{pidx}",
+                title=f"Decouple {a} and {b} — they changed together in {n} commits",
+                subject=f"{a}\N{LEFT RIGHT ARROW}{b}",
+                rationale=("Synthesized: temporal coupling measured from git history — "
+                           "these modules co-change whether or not an import connects them."),
+                branch_path=f"x.p{pidx}",
+                depth=1,
+                operator="synthesis",
+                operator_chain=["integrate"],
+                source_facts=[f"co-change: {a} + {b} ({n} commits together)"],
+                kind="pair",
+            )
+            self._score(node, relevance)
+            if not graph.has_similar_claim(node.title):
+                out.append(node)
+                pidx += 1
+
         # Plain coupling ideas for edges not already inside a reported cycle.
         edges = getattr(profile, "dependency_edges", []) or []
-        seen_pairs: set[tuple[str, str]] = set()
         for source, target in edges:
             if pidx >= 5:  # keep total pair ideas bounded
                 break

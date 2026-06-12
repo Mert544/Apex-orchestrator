@@ -46,6 +46,10 @@ class ProjectProfile:
     # Change-frequency hotspots from git history: where development energy
     # concentrates. Each entry: {"module", "commits"}.
     churn_hotspots: list[dict] = field(default_factory=list)
+    # Temporal coupling: module pairs that repeatedly change in the SAME
+    # commits — factually coupled whether or not an import connects them.
+    # Each entry: {"a", "b", "commits"}.
+    change_coupling: list[dict] = field(default_factory=list)
     # Age (days) of the OLDEST debt marker per flagged module, from git blame —
     # a 3-year-old FIXME is a different fact than one written yesterday.
     debt_marker_ages: dict[str, int] = field(default_factory=dict)
@@ -107,6 +111,11 @@ class ProjectProfiler:
     # signal deterministic for a given repo state and bounds the git call.
     CHURN_COMMIT_WINDOW = 300
     CHURN_THRESHOLD = 3
+    # Coupling: a pair must co-change in at least this many commits to count;
+    # commits touching more than MAX_COMMIT_FILES files (sweeping reformats,
+    # vendoring) couple everything and mean nothing, so they're skipped.
+    COCHANGE_THRESHOLD = 3
+    MAX_COMMIT_FILES = 15
 
     def __init__(self, root: str | Path, max_files: int = 2000) -> None:
         self.root = Path(root)
@@ -342,18 +351,24 @@ class ProjectProfiler:
         profile.debt_marker_ages = ages
 
     def _scan_churn(self, profile: ProjectProfile) -> None:
-        """Rank modules by how often recent commits touched them (git churn).
+        """One pass over recent git history yields TWO temporal signals:
 
-        Where change concentrates is where development energy goes — the idea
-        engine should reason about the project's *living* modules, not only its
-        statically risky ones. Non-git directories (or a missing git binary)
-        simply yield no signal.
+        - **churn hotspots** — modules recent commits touch most (where
+          development energy goes);
+        - **change coupling** — module pairs that repeatedly change in the
+          *same* commit: factually coupled whether or not an import connects
+          them, the hidden seam static analysis can't see.
+
+        Mega-commits (> MAX_COMMIT_FILES files) are excluded from coupling —
+        a sweeping reformat couples everything and means nothing. Non-git
+        directories simply yield no signal.
         """
         import subprocess
+        from itertools import combinations
 
         try:
             out = subprocess.run(
-                ["git", "log", "--name-only", "--pretty=format:",
+                ["git", "log", "--name-only", "--pretty=format:@commit@",
                  "-n", str(self.CHURN_COMMIT_WINDOW)],
                 cwd=self.root, capture_output=True, text=True, timeout=15,
             )
@@ -361,18 +376,43 @@ class ProjectProfiler:
             return
         if out.returncode != 0:
             return
-        counts: Counter[str] = Counter()
+
+        commits: list[list[str]] = []
+        current: list[str] = []
         for line in out.stdout.splitlines():
-            rel = line.strip()
-            if not rel.endswith(".py") or self._is_fixture_path(rel):
-                continue
-            if not (self.root / rel).exists():  # deleted files don't need ideas
-                continue
-            counts[rel] += 1
+            line = line.strip()
+            if line == "@commit@":
+                if current:
+                    commits.append(current)
+                current = []
+            elif line:
+                current.append(line)
+        if current:
+            commits.append(current)
+
+        counts: Counter[str] = Counter()
+        pair_counts: Counter[tuple[str, str]] = Counter()
+        for files in commits:
+            pys = sorted({
+                rel for rel in files
+                if rel.endswith(".py") and not self._is_fixture_path(rel)
+                and (self.root / rel).exists()
+            })
+            for rel in pys:
+                counts[rel] += 1
+            if 2 <= len(pys) <= self.MAX_COMMIT_FILES:
+                for a, b in combinations(pys, 2):
+                    pair_counts[(a, b)] += 1
+
         profile.churn_hotspots = [
-            {"module": module, "commits": commits}
-            for module, commits in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
-            if commits >= self.CHURN_THRESHOLD
+            {"module": module, "commits": commits_n}
+            for module, commits_n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+            if commits_n >= self.CHURN_THRESHOLD
+        ]
+        profile.change_coupling = [
+            {"a": a, "b": b, "commits": n}
+            for (a, b), n in sorted(pair_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+            if n >= self.COCHANGE_THRESHOLD
         ]
 
     # Mirrors app.engine.health_score._is_fixture_path (kept local to avoid a

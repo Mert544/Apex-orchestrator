@@ -798,3 +798,24 @@ def test_magnitude_bonus_lifts_root_value_in_tree(tmp_path):
     by_subject = {r.subject: r for r in roots}
     assert by_subject["app/old.py"].value > by_subject["app/new.py"].value
     assert by_subject["app/old.py"].value <= 1.0
+
+
+def test_co_change_pairs_become_measured_pair_ideas(tmp_path):
+    # Temporal coupling seeds a pair idea with the count as its evidence —
+    # whether or not an import connects the two modules.
+    from app.memory.graph_store import GraphStore
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.tools.project_profile import ProjectProfile
+
+    eng = IdeaPermutationEngine({"max_total_ideas": 30, "max_idea_depth": 1}, tmp_path)
+    eng._has_objective = False
+    eng._chain_counts, eng._subject_counts = {}, {}
+    profile = ProjectProfile(
+        root=".",
+        change_coupling=[{"a": "app/a.py", "b": "app/b.py", "commits": 7}],
+    )
+    ideas = eng._synthesize([], profile, RelevanceScorer(""), GraphStore())
+    pair = next(i for i in ideas if i.kind == "pair")
+    assert pair.title == "Decouple app/a.py and app/b.py — they changed together in 7 commits"
+    assert pair.source_facts == ["co-change: app/a.py + app/b.py (7 commits together)"]
+    assert "git history" in pair.rationale
