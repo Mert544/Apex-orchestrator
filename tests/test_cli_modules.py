@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import app.cli_autonomy
 import app.cli_ideate
+import app.cli_ops
 import app.cli_plugins
+import app.cli_reporting
 import app.cli_refactor
 import app.cli_review
 from app import cli
@@ -32,6 +34,12 @@ def test_cli_reexports_are_the_same_objects():
     assert cli.cmd_plugin_install is app.cli_plugins.cmd_plugin_install
     assert cli.cmd_marketplace is app.cli_plugins.cmd_marketplace
     assert cli.cmd_hook is app.cli_plugins.cmd_hook
+    assert cli.cmd_scan is app.cli_ops.cmd_scan
+    assert cli.cmd_agents is app.cli_ops.cmd_agents
+    assert cli.cmd_metrics is app.cli_ops.cmd_metrics
+    assert cli.cmd_dashboard is app.cli_reporting.cmd_dashboard
+    assert cli.cmd_debug is app.cli_reporting.cmd_debug
+    assert cli.cmd_report is app.cli_reporting.cmd_report
     assert cli._get_project_root is _get_project_root
 
 

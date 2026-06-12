@@ -1,0 +1,286 @@
+"""Ops-family commands: agents, scan, consensus, daemon, audits, metrics.
+
+Extracted from the `app/cli.py` monolith — the engine's own #1 convergence
+target (central dependency hub × high churn). Pure mechanical move:
+`app.cli` re-exports every symbol, so the import surface is unchanged.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+
+from app.cli_common import _get_project_root
+
+def cmd_agents(args: argparse.Namespace) -> int:
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    agent_type = args.agent_type
+
+    if agent_type == "security":
+        from app.agents.skills import SecurityAgent
+
+        agent = SecurityAgent()
+        result = agent.run(project_root=target)
+        print(json.dumps(result, indent=2))
+
+    elif agent_type == "docstring":
+        from app.agents.skills import DocstringAgent
+
+        agent = DocstringAgent()
+        result = agent.run(project_root=target, patch=args.patch)
+        print(f"Found {result['gaps_found']} missing docstrings")
+        if result["patched_files"]:
+            print(
+                f"Patched {len(result['patched_files'])} files: {result['patched_files']}"
+            )
+        print(json.dumps(result, indent=2))
+
+    elif agent_type == "test-stub":
+        from app.agents.skills import TestStubAgent
+
+        agent = TestStubAgent()
+        result = agent.run(project_root=target, generate=args.generate)
+        print(
+            f"Coverage: {result['coverage_ratio'] * 100:.0f}% ({result['tested_functions']}/{result['total_functions']})"
+        )
+        if result["stubs_generated"]:
+            print(
+                f"Generated {len(result['stubs_generated'])} test stubs: {result['stubs_generated']}"
+            )
+        print(json.dumps(result, indent=2))
+
+    elif agent_type == "dependency":
+        from app.agents.skills import DependencyAgent
+
+        agent = DependencyAgent()
+        result = agent.run(project_root=target)
+        print(f"Modules: {result['total_modules']}, Edges: {result['total_edges']}")
+        if result["circular_imports"]:
+            print(f"Circular imports detected: {len(result['circular_imports'])}")
+        if result["orphaned_modules"]:
+            print(f"Orphaned modules: {result['orphaned_modules']}")
+        print(json.dumps(result, indent=2))
+
+    else:
+        print(f"Unknown agent type: {agent_type}")
+        return 1
+    return 0
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    os.environ["EPISTEMIC_TARGET_ROOT"] = str(target)
+    os.environ["EPISTEMIC_AUTOMATION_PLAN"] = args.plan
+    if args.focus_branch:
+        os.environ["EPISTEMIC_FOCUS_BRANCH"] = args.focus_branch
+    if args.objective:
+        os.environ["EPISTEMIC_OBJECTIVE"] = args.objective
+    if args.auto_patch is not None:
+        os.environ["APEX_AUTO_PATCH"] = "1" if args.auto_patch else "0"
+    if args.auto_commit is not None:
+        os.environ["APEX_AUTO_COMMIT"] = "1" if args.auto_commit else "0"
+    if args.max_fractal_budget is not None:
+        os.environ["APEX_MAX_FRACTAL_BUDGET"] = str(args.max_fractal_budget)
+    if args.safety_policy is not None:
+        os.environ["APEX_SAFETY_POLICY"] = args.safety_policy
+    if args.mode is not None:
+        os.environ["APEX_MODE"] = args.mode
+    from app.main import main
+
+    main()
+    return 0
+
+
+def cmd_consensus(args: argparse.Namespace) -> int:
+    from app.agents.evaluator import ClaimEvaluator
+
+    import time
+
+    memory_dir = str(_get_project_root() / ".apex") if args.use_memory else None
+    evaluator = ClaimEvaluator(
+        consensus_strategy=args.strategy, quorum=args.quorum, memory_dir=memory_dir
+    )
+    claims = args.claims.split(";") if args.claims else []
+    if not claims:
+        print("No claims provided. Use --claims='claim1;claim2;claim3'")
+        return 1
+
+    start = time.perf_counter()
+    results = evaluator.evaluate_batch(claims)
+    elapsed = time.perf_counter() - start
+
+    approved = [r for r in results if r.final_verdict.name == "APPROVE"]
+    rejected = [r for r in results if r.final_verdict.name == "REJECT"]
+    abstained = [r for r in results if r.final_verdict.name == "ABSTAIN"]
+    cached = [r for r in results if r.metadata.get("cached")]
+
+    print(f"\n=== CONSENSUS RESULTS ({args.strategy}) ===")
+    print(
+        f"Total: {len(results)} | Approved: {len(approved)} | Rejected: {len(rejected)} | Abstained: {len(abstained)}"
+    )
+    if args.use_memory:
+        print(
+            f"Cached: {len(cached)} | Memory entries: {evaluator.memory.stats()['total_entries']}"
+        )
+    print(f"Time: {elapsed:.3f}s")
+    print()
+
+    for result in results:
+        cached_mark = " [CACHED]" if result.metadata.get("cached") else ""
+        status_icon = (
+            "[OK]"
+            if result.final_verdict.name == "APPROVE"
+            else "[NO]"
+            if result.final_verdict.name == "REJECT"
+            else "[--]"
+        )
+        print(f"{status_icon}{cached_mark} {result.claim[:80]}...")
+        print(
+            f"   Verdict: {result.final_verdict.name} (confidence: {result.confidence:.2f})"
+        )
+        for vote in result.votes:
+            icon = "+" if vote.verdict.name == result.final_verdict.name else "-"
+            print(
+                f"   {icon} {vote.agent_name} ({vote.agent_role}): {vote.verdict.name} @ {vote.confidence:.2f} — {vote.reasoning[:60]}"
+            )
+        print()
+
+    if args.json:
+        import json
+
+        print(json.dumps([r.to_dict() for r in results], indent=2))
+
+    return 0
+
+
+def cmd_daemon(args: argparse.Namespace) -> int:
+    from app.daemon import ApexDaemon
+
+    if args.action == "start":
+        if ApexDaemon.is_running():
+            print("[daemon] Already running.")
+            return 1
+        daemon = ApexDaemon(
+            goal=args.goal,
+            interval_sec=args.interval,
+            target=args.target or str(_get_project_root()),
+            mode=args.mode,
+            autonomous=not getattr(args, "legacy", False),
+        )
+        daemon.start()
+        return 0
+
+    if args.action == "stop":
+        if ApexDaemon.stop_running():
+            print("[daemon] Stopped.")
+            return 0
+        print("[daemon] Not running.")
+        return 1
+
+    if args.action == "status":
+        if ApexDaemon.is_running():
+            print("[daemon] Running.")
+            return 0
+        print("[daemon] Not running.")
+        return 0
+
+    print(f"Unknown daemon action: {args.action}")
+    return 1
+
+
+def cmd_self_audit(args: argparse.Namespace) -> int:
+    from app.agents.skills.self_audit_agent import SelfAuditAgent
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    agent = SelfAuditAgent()
+    result = agent.run(project_root=str(target))
+
+    if args.format == "json":
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print("# Apex Self-Audit Report")
+        print(f"**Target:** {target}")
+        print()
+        print(f"- Risks found: {len(result.get('findings', []))}")
+        print(f"- Missing docstrings: {result.get('missing_docstrings_count', 0)}")
+        print(f"- Long functions (>50 lines): {result.get('long_functions_count', 0)}")
+        print(f"- TODOs: {result.get('todos_count', 0)}")
+        cov = result.get("coverage_gap", {})
+        print(f"- Tested modules: {', '.join(cov.get('tested_modules', []))}")
+        print(f"- Untested modules: {', '.join(cov.get('untested_modules', []))}")
+    return 0
+
+
+def cmd_fix_docstrings(args: argparse.Namespace) -> int:
+    from app.agents.skills import DocstringAgent
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    agent = DocstringAgent()
+    result = agent.run(project_root=str(target), patch=not args.dry_run)
+    print(f"Symbols scanned: {result['total_symbols']}")
+    print(f"Gaps found: {result['gaps_found']}")
+    if not args.dry_run:
+        print(f"Files patched: {len(result['patched_files'])}")
+        for f in result['patched_files']:
+            print(f"  patched: {f}")
+    else:
+        print("(Dry run — no files modified)")
+        for gap in result.get('gaps', [])[:20]:
+            print(f"  {gap['file']}:{gap['line']} {gap['symbol_type']} '{gap['name']}'")
+    return 0
+
+
+def cmd_fix_coverage(args: argparse.Namespace) -> int:
+    from app.agents.skills import TestStubAgent
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    agent = TestStubAgent()
+    result = agent.run(project_root=str(target), generate=args.generate)
+    print(f"Functions scanned: {result['total_functions']}")
+    print(f"Tested functions: {result['tested_functions']}")
+    print(f"Coverage: {result['coverage_ratio']:.1%}")
+    print(f"Gaps found: {result['gaps_found']}")
+    if args.generate:
+        print(f"Stubs generated: {len(result['stubs_generated'])}")
+        for s in result['stubs_generated']:
+            print(f"  created: {s}")
+    else:
+        print("(Dry run — use --generate to create test files)")
+    return 0
+
+
+def cmd_lsp(args: argparse.Namespace) -> int:
+    from app.lsp.server import main as lsp_main
+
+    return lsp_main()
+
+
+def cmd_metrics(args: argparse.Namespace) -> int:
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    from app.metrics.exporter import MetricsMiddleware
+
+    mw = MetricsMiddleware()
+    mw.record_run("cli_serve", 0.0, 0, 0)
+
+    class MetricsHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.end_headers()
+            self.wfile.write(mw.render().encode("utf-8"))
+
+        def log_message(self, format, *args):
+            pass
+
+    server = HTTPServer(("0.0.0.0", args.port), MetricsHandler)
+    print(f"Metrics endpoint: http://0.0.0.0:{args.port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.shutdown()
+    return 0
+
+
