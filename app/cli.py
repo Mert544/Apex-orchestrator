@@ -166,6 +166,32 @@ def cmd_dream(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_outcomes(args: argparse.Namespace) -> int:
+    """Grade the project against YOUR written rubric (per-criterion gaps)."""
+    from app.engine.outcomes import (
+        RUBRIC_REL,
+        evaluate,
+        init_rubric,
+        render_outcomes_markdown,
+    )
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    if getattr(args, "init", False):
+        path = init_rubric(str(target))
+        print(f"[outcomes] Starter rubric written to {path} — edit the bar, "
+              "then run `apex outcomes` (exits non-zero on gaps; CI-ready).")
+        return 0
+    report = evaluate(str(target))
+    if report is None:
+        print(f"⛔ no rubric at {RUBRIC_REL} — create one: apex outcomes --init")
+        return 1
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(render_outcomes_markdown(report))
+    return 0 if report.passed else 1
+
+
 def cmd_grade(args: argparse.Namespace) -> int:
     """Give the project a single health grade (A–F) with a breakdown."""
     from app.engine.health_score import grade, render_grade_markdown
@@ -455,6 +481,17 @@ def main() -> int:
                               help="Apply the curation (default only reports; inputs untouched)")
     dream_parser.add_argument("--json", action="store_true", help="Emit JSON")
     dream_parser.set_defaults(func=cmd_dream)
+
+    # outcomes — grade the project against a user-written rubric (CI gate)
+    outcomes_parser = subparsers.add_parser(
+        "outcomes",
+        help="Verify the project against YOUR rubric — per-criterion gaps, CI-ready exit code",
+    )
+    outcomes_parser.add_argument("--target", default="", help="Target project root")
+    outcomes_parser.add_argument("--init", action="store_true",
+                                 help="Write a starter rubric to .apex/outcomes.json")
+    outcomes_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    outcomes_parser.set_defaults(func=cmd_outcomes)
 
     # evolve — self-improvement loop: apply → re-measure → prove progress
     evolve_parser = subparsers.add_parser(
