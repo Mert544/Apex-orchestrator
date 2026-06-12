@@ -106,8 +106,6 @@ class BaseFractalAgent(RecursiveAgent):
     def _execute(
         self, project_root: str = ".", max_depth: int = 5, **kwargs: Any
     ) -> dict[str, Any]:
-        permissions = self.mode_policy.permissions
-
         scan_result = self._scan(project_root, **kwargs)
         findings = scan_result.get("findings", [])
 
@@ -115,96 +113,7 @@ class BaseFractalAgent(RecursiveAgent):
         targets = findings[:budget]
 
         decisions = self._decide_batch(targets)
-
-        action_results = []
-        commit_results = []
-        if self.auto_patch:
-            self.executor = ActionExecutor(project_root)
-            gates = SafetyGates(
-                project_root=project_root,
-                max_changed_files=permissions.max_changed_files,
-            )
-
-            for decision in decisions:
-                if decision.action_type == "patch" and decision.patches:
-                    for patch_dict in decision.patches:
-                        patch = FractalPatch(**patch_dict)
-                        plan = self.planner.plan(decision.finding)
-                        plan.next_strategy()
-
-                        patch_result = self.executor.execute_patch(
-                            patch, run_tests=False
-                        )
-
-                        test_result = None
-                        if patch_result.success:
-                            safety_report = gates.check_all(
-                                changed_files=[patch.file],
-                                old_code=patch.old_code,
-                                new_code=patch.new_code,
-                                skip_test=False,
-                            )
-                            if safety_report.blocked:
-                                action_results.append(
-                                    {
-                                        "action_type": "patch",
-                                        "success": False,
-                                        "patch_applied": False,
-                                        "test_success": None,
-                                        "changed_files": [],
-                                        "feedback_score": -0.5,
-                                        "safety_blocked": True,
-                                        "safety_summary": safety_report.summary,
-                                    }
-                                )
-                                continue
-
-                            test_result = self.executor._run_tests()
-
-                        overall_success = patch_result.success and (
-                            test_result is None or test_result.success
-                        )
-
-                        action_results.append(
-                            {
-                                "action_type": "patch",
-                                "success": overall_success,
-                                "patch_applied": patch_result.success,
-                                "test_success": test_result.success
-                                if test_result
-                                else None,
-                                "changed_files": patch_result.changed_files,
-                                "feedback_score": 1.0 if overall_success else -0.5,
-                            }
-                        )
-
-                        if overall_success:
-                            self.executor.promote_to_original()
-                            if self.auto_commit and permissions.can_commit:
-                                commit = self.git_commit.commit(
-                                    changed_files=patch_result.changed_files,
-                                    finding=decision.finding.get("issue", "unknown"),
-                                    action="fix",
-                                )
-                                commit_results.append(commit.to_dict())
-
-                        node_key = f"{decision.finding.get('issue', '')}:{decision.finding.get('file', '')}:{decision.finding.get('line', 0)}"
-                        old_conf = decision.meta_analysis.get(
-                            "aggregate_confidence", 0.5
-                        )
-                        score = 1.0 if overall_success else -0.5
-                        self.feedback.update(node_key, old_conf, score, "patch")
-
-                        if not overall_success:
-                            fallback_outcome = self._run_fallback_ladder(
-                                decision.finding,
-                                patch,
-                                gates,
-                                plan,
-                                decision.patches,
-                            )
-                            if fallback_outcome:
-                                action_results.append(fallback_outcome)
+        action_results, commit_results = self._apply_patches(decisions, project_root)
 
         # Phase 3: Reflection
         reflection = self.reflector.reflect().to_dict()
@@ -242,6 +151,136 @@ class BaseFractalAgent(RecursiveAgent):
             "reflection": reflection,
             "commits": commit_results if self.auto_commit else [],
         }
+
+    def _apply_patches(
+        self, decisions: list[CortexDecision], project_root: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """The hands phase: every patch decision applied under the gates.
+
+        Returns ``(action_results, commit_results)`` — both empty when
+        auto-patching is off.
+        """
+        if not self.auto_patch:
+            return [], []
+        permissions = self.mode_policy.permissions
+        self.executor = ActionExecutor(project_root)
+        gates = SafetyGates(
+            project_root=project_root,
+            max_changed_files=permissions.max_changed_files,
+        )
+        action_results: list[dict[str, Any]] = []
+        commit_results: list[dict[str, Any]] = []
+        for decision in decisions:
+            if decision.action_type != "patch" or not decision.patches:
+                continue
+            for patch_dict in decision.patches:
+                self._apply_one_patch(decision, patch_dict, gates, permissions,
+                                      action_results, commit_results)
+        return action_results, commit_results
+
+    def _apply_one_patch(
+        self,
+        decision: CortexDecision,
+        patch_dict: dict[str, Any],
+        gates: SafetyGates,
+        permissions: Any,
+        action_results: list[dict[str, Any]],
+        commit_results: list[dict[str, Any]],
+    ) -> None:
+        """One patch end-to-end: apply, gate, test, commit, learn, fall back."""
+        patch = FractalPatch(**patch_dict)
+        plan = self.planner.plan(decision.finding)
+        plan.next_strategy()
+
+        patch_result = self.executor.execute_patch(patch, run_tests=False)
+
+        test_result = None
+        if patch_result.success:
+            safety_report = gates.check_all(
+                changed_files=[patch.file],
+                old_code=patch.old_code,
+                new_code=patch.new_code,
+                skip_test=False,
+            )
+            if safety_report.blocked:
+                action_results.append(self._blocked_entry(safety_report))
+                return
+            test_result = self.executor._run_tests()
+
+        overall_success = patch_result.success and (
+            test_result is None or test_result.success
+        )
+        action_results.append(
+            self._patch_entry(patch_result, test_result, overall_success))
+        self._settle_patch_outcome(decision, patch, gates, plan, patch_result,
+                                   overall_success, permissions,
+                                   action_results, commit_results)
+
+    @staticmethod
+    def _blocked_entry(safety_report: Any) -> dict[str, Any]:
+        """The action-result entry for a patch the safety gates refused."""
+        return {
+            "action_type": "patch",
+            "success": False,
+            "patch_applied": False,
+            "test_success": None,
+            "changed_files": [],
+            "feedback_score": -0.5,
+            "safety_blocked": True,
+            "safety_summary": safety_report.summary,
+        }
+
+    @staticmethod
+    def _patch_entry(patch_result: Any, test_result: Any,
+                     overall_success: bool) -> dict[str, Any]:
+        """The action-result entry for an attempted (gated, tested) patch."""
+        return {
+            "action_type": "patch",
+            "success": overall_success,
+            "patch_applied": patch_result.success,
+            "test_success": test_result.success if test_result else None,
+            "changed_files": patch_result.changed_files,
+            "feedback_score": 1.0 if overall_success else -0.5,
+        }
+
+    def _settle_patch_outcome(
+        self,
+        decision: CortexDecision,
+        patch: FractalPatch,
+        gates: SafetyGates,
+        plan: Any,
+        patch_result: Any,
+        overall_success: bool,
+        permissions: Any,
+        action_results: list[dict[str, Any]],
+        commit_results: list[dict[str, Any]],
+    ) -> None:
+        """Book-keep an attempt: promote/commit on success, learn, fall back."""
+        if overall_success:
+            self.executor.promote_to_original()
+            if self.auto_commit and permissions.can_commit:
+                commit = self.git_commit.commit(
+                    changed_files=patch_result.changed_files,
+                    finding=decision.finding.get("issue", "unknown"),
+                    action="fix",
+                )
+                commit_results.append(commit.to_dict())
+
+        node_key = f"{decision.finding.get('issue', '')}:{decision.finding.get('file', '')}:{decision.finding.get('line', 0)}"
+        old_conf = decision.meta_analysis.get("aggregate_confidence", 0.5)
+        score = 1.0 if overall_success else -0.5
+        self.feedback.update(node_key, old_conf, score, "patch")
+
+        if not overall_success:
+            fallback_outcome = self._run_fallback_ladder(
+                decision.finding,
+                patch,
+                gates,
+                plan,
+                decision.patches,
+            )
+            if fallback_outcome:
+                action_results.append(fallback_outcome)
 
     def _normalize_finding(self, finding: dict[str, Any]) -> dict[str, Any]:
         """Normalize finding keys for fractal engine compatibility."""
@@ -329,6 +368,30 @@ class BaseFractalAgent(RecursiveAgent):
             node.children.append(self._rebuild_tree(child))
         return node
 
+    def _gated_apply(self, patch: FractalPatch, gates: SafetyGates,
+                     run_tests: bool = False,
+                     skip_gate_test: bool = False) -> tuple[Any, bool]:
+        """Apply a fallback patch under the gates.
+
+        Returns ``(executor_result, overall_success)``; on success the
+        sandbox is promoted to original. This is the ONE copy of a shape
+        that was pasted into all four fallback tiers.
+        """
+        result = self.executor.execute_patch(patch, run_tests=run_tests)
+        safety_ok = True
+        if result.success:
+            safety_report = gates.check_all(
+                changed_files=[patch.file],
+                old_code=patch.old_code,
+                new_code=patch.new_code,
+                skip_test=skip_gate_test,
+            )
+            safety_ok = not safety_report.blocked
+        success = result.success and safety_ok
+        if success:
+            self.executor.promote_to_original()
+        return result, success
+
     def _run_fallback_ladder(
         self,
         finding: dict[str, Any],
@@ -348,27 +411,22 @@ class BaseFractalAgent(RecursiveAgent):
 
         Returns the successful outcome dict or None if all fallbacks failed.
         """
-        finding.get("issue", "unknown").lower()
-
-        for strategy in ["scope_reduce", "semantic_patch", "split_patches", "test_first", "review_only"]:
+        # The ladder as data (the same dissolve the bridge's harden ladder
+        # got): rung order IS the policy, dispatch never changes.
+        ladder = (
+            lambda: self._fallback_scope_reduce(finding, original_patch, gates),
+            lambda: self._fallback_semantic_patch(finding, original_patch, gates),
+            lambda: self._fallback_split_patches(finding, all_patches, gates),
+            lambda: self._fallback_test_first(finding, original_patch, gates),
+            lambda: self._fallback_review_only(finding, original_patch),
+        )
+        for attempt in ladder:
             try:
-                if strategy == "scope_reduce":
-                    outcome = self._fallback_scope_reduce(finding, original_patch, gates)
-                elif strategy == "semantic_patch":
-                    outcome = self._fallback_semantic_patch(finding, original_patch, gates)
-                elif strategy == "split_patches":
-                    outcome = self._fallback_split_patches(finding, all_patches, gates)
-                elif strategy == "test_first":
-                    outcome = self._fallback_test_first(finding, original_patch, gates)
-                elif strategy == "review_only":
-                    outcome = self._fallback_review_only(finding, original_patch)
-                else:
-                    continue
-
-                if outcome and outcome.get("success"):
-                    return outcome
+                outcome = attempt()
             except Exception:
                 continue
+            if outcome and outcome.get("success"):
+                return outcome
 
         return {
             "action_type": "fallback_ladder",
@@ -407,20 +465,7 @@ class BaseFractalAgent(RecursiveAgent):
             patch_source="fallback-scope-reduce",
         )
 
-        result = self.executor.execute_patch(reduced_patch, run_tests=False)
-        safety_ok = True
-        if result.success:
-            safety_report = gates.check_all(
-                changed_files=[file_path],
-                old_code=reduced_patch.old_code,
-                new_code=reduced_patch.new_code,
-                skip_test=False,
-            )
-            safety_ok = not safety_report.blocked
-
-        success = result.success and safety_ok
-        if success:
-            self.executor.promote_to_original()
+        result, success = self._gated_apply(reduced_patch, gates)
 
         return {
             "action_type": "fallback",
@@ -431,16 +476,12 @@ class BaseFractalAgent(RecursiveAgent):
             "feedback_score": 0.3 if success else -0.4,
         }
 
-    def _fallback_semantic_patch(
-        self,
-        finding: dict[str, Any],
-        original_patch: FractalPatch,
-        gates: SafetyGates,
-    ) -> dict[str, Any]:
-        """Tier 2: Use semantic AST patch generator."""
+    def _semantic_result_for(self, finding: dict[str, Any],
+                             file_path: str) -> tuple[Any, str]:
+        """The canonical security transform's result for this finding —
+        ``(result, strategy)``, or ``(None, "")`` when the issue isn't
+        mapped or the file can't be processed."""
         issue = finding.get("issue", "").lower()
-        file_path = original_patch.file
-
         strategy_map = {
             "eval": "fix_eval",
             "os.system": "fix_os_system",
@@ -450,27 +491,34 @@ class BaseFractalAgent(RecursiveAgent):
             (v for k, v in strategy_map.items() if k in issue), None
         )
         if not sem_strategy:
-            return {"success": False}
+            return None, ""
 
         from app.execution.semantic.transforms import security as sec_transforms
 
         try:
-            tree = self._parse_file(file_path)
-            if not tree:
-                return {"success": False}
+            if not self._parse_file(file_path):
+                return None, ""
             source = self._read_file(file_path)
-            if sem_strategy == "fix_eval":
-                sem_result = sec_transforms.apply(file_path, source, f"Fix {issue}")
-            elif sem_strategy == "fix_os_system":
-                sem_result = sec_transforms.apply(file_path, source, f"Fix {issue}")
-            elif sem_strategy == "fix_bare_except":
-                sem_result = sec_transforms.apply(file_path, source, f"Fix {issue}")
-            else:
-                return {"success": False}
+            # Every mapped strategy routes to the same canonical security
+            # transform — the issue text selects the rewrite inside it. The
+            # old three-way branch repeated this identical call per strategy.
+            sem_result = sec_transforms.apply(file_path, source, f"Fix {issue}")
         except Exception:
-            return {"success": False}
-
+            return None, ""
         if not sem_result or not sem_result.patch_requests:
+            return None, ""
+        return sem_result, sem_strategy
+
+    def _fallback_semantic_patch(
+        self,
+        finding: dict[str, Any],
+        original_patch: FractalPatch,
+        gates: SafetyGates,
+    ) -> dict[str, Any]:
+        """Tier 2: Use semantic AST patch generator."""
+        file_path = original_patch.file
+        sem_result, sem_strategy = self._semantic_result_for(finding, file_path)
+        if sem_result is None:
             return {"success": False}
 
         pr = sem_result.patch_requests[0]
@@ -485,20 +533,7 @@ class BaseFractalAgent(RecursiveAgent):
             patch_source="semantic-fallback",
         )
 
-        result = self.executor.execute_patch(sem_patch, run_tests=False)
-        safety_ok = True
-        if result.success:
-            safety_report = gates.check_all(
-                changed_files=[file_path],
-                old_code=sem_patch.old_code,
-                new_code=sem_patch.new_code,
-                skip_test=False,
-            )
-            safety_ok = not safety_report.blocked
-
-        success = result.success and safety_ok
-        if success:
-            self.executor.promote_to_original()
+        result, success = self._gated_apply(sem_patch, gates)
 
         return {
             "action_type": "fallback",
@@ -533,20 +568,7 @@ class BaseFractalAgent(RecursiveAgent):
             patch_source="split-fallback",
         )
 
-        result = self.executor.execute_patch(sub_patch, run_tests=False)
-        safety_ok = True
-        if result.success:
-            safety_report = gates.check_all(
-                changed_files=[file_path],
-                old_code=sub_patch.old_code,
-                new_code=sub_patch.new_code,
-                skip_test=False,
-            )
-            safety_ok = not safety_report.blocked
-
-        success = result.success and safety_ok
-        if success:
-            self.executor.promote_to_original()
+        result, success = self._gated_apply(sub_patch, gates)
 
         return {
             "action_type": "fallback",
@@ -589,20 +611,8 @@ class BaseFractalAgent(RecursiveAgent):
             patch_source="fallback-test-first",
         )
 
-        result = self.executor.execute_patch(new_patch, run_tests=True)
-        safety_ok = True
-        if result.success:
-            safety_report = gates.check_all(
-                changed_files=[file_path],
-                old_code=new_patch.old_code,
-                new_code=new_patch.new_code,
-                skip_test=True,
-            )
-            safety_ok = not safety_report.blocked
-
-        success = result.success and safety_ok
-        if success:
-            self.executor.promote_to_original()
+        result, success = self._gated_apply(new_patch, gates,
+                                            run_tests=True, skip_gate_test=True)
 
         return {
             "action_type": "fallback",

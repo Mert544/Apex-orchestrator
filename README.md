@@ -5,7 +5,7 @@
 ### A deterministic engineering agent that *reasons* about your codebase — and helps you act on it.
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-2060%2B%20passing-2ea44f)]()
+[![Tests](https://img.shields.io/badge/tests-2100%2B%20passing-2ea44f)]()
 [![Health grade](https://img.shields.io/badge/apex%20grade-A%2B%20(100)-2ea44f)]()
 [![No LLM required](https://img.shields.io/badge/LLM-optional%20·%20offline%20core-8957e5)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-24292f)](LICENSE)
@@ -98,7 +98,7 @@ The grade rolls these into five components — **Security · Architecture · Tes
 python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -e .[dev]
 
-# Verify (2060+ tests, fully offline)
+# Verify (2100+ tests, fully offline)
 pytest -q
 ```
 
