@@ -82,7 +82,13 @@ opposite: Apex is a **project-development assistant** — an agent that helps
 *build and grow* projects through fractal reasoning and deep deterministic
 thinking, no LLM required. Security is **one lens among four** in the roadmap
 (Stabilize → **Secure** → Evolve → Refine), one signal class feeding the Idea
-Engine — never the headline. Practical rules:
+Engine — never the headline.
+
+**Founder decision (2026-06, binding):** the project's *single focus* is the
+Idea Permutation Engine, fractal facets, and roadmap reasoning — and executing
+what they propose. The existing security investment stays integrated and
+functional, but it is frozen as a supporting signal: no new detector-driven
+features lead the roadmap. Practical rules:
 
 - The Idea Permutation Engine (what to build next) stays the lead feature in
   every doc, demo, and dashboard; findings exist to *ground ideas*, not to be

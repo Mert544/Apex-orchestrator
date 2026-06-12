@@ -5,6 +5,14 @@
 - **Name:** Apex Orchestrator
 - **Tagline:** Agents for fractal codebase intelligence
 - **Vision:** Branch-aware, memory-aware, supervised engineering agent evolving toward guarded autonomous coding
+- **Single focus (founder decision, 2026-06):** the Idea Permutation Engine,
+  fractal facets, and roadmap reasoning — *what should this project build next,
+  and in what order* — plus the guarded execution of those ideas. Apex is a
+  **project-development assistant**, not a security scanner. The existing
+  security machinery stays and keeps working, but strictly as one grounding
+  signal among many; new capability investment goes to the idea/roadmap core
+  (richer seeding signals, deeper facets, better sequencing), not to more
+  detectors. Marketing and docs lead with the Idea Engine, always.
 
 ## Build & Test
 
