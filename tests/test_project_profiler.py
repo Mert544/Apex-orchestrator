@@ -334,3 +334,45 @@ def test_example_dir_as_target_still_surfaces_its_own_code(tmp_path: Path):
     (tmp_path / "app" / "accounts.py").write_text("import os\ndef r(c):\n    os.system(c)\n")
     profile = ProjectProfiler(str(tmp_path)).profile()
     assert any("accounts.py" in str(m) for m in profile.security_finding_modules)
+
+
+def _git_repo_with_history(tmp_path: Path) -> Path:
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "busy.py").write_text("def f():\n    return 1\n")
+    (tmp_path / "app" / "quiet.py").write_text("def g():\n    return 2\n")
+    (tmp_path / "tests" / "test_busy.py").write_text("def test_x():\n    assert True\n")
+    import subprocess
+    def _git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True)
+    _git("init", "-q")
+    _git("config", "user.email", "t@t.com")
+    _git("config", "user.name", "t")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "init")
+    # busy.py changes in 3 more commits (4 touches total); quiet.py never again.
+    for i in range(3):
+        (tmp_path / "app" / "busy.py").write_text(f"def f():\n    return {i}\n")
+        (tmp_path / "tests" / "test_busy.py").write_text(f"def test_x():\n    assert {i} >= 0\n")
+        _git("add", "-A")
+        _git("-c", "commit.gpgsign=false", "commit", "-qm", f"change {i}")
+    return tmp_path
+
+
+def test_churn_hotspots_rank_frequently_changed_modules(tmp_path: Path):
+    _git_repo_with_history(tmp_path)
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    modules = [c["module"] for c in profile.churn_hotspots]
+    assert "app/busy.py" in modules
+    busy = next(c for c in profile.churn_hotspots if c["module"] == "app/busy.py")
+    assert busy["commits"] >= ProjectProfiler.CHURN_THRESHOLD
+    # Below-threshold and test/fixture files never become churn hotspots.
+    assert "app/quiet.py" not in modules
+    assert not any(m.startswith("tests/") for m in modules)
+
+
+def test_churn_empty_for_non_git_directory(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f():\n    return 1\n")
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert profile.churn_hotspots == []

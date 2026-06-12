@@ -43,6 +43,9 @@ class ProjectProfile:
     # Symbol granularity: complex functions no linked test ever names.
     # Each entry: {"module", "function", "line", "complexity"}.
     hotspot_functions: list[dict] = field(default_factory=list)
+    # Change-frequency hotspots from git history: where development energy
+    # concentrates. Each entry: {"module", "commits"}.
+    churn_hotspots: list[dict] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -90,6 +93,11 @@ class ProjectProfiler:
     # signal meaningful (modules with a single stray TODO are noise); a cluster
     # of three or more is a real, surface-worthy pocket of deferred work.
     DEBT_MARKER_THRESHOLD = 3
+    # Churn: how many recent commits to examine, and how many touches a module
+    # needs inside that window to count as a hotspot. A fixed window keeps the
+    # signal deterministic for a given repo state and bounds the git call.
+    CHURN_COMMIT_WINDOW = 300
+    CHURN_THRESHOLD = 3
 
     def __init__(self, root: str | Path, max_files: int = 2000) -> None:
         self.root = Path(root)
@@ -183,8 +191,43 @@ class ProjectProfiler:
         )[:5]
 
         self._populate_python_structure(profile)
+        self._scan_churn(profile)
         self._drop_fixture_signals(profile)
         return profile
+
+    def _scan_churn(self, profile: ProjectProfile) -> None:
+        """Rank modules by how often recent commits touched them (git churn).
+
+        Where change concentrates is where development energy goes — the idea
+        engine should reason about the project's *living* modules, not only its
+        statically risky ones. Non-git directories (or a missing git binary)
+        simply yield no signal.
+        """
+        import subprocess
+
+        try:
+            out = subprocess.run(
+                ["git", "log", "--name-only", "--pretty=format:",
+                 "-n", str(self.CHURN_COMMIT_WINDOW)],
+                cwd=self.root, capture_output=True, text=True, timeout=15,
+            )
+        except Exception:
+            return
+        if out.returncode != 0:
+            return
+        counts: Counter[str] = Counter()
+        for line in out.stdout.splitlines():
+            rel = line.strip()
+            if not rel.endswith(".py") or self._is_fixture_path(rel):
+                continue
+            if not (self.root / rel).exists():  # deleted files don't need ideas
+                continue
+            counts[rel] += 1
+        profile.churn_hotspots = [
+            {"module": module, "commits": commits}
+            for module, commits in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+            if commits >= self.CHURN_THRESHOLD
+        ]
 
     # Mirrors app.engine.health_score._is_fixture_path (kept local to avoid a
     # project_profile <-> health_score import cycle). Example/fixture/test code
@@ -220,6 +263,11 @@ class ProjectProfiler:
             profile.hotspot_functions = [
                 f for f in profile.hotspot_functions
                 if not self._is_fixture_path(str(f.get("module", "")))
+            ]
+        if profile.churn_hotspots:
+            profile.churn_hotspots = [
+                c for c in profile.churn_hotspots
+                if not self._is_fixture_path(str(c.get("module", "")))
             ]
 
     def _count_debt_markers(self, path: Path) -> int:

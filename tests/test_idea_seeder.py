@@ -257,3 +257,24 @@ def test_correctness_bug_maps_to_executable_harden():
                     source_facts=["correctness-bug: app/b.py (high-severity logic bug detected)"])
     step = IdeaActionBridge().plan_idea(idea)
     assert step.action_type == "harden_security" and step.executable is True
+
+
+def test_seeds_churn_hotspot_idea():
+    profile = _profile(
+        churn_hotspots=[{"module": "app/busy.py", "commits": 7}],
+        ci_files=["ci.yml"],
+    )
+    roots = IdeaSeeder().seed(profile)
+    churn = next(r for r in roots if r.subject == "app/busy.py")
+    assert "7 recent commits" in churn.title
+    assert any(f.startswith("churn-hotspot:") for f in churn.source_facts)
+
+
+def test_churn_hotspot_routes_to_evolve_phase():
+    from app.engine.idea_roadmap import EVOLVE, classify_phase
+    profile = _profile(
+        churn_hotspots=[{"module": "app/busy.py", "commits": 5}],
+        ci_files=["ci.yml"],
+    )
+    churn = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/busy.py")
+    assert classify_phase(churn) == EVOLVE

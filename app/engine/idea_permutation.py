@@ -290,6 +290,20 @@ class IdeaSeeder:
                 fact_value=f"{module} (clustered TODO/FIXME/XXX/HACK comments)",
             )
 
+        # Change-frequency hotspots (git churn): the modules recent commits
+        # touch most. Where change concentrates is where the project is alive —
+        # evolve its change path (interfaces, coupling, simplification) instead
+        # of letting the busiest module calcify.
+        for spot in (getattr(profile, "churn_hotspots", []) or [])[:3]:
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Smooth the change path of {spot['module']} "
+                       f"(touched by {spot['commits']} recent commits)"),
+                subject=spot["module"],
+                fact_label="churn-hotspot",
+                fact_value=f"{spot['module']} ({spot['commits']} commits in recent history)",
+            )
+
         # Dominant language → tooling idea (type hints / lint config).
         exts = getattr(profile, "extension_counts", {}) or {}
         if exts.get(".py", 0) >= 1:
@@ -1165,6 +1179,7 @@ _FACT_HINTS: dict[str, str] = {
     "debt-markers": "refactor cleanup deferred work",
     "complexity-hotspot": "complex check validation edge cases simplify",
     "hotspot-function": "complex check validation edge cases",
+    "churn-hotspot": "refactor interface boundary coupling simplify",
     "convergence": "complex secret guard validation check edge cases",
     "shallow-coverage": "check validation edge cases assert behaviour",
     "missing-ci": "ci workflow run tests automation",
