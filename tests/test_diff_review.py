@@ -168,3 +168,35 @@ def test_review_no_impact_for_uncalled_change(tmp_path):
     (tmp_path / "app" / "core.py").write_text("def lonely():\n    return 2\n")
     result = review(str(tmp_path))
     assert result.impacts == []  # nothing calls lonely()
+
+
+def test_review_proposes_inline_fix_for_clean_one_liners():
+    from app.engine.diff_review import scan_findings, _line_suggestion
+    # open-encoding: a pure single-line rewrite -> show the before/after.
+    src = "def load(p):\n    return open(p).read()\n"
+    f = next(x for x in scan_findings("m.py", src) if x.fix_kind == "open-encoding")
+    old, new = _line_suggestion("m.py", src, f)
+    assert old == "return open(p).read()"
+    assert new == 'return open(p, encoding="utf-8").read()'
+
+
+def test_review_no_inline_suggestion_when_imports_are_added():
+    # eval -> ast.literal_eval injects `import ast`, so it is auto-fixable but
+    # NOT a tidy one-liner -> no inline diff (avoids a misleading suggestion).
+    from app.engine.diff_review import scan_findings, _line_suggestion
+    src = "def f(s):\n    return eval(s)\n"
+    f = next(x for x in scan_findings("m.py", src) if x.fix_kind == "eval")
+    assert f.auto_fixable
+    assert _line_suggestion("m.py", src, f) is None
+
+
+def test_render_includes_suggestion_diff_block(tmp_path):
+    from app.engine.diff_review import ReviewFinding, ReviewResult, render_review_markdown
+    f = ReviewFinding("svc.py", 4, "bug", "low", "open() without encoding=",
+                      auto_fixable=True, fix_kind="open-encoding",
+                      suggestion=("return open(p).read()",
+                                  'return open(p, encoding="utf-8").read()'))
+    md = render_review_markdown(ReviewResult(base="HEAD", files_reviewed=1, findings=[f]))
+    assert "suggested fix below" in md
+    assert "```diff" in md
+    assert '+ return open(p, encoding="utf-8").read()' in md

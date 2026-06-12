@@ -29,6 +29,8 @@ class ReviewFinding:
     severity: str          # high | medium | low
     message: str
     auto_fixable: bool
+    fix_kind: str = ""     # detector routing key (drives the suggested fix)
+    suggestion: tuple[str, str] | None = None  # (old_line, new_line) when shown
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -106,9 +108,58 @@ def scan_findings(rel_path: str, source: str) -> list[ReviewFinding]:
     from app.engine.detectors import detect
 
     return [
-        ReviewFinding(rel_path, i.line, i.category, i.severity, i.message, i.auto_fixable)
+        ReviewFinding(rel_path, i.line, i.category, i.severity, i.message,
+                      i.auto_fixable, i.fix_kind)
         for i in detect(source)
     ]
+
+
+# Pure single-line rewrites — safe to show as an inline before/after suggestion
+# (no import injection or multi-line surgery). Maps fix_kind -> a transform call.
+def _line_suggestion(rel: str, source: str, finding: ReviewFinding) -> tuple[str, str] | None:
+    """The (old_line, new_line) a clean single-line fix would make at this
+    finding's line, or None when the fix isn't a tidy one-liner (eval/os.system
+    add imports; flag-only fixes annotate) — those stay 'auto-fixable' without a
+    shown diff."""
+    from app.execution.semantic.transforms import (
+        modernize, open_encoding, identity_literal, negated_comparison, raise_from,
+    )
+    from app.execution.semantic.transforms import security as security_transforms
+
+    fk = finding.fix_kind
+    try:
+        if fk == "open-encoding":
+            res = open_encoding.apply(rel, source, "open encoding")
+        elif fk == "none-comparison":
+            res = modernize.apply(rel, source, "modernize none-comparison")
+        elif fk == "identity-literal":
+            res = identity_literal.apply(rel, source, "identity-literal")
+        elif fk == "negated-comparison":
+            res = negated_comparison.apply(rel, source, "negated-comparison")
+        elif fk == "raise-from":
+            res = raise_from.apply(rel, source, "raise-from")
+        elif fk in ("bare except", "base-exception"):
+            res = security_transforms.apply(rel, source, f"fix {fk}")
+        else:
+            return None
+    except Exception:
+        return None
+    if not res or not res.patch_requests:
+        return None
+    new = res.patch_requests[0].get("new_content", "")
+    old_lines = source.splitlines()
+    new_lines = new.splitlines()
+    if len(old_lines) != len(new_lines):
+        return None  # an import was added or lines shifted — not a tidy one-liner
+    idx = finding.line - 1
+    if 0 <= idx < len(old_lines) and old_lines[idx] != new_lines[idx]:
+        return (old_lines[idx].strip(), new_lines[idx].strip())
+    # fall back to the single differing line, if exactly one changed
+    diffs = [i for i in range(len(old_lines)) if old_lines[i] != new_lines[i]]
+    if len(diffs) == 1:
+        i = diffs[0]
+        return (old_lines[i].strip(), new_lines[i].strip())
+    return None
 
 
 def review(project_root: str, base: str = "HEAD") -> ReviewResult:
@@ -125,6 +176,8 @@ def review(project_root: str, base: str = "HEAD") -> ReviewResult:
         sources[rel] = source
         for f in scan_findings(rel, source):
             if f.line in lines:
+                if f.auto_fixable:
+                    f.suggestion = _line_suggestion(rel, source, f)
                 findings.append(f)
     # Most serious first, then by file/line for stable output.
     sev_rank = {"high": 0, "medium": 1, "low": 2}
@@ -186,11 +239,20 @@ def render_review_markdown(result: ReviewResult) -> str:
         lines.append("")
         icon = {"high": "🔴", "medium": "🟠", "low": "🔵"}
         for f in result.findings:
-            fix = " · _Apex can auto-fix_" if f.auto_fixable else " · _needs a human_"
+            if f.suggestion:
+                fix = " · _suggested fix below_"
+            elif f.auto_fixable:
+                fix = " · _Apex can auto-fix_"
+            else:
+                fix = " · _needs a human_"
             lines.append(
                 f"- {icon.get(f.severity, '⚪')} `{f.file}:{f.line}` "
                 f"**[{f.category}]** {f.message}{fix}"
             )
+            if f.suggestion:
+                old, new = f.suggestion
+                # A reviewer that *proposes the patch*, not just flags the issue.
+                lines += ["", "  ```diff", f"  - {old}", f"  + {new}", "  ```", ""]
         lines.append("")
 
     if result.impacts:
