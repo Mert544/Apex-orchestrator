@@ -428,12 +428,18 @@ class IdeaActionBridge:
 
         # Verify: run tests; roll back the changed files if they fail.
         from app.engine.proof_of_fix import summarize_test_run
+        from app.engine.verification_strength import assess_strength
         from app.skills.execution.run_tests import RunTestsSkill
 
         summary = RunTestsSkill().run(project_root)
         out["verified"] = bool(summary.ok)
         out["test_commands"] = summary.commands
         out["test_evidence"] = summarize_test_run(summary)
+        # How strongly does that green suite vouch for THESE changes?
+        new_by_path = {pr.get("path", ""): pr.get("new_content", "") or "" for pr in patch_requests}
+        out["verification_strength"] = assess_strength(
+            project_root, applied.changed_files, snapshot, new_by_path
+        )
         if summary.ok or not summary.commands:
             # Pass (or no test command detected -> nothing to verify against).
             out["rolled_back"] = False
@@ -783,7 +789,14 @@ def render_maintenance_markdown(summary: dict, project_root: str, objective: str
         for r in applied:
             extra = ""
             if r.get("verified") is True:
-                extra += " (tests pass)"
+                # Say what the green suite actually proves about THIS change.
+                level = (r.get("verification_strength") or {}).get("level", "")
+                extra += {
+                    "function": " (tests pass — and name the changed function)",
+                    "module": " (tests pass — suite references this module)",
+                    "none": " (tests pass — ⚠️ no test references this module)",
+                    "test-change": " (tests pass)",
+                }.get(level, " (tests pass)")
             if r.get("committed"):
                 extra += f" [commit {r.get('commit_hash', '')}]"
             files = ", ".join(r.get("changed_files", [])) or r.get("target", "")

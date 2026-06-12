@@ -83,7 +83,11 @@ def _fix_record(r: dict) -> dict:
         outcome = "applied"
     else:
         outcome = "blocked"
-    verification = r.get("test_evidence") or {"performed": False}
+    verification = dict(r.get("test_evidence") or {"performed": False})
+    if r.get("verification_strength"):
+        # Coverage-aware honesty: a green suite that never references the
+        # changed module is recorded as exactly that.
+        verification["strength"] = r["verification_strength"]
     record = {
         "finding": {
             "label": r.get("label", ""),
