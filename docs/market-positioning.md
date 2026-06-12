@@ -224,6 +224,23 @@ optionally let the BS-2 local-LLM layer *rephrase* ideas without inventing them.
 
 ---
 
+## 4b. Closure scoreboard (kept current)
+
+| Blind spot | Status |
+|---|---|
+| BS-1 Python-only | ⏳ open (language-plugin seam not started) |
+| BS-2 no LLM for ambiguous work | ⏳ open by design (verifier-gated local-LLM still optional/planned) |
+| BS-3 no external proof | ✅ honest docs + `apex bench` calibration on pinned OSS repos (`docs/bench/results.md`); ground-truth P/R remains impossible without labels — stated |
+| BS-4 fix scope limited | ✅ risk-tiered catalog (Tier 0/1/2; unknown ⇒ Tier 1; Tier 1 needs coverage or shield) |
+| BS-5 multi-file refactor weak | ✅ foundation: `apex rename`, `apex move`, `apex rename --param` (span-edit machinery; signature add/remove still open) |
+| BS-6 verification ≅ host tests | ✅ verification strength grading + test-first shield + failing-test names in evidence |
+| BS-7 no runtime understanding | ⏳ open (static-confidence labeling partial via bench caveats) |
+| BS-8 idea novelty ceiling | ✅ signal vocabulary widened: churn, change×complexity convergence, debt age, L3 facets, signal-narrated diffs |
+
+Standing institutions: proof-of-fix artifact on every apply; nightly **dogfood
+CI** (Apex maintains Apex, evidence published); three real bugs already found
+and fixed by self-application.
+
 ## 5. Recommended sequence
 
 | # | Item | Closes | Effort | Leverage |

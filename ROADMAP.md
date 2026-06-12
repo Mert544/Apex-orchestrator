@@ -43,14 +43,12 @@ an integrated supporting signal.
 1. **Refactor family growth** on the span-edit machinery: signature change
    with call-site update; `apex rename --from-idea` (the engine proposes the
    rename it already suggests in ideas).
-2. **External validity** (`apex bench`): pinned OSS-repo snapshots, published
-   precision/recall vs. bandit/ruff/semgrep — the missing third-party evidence
-   named in `docs/comparison.md`.
-3. **Risk-tiered transform catalog** (Tier 0 auto / Tier 1 needs covering
-   tests / Tier 2 proposal-only) so autonomy can grow without diluting safety.
-4. Optional **verifier-gated local-LLM** adapter (Ollama; off by default):
+2. Optional **verifier-gated local-LLM** adapter (Ollama; off by default):
    LLM proposes, the deterministic pipeline validates/tests/rolls back.
-5. **Coverage** — keep raising unit-test coverage of thin areas.
+3. **Coverage** — keep raising unit-test coverage of thin areas.
+
+   (Shipped meanwhile: `apex bench` external calibration on pinned OSS repos;
+   risk-tiered transform catalog; `apex rename --param`; nightly dogfood CI.)
 
 ## Later
 - Plugin marketplace / registry server.
