@@ -84,8 +84,7 @@ def _body_spans(fn: ast.FunctionDef | ast.AsyncFunctionDef, old: str) -> list[Sp
     return spans
 
 
-def _call_resolves(node: ast.Call, func_name: str, dotted: str,
-                   from_names: set[str], module_aliases: set[str]) -> bool:
+def _call_resolves(node: ast.Call, func_name: str, from_names: set[str], module_aliases: set[str]) -> bool:
     """Does this call target our function, given the file's imports?"""
     f = node.func
     if isinstance(f, ast.Name):
@@ -171,7 +170,9 @@ def plan_param_rename(project_root: str | Path, func_name: str,
 
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call)
-                    and _call_resolves(node, func_name, dotted, from_names, module_aliases)):
+                    and _call_resolves(node, func_name,
+                                       from_names=from_names,
+                                       module_aliases=module_aliases)):
                 continue
             for kw in node.keywords:
                 if kw.arg == old:

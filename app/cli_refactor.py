@@ -62,6 +62,51 @@ def cmd_rename(args: argparse.Namespace) -> int:
 
 
 
+def cmd_signature(args: argparse.Namespace) -> int:
+    """Signature family: ``drop`` removes an UNUSED parameter project-wide.
+
+    The def site is rebuilt without it and every keyword call site loses the
+    argument; positional callers block (no silent repositioning). Apply is
+    test-verified with rollback, like every Apex change.
+    """
+    from app.execution.cross_file_rename import apply_rename
+    from app.execution.param_drop import plan_param_drop
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    plan = plan_param_drop(str(target), args.function, args.param)
+    label = f"drop `{args.param}` from `{args.function}()`"
+
+    if plan.blockers:
+        print(f"# Signature change blocked: {label}\n")
+        for b in plan.blockers:
+            print(f"- ⛔ {b}")
+        return 1
+    if getattr(args, "dry_run", False):
+        print(f"# Signature change (dry run): {label} — "
+              f"{sum(plan.edits_by_file.values())} edit(s) across {len(plan.new_contents)} file(s)\n")
+        print("```diff")
+        print(plan.render_diff().rstrip())
+        print("```")
+        for w in plan.warnings:
+            print(f"- ⚠️ {w}")
+        return 0
+
+    res = apply_rename(str(target), plan, verify=not getattr(args, "no_verify", False))
+    if args.json:
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("applied") else 1
+    if res.get("applied"):
+        print(f"✅ Dropped `{args.param}` from `{args.function}()`: {res['edits']} edit(s) in "
+              f"{len(res['changed_files'])} file(s): {', '.join(res['changed_files'])}")
+        if res.get("verified") is True:
+            print("   tests pass — change is verified")
+        for w in res.get("warnings", []):
+            print(f"- ⚠️ {w}")
+        return 0
+    print(f"↩️ {res.get('reason', 'signature change not applied')}")
+    return 1
+
+
 def cmd_move(args: argparse.Namespace) -> int:
     """Move/rename a module across the project — imports rewritten, test-verified."""
     from app.execution.move_module import apply_move, plan_move

@@ -69,7 +69,7 @@ from app.cli_review import (  # noqa: F401  (re-exports: import surface unchange
     _render_review_fixes_markdown,
     cmd_review,
 )
-from app.cli_refactor import cmd_move, cmd_rename  # noqa: F401  (re-exports)
+from app.cli_refactor import cmd_move, cmd_rename, cmd_signature  # noqa: F401  (re-exports)
 
 
 def cmd_bench(args: argparse.Namespace) -> int:
@@ -285,6 +285,24 @@ def main() -> int:
                              help="Skip the test verification run")
     move_parser.add_argument("--json", action="store_true", help="Emit JSON")
     move_parser.set_defaults(func=cmd_move)
+
+    # signature — signature-family refactors (drop an unused parameter), verified
+    sig_parser = subparsers.add_parser(
+        "signature",
+        help="Change a function's signature project-wide: drop an unused parameter (test-verified)",
+    )
+    sig_parser.add_argument("op", choices=["drop"],
+                            help="Operation (drop: remove a parameter the body never reads)")
+    # NB: dest must not be "func" — that's the dispatch slot set_defaults uses.
+    sig_parser.add_argument("function", help="Function whose signature changes")
+    sig_parser.add_argument("param", help="Parameter to drop")
+    sig_parser.add_argument("--target", default="", help="Target project root")
+    sig_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
+                            help="Preview the unified diff without changing files")
+    sig_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                            help="Skip the test verification run")
+    sig_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    sig_parser.set_defaults(func=cmd_signature)
 
     # bench — grade pinned external codebases (calibration, reproducible)
     bench_parser = subparsers.add_parser(

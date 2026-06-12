@@ -29,6 +29,7 @@ def test_cli_reexports_are_the_same_objects():
     assert cli._working_tree_clean is app.cli_autonomy._working_tree_clean
     assert cli.cmd_rename is app.cli_refactor.cmd_rename
     assert cli.cmd_move is app.cli_refactor.cmd_move
+    assert cli.cmd_signature is app.cli_refactor.cmd_signature
     assert cli.cmd_review is app.cli_review.cmd_review
     assert cli._apply_review_fixes is app.cli_review._apply_review_fixes
     assert cli.cmd_ideate is app.cli_ideate.cmd_ideate

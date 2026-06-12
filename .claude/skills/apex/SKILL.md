@@ -79,6 +79,11 @@ without the file). `apex auto` prints what it has learned.
   edits, conservative blockers (ambiguity/shadow/collision), test-verified with rollback.
   With `--param FUNC`: renames a *parameter* of FUNC instead — def site, body uses, and
   every keyword call site project-wide (positional calls untouched; `**kwargs` sites warn).
+- `apex signature drop FUNC PARAM [--target=.] [--dry-run] [--no-verify]` — remove a
+  parameter the function body never reads: the `def` is rebuilt without it and every
+  keyword call site loses the argument, project-wide. Positional callers block ("convert
+  to keywords first" — no silent repositioning), `**kwargs` sites warn, a comment inside
+  the signature blocks (comment-preservation promise). Test-verified with rollback.
 - `apex move SRC.py DST.py [--target=.] [--dry-run] [--no-verify]` — move/rename a module;
   every import form (`import x.y`, `from x.y import f`, `from x import y`, aliases) is
   rewritten project-wide, missing `__init__.py` created, relative-import cases block.
