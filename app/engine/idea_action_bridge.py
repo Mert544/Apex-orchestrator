@@ -814,6 +814,9 @@ def render_action_markdown(plan: ActionPlan) -> str:
             lines.append(
                 f"    ↳ draft `{s.patch_preview.get('transform_type')}` → {files} (preview, not applied)"
             )
+        elif not s.executable:
+            # Design work isn't a dead end: the brief turns it into a work order.
+            lines.append(f"    ↳ work order: `apex brief {s.branch_path}`")
     return "\n".join(lines)
 
 

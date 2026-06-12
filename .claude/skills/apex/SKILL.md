@@ -48,6 +48,10 @@ without the file). `apex auto` prints what it has learned.
 - `apex explain [BRANCH] --target=.` — show *why* an idea scored what it did: provenance
   (the code fact), the value formula with the weights used, roadmap impact/effort/ROI
   grounded in fan-in + LOC, the action it maps to, and its caveats. Defaults to the top idea.
+- `apex brief [BRANCH] --target=.` — turn a design-level idea (hub evolution, integration,
+  generalization — the non-executable steps) into an actionable work order: grounding facts,
+  measured context (fan-in/LOC/complexity), the fractal facet vocabulary as a checklist, and
+  a definition-of-done the engine itself verifies on the next run (`--roadmap --diff`).
 - `apex grade [--min-score N]` — single project health grade (A–F) from all signals, with
   a breakdown + cheapest fixes; `--min-score` gates CI.
 - `apex bench [--manifest docs/bench/manifest.json] [--out FILE]` — grade pinned external

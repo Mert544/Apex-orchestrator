@@ -562,6 +562,28 @@ def cmd_explain(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_brief(args: argparse.Namespace) -> int:
+    """A design-level idea rendered as an actionable engineering brief."""
+    from app.engine.idea_brief import build_brief, render_brief_markdown
+    from app.engine.idea_permutation import IdeaPermutationEngine
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    report = IdeaPermutationEngine(
+        {"max_total_ideas": args.max_ideas, "max_idea_depth": args.depth,
+         "breadth": args.breadth},
+        project_root=str(target),
+    ).run(objective=args.objective or None)
+    brief = build_brief(report, branch_path=getattr(args, "branch", "") or "")
+    if brief is None:
+        print("No design-level idea to brief (every idea is directly executable).")
+        return 1
+    if args.json:
+        print(json.dumps(brief.to_dict(), indent=2))
+    else:
+        print(render_brief_markdown(brief))
+    return 0
+
+
 def cmd_grade(args: argparse.Namespace) -> int:
     """Give the project a single health grade (A–F) with a breakdown."""
     from app.engine.health_score import grade, render_grade_markdown
@@ -891,6 +913,21 @@ def main() -> int:
                               help="Keep the cloned working directories")
     bench_parser.add_argument("--json", action="store_true", help="Emit JSON")
     bench_parser.set_defaults(func=cmd_bench)
+
+    # brief — a design-level idea as an actionable engineering brief
+    brief_parser = subparsers.add_parser(
+        "brief",
+        help="Turn a design-level idea into an actionable work brief (facts, plan, done-when)",
+    )
+    brief_parser.add_argument("branch", nargs="?", default="",
+                              help="Branch path (default: the top design-level idea)")
+    brief_parser.add_argument("--target", default="", help="Target project root")
+    brief_parser.add_argument("--objective", default="", help="Optional focus")
+    brief_parser.add_argument("--depth", type=int, default=2)
+    brief_parser.add_argument("--breadth", type=int, default=4)
+    brief_parser.add_argument("--max-ideas", type=int, default=40, dest="max_ideas")
+    brief_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    brief_parser.set_defaults(func=cmd_brief)
 
     # evolve — self-improvement loop: apply → re-measure → prove progress
     evolve_parser = subparsers.add_parser(
