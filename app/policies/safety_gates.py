@@ -68,9 +68,7 @@ class TestVerificationResult:
     message: str = ""
 
 
-def verify_patch_with_tests(
-    project_root: str | Path, changed_files: list[str]
-) -> TestVerificationResult:
+def verify_patch_with_tests(project_root: str | Path) -> TestVerificationResult:
     project_root = Path(project_root)
     try:
         result = subprocess.run(
@@ -228,7 +226,7 @@ class SafetyGates:
         )
 
     def check_test_verification(self, changed_files: list[str]) -> SafetyGateResult:
-        result = verify_patch_with_tests(self.project_root, changed_files)
+        result = verify_patch_with_tests(self.project_root)
         return SafetyGateResult(
             name="test_verification",
             passed=result.passed,

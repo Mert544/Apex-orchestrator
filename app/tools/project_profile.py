@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -63,6 +64,11 @@ class ProjectProfile:
     # Documentation drift: backticked file references in README/docs that don't
     # exist on disk. Each entry: {"doc", "reference", "line"}.
     doc_drift: list[dict] = field(default_factory=list)
+    # Parameters no statement in the function body ever reads — dead weight on
+    # the API surface, droppable via `apex signature drop`. Conservative by
+    # construction (see _scan_dead_params). Each entry:
+    # {"module", "function", "param", "line"}.
+    dead_params: list[dict] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -223,8 +229,78 @@ class ProjectProfiler:
         self._scan_debt_age(profile)
         self._scan_security_exposure_age(profile)
         self._scan_doc_drift(profile)
+        self._scan_dead_params(profile)
         self._drop_fixture_signals(profile)
         return profile
+
+    def _scan_dead_params(self, profile: ProjectProfile) -> None:
+        """Parameters no statement in the function body ever reads.
+
+        Dead weight on the API surface — every caller is forced to know about
+        a knob that does nothing. Conservative by construction, each rule a
+        real false-positive class:
+          - only top-level functions whose NAME is unique project-wide
+            (interface families — many modules defining the same ``apply()`` —
+            conform to a shared signature, not their own needs);
+          - never referenced as a bare object anywhere (callbacks, dispatch
+            tables and ``set_defaults(func=...)`` impose their signature);
+          - no decorators (frameworks impose signatures too);
+          - a real body (stubs/protocol methods keep their params);
+          - the parameter isn't ``_``-prefixed (already declared intentional)
+            and isn't ``*args``/``**kwargs``.
+        """
+        skipped_dirs = {".git", "__pycache__", ".apex", ".epistemic", "node_modules",
+                        ".venv", "venv", "dist", "build", ".turbo", ".next"}
+        defs_by_name: dict[str, list[tuple[str, ast.AST]]] = {}
+        object_refs: set[str] = set()
+        scanned = 0
+        for path in sorted(self.root.rglob("*.py")):
+            if scanned >= self.max_files:
+                break
+            rel = path.relative_to(self.root)
+            rel_str = rel.as_posix()
+            if any(part in skipped_dirs for part in rel.parts):
+                continue
+            if self._is_fixture_path(rel_str):
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+            except (OSError, SyntaxError):
+                continue
+            scanned += 1
+            call_funcs = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+            for node in ast.walk(tree):
+                # Any non-call reference means the function travels as an
+                # object — its signature belongs to whoever receives it.
+                if isinstance(node, ast.Name) and id(node) not in call_funcs:
+                    object_refs.add(node.id)
+                elif isinstance(node, ast.Attribute) and id(node) not in call_funcs:
+                    object_refs.add(node.attr)
+            for fn in tree.body:
+                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    defs_by_name.setdefault(fn.name, []).append((rel_str, fn))
+
+        found: list[dict] = []
+        for name, defs in defs_by_name.items():
+            if len(defs) != 1 or name in object_refs:
+                continue
+            rel_str, fn = defs[0]
+            if fn.decorator_list:
+                continue
+            body = [s for s in fn.body
+                    if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
+            if all(isinstance(s, (ast.Pass, ast.Raise)) for s in body):
+                continue  # stub / protocol shape — params are the contract
+            read = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
+            a = fn.args
+            for p in [*a.posonlyargs, *a.args, *a.kwonlyargs]:
+                if p.arg.startswith("_") or p.arg in ("self", "cls"):
+                    continue
+                if p.arg not in read:
+                    found.append({"module": rel_str, "function": name,
+                                  "param": p.arg, "line": fn.lineno})
+        found.sort(key=lambda d: (d["module"], d["line"], d["param"]))
+        profile.dead_params = found[:5]
 
     # Backticked tokens that look like file paths. No spaces (so command lines
     # with flags never match), and either a path separator or a .py suffix.

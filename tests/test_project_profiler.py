@@ -598,3 +598,48 @@ def test_knowledge_risk_ignores_drive_by_second_author(tmp_path: Path):
 
     profile = ProjectProfiler(str(tmp_path)).profile()
     assert profile.knowledge_risks == []
+
+
+def test_dead_params_flags_never_read_parameters_only(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "core.py").write_text(
+        "def render(text, color=None, width=80):\n"   # color -> dead
+        "    return text[:width]\n"
+        "\n"
+        "def fetch(url, *, retries=3):\n"             # kwonly dead too
+        "    return url\n"
+        "\n"
+        "def walk(node, _depth=0):\n"                 # _-prefixed = intentional
+        "    return node\n"
+    )
+    (tmp_path / "app" / "iface.py").write_text(
+        "def apply(x, extra):\n"                      # name defined twice ->
+        "    return x\n"                              # interface family, skip
+    )
+    (tmp_path / "app" / "iface2.py").write_text(
+        "import functools\n"
+        "\n"
+        "def apply(y, extra):\n"
+        "    return y\n"
+        "\n"
+        "def on_event(payload):\n"                    # travels as an object ->
+        "    return 1\n"                              # signature isn't its own
+        "\n"
+        "HANDLER = on_event\n"
+        "\n"
+        "@functools.lru_cache\n"                      # decorated -> framework
+        "def cached(size):\n"                         # may impose signature
+        "    return 1\n"
+        "\n"
+        "def proto(handler):\n"                       # stub -> params are the
+        "    raise NotImplementedError\n"             # contract, keep them
+    )
+    (tmp_path / "tests" / "test_x.py").write_text(
+        "def helper(unused):\n    return 1\n")        # fixture/test path skipped
+
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert profile.dead_params == [
+        {"module": "app/core.py", "function": "render", "param": "color", "line": 1},
+        {"module": "app/core.py", "function": "fetch", "param": "retries", "line": 4},
+    ]

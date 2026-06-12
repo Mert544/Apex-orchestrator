@@ -232,6 +232,15 @@ def plan_param_drop(project_root: str | Path, func_name: str,
                         right = after + 1
                         while right < len(row) and row[right] == " ":
                             right += 1
+                    elif not row[:left].strip():
+                        # The keyword stood alone on its line: its separating
+                        # comma lives on the line above, out of reach for an
+                        # intra-line (numbering-safe) edit. The result stays
+                        # valid (trailing comma) — say so instead of hiding it.
+                        plan.warnings.append(
+                            f"{rel}:{line_no}: dropped a keyword that stood on "
+                            "its own line — the call stays valid but ragged; "
+                            "run a formatter or tidy by hand")
                 lines[line_no - 1] = row[:left] + row[right:]
             text = "".join(lines)
             plan.originals.setdefault(rel, sources[rel])

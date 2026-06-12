@@ -75,6 +75,7 @@ _LABEL_LENS = {
     "hotspot-function": "test",
     "knowledge-risk": "document",
     "doc-drift": "document",
+    "dead-parameter": "simplify",
 }
 
 

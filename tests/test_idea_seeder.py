@@ -374,3 +374,28 @@ def test_knowledge_risk_share_drives_the_magnitude_bonus():
 
     assert _magnitude_bonus(_root(100)) == 0.08   # saturated
     assert 0 < _magnitude_bonus(_root(86)) < 0.08
+
+
+def test_dead_parameter_seeds_root_with_drop_command():
+    profile = _profile(
+        dead_params=[{"module": "app/core.py", "function": "render",
+                      "param": "color", "line": 12}],
+        ci_files=["ci.yml"],
+    )
+    root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/core.py")
+    assert root.title == "Drop the dead parameter `color` from render() in app/core.py"
+    assert root.source_facts[0].startswith("dead-parameter:")
+    # The hands already exist — the fact hands you the exact command.
+    assert "apex signature drop render color" in root.source_facts[0]
+
+
+def test_dead_parameter_routes_to_refine_phase():
+    from app.engine.idea_roadmap import REFINE, classify_phase
+
+    profile = _profile(
+        dead_params=[{"module": "app/core.py", "function": "render",
+                      "param": "color", "line": 12}],
+        ci_files=["ci.yml"],
+    )
+    root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/core.py")
+    assert classify_phase(root) == REFINE

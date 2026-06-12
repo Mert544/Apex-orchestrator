@@ -309,6 +309,20 @@ class IdeaSeeder:
                 fact_value=f"{module} (def f(x=[]))",
             )
 
+        # Dead parameters: a knob every caller must know about that does
+        # nothing. The hands for this already exist — the fact carries the
+        # exact `apex signature drop` command, verified with rollback.
+        for dp in (getattr(profile, "dead_params", []) or [])[:2]:
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Drop the dead parameter `{dp['param']}` from "
+                       f"{dp['function']}() in {dp['module']}"),
+                subject=dp["module"],
+                fact_label="dead-parameter",
+                fact_value=(f"{dp['module']}:{dp['line']} {dp['function']}({dp['param']}) "
+                            f"never read — `apex signature drop {dp['function']} {dp['param']}`"),
+            )
+
         # Modernization debt → a safe, behavior-preserving cleanup direction.
         for module in (getattr(profile, "modernizable_modules", []) or [])[:2]:
             self._append_root(

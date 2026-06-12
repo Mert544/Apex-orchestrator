@@ -148,6 +148,25 @@ def test_multiline_def_with_same_file_call_site_below(tmp_path):
     assert "width=40)" in core
 
 
+def test_keyword_alone_on_its_line_warns_about_ragged_call(tmp_path):
+    # Found applying the engine's own recommendation on safety_gates: the
+    # separating comma lives on the line above, out of reach for an
+    # intra-line edit — the result is valid (trailing comma) but ragged,
+    # and the plan must SAY so.
+    _project(tmp_path)
+    (tmp_path / "app" / "tall.py").write_text(
+        "from app.core import render\n"
+        "def g(t):\n"
+        "    return render(t,\n"
+        "                  color='red')\n"
+    )
+    plan = plan_param_drop(tmp_path, "render", "color")
+    assert plan.ok, plan.blockers
+    import ast
+    ast.parse(plan.new_contents["app/tall.py"])  # valid, comma-trailing
+    assert any("ragged" in w for w in plan.warnings)
+
+
 def test_multiline_keyword_value_blocks(tmp_path):
     _project(tmp_path)
     (tmp_path / "app" / "tall.py").write_text(
