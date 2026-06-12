@@ -73,7 +73,12 @@ def cmd_signature(args: argparse.Namespace) -> int:
     from app.execution.cross_file_rename import apply_rename
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
-    if args.op == "add":
+    if args.op == "keywordify":
+        from app.execution.keywordify import plan_keywordify
+
+        plan = plan_keywordify(str(target), args.function)
+        label = f"convert positional calls of `{args.function}()` to keywords"
+    elif args.op == "add":
         from app.execution.param_add import plan_param_add
 
         default = getattr(args, "default", "") or "None"
@@ -82,6 +87,9 @@ def cmd_signature(args: argparse.Namespace) -> int:
     else:
         from app.execution.param_drop import plan_param_drop
 
+        if not args.param:
+            print(f"# Signature change blocked: `{args.op}` needs a PARAM argument")
+            return 1
         plan = plan_param_drop(str(target), args.function, args.param)
         label = f"drop `{args.param}` from `{args.function}()`"
 

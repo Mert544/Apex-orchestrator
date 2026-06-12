@@ -89,6 +89,11 @@ without the file). `apex auto` prints what it has learned.
   safety-chosen: appended positionally, or keyword-only after `*args`/existing kwonly
   params (a trailing default before `*args` would absorb positionals). A caller already
   passing that keyword blocks; `f(**…)` sites warn. Test-verified with rollback.
+- `apex signature keywordify FUNC [--dry-run] [--no-verify]` — rewrite every positional
+  call site of FUNC as keywords (`f(v, 4)` → `f(value=v, factor=4)`), project-wide.
+  The drop-enabler: a `signature drop` blocked on positional callers chains through
+  this. Positional-only params stay positional; calls feeding `*args` are left alone
+  (warned); `f(*xs)` and paren-wrapped arguments block. Test-verified with rollback.
 - `apex move SRC.py DST.py [--target=.] [--dry-run] [--no-verify]` — move/rename a module;
   every import form (`import x.y`, `from x.y import f`, `from x import y`, aliases) is
   rewritten project-wide, missing `__init__.py` created, relative-import cases block.
