@@ -58,6 +58,10 @@ without the file). `apex auto` prints what it has learned.
   Open-ended DISCOVERY: mines the full signal-combination space (no rule named in advance)
   for associations ("80% of single-author modules are also high-churn") and confluences
   (a module whose signal fingerprint is unusually broad). Default reports; `--curate` applies.
+- `apex changelog [--target=.] [--out FILE]` — release notes from ARTIFACTS, not memory:
+  commits since the last tag, verified fixes (proof-of-fix, with shields/strength), roadmap
+  ideas that landed (signal-narrated), the current grade. Sections render only when their
+  artifact exists.
 - `apex grade [--min-score N]` — single project health grade (A–F) from all signals, with
   a breakdown + cheapest fixes; `--min-score` gates CI.
 - `apex bench [--manifest docs/bench/manifest.json] [--out FILE]` — grade pinned external

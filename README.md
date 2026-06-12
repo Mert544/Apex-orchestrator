@@ -66,6 +66,7 @@ flowchart LR
 | 🧪 **Simulate** | Previews autonomous improvement — on a throwaway copy, changing nothing | `apex simulate` |
 | 🎓 **Grade** | One memorable health grade (A–F), with the cheapest ways to climb | `apex grade` |
 | 📏 **Bench** | The same rubric on **pinned real codebases** (click, jinja, attrs, httpx) — calibration for the grade, reproducible by SHA | `apex bench` |
+| 📜 **Changelog** | Release notes **written from evidence, not memory**: commits since the last tag, verified fixes from the proof record, roadmap work that landed, the grade | `apex changelog` |
 | 💤 **Dream** | Nightly curator over Apex's own memory: extracts patterns, **discovers the project's own signal grammar** (open‑ended associations + confluences), narrates a **new/resolved flow** across nights, archives resolved briefs — deterministic, zero tokens | `apex dream` |
 | 📊 **Report** | One self‑contained HTML dashboard of everything above | `apex dashboard` |
 
