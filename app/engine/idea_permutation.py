@@ -240,6 +240,15 @@ class IdeaSeeder:
         if subject in seen_subjects:
             return
         seen_subjects.add(subject)
+        # Temporal annotation rides on WHICHEVER root claims the subject:
+        # rising churn while a risk ages is part of the fact, not a separate
+        # idea competing for the same module.
+        trend = getattr(self, "_accel", {}).get(subject)
+        if trend:
+            risks = "/".join(trend["aging"])
+            title += (f" — accelerating: {trend['churn_before']}→{trend['churn_now']} "
+                      f"commits while its {risks} risk ages")
+            fact_value += f" (accelerating {trend['churn_before']}→{trend['churn_now']})"
         idx = len(roots)
         roots.append(
             IdeaNode(
@@ -254,9 +263,11 @@ class IdeaSeeder:
             )
         )
 
-    def seed(self, profile: ProjectProfile, objective: str | None = None) -> list[IdeaNode]:
+    def seed(self, profile: ProjectProfile, objective: str | None = None,
+             accelerating: dict[str, dict] | None = None) -> list[IdeaNode]:
         roots: list[IdeaNode] = []
         seen_subjects: set[str] = set()
+        self._accel = accelerating or {}
 
         # High-severity content signals claim their subject first: a guaranteed
         # crash or a real vulnerability is more urgent than "this file is a hub"
@@ -584,6 +595,19 @@ class IdeaPermutationEngine:
 
     def run(self, objective: str | None = None) -> IdeaTreeReport:
         profile = self.profiler.profile()
+        self.last_profile = profile  # recorders (signal trends) read this
+        # Temporal convergence: which modules got WORSE since the last
+        # recorded snapshot (rising churn while a risk on them ages)?
+        # No history file -> empty -> identical to a fresh engine.
+        try:
+            from app.engine.signal_trends import SignalTrends
+
+            self._accelerating = {
+                d["module"]: d
+                for d in SignalTrends(self.project_root).accelerating(profile)
+            }
+        except Exception:
+            self._accelerating = {}
         relevance = RelevanceScorer(objective or "")
         self._has_objective = bool(objective and objective.strip())
         graph = GraphStore()  # reused purely for near-duplicate idea detection
@@ -604,7 +628,7 @@ class IdeaPermutationEngine:
         emitted: list[IdeaNode] = []
         frontier: list[IdeaNode] = []
 
-        for root in self.seeder.seed(profile, objective):
+        for root in self.seeder.seed(profile, objective, accelerating=self._accelerating):
             if self.budget.exhausted:
                 break
             self._score(root, relevance)
@@ -802,6 +826,11 @@ class IdeaPermutationEngine:
             subject = spot.get("module", "")
             if subject and "high-churn" not in dims_by_subject[subject]:
                 dims_by_subject[subject].append("high-churn")
+        # The time dimension: a subject getting WORSE since the last snapshot
+        # converges with whatever else flags it — urgency from the slope.
+        for subject in (getattr(self, "_accelerating", {}) or {}):
+            if "accelerating" not in dims_by_subject[subject]:
+                dims_by_subject[subject].append("accelerating")
 
         # Coverage is one dimension; take the most-severe label a subject carries.
         crit = set(getattr(profile, "critical_untested_modules", []) or [])
@@ -1449,6 +1478,7 @@ _CONVERGENCE_STEPS: dict[str, tuple[int, str, str, str, bool]] = {
     "a complexity hotspot":     (1, "Stabilize", "Cover the complex branches before changing them", "create_test_stub", True),
     "security-sensitive":       (2, "Secure", "Harden inputs and fix risky patterns", "harden_security", True),
     "a central dependency hub": (3, "Evolve", "Reduce coupling and clarify the interface", "design_task", False),
+    "accelerating":             (3, "Evolve", "Intervene while the trend is young — smooth the change path now", "design_task", False),
     "high-churn":               (3, "Evolve", "Smooth the change path so frequent change stays cheap", "design_task", False),
     "debt-laden":               (4, "Refine", "Clear the clustered TODO/FIXME debt", "design_task", False),
 }

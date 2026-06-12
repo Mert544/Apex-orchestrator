@@ -26,12 +26,13 @@ def cmd_maintain(args: argparse.Namespace) -> int:
     plugins = PluginRegistry()
     plugins.load_all()
 
-    report = IdeaPermutationEngine(
+    engine = IdeaPermutationEngine(
         config={"max_total_ideas": args.max_ideas, "max_idea_depth": args.depth,
                 "breadth": args.breadth},
         project_root=str(target),
         extra_operators=plugins.idea_operators(),
-    ).run(objective=args.objective or None)
+    )
+    report = engine.run(objective=args.objective or None)
 
     bridge = IdeaActionBridge()
     plan = bridge.plan_tree(report, mode=args.mode, top=(args.top or None), project_root=str(target))
@@ -64,6 +65,9 @@ def cmd_maintain(args: argparse.Namespace) -> int:
     from app.engine.idea_memory import IdeaMemory
 
     IdeaMemory.learn_from(summary, str(target))  # learn from this run's outcomes
+    from app.engine.signal_trends import SignalTrends
+
+    SignalTrends(str(target)).record(engine.last_profile)  # trend baseline
     md = render_maintenance_markdown(summary, str(target), objective=args.objective or "")
 
     if args.json:
@@ -122,11 +126,12 @@ def cmd_auto(args: argparse.Namespace) -> int:
 
     plugins = PluginRegistry()
     plugins.load_all()
-    report = IdeaPermutationEngine(
+    engine = IdeaPermutationEngine(
         config={"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4},
         project_root=str(target),
         extra_operators=plugins.idea_operators(),
-    ).run(objective=goal or None)
+    )
+    report = engine.run(objective=goal or None)
     roadmap = RoadmapSynthesizer().build(report)
     shape = analyze_tree_shape(report)
 
@@ -240,6 +245,9 @@ def cmd_auto(args: argparse.Namespace) -> int:
     from app.engine.idea_memory import IdeaMemory
 
     IdeaMemory.learn_from(summary, str(target))  # the engine gets wiser each run
+    from app.engine.signal_trends import SignalTrends
+
+    SignalTrends(str(target)).record(engine.last_profile)  # trend baseline
     md = render_maintenance_markdown(summary, str(target), objective=goal)
     proof_path = None
     if summary.get("results"):
