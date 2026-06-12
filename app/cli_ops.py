@@ -284,3 +284,140 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     return 0
 
 
+
+
+def register_parsers(subparsers) -> None:
+    """Register the ops family's subcommands: scan, agents, consensus, daemon,
+    self-audit, fix-docstrings, fix-coverage, lsp, metrics."""
+    # scan
+    scan_parser = subparsers.add_parser("scan", help="Run an automation plan")
+    scan_parser.add_argument(
+        "--plan", default="project_scan", help="Automation plan name"
+    )
+    scan_parser.add_argument("--target", default="", help="Target project root")
+    scan_parser.add_argument("--focus-branch", default="", help="Focus branch path")
+    scan_parser.add_argument("--objective", default="", help="Scan objective")
+    scan_parser.add_argument(
+        "--auto-patch",
+        type=lambda x: x.lower() in ("1", "true", "yes"),
+        default=None,
+        help="Enable automatic patching",
+    )
+    scan_parser.add_argument(
+        "--auto-commit",
+        type=lambda x: x.lower() in ("1", "true", "yes"),
+        default=None,
+        help="Enable automatic commit",
+    )
+    scan_parser.add_argument(
+        "--max-fractal-budget",
+        type=int,
+        default=None,
+        help="Max fractal analysis budget",
+    )
+    scan_parser.add_argument(
+        "--safety-policy",
+        default=None,
+        choices=["minimal", "standard", "strict"],
+        help="Safety policy level",
+    )
+    scan_parser.add_argument(
+        "--mode",
+        default=None,
+        choices=["report", "supervised", "autonomous"],
+        help="Execution mode (report/supervised/autonomous)",
+    )
+    scan_parser.set_defaults(func=cmd_scan)
+
+    # agents
+    agents_parser = subparsers.add_parser("agents", help="Run helper agents")
+    agents_parser.add_argument(
+        "agent_type",
+        choices=["security", "docstring", "test-stub", "dependency"],
+        help="Agent type",
+    )
+    agents_parser.add_argument("--target", default="", help="Target project root")
+    agents_parser.add_argument(
+        "--patch", action="store_true", help="Apply patches (docstring agent)"
+    )
+    agents_parser.add_argument(
+        "--generate", action="store_true", help="Generate stubs (test-stub agent)"
+    )
+    agents_parser.set_defaults(func=cmd_agents)
+
+    # consensus
+    consensus_parser = subparsers.add_parser(
+        "consensus", help="Evaluate claims via agent consensus"
+    )
+    consensus_parser.add_argument(
+        "--claims", required=True, help="Semicolon-separated claims to evaluate"
+    )
+    consensus_parser.add_argument(
+        "--strategy",
+        default="majority",
+        choices=["unanimous", "majority", "supermajority", "weighted", "threshold"],
+        help="Consensus strategy",
+    )
+    consensus_parser.add_argument(
+        "--quorum", type=int, default=2, help="Minimum votes required"
+    )
+    consensus_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+    consensus_parser.add_argument(
+        "--use-memory",
+        action="store_true",
+        help="Enable persistent agent memory for caching and learning",
+    )
+    consensus_parser.set_defaults(func=cmd_consensus)
+
+    # daemon
+    daemon_parser = subparsers.add_parser(
+        "daemon", help="Run Apex periodically in the background"
+    )
+    daemon_parser.add_argument(
+        "action", choices=["start", "stop", "status"], help="Daemon action"
+    )
+    daemon_parser.add_argument(
+        "--goal", default="scan project", help="Goal to run periodically"
+    )
+    daemon_parser.add_argument(
+        "--interval", type=int, default=3600, help="Interval in seconds"
+    )
+    daemon_parser.add_argument("--target", default="", help="Target project root")
+    daemon_parser.add_argument(
+        "--mode",
+        default="report",
+        choices=["report", "supervised", "autonomous"],
+        help="Execution mode for daemon runs",
+    )
+    daemon_parser.add_argument(
+        "--legacy", action="store_true",
+        help="Use the older goal-driven `apex run` each cycle instead of autonomous `apex auto`",
+    )
+    daemon_parser.set_defaults(func=cmd_daemon)
+
+    # self-audit
+    self_audit_parser = subparsers.add_parser("self-audit", help="Run Apex self-audit on its own codebase")
+    self_audit_parser.add_argument("--target", default=".", help="Target project root")
+    self_audit_parser.add_argument("--format", default="markdown", choices=["markdown", "json"], help="Output format")
+    self_audit_parser.set_defaults(func=cmd_self_audit)
+
+    # fix-docstrings
+    fix_doc_parser = subparsers.add_parser("fix-docstrings", help="Auto-fix missing docstrings")
+    fix_doc_parser.add_argument("--target", default=".", help="Target project root")
+    fix_doc_parser.add_argument("--dry-run", action="store_true", help="Show gaps without patching")
+    fix_doc_parser.set_defaults(func=cmd_fix_docstrings)
+
+    # fix-coverage
+    fix_cov_parser = subparsers.add_parser("fix-coverage", help="Auto-generate test stubs")
+    fix_cov_parser.add_argument("--target", default=".", help="Target project root")
+    fix_cov_parser.add_argument("--generate", action="store_true", help="Generate test files")
+    fix_cov_parser.set_defaults(func=cmd_fix_coverage)
+
+    # lsp
+    lsp_parser = subparsers.add_parser("lsp", help="Start LSP language server (stdio)")
+    lsp_parser.set_defaults(func=cmd_lsp)
+
+    # metrics
+    metrics_parser = subparsers.add_parser("metrics", help="Start Prometheus metrics endpoint")
+    metrics_parser.add_argument("--port", type=int, default=9090, help="Metrics endpoint port")
+    metrics_parser.set_defaults(func=cmd_metrics)

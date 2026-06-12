@@ -165,3 +165,63 @@ def cmd_move(args: argparse.Namespace) -> int:
     return 1
 
 
+
+
+def register_parsers(subparsers) -> None:
+    """Register the refactor family's subcommands: rename, move, signature."""
+    # rename — cross-file rename (definition + imports + call sites), verified
+    rename_parser = subparsers.add_parser(
+        "rename",
+        help="Rename a top-level function/class across the whole project (test-verified)",
+    )
+    rename_parser.add_argument("old", help="Current symbol name")
+    rename_parser.add_argument("new", help="New symbol name")
+    rename_parser.add_argument("--param", default="",
+                               help="Rename a PARAMETER of this function instead "
+                                    "(def site + body + keyword call sites)")
+    rename_parser.add_argument("--target", default="", help="Target project root")
+    rename_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
+                               help="Preview the unified diff without changing files")
+    rename_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                               help="Skip the test verification run")
+    rename_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    rename_parser.set_defaults(func=cmd_rename)
+
+    # move — move/rename a module across the project (imports rewritten), verified
+    move_parser = subparsers.add_parser(
+        "move",
+        help="Move/rename a module; every import in the project is rewritten (test-verified)",
+    )
+    move_parser.add_argument("src", help="Current module path (e.g. app/old.py)")
+    move_parser.add_argument("dst", help="New module path (e.g. app/sub/new.py)")
+    move_parser.add_argument("--target", default="", help="Target project root")
+    move_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
+                             help="Preview the unified diff without changing files")
+    move_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                             help="Skip the test verification run")
+    move_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    move_parser.set_defaults(func=cmd_move)
+
+    # signature — signature-family refactors (drop/add/keywordify), verified
+    sig_parser = subparsers.add_parser(
+        "signature",
+        help="Change a function's signature project-wide: drop an unused parameter, "
+             "add one with a safe default, or keywordify positional calls (test-verified)",
+    )
+    sig_parser.add_argument("op", choices=["drop", "add", "keywordify"],
+                            help="drop: remove a parameter the body never reads; "
+                                 "add: introduce a parameter with a safe default; "
+                                 "keywordify: rewrite positional call sites as keywords")
+    # NB: dest must not be "func" — that's the dispatch slot set_defaults uses.
+    sig_parser.add_argument("function", help="Function whose signature changes")
+    sig_parser.add_argument("param", nargs="?", default="",
+                            help="Parameter to drop/add (not used by keywordify)")
+    sig_parser.add_argument("--default", default="None",
+                            help="Default expression for `add` (e.g. 0, None, \"utf-8\")")
+    sig_parser.add_argument("--target", default="", help="Target project root")
+    sig_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
+                            help="Preview the unified diff without changing files")
+    sig_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                            help="Skip the test verification run")
+    sig_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    sig_parser.set_defaults(func=cmd_signature)

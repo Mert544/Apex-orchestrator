@@ -194,3 +194,123 @@ def cmd_fractal(args: argparse.Namespace) -> int:
     return 0
 
 
+
+
+def register_parsers(subparsers) -> None:
+    """Register the reporting family's subcommands: dashboard, hotspots,
+    deadcode, city, report, fractal, debug."""
+    # dashboard
+    dash_parser = subparsers.add_parser(
+        "dashboard", help="Generate a self-contained HTML project dashboard"
+    )
+    dash_parser.add_argument("--target", default="", help="Target project root")
+    dash_parser.add_argument("--objective", default="", help="Optional theme to focus ideas on")
+    dash_parser.add_argument("--depth", type=int, default=2, help="Idea permutation depth")
+    dash_parser.add_argument("--breadth", type=int, default=3, help="Operators per idea")
+    dash_parser.add_argument("--max-ideas", type=int, default=24, dest="max_ideas", help="Idea budget")
+    dash_parser.add_argument("--out", default="", help="Output HTML path (default <target>/.apex/dashboard.html)")
+    dash_parser.set_defaults(func=cmd_dashboard)
+
+    # hotspots — rank modules by complexity × blast-radius ÷ tests
+    hot_parser = subparsers.add_parser(
+        "hotspots", help="Rank the modules most worth attention (complexity × fan-in ÷ tests)"
+    )
+    hot_parser.add_argument("--target", default="", help="Target project root")
+    hot_parser.add_argument("--limit", type=int, default=15, help="How many hotspots to show")
+    hot_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    hot_parser.set_defaults(func=cmd_hotspots)
+
+    # deadcode — cross-file: symbols defined but referenced nowhere
+    dead_parser = subparsers.add_parser(
+        "deadcode", help="Report module-level symbols defined but never referenced (cross-file)"
+    )
+    dead_parser.add_argument("--target", default="", help="Target project root")
+    dead_parser.add_argument("--limit", type=int, default=40, help="How many to show")
+    dead_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    dead_parser.set_defaults(func=cmd_deadcode)
+
+    # city — 3D "company city": modules as buildings, Apex agents as walking workers
+    city_parser = subparsers.add_parser(
+        "city", help="Generate the 3D company-city dashboard (modules as buildings, agents as workers)"
+    )
+    city_parser.add_argument("--target", default="", help="Target project root")
+    city_parser.add_argument("--objective", default="", help="Optional theme to focus on")
+    city_parser.add_argument("--out", default="", help="Output HTML path (default <target>/.apex/city.html)")
+    city_parser.set_defaults(func=cmd_city)
+
+    # report
+    report_parser = subparsers.add_parser(
+        "report", help="Generate report from run results"
+    )
+    report_parser.add_argument(
+        "--input", required=True, help="Input JSON file from a previous run"
+    )
+    report_parser.add_argument(
+        "--format",
+        default="markdown",
+        choices=["markdown", "html", "sarif"],
+        help="Output format",
+    )
+    report_parser.add_argument("--output", required=True, help="Output file path")
+    report_parser.set_defaults(func=cmd_report)
+
+    # fractal
+    fractal_parser = subparsers.add_parser(
+        "fractal", help="Fractal deep analysis tools"
+    )
+    fractal_sub = fractal_parser.add_subparsers(dest="subcommand")
+
+    fractal_analyze_parser = fractal_sub.add_parser(
+        "analyze", help="Analyze project with fractal 5-Whys depth"
+    )
+    fractal_analyze_parser.add_argument(
+        "--target", default="", help="Target project root"
+    )
+    fractal_analyze_parser.add_argument(
+        "--depth", type=int, default=5, help="Max fractal depth (1-5)"
+    )
+    fractal_analyze_parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON"
+    )
+    fractal_analyze_parser.add_argument(
+        "--max-fractal-budget",
+        type=int,
+        default=None,
+        help="Max fractal analysis budget (default 10)",
+    )
+    fractal_analyze_parser.set_defaults(func=cmd_fractal)
+
+    fractal_tree_parser = fractal_sub.add_parser(
+        "tree", help="Render fractal tree for a single finding"
+    )
+    fractal_tree_parser.add_argument(
+        "--finding",
+        required=True,
+        help='JSON finding, e.g. {"issue":"eval()","file":"a.py"}',
+    )
+    fractal_tree_parser.add_argument(
+        "--depth", type=int, default=5, help="Max fractal depth (1-5)"
+    )
+    fractal_tree_parser.set_defaults(func=cmd_fractal)
+
+    # debug
+    debug_parser = subparsers.add_parser(
+        "debug", help="Trace a run or analyze a traceback via the debug subsystem"
+    )
+    debug_sub = debug_parser.add_subparsers(dest="subcommand")
+
+    dbg_trace = debug_sub.add_parser(
+        "trace", help="Run with debug tracing; write a .apex/debug report"
+    )
+    dbg_trace.add_argument("--target", default="", help="Target project root")
+    dbg_trace.add_argument("--json", action="store_true", help="Emit JSON")
+    dbg_trace.set_defaults(func=cmd_debug)
+
+    dbg_analyze = debug_sub.add_parser(
+        "analyze", help="Diagnose a traceback (from --trace file or stdin)"
+    )
+    dbg_analyze.add_argument("--target", default="", help="Target project root")
+    dbg_analyze.add_argument("--trace", default="-", help="Traceback file, or - for stdin")
+    dbg_analyze.add_argument("--file", default="", help="Optional source file to scan")
+    dbg_analyze.add_argument("--json", action="store_true", help="Emit JSON")
+    dbg_analyze.set_defaults(func=cmd_debug)

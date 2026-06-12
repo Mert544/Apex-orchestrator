@@ -29,7 +29,10 @@ def test_main_dispatches_to_func(monkeypatch):
     # A subcommand with a light handler exercises the dispatch tail (args.func).
     monkeypatch.setattr("sys.argv", ["apex", "plugin", "list"])
     calls = []
-    monkeypatch.setattr(cli, "cmd_plugin_list", lambda args: calls.append(args) or 0)
+    # Module-of-use: dispatch binds the FAMILY module's function at
+    # registration time, so that is where the patch must land.
+    monkeypatch.setattr("app.cli_plugins.cmd_plugin_list",
+                        lambda args: calls.append(args) or 0)
     rc = cli.main()
     assert rc == 0
     assert calls
@@ -56,7 +59,7 @@ def test_main_ideate_wires_args(monkeypatch, tmp_path):
         seen["breadth"] = args.breadth
         return 0
 
-    monkeypatch.setattr(cli, "cmd_ideate", fake_ideate)
+    monkeypatch.setattr("app.cli_ideate.cmd_ideate", fake_ideate)  # module-of-use
     assert cli.main() == 0
     assert seen["target"] == str(tmp_path)
     assert seen["depth"] == 1

@@ -829,3 +829,16 @@ def test_expand_idea_demotes_harden_with_no_fixable_pattern(tmp_path):
     clean.write_text("def get(k):\n    return eval(k)\n")
     step = bridge._expand_idea(idea, project_root=str(tmp_path))[0]
     assert step.executable is True
+
+
+def test_dead_parameter_root_maps_to_command_carrying_work_order():
+    idea = IdeaNode(
+        id="d", title="Drop the dead parameter `color` from render() in app/ui.py",
+        subject="app/ui.py", operator="root", branch_path="x.d",
+        source_facts=["dead-parameter: app/ui.py:12 render(color) never read — "
+                      "`apex signature drop render color`"],
+    )
+    step = IdeaActionBridge().plan_idea(idea)
+    assert step.action_type == "design_task"
+    assert step.executable is False
+    assert "apex signature drop" in step.description

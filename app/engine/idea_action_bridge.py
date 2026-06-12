@@ -33,6 +33,13 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "missing-ci": ("add_ci", "Add a CI workflow that runs the test suite", False),
     "modernization": ("modernize_comparisons", "Modernize None comparisons in {s}", True),
     "mutable-default": ("fix_mutable_defaults", "Fix mutable default arguments in {s}", True),
+    # The hands exist (apex signature drop/keywordify) but as supervised CLI
+    # muscles, not unattended transforms — the work order carries the command.
+    "dead-parameter": ("design_task",
+                       "Drop the never-read parameter from {s} — the idea's fact "
+                       "line carries the exact `apex signature drop` command "
+                       "(chain `apex signature keywordify` first if a caller "
+                       "passes it positionally)", False),
 }
 
 

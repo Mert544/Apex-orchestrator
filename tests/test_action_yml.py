@@ -40,7 +40,15 @@ def test_action_invokes_the_real_apex_gate_commands():
 
 def test_action_commands_match_real_cli_flags():
     # The flags the action passes must actually exist on the CLI, or every
-    # downstream pipeline fails. Assert they are wired in app/cli.py.
-    cli = (Path(__file__).resolve().parents[1] / "app" / "cli.py").read_text(encoding="utf-8")
-    assert 'dest="min_score"' in cli
-    assert 'dest="fail_on_high"' in cli
+    # downstream pipeline fails. Assert against the composed parser (the
+    # definitions now live in the family modules, not app/cli.py).
+    import argparse
+
+    import app.cli_insight
+    import app.cli_review
+
+    sub = argparse.ArgumentParser().add_subparsers()
+    app.cli_insight.register_parsers(sub)
+    app.cli_review.register_parsers(sub)
+    assert any(a.dest == "min_score" for a in sub.choices["grade"]._actions)
+    assert any(a.dest == "fail_on_high" for a in sub.choices["review"]._actions)

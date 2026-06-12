@@ -133,3 +133,35 @@ def cmd_hook(args: argparse.Namespace) -> int:
     return 1
 
 
+
+
+def register_parsers(subparsers) -> None:
+    """Register the plugins family's subcommands: plugin, marketplace, hook."""
+    # plugin
+    plugin_parser = subparsers.add_parser("plugin", help="Manage plugins")
+    plugin_sub = plugin_parser.add_subparsers(dest="plugin_cmd")
+
+    install_parser = plugin_sub.add_parser("install", help="Install a plugin")
+    install_parser.add_argument("name", help="Plugin name or URL")
+    install_parser.set_defaults(func=cmd_plugin_install)
+
+    list_parser = plugin_sub.add_parser("list", help="List installed plugins")
+    list_parser.set_defaults(func=cmd_plugin_list)
+
+    uninstall_parser = plugin_sub.add_parser("uninstall", help="Uninstall a plugin")
+    uninstall_parser.add_argument("name", help="Plugin name")
+    uninstall_parser.set_defaults(func=cmd_plugin_uninstall)
+
+    # marketplace
+    marketplace_parser = subparsers.add_parser("marketplace", help="Start plugin marketplace server")
+    marketplace_parser.add_argument("--port", type=int, default=8765, help="Marketplace server port")
+    marketplace_parser.add_argument("--plugin-dir", default="plugins", help="Plugin directory")
+    marketplace_parser.set_defaults(func=cmd_marketplace)
+
+    # hook
+    hook_parser = subparsers.add_parser("hook", help="Manage git hooks")
+    hook_parser.add_argument(
+        "action", choices=["install", "uninstall"], help="Hook action"
+    )
+    hook_parser.add_argument("--target", default="", help="Target project root")
+    hook_parser.set_defaults(func=cmd_hook)

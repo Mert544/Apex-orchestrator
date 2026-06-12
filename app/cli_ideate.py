@@ -280,3 +280,143 @@ def cmd_ideate(args: argparse.Namespace) -> int:
     return 0
 
 
+
+
+def register_parsers(subparsers) -> None:
+    """Register the ideate family's subcommand: ideate."""
+    ideate_parser = subparsers.add_parser(
+        "ideate",
+        help="Generate a permutation tree of development ideas from the codebase",
+    )
+    ideate_parser.add_argument("--target", default="", help="Target project root")
+    ideate_parser.add_argument(
+        "--objective", default="", help="Optional theme to focus ideas on"
+    )
+    ideate_parser.add_argument("--depth", type=int, default=2, help="Permutation depth")
+    ideate_parser.add_argument(
+        "--breadth", type=int, default=4, help="Operators applied per idea"
+    )
+    ideate_parser.add_argument(
+        "--max-ideas", type=int, default=40, dest="max_ideas", help="Idea budget"
+    )
+    ideate_parser.add_argument(
+        "--min-relevance",
+        type=float,
+        default=0.0,
+        dest="min_relevance",
+        help="Drop ideas below this relevance to the objective (0=off)",
+    )
+    ideate_parser.add_argument(
+        "--actions",
+        action="store_true",
+        help="Bridge ideas into a supervised, never-applied action plan",
+    )
+    ideate_parser.add_argument(
+        "--top", type=int, default=0, help="Limit action plan to top-N ideas by value"
+    )
+    ideate_parser.add_argument(
+        "--draft",
+        action="store_true",
+        help="Draft real patch previews for executable steps (never applied)",
+    )
+    ideate_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply executable steps — gated by mode + safety gates (opt-in)",
+    )
+    ideate_parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="After applying, run tests and auto-rollback any step that breaks them",
+    )
+    ideate_parser.add_argument(
+        "--commit",
+        action="store_true",
+        help="Auto-commit each applied step (autonomous mode only)",
+    )
+    ideate_parser.add_argument(
+        "--max-apply",
+        type=int,
+        default=0,
+        dest="max_apply",
+        help="Cap how many steps a maintenance run applies (0 = no cap)",
+    )
+    ideate_parser.add_argument(
+        "--mode",
+        default="supervised",
+        choices=["report", "supervised", "autonomous"],
+        help="Execution mode for --apply (report cannot patch)",
+    )
+    ideate_parser.add_argument(
+        "--mermaid", action="store_true", help="Also emit a Mermaid diagram"
+    )
+    ideate_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    ideate_parser.add_argument("--out", default="", help="Write markdown to this path")
+    ideate_parser.add_argument(
+        "--kind",
+        default="",
+        choices=["", "all", "permutation", "synthesis", "pair"],
+        help="List only ideas of this kind (value-sorted)",
+    )
+    ideate_parser.add_argument(
+        "--roadmap",
+        action="store_true",
+        help="Sequence ideas into a prioritized roadmap (Stabilize→Secure→Evolve→Refine)",
+    )
+    ideate_parser.add_argument(
+        "--facets",
+        action="store_true",
+        help="Fractal zoom: expand the strongest leaves into self-similar sub-ideas",
+    )
+    ideate_parser.add_argument(
+        "--facet-depth",
+        type=int,
+        default=1,
+        dest="facet_depth",
+        help="How many self-similar facet zoom levels to recurse (with --facets)",
+    )
+    ideate_parser.add_argument(
+        "--shape",
+        action="store_true",
+        help="Analyze the shape/health of the generated idea tree",
+    )
+    ideate_parser.add_argument(
+        "--pareto",
+        action="store_true",
+        help="Show the efficient frontier: non-dominated ideas across impact/effort/value",
+    )
+    ideate_parser.add_argument(
+        "--adaptive",
+        action="store_true",
+        help="Adaptive depth: let high-value branches grow deeper (value-guided fractal)",
+    )
+    ideate_parser.add_argument(
+        "--sequence",
+        action="store_true",
+        help="Dependency-ordered execution plan (prerequisites first) + critical path",
+    )
+    ideate_parser.add_argument(
+        "--budget", type=float, default=0.0,
+        help="Optimal idea portfolio for this effort budget (impact-maximizing knapsack)",
+    )
+    ideate_parser.add_argument(
+        "--invest", action="store_true",
+        help="Investment curve: impact achievable per effort budget + diminishing-returns knee",
+    )
+    ideate_parser.add_argument(
+        "--phase",
+        default="",
+        choices=["", "Stabilize", "Secure", "Evolve", "Refine"],
+        help="With --roadmap --actions: restrict the action plan to one phase",
+    )
+    ideate_parser.add_argument(
+        "--save",
+        action="store_true",
+        help="With --roadmap: snapshot the roadmap to .apex/roadmap-snapshot.json",
+    )
+    ideate_parser.add_argument(
+        "--diff",
+        action="store_true",
+        help="With --roadmap: show what changed since the last saved snapshot",
+    )
+    ideate_parser.set_defaults(func=cmd_ideate)

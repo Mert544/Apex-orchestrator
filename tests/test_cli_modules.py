@@ -78,3 +78,36 @@ def test_engine_family_reexports_are_the_same_objects():
     assert engine._FACET_SUBASPECTS is facets._FACET_SUBASPECTS
     assert engine._FACET_CASES is facets._FACET_CASES
     assert engine._FACET_CAVEAT_RULES is facets._FACET_CAVEAT_RULES
+
+
+def test_family_parser_registration_covers_every_command():
+    # The parser is composed from the families now — a family forgetting to
+    # register (or a typo'd command name) must fail HERE, not in a user's
+    # terminal. Equality, not subset: silent loss and silent growth both fail.
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="apex")
+    sub = parser.add_subparsers(dest="command")
+    for mod in (app.cli_autonomy, app.cli_insight, app.cli_ideate, app.cli_review,
+                app.cli_refactor, app.cli_ops, app.cli_reporting, app.cli_plugins):
+        mod.register_parsers(sub)
+    cli._register_local_parsers(sub)
+
+    assert set(sub.choices) == {
+        "auto", "simulate", "evolve", "maintain",
+        "grade", "impact", "brief", "dream", "outcomes", "recipes", "changelog", "explain",
+        "ideate", "review", "rename", "move", "signature",
+        "bench", "run",
+        "scan", "agents", "consensus", "daemon", "self-audit",
+        "fix-docstrings", "fix-coverage", "lsp", "metrics",
+        "dashboard", "hotspots", "deadcode", "city", "report", "fractal", "debug",
+        "plugin", "marketplace", "hook",
+    }
+    # Dispatch targets ARE the family functions (not stale copies).
+    assert sub.choices["rename"].get_default("func") is app.cli_refactor.cmd_rename
+    assert sub.choices["maintain"].get_default("func") is app.cli_autonomy.cmd_maintain
+    assert sub.choices["dream"].get_default("func") is app.cli_insight.cmd_dream
+    assert sub.choices["ideate"].get_default("func") is app.cli_ideate.cmd_ideate
+    assert sub.choices["dashboard"].get_default("func") is app.cli_reporting.cmd_dashboard
+    assert sub.choices["scan"].get_default("func") is app.cli_ops.cmd_scan
+    assert sub.choices["hook"].get_default("func") is app.cli_plugins.cmd_hook

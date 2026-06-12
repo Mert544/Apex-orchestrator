@@ -205,3 +205,106 @@ def cmd_impact(args: argparse.Namespace) -> int:
     return 0
 
 
+
+
+def register_parsers(subparsers) -> None:
+    """Register the insight family's subcommands: grade, impact, brief, dream,
+    outcomes, recipes, changelog, explain."""
+    # grade — single project health grade (A-F)
+    grade_parser = subparsers.add_parser(
+        "grade", help="Give the project a single health grade (A-F) with a breakdown",
+    )
+    grade_parser.add_argument("--target", default="", help="Target project root")
+    grade_parser.add_argument("--min-score", type=int, default=0, dest="min_score",
+                              help="Exit non-zero if the score is below this (CI gate)")
+    grade_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    grade_parser.set_defaults(func=cmd_grade)
+
+    # impact — function-level blast radius (who calls this, transitively)
+    impact_parser = subparsers.add_parser(
+        "impact",
+        help="Show the blast radius of changing a function (its transitive callers)",
+    )
+    impact_parser.add_argument("function", help="Function/method name to analyze")
+    impact_parser.add_argument("--target", default="", help="Target project root")
+    impact_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    impact_parser.set_defaults(func=cmd_impact)
+
+    # brief — a design-level idea as an actionable engineering brief
+    brief_parser = subparsers.add_parser(
+        "brief",
+        help="Turn a design-level idea into an actionable work brief (facts, plan, done-when)",
+    )
+    brief_parser.add_argument("branch", nargs="?", default="",
+                              help="Branch path (default: the top design-level idea)")
+    brief_parser.add_argument("--target", default="", help="Target project root")
+    brief_parser.add_argument("--subject", default="",
+                              help="Target by MODULE PATH (stable across runs, "
+                                   "unlike branch paths — prefer this with --save)")
+    brief_parser.add_argument("--objective", default="", help="Optional focus")
+    brief_parser.add_argument("--depth", type=int, default=2)
+    brief_parser.add_argument("--breadth", type=int, default=4)
+    brief_parser.add_argument("--max-ideas", type=int, default=40, dest="max_ideas")
+    brief_parser.add_argument("--save", action="store_true",
+                              help="Snapshot the brief's evidence baseline for --check")
+    brief_parser.add_argument("--check", action="store_true",
+                              help="Re-measure a saved brief: evidence gone = item resolved")
+    brief_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    brief_parser.set_defaults(func=cmd_brief)
+
+    # dream — scheduled curation over Apex's own memory stores
+    dream_parser = subparsers.add_parser(
+        "dream",
+        help="Review memory stores, extract patterns, curate, and write the dream digest",
+    )
+    dream_parser.add_argument("--target", default="", help="Target project root")
+    dream_parser.add_argument("--curate", action="store_true",
+                              help="Apply the curation (default only reports; inputs untouched)")
+    dream_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    dream_parser.set_defaults(func=cmd_dream)
+
+    # outcomes — grade the project against a user-written rubric (CI gate)
+    outcomes_parser = subparsers.add_parser(
+        "outcomes",
+        help="Verify the project against YOUR rubric — per-criterion gaps, CI-ready exit code",
+    )
+    outcomes_parser.add_argument("--target", default="", help="Target project root")
+    outcomes_parser.add_argument("--init", action="store_true",
+                                 help="Write a starter rubric to .apex/outcomes.json")
+    outcomes_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    outcomes_parser.set_defaults(func=cmd_outcomes)
+
+    # recipes — the named, composable transform catalog
+    recipes_parser = subparsers.add_parser(
+        "recipes",
+        help="List the transform catalog as named, composable recipes",
+    )
+    recipes_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    recipes_parser.set_defaults(func=cmd_recipes)
+
+    # changelog — release notes from evidence
+    changelog_parser = subparsers.add_parser(
+        "changelog",
+        help="Release notes from artifacts: commits, verified fixes, landed roadmap work, the grade",
+    )
+    changelog_parser.add_argument("--target", default="", help="Target project root")
+    changelog_parser.add_argument("--out", default="", help="Write the Markdown to this path")
+    changelog_parser.set_defaults(func=cmd_changelog)
+
+    # explain — show why an idea scored what it did
+    explain_parser = subparsers.add_parser(
+        "explain",
+        help="Explain why an idea scored what it did (provenance, score, ROI, caveats)",
+    )
+    explain_parser.add_argument("branch", nargs="?", default="",
+                                help="Branch path to explain (e.g. x.a.c); default: the top idea")
+    explain_parser.add_argument("--target", default="", help="Target project root")
+    explain_parser.add_argument("--objective", default="", help="Optional theme to focus on")
+    explain_parser.add_argument("--depth", type=int, default=2, help="Permutation depth")
+    explain_parser.add_argument("--breadth", type=int, default=4, help="Operators per idea")
+    explain_parser.add_argument("--max-ideas", type=int, default=40, dest="max_ideas",
+                                help="Idea budget")
+    explain_parser.add_argument("--facets", action="store_true",
+                                help="Include fractal facet ideas (for facet branch paths)")
+    explain_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    explain_parser.set_defaults(func=cmd_explain)

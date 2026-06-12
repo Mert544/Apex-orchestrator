@@ -113,3 +113,22 @@ def _render_review_fixes_markdown(fix: dict) -> str:
     return "\n".join(lines)
 
 
+
+
+def register_parsers(subparsers) -> None:
+    """Register the review family's subcommand: review."""
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Review only the lines changed since a base ref (security/bugs/style/docs)",
+    )
+    review_parser.add_argument("--target", default="", help="Target project root")
+    review_parser.add_argument("--base", default="HEAD", help="Git base ref to diff against")
+    review_parser.add_argument("--fail-on-high", action="store_true", dest="fail_on_high",
+                              help="Exit non-zero if a high-severity issue is in the diff (CI)")
+    review_parser.add_argument("--sarif", default="",
+                               help="Write findings as SARIF 2.1.0 to this path "
+                                    "(GitHub code scanning compatible)")
+    review_parser.add_argument("--fix", action="store_true",
+                              help="Apply the auto-fixable findings on the changed files (test-verified)")
+    review_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    review_parser.set_defaults(func=cmd_review)

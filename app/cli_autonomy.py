@@ -393,3 +393,116 @@ def cmd_evolve(args: argparse.Namespace) -> int:
     return 0
 
 
+
+
+def register_parsers(subparsers) -> None:
+    """Register the autonomy family's subcommands: auto, simulate, evolve, maintain."""
+    # auto — the recommended one-command entry point (no flags to memorize)
+    auto_parser = subparsers.add_parser(
+        "auto",
+        help="Autonomous review: assess the project and recommend (or --apply) the best next moves",
+    )
+    auto_parser.add_argument("goal", nargs="?", default="", help="Optional natural-language goal")
+    auto_parser.add_argument("--target", default="", help="Target project root")
+    auto_parser.add_argument(
+        "--apply", action="store_true",
+        help="Force-apply the safe, test-verified fixes (overrides the autonomy gate)",
+    )
+    auto_parser.add_argument(
+        "--recommend", action="store_true",
+        help="Recommend only — never touch the tree, even if it's safe to act",
+    )
+    auto_parser.add_argument(
+        "--mode", default=None, choices=["report", "supervised", "autonomous"],
+        help="Override the execution mode (default: inferred / supervised)",
+    )
+    auto_parser.add_argument("--commit", action="store_true", help="Commit each applied fix (autonomous)")
+    auto_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                             help="Skip test verification (not recommended)")
+    auto_parser.add_argument("--max-apply", type=int, default=0, dest="max_apply",
+                             help="Cap how many fixes to apply (default 8)")
+    auto_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    auto_parser.add_argument("--out", default="", help="Write the report to this path")
+    auto_parser.set_defaults(func=cmd_auto)
+
+    # simulate — preview autonomous improvement on a disposable copy
+    sim_parser = subparsers.add_parser(
+        "simulate",
+        help="Preview what 'apex evolve' would do — run on a throwaway copy, change nothing",
+    )
+    sim_parser.add_argument("--target", default="", help="Target project root")
+    sim_parser.add_argument("--objective", default="", help="Optional theme to focus on")
+    sim_parser.add_argument("--max-cycles", type=int, default=3, dest="max_cycles",
+                            help="Maximum improvement cycles to simulate")
+    sim_parser.add_argument("--max-apply", type=int, default=5, dest="max_apply",
+                            help="Max fixes per cycle")
+    sim_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    sim_parser.set_defaults(func=cmd_simulate)
+
+    # evolve — self-improvement loop: apply → re-measure → prove progress
+    evolve_parser = subparsers.add_parser(
+        "evolve",
+        help="Self-improvement loop: apply guarded fixes to a fixpoint, then prove the gain",
+    )
+    evolve_parser.add_argument("--target", default="", help="Target project root")
+    evolve_parser.add_argument("--objective", default="", help="Optional theme to focus on")
+    evolve_parser.add_argument("--max-cycles", type=int, default=3, dest="max_cycles",
+                               help="Maximum improvement cycles (default 3)")
+    evolve_parser.add_argument("--max-apply", type=int, default=5, dest="max_apply",
+                               help="Max fixes applied per cycle (default 5)")
+    evolve_parser.add_argument("--mode", default=None,
+                               choices=["report", "supervised", "autonomous"],
+                               help="Execution mode (default: supervised, or autonomous with --commit)")
+    evolve_parser.add_argument("--commit", action="store_true", help="Commit each applied fix")
+    evolve_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                               help="Skip test verification (not recommended)")
+    evolve_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
+                               help="Preview the first cycle's fixes without applying")
+    evolve_parser.add_argument("--history", action="store_true",
+                               help="Show the recorded self-improvement trajectory and exit")
+    evolve_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    evolve_parser.add_argument("--out", default="", help="Write the report to this path")
+    evolve_parser.set_defaults(func=cmd_evolve)
+
+    # maintain — one-shot scan -> ideate -> apply -> verify -> commit -> report
+    maintain_parser = subparsers.add_parser(
+        "maintain",
+        help="One-shot maintenance: scan, generate fixes, apply (verified), commit, report",
+    )
+    maintain_parser.add_argument("--target", default="", help="Target project root")
+    maintain_parser.add_argument("--objective", default="", help="Optional theme to focus on")
+    maintain_parser.add_argument("--depth", type=int, default=2, help="Idea permutation depth")
+    maintain_parser.add_argument("--breadth", type=int, default=4, help="Operators per idea")
+    maintain_parser.add_argument("--max-ideas", type=int, default=40, dest="max_ideas")
+    maintain_parser.add_argument("--top", type=int, default=0, help="Limit plan to top-N ideas")
+    maintain_parser.add_argument(
+        "--mode", default="supervised",
+        choices=["report", "supervised", "autonomous"],
+        help="report=plan only, supervised=apply, autonomous=apply+commit",
+    )
+    maintain_parser.add_argument(
+        "--dry-run", action="store_true", dest="dry_run",
+        help="Preview the diffs of every fix without changing anything",
+    )
+    maintain_parser.add_argument(
+        "--no-verify", action="store_true",
+        help="Skip running tests + auto-rollback after each applied step",
+    )
+    maintain_parser.add_argument(
+        "--commit", action="store_true",
+        help="Auto-commit each applied step (autonomous mode only)",
+    )
+    maintain_parser.add_argument(
+        "--max-apply", type=int, default=0, dest="max_apply",
+        help="Cap how many steps to apply (0 = no cap)",
+    )
+    maintain_parser.add_argument("--recipe", default="",
+                                 help="Scope the pass to one recipe/composite (see `apex recipes`)")
+    maintain_parser.add_argument("--json", action="store_true", help="Emit JSON summary")
+    maintain_parser.add_argument("--out", default="", help="Write the Markdown report to this path")
+    maintain_parser.add_argument(
+        "--proof", default="",
+        help="Where to write the proof-of-fix evidence JSON "
+             "(default: .apex/proof-of-fix.json in the target)",
+    )
+    maintain_parser.set_defaults(func=cmd_maintain)
