@@ -35,7 +35,7 @@ def _module_set(profile: Any) -> list[str]:
     return [m for m in ordered if isinstance(m, str) and m.endswith(".py")]
 
 
-def build_city_model(project_root: str, objective: str | None = None, max_buildings: int = 60) -> dict[str, Any]:
+def build_city_model(project_root: str, max_buildings: int = 60) -> dict[str, Any]:
     """Assemble the deterministic city model from real project signals."""
     from app.engine.health_score import grade
     from app.tools.code_metrics import CodeMetrics
@@ -179,9 +179,9 @@ def build_city_model(project_root: str, objective: str | None = None, max_buildi
     }
 
 
-def build_city(project_root: str, objective: str | None = None) -> str:
+def build_city(project_root: str) -> str:
     """Build the self-contained 3D city dashboard HTML."""
-    model = build_city_model(project_root, objective)
+    model = build_city_model(project_root)
     data_json = json.dumps(model, separators=(",", ":"))
     return _HTML_TEMPLATE.replace("/*__DATA__*/", data_json)
 

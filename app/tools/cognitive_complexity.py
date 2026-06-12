@@ -26,7 +26,7 @@ import ast
 __all__ = ["cognitive_complexity", "function_cognitive_complexities"]
 
 
-def _bool_sequences(node: ast.BoolOp) -> int:
+def _bool_sequences(_node: ast.BoolOp) -> int:
     """Each boolean-operator *sequence* costs +1: ``a and b and c`` is one
     sequence; ``a and b or c`` nests BoolOps and costs one per node."""
     return 1

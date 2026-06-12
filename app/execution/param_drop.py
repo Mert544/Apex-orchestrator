@@ -72,7 +72,9 @@ def _rebuild_params(source: str, fn: ast.FunctionDef | ast.AsyncFunctionDef,
     def pos_text(arg: ast.arg, default: ast.expr | None) -> str:
         text = _segment(source, arg)
         if default is not None:
-            text += f"={_segment(source, default)}"
+            # PEP 8: spaces around "=" only when the parameter is annotated.
+            eq = " = " if arg.annotation is not None else "="
+            text += f"{eq}{_segment(source, default)}"
         return text
 
     # Positional (incl. positional-only) with right-aligned defaults.

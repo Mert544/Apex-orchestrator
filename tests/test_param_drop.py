@@ -180,6 +180,20 @@ def test_multiline_keyword_value_blocks(tmp_path):
     assert any("spans lines" in b for b in plan.blockers)
 
 
+def test_annotated_defaults_keep_pep8_spacing(tmp_path):
+    # Found dropping `objective` from build_city_model on the live repo:
+    # the rebuild wrote `max_buildings: int=60`. Annotated params get
+    # spaces around "=", unannotated ones stay tight.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "core.py").write_text(
+        "def render(text: str, color=None, width: int = 80, pad=0):\n"
+        "    return text[: width + pad]\n"
+    )
+    plan = plan_param_drop(tmp_path, "render", "color")
+    assert plan.ok, plan.blockers
+    assert "def render(text: str, width: int = 80, pad=0):" in plan.new_contents["app/core.py"]
+
+
 def test_kwonly_and_posonly_shapes_survive(tmp_path):
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "shapes.py").write_text(

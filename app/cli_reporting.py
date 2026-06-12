@@ -115,7 +115,7 @@ def cmd_city(args: argparse.Namespace) -> int:
     from app.reporting.city_dashboard import build_city
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
-    html_doc = build_city(str(target), objective=args.objective or None)
+    html_doc = build_city(str(target))
     out_path = Path(args.out) if args.out else target / ".apex" / "city.html"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html_doc, encoding="utf-8")
