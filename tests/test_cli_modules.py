@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import app.cli_autonomy
 import app.cli_ideate
+import app.cli_insight
 import app.cli_ops
 import app.cli_plugins
 import app.cli_reporting
@@ -40,6 +41,14 @@ def test_cli_reexports_are_the_same_objects():
     assert cli.cmd_dashboard is app.cli_reporting.cmd_dashboard
     assert cli.cmd_debug is app.cli_reporting.cmd_debug
     assert cli.cmd_report is app.cli_reporting.cmd_report
+    assert cli.cmd_explain is app.cli_insight.cmd_explain
+    assert cli.cmd_brief is app.cli_insight.cmd_brief
+    assert cli.cmd_dream is app.cli_insight.cmd_dream
+    assert cli.cmd_outcomes is app.cli_insight.cmd_outcomes
+    assert cli.cmd_recipes is app.cli_insight.cmd_recipes
+    assert cli.cmd_changelog is app.cli_insight.cmd_changelog
+    assert cli.cmd_grade is app.cli_insight.cmd_grade
+    assert cli.cmd_impact is app.cli_insight.cmd_impact
     assert cli._get_project_root is _get_project_root
 
 
