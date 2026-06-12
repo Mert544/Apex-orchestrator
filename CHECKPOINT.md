@@ -1,11 +1,55 @@
 # Apex Autonomous Engineering Organism - Checkpoint
 
-**Date**: 2026-05-30
-**Commit**: 7067cf2 (branch `claude/apex-orchestrator-eZbJO`)
-**Tests**: 786 passing ✅ (5 git tests fail only in this sandbox — commit-signing, green in real CI)
-**Status**: Idea engine + action bridge + CI gate shipped — see Phases 8–10
+**Date**: 2026-06-12
+**Commit**: branch `claude/apex-orchestrator-eZbJO`
+**Tests**: 1921+ passing ✅
+**Status**: Trust layer + multi-file refactoring + richer fact base shipped — see "Latest milestone" below
 
-> Previous milestone: autonomy-safety-core (2026-04-25, 633 tests).
+> Previous milestones: idea-engine+action-bridge (2026-05-30, 786 tests);
+> autonomy-safety-core (2026-04-25, 633 tests).
+
+---
+
+## Latest milestone: trust layer + refactoring (2026-06)
+
+**Identity (binding, see `AGENTS.md`):** single focus = Idea Permutation
+Engine, fractal facets, roadmap reasoning. Apex is a project-development
+assistant; security stays integrated as a supporting signal, never the
+headline. Strategy + blind-spot plans: `docs/market-positioning.md`.
+
+**Trust layer**
+- Proof-of-Fix artifact: every apply run writes `.apex/proof-of-fix.json`
+  (finding cited, exact diff, test run evidence, rollbacks, commits)
+  — `app/engine/proof_of_fix.py`.
+- Coverage-aware verification strength (`app/engine/verification_strength.py`):
+  each verified fix graded function / module / none / test-change; weakest
+  link across changed files; reported in proof + maintenance markdown.
+- Test-first shield: a fix targeting a module NO test references first gets a
+  generated characterization test (verified), then applies under its
+  protection (`apply_plan(test_first=True)`).
+- SARIF 2.1.0 export: `apex review --sarif` (`app/engine/sarif_export.py`).
+
+**Multi-file refactoring (span-edit machinery)**
+- `apex rename OLD NEW` — definition + imports + call sites, comment-preserving,
+  blockers on ambiguity/shadow/collision (`app/execution/cross_file_rename.py`).
+- `apex move SRC DST` — module move; every import form rewritten project-wide,
+  `__init__.py` created, relative-import cases block (`app/execution/move_module.py`).
+- Both: `--dry-run` diffs, test-verified apply, full rollback.
+
+**Richer fact base for the idea engine**
+- Git-churn hotspots (`ProjectProfiler._scan_churn`) → "churn-hotspot" seeds
+  (Evolve phase) + "high-churn" convergence dimension (change×complexity).
+- Debt-marker age via git blame (`_scan_debt_age`) → stale debt narrated
+  ("oldest has waited N months").
+- Level-3 content-aware facet vocabulary; facet budget stretches with
+  requested zoom depth (12% at depth<=2, +6%/level, cap 30%).
+
+**Cross-run narrative**
+- Roadmap snapshots carry per-item provenance (`grounded_in`); `--roadmap
+  --diff` narrates which signal produced each new idea / stopped firing
+  (`app/engine/roadmap_history.py`).
+- Dashboard: proof-of-fix section, roadmap-changes section, churn + stale-debt
+  in the profile (`app/reporting/dashboard.py`).
 
 ---
 

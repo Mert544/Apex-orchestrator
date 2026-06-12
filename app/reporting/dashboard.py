@@ -297,6 +297,8 @@ def _chip(label: str, value: Any) -> str:
 
 
 def _profile_section(p: ProjectProfile) -> str:
+    churn = getattr(p, "churn_hotspots", []) or []
+    debt_ages = getattr(p, "debt_marker_ages", {}) or {}
     chips = "".join(
         [
             _chip("files", p.total_files),
@@ -304,6 +306,7 @@ def _profile_section(p: ProjectProfile) -> str:
             _chip("dependency hubs", len(p.dependency_hubs)),
             _chip("untested modules", len(p.untested_modules)),
             _chip("sensitive paths", len(p.sensitive_paths)),
+            _chip("churn hotspots", len(churn)),
             _chip("CI files", len(p.ci_files)),
         ]
     )
@@ -320,6 +323,11 @@ def _profile_section(p: ProjectProfile) -> str:
             _list("Dependency hubs", p.dependency_hubs),
             _list("Untested modules", p.untested_modules),
             _list("Sensitive paths", p.sensitive_paths),
+            _list("Change hotspots (git churn)",
+                  [f"{c['module']} · {c['commits']} commits" for c in churn]),
+            _list("Stale debt (oldest marker)",
+                  [f"{m} · ~{d // 30} months" for m, d in sorted(
+                      debt_ages.items(), key=lambda kv: -kv[1]) if d >= 90]),
         ]
     )
     return _card("profile", "📦", "Project profile", f"<div class='chips'>{chips}</div><div class='cols'>{cols}</div>")
@@ -773,6 +781,102 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:8px 0 36px}
 """
 
 
+def _proof_section(project_root: str) -> str:
+    """The last maintenance pass's evidence record — outcomes, verification
+    strength and shields, straight from .apex/proof-of-fix.json."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    path = _Path(project_root) / ".apex" / "proof-of-fix.json"
+    if not path.exists():
+        return ""
+    try:
+        proof = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    totals = proof.get("totals", {})
+    chips = "".join([
+        _chip("applied", totals.get("applied", 0)),
+        _chip("rolled back", totals.get("rolled_back", 0)),
+        _chip("blocked", totals.get("blocked", 0)),
+        _chip("committed", totals.get("committed", 0)),
+    ])
+    outcome_icon = {"applied": "✅", "rolled_back": "↩️", "blocked": "⛔"}
+    strength_label = {
+        "function": "💪 names the changed function",
+        "module": "✔️ suite references the module",
+        "none": "⚠️ applied blind (no covering test)",
+        "test-change": "🧪 test change",
+    }
+    rows = ""
+    for fix in (proof.get("fixes") or [])[:12]:
+        strength = ((fix.get("verification") or {}).get("strength") or {}).get("level", "")
+        shield = fix.get("shield_test", "")
+        rows += (
+            f"<tr><td>{outcome_icon.get(fix.get('outcome', ''), '·')} "
+            f"{_esc(fix.get('outcome', ''))}</td>"
+            f"<td>{_esc((fix.get('finding') or {}).get('action', ''))}</td>"
+            f"<td><code>{_esc((fix.get('finding') or {}).get('target', ''))}</code></td>"
+            f"<td>{_esc(strength_label.get(strength, '—'))}</td>"
+            f"<td>{('🛡️ <code>' + _esc(shield) + '</code>') if shield else '—'}</td></tr>"
+        )
+    if not rows:
+        return ""
+    table = ("<table><thead><tr><th>Outcome</th><th>Action</th><th>Target</th>"
+             "<th>Verification strength</th><th>Shield</th></tr></thead>"
+             f"<tbody>{rows}</tbody></table>")
+    sub = f"<p class='muted'>Generated {_esc(proof.get('generated_at', ''))} · full evidence (diffs, test runs) in <code>.apex/proof-of-fix.json</code></p>"
+    return _card("proof", "🧾", "Proof of fix — last maintenance pass",
+                 f"<div class='chips'>{chips}</div>{table}{sub}")
+
+
+def _roadmap_changes_section(project_root: str, roadmap) -> str:
+    """Cross-run roadmap story: which signals produced the new work, which
+    stopped firing — when a saved snapshot exists to compare against."""
+    if roadmap is None or not getattr(roadmap, "phases", None):
+        return ""
+    try:
+        from pathlib import Path as _Path
+
+        from app.engine.roadmap_history import (
+            _count_signals,
+            _signal_phrase,
+            diff_roadmaps,
+            load_snapshot,
+        )
+
+        snapshot = load_snapshot(_Path(project_root) / ".apex" / "roadmap-snapshot.json")
+        if not snapshot:
+            return ""
+        diff = diff_roadmaps(snapshot, roadmap)
+    except Exception:
+        return ""
+    if not (diff.new or diff.dropped):
+        return ""
+    parts = [f"<div class='chips'>{_chip('new', len(diff.new))}"
+             f"{_chip('no longer surfaced', len(diff.dropped))}"
+             f"{_chip('stable', diff.stable_count)}</div>"]
+    new_signals = _count_signals(diff.new)
+    gone_signals = _count_signals(diff.dropped)
+    if new_signals:
+        parts.append(f"<p><b>Where the new work comes from:</b> {_esc(_signal_phrase(new_signals))}</p>")
+    if gone_signals:
+        parts.append(f"<p><b>Signals that stopped firing:</b> {_esc(_signal_phrase(gone_signals))}</p>")
+    items = "".join(
+        f"<li>🆕 [{_esc(c.curr_phase)}] {_esc(c.title)}"
+        + (f" — <code>{_esc(c.grounded_in)}</code>" if c.grounded_in else "") + "</li>"
+        for c in diff.new[:6]
+    ) + "".join(
+        f"<li>✅ {_esc(c.title)}"
+        + (f" — its <code>{_esc(c.signal)}</code> signal no longer fires" if c.signal else "")
+        + "</li>"
+        for c in diff.dropped[:6]
+    )
+    if items:
+        parts.append(f"<ul>{items}</ul>")
+    return _card("changes", "📈", "Roadmap changes since last snapshot", "".join(parts))
+
+
 def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning,
                  git=None, debug=None, roadmap=None, shape=None, autonomy=None,
                  pareto=None, trajectory=None, learned=None) -> str:
@@ -810,6 +914,8 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
             _ideas_section(idea_report),
             _shape_section(shape),
             _roadmap_section(roadmap),
+            _roadmap_changes_section(project_root, roadmap),
+            _proof_section(project_root),
             _pareto_section(pareto, getattr(idea_report, "stats", {}).get("total_ideas", 0)),
             _autonomy_section(autonomy),
             _trajectory_section(trajectory),

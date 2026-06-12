@@ -1,8 +1,27 @@
 # Roadmap
 
 Living document. For shipped detail see `CHECKPOINT.md`.
+Strategic positioning + blind-spot closure plans: `docs/market-positioning.md`.
+**Single focus** (see `AGENTS.md`): the Idea Permutation Engine, fractal facets
+and roadmap reasoning — Apex is a project-development assistant; security stays
+an integrated supporting signal.
 
 ## Now (shipped)
+- **Trust layer** — `proof-of-fix.json` evidence artifact (finding, diff, test
+  run, rollback per fix), **coverage-aware verification strength** (does the
+  green suite *name the changed function*, reference the module, or never look
+  at it?), **test-first shield** (uncovered modules get a generated
+  characterization test BEFORE the fix), SARIF export for `apex review`.
+- **Multi-file refactoring** — `apex rename` (cross-file rename: definition +
+  imports + call sites) and `apex move` (module move with project-wide import
+  rewriting). Span-edit machinery: comment-preserving, conservative blockers,
+  test-verified with rollback.
+- **Richer fact base** — git-churn hotspots, change×complexity convergence
+  dimension, debt-marker age via git blame, level-3 content-aware fractal facet
+  vocabulary, depth-stretched facet budget.
+- **Cross-run narrative** — roadmap snapshots carry provenance; `--roadmap
+  --diff` narrates which signal produced each new idea and which stopped
+  firing. Dashboard sections for proof-of-fix and roadmap changes.
 - **Autonomous maintenance** — `apex maintain` runs the full guarded loop
   (scan → ideate → apply → verify with tests → auto-rollback → commit →
   Markdown report). Modes: report / supervised / autonomous.
@@ -21,12 +40,17 @@ Living document. For shipped detail see `CHECKPOINT.md`.
 - **Plugin-contributed operators** (`proxy.add_operator`) widen the alphabet.
 
 ## Next (near-term)
-1. Optional LLM *polish* of idea titles/rationale (additive, off by default —
-   same pattern as `report.llm_summary`).
-2. Supervised *apply* path: take a drafted patch through ModePolicy +
-   SafetyGates to an actual (reviewed) change.
-3. **Coverage** — raise unit-test coverage of the thin areas: `app/engine/`,
-   `app/memory/`, `app/tools/`, `app/policies/`.
+1. **Refactor family growth** on the span-edit machinery: signature change
+   with call-site update; `apex rename --from-idea` (the engine proposes the
+   rename it already suggests in ideas).
+2. **External validity** (`apex bench`): pinned OSS-repo snapshots, published
+   precision/recall vs. bandit/ruff/semgrep — the missing third-party evidence
+   named in `docs/comparison.md`.
+3. **Risk-tiered transform catalog** (Tier 0 auto / Tier 1 needs covering
+   tests / Tier 2 proposal-only) so autonomy can grow without diluting safety.
+4. Optional **verifier-gated local-LLM** adapter (Ollama; off by default):
+   LLM proposes, the deterministic pipeline validates/tests/rolls back.
+5. **Coverage** — keep raising unit-test coverage of thin areas.
 
 ## Later
 - Plugin marketplace / registry server.
