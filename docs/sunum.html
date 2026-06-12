@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Apex Orchestrator — Sunum</title>
+<style>
+:root{
+  --bg:#070a12; --card:rgba(20,28,48,.6); --line:rgba(80,110,170,.25);
+  --ink:#eaf0ff; --muted:#93a4c8; --dim:#5b6b8c;
+  --blue:#58a6ff; --purple:#bc8cff; --gold:#e3b341; --green:#3fb950; --red:#ff7b72;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;overflow:hidden}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.slide{position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;
+  padding:6vh 9vw;background:
+  radial-gradient(900px 500px at 70% -10%, rgba(88,166,255,.10), transparent 60%),
+  radial-gradient(700px 500px at 10% 110%, rgba(137,87,229,.10), transparent 60%)}
+.slide.on{display:flex}
+.eyebrow{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin-bottom:14px}
+h1{font-size:clamp(34px,5.4vw,64px);letter-spacing:-1.5px;line-height:1.05;font-weight:800}
+h1 .gx{background:linear-gradient(100deg,var(--blue),var(--purple) 55%,#ff9ed8);-webkit-background-clip:text;background-clip:text;color:transparent}
+h2{font-size:clamp(24px,3.4vw,40px);letter-spacing:-.8px;margin-bottom:18px;font-weight:800}
+p.lead{font-size:clamp(15px,1.7vw,20px);color:#c2cee8;max-width:880px;margin-top:16px}
+ul.big{margin:14px 0 0 0;list-style:none;max-width:980px}
+ul.big li{font-size:clamp(14px,1.5vw,18px);color:#c2cee8;padding:7px 0 7px 30px;position:relative}
+ul.big li::before{content:"▸";position:absolute;left:6px;color:var(--purple)}
+ul.big li b{color:var(--ink)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-top:22px;max-width:1100px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+.card h3{font-size:15.5px;margin-bottom:6px}
+.card p{font-size:13px;color:var(--muted);line-height:1.5}
+.card .ico{font-size:20px}
+.kpis{display:flex;gap:12px;flex-wrap:wrap;margin-top:24px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 20px;text-align:center}
+.kpi b{display:block;font-size:clamp(20px,2.6vw,30px)}
+.kpi span{font-size:12px;color:var(--muted)}
+table{border-collapse:collapse;margin-top:20px;font-size:clamp(12px,1.3vw,15px)}
+th,td{padding:8px 16px;border-bottom:1px solid var(--line);text-align:left;color:#c2cee8}
+th{color:var(--muted);font-weight:600;font-size:12.5px;text-transform:uppercase;letter-spacing:.08em}
+td b{color:var(--ink)}
+.term{background:rgba(6,9,17,.85);border:1px solid var(--line);border-radius:12px;
+  padding:16px 20px;font-family:ui-monospace,Menlo,Consolas,monospace;
+  font-size:clamp(11px,1.25vw,14px);line-height:1.7;color:#c9d6f2;margin-top:20px;max-width:980px;overflow-x:auto}
+.term .c{color:var(--dim)} .term .g{color:var(--green)} .term .b{color:var(--blue)}
+.term .y{color:var(--gold)} .term .p{color:var(--purple)}
+.foot{position:fixed;bottom:18px;left:0;right:0;display:flex;justify-content:space-between;
+  padding:0 28px;font-size:12px;color:var(--dim);z-index:5}
+.flow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:26px}
+.step{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;text-align:center;min-width:120px}
+.step b{display:block;font-size:14px}.step span{font-size:11.5px;color:var(--muted)}
+.arr{color:var(--dim);font-size:18px}
+.s1{border-top:3px solid var(--blue)}.s2{border-top:3px solid var(--purple)}
+.s3{border-top:3px solid var(--gold)}.s4{border-top:3px solid var(--green)}.s5{border-top:3px solid var(--red)}
+.tag{display:inline-block;font-size:12px;border:1px solid var(--line);border-radius:999px;
+  padding:4px 12px;color:var(--muted);margin:4px 6px 0 0}
+.center{text-align:center;align-items:center}
+.center ul.big{text-align:left}
+</style>
+</head>
+<body>
+
+<!-- 1 · Kapak -->
+<section class="slide on center">
+  <div class="eyebrow">deterministik · çevrimdışı · LLM'siz çekirdek · Apache-2.0</div>
+  <h1>🧠 Apex Orchestrator</h1>
+  <p class="lead"><b>Fraktal akıl yürüten proje geliştirme asistanı.</b><br/>
+  Kod tabanının sırada ne inşa etmesi gerektiğini akıl yürütür, güvenli olduğunu
+  kanıtlayabildiğini düzeltir ve kanıtını gösterir.</p>
+  <div class="kpis">
+    <div class="kpi"><b>1995</b><span>test, hepsi yeşil</span></div>
+    <div class="kpi"><b>A+ (100)</b><span>öz-not — kalibre edilmiş</span></div>
+    <div class="kpi"><b>0 token</b><span>çekirdek maliyeti</span></div>
+    <div class="kpi"><b>stdlib</b><span>zorunlu bağımlılık yok</span></div>
+  </div>
+</section>
+
+<!-- 2 · Problem -->
+<section class="slide">
+  <h2>Pazarın darboğazı artık üretim değil, <span style="color:var(--gold)">doğrulama</span></h2>
+  <ul class="big">
+    <li>Geliştiricilerin <b>~%82'si</b> AI kod asistanı kullanıyor — ama yalnızca <b>%3'ü</b> üretilen koda yüksek güven duyuyor.</li>
+    <li><b>%66'sı</b> "neredeyse doğru ama sorunlu" kod gördüğünü söylüyor; PR başına olay <b>+%23.5</b>.</li>
+    <li>Şirketler bulut asistanlarını IP/uyum nedeniyle engelliyor; <b>self-hosted</b> talebi büyüyor.</li>
+    <li>Herkes <b>üretim</b> satıyor. Neredeyse hiç kimse <b>kanıt</b> satmıyor.</li>
+  </ul>
+  <p class="lead" style="margin-top:26px"><b>Apex'in cevabı:</b> LLM'ler kodu hızlı yazar.
+  Apex hangisinin güvenli olduğunu <b>kanıtlar</b> — ve sırada ne yapılacağını söyler.</p>
+</section>
+
+<!-- 3 · Tez -->
+<section class="slide">
+  <h2>Tez: Tarayıcı değil, <span class="gx" style="background:linear-gradient(100deg,var(--blue),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent">organizma</span></h2>
+  <div class="flow">
+    <div class="step s1"><b>👁️ Gözler</b><span>9 sinyal sınıfı</span></div>
+    <div class="arr">→</div>
+    <div class="step s2"><b>💡 Beyin</b><span>fraktal fikir ağacı</span></div>
+    <div class="arr">→</div>
+    <div class="step s3"><b>🗺️ Plan</b><span>fazlı yol haritası</span></div>
+    <div class="arr">→</div>
+    <div class="step s4"><b>🤖 Eller</b><span>doğrulanmış düzeltme</span></div>
+    <div class="arr">→</div>
+    <div class="step s5"><b>🧾 Kanıt</b><span>proof-of-fix</span></div>
+  </div>
+  <ul class="big" style="margin-top:26px">
+    <li><b>Deterministik:</b> aynı girdi → aynı çıktı. Güvenmek zorunda değilsin; <b>tekrar oynatabilirsin</b>.</li>
+    <li><b>İzlenebilir:</b> her fikir, onu doğuran somut kod olgusuna atıf yapar.</li>
+    <li><b>Çevrimdışı:</b> kod makineden çıkmaz; CI'da çalıştırma başına maliyet sıfır.</li>
+  </ul>
+</section>
+
+<!-- 4 · Beyin: sinyaller -->
+<section class="slide">
+  <h2>Beyin nelerle besleniyor? — 9 sinyal sınıfı, tek terazi</h2>
+  <div class="grid">
+    <div class="card"><div class="ico">🏛️</div><h3>Statik yapı</h3><p>Hub'lar, import döngüleri, kırılgan modüller, test edilmemiş kod</p></div>
+    <div class="card"><div class="ico">🔥</div><h3>Churn</h3><p>Son commit'lerin en çok dokunduğu modüller — projenin <b>yaşayan</b> yerleri</p></div>
+    <div class="card"><div class="ico">🔗</div><h3>Co-change</h3><p>Aynı commit'te tekrar tekrar değişen çiftler — import'un göstermediği gizli dikiş</p></div>
+    <div class="card"><div class="ico">🚌</div><h3>Bilgi yoğunlaşması</h3><p>%85+ tek-yazarlı modüller — otobüs faktörü riski (DOA araştırması)</p></div>
+    <div class="card"><div class="ico">⏳</div><h3>Debt yaşı</h3><p>git blame ile: 14 aylık FIXME ≠ dünkü TODO</p></div>
+    <div class="card"><div class="ico">🚪</div><h3>Maruziyet</h3><p>Bulgu kaç aydır kodda + entrypoint'ten ulaşılabilir mi (çağrı grafiği)</p></div>
+    <div class="card"><div class="ico">📜</div><h3>Belge vaatleri</h3><p>README'nin işaret ettiği ama var olmayan dosyalar — vaat drift'i</p></div>
+    <div class="card"><div class="ico">🧮</div><h3>Karmaşıklık ×2</h3><p>Dal sayısı + <b>bilişsel karmaşıklık</b> (okuması ne kadar zor — Sonar spec'i, clean-room)</p></div>
+    <div class="card"><div class="ico">📈</div><h3>Eğim (zaman)</h3><p>Yükselen churn × yaşlanan risk = <b>ivmelenen hotspot</b> — Apex orijinali</p></div>
+  </div>
+  <p class="lead" style="margin-top:18px"><b>Büyüklük bonusu:</b> olgudaki ölçülmüş sayı (ay, commit, %) sıralamayı kendisi oynatır — sinyal-özel istisna yok, <code>apex explain</code> formülde gösterir.</p>
+</section>
+
+<!-- 5 · Fraktal -->
+<section class="slide">
+  <h2>Fraktal yapı: zoom her seviyede içerik taşır</h2>
+  <div class="term">
+<span class="b">Harden: app/auth.py</span>                            <span class="c">← mercek (lens)</span>
+  └─ <span class="p">resource limits</span>                             <span class="c">← L1: aspect</span>
+       └─ <span class="p">time and timeout bounds</span>               <span class="c">← L2: alt-kaygı</span>
+            └─ <span class="p">deadline propagation</span>             <span class="c">← L3: hâlâ mühendislik, jenerik değil</span>
+
+  📌 <span class="g">facet kanıtlı:</span> "error handling genuinely weak — line 12"   <span class="c">← doğrulanmış gözlem</span>
+     <span class="y">kanıtsız facet = dürüst hipotez</span> <span class="c">(asla kanıt taklidi yapmaz)</span></div>
+  <ul class="big" style="margin-top:18px">
+    <li><b>Convergence 3 boyutlu:</b> mekân (hangi modül) × mutabakat (kaç bağımsız sinyal) × <b>zaman</b> (kötüye mi gidiyor?)</li>
+    <li>Bütçe kendi kendini fonlar: derin zoom istendiğinde facet payı orantılı büyür.</li>
+    <li>Değer-güdümlü: ağaç, kanıtın olduğu dala doğru sivrilir.</li>
+  </ul>
+</section>
+
+<!-- 6 · Plan -->
+<section class="slide">
+  <h2>Yol haritası akıl yürütmesi — liste değil, sıra</h2>
+  <div class="flow">
+    <div class="step s5"><b>🩹 Stabilize</b><span>önce güvenlik ağı</span></div>
+    <div class="arr">→</div>
+    <div class="step s3"><b>🔒 Secure</b><span>açık yüzeyi kapat</span></div>
+    <div class="arr">→</div>
+    <div class="step s1"><b>🚀 Evolve</b><span>yetenek büyüt</span></div>
+    <div class="arr">→</div>
+    <div class="step s4"><b>✨ Refine</b><span>cilala</span></div>
+  </div>
+  <ul class="big" style="margin-top:24px">
+    <li><b>ROI ölçülüdür:</b> etki = gerçek fan-in + yapısal risk; çaba = ölçülmüş LOC + karmaşıklık.</li>
+    <li><b>Cross-run anlatı:</b> <code>--roadmap --diff</code> yalnız deltayı değil <b>nedenini</b> söyler: <i>"yeni işin kaynağı: churn-hotspot ×2"</i>, <i>"security-finding sinyali artık susuyor"</i>.</li>
+    <li><b>İş emri (<code>apex brief</code>):</b> tasarım fikri → ölçülmüş bağlam + fraktal kontrol listesi + <b>bitti-tanımını motorun kendisi doğrular</b> (fikir bir sonraki diff'te kaybolmalı).</li>
+  </ul>
+</section>
+
+<!-- 7 · Eller -->
+<section class="slide">
+  <h2>Eller: kumar yok — kanıtlı otonomi</h2>
+  <div class="grid">
+    <div class="card"><div class="ico">🎚️</div><h3>Risk katmanları</h3><p><b>Tier 0</b> anlam-koruyan → otomatik · <b>Tier 1</b> davranışa-bitişik → kapsam şart · <b>Tier 2</b> tasarım → yalnız öneri. Bilinmeyen = Tier 1: güven <i>kazanılır</i>.</p></div>
+    <div class="card"><div class="ico">🛡️</div><h3>Test-first kalkan</h3><p>Hiçbir testin bakmadığı modüle düzeltme mi? Önce karakterizasyon testi üretilir, düzeltme onun korumasında yapılır.</p></div>
+    <div class="card"><div class="ico">💪</div><h3>Doğrulama gücü</h3><p>Yeşil süit ne kanıtladı? <b>function</b> / module / none — "kör uygulandı" asla gizlenmez, ⚠️ ile söylenir.</p></div>
+    <div class="card"><div class="ico">🧾</div><h3>Proof-of-Fix</h3><p>Her düzeltme: atıf yapılan bulgu + birebir diff + koşan testler + kalan testlerin adları + rollback kaydı. <b>Denetlenebilir.</b></p></div>
+    <div class="card"><div class="ico">♻️</div><h3>Refactor ailesi</h3><p><code>apex rename</code> (sembol + parametre) ve <code>apex move</code>: tüm projede import/çağrı yeniden yazımı, yorum-koruyan, belirsizlikte <b>blokaj</b>.</p></div>
+    <div class="card"><div class="ico">↩️</div><h3>Otomatik rollback</h3><p>Süit kırılırsa her şey geri alınır — bakım koşusu projeyi <b>asla bozuk bırakamaz</b>.</p></div>
+  </div>
+</section>
+
+<!-- 8 · Kanıt -->
+<section class="slide">
+  <h2>İddia değil, kanıt</h2>
+  <table>
+    <tr><th>Depo (sabitlenmiş SHA)</th><th>Not</th><th>Güvenlik</th><th>Test</th></tr>
+    <tr><td>click</td><td><b>A+ (97)</b></td><td>−0</td><td>−0</td></tr>
+    <tr><td>attrs</td><td><b>A (94)</b></td><td>−4</td><td>−2</td></tr>
+    <tr><td>jinja</td><td><b>B+ (89)</b></td><td>−10</td><td>−1</td></tr>
+    <tr><td>httpx</td><td><b>B− (81)</b></td><td>−14</td><td>−5</td></tr>
+  </table>
+  <ul class="big" style="margin-top:22px">
+    <li><b><code>apex bench</code>:</b> aynı rubrik, gerçek kod tabanlarında — not <b>ayrıştırıyor</b>, öz-not kalibre. Herkes aynı SHA'lardan birebir tekrar üretir.</li>
+    <li><b>Gecelik dogfood CI:</b> Apex her gece kendi deposuna bakım yapar, kanıtı artifact olarak yayınlar.</li>
+    <li><b>Kendi üzerinde bulduğu gerçek hatalar:</b> yanlış varsayılan kök, env sızıntısı, dunder stub — üçü de dogfood'la yakalandı ve kapatıldı.</li>
+    <li>Dürüstlük ilkesi: precision/recall iddiası yok — gerçek depolarda etiket yok, <b>bunu açıkça söylüyoruz</b>.</li>
+  </ul>
+</section>
+
+<!-- 9 · Rakip haritası -->
+<section class="slide">
+  <h2>Harita: her komşuda bir organ var, organizmada hiçbiri</h2>
+  <table>
+    <tr><th>Katman</th><th>Oyuncular</th><th>Sattığı</th></tr>
+    <tr><td>Editör copilot'ları</td><td>Cursor, Copilot</td><td>üretim hızı</td></tr>
+    <tr><td>Otonom görev ajanları</td><td>Devin, Sweep</td><td>"ticket'ımı yap" (~%30-50 isabet)</td></tr>
+    <tr><td>Kalite/analiz</td><td>SonarQube, CodeScene</td><td>bulgular &amp; metrikler</td></tr>
+    <tr><td>Deterministik yürütme</td><td>OpenRewrite</td><td>recipe'lerle kitlesel refactor (Java)</td></tr>
+    <tr><td><b>Hepsi birden</b></td><td><b>— yalnız Apex —</b></td><td><b>fikir muhakemesi + doğrulanmış yürütme + cross-run anlatı</b></td></tr>
+  </table>
+  <p class="lead" style="margin-top:20px">Güvenlik <b>entegre artı:</b> detektörler + Secure fazı + SARIF + maruziyet analizi —
+  ayrı tarayıcı gerekmez. Manşet değil, motorun yakıtı.</p>
+</section>
+
+<!-- 10 · Kullanım -->
+<section class="slide">
+  <h2>Tek komut yeter — gerisi istediğinde</h2>
+  <div class="term">
+<span class="c">$</span> <span class="g">pip</span> install apex-orchestrator
+<span class="c">$</span> <span class="g">apex</span>                          <span class="c"># değerlendir, önceliklendir, güvenliyse uygula</span>
+
+<span class="c">$</span> <span class="g">apex</span> ideate --roadmap --diff   <span class="c"># sırada ne var + geçen koşudan ne değişti, neden</span>
+<span class="c">$</span> <span class="g">apex</span> brief                     <span class="c"># en değerli tasarım fikri → iş emri</span>
+<span class="c">$</span> <span class="g">apex</span> maintain                  <span class="c"># korumalı otonom bakım + proof-of-fix.json</span>
+<span class="c">$</span> <span class="g">apex</span> rename old new            <span class="c"># proje-genelinde güvenli yeniden adlandırma</span>
+<span class="c">$</span> <span class="g">apex</span> grade · bench · dashboard <span class="c"># not · kalibrasyon · tek-dosya HTML panel</span></div>
+  <div style="margin-top:18px">
+    <span class="tag">GitHub Action: PR kapısı</span><span class="tag">SARIF → code scanning</span>
+    <span class="tag">MCP server</span><span class="tag">plugin sistemi</span><span class="tag">air-gap dostu</span>
+  </div>
+</section>
+
+<!-- 11 · Kapanış -->
+<section class="slide center">
+  <div class="eyebrow">yol haritası: kanıt-eriyen brifler · promise ledger · recipe kompozisyonu · çok-dil yolu</div>
+  <h1>LLM'ler kod yazar.<br/><span class="gx">Apex neyi, neden ve kanıtıyla geliştirir.</span></h1>
+  <p class="lead" style="margin:26px auto 0">mert544.github.io/Apex-orchestrator · pip install apex-orchestrator · Apache-2.0</p>
+</section>
+
+<div class="foot"><span>Apex Orchestrator — 2026-06</span><span id="pg"></span><span>← → tuşlarıyla gezin</span></div>
+
+<script>
+const slides=[...document.querySelectorAll('.slide')];let i=0;
+function show(n){slides[i].classList.remove('on');i=(n+slides.length)%slides.length;
+  slides[i].classList.add('on');document.getElementById('pg').textContent=(i+1)+' / '+slides.length;}
+addEventListener('keydown',e=>{if(['ArrowRight','PageDown',' '].includes(e.key))show(i+1);
+  if(['ArrowLeft','PageUp'].includes(e.key))show(i-1);});
+addEventListener('click',e=>{if(e.clientX>innerWidth/2)show(i+1);else show(i-1);});
+show(0);
+</script>
+</body>
+</html>
