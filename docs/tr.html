@@ -106,10 +106,10 @@ footer a{color:var(--muted)}
   <div class="wrap">
     <span class="eyebrow">deterministik · çevrimdışı · LLM yok</span>
     <h1>Kod hakkında <span class="gx">akıl yürüten</span><br/>mühendislik ajanı</h1>
-    <p class="tag">Apex projeni tarar, gerekçeli bir yol haritası önerir ve <b>test-doğrulamalı düzeltmeler</b> uygular — çekirdeği deterministik bir akıl-yürütme motoru, yani ücretsiz çalışır, CI'da tekrar üretilebilir ve kodun makineden hiç çıkmaz.</p>
+    <p class="tag">Apex bir <b>proje geliştirme asistanı</b>: kod tabanının <b>sırada ne inşa etmesi gerektiğini</b> akıl yürütür — gerekçeli fikirlerden fraktal bir ağaç, yol haritasına dizilmiş — ve <b>test-doğrulamalı düzeltmeler</b> uygular. Çekirdeği deterministik, yani ücretsiz çalışır, CI'da tekrar üretilebilir ve kodun makineden hiç çıkmaz.</p>
     <div class="badges">
       <span class="badge grade">🏆 öz-not <b>A+ (100)</b></span>
-      <span class="badge">✅ <b>1850+</b> test</span>
+      <span class="badge">✅ <b>1880+</b> test</span>
       <span class="badge">🔌 <b>sıfır</b> API anahtarı</span>
       <span class="badge">⚖️ Apache-2.0</span>
     </div>
@@ -123,7 +123,7 @@ footer a{color:var(--muted)}
       <a class="btn ghost" href="https://github.com/Mert544/Apex-orchestrator">⭐ GitHub'da yıldızla</a>
     </div>
     <div class="pipe">
-      <div class="stage s1"><div class="ico">👁️</div><b>Tara</b><span>güvenlik · döngüler · kapsam</span></div>
+      <div class="stage s1"><div class="ico">👁️</div><b>Tara</b><span>yapı · churn · kapsam</span></div>
       <div class="arrow">→</div>
       <div class="stage s2"><div class="ico">💡</div><b>Fikir Üret</b><span>gerekçeli fikir ağacı</span></div>
       <div class="arrow">→</div>
@@ -142,10 +142,11 @@ footer a{color:var(--muted)}
   <h2>Neden Apex?</h2>
   <p class="sub">LLM tabanlı araçlar her PR'da para yakar ve her çalışmada farklı cevap verir. Apex'in çekirdeği <b>deterministik bir akıl-yürütme motoru</b> — sonsuza dek ücretsiz, tekrar üretilebilir, gizli.</p>
   <div class="grid" data-tilt>
-    <div class="card"><div class="ico">🔒</div><h3>Önemli olanı bulur</h3><p>Tek kanonik AST detektörü: <code>eval</code>/<code>exec</code>, shell &amp; SQL enjeksiyonu, güvensiz pickle/yaml, zayıf hash'ler, yutulan istisnalar, <code>x is 5</code> gibi mantık hataları — satır içi <code>#&nbsp;noqa</code>/<code>#&nbsp;nosec</code>'e saygılı.</p></div>
-    <div class="card"><div class="ico">🧪</div><h3>Düzeltmeler kanıtlı</h3><p>Her otomatik düzeltme bir sandbox'ta uygulanır, <b>test paketinle doğrulanır</b> ve bir şey bozulursa otomatik geri alınır.</p></div>
     <div class="card"><div class="ico">💡</div><h3>Sorun değil, fikir</h3><p>Idea Permutation Engine <i>nasıl geliştirileceğini</i> önerir — <b>fonksiyon</b> düzeyine kadar: "<code>_expand()</code> için davranışsal test yaz, karmaşıklık 23, hiçbir testin anmadığı".</p></div>
+    <div class="card"><div class="ico">🔬</div><h3>Fraktal mikroskop</h3><p>Zoom üç seviye boyunca içerik taşır — <code>harden → kaynak limitleri → timeout sınırları → deadline yayılımı</code> — ve her facet ya <b>satır düzeyinde kanıt</b> gösterir (📌 doğrulanmış) ya da dürüst bir hipotez olarak kalır.</p></div>
+    <div class="card"><div class="ico">🧪</div><h3>Düzeltmeler kanıtlı</h3><p>Her otomatik düzeltme bir sandbox'ta uygulanır, <b>test paketinle doğrulanır</b>, bozulursa geri alınır — ve denetleyebileceğin bir <b>proof-of-fix kanıt kaydına</b> (diff, koşan testler, süreler) yazılır.</p></div>
     <div class="card"><div class="ico">🎓</div><h3>Tek dürüst not</h3><p>Güvenlik · Mimari · Test · Kod borcu · Doğruluk — şiddet-ağırlıklı, fixture-farkında ve sığ stub testler yalnızca yarım kredi alır. Bir A+ taklit edilemez.</p></div>
+    <div class="card"><div class="ico">🔒</div><h3>Güvenlik yerleşik</h3><p>Kanonik AST detektörü (<code>eval</code>, shell &amp; SQL enjeksiyonu, güvensiz pickle/yaml, zayıf hash'ler, sırlar…) aynı fikir ağacını ve <b>Secure</b> fazını besler — GitHub code scanning için <b>SARIF dışa aktarımıyla</b>. Geliştirme asistanın güvenlik temellerini de kapsar; ayrı bir tarayıcıya gerek yok.</p></div>
   </div>
 </section>
 
@@ -153,7 +154,7 @@ footer a{color:var(--muted)}
   <h2>Ana fikir: ilişkiler hakkında akıl yürütür</h2>
   <p class="sub">Bir linter sana ayrı uyarılar verir. Apex sorunların nerede <b>birleştiğini</b> ve nereye <b>yayıldığını</b> görür — bir linter'dan ayıran şey budur.</p>
   <div class="grid" data-tilt>
-    <div class="card"><div class="ico">🎯</div><h3>Convergence (dikey)</h3><p>Birden çok bağımsız analiz <i>aynı</i> modülü işaretlediğinde — <code>auth.py</code> hem güvenlik-hassas hem hotspot hem test edilmemiş — Apex bunu tek bir <b>en yüksek-kaldıraçlı hedef</b> olarak çıkarıp fazlı bir mini yol haritasına açar.</p></div>
+    <div class="card"><div class="ico">🎯</div><h3>Convergence (dikey)</h3><p>Birden çok bağımsız analiz <i>aynı</i> modülü işaretlediğinde — <b>high-churn</b> dahil: son commit'lerin en çok dokunduğu karmaşık kod (klasik <i>değişim × karmaşıklık</i> hotspot'u) — Apex bunu tek bir <b>en yüksek-kaldıraçlı hedef</b> olarak çıkarıp fazlı bir mini yol haritasına açar.</p></div>
     <div class="card"><div class="ico">🌐</div><h3>Tema (yatay)</h3><p>Tek bir sinyal <i>birçok</i> modülü etkilediğinde — 6 test edilmemiş dosya — Apex onu dağınık 6 angarya değil, etkilenen tüm seti adlandıran tek bir <b>sistemik girişim</b> olarak sunar.</p></div>
     <div class="card"><div class="ico">🪜</div><h3>Fazlı yol haritası</h3><p><b>Stabilize → Secure → Evolve → Refine</b>: riskli kodu değiştirmeden önce güvenlik ağı, açığı kapat, sonra geliştir, en son cilala — etki/çaba/ROI ölçülmüş yapıya dayalı.</p></div>
     <div class="card"><div class="ico">🧬</div><h3>Zamanla akıllanır</h3><p>Her düzeltmede hangi fikir türünün temiz oturduğunu kaydeder ve <b>senin kod tabanında</b> iyi sicili olan merceklere doğru sınırlı bir eğilim verir — determinizmi asla bozmadan.</p></div>
@@ -168,13 +169,16 @@ footer a{color:var(--muted)}
     <pre>
 <span class="c">$</span> <span class="g">apex</span> ideate --target=. --depth=2
 
-<span class="b">## x.c0 — app/auth.py'yi önceliklendir — 3 bağımsız analiz birleşiyor</span>
-<span class="b">        (güvenlik-hassas, karmaşıklık-merkezi ve test edilmemiş)</span>
-   <span class="p">1. [Stabilize] ⚙️ Önce bir güvenlik ağı testi ekle</span>
-   <span class="p">2. [Secure]    ⚙️ Girdileri sertleştir, riskli kalıpları düzelt</span>
+<span class="b">## x.c0 — app/engine/detectors.py'yi önceliklendir — 2 bağımsız analiz birleşiyor</span>
+<span class="b">        (karmaşıklık hotspot'u ve high-churn)</span>
+   <span class="p">1. [Stabilize] ⚙️ Değiştirmeden önce karmaşık dalları testle kapla</span>
+   <span class="p">2. [Evolve]    Değişim yolunu pürüzsüzleştir — sık değişim ucuz kalsın</span>
 
 <span class="b">## x.t0 — 6 modülde temel test kapsamı oluştur</span>
    <span class="c">tema: coverage-theme (6 modül) — dağınık değil, tek sistemik geçiş</span>
+
+<span class="c">$</span> <span class="g">apex</span> ideate --roadmap --diff
+<span class="y">**Yeni işin kaynağı:** convergence ×3, churn-hotspot</span>
 
 <span class="c">$</span> <span class="g">apex</span> grade
 <span class="p"># Proje sağlığı: 🏆 A+  (100/100)</span>

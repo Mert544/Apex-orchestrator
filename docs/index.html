@@ -113,10 +113,10 @@ footer a{color:var(--muted)}
   <div class="wrap">
     <span class="eyebrow">deterministic · offline · no LLM</span>
     <h1>The engineering agent<br/>that <span class="gx">reasons</span> about code</h1>
-    <p class="tag">Apex scans your project, proposes a grounded roadmap, and applies <b>test-verified fixes</b> — its core is a deterministic reasoning engine, so it's free to run, reproducible in CI, and your code never leaves the machine.</p>
+    <p class="tag">Apex is a <b>project-development assistant</b>: it reasons about <b>what your codebase should build next</b> — a fractal tree of grounded ideas, sequenced into a roadmap — and applies <b>test-verified fixes</b>. Deterministic core, so it's free to run, reproducible in CI, and your code never leaves the machine.</p>
     <div class="badges">
       <span class="badge grade">🏆 self-grade <b>A+ (100)</b></span>
-      <span class="badge">✅ <b>1850+</b> tests</span>
+      <span class="badge">✅ <b>1880+</b> tests</span>
       <span class="badge">🔌 <b>zero</b> API keys</span>
       <span class="badge">⚖️ Apache-2.0</span>
     </div>
@@ -130,7 +130,7 @@ footer a{color:var(--muted)}
       <a class="btn ghost" href="https://github.com/Mert544/Apex-orchestrator">⭐ Star on GitHub</a>
     </div>
     <div class="pipe">
-      <div class="stage s1"><div class="ico">👁️</div><b>Scan</b><span>security · cycles · coverage</span></div>
+      <div class="stage s1"><div class="ico">👁️</div><b>Scan</b><span>structure · churn · coverage</span></div>
       <div class="arrow">→</div>
       <div class="stage s2"><div class="ico">💡</div><b>Ideate</b><span>grounded idea tree</span></div>
       <div class="arrow">→</div>
@@ -149,10 +149,11 @@ footer a{color:var(--muted)}
   <h2>Why Apex?</h2>
   <p class="sub">LLM review tools cost money on every PR and answer differently every run. Apex's core is a <b>deterministic reasoning engine</b> — free forever, reproducible, private.</p>
   <div class="grid" data-tilt>
-    <div class="card"><div class="ico">🔒</div><h3>Finds what matters</h3><p>One canonical AST detector: <code>eval</code>/<code>exec</code>, shell &amp; SQL injection, unsafe pickle/yaml, weak hashes, swallowed exceptions, logic bugs like <code>x is 5</code> — respecting inline <code>#&nbsp;noqa</code>/<code>#&nbsp;nosec</code>.</p></div>
-    <div class="card"><div class="ico">🧪</div><h3>Fixes are proven</h3><p>Every auto-fix is applied in a sandbox, <b>verified against your test suite</b>, and rolled back automatically if anything breaks.</p></div>
     <div class="card"><div class="ico">💡</div><h3>Ideas, not just issues</h3><p>The Idea Permutation Engine proposes <i>how to develop</i> the project — down to the <b>function</b>: “write behavioral tests for <code>_expand()</code>, complexity 23, never named by a test”.</p></div>
+    <div class="card"><div class="ico">🔬</div><h3>A fractal microscope</h3><p>The zoom stays content-aware for three levels — <code>harden → resource limits → timeout bounds → deadline propagation</code> — and each facet either cites <b>line-level evidence</b> (📌 verified) or stays an honest hypothesis.</p></div>
+    <div class="card"><div class="ico">🧪</div><h3>Fixes are proven</h3><p>Every auto-fix is applied in a sandbox, <b>verified against your test suite</b>, rolled back if anything breaks — and recorded in a <b>proof-of-fix evidence artifact</b> (diff, tests run, durations) you can audit.</p></div>
     <div class="card"><div class="ico">🎓</div><h3>One honest grade</h3><p>Security · Architecture · Testing · Code debt · Correctness — severity-weighted, fixture-aware, and shallow stub tests get only half credit. An A+ can't be faked.</p></div>
+    <div class="card"><div class="ico">🔒</div><h3>Security built in</h3><p>A canonical AST detector (<code>eval</code>, shell &amp; SQL injection, unsafe pickle/yaml, weak hashes, secrets…) feeds the same idea tree and the <b>Secure</b> phase — with <b>SARIF export</b> for GitHub code scanning. Your development assistant covers the security basics too; no separate scanner needed.</p></div>
   </div>
 </section>
 
@@ -160,7 +161,7 @@ footer a{color:var(--muted)}
   <h2>The main idea: it reasons about relationships</h2>
   <p class="sub">A linter hands you separate warnings. Apex sees where problems <b>converge</b> and where they <b>spread</b> — that's the difference between a linter and a brain.</p>
   <div class="grid" data-tilt>
-    <div class="card"><div class="ico">🎯</div><h3>Convergence (vertical)</h3><p>When several independent analyses flag the <i>same</i> module — <code>auth.py</code> is security-sensitive <b>and</b> a hotspot <b>and</b> untested — Apex emits one <b>highest-leverage target</b> and opens it into a phased mini-roadmap.</p></div>
+    <div class="card"><div class="ico">🎯</div><h3>Convergence (vertical)</h3><p>When several independent analyses flag the <i>same</i> module — including <b>high-churn</b>, so complex code that recent commits touch most (the classic <i>change × complexity</i> hotspot) — Apex emits one <b>highest-leverage target</b> and opens it into a phased mini-roadmap.</p></div>
     <div class="card"><div class="ico">🌐</div><h3>Theme (horizontal)</h3><p>When one signal spans <i>many</i> modules — 6 untested files — Apex names it once as a <b>systemic initiative</b> listing the whole affected set, not 6 scattered chores.</p></div>
     <div class="card"><div class="ico">🪜</div><h3>Phased roadmap</h3><p><b>Stabilize → Secure → Evolve → Refine</b>: a safety net before you change risky code, secure what's exposed, then grow, then polish — impact/effort/ROI grounded in measured structure.</p></div>
     <div class="card"><div class="ico">🧬</div><h3>It gets wiser</h3><p>Each applied fix records which idea kinds land cleanly, nudging future scoring toward the lenses with a track record <b>on your codebase</b> — without ever breaking determinism.</p></div>
@@ -175,13 +176,16 @@ footer a{color:var(--muted)}
     <pre>
 <span class="c">$</span> <span class="g">apex</span> ideate --target=. --depth=2
 
-<span class="b">## x.c0 — Prioritize app/auth.py — 3 independent analyses converge</span>
-<span class="b">        (security-sensitive, a complexity hotspot and untested)</span>
-   <span class="p">1. [Stabilize] ⚙️ Add a safety-net test layer first</span>
-   <span class="p">2. [Secure]    ⚙️ Harden inputs and fix risky patterns</span>
+<span class="b">## x.c0 — Prioritize app/engine/detectors.py — 2 independent analyses converge</span>
+<span class="b">        (a complexity hotspot and high-churn)</span>
+   <span class="p">1. [Stabilize] ⚙️ Cover the complex branches before changing them</span>
+   <span class="p">2. [Evolve]    Smooth the change path so frequent change stays cheap</span>
 
 <span class="b">## x.t0 — Establish baseline test coverage across 6 modules</span>
    <span class="c">theme: coverage-theme (6 modules) — one systemic pass, not scattered fixes</span>
+
+<span class="c">$</span> <span class="g">apex</span> ideate --roadmap --diff
+<span class="y">**Where the new work comes from:** convergence ×3, churn-hotspot</span>
 
 <span class="c">$</span> <span class="g">apex</span> grade
 <span class="p"># Project health: 🏆 A+  (100/100)</span>

@@ -98,6 +98,10 @@ features lead the roadmap. Practical rules:
   detector.
 - Marketing language says "engineering agent / development assistant"; "scanner"
   and "vulnerability finder" describe a component, never the identity.
+- The integrated security layer **is** a differentiator — pitched as "your
+  development assistant covers the security basics too (detectors, Secure
+  phase, SARIF), no separate scanner needed" — i.e. a plus *inside* the
+  development-assistant story, never a competing headline.
 
 ---
 

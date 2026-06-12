@@ -5,7 +5,7 @@
 ### A deterministic engineering agent that *reasons* about your codebase — and helps you act on it.
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-1850%2B%20passing-2ea44f)]()
+[![Tests](https://img.shields.io/badge/tests-1880%2B%20passing-2ea44f)]()
 [![Health grade](https://img.shields.io/badge/apex%20grade-A%2B%20(100)-2ea44f)]()
 [![No LLM required](https://img.shields.io/badge/LLM-optional%20·%20offline%20core-8957e5)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-24292f)](LICENSE)
@@ -93,7 +93,7 @@ The grade rolls these into five components — **Security · Architecture · Tes
 python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -e .[dev]
 
-# Verify (1850+ tests, fully offline)
+# Verify (1880+ tests, fully offline)
 pytest -q
 ```
 
@@ -141,7 +141,7 @@ Apex doesn't only *analyze* code — it proposes **how to develop it**. The **Id
 
 ```mermaid
 flowchart TD
-    R["📦 your codebase"] --> F["grounded facts<br/>(hubs · risks · untested<br/>functions · debt)"]
+    R["📦 your codebase"] --> F["grounded facts<br/>(hubs · churn · risks ·<br/>untested functions · debt)"]
     F --> S1["🌱 root idea<br/>app/auth.py"]
     F --> S2["🌱 root idea<br/>parser.py::tokenize()"]
     S1 --> L1["🛡️ harden"]
@@ -163,9 +163,9 @@ apex explain x.a.c --target=.                      # why does this idea score wh
 apex ideate --target=. --pareto                   # the efficient frontier (non-dominated only)
 ```
 
-Every idea is **traceable to a concrete project fact**, scored by relevance × novelty × feasibility, and stress‑tested with **caveats that name the actual code** — including down to the *function*: Apex finds the heaviest‑branching functions no test ever names and asks for behavioral tests on *them*, not just the file.
+Every idea is **traceable to a concrete project fact**, scored by relevance × novelty × feasibility, and stress‑tested with **caveats that name the actual code** — including down to the *function*: Apex finds the heaviest‑branching functions no test ever names and asks for behavioral tests on *them*, not just the file. The fact base goes beyond static structure: a **git‑churn signal** ranks the modules recent commits touch most, so the engine reasons about where the project is *alive*, not only where it is risky. And the **fractal zoom** stays content‑aware for three levels — `harden → resource limits → time and timeout bounds → deadline propagation` — with each facet either citing line‑level evidence (a 📌 *verified observation*) or honestly labeled a hypothesis.
 
-> **It reasons about where problems converge.** When several independent analyses flag the *same* module — `app/auth.py` is security‑sensitive **and** a complexity hotspot **and** untested — Apex doesn't list three separate items. It emits one **convergence** idea that names the agreement, ranks it the highest‑leverage target, and **auto‑expands it into a phased mini‑roadmap** — *Stabilize* (add the safety‑net tests) **before** *Secure* (harden the risky code), because you don't change what you can't re‑verify. Each step is executable where a deterministic fix exists. That's the difference between a linter and a brain.
+> **It reasons about where problems converge.** When several independent analyses flag the *same* module — `app/auth.py` is security‑sensitive **and** a complexity hotspot **and** untested — Apex doesn't list three separate items. It emits one **convergence** idea that names the agreement, ranks it the highest‑leverage target, and **auto‑expands it into a phased mini‑roadmap** — *Stabilize* (add the safety‑net tests) **before** *Secure* (harden the risky code), because you don't change what you can't re‑verify. The dimensions include **high‑churn**, so the classic *change × complexity* hotspot — complex code that recent commits touch most — surfaces as the strongest refactoring mandate. Each step is executable where a deterministic fix exists. That's the difference between a linter and a brain.
 
 <details>
 <summary><b>🧠 It gets wiser over time</b></summary>
@@ -200,7 +200,7 @@ flowchart LR
 ```bash
 apex ideate --target=. --roadmap                                  # the phased plan
 apex ideate --target=. --roadmap --save                          # snapshot today's roadmap
-apex ideate --target=. --roadmap --diff                          # what's new / resolved / shifted?
+apex ideate --target=. --roadmap --diff   # what's new / resolved / shifted — and WHICH SIGNAL caused it
 apex ideate --target=. --roadmap --actions --phase=Secure --apply --verify
 ```
 
@@ -214,6 +214,20 @@ apex ideate --target=. --roadmap --actions --phase=Secure --apply --verify
 ## Phase 1: Stabilize — Build a safety net before changing risky code
 - x.a.c  Test: app/engine/debug_engine.py    (ROI 2.41 · imported by 6 · 330 LOC)
 - x.c    Reduce fragility of claim_analyzer.py (ROI 1.86 · imported by 4 · 50 LOC)
+```
+
+The cross‑run diff doesn't just count the delta — it **narrates why the roadmap changed**: which signal produced each new idea, and which signal stopped firing for the resolved ones.
+
+```text
+# Roadmap Changes Since Last Run
+4 new · 2 no longer surfaced · 36 stable
+
+**Where the new work comes from:** `convergence` ×3, `churn-hotspot`
+**Signals that stopped firing:** `security-finding`
+
+## 🆕 New ideas
+- [Stabilize] Prioritize app/engine/detectors.py — 2 independent analyses converge
+  (a complexity hotspot and high-churn)  (ROI 1.69) — grounded in `convergence: a complexity hotspot+high-churn`
 ```
 
 ---
