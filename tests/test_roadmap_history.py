@@ -117,3 +117,61 @@ def test_end_to_end_save_then_diff_via_engine(tmp_path):
     rm2 = RoadmapSynthesizer().build(rep2)
     diff = diff_roadmaps(load_snapshot(path), rm2)
     assert any("feature.py" in c.title for c in diff.new)
+
+
+def _grounded_item(title, phase, roi, fact, subject="app/x.py"):
+    it = _item(title, phase, roi, subject=subject)
+    it.source_facts = [fact]
+    return it
+
+
+def test_diff_carries_provenance_for_new_and_dropped(tmp_path):
+    prev = _roadmap({"Secure": [_grounded_item(
+        "Harden: app/a.py", "Secure", 5.0, "security-finding: app/a.py (eval detected)")]})
+    path = tmp_path / "snap.json"
+    snapshot_roadmap(prev, path)
+    previous = load_snapshot(path)
+
+    curr = _roadmap({"Evolve": [_grounded_item(
+        "Smooth the change path of app/b.py", "Evolve", 3.0,
+        "churn-hotspot: app/b.py (12 commits in recent history)")]})
+    diff = diff_roadmaps(previous, curr)
+    assert diff.new[0].grounded_in.startswith("churn-hotspot:")
+    assert diff.new[0].signal == "churn-hotspot"
+    assert diff.dropped[0].signal == "security-finding"
+
+
+def test_render_diff_narrates_signals(tmp_path):
+    prev = _roadmap({"Secure": [_grounded_item(
+        "Harden: app/a.py", "Secure", 5.0, "security-finding: app/a.py (eval detected)")]})
+    path = tmp_path / "snap.json"
+    snapshot_roadmap(prev, path)
+    previous = load_snapshot(path)
+
+    curr = _roadmap({"Evolve": [
+        _grounded_item("Smooth the change path of app/b.py", "Evolve", 3.0,
+                       "churn-hotspot: app/b.py (12 commits in recent history)",
+                       subject="app/b.py"),
+        _grounded_item("Smooth the change path of app/c.py", "Evolve", 2.0,
+                       "churn-hotspot: app/c.py (8 commits in recent history)",
+                       subject="app/c.py"),
+    ]})
+    md = render_diff_markdown(diff_roadmaps(previous, curr))
+    assert "Where the new work comes from:" in md
+    assert "`churn-hotspot` ×2" in md
+    assert "Signals that stopped firing:" in md and "`security-finding`" in md
+    assert "grounded in `churn-hotspot: app/b.py" in md
+    assert "its `security-finding` signal no longer fires" in md
+
+
+def test_diff_tolerates_legacy_snapshot_without_provenance(tmp_path):
+    # Snapshots written before grounded_in existed must still diff cleanly.
+    import json
+    legacy = {"generated": "2026-01-01", "items": [
+        {"title": "Old idea", "subject": "app/o.py", "phase": "Refine", "roi": 1.0}]}
+    curr = _roadmap({"Stabilize": [_item("Test: app/n.py", "Stabilize", 4.0)]})
+    diff = diff_roadmaps(legacy, curr)
+    assert diff.dropped[0].grounded_in == ""
+    md = render_diff_markdown(diff)
+    assert "Old idea" in md and "no longer fires" not in md
+    json.dumps(diff.to_dict())  # round-trippable

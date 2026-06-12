@@ -33,6 +33,12 @@ class RoadmapChange:
     prev_roi: float = 0.0
     curr_roi: float = 0.0
     roi_delta: float = 0.0
+    grounded_in: str = ""     # the seeding fact behind the idea ("churn-hotspot: …")
+
+    @property
+    def signal(self) -> str:
+        """The fact label alone ("churn-hotspot"), for grouping by signal."""
+        return self.grounded_in.split(":", 1)[0].strip()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -72,6 +78,9 @@ def _flatten(roadmap) -> dict[str, dict[str, Any]]:
                 "roi": item.roi,
                 "impact": item.impact,
                 "effort": item.effort,
+                # Provenance travels with the snapshot so a later diff can say
+                # *why* an idea appeared or stopped surfacing, not just that it did.
+                "grounded_in": (item.source_facts[0] if item.source_facts else ""),
             }
     return out
 
@@ -121,6 +130,7 @@ def diff_roadmaps(previous: dict[str, Any], current) -> RoadmapDiff:
             diff.new.append(RoadmapChange(
                 title=title, subject=cur["subject"], status="new",
                 curr_phase=cur["phase"], curr_roi=cur["roi"],
+                grounded_in=cur.get("grounded_in", ""),
             ))
             continue
         prev = prev_items[title]
@@ -147,8 +157,25 @@ def diff_roadmaps(previous: dict[str, Any], current) -> RoadmapDiff:
             diff.dropped.append(RoadmapChange(
                 title=title, subject=prev.get("subject", ""), status="dropped",
                 prev_phase=prev.get("phase", ""), prev_roi=prev.get("roi", 0.0),
+                grounded_in=prev.get("grounded_in", ""),
             ))
     return diff
+
+
+def _count_signals(changes: list[RoadmapChange]) -> list[tuple[str, int]]:
+    """Distinct fact labels among ``changes`` with counts, most frequent first
+    (ties alphabetical — deterministic)."""
+    counts: dict[str, int] = {}
+    for c in changes:
+        if c.signal:
+            counts[c.signal] = counts.get(c.signal, 0) + 1
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def _signal_phrase(signals: list[tuple[str, int]]) -> str:
+    return ", ".join(
+        f"`{label}` ×{n}" if n > 1 else f"`{label}`" for label, n in signals
+    )
 
 
 def render_diff_markdown(diff: RoadmapDiff) -> str:
@@ -163,6 +190,17 @@ def render_diff_markdown(diff: RoadmapDiff) -> str:
     )
     lines.append("")
 
+    # Narrate *why* the roadmap changed: which signals produced the new work,
+    # and which stopped firing — the cross-run story, not just the delta.
+    new_signals = _count_signals(diff.new)
+    gone_signals = _count_signals(diff.dropped)
+    if new_signals:
+        lines.append(f"**Where the new work comes from:** {_signal_phrase(new_signals)}")
+    if gone_signals:
+        lines.append(f"**Signals that stopped firing:** {_signal_phrase(gone_signals)}")
+    if new_signals or gone_signals:
+        lines.append("")
+
     def _section(title: str, items: list[RoadmapChange], fmt) -> None:
         if not items:
             return
@@ -171,10 +209,16 @@ def render_diff_markdown(diff: RoadmapDiff) -> str:
             lines.append(f"- {fmt(c)}")
         lines.append("")
 
-    _section("🆕 New ideas", diff.new,
-             lambda c: f"[{c.curr_phase}] {c.title}  (ROI {c.curr_roi})")
-    _section("✅ No longer surfaced (likely addressed)", diff.dropped,
-             lambda c: f"[{c.prev_phase}] {c.title}  (was ROI {c.prev_roi})")
+    def _new_line(c: RoadmapChange) -> str:
+        base = f"[{c.curr_phase}] {c.title}  (ROI {c.curr_roi})"
+        return f"{base} — grounded in `{c.grounded_in}`" if c.grounded_in else base
+
+    def _dropped_line(c: RoadmapChange) -> str:
+        base = f"[{c.prev_phase}] {c.title}  (was ROI {c.prev_roi})"
+        return f"{base} — its `{c.signal}` signal no longer fires" if c.signal else base
+
+    _section("🆕 New ideas", diff.new, _new_line)
+    _section("✅ No longer surfaced (likely addressed)", diff.dropped, _dropped_line)
     _section("🔀 Moved phase", diff.phase_moved,
              lambda c: f"{c.title}: {c.prev_phase} → {c.curr_phase}")
     _section("📈 ROI improved", diff.roi_improved,
