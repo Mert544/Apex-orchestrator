@@ -60,7 +60,7 @@ flowchart LR
 | 🗺️ **Prioritize** | Sequences ideas into a phased roadmap with **impact / effort / ROI** from measured structure | `apex ideate --roadmap` |
 | 🔎 **Review** | Reviews a PR diff like a human — issues on the *changed* lines, with a **suggested‑fix diff** for clean one‑liners, CI‑ready | `apex review` |
 | 🤖 **Fix** | Applies real, **test‑verified** fixes with automatic rollback + safety gates | `apex maintain` |
-| ♻️ **Refactor** | **Cross‑file rename**: definition + imports + call sites across the whole project, comment‑preserving, blocked on any ambiguity, test‑verified | `apex rename old new` |
+| ♻️ **Refactor** | **Cross‑file rename & module move**: definitions, imports and call sites rewritten across the whole project, comment‑preserving, blocked on any ambiguity, test‑verified | `apex rename old new` · `apex move a/old.py b/new.py` |
 | 🔁 **Evolve** | Improves cycle by cycle **to a fixpoint**, then proves the gain | `apex evolve` |
 | 🧪 **Simulate** | Previews autonomous improvement — on a throwaway copy, changing nothing | `apex simulate` |
 | 🎓 **Grade** | One memorable health grade (A–F), with the cheapest ways to climb | `apex grade` |
