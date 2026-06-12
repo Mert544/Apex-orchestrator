@@ -355,7 +355,9 @@ class IdeaSeeder:
                 subject=f"{fn['module']}::{fn['function']}",
                 fact_label="hotspot-function",
                 fact_value=(f"{fn['module']}::{fn['function']} "
-                            f"(complexity {fn['complexity']}, line {fn['line']}, no direct tests)"),
+                            f"(complexity {fn['complexity']}"
+                            + (f", cognitive {fn['cognitive']}" if fn.get("cognitive") else "")
+                            + f", line {fn['line']}, no direct tests)"),
             )
 
         # Technical-debt markers: modules carrying a cluster of TODO/FIXME/XXX/
@@ -391,6 +393,20 @@ class IdeaSeeder:
                 subject=spot["module"],
                 fact_label="churn-hotspot",
                 fact_value=f"{spot['module']} ({spot['commits']} commits in recent history)",
+            )
+
+        # Knowledge concentration (bus-factor): a module whose recent changes
+        # come overwhelmingly from one author is a stability risk the moment
+        # that author is unavailable — spread it via docs, tests and pairing.
+        for kr in (getattr(profile, "knowledge_risks", []) or [])[:2]:
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Spread the knowledge of {kr['module']} — "
+                       f"{kr['share']}% of its recent changes come from one author"),
+                subject=kr["module"],
+                fact_label="knowledge-risk",
+                fact_value=(f"{kr['module']} ({kr['share']}% single-author "
+                            f"across {kr['commits']} commits)"),
             )
 
         # Documentation drift: the README/docs promise files that don't exist.
@@ -1337,6 +1353,9 @@ _OPERATOR_HINTS: dict[str, str] = {
 # scoring bonuses (convergence/evidence) so no single mechanism dominates.
 _MAGNITUDE_PATTERNS: list[tuple[re.Pattern[str], float]] = [
     (re.compile(r"~(\d+) months"), 16.0),
+    # Order matters: a knowledge-risk fact also mentions "across N commits",
+    # so the share pattern must win before the generic commits pattern.
+    (re.compile(r"(\d+)% single-author"), 100.0),
     (re.compile(r"(\d+) commits"), 50.0),
     (re.compile(r"complexity (\d+)"), 24.0),
 ]
@@ -1374,6 +1393,7 @@ _FACT_HINTS: dict[str, str] = {
     "hotspot-function": "complex check validation edge cases",
     "churn-hotspot": "refactor interface boundary coupling simplify",
     "doc-drift": "documentation drift broken reference promise",
+    "knowledge-risk": "bus factor onboarding documentation pairing review",
     "convergence": "complex secret guard validation check edge cases",
     "shallow-coverage": "check validation edge cases assert behaviour",
     "missing-ci": "ci workflow run tests automation",

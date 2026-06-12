@@ -348,3 +348,29 @@ def test_doc_drift_routes_to_refine_phase():
     )
     root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "README.md")
     assert classify_phase(root) == REFINE
+
+
+def test_knowledge_risk_seeds_and_routes_to_stabilize():
+    from app.engine.idea_roadmap import STABILIZE, classify_phase
+
+    profile = _profile(
+        knowledge_risks=[{"module": "app/owned.py", "share": 94, "commits": 17}],
+        ci_files=["ci.yml"],
+    )
+    root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/owned.py")
+    assert "94% of its recent changes come from one author" in root.title
+    assert root.source_facts == ["knowledge-risk: app/owned.py (94% single-author across 17 commits)"]
+    assert classify_phase(root) == STABILIZE
+
+
+def test_knowledge_risk_share_drives_the_magnitude_bonus():
+    from app.engine.idea_permutation import _magnitude_bonus
+    from app.models.idea import IdeaNode
+
+    def _root(share):
+        return IdeaNode(id="i", title="t", subject="s", operator="root",
+                        operator_chain=["root"],
+                        source_facts=[f"knowledge-risk: m ({share}% single-author across 9 commits)"])
+
+    assert _magnitude_bonus(_root(100)) == 0.08   # saturated
+    assert 0 < _magnitude_bonus(_root(86)) < 0.08

@@ -50,6 +50,10 @@ class ProjectProfile:
     # commits — factually coupled whether or not an import connects them.
     # Each entry: {"a", "b", "commits"}.
     change_coupling: list[dict] = field(default_factory=list)
+    # Knowledge concentration (DOA-inspired): modules whose recent changes
+    # come overwhelmingly from ONE author — a bus-factor risk. Author names
+    # are never stored. Each entry: {"module", "share" (percent), "commits"}.
+    knowledge_risks: list[dict] = field(default_factory=list)
     # Age (days) of the OLDEST debt marker per flagged module, from git blame —
     # a 3-year-old FIXME is a different fact than one written yesterday.
     debt_marker_ages: dict[str, int] = field(default_factory=dict)
@@ -116,6 +120,12 @@ class ProjectProfiler:
     # vendoring) couple everything and mean nothing, so they're skipped.
     COCHANGE_THRESHOLD = 3
     MAX_COMMIT_FILES = 15
+    # Knowledge risk: a module needs this many touches before concentration
+    # means anything, and the top author must own at least this share. The
+    # signal is skipped entirely for single-author projects (solo dev — a
+    # 100% share carries no information).
+    KNOWLEDGE_MIN_COMMITS = 5
+    KNOWLEDGE_SHARE = 0.85
 
     def __init__(self, root: str | Path, max_files: int = 2000) -> None:
         self.root = Path(root)
@@ -368,7 +378,7 @@ class ProjectProfiler:
 
         try:
             out = subprocess.run(
-                ["git", "log", "--name-only", "--pretty=format:@commit@",
+                ["git", "log", "--name-only", "--pretty=format:@commit@%an",
                  "-n", str(self.CHURN_COMMIT_WINDOW)],
                 cwd=self.root, capture_output=True, text=True, timeout=15,
             )
@@ -377,22 +387,25 @@ class ProjectProfiler:
         if out.returncode != 0:
             return
 
-        commits: list[list[str]] = []
-        current: list[str] = []
+        commits: list[tuple[str, list[str]]] = []  # (author, files)
+        author, current = "", []
         for line in out.stdout.splitlines():
             line = line.strip()
-            if line == "@commit@":
+            if line.startswith("@commit@"):
                 if current:
-                    commits.append(current)
-                current = []
+                    commits.append((author, current))
+                author, current = line[len("@commit@"):], []
             elif line:
                 current.append(line)
         if current:
-            commits.append(current)
+            commits.append((author, current))
 
         counts: Counter[str] = Counter()
         pair_counts: Counter[tuple[str, str]] = Counter()
-        for files in commits:
+        author_touches: dict[str, Counter[str]] = {}  # module -> author -> n
+        all_authors: set[str] = set()
+        for commit_author, files in commits:
+            all_authors.add(commit_author)
             pys = sorted({
                 rel for rel in files
                 if rel.endswith(".py") and not self._is_fixture_path(rel)
@@ -400,6 +413,7 @@ class ProjectProfiler:
             })
             for rel in pys:
                 counts[rel] += 1
+                author_touches.setdefault(rel, Counter())[commit_author] += 1
             if 2 <= len(pys) <= self.MAX_COMMIT_FILES:
                 for a, b in combinations(pys, 2):
                     pair_counts[(a, b)] += 1
@@ -414,6 +428,21 @@ class ProjectProfiler:
             for (a, b), n in sorted(pair_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
             if n >= self.COCHANGE_THRESHOLD
         ]
+
+        # Knowledge concentration only means something with >= 2 authors.
+        if len(all_authors) >= 2:
+            risks = []
+            for module, by_author in author_touches.items():
+                total = sum(by_author.values())
+                if total < self.KNOWLEDGE_MIN_COMMITS:
+                    continue
+                top = by_author.most_common(1)[0][1]
+                share = top / total
+                if share >= self.KNOWLEDGE_SHARE:
+                    risks.append({"module": module, "share": int(share * 100),
+                                  "commits": total})
+            risks.sort(key=lambda r: (-r["share"], -r["commits"], r["module"]))
+            profile.knowledge_risks = risks[:5]
 
     # Mirrors app.engine.health_score._is_fixture_path (kept local to avoid a
     # project_profile <-> health_score import cycle). Example/fixture/test code
@@ -645,6 +674,13 @@ class ProjectProfiler:
                     return _exercised(qualified.rsplit(".", 1)[0])
                 return False
 
+            from app.tools.cognitive_complexity import function_cognitive_complexities
+
+            # Branch counts keep driving the threshold (stable scores);
+            # cognitive complexity narrates how hard the code READS.
+            cognitive_by_name = {
+                name: cog for name, _ln, cog in function_cognitive_complexities(source)
+            }
             for name, lineno, complexity in function_complexities(source):
                 if complexity < 8:
                     continue  # a real branching function, not a trivial one
@@ -654,7 +690,8 @@ class ProjectProfiler:
                 if _exercised(name):
                     continue
                 out.append({"module": module, "function": name,
-                            "line": lineno, "complexity": complexity})
+                            "line": lineno, "complexity": complexity,
+                            "cognitive": cognitive_by_name.get(name, 0)})
         out.sort(key=lambda d: (-d["complexity"], d["module"], d["function"]))
         return out[:5]
 

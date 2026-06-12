@@ -506,3 +506,63 @@ def test_change_coupling_empty_outside_git(tmp_path: Path):
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "m.py").write_text("M = 1\n")
     assert ProjectProfiler(str(tmp_path)).profile().change_coupling == []
+
+
+def test_knowledge_risk_flags_single_author_concentration(tmp_path: Path):
+    import os
+    import subprocess
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "owned.py").write_text("O = 0\n")
+    (tmp_path / "app" / "shared.py").write_text("S = 0\n")
+
+    def _git(*args: str, who: str = "alice") -> None:
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = who
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = f"{who}@t.com"
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, env=env)
+
+    _git("init", "-q")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "init")
+    # owned.py: 5 more touches, all alice. shared.py: alternating authors.
+    for i in range(5):
+        (tmp_path / "app" / "owned.py").write_text(f"O = {i + 1}\n")
+        _git("add", "-A")
+        _git("-c", "commit.gpgsign=false", "commit", "-qm", f"own {i}")
+    for i in range(5):
+        (tmp_path / "app" / "shared.py").write_text(f"S = {i + 1}\n")
+        _git("add", "-A")
+        _git("-c", "commit.gpgsign=false", "commit", "-qm", f"share {i}",
+             who="alice" if i % 2 else "bob")
+
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    flagged = {r["module"]: r for r in profile.knowledge_risks}
+    assert "app/owned.py" in flagged
+    assert flagged["app/owned.py"]["share"] == 100
+    assert "app/shared.py" not in flagged  # 50/50 split is healthy
+
+
+def test_knowledge_risk_silent_for_single_author_projects(tmp_path: Path):
+    import os
+    import subprocess
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("M = 0\n")
+
+    def _git(*args: str) -> None:
+        env = dict(os.environ)
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, env=env)
+
+    _git("init", "-q")
+    _git("config", "user.email", "solo@t.com")
+    _git("config", "user.name", "solo")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "init")
+    for i in range(6):
+        (tmp_path / "app" / "m.py").write_text(f"M = {i + 1}\n")
+        _git("add", "-A")
+        _git("-c", "commit.gpgsign=false", "commit", "-qm", f"c{i}")
+
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert profile.knowledge_risks == []  # solo dev: 100% share = no information

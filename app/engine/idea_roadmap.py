@@ -59,7 +59,7 @@ _HIGH_IMPACT_LABELS = {
 }
 
 # Lens / fact routing for phase assignment. Checked most-specific first.
-_STABILIZE_LABELS = {"untested", "critical-untested", "partial-coverage", "shallow-coverage", "fragile", "missing-ci", "complexity-hotspot", "hotspot-function", "convergence"}
+_STABILIZE_LABELS = {"untested", "critical-untested", "partial-coverage", "shallow-coverage", "fragile", "missing-ci", "complexity-hotspot", "hotspot-function", "convergence", "knowledge-risk"}
 _SECURE_LABELS = {"sensitive-path", "security-finding", "correctness-bug"}
 _EVOLVE_LABELS = {"dependency-hub", "symbol-hub", "entrypoint", "top-directory", "churn-hotspot"}
 _REFINE_OPS = {"document", "observe", "simplify"}
