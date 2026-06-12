@@ -34,14 +34,16 @@ MEMORY_KEY_CAP = 20
 
 @dataclass
 class DreamReport:
-    patterns: list[str] = field(default_factory=list)   # what the dream noticed
-    curated: list[str] = field(default_factory=list)    # what it tidied (--curate)
-    proposed: list[str] = field(default_factory=list)   # what it WOULD tidy (default)
+    patterns: list[str] = field(default_factory=list)     # what the dream noticed
+    discoveries: list[str] = field(default_factory=list)  # open-ended associations
+    curated: list[str] = field(default_factory=list)      # what it tidied (--curate)
+    proposed: list[str] = field(default_factory=list)     # what it WOULD tidy (default)
     digest_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"patterns": self.patterns, "curated": self.curated,
-                "proposed": self.proposed, "digest_path": self.digest_path}
+        return {"patterns": self.patterns, "discoveries": self.discoveries,
+                "curated": self.curated, "proposed": self.proposed,
+                "digest_path": self.digest_path}
 
 
 def _review_outcome_memory(root: Path, report: DreamReport, curate: bool) -> None:
@@ -153,6 +155,11 @@ def _review_pulse(root: Path, report: DreamReport) -> None:
         report.patterns.append(
             f"{len(profile.doc_drift)} documentation promise(s) point at files "
             "that don't exist — the docs drifted.")
+    # Open-ended discovery: what travels with what on THIS codebase. No
+    # combination is named in advance — the data decides.
+    from app.engine.dream_discovery import discover
+
+    report.discoveries.extend(discover(profile))
 
 
 def dream(project_root: str | Path, write_digest: bool = True,
@@ -215,17 +222,23 @@ def _consolidate(root: Path, report: DreamReport) -> None:
             history = json.loads(journal_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             history = []
-    keys = [_pattern_key(p) for p in report.patterns]
-    # Streak per key: how many consecutive past dreams (newest first) saw it.
-    for i, key in enumerate(keys):
+    def _streak(key: str) -> int:
         streak = 1
         for past in reversed(history):
             if key in past:
                 streak += 1
             else:
                 break
-        if streak >= 2:
-            report.patterns[i] += f"  ⟲ seen in {streak} consecutive dreams"
+        return streak
+
+    keys: list[str] = []
+    for bucket in (report.patterns, report.discoveries):
+        for i, text in enumerate(bucket):
+            key = _pattern_key(text)
+            keys.append(key)
+            n = _streak(key)
+            if n >= 2:
+                bucket[i] += f"  ⟲ seen in {n} consecutive dreams"
     history.append(keys)
     try:
         journal_path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,6 +259,10 @@ def render_dream_markdown(report: DreamReport) -> str:
     else:
         lines += ["_No artifacts to learn from yet — run `apex maintain` or save "
                   "a brief, then dream again._", ""]
+    if report.discoveries:
+        lines.append("## Discoveries — open-ended, found in the data (not coded rules)")
+        lines += [f"- 🔍 {d}" for d in report.discoveries]
+        lines.append("")
     if report.curated:
         lines.append("## Curated")
         lines += [f"- 🧹 {c}" for c in report.curated]

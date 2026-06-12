@@ -55,6 +55,9 @@ without the file). `apex auto` prints what it has learned.
 - `apex dream [--target=.]` — the nightly curator: reviews the organism's memory stores
   (outcome memory, saved briefs, proof-of-fix, signal trends), extracts patterns, archives
   fully-resolved briefs, trims memory to high-signal keys, writes `.apex/dream-digest.md`.
+  Open-ended DISCOVERY: mines the full signal-combination space (no rule named in advance)
+  for associations ("80% of single-author modules are also high-churn") and confluences
+  (a module whose signal fingerprint is unusually broad). Default reports; `--curate` applies.
 - `apex grade [--min-score N]` — single project health grade (A–F) from all signals, with
   a breakdown + cheapest fixes; `--min-score` gates CI.
 - `apex bench [--manifest docs/bench/manifest.json] [--out FILE]` — grade pinned external
