@@ -131,7 +131,7 @@ jobs:
           fail-on-high: "true"              # fail if a high-severity issue is in the diff
 ```
 
-The action grades the project (`apex grade --min-score`) and runs a diff‑scoped review (`apex review --fail-on-high`). Both are offline and deterministic, so the gate is fast and reproducible.
+The action grades the project (`apex grade --min-score`) and runs a diff‑scoped review (`apex review --fail-on-high`). Both are offline and deterministic, so the gate is fast and reproducible. Add `apex review --sarif apex.sarif` to upload findings to **GitHub code scanning** (SARIF 2.1.0), so they appear inline on the PR instead of in a build log.
 
 ---
 
@@ -240,6 +240,8 @@ apex maintain --target=. --mode=autonomous --commit --out=MAINT.md
 | `pickle.loads` / SQL f‑strings | flagged (no unsafe auto‑rewrite) |
 
 The run ends with a Markdown report of what was applied, rolled back, or blocked — with per‑step commit hashes in autonomous mode.
+
+**Proof‑of‑Fix:** every apply run also writes a machine‑readable evidence record to `.apex/proof-of-fix.json` (`--proof PATH` to relocate): for each fix, the finding it cites, the exact unified diff, the verifying test run (commands, pass/fail counts, duration), and any rollback. You don't have to trust the report — you can audit it.
 
 <details>
 <summary><b>🔁 Self‑improvement loop (<code>apex evolve</code>)</b> — converge to a fixpoint, then prove the gain</summary>

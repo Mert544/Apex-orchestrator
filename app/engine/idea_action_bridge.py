@@ -421,15 +421,19 @@ class IdeaActionBridge:
             "skipped_files": applied.skipped_files,
             "error": applied.error,
         }
+        if applied.ok and applied.changed_files:
+            out["diff"] = self._evidence_diff(snapshot, patch_requests, applied.changed_files)
         if not (verify and applied.ok and applied.changed_files):
             return out
 
         # Verify: run tests; roll back the changed files if they fail.
+        from app.engine.proof_of_fix import summarize_test_run
         from app.skills.execution.run_tests import RunTestsSkill
 
         summary = RunTestsSkill().run(project_root)
         out["verified"] = bool(summary.ok)
         out["test_commands"] = summary.commands
+        out["test_evidence"] = summarize_test_run(summary)
         if summary.ok or not summary.commands:
             # Pass (or no test command detected -> nothing to verify against).
             out["rolled_back"] = False
@@ -447,6 +451,28 @@ class IdeaActionBridge:
         out["rolled_back"] = True
         out["reason"] = "tests failed after patch; changes rolled back"
         return out
+
+    @staticmethod
+    def _evidence_diff(snapshot: dict[str, str | None], patch_requests: list[dict],
+                       changed_files: list[str]) -> str:
+        """Unified diff of what was just applied (snapshot → written content).
+
+        This is the evidence trail for the proof-of-fix artifact: the exact
+        change, recorded even if the step is later rolled back.
+        """
+        import difflib
+
+        new_by_path = {pr.get("path", ""): pr.get("new_content", "") or "" for pr in patch_requests}
+        parts: list[str] = []
+        for rel in changed_files:
+            old = snapshot.get(rel) or ""
+            new = new_by_path.get(rel, "")
+            diff = "".join(difflib.unified_diff(
+                old.splitlines(keepends=True), new.splitlines(keepends=True),
+                fromfile=f"a/{rel}", tofile=f"b/{rel}",
+            ))
+            parts.append(diff or f"(new file) b/{rel}")
+        return "\n".join(parts)
 
     def dry_run_plan(self, plan: ActionPlan, project_root: str) -> dict:
         """Preview a maintenance pass without touching the tree.

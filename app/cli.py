@@ -578,6 +578,14 @@ def cmd_maintain(args: argparse.Namespace) -> int:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(md, encoding="utf-8")
         print(f"\n[maintain] Report written to {out_path}")
+    # Proof-of-fix: the auditable evidence record for everything this pass did.
+    if summary.get("results"):
+        from app.engine.proof_of_fix import build_proof, write_proof
+
+        proof = build_proof(summary, str(target), objective=args.objective or "")
+        proof_path = write_proof(proof, str(target), out=getattr(args, "proof", "") or None)
+        if not args.json:
+            print(f"\n[maintain] Proof-of-fix evidence written to {proof_path}")
     return 0
 
 
@@ -735,11 +743,18 @@ def cmd_auto(args: argparse.Namespace) -> int:
 
     IdeaMemory.learn_from(summary, str(target))  # the engine gets wiser each run
     md = render_maintenance_markdown(summary, str(target), objective=goal)
+    proof_path = None
+    if summary.get("results"):
+        from app.engine.proof_of_fix import build_proof, write_proof
+
+        proof_path = write_proof(build_proof(summary, str(target), objective=goal), str(target))
     if emit_json:
         print(json.dumps({**summary, "decision": decision.to_dict()}, indent=2))
     else:
         print(f"_Apex is applying autonomously: {decision.reason}._\n")
         print(md)
+        if proof_path is not None:
+            print(f"\n_Proof-of-fix evidence written to `{proof_path}`._")
         if not commit:
             print("\n_Applied to your working tree, not committed — "
                   "review with `git diff`, undo with `git checkout -- .`_")
@@ -871,6 +886,16 @@ def cmd_review(args: argparse.Namespace) -> int:
     if getattr(args, "fix", False):
         fix_report = _apply_review_fixes(str(target), result)
 
+    # --sarif: export findings for GitHub code scanning / CI dashboards.
+    sarif_out = getattr(args, "sarif", "")
+    if sarif_out:
+        from app.engine.sarif_export import review_to_sarif
+
+        sarif_path = Path(sarif_out)
+        sarif_path.parent.mkdir(parents=True, exist_ok=True)
+        sarif_path.write_text(json.dumps(review_to_sarif(result), indent=2) + "\n",
+                              encoding="utf-8")
+
     if args.json:
         payload = result.to_dict()
         if fix_report is not None:
@@ -880,6 +905,8 @@ def cmd_review(args: argparse.Namespace) -> int:
         print(render_review_markdown(result))
         if fix_report is not None:
             print(_render_review_fixes_markdown(fix_report))
+        if sarif_out:
+            print(f"[review] SARIF written to {sarif_out}")
     # Non-zero exit when high-severity issues land in the diff (CI-friendly).
     if getattr(args, "fail_on_high", False) and any(f.severity == "high" for f in result.findings):
         return 1
@@ -1477,6 +1504,9 @@ def main() -> int:
     review_parser.add_argument("--base", default="HEAD", help="Git base ref to diff against")
     review_parser.add_argument("--fail-on-high", action="store_true", dest="fail_on_high",
                               help="Exit non-zero if a high-severity issue is in the diff (CI)")
+    review_parser.add_argument("--sarif", default="",
+                               help="Write findings as SARIF 2.1.0 to this path "
+                                    "(GitHub code scanning compatible)")
     review_parser.add_argument("--fix", action="store_true",
                               help="Apply the auto-fixable findings on the changed files (test-verified)")
     review_parser.add_argument("--json", action="store_true", help="Emit JSON")
@@ -1997,6 +2027,11 @@ def main() -> int:
     )
     maintain_parser.add_argument("--json", action="store_true", help="Emit JSON summary")
     maintain_parser.add_argument("--out", default="", help="Write the Markdown report to this path")
+    maintain_parser.add_argument(
+        "--proof", default="",
+        help="Where to write the proof-of-fix evidence JSON "
+             "(default: .apex/proof-of-fix.json in the target)",
+    )
     maintain_parser.set_defaults(func=cmd_maintain)
 
     # debug
