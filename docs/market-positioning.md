@@ -73,6 +73,26 @@ CI health gate + `apex review` as the deterministic reviewer of AI-generated PRs
 **The honest tagline for the era:** *LLMs write code fast. Apex proves which of it
 is safe — and what to do next.*
 
+### Identity guard: a development assistant, not a security scanner
+
+A standing risk in this product's evolution is **drift toward "cybersecurity
+tool"** — security detectors are the easiest capabilities to add and demo, so
+they accumulate. The founder's intent, and the defensible position, is the
+opposite: Apex is a **project-development assistant** — an agent that helps
+*build and grow* projects through fractal reasoning and deep deterministic
+thinking, no LLM required. Security is **one lens among four** in the roadmap
+(Stabilize → **Secure** → Evolve → Refine), one signal class feeding the Idea
+Engine — never the headline. Practical rules:
+
+- The Idea Permutation Engine (what to build next) stays the lead feature in
+  every doc, demo, and dashboard; findings exist to *ground ideas*, not to be
+  the product.
+- New capability investment favors development breadth (tests, architecture,
+  refactoring, documentation, roadmap intelligence) over yet another security
+  detector.
+- Marketing language says "engineering agent / development assistant"; "scanner"
+  and "vulnerability finder" describe a component, never the identity.
+
 ---
 
 ## 3. Capabilities to strengthen or add (market-driven)
