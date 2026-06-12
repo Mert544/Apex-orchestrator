@@ -64,6 +64,7 @@ flowchart LR
 | 🔁 **Evolve** | Improves cycle by cycle **to a fixpoint**, then proves the gain | `apex evolve` |
 | 🧪 **Simulate** | Previews autonomous improvement — on a throwaway copy, changing nothing | `apex simulate` |
 | 🎓 **Grade** | One memorable health grade (A–F), with the cheapest ways to climb | `apex grade` |
+| 📏 **Bench** | The same rubric on **pinned real codebases** (click, jinja, attrs, httpx) — calibration for the grade, reproducible by SHA | `apex bench` |
 | 📊 **Report** | One self‑contained HTML dashboard of everything above | `apex dashboard` |
 
 Everything is **deterministic** (same input → same output) and **traceable** (every idea cites the concrete code fact that produced it). An optional LLM layer exists but is **off by default**.

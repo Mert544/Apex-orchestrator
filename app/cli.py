@@ -1052,6 +1052,29 @@ def cmd_move(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_bench(args: argparse.Namespace) -> int:
+    """Grade pinned external codebases with the same rubric (calibration)."""
+    from app.benchmarking.external import load_manifest, render_bench_markdown, run_bench
+
+    manifest = Path(args.manifest) if args.manifest else (
+        _get_project_root() / "docs" / "bench" / "manifest.json")
+    if not manifest.exists():
+        print(f"⛔ manifest not found: {manifest}")
+        return 1
+    results = run_bench(load_manifest(manifest), keep=getattr(args, "keep", False))
+    if args.json:
+        print(json.dumps([r.to_dict() for r in results], indent=2))
+    else:
+        print(render_bench_markdown(results, manifest_path=str(manifest)))
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(render_bench_markdown(results, manifest_path=str(manifest)),
+                            encoding="utf-8")
+        print(f"[bench] Report written to {out_path}")
+    return 1 if any(r.error for r in results) else 0
+
+
 def cmd_evolve(args: argparse.Namespace) -> int:
     """Self-improvement loop: apply guarded fixes cycle by cycle to a fixpoint,
     then prove the project's health improved (before/after + roadmap diff)."""
@@ -1642,6 +1665,19 @@ def main() -> int:
                              help="Skip the test verification run")
     move_parser.add_argument("--json", action="store_true", help="Emit JSON")
     move_parser.set_defaults(func=cmd_move)
+
+    # bench — grade pinned external codebases (calibration, reproducible)
+    bench_parser = subparsers.add_parser(
+        "bench",
+        help="Grade pinned external repos with the same rubric — calibration for the grade",
+    )
+    bench_parser.add_argument("--manifest", default="",
+                              help="Manifest JSON (default: docs/bench/manifest.json)")
+    bench_parser.add_argument("--out", default="", help="Write the Markdown report to this path")
+    bench_parser.add_argument("--keep", action="store_true",
+                              help="Keep the cloned working directories")
+    bench_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    bench_parser.set_defaults(func=cmd_bench)
 
     # evolve — self-improvement loop: apply → re-measure → prove progress
     evolve_parser = subparsers.add_parser(

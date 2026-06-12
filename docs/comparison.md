@@ -58,10 +58,18 @@ Three properties follow from that design, and they are the entire pitch:
   example projects (`examples/`) used as regression tests for the detectors.
   These are *fixtures we planted ourselves* — they prove the detectors work as
   specified, **not** field accuracy. Treat them as unit tests, not benchmarks.
-- **What we don't yet have:** independent, third-party accuracy benchmarks on
-  real-world repositories. Until a reproducible public benchmark exists
-  (planned: pinned OSS-repo snapshots with published precision/recall), we
-  make no comparative accuracy claims.
+- **External calibration (`apex bench`):** the same rubric, run on pinned
+  snapshots of known OSS codebases (manifest + exact SHAs in
+  `docs/bench/manifest.json`, results in `docs/bench/results.md`) — e.g.
+  click **A+ (97)**, attrs **A (94)**, jinja **B+ (89)**, httpx **B− (81)**.
+  This shows the grade *differentiates* real projects and gives Apex's own
+  score context. Caveat stated plainly: findings are static-pattern matches —
+  e.g. jinja's intentional, sandbox-mitigated `eval`-family usage costs it
+  security points under this rubric; that is a property of static analysis,
+  not a verdict on jinja.
+- **What we still don't have:** ground-truth precision/recall on real
+  repositories (no honest labels exist), or third-party replication. We make
+  no comparative accuracy claims.
 
 ## The design bet
 

@@ -1,0 +1,9 @@
+{
+  "comment": "Pinned external codebases for `apex bench` — the grade rubric's calibration set. Refs are exact SHAs so anyone reproduces the identical run.",
+  "repos": [
+    {"name": "click", "url": "https://github.com/pallets/click", "ref": "8a1b1a33d739be05b7e91251e3c0dde77c5e152f"},
+    {"name": "jinja", "url": "https://github.com/pallets/jinja", "ref": "5ef70112a1ff19c05324ff889dd30405b1002044"},
+    {"name": "attrs", "url": "https://github.com/python-attrs/attrs", "ref": "89fae8300f484544c1b7678cea5efe58c551fbb9"},
+    {"name": "httpx", "url": "https://github.com/encode/httpx", "ref": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"}
+  ]
+}

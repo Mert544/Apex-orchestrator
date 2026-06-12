@@ -50,6 +50,9 @@ without the file). `apex auto` prints what it has learned.
   grounded in fan-in + LOC, the action it maps to, and its caveats. Defaults to the top idea.
 - `apex grade [--min-score N]` — single project health grade (A–F) from all signals, with
   a breakdown + cheapest fixes; `--min-score` gates CI.
+- `apex bench [--manifest docs/bench/manifest.json] [--out FILE]` — grade pinned external
+  codebases with the same rubric (calibration context for the grade; exact SHAs, fully
+  reproducible; local `path` entries keep tests offline). Results: `docs/bench/results.md`.
 - `apex simulate [--max-cycles N]` — preview what `apex evolve` would do, run on a disposable
   copy so the real tree is never touched.
 - `apex impact <function> [--target=.]` — function-level blast radius: who transitively

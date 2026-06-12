@@ -1,0 +1,63 @@
+name: Dogfood — Apex maintains Apex
+
+# Nightly self-application: the product runs on its own codebase in
+# supervised mode (applies test-verified fixes to the working tree, commits
+# nothing) and publishes the proof-of-fix evidence artifact. A rollback or a
+# tier-gate block is signal, not failure — the job fails only if the run
+# itself crashes.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dogfood:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # churn + debt-age signals need history
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e .[dev]
+
+      - name: Baseline suite must be green before self-maintenance
+        run: python -m pytest -q
+
+      - name: Apex maintains Apex (supervised, verified, capped)
+        run: |
+          python -m app.cli auto --apply --max-apply 4 --out .apex/dogfood-report.md
+
+      - name: Suite still green after self-maintenance
+        run: python -m pytest -q
+
+      - name: Show what happened
+        if: always()
+        run: |
+          echo "## Working-tree diff after self-maintenance" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          git diff --stat >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f .apex/dogfood-report.md ]; then
+            cat .apex/dogfood-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publish proof-of-fix evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dogfood-evidence
+          path: |
+            .apex/proof-of-fix.json
+            .apex/dogfood-report.md
+          if-no-files-found: ignore
+          retention-days: 30
