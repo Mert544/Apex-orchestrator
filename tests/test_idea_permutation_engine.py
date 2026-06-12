@@ -586,3 +586,35 @@ def test_facet_level2_uses_aspect_specific_subconcerns(tmp_path):
             parent_lbl = by_id[f.parent_id].source_facts[-1].split("facet:", 1)[1].strip()
             assert lbl in _FACET_SUBASPECTS.get(parent_lbl, []) or parent_lbl in _FACET_SUBASPECTS
             assert lbl not in _FACET_CASES        # genuinely not the generic triple
+
+
+def test_facet_caveats_interrogate_the_subconcern(tmp_path):
+    # The fractal deepens the *reasoning*: a facet's caveat stress-tests its own
+    # sub-concern, not the parent lens's generic scenario — and never the
+    # symbol-grounded "hits its rarest branch" caveat (a facet subject uses
+    # " :: " which must not be read as a function name).
+    _project(tmp_path)
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 140, "max_idea_depth": 1, "breadth": 6,
+         "fractal_facets": True, "facet_depth": 3, "facets_per_idea": 3},
+        tmp_path,
+    ).run()
+    facets = [i for i in rep.ideas if i.kind == "facet" and i.caveats]
+    assert facets
+    # no facet leaks the function-symbol caveat
+    assert not any("hits its rarest branch" in f.caveats[0] for f in facets)
+
+    def caveat_for(phrase_key):
+        for f in facets:
+            if f.source_facts[-1].split("facet:", 1)[-1].strip() == phrase_key:
+                return f.caveats[0].lower()
+        return None
+
+    # a failure-themed facet asks about partial state; an idempotence/invariant
+    # facet asks about repetition/ordering — distinct, sub-concern-specific.
+    fm = caveat_for("failure modes")
+    if fm:
+        assert "midway" in fm or "partial" in fm
+    inv = caveat_for("property invariants")
+    if inv:
+        assert "twice" in inv or "reorder" in inv or "round trip" in inv

@@ -91,6 +91,37 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "trace spans": ["span boundaries", "attributes", "error recording"],
 }
 
+# A facet's caveat should interrogate *its* sub-concern, not recite the lens's
+# generic scenario. Keyed by theme (first keyword match wins) so the whole facet
+# vocabulary is covered with a handful of rules. Order matters: most specific
+# first. Empty match → fall back to the lens/operator caveat.
+_FACET_CAVEAT_RULES: list[tuple[tuple[str, ...], str]] = [
+    (("null", "empty"), "What does this do with None, an empty value, or a missing key?"),
+    (("timeout", "hang", "timeout bounds"), "What if it never returns — is there a bound, and what fires when it trips?"),
+    (("concurren", "race"), "What if two callers reach this at the same moment?"),
+    (("idempot",), "What breaks if this runs twice on the same input?"),
+    (("ordering", "round-trip", "round trip", "invariant"), "What invariant silently breaks under reordering or a round trip?"),
+    (("secret", "plaintext", "rotation", "credential", "leakage"), "What leaks if this is logged, committed, or read by the wrong caller?"),
+    (("default",), "What goes wrong when the default is wrong for a particular caller?"),
+    (("version", "compat", "skew", "degradation"), "What happens when the two sides are on different versions?"),
+    (("metric", "log", "trace", "span", "counter", "histogram", "correlation"), "What failure currently happens with no signal to catch it?"),
+    (("schema", "contract", "field", "type and shape", "signatures and types"), "What consumer breaks when this contract shifts?"),
+    (("cleanup", "rollback", "partial", "interrupted", "failure case", "failure mode", "failure semantics"), "When this fails midway, what partial state or resource is left behind?"),
+    (("dependency", "unavailable", "down"), "What if the thing this depends on is down or slow?"),
+    (("dead code", "unreferenced", "unreachable", "redundant"), "What dynamic or reflective use makes this 'dead' code actually live?"),
+    (("duplicat", "shared helper", "single source", "variants"), "What subtle difference between the copies does merging them erase?"),
+    (("nesting", "early return", "guard clause", "extract", "inner block"), "What behavior shifts when the control flow is flattened?"),
+    (("range", "bound", "length", "size", "maximum", "limit", "boundary"), "What happens at exactly the limit — and one step past it?"),
+    (("registration", "hook", "extension point", "no-op"), "What if a second implementation registers, or none does?"),
+    (("backward compat", "migration", "consumer"), "What existing caller breaks the moment this changes?"),
+    (("common case", "happy path"), "What ordinary-looking input still slips through the normal path unhandled?"),
+    (("edge case", "single element", "single", "maximum size"), "What rare shape — empty, single, or maximum — does the normal path skip?"),
+    (("public api", "worked example", "usage example", "pre and postcondition"), "What contract do callers assume here that is written down nowhere?"),
+    (("attribute", "error recording"), "What context is missing when this is read during an incident?"),
+    (("naming and types", "parameter"), "What caller passes a plausible-but-wrong argument this accepts?"),
+    (("validation", "checks"), "What malformed value passes the check but breaks downstream?"),
+]
+
 
 # The fixed permutation alphabet — the "abc" applied to every branch "a".
 # Data-driven so breadth is tunable and plugins can extend it later.
@@ -892,6 +923,17 @@ class IdeaPermutationEngine:
             sources = next_sources
         stats["faceted"] = counter["added"]
 
+    @staticmethod
+    def _facet_caveat(phrase: str) -> str:
+        """A stress-test specific to a facet sub-concern, so the fractal deepens
+        its *reasoning*, not just its title — keyed by the theme of the phrase so
+        all ~75 facet phrases are covered without per-phrase hand-writing."""
+        p = phrase.lower()
+        for keys, caveat in _FACET_CAVEAT_RULES:
+            if any(k in p for k in keys):
+                return caveat
+        return ""
+
     def _facet_vocab(self, node: IdeaNode, level: int) -> list[str]:
         """Facet phrases available to refine ``node`` at the given zoom level.
 
@@ -1012,9 +1054,20 @@ class IdeaPermutationEngine:
         elif node.source_facts:
             # A root idea: discriminate its caveat by the seeding fact label.
             claim["fact_label"] = node.source_facts[0].split(":", 1)[0].strip()
-        if "::" in node.subject:
+        # Symbol-granular subjects ("mod.py::func") get a function-named caveat —
+        # but a facet's "subject :: phrase" also contains "::", so guard against
+        # mistaking a facet phrase for a function name.
+        if "::" in node.subject and node.kind != "facet":
             claim["symbol"] = node.subject.split("::", 1)[1].rsplit(".", 1)[-1]
         node.caveats = self.counterfactual.generate(claim).scenarios[:2]
+        # A facet refines into a specific sub-concern; lead its caveat with a
+        # stress-test of *that* concern so the fractal deepens the reasoning, not
+        # just the title. The lens caveat stays as the second scenario.
+        if node.kind == "facet" and node.source_facts:
+            phrase = node.source_facts[-1].split("facet:", 1)[-1].strip()
+            specific = self._facet_caveat(phrase)
+            if specific:
+                node.caveats = [specific] + [c for c in node.caveats if c != specific][:1]
 
 
 # Keyword-rich context per development lens so the CounterfactualGenerator
