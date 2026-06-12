@@ -5,7 +5,7 @@
 ### A deterministic engineering agent that *reasons* about your codebase — and helps you act on it.
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-1780%2B%20passing-2ea44f)]()
+[![Tests](https://img.shields.io/badge/tests-1850%2B%20passing-2ea44f)]()
 [![Health grade](https://img.shields.io/badge/apex%20grade-A%2B%20(100)-2ea44f)]()
 [![No LLM required](https://img.shields.io/badge/LLM-optional%20·%20offline%20core-8957e5)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-24292f)](LICENSE)
@@ -58,7 +58,7 @@ flowchart LR
 | 👁️ **Scan** | Profiles structure; finds security risks, import cycles, fragile/untested modules | every run |
 | 💡 **Ideate** | Generates a **fractal tree of grounded development ideas** from real code facts | `apex ideate` |
 | 🗺️ **Prioritize** | Sequences ideas into a phased roadmap with **impact / effort / ROI** from measured structure | `apex ideate --roadmap` |
-| 🔎 **Review** | Reviews a PR diff like a human — issues on the *changed* lines, auto‑fix flags, CI‑ready | `apex review` |
+| 🔎 **Review** | Reviews a PR diff like a human — issues on the *changed* lines, with a **suggested‑fix diff** for clean one‑liners, CI‑ready | `apex review` |
 | 🤖 **Fix** | Applies real, **test‑verified** fixes with automatic rollback + safety gates | `apex maintain` |
 | 🔁 **Evolve** | Improves cycle by cycle **to a fixpoint**, then proves the gain | `apex evolve` |
 | 🧪 **Simulate** | Previews autonomous improvement — on a throwaway copy, changing nothing | `apex simulate` |
@@ -93,7 +93,7 @@ The grade rolls these into five components — **Security · Architecture · Tes
 python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -e .[dev]
 
-# Verify (1780+ tests, fully offline)
+# Verify (1850+ tests, fully offline)
 pytest -q
 ```
 
@@ -340,7 +340,7 @@ Optional surfaces: an **MCP server** (stdio + HTTP/SSE) for IDE integration, a *
 - ✅ **Guarded maintenance** — real AST fixes, test‑verified, auto‑rollback, optional per‑fix commits
 - ✅ **Dashboard, debug, deadcode, hotspots, self‑audit, MCP, metrics, LSP**
 - ✅ **Deterministic, offline core** — LLM is strictly opt‑in
-- ✅ **1780+ tests**, ruff‑linted, CI‑gated, self‑graded **A+**
+- ✅ **1850+ tests**, ruff‑linted, CI‑gated, self‑graded **A+**
 
 **Experimental (not production‑ready):** the Kubernetes operator, Helm chart, and VS Code extension are skeletal.
 
