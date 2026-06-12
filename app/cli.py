@@ -954,6 +954,44 @@ def _render_review_fixes_markdown(fix: dict) -> str:
     return "\n".join(lines)
 
 
+def cmd_rename(args: argparse.Namespace) -> int:
+    """Cross-file rename: definition + imports + call sites, test-verified."""
+    from app.execution.cross_file_rename import apply_rename, plan_rename
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    plan = plan_rename(str(target), args.old, args.new)
+
+    if plan.blockers:
+        print(f"# Rename blocked: `{args.old}` → `{args.new}`\n")
+        for b in plan.blockers:
+            print(f"- ⛔ {b}")
+        return 1
+    if getattr(args, "dry_run", False):
+        print(f"# Rename (dry run): `{args.old}` → `{args.new}` — "
+              f"{sum(plan.edits_by_file.values())} edit(s) across {len(plan.new_contents)} file(s)\n")
+        print("```diff")
+        print(plan.render_diff().rstrip())
+        print("```")
+        for w in plan.warnings:
+            print(f"- ⚠️ {w}")
+        return 0
+
+    res = apply_rename(str(target), plan, verify=not getattr(args, "no_verify", False))
+    if args.json:
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("applied") else 1
+    if res.get("applied"):
+        print(f"✅ Renamed `{args.old}` → `{args.new}`: {res['edits']} edit(s) in "
+              f"{len(res['changed_files'])} file(s): {', '.join(res['changed_files'])}")
+        if res.get("verified") is True:
+            print("   tests pass — change is verified")
+        for w in res.get("warnings", []):
+            print(f"- ⚠️ {w}")
+        return 0
+    print(f"↩️ {res.get('reason', 'rename not applied')}")
+    return 1
+
+
 def cmd_evolve(args: argparse.Namespace) -> int:
     """Self-improvement loop: apply guarded fixes cycle by cycle to a fixpoint,
     then prove the project's health improved (before/after + roadmap diff)."""
@@ -1511,6 +1549,21 @@ def main() -> int:
                               help="Apply the auto-fixable findings on the changed files (test-verified)")
     review_parser.add_argument("--json", action="store_true", help="Emit JSON")
     review_parser.set_defaults(func=cmd_review)
+
+    # rename — cross-file rename (definition + imports + call sites), verified
+    rename_parser = subparsers.add_parser(
+        "rename",
+        help="Rename a top-level function/class across the whole project (test-verified)",
+    )
+    rename_parser.add_argument("old", help="Current symbol name")
+    rename_parser.add_argument("new", help="New symbol name")
+    rename_parser.add_argument("--target", default="", help="Target project root")
+    rename_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
+                               help="Preview the unified diff without changing files")
+    rename_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                               help="Skip the test verification run")
+    rename_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    rename_parser.set_defaults(func=cmd_rename)
 
     # evolve — self-improvement loop: apply → re-measure → prove progress
     evolve_parser = subparsers.add_parser(

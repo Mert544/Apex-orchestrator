@@ -57,6 +57,9 @@ without the file). `apex auto` prints what it has learned.
 - `apex review [--base REF] [--fail-on-high]` — diff-scoped code review (Apex as a PR
   reviewer): flags security/bug/style/docs issues on the *changed* lines only, noting which
   Apex can auto-fix. `--fail-on-high` exits non-zero for CI gating.
+- `apex rename OLD NEW [--target=.] [--dry-run] [--no-verify]` — cross-file rename of a
+  top-level function/class: definition + imports + call sites, comment-preserving span
+  edits, conservative blockers (ambiguity/shadow/collision), test-verified with rollback.
 - `python -m app.cli maintain --target=. --dry-run` — preview every fix as a unified diff.
   Modes: `--mode report|supervised|autonomous` (+ `--commit`, `--verify` on by default,
   `--no-verify`, `--max-apply N`, `--out MAINT.md`).
