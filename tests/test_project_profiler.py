@@ -525,12 +525,13 @@ def test_knowledge_risk_flags_single_author_concentration(tmp_path: Path):
     _git("init", "-q")
     _git("add", "-A")
     _git("-c", "commit.gpgsign=false", "commit", "-qm", "init")
-    # owned.py: 5 more touches, all alice. shared.py: alternating authors.
+    # owned.py: 5 more touches, all alice. shared.py: alternating authors
+    # (10 rounds so BOTH authors clear the activity floor of 5 commits).
     for i in range(5):
         (tmp_path / "app" / "owned.py").write_text(f"O = {i + 1}\n")
         _git("add", "-A")
         _git("-c", "commit.gpgsign=false", "commit", "-qm", f"own {i}")
-    for i in range(5):
+    for i in range(10):
         (tmp_path / "app" / "shared.py").write_text(f"S = {i + 1}\n")
         _git("add", "-A")
         _git("-c", "commit.gpgsign=false", "commit", "-qm", f"share {i}",
@@ -566,3 +567,34 @@ def test_knowledge_risk_silent_for_single_author_projects(tmp_path: Path):
 
     profile = ProjectProfiler(str(tmp_path)).profile()
     assert profile.knowledge_risks == []  # solo dev: 100% share = no information
+
+
+def test_knowledge_risk_ignores_drive_by_second_author(tmp_path: Path):
+    # One real author + a single drive-by commit must NOT make the project
+    # "multi-author" — otherwise every solo project with one bot commit
+    # would flag everything at 100%.
+    import os
+    import subprocess
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("M = 0\n")
+
+    def _git(*args: str, who: str = "solo") -> None:
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = who
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = f"{who}@t.com"
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, env=env)
+
+    _git("init", "-q")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "init")
+    for i in range(6):
+        (tmp_path / "app" / "m.py").write_text(f"M = {i + 1}\n")
+        _git("add", "-A")
+        _git("-c", "commit.gpgsign=false", "commit", "-qm", f"c{i}")
+    (tmp_path / "app" / "m.py").write_text("M = 99\n")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "drive-by", who="bot")
+
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert profile.knowledge_risks == []

@@ -429,8 +429,12 @@ class ProjectProfiler:
             if n >= self.COCHANGE_THRESHOLD
         ]
 
-        # Knowledge concentration only means something with >= 2 authors.
-        if len(all_authors) >= 2:
+        # Knowledge concentration only means something when at least TWO
+        # authors are genuinely active (a drive-by single commit or a bot
+        # doesn't make a project multi-author).
+        author_commits: Counter[str] = Counter(a for a, _files in commits)
+        active = [a for a, n in author_commits.items() if n >= self.KNOWLEDGE_MIN_COMMITS]
+        if len(active) >= 2:
             risks = []
             for module, by_author in author_touches.items():
                 total = sum(by_author.values())
