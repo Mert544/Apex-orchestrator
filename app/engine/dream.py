@@ -38,15 +38,19 @@ class DreamReport:
     discoveries: list[str] = field(default_factory=list)  # open-ended associations
     new_since: list[str] = field(default_factory=list)    # surfaced this dream, not last
     resolved_since: list[str] = field(default_factory=list)  # in last dream, gone now
+    promoted: list[str] = field(default_factory=list)     # confirmed laws → waking ideas
     curated: list[str] = field(default_factory=list)      # what it tidied (--curate)
     proposed: list[str] = field(default_factory=list)     # what it WOULD tidy (default)
     digest_path: str = ""
+    # Structured discoveries (key/confidence) kept for journaling + promotion;
+    # not part of the human dict but exposed for callers that need the scores.
+    discovery_objs: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {"patterns": self.patterns, "discoveries": self.discoveries,
                 "new_since": self.new_since, "resolved_since": self.resolved_since,
-                "curated": self.curated, "proposed": self.proposed,
-                "digest_path": self.digest_path}
+                "promoted": self.promoted, "curated": self.curated,
+                "proposed": self.proposed, "digest_path": self.digest_path}
 
 
 def _review_outcome_memory(root: Path, report: DreamReport, curate: bool) -> None:
@@ -160,9 +164,56 @@ def _review_pulse(root: Path, report: DreamReport) -> None:
             "that don't exist — the docs drifted.")
     # Open-ended discovery: what travels with what on THIS codebase. No
     # combination is named in advance — the data decides.
-    from app.engine.dream_discovery import discover
+    from app.engine.dream_discovery import discover_structured
 
-    report.discoveries.extend(discover(profile))
+    for d in discover_structured(profile):
+        report.discoveries.append(d.text)
+        report.discovery_objs.append(d.to_dict())
+
+
+# A discovery graduates into a waking idea only when it is BOTH strong and
+# repeatedly confirmed: high confidence AND seen in this many consecutive
+# dreams. Persistence is the anti-oscillation guard — a one-off never seeds.
+PROMOTE_STREAK = 3
+PROMOTE_CONFIDENCE = 0.80
+PROMOTIONS_REL = ".apex/dream-promotions.json"
+
+
+def _promote(root: Path, report: DreamReport, curate: bool) -> None:
+    """Graduate confirmed discoveries into a seed store the waking engine reads.
+
+    Default mode only proposes (inputs untouched, like the rest of the dream);
+    ``--curate`` rewrites the promotions store FRESH each run — so a law that
+    stops holding simply drops out, never leaving a stale idea behind.
+    """
+    streaks: dict[str, int] = getattr(report, "_streaks", {}) or {}
+    promotable = [
+        d for d in report.discovery_objs
+        if streaks.get(d["key"], 1) >= PROMOTE_STREAK
+        and d.get("confidence", 0.0) >= PROMOTE_CONFIDENCE
+    ]
+    if not curate:
+        for d in promotable:
+            report.proposed.append(
+                f"promote to the idea engine: {d['text']} "
+                f"(confirmed {streaks.get(d['key'], 1)} dreams)")
+        return
+    # curate: rewrite the store fresh (even empty → clears stale promotions).
+    payload = [{"key": d["key"], "text": d["text"], "kind": d["kind"],
+                "confidence": d["confidence"],
+                "streak": streaks.get(d["key"], 1)} for d in promotable]
+    path = root / PROMOTIONS_REL
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError:
+        return
+    for d in promotable:
+        report.promoted.append(d["text"])
+        report.curated.append(
+            f"promoted to the idea engine: {d['key']} "
+            f"(confirmed {streaks.get(d['key'], 1)} dreams, "
+            f"{int(d['confidence'] * 100)}% confidence)")
 
 
 def dream(project_root: str | Path, write_digest: bool = True,
@@ -187,6 +238,10 @@ def dream(project_root: str | Path, write_digest: bool = True,
             continue
     try:
         _consolidate(root, report)
+    except Exception:
+        pass
+    try:
+        _promote(root, report, curate)
     except Exception:
         pass
     if write_digest:
@@ -248,13 +303,21 @@ def _consolidate(root: Path, report: DreamReport) -> None:
         return streak
 
     current: dict[str, str] = {}
-    for bucket in (report.patterns, report.discoveries):
-        for i, text in enumerate(bucket):
-            key = _pattern_key(text)
-            current[key] = text
-            n = _streak(key)
-            if n >= 2:
-                bucket[i] += f"  ⟲ seen in {n} consecutive dreams"
+    streaks: dict[str, int] = {}
+    disc_key_by_index = {i: d["key"] for i, d in enumerate(report.discovery_objs)}
+    for i, text in enumerate(report.patterns):
+        key = _pattern_key(text)
+        current[key] = text
+        streaks[key] = _streak(key)
+        if streaks[key] >= 2:
+            report.patterns[i] += f"  ⟲ seen in {streaks[key]} consecutive dreams"
+    for i, text in enumerate(report.discoveries):
+        key = disc_key_by_index.get(i) or _pattern_key(text)
+        current[key] = text
+        streaks[key] = _streak(key)
+        if streaks[key] >= 2:
+            report.discoveries[i] += f"  ⟲ seen in {streaks[key]} consecutive dreams"
+    report._streaks = streaks  # for promotion
 
     prev = history[-1] if history else {}
     prev_keys = set(prev.keys()) if isinstance(prev, dict) else set(prev)
@@ -281,6 +344,10 @@ def render_dream_markdown(report: DreamReport) -> str:
         lines.append("## Since the last dream")
         lines += [f"- 🆕 {t}" for t in report.new_since]
         lines += [f"- ✅ no longer surfaces: {t}" for t in report.resolved_since]
+        lines.append("")
+    if report.promoted:
+        lines.append("## ⬆️ Graduated to the idea engine (confirmed across dreams)")
+        lines += [f"- {t}" for t in report.promoted]
         lines.append("")
     if report.patterns:
         lines.append("## Patterns")

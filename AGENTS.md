@@ -14,6 +14,27 @@
   (richer seeding signals, deeper facets, better sequencing), not to more
   detectors. Marketing and docs lead with the Idea Engine, always.
 
+## The dreaming layer (self-improvement while you're away)
+
+Apex's nocturnal loop — deterministic, zero tokens, the differentiator:
+
+- `apex dream` reviews the organism's own artifacts (outcome memory, briefs,
+  proof-of-fix, signal trends) and does **open-ended discovery**: mines the
+  full signal-combination space (`app/engine/dream_discovery.py`) for
+  associations, higher-order triples and confluences — no combination coded in
+  advance. Each carries a stable key + confidence.
+- The **dream journal** (`.apex/dream-journal.json`) tracks persistence; the
+  digest narrates a **new/resolved flow** across nights (one journal = no
+  cyclic re-announcement). Default reports; `--curate` applies.
+- **Promotion loop**: a discovery confirmed across `PROMOTE_STREAK` dreams at
+  high confidence GRADUATES to `.apex/dream-promotions.json`, which the
+  `IdeaSeeder` reads as `dream-insight` roots — the organism acting on what it
+  learned. Persistence is the anti-oscillation guard; the store is rewritten
+  fresh each curate so a lapsed law leaves no stale idea.
+- Nightly **dogfood CI** runs `apex dream --curate`; a **SessionStart hook**
+  (`.claude/hooks/session_dream.sh`) surfaces the digest when a session begins
+  — the chief engineer reads the night's dreams first.
+
 ## Build & Test
 
 ```bash

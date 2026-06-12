@@ -214,6 +214,9 @@ class IdeaSeeder:
     downstream idea is traceable to actual code.
     """
 
+    def __init__(self, project_root: str = ".") -> None:
+        self.project_root = str(project_root)
+
     # (profile attribute, max seeds, subject label, title template, fact label)
     _RULES = [
         ("dependency_hubs", 3, "Evolve the central module {s}", "dependency-hub"),
@@ -262,6 +265,30 @@ class IdeaSeeder:
                 source_facts=[f"{fact_label}: {fact_value}"],
             )
         )
+
+    def _dream_promotions(self) -> list[dict]:
+        """Confirmed, graduated dream discoveries (empty without the store)."""
+        import json
+        from pathlib import Path
+
+        root = getattr(self, "project_root", "") or "."
+        path = Path(root) / ".apex" / "dream-promotions.json"
+        if not path.exists():
+            return []
+        try:
+            items = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        out: list[dict] = []
+        for it in items if isinstance(items, list) else []:
+            key = it.get("key", "")
+            # A confluence names a module; bind the idea to it. Associations
+            # are project-wide structure, so they keep the abstract subject.
+            subject = ""
+            if key.startswith("confluence:"):
+                subject = key.split(":", 1)[1]
+            out.append({**it, "subject": subject})
+        return out
 
     def seed(self, profile: ProjectProfile, objective: str | None = None,
              accelerating: dict[str, dict] | None = None) -> list[IdeaNode]:
@@ -406,6 +433,21 @@ class IdeaSeeder:
                 fact_value=f"{spot['module']} ({spot['commits']} commits in recent history)",
             )
 
+        # Dream insights: discoveries the nightly dream CONFIRMED across multiple
+        # dreams and graduated (high confidence + persistence). The organism
+        # acting on what it learned while you were away — guarded so only a
+        # repeatedly-confirmed law ever becomes a development idea.
+        for insight in self._dream_promotions()[:2]:
+            subject = insight.get("subject") or "project structure"
+            self._append_root(
+                roots, seen_subjects,
+                title=f"Act on a confirmed pattern — {insight['text']}",
+                subject=subject,
+                fact_label="dream-insight",
+                fact_value=(f"{insight['key']} ({int(insight.get('confidence', 0) * 100)}% "
+                            f"confidence, confirmed {insight.get('streak', 0)} dreams)"),
+            )
+
         # Knowledge concentration (bus-factor): a module whose recent changes
         # come overwhelmingly from one author is a stability risk the moment
         # that author is unavailable — spread it via docs, tests and pairing.
@@ -523,7 +565,7 @@ class IdeaPermutationEngine:
         cfg = config or {}
         self.project_root = str(project_root)
         self.profiler = ProjectProfiler(self.project_root)
-        self.seeder = IdeaSeeder()
+        self.seeder = IdeaSeeder(self.project_root)
         # Plugins (or callers) can contribute operators to widen the alphabet.
         extra = [
             op if isinstance(op, Operator) else Operator(**op)
@@ -1385,6 +1427,7 @@ _MAGNITUDE_PATTERNS: list[tuple[re.Pattern[str], float]] = [
     # Order matters: a knowledge-risk fact also mentions "across N commits",
     # so the share pattern must win before the generic commits pattern.
     (re.compile(r"(\d+)% single-author"), 100.0),
+    (re.compile(r"(\d+)% confidence"), 100.0),
     (re.compile(r"(\d+) commits"), 50.0),
     (re.compile(r"complexity (\d+)"), 24.0),
 ]
@@ -1423,6 +1466,7 @@ _FACT_HINTS: dict[str, str] = {
     "churn-hotspot": "refactor interface boundary coupling simplify",
     "doc-drift": "documentation drift broken reference promise",
     "knowledge-risk": "bus factor onboarding documentation pairing review",
+    "dream-insight": "structural pattern refactor architecture coupling confirmed",
     "convergence": "complex secret guard validation check edge cases",
     "shallow-coverage": "check validation edge cases assert behaviour",
     "missing-ci": "ci workflow run tests automation",
