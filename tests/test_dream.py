@@ -174,3 +174,23 @@ def test_dashboard_dream_section_empty_without_digest(tmp_path):
     from app.reporting.dashboard import _dream_section
 
     assert _dream_section(str(tmp_path)) == ""
+
+
+def test_promise_ledger_narrates_kept_and_broken(tmp_path):
+    # Dream 1: docs promise a file that doesn't exist (broken, first sighting).
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "real.py").write_text("def f():\n    return 1\n")
+    (tmp_path / "README.md").write_text("See `app/ghost.py` for details.\n")
+
+    first = dream(tmp_path)
+    assert any("💔 promise broken" in p and "app/ghost.py" in p
+               for p in first.patterns)
+
+    # Fix the doc -> the next dream says the promise was KEPT, exactly once.
+    (tmp_path / "README.md").write_text("See `app/real.py` for details.\n")
+    second = dream(tmp_path)
+    assert any("🤝 promise kept" in p and "app/ghost.py" in p
+               for p in second.patterns)
+    # Third dream: nothing new on this front — no repetition.
+    third = dream(tmp_path)
+    assert not any("app/ghost.py" in p for p in third.patterns)

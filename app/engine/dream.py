@@ -138,6 +138,41 @@ def _review_proof(root: Path, report: DreamReport) -> None:
             report.patterns.append(f"{n} steps blocked for the same reason: {reason}.")
 
 
+def _review_promises(root: Path, profile: Any, report: DreamReport) -> None:
+    """The promise ledger — doc-drift, stretched across time (an Apex original).
+
+    Doc-drift says whether the docs lie TODAY; the ledger remembers, so each
+    dream can say which promise was KEPT (a broken reference fixed since the
+    last dream) and which was newly BROKEN. The ledger is the dream's own
+    memory (like the journal), so it is always written; nothing user-owned
+    is touched.
+    """
+    ledger_path = root / ".apex" / "promise-ledger.json"
+    previous: list[dict] = []
+    if ledger_path.exists():
+        try:
+            previous = json.loads(ledger_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            previous = []
+    current = [{"doc": d["doc"], "reference": d["reference"]}
+               for d in (profile.doc_drift or [])]
+    prev_keys = {(p["doc"], p["reference"]) for p in previous}
+    curr_keys = {(c["doc"], c["reference"]) for c in current}
+    for doc, ref in sorted(prev_keys - curr_keys):
+        report.patterns.append(
+            f"🤝 promise kept: `{doc}` no longer points at the missing `{ref}` "
+            "— the doc and the code agree again.")
+    for doc, ref in sorted(curr_keys - prev_keys):
+        report.patterns.append(
+            f"💔 promise broken: `{doc}` now references `{ref}`, which doesn't "
+            "exist — fix the doc or build the promise.")
+    try:
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.write_text(json.dumps(current, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _review_pulse(root: Path, report: DreamReport) -> None:
     """Where the project is alive — churn, trends, knowledge, promises."""
     from app.engine.signal_trends import SignalTrends
@@ -162,6 +197,7 @@ def _review_pulse(root: Path, report: DreamReport) -> None:
         report.patterns.append(
             f"{len(profile.doc_drift)} documentation promise(s) point at files "
             "that don't exist — the docs drifted.")
+    _review_promises(root, profile, report)
     # Open-ended discovery: what travels with what on THIS codebase. No
     # combination is named in advance — the data decides.
     from app.engine.dream_discovery import discover_structured
