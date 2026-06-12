@@ -97,3 +97,24 @@ def test_review_fix_applies_verified_fixes(tmp_path, capsys):
     assert "ast.literal_eval(c)" in fixed   # eval fixed
     assert "o=None" in fixed                # mutable default fixed
     assert "c is None" in fixed             # modernized
+
+
+def test_review_fix_shields_uncovered_file(tmp_path, capsys):
+    # review --fix now runs through the same guarded pass as apex maintain:
+    # an eval fix on a file NO test references gets a shield test first.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def base():\n    return 1\n")
+    (tmp_path / "tests" / "test_other.py").write_text("def test_o():\n    assert True\n")
+    for c in (["git", "init", "-q"], ["git", "config", "user.email", "t@t.com"],
+              ["git", "config", "user.name", "t"], ["git", "add", "-A"],
+              ["git", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]):
+        subprocess.run(c, cwd=tmp_path, capture_output=True)
+    (tmp_path / "app" / "m.py").write_text(
+        "def base():\n    return 1\n\ndef risky(c):\n    return eval(c)\n")
+    rc = cmd_review(_ns(tmp_path, fix=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "🛡️ shielded first by `tests/test_m.py`" in out
+    assert (tmp_path / "tests" / "test_m.py").exists()
+    assert "ast.literal_eval(c)" in (tmp_path / "app" / "m.py").read_text()
