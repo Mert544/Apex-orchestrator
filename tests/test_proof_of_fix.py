@@ -139,3 +139,11 @@ def test_cli_maintain_writes_proof_artifact(tmp_path, capsys):
     assert proof["schema"] == SCHEMA
     assert proof["totals"]["applied"] >= 1
     assert any(f["outcome"] == "applied" and f["diff"] for f in proof["fixes"])
+
+
+def test_summarize_captures_failing_test_names():
+    ev = summarize_test_run(_fake_test_summary(
+        "FAILED tests/test_a.py::test_x - AssertionError\n"
+        "ERROR tests/test_b.py::test_y\n"
+        "1 failed, 3 passed in 1.00s", ok=False))
+    assert ev["failing_tests"] == ["tests/test_a.py::test_x", "tests/test_b.py::test_y"]

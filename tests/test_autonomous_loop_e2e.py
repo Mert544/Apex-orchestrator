@@ -85,8 +85,16 @@ def test_project_tests_still_pass_after_evolve(tmp_path):
     # suite must still pass afterward (verified independently here).
     proj = _messy_project(tmp_path)
     EvolutionLoop(proj, mode="supervised", max_cycles=3, max_apply_per_cycle=6).run()
+    # Isolate like RunTestsSkill does: PYTHONPATH = the project under test ONLY.
+    # An inherited PYTHONPATH (e.g. Apex's own root when Apex verifies itself)
+    # would make the tmp project's namespace `app/` lose to Apex's regular
+    # `app/` package — found by dogfooding `apex auto` on this repo.
+    import os
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(proj)
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-q"],
-        cwd=str(proj), capture_output=True, text=True, timeout=120,
+        cwd=str(proj), capture_output=True, text=True, timeout=120, env=env,
     )
     assert result.returncode == 0, f"project tests broke after evolve:\n{result.stdout[-800:]}"

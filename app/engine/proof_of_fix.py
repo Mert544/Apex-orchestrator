@@ -27,6 +27,8 @@ SCHEMA_VERSION = "1.0"
 _PASSED = re.compile(r"(\d+) passed")
 _FAILED = re.compile(r"(\d+) failed")
 _ERRORS = re.compile(r"(\d+) error")
+# pytest's short summary lines — the names a human needs to act on a failure.
+_FAIL_LINE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
 
 
 def tool_version() -> str:
@@ -49,6 +51,7 @@ def summarize_test_run(summary: Any) -> dict:
     """
     passed = failed = errors = 0
     duration = 0.0
+    failures: list[str] = []
     for res in getattr(summary, "results", None) or []:
         text = (res.get("stdout") or "") + (res.get("stderr") or "")
         for pattern, bump in ((_PASSED, "p"), (_FAILED, "f"), (_ERRORS, "e")):
@@ -62,6 +65,7 @@ def summarize_test_run(summary: Any) -> dict:
                 failed += n
             else:
                 errors += n
+        failures += _FAIL_LINE.findall(text)
         duration += float(res.get("duration_seconds") or 0.0)
     return {
         "performed": bool(getattr(summary, "commands", None)),
@@ -71,6 +75,9 @@ def summarize_test_run(summary: Any) -> dict:
         "tests_passed": passed,
         "tests_failed": failed,
         "errors": errors,
+        # WHICH tests failed (capped): the line a human needs to act on a
+        # rollback without rerunning the whole suite to find out.
+        "failing_tests": failures[:5],
         "duration_seconds": round(duration, 3),
     }
 

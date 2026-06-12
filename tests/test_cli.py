@@ -61,3 +61,13 @@ def test_registry_server_importable():
     from app.registry_server import RegistryHandler, main
     assert RegistryHandler is not None
     assert callable(main)
+
+
+def test_default_project_root_is_cwd(tmp_path, monkeypatch):
+    # `apex` without --target must analyze the directory you're standing in —
+    # not a path derived from the package location (which pointed at the
+    # repo's PARENT from a source checkout; found by dogfooding).
+    from app.cli import _get_project_root
+
+    monkeypatch.chdir(tmp_path)
+    assert _get_project_root() == tmp_path.resolve()

@@ -21,7 +21,16 @@ from app.plugins.registry import PluginRegistry
 
 
 def _get_project_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    """Default target: the project you're standing in.
+
+    `apex` is a tool you run *on the current project*, so the default is the
+    working directory — not a path derived from where the package happens to
+    be installed. (The old __file__-based variant resolved to the REPO'S
+    PARENT when run from a source checkout: every no-`--target` run analyzed
+    the wrong directory, wrote artifacts there, and rolled back every fix
+    because the test suite ran from the wrong root. Found by dogfooding.)
+    """
+    return Path.cwd().resolve()
 
 
 def cmd_agents(args: argparse.Namespace) -> int:
