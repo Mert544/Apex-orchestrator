@@ -1,3 +1,10 @@
+"""Intentionally imperfect demo fixture for the Apex static analyzer.
+
+This microservices module deliberately contains known quality and
+security defects so Apex's detectors and fix transforms have a realistic
+target to find and repair. It is defensive test data that exercises a
+code-analysis tool — not production code, and not an exploit.
+"""
 from __future__ import annotations
 
 import ast
