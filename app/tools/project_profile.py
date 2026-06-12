@@ -46,6 +46,9 @@ class ProjectProfile:
     # Change-frequency hotspots from git history: where development energy
     # concentrates. Each entry: {"module", "commits"}.
     churn_hotspots: list[dict] = field(default_factory=list)
+    # Age (days) of the OLDEST debt marker per flagged module, from git blame —
+    # a 3-year-old FIXME is a different fact than one written yesterday.
+    debt_marker_ages: dict[str, int] = field(default_factory=dict)
 
 
 class ProjectProfiler:
@@ -192,8 +195,55 @@ class ProjectProfiler:
 
         self._populate_python_structure(profile)
         self._scan_churn(profile)
+        self._scan_debt_age(profile)
         self._drop_fixture_signals(profile)
         return profile
+
+    def _scan_debt_age(self, profile: ProjectProfile) -> None:
+        """How long each flagged module's OLDEST debt marker has waited (days).
+
+        Uses ``git blame`` on the (<= 5) debt-marker modules and anchors "now"
+        to the HEAD commit time — not the wall clock — so the result is
+        deterministic for a given repo state. Non-git targets yield no ages.
+        """
+        if not profile.debt_marker_modules:
+            return
+        import subprocess
+
+        def _git(*args: str):
+            return subprocess.run(["git", *args], cwd=self.root,
+                                  capture_output=True, text=True, timeout=15)
+
+        try:
+            head = _git("log", "-1", "--format=%ct")
+        except Exception:
+            return
+        if head.returncode != 0 or not head.stdout.strip():
+            return
+        now = int(head.stdout.strip())
+
+        ages: dict[str, int] = {}
+        for module in profile.debt_marker_modules:
+            try:
+                blame = _git("blame", "--line-porcelain", "--", module)
+            except Exception:
+                continue
+            if blame.returncode != 0:
+                continue
+            oldest: int | None = None
+            ctime: int | None = None
+            for line in blame.stdout.splitlines():
+                if line.startswith("committer-time "):
+                    try:
+                        ctime = int(line.split()[1])
+                    except (IndexError, ValueError):
+                        ctime = None
+                elif line.startswith("\t") and ctime is not None:
+                    if self.DEBT_MARKER_RE.search(line):
+                        oldest = ctime if oldest is None else min(oldest, ctime)
+            if oldest is not None:
+                ages[module] = max(0, (now - oldest) // 86400)
+        profile.debt_marker_ages = ages
 
     def _scan_churn(self, profile: ProjectProfile) -> None:
         """Rank modules by how often recent commits touched them (git churn).

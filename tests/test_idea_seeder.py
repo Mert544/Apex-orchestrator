@@ -278,3 +278,24 @@ def test_churn_hotspot_routes_to_evolve_phase():
     )
     churn = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/busy.py")
     assert classify_phase(churn) == EVOLVE
+
+
+def test_stale_debt_markers_narrate_their_age():
+    profile = _profile(
+        debt_marker_modules=["app/old.py"],
+        debt_marker_ages={"app/old.py": 400},
+        ci_files=["ci.yml"],
+    )
+    root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/old.py")
+    assert "waited 13 months" in root.title
+    assert "oldest ~13 months old" in root.source_facts[0]
+
+
+def test_fresh_debt_markers_keep_plain_title():
+    profile = _profile(
+        debt_marker_modules=["app/new.py"],
+        debt_marker_ages={"app/new.py": 30},  # < 90 days -> no age claim
+        ci_files=["ci.yml"],
+    )
+    root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/new.py")
+    assert root.title == "Address the TODO/FIXME debt markers in app/new.py"

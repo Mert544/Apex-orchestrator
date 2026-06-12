@@ -376,3 +376,42 @@ def test_churn_empty_for_non_git_directory(tmp_path: Path):
     (tmp_path / "app" / "m.py").write_text("def f():\n    return 1\n")
     profile = ProjectProfiler(str(tmp_path)).profile()
     assert profile.churn_hotspots == []
+
+
+def test_debt_marker_age_anchored_to_head_commit(tmp_path: Path):
+    # The oldest marker's age comes from git blame, measured against the HEAD
+    # commit time (not the wall clock) — deterministic for a given repo state.
+    import os
+    import subprocess
+
+    (tmp_path / "app").mkdir()
+    debt = tmp_path / "app" / "old_debt.py"
+    debt.write_text("# TODO: one\n# FIXME: two\n# XXX: three\ndef f():\n    return 1\n")
+
+    def _git(*args: str, date: str = "") -> None:
+        env = dict(os.environ)
+        if date:
+            env["GIT_AUTHOR_DATE"] = env["GIT_COMMITTER_DATE"] = date
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, env=env)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@t.com")
+    _git("config", "user.name", "t")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "old", date="2024-01-01T12:00:00 +0000")
+    (tmp_path / "app" / "fresh.py").write_text("def g():\n    return 2\n")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "new", date="2026-01-01T12:00:00 +0000")
+
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert "app/old_debt.py" in profile.debt_marker_modules
+    age = profile.debt_marker_ages.get("app/old_debt.py")
+    assert age is not None and 700 <= age <= 745  # ~2 years between the commits
+
+
+def test_debt_marker_age_empty_outside_git(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "d.py").write_text("# TODO a\n# FIXME b\n# HACK c\ndef f():\n    return 1\n")
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert profile.debt_marker_modules  # flagged by count
+    assert profile.debt_marker_ages == {}  # but no git history to date them
