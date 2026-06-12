@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Apex Orchestrator — Kurumsal Sunum</title>
+<link rel="icon" href="assets/apex-icon.svg" type="image/svg+xml"/>
+<style>
+:root{
+  --bg:#070a12; --card:rgba(20,28,48,.62); --line:rgba(86,116,178,.28);
+  --ink:#eaf0ff; --muted:#93a4c8; --dim:#5b6b8c;
+  --blue:#58a6ff; --purple:#bc8cff; --teal:#41d6c3; --gold:#e3b341; --green:#3fb950; --red:#ff7b72;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);overflow:hidden;
+  font-family:-apple-system,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+/* ambient 3D orbs */
+.orb{position:fixed;border-radius:50%;filter:blur(70px);opacity:.35;pointer-events:none;z-index:0}
+.orb.a{width:560px;height:560px;left:-160px;top:-180px;background:radial-gradient(circle,#1d3a7a,transparent 70%);animation:drift 16s ease-in-out infinite alternate}
+.orb.b{width:480px;height:480px;right:-140px;bottom:-160px;background:radial-gradient(circle,#3c2a86,transparent 70%);animation:drift 19s ease-in-out infinite alternate-reverse}
+@keyframes drift{from{transform:translate3d(0,0,0) scale(1)}to{transform:translate3d(60px,40px,0) scale(1.12)}}
+
+.slide{position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;z-index:1;
+  padding:6vh 9vw;
+  background:radial-gradient(900px 520px at 72% -12%, rgba(88,166,255,.10), transparent 60%),
+             radial-gradient(720px 520px at 8% 112%, rgba(137,87,229,.10), transparent 60%)}
+.slide.on{display:flex;animation:enter .45s ease-out}
+@keyframes enter{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+
+.eyebrow{font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-bottom:14px}
+h1{font-size:clamp(36px,5.6vw,68px);letter-spacing:-1.6px;line-height:1.04;font-weight:800}
+h2{font-size:clamp(25px,3.5vw,42px);letter-spacing:-.8px;margin-bottom:16px;font-weight:800}
+.gx{background:linear-gradient(100deg,var(--teal),var(--blue) 45%,var(--purple) 85%);-webkit-background-clip:text;background-clip:text;color:transparent}
+p.lead{font-size:clamp(15px,1.7vw,21px);color:#c2cee8;max-width:900px;margin-top:14px;line-height:1.5}
+p.sub{font-size:clamp(13px,1.3vw,16px);color:var(--muted);margin-top:14px}
+
+ul.big{margin:16px 0 0;list-style:none;max-width:980px}
+ul.big li{font-size:clamp(14px,1.55vw,19px);color:#c2cee8;padding:8px 0 8px 32px;position:relative;line-height:1.45}
+ul.big li::before{content:"▸";position:absolute;left:8px;color:var(--purple)}
+ul.big li b{color:var(--ink)}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:24px;max-width:1160px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;
+  transition:transform .25s ease, border-color .25s ease}
+.card:hover{transform:perspective(700px) rotateX(4deg) translateY(-4px);border-color:rgba(120,160,255,.55)}
+.card h3{font-size:16px;margin:8px 0 6px}
+.card p{font-size:13.5px;color:var(--muted);line-height:1.55}
+.card .ico{font-size:22px}
+.card .tag{display:inline-block;margin-top:10px;font-size:11.5px;color:var(--teal);
+  border:1px solid rgba(65,214,195,.35);border-radius:99px;padding:2px 10px}
+.mono.cmd{display:inline-block;margin-top:10px;font-size:12px;color:#9fd8ff;background:rgba(20,40,80,.5);
+  border:1px solid var(--line);border-radius:8px;padding:4px 10px}
+
+.kpis{display:flex;gap:14px;flex-wrap:wrap;margin-top:28px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 26px;text-align:center;min-width:140px}
+.kpi b{display:block;font-size:clamp(24px,3vw,38px);letter-spacing:-1px}
+.kpi span{font-size:12.5px;color:var(--muted)}
+
+.flow{display:flex;gap:0;align-items:stretch;flex-wrap:wrap;margin-top:26px;max-width:1200px}
+.fstep{flex:1;min-width:150px;background:var(--card);border:1px solid var(--line);border-radius:14px;
+  padding:16px;margin:6px;position:relative}
+.fstep h3{font-size:15px;margin:6px 0 4px}
+.fstep p{font-size:12.5px;color:var(--muted);line-height:1.5}
+.fstep .n{position:absolute;top:-11px;left:14px;background:linear-gradient(100deg,var(--blue),var(--purple));
+  color:#06101f;font-weight:800;font-size:11px;border-radius:99px;padding:2px 10px}
+
+table{border-collapse:collapse;margin-top:22px;font-size:clamp(12.5px,1.35vw,15.5px);max-width:1100px}
+th,td{padding:10px 16px;text-align:left;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-size:12px;letter-spacing:.1em;text-transform:uppercase}
+td b{color:var(--ink)}
+td{color:#c2cee8}
+
+/* hero icon, gently rotating in 3D */
+.heroicon{width:clamp(150px,19vw,240px);margin-bottom:26px;perspective:900px}
+.heroicon svg{width:100%;height:auto;animation:float 7s ease-in-out infinite;
+  filter:drop-shadow(0 26px 50px rgba(40,80,200,.35))}
+@keyframes float{0%,100%{transform:rotateY(-9deg) rotateX(5deg) translateY(0)}
+  50%{transform:rotateY(9deg) rotateX(-3deg) translateY(-12px)}}
+
+.quote{border-left:3px solid var(--purple);padding:8px 0 8px 22px;margin-top:26px;max-width:880px}
+.quote p{font-size:clamp(17px,2vw,24px);font-style:italic;color:#dfe8ff;line-height:1.45}
+.quote span{display:block;margin-top:8px;font-size:13px;color:var(--muted)}
+
+.foot{position:fixed;bottom:18px;left:0;right:0;display:flex;justify-content:center;gap:10px;z-index:5}
+.dot{width:9px;height:9px;border-radius:50%;background:#26314f;cursor:pointer;transition:all .2s}
+.dot.on{background:var(--blue);transform:scale(1.35)}
+.pager{position:fixed;bottom:14px;right:22px;color:var(--dim);font-size:12px;z-index:5}
+.bar{position:fixed;top:0;left:0;height:3px;background:linear-gradient(90deg,var(--teal),var(--blue),var(--purple));z-index:6;transition:width .3s}
+.hint{position:fixed;bottom:14px;left:22px;color:var(--dim);font-size:12px;z-index:5}
+</style>
+</head>
+<body>
+<div class="orb a"></div><div class="orb b"></div>
+<div class="bar" id="bar"></div>
+
+<!-- 1 — KAPAK -->
+<section class="slide on">
+  <div class="heroicon" id="heroicon"></div>
+  <h1>APEX <span class="gx">ORCHESTRATOR</span></h1>
+  <p class="lead">Kod tabanınızı <b>anlayan</b>, geliştirme yol haritasını <b>çıkaran</b> ve her düzeltmeyi
+  <b>testle kanıtlayan</b> deterministik mühendislik asistanı.</p>
+  <p class="sub mono">LLM gerektirmez · tamamen çevrimdışı · sıfır token maliyeti · aynı girdi → aynı çıktı</p>
+</section>
+
+<!-- 2 — PROBLEM -->
+<section class="slide">
+  <div class="eyebrow">Problem</div>
+  <h2>LLM'ler kodu hızlı yazar. <span class="gx">Sonra ne olacak?</span></h2>
+  <ul class="big">
+    <li><b>Kanıt yok:</b> üretilen değişikliğin doğru olduğunu kim, neyle gösteriyor?</li>
+    <li><b>Tekrarlanabilirlik yok:</b> aynı soruya yarın farklı cevap — denetlenemez.</li>
+    <li><b>Maliyet:</b> her analiz token yakar; büyük kod tabanında her gün, her CI koşusunda.</li>
+    <li><b>Yön yok:</b> "şu satır hatalı" listeleri var; <i>"sırada ne yapılmalı?"</i> cevabı yok.</li>
+    <li><b>Veri riski:</b> kaynak kod analiz için dışarı, bir API'ye gidiyor.</li>
+  </ul>
+  <div class="quote">
+    <p>"LLM'ler kodu hızlı yazar. Apex hangisinin sağlam olduğunu kanıtlar — ve sırada ne yapılacağını söyler."</p>
+    <span>Apex'in tek cümlelik varlık nedeni</span>
+  </div>
+</section>
+
+<!-- 3 — ORGANİZMA -->
+<section class="slide">
+  <div class="eyebrow">Mimari</div>
+  <h2>Bir araç değil, bir <span class="gx">organizma</span></h2>
+  <p class="lead">Her katman bir sonrakini besler; döngü her gece kendi üzerinde de çalışır.</p>
+  <div class="flow">
+    <div class="fstep"><span class="n">1</span><div class="ico">👁️</div><h3>Gözler</h3><p>9 sinyal sınıfı: yapı, git geçmişi, eş-değişim, bilgi yoğunluğu, karmaşıklık, doküman kayması, ölü parametreler…</p></div>
+    <div class="fstep"><span class="n">2</span><div class="ico">🧠</div><h3>Beyin</h3><p>Fraktal fikir ağacı — her fikir koddaki <b>gerçek bir olguya</b> bağlı, hiçbiri havadan değil.</p></div>
+    <div class="fstep"><span class="n">3</span><div class="ico">🗺️</div><h3>Plan</h3><p>Etki / efor / ROI ile fazlı yol haritası: Stabilize → Secure → Evolve → Refine.</p></div>
+    <div class="fstep"><span class="n">4</span><div class="ico">🤖</div><h3>Eller</h3><p>Gerçek, test-doğrulamalı düzeltmeler; başarısızlıkta otomatik geri sarma.</p></div>
+    <div class="fstep"><span class="n">5</span><div class="ico">📜</div><h3>Kanıt</h3><p>Her uygulanan değişiklik için proof-of-fix kaydı: diff, test kanıtı, doğrulama gücü.</p></div>
+    <div class="fstep"><span class="n">6</span><div class="ico">💤</div><h3>Rüya</h3><p>Gece küratörü kendi hafızasını tarar, örüntü keşfeder, kanıtlananı sabaha tohum yapar.</p></div>
+  </div>
+</section>
+
+<!-- 4 — IDEA ENGINE -->
+<section class="slide">
+  <div class="eyebrow">Çekirdek: Idea Permutation Engine</div>
+  <h2>Fikirler <span class="gx">kanıttan</span> doğar</h2>
+  <ul class="big">
+    <li>Tarama, kod tabanından <b>olgular</b> çıkarır: "şu modül 14 kez değişti", "şu fonksiyonun parametresi hiç okunmuyor".</li>
+    <li>Her olgu bir kök fikir olur; operatör mercekleri (genişlet, sadeleştir, test et, belgele…) onu <b>fraktal</b> derinleştirir.</li>
+    <li>Fikir değeri ölçülür: ilgililik × yenilik × yapılabilirlik + sinyal yakınsaması bonusu.</li>
+    <li><b>İzlenebilirlik:</b> her fikrin yanında onu doğuran olgu ve bazen doğrudan komutu yazar:
+      <span class="mono cmd">apex signature drop render color</span></li>
+  </ul>
+  <p class="sub">Aynı kod tabanı → her seferinde aynı ağaç. Denetlenebilir, diff'lenebilir, CI'da koşturulabilir.</p>
+</section>
+
+<!-- 5 — YOL HARİTASI -->
+<section class="slide">
+  <div class="eyebrow">Yol haritası</div>
+  <h2>"Sırada ne var?" sorusunun <span class="gx">ölçülü</span> cevabı</h2>
+  <table>
+    <tr><th>Faz</th><th>Soru</th><th>Neye dayanır</th></tr>
+    <tr><td><b>1 · Stabilize</b></td><td>Neresi kırılgan?</td><td>test kapsamı, karmaşıklık, bilgi riski</td></tr>
+    <tr><td><b>2 · Secure</b></td><td>Neresi riskli?</td><td>içerik dedektörü + maruziyet süresi (git blame)</td></tr>
+    <tr><td><b>3 · Evolve</b></td><td>Nereden büyür?</td><td>bağımlılık merkezleri, değişim enerjisi</td></tr>
+    <tr><td><b>4 · Refine</b></td><td>Ne sadeleşir?</td><td>ölü ağırlık, doküman kayması, modernizasyon</td></tr>
+  </table>
+  <p class="sub">Etki ve efor tahmin değil ölçümdür: fan-in (kaç modül etkilenir), satır sayısı, bilişsel karmaşıklık.
+  ROI = etki / efor; "hızlı kazanımlar" ayrıca işaretlenir.</p>
+</section>
+
+<!-- 6 — REFACTOR AİLESİ -->
+<section class="slide">
+  <div class="eyebrow">Eller</div>
+  <h2>Proje geliştiren kaslar — <span class="gx">tahmin yok, blokaj var</span></h2>
+  <div class="grid">
+    <div class="card"><div class="ico">✏️</div><h3>rename</h3><p>Fonksiyon/sınıf adı tüm projede: tanım, import'lar, çağrılar. Yorumlar korunur.</p><span class="mono cmd">apex rename old new</span></div>
+    <div class="card"><div class="ico">📦</div><h3>move</h3><p>Modül taşı; her import biçimi projede yeniden yazılır.</p><span class="mono cmd">apex move a/x.py b/y.py</span></div>
+    <div class="card"><div class="ico">➖</div><h3>signature drop</h3><p>Gövdenin hiç okumadığı parametreyi tüm çağrılardan söker. Pozisyonel çağrı varsa durur.</p><span class="mono cmd">apex signature drop f p</span></div>
+    <div class="card"><div class="ico">➕</div><h3>signature add</h3><p>Güvenli varsayılanla yeni parametre — hiçbir çağrı kırılamaz.</p><span class="mono cmd">apex signature add f p --default 3</span></div>
+  </div>
+  <p class="sub">Hepsi aynı sözleşmeyle: belirsizlik = <b>blokaj</b> (asla tahmin), uygulama = <b>testle doğrulama</b>,
+  kızaran süit = <b>tam geri sarma</b>. Bu kaslar bugün Apex'in kendi gövdesindeki ölü parametreleri temizledi.</p>
+</section>
+
+<!-- 7 — GÜVEN KATMANI -->
+<section class="slide">
+  <div class="eyebrow">Güven</div>
+  <h2>Her değişiklik <span class="gx">kanıtla</span> gelir</h2>
+  <ul class="big">
+    <li><b>Risk katmanları:</b> anlam-koruyan düzeltmeler otomatik; davranışa dokunanlar test kapsamı ister; tasarım kararları yalnız öneridir.</li>
+    <li><b>Test kalkanı:</b> kapsamı olmayan kritik modüle dokunmadan önce karakterizasyon testi üretir.</li>
+    <li><b>proof-of-fix.json:</b> diff + test kanıtı + doğrulama gücü — denetime hazır iz.</li>
+    <li><b>Geri sarma:</b> süit kızarırsa her dosya eski haline döner; yarım iş bırakmaz.</li>
+    <li><b>Artı değer:</b> entegre güvenlik kanıtı (SARIF çıktısı, CI kapısı) — ana fikir değil,
+      rakiplerden ayıran <i>yerleşik</i> bir detay.</li>
+  </ul>
+</section>
+
+<!-- 8 — NEDEN LLM'SİZ -->
+<section class="slide">
+  <div class="eyebrow">Kurumsal fark</div>
+  <h2>Neden <span class="gx">LLM'siz</span> çekirdek?</h2>
+  <div class="grid">
+    <div class="card"><div class="ico">🔁</div><h3>Deterministik</h3><p>Aynı kod → aynı analiz → aynı plan. Denetlenebilir ve diff'lenebilir; "dün başka söylüyordu" yok.</p><span class="tag">tekrarlanabilir</span></div>
+    <div class="card"><div class="ico">💸</div><h3>Sıfır token</h3><p>Her gece, her CI koşusunda, her depoda — işletme maliyeti artmaz.</p><span class="tag">maliyet</span></div>
+    <div class="card"><div class="ico">🔒</div><h3>Veri içeride</h3><p>Kaynak kod hiçbir API'ye gitmez. Hava boşluklu ortamda dahi çalışır.</p><span class="tag">gizlilik</span></div>
+    <div class="card"><div class="ico">⚙️</div><h3>CI-yerlisi</h3><p>Çıkış kodlarıyla kapı bekçiliği: not eşiği, inceleme, kıyas — hepsi otomasyona hazır.</p><span class="tag">otomasyon</span></div>
+  </div>
+  <p class="sub">LLM katmanı var ama <b>tercihen ve kapalı</b> gelir — Apex'in iddiaları modele değil, kanıta dayanır.</p>
+</section>
+
+<!-- 9 — RAKAMLAR -->
+<section class="slide">
+  <div class="eyebrow">Bugünkü durum — hepsi ölçülü, hiçbiri yuvarlanmış değil</div>
+  <h2>Rakamlarla <span class="gx">Apex</span></h2>
+  <div class="kpis">
+    <div class="kpi"><b>2.077</b><span>test, tamamı çevrimdışı</span></div>
+    <div class="kpi"><b>A · 96/100</b><span>kendi rubriğiyle kendi notu</span></div>
+    <div class="kpi"><b>20+</b><span>CLI komutu</span></div>
+    <div class="kpi"><b>9</b><span>sinyal sınıfı</span></div>
+    <div class="kpi"><b>0</b><span>token maliyeti</span></div>
+    <div class="kpi"><b>4</b><span>fazlı yol haritası</span></div>
+  </div>
+  <ul class="big" style="margin-top:30px">
+    <li><b>Kalibrasyon:</b> aynı rubrik, SHA'sı sabitlenmiş gerçek projelerde koşar (click, jinja, attrs, httpx) — not şişirilemez.</li>
+    <li><b>Kendi üzerinde:</b> Apex her gece kendini tarar, düzeltir, rüya görür ve sabaha raporlar.</li>
+  </ul>
+</section>
+
+<!-- 10 — KAPANIŞ -->
+<section class="slide">
+  <div class="heroicon" id="heroicon2"></div>
+  <h2>Apex bir organizma: <span class="gx">her gece rüya görür,<br/>her sabah daha akıllı uyanır.</span></h2>
+  <p class="lead">Deterministik çekirdek + kanıtlı eller + fraktal beyin.<br/>
+  Kod tabanınız için: <b>bir tarama uzakta.</b></p>
+  <p class="sub mono">pip install apex-orchestrator &nbsp;·&nbsp; apex &nbsp;·&nbsp; github.com/Mert544/Apex-orchestrator</p>
+</section>
+
+<div class="foot" id="dots"></div>
+<div class="pager" id="pager"></div>
+<div class="hint">← → tuşları veya tıklama</div>
+
+<script>
+const ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Apex Orchestrator">
+  <!-- Apex Orchestrator — the fractal idea tree inside a crystal.
+       The crystal = deterministic, provable, self-contained.
+       The glowing tree = grounded ideas branching from real code facts. -->
+  <defs>
+    <radialGradient id="tile" cx="35%" cy="20%" r="100%">
+      <stop offset="0%" stop-color="#162040"/>
+      <stop offset="55%" stop-color="#0b1126"/>
+      <stop offset="100%" stop-color="#060913"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#46598f"/>
+      <stop offset="100%" stop-color="#141b33"/>
+    </linearGradient>
+    <linearGradient id="faceTop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#a5dcff"/>
+      <stop offset="48%" stop-color="#58a6ff"/>
+      <stop offset="100%" stop-color="#7a5cff"/>
+    </linearGradient>
+    <linearGradient id="faceLeft" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2a4f9f"/>
+      <stop offset="100%" stop-color="#152350"/>
+    </linearGradient>
+    <linearGradient id="faceRight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#5d40d8"/>
+      <stop offset="100%" stop-color="#2a1d66"/>
+    </linearGradient>
+    <linearGradient id="vein" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#41d6c3"/>
+      <stop offset="55%" stop-color="#58a6ff"/>
+      <stop offset="100%" stop-color="#bc8cff"/>
+    </linearGradient>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+  </defs>
+
+  <!-- tile -->
+  <rect x="16" y="16" width="480" height="480" rx="104" fill="url(#tile)"/>
+  <rect x="17" y="17" width="478" height="478" rx="103" fill="none" stroke="url(#rim)" stroke-width="2" stroke-opacity=".85"/>
+
+  <!-- ground shadow -->
+  <ellipse cx="256" cy="420" rx="126" ry="24" fill="#000" opacity=".5" filter="url(#soft)"/>
+
+  <!-- crystal (isometric prism) -->
+  <polygon points="256,112 372,172 256,232 140,172" fill="url(#faceTop)"/>
+  <polygon points="140,172 256,232 256,400 140,340" fill="url(#faceLeft)"/>
+  <polygon points="372,172 256,232 256,400 372,340" fill="url(#faceRight)"/>
+  <polyline points="140,172 256,232 372,172" fill="none" stroke="#dff0ff" stroke-opacity=".55" stroke-width="2.5"/>
+  <line x1="256" y1="232" x2="256" y2="400" stroke="#cfe2ff" stroke-opacity=".3" stroke-width="2"/>
+  <polyline points="140,172 140,340 256,400 372,340 372,172" fill="none" stroke="#9fb6e8" stroke-opacity=".35" stroke-width="2"/>
+
+  <!-- the fractal idea tree, glowing through the front faces -->
+  <g filter="url(#glow)" stroke="url(#vein)" stroke-width="7" stroke-linecap="round" fill="none">
+    <path d="M256,382 L256,328"/>
+    <path d="M256,328 L209,295"/>
+    <path d="M256,328 L303,295"/>
+    <path d="M209,295 L185,256"/>
+    <path d="M209,295 L233,253"/>
+    <path d="M303,295 L279,253"/>
+    <path d="M303,295 L327,256"/>
+  </g>
+  <g filter="url(#glow)">
+    <circle cx="256" cy="382" r="11" fill="#41d6c3"/>
+    <circle cx="209" cy="295" r="8" fill="#58a6ff"/>
+    <circle cx="303" cy="295" r="8" fill="#58a6ff"/>
+    <circle cx="185" cy="256" r="6.5" fill="#bc8cff"/>
+    <circle cx="233" cy="253" r="6.5" fill="#bc8cff"/>
+    <circle cx="279" cy="253" r="6.5" fill="#bc8cff"/>
+    <circle cx="327" cy="256" r="6.5" fill="#bc8cff"/>
+  </g>
+
+  <!-- the apex: a spark above the crystal's peak -->
+  <g filter="url(#glow)">
+    <path d="M256,70 L264,96 L290,104 L264,112 L256,138 L248,112 L222,104 L248,96 Z" fill="#eef6ff"/>
+  </g>
+</svg>`;
+document.getElementById('heroicon').innerHTML = ICON;
+document.getElementById('heroicon2').innerHTML = ICON;
+
+const slides=[...document.querySelectorAll('.slide')];
+const dots=document.getElementById('dots');
+slides.forEach((_,i)=>{const d=document.createElement('div');d.className='dot'+(i===0?' on':'');
+  d.onclick=()=>go(i);dots.appendChild(d)});
+let cur=0;
+function go(i){
+  if(i<0||i>=slides.length)return;
+  slides[cur].classList.remove('on');
+  document.querySelectorAll('.dot')[cur].classList.remove('on');
+  cur=i;
+  slides[cur].classList.add('on');
+  document.querySelectorAll('.dot')[cur].classList.add('on');
+  document.getElementById('pager').textContent=(cur+1)+' / '+slides.length;
+  document.getElementById('bar').style.width=((cur+1)/slides.length*100)+'%';
+}
+go(0);
+addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown')go(cur+1);
+  if(e.key==='ArrowLeft'||e.key==='PageUp')go(cur-1);
+  if(e.key==='Home')go(0); if(e.key==='End')go(slides.length-1);
+});
+addEventListener('click',e=>{
+  if(e.target.closest('.dot'))return;
+  go(e.clientX>innerWidth/2?cur+1:cur-1);
+});
+let tx=null;
+addEventListener('touchstart',e=>tx=e.touches[0].clientX);
+addEventListener('touchend',e=>{
+  if(tx===null)return;
+  const dx=e.changedTouches[0].clientX-tx;
+  if(Math.abs(dx)>50)go(dx<0?cur+1:cur-1);
+  tx=null;
+});
+</script>
+</body>
+</html>

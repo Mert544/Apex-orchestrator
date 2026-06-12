@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Apex Orchestrator">
+  <!-- Apex Orchestrator — the fractal idea tree inside a crystal.
+       The crystal = deterministic, provable, self-contained.
+       The glowing tree = grounded ideas branching from real code facts. -->
+  <defs>
+    <radialGradient id="tile" cx="35%" cy="20%" r="100%">
+      <stop offset="0%" stop-color="#162040"/>
+      <stop offset="55%" stop-color="#0b1126"/>
+      <stop offset="100%" stop-color="#060913"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#46598f"/>
+      <stop offset="100%" stop-color="#141b33"/>
+    </linearGradient>
+    <linearGradient id="faceTop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#a5dcff"/>
+      <stop offset="48%" stop-color="#58a6ff"/>
+      <stop offset="100%" stop-color="#7a5cff"/>
+    </linearGradient>
+    <linearGradient id="faceLeft" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2a4f9f"/>
+      <stop offset="100%" stop-color="#152350"/>
+    </linearGradient>
+    <linearGradient id="faceRight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#5d40d8"/>
+      <stop offset="100%" stop-color="#2a1d66"/>
+    </linearGradient>
+    <linearGradient id="vein" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#41d6c3"/>
+      <stop offset="55%" stop-color="#58a6ff"/>
+      <stop offset="100%" stop-color="#bc8cff"/>
+    </linearGradient>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+  </defs>
+
+  <!-- tile -->
+  <rect x="16" y="16" width="480" height="480" rx="104" fill="url(#tile)"/>
+  <rect x="17" y="17" width="478" height="478" rx="103" fill="none" stroke="url(#rim)" stroke-width="2" stroke-opacity=".85"/>
+
+  <!-- ground shadow -->
+  <ellipse cx="256" cy="420" rx="126" ry="24" fill="#000" opacity=".5" filter="url(#soft)"/>
+
+  <!-- crystal (isometric prism) -->
+  <polygon points="256,112 372,172 256,232 140,172" fill="url(#faceTop)"/>
+  <polygon points="140,172 256,232 256,400 140,340" fill="url(#faceLeft)"/>
+  <polygon points="372,172 256,232 256,400 372,340" fill="url(#faceRight)"/>
+  <polyline points="140,172 256,232 372,172" fill="none" stroke="#dff0ff" stroke-opacity=".55" stroke-width="2.5"/>
+  <line x1="256" y1="232" x2="256" y2="400" stroke="#cfe2ff" stroke-opacity=".3" stroke-width="2"/>
+  <polyline points="140,172 140,340 256,400 372,340 372,172" fill="none" stroke="#9fb6e8" stroke-opacity=".35" stroke-width="2"/>
+
+  <!-- the fractal idea tree, glowing through the front faces -->
+  <g filter="url(#glow)" stroke="url(#vein)" stroke-width="7" stroke-linecap="round" fill="none">
+    <path d="M256,382 L256,328"/>
+    <path d="M256,328 L209,295"/>
+    <path d="M256,328 L303,295"/>
+    <path d="M209,295 L185,256"/>
+    <path d="M209,295 L233,253"/>
+    <path d="M303,295 L279,253"/>
+    <path d="M303,295 L327,256"/>
+  </g>
+  <g filter="url(#glow)">
+    <circle cx="256" cy="382" r="11" fill="#41d6c3"/>
+    <circle cx="209" cy="295" r="8" fill="#58a6ff"/>
+    <circle cx="303" cy="295" r="8" fill="#58a6ff"/>
+    <circle cx="185" cy="256" r="6.5" fill="#bc8cff"/>
+    <circle cx="233" cy="253" r="6.5" fill="#bc8cff"/>
+    <circle cx="279" cy="253" r="6.5" fill="#bc8cff"/>
+    <circle cx="327" cy="256" r="6.5" fill="#bc8cff"/>
+  </g>
+
+  <!-- the apex: a spark above the crystal's peak -->
+  <g filter="url(#glow)">
+    <path d="M256,70 L264,96 L290,104 L264,112 L256,138 L248,112 L222,104 L248,96 Z" fill="#eef6ff"/>
+  </g>
+</svg>
