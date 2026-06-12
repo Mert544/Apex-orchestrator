@@ -151,6 +151,21 @@ def cmd_brief(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dream(args: argparse.Namespace) -> int:
+    """Review the organism's memory stores, extract patterns, curate, digest."""
+    from app.engine.dream import dream, render_dream_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    report = dream(str(target))
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(render_dream_markdown(report))
+        if report.digest_path:
+            print(f"[dream] Digest written to {report.digest_path}")
+    return 0
+
+
 def cmd_grade(args: argparse.Namespace) -> int:
     """Give the project a single health grade (A–F) with a breakdown."""
     from app.engine.health_score import grade, render_grade_markdown
@@ -429,6 +444,15 @@ def main() -> int:
                               help="Re-measure a saved brief: evidence gone = item resolved")
     brief_parser.add_argument("--json", action="store_true", help="Emit JSON")
     brief_parser.set_defaults(func=cmd_brief)
+
+    # dream — scheduled curation over Apex's own memory stores
+    dream_parser = subparsers.add_parser(
+        "dream",
+        help="Review memory stores, extract patterns, curate, and write the dream digest",
+    )
+    dream_parser.add_argument("--target", default="", help="Target project root")
+    dream_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    dream_parser.set_defaults(func=cmd_dream)
 
     # evolve — self-improvement loop: apply → re-measure → prove progress
     evolve_parser = subparsers.add_parser(

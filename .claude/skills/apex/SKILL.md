@@ -52,6 +52,9 @@ without the file). `apex auto` prints what it has learned.
   generalization — the non-executable steps) into an actionable work order: grounding facts,
   measured context (fan-in/LOC/complexity), the fractal facet vocabulary as a checklist, and
   a definition-of-done the engine itself verifies on the next run (`--roadmap --diff`).
+- `apex dream [--target=.]` — the nightly curator: reviews the organism's memory stores
+  (outcome memory, saved briefs, proof-of-fix, signal trends), extracts patterns, archives
+  fully-resolved briefs, trims memory to high-signal keys, writes `.apex/dream-digest.md`.
 - `apex grade [--min-score N]` — single project health grade (A–F) from all signals, with
   a breakdown + cheapest fixes; `--min-score` gates CI.
 - `apex bench [--manifest docs/bench/manifest.json] [--out FILE]` — grade pinned external
