@@ -658,6 +658,15 @@ class IdeaPermutationEngine:
                 if label not in dims_by_subject[subject]:
                     dims_by_subject[subject].append(label)
 
+        # Churn carries its count, so it isn't a plain module list: a subject
+        # many recent commits touch adds the "high-churn" dimension — combined
+        # with a complexity hotspot this is the classic change×complexity
+        # hotspot, the strongest refactoring mandate structure analysis offers.
+        for spot in (getattr(profile, "churn_hotspots", []) or []):
+            subject = spot.get("module", "")
+            if subject and "high-churn" not in dims_by_subject[subject]:
+                dims_by_subject[subject].append("high-churn")
+
         # Coverage is one dimension; take the most-severe label a subject carries.
         crit = set(getattr(profile, "critical_untested_modules", []) or [])
         untested = set(getattr(profile, "untested_modules", []) or [])
@@ -1235,6 +1244,7 @@ _CONVERGENCE_STEPS: dict[str, tuple[int, str, str, str, bool]] = {
     "a complexity hotspot":     (1, "Stabilize", "Cover the complex branches before changing them", "create_test_stub", True),
     "security-sensitive":       (2, "Secure", "Harden inputs and fix risky patterns", "harden_security", True),
     "a central dependency hub": (3, "Evolve", "Reduce coupling and clarify the interface", "design_task", False),
+    "high-churn":               (3, "Evolve", "Smooth the change path so frequent change stays cheap", "design_task", False),
     "debt-laden":               (4, "Refine", "Clear the clustered TODO/FIXME debt", "design_task", False),
 }
 

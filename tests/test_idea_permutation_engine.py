@@ -657,3 +657,36 @@ def test_adaptive_facets_spike_on_the_strongest_branch(tmp_path):
     # the deep spike narrows: at most one facet branch reaches the deepest level
     deepest = max(levels)
     assert sum(1 for f in facets if f.branch_path.count(".f") == deepest) <= 2
+
+
+def test_high_churn_is_a_convergence_dimension():
+    # change x complexity: a module that is BOTH a complexity hotspot and
+    # high-churn converges — the classic strongest-refactoring-mandate signal.
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+
+    profile = ProjectProfile(
+        root=".",
+        hotspot_modules=["app/core.py"],
+        churn_hotspots=[{"module": "app/core.py", "commits": 12},
+                        {"module": "app/quiet.py", "commits": 4}],  # churn alone -> no convergence
+    )
+    eng = IdeaPermutationEngine({"max_total_ideas": 40, "max_idea_depth": 1, "breadth": 3}, ".")
+    eng._has_objective = False
+    eng._chain_counts, eng._subject_counts = {}, {}
+    ideas = eng._convergence_ideas(profile, RelevanceScorer(""), GraphStore())
+    assert len(ideas) == 1
+    idea = ideas[0]
+    assert idea.subject == "app/core.py"
+    assert "a complexity hotspot" in idea.title and "high-churn" in idea.title
+
+
+def test_high_churn_convergence_plan_has_evolve_step():
+    from app.engine.idea_permutation import convergence_plan
+
+    plan = convergence_plan(["a complexity hotspot", "high-churn"])
+    phases = [s["phase"] for s in plan]
+    # Stabilize (cover the hotspot) always precedes Evolve (smooth the change path).
+    assert phases == ["Stabilize", "Evolve"]
+    assert any("change path" in s["step"] for s in plan)
