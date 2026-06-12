@@ -345,7 +345,7 @@ def _coverage_bar(cov: dict[str, Any]) -> str:
     )
 
 
-def _findings_section(findings: dict[str, dict[str, Any]]) -> str:
+def _findings_section(findings: dict[str, dict[str, Any]], project_root: str = "") -> str:
     sec = findings.get("security", {})
     doc = findings.get("docstring", {})
     cov = findings.get("coverage", {})
@@ -358,18 +358,33 @@ def _findings_section(findings: dict[str, dict[str, Any]]) -> str:
             _chip("circular imports", len(dep.get("circular_imports", []) or [])),
         ]
     )
+    shown = (sec.get("findings", []) or [])[:12]
+    # Exposure context: how long each finding has sat in the code, and whether
+    # an entrypoint can reach it — the development context that turns a
+    # finding into a decision. Best-effort: absent git/graph renders "—".
+    exposures: list[str] = []
+    if project_root and shown:
+        try:
+            from app.engine.exposure import analyze_exposure
+
+            pairs = [(str(f.get("file", "")), int(f.get("line", 0) or 0)) for f in shown]
+            exposures = [e.describe() or "—" for e in analyze_exposure(project_root, pairs)]
+        except Exception:
+            exposures = []
     rows = ""
-    for f in (sec.get("findings", []) or [])[:12]:
+    for i, f in enumerate(shown):
         issue = (
             f.get("details") or f.get("risk_type") or f.get("issue") or f.get("risk") or ""
         )
+        exposure = exposures[i] if i < len(exposures) else "—"
         rows += (
             f"<tr><td><code>{_esc(f.get('file', '?'))}:{_esc(f.get('line', '?'))}</code></td>"
-            f"<td>{_esc(issue)}</td><td>{_severity_badge(f.get('severity', ''))}</td></tr>"
+            f"<td>{_esc(issue)}</td><td>{_severity_badge(f.get('severity', ''))}</td>"
+            f"<td>{_esc(exposure)}</td></tr>"
         )
     table = (
-        "<table><thead><tr><th>Location</th><th>Issue</th><th>Severity</th></tr></thead>"
-        f"<tbody>{rows or '<tr><td colspan=3 class=empty>No security findings 🎉</td></tr>'}</tbody></table>"
+        "<table><thead><tr><th>Location</th><th>Issue</th><th>Severity</th><th>Exposure</th></tr></thead>"
+        f"<tbody>{rows or '<tr><td colspan=4 class=empty>No security findings 🎉</td></tr>'}</tbody></table>"
     )
     inner = f"<div class='chips'>{chips}</div>{_coverage_bar(cov)}{table}"
     return _card("findings", "🔍", "Scan findings", inner)
@@ -909,7 +924,7 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
     sections = "".join(
         [
             _overview(profile, findings, idea_report, action_plan, git),
-            _findings_section(findings),
+            _findings_section(findings, project_root),
             _architecture_section(profile),
             _ideas_section(idea_report),
             _shape_section(shape),

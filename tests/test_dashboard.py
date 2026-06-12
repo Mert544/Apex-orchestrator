@@ -230,3 +230,23 @@ def test_profile_section_lists_churn_and_stale_debt():
     assert "app/busy.py · 17 commits" in html_doc
     assert "app/old.py · ~13 months" in html_doc
     assert "app/new.py" not in html_doc  # fresh debt isn't 'stale'
+
+
+def test_findings_table_carries_exposure_context(tmp_path):
+    from app.reporting.dashboard import _findings_section
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text(
+        "def main():\n    return eval('1')\n")
+    findings = {"security": {"findings_count": 1, "findings": [
+        {"file": "app/main.py", "line": 2, "details": "eval() on input", "severity": "high"}]}}
+    html_doc = _findings_section(findings, str(tmp_path))
+    assert "<th>Exposure</th>" in html_doc
+    assert "reachable from `app/main.py`" in html_doc  # entrypoint finding -> exposed
+
+
+def test_findings_table_survives_without_project_root():
+    from app.reporting.dashboard import _findings_section
+
+    html_doc = _findings_section({"security": {"findings_count": 0, "findings": []}})
+    assert "No security findings" in html_doc
