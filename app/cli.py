@@ -96,17 +96,47 @@ def cmd_explain(args: argparse.Namespace) -> int:
 
 
 def cmd_brief(args: argparse.Namespace) -> int:
-    """A design-level idea rendered as an actionable engineering brief."""
-    from app.engine.idea_brief import build_brief, render_brief_markdown
-    from app.engine.idea_permutation import IdeaPermutationEngine
+    """A design-level idea rendered as an actionable engineering brief.
+
+    ``--save`` snapshots the brief's evidence baseline; ``--check`` re-measures
+    a saved brief against the CURRENT code — evidenced items whose evidence
+    vanished are resolved by the scan, not by a checkbox (the burndown).
+    """
+    from app.engine.idea_brief import (
+        build_brief,
+        check_brief,
+        render_brief_markdown,
+        render_check_markdown,
+        save_brief,
+    )
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
+    branch = getattr(args, "branch", "") or ""
+
+    if getattr(args, "check", False):
+        if not branch:
+            print("⛔ --check needs the BRANCH of a previously saved brief "
+                  "(apex brief x.o --save)")
+            return 1
+        result = check_brief(str(target), branch)
+        if result is None:
+            print(f"⛔ no saved brief for `{branch}` — save one first: "
+                  f"apex brief {branch} --save")
+            return 1
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(render_check_markdown(result))
+        return 0
+
+    from app.engine.idea_permutation import IdeaPermutationEngine
+
     report = IdeaPermutationEngine(
         {"max_total_ideas": args.max_ideas, "max_idea_depth": args.depth,
          "breadth": args.breadth},
         project_root=str(target),
     ).run(objective=args.objective or None)
-    brief = build_brief(report, branch_path=getattr(args, "branch", "") or "")
+    brief = build_brief(report, branch_path=branch)
     if brief is None:
         print("No design-level idea to brief (every idea is directly executable).")
         return 1
@@ -114,6 +144,10 @@ def cmd_brief(args: argparse.Namespace) -> int:
         print(json.dumps(brief.to_dict(), indent=2))
     else:
         print(render_brief_markdown(brief))
+    if getattr(args, "save", False):
+        path = save_brief(brief, str(target))
+        print(f"\n[brief] Evidence baseline saved to {path} — "
+              f"measure progress later with: apex brief {brief.branch_path} --check")
     return 0
 
 
@@ -389,6 +423,10 @@ def main() -> int:
     brief_parser.add_argument("--depth", type=int, default=2)
     brief_parser.add_argument("--breadth", type=int, default=4)
     brief_parser.add_argument("--max-ideas", type=int, default=40, dest="max_ideas")
+    brief_parser.add_argument("--save", action="store_true",
+                              help="Snapshot the brief's evidence baseline for --check")
+    brief_parser.add_argument("--check", action="store_true",
+                              help="Re-measure a saved brief: evidence gone = item resolved")
     brief_parser.add_argument("--json", action="store_true", help="Emit JSON")
     brief_parser.set_defaults(func=cmd_brief)
 
