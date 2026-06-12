@@ -348,14 +348,24 @@ class IdeaSeeder:
             )
 
         # Technical-debt markers: modules carrying a cluster of TODO/FIXME/XXX/
-        # HACK comments are concrete, traceable pockets of deferred work.
+        # HACK comments are concrete, traceable pockets of deferred work. When
+        # git blame shows the oldest marker has waited months, the idea says so
+        # — a 3-year-old FIXME is a different fact than one written yesterday.
+        debt_ages = getattr(profile, "debt_marker_ages", {}) or {}
         for module in (getattr(profile, "debt_marker_modules", []) or [])[:3]:
+            title = f"Address the TODO/FIXME debt markers in {module}"
+            fact_value = f"{module} (clustered TODO/FIXME/XXX/HACK comments)"
+            age_days = debt_ages.get(module, 0)
+            if age_days >= 90:
+                months = age_days // 30
+                title += f" — the oldest has waited {months} months"
+                fact_value = f"{module} (clustered debt markers; oldest ~{months} months old)"
             self._append_root(
                 roots, seen_subjects,
-                title=f"Address the TODO/FIXME debt markers in {module}",
+                title=title,
                 subject=module,
                 fact_label="debt-markers",
-                fact_value=f"{module} (clustered TODO/FIXME/XXX/HACK comments)",
+                fact_value=fact_value,
             )
 
         # Change-frequency hotspots (git churn): the modules recent commits
@@ -515,6 +525,20 @@ class IdeaPermutationEngine:
             return 1.0
         return round(min(1.3, 1.0 + 0.06 * n), 4)
 
+    def _facet_share(self) -> float:
+        """The slice of the node budget the fractal zoom may claim.
+
+        Identical to the historical 12% for zoom depth <= 2; stretches
+        proportionally with the *requested* depth (incl. the adaptive bonus,
+        capped at 30%) so asking for a deep zoom actually buys levels instead
+        of exhausting the slice while the base levels are still being laid.
+        """
+        if not self.fractal_facets:
+            return 0.0
+        bonus = self.adaptive_depth_bonus if self.adaptive_depth else 0
+        max_level = self.facet_depth + bonus
+        return min(0.30, 0.12 * max(1.0, max_level / 2))
+
     def run(self, objective: str | None = None) -> IdeaTreeReport:
         profile = self.profiler.profile()
         relevance = RelevanceScorer(objective or "")
@@ -551,7 +575,8 @@ class IdeaPermutationEngine:
         # their own slice carved off the top.
         self._synth_reserve = max(4, int(self.budget.max_total_nodes * 0.15))
         facet_reserve = (
-            max(2, int(self.budget.max_total_nodes * 0.12)) if self.fractal_facets else 0
+            max(2, int(self.budget.max_total_nodes * self._facet_share()))
+            if self.fractal_facets else 0
         )
         perm_cap = max(
             len(emitted),
@@ -971,7 +996,17 @@ class IdeaPermutationEngine:
             and n.id not in perm_parents
         ]
 
-        facet_cap = max(2, int(self.budget.max_total_nodes * 0.12))
+        # Adaptive zoom: high-value branches grow past the base facet_depth by a
+        # bounded bonus, so the fractal *sharpens where it pays off* instead of
+        # faceting every leaf uniformly. The base levels stay wide; each extra
+        # adaptive level narrows to the single strongest branch — a deep spike on
+        # the most valuable leaf rather than shallow breadth everywhere.
+        bonus = self.adaptive_depth_bonus if self.adaptive_depth else 0
+        max_level = self.facet_depth + bonus
+
+        # Same stretched share that run() reserved out of the permutation cap,
+        # so the room the permutation tree left is exactly the room we may use.
+        facet_cap = max(2, int(self.budget.max_total_nodes * self._facet_share()))
         # Never spend the slice reserved for synthesis.
         synth_floor = self.budget.max_total_nodes - getattr(self, "_synth_reserve", 0)
         counter = {"added": 0}
@@ -982,14 +1017,6 @@ class IdeaPermutationEngine:
                 or counter["added"] >= facet_cap
                 or len(emitted) >= synth_floor
             )
-
-        # Adaptive zoom: high-value branches grow past the base facet_depth by a
-        # bounded bonus, so the fractal *sharpens where it pays off* instead of
-        # faceting every leaf uniformly. The base levels stay wide; each extra
-        # adaptive level narrows to the single strongest branch — a deep spike on
-        # the most valuable leaf rather than shallow breadth everywhere.
-        bonus = self.adaptive_depth_bonus if self.adaptive_depth else 0
-        max_level = self.facet_depth + bonus
 
         # Per-level source cap: split the facet budget across ALL the zoom levels
         # (including the adaptive bonus) so the wide base levels leave room for

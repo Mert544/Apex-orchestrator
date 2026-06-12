@@ -732,3 +732,22 @@ def test_facet_subaspects_never_self_reference():
     for key, subs in _FACET_SUBASPECTS.items():
         assert key not in subs
         assert len(subs) == len(set(subs))
+
+
+def test_deep_zoom_budget_stretches_to_reach_level_3(tmp_path):
+    # Asking for facet_depth=3 must actually buy a third level within a normal
+    # budget: the facet share stretches with the requested depth (and stays at
+    # the historical 12% for depth <= 2, so shallow runs are unchanged).
+    _project(tmp_path)
+    rep = IdeaPermutationEngine(
+        {
+            "max_total_ideas": 80,
+            "max_idea_depth": 2,
+            "breadth": 4,
+            "fractal_facets": True,
+            "facet_depth": 3,
+        },
+        tmp_path,
+    ).run()
+    levels = [i.branch_path.count(".f") for i in rep.ideas if i.kind == "facet"]
+    assert levels and max(levels) >= 3, "deep zoom request should reach level 3"
