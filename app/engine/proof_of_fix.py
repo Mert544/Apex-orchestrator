@@ -97,6 +97,7 @@ def _fix_record(r: dict) -> dict:
             "target": r.get("target", ""),
         },
         "transform_type": r.get("transform_type", ""),
+        "risk_tier": r.get("risk_tier", None),
         "outcome": outcome,
         "changed_files": r.get("changed_files") or [],
         "diff": r.get("diff", ""),

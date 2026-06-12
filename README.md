@@ -258,6 +258,8 @@ The run ends with a Markdown report of what was applied, rolled back, or blocked
 
 **Proof‑of‑Fix:** every apply run also writes a machine‑readable evidence record to `.apex/proof-of-fix.json` (`--proof PATH` to relocate): for each fix, the finding it cites, the exact unified diff, the verifying test run (commands, pass/fail counts, duration), and any rollback. Verification is **coverage‑aware and honest about its own strength**: each fix is graded by whether the green suite actually *names the changed function*, merely *references the module*, or never looks at it at all (“applied blind” — flagged with ⚠️). You don't have to trust the report — you can audit it.
 
+**Risk‑tiered autonomy:** every fix carries an explicit risk tier. **Tier 0** (semantics‑preserving: docstrings, import tidying, `== None` → `is None`) auto‑applies under the normal verify/rollback loop. **Tier 1** (behavior‑adjacent: `eval` rewrites, mutable defaults) applies **only when the suite actually covers the target** — if nothing references the module, Apex first generates a 🛡️ characterization test (the *test‑first shield*) and fixes under its protection; if no shield can be built, the fix is **blocked, not gambled**. **Tier 2** (design‑level) is never auto‑applied. The tier is recorded in the proof artifact.
+
 <details>
 <summary><b>🔁 Self‑improvement loop (<code>apex evolve</code>)</b> — converge to a fixpoint, then prove the gain</summary>
 

@@ -182,3 +182,59 @@ def test_shield_recorded_in_proof_and_markdown(tmp_path):
     record = build_proof(summary, str(tmp_path))["fixes"][0]
     assert record["shield_test"] == "tests/test_danger.py"
     assert "🛡️ shielded first by `tests/test_danger.py`" in render_maintenance_markdown(summary, str(tmp_path))
+
+
+def test_tier_mapping_defaults_unknown_to_cautious():
+    from app.execution.risk_tiers import tier_for
+
+    assert tier_for("add_docstring") == 0
+    assert tier_for("create_test_stub") == 0
+    assert tier_for("harden_security") == 1
+    assert tier_for("fix_mutable_defaults") == 1
+    assert tier_for("design_task") == 2
+    assert tier_for("brand_new_transform") == 1  # unknown -> earn Tier 0
+
+
+def test_tier1_blocked_when_no_coverage_and_no_shield(tmp_path, monkeypatch):
+    # Shield generation disabled -> an uncovered tier-1 fix is blocked, not gambled.
+    _shield_project(tmp_path)
+    bridge, plan = _harden_plan(tmp_path)
+    summary = bridge.apply_plan(plan, str(tmp_path), mode="supervised",
+                                verify=True, test_first=False)
+    entry = summary["results"][0]
+    assert entry["applied"] is False
+    assert "tier-1 fix requires a covering test" in entry["reason"]
+    assert summary["blocked"] == 1 and summary["applied"] == 0
+    # The risky file was never touched.
+    assert "eval(e)" in (tmp_path / "app" / "danger.py").read_text()
+
+
+def test_tier0_fix_applies_without_coverage(tmp_path):
+    # A docstring fix (tier 0) on an uncovered module applies normally even
+    # without the shield: it is semantics-preserving.
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.models.idea import ActionPlan, ActionStep
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "plain.py").write_text("def f(x):\n    return x + 1\n")
+    (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n")
+    step = ActionStep(branch_path="x.d", title="doc app/plain.py", operator="document",
+                      subject="app/plain.py", action_type="add_docstring",
+                      target="app/plain.py", executable=True)
+    summary = IdeaActionBridge().apply_plan(
+        ActionPlan(objective="", steps=[step]), str(tmp_path),
+        mode="supervised", verify=True, test_first=False)
+    entry = summary["results"][0]
+    assert entry["applied"] is True
+    assert entry["risk_tier"] == 0
+
+
+def test_tier_recorded_in_proof(tmp_path):
+    from app.engine.proof_of_fix import build_proof
+
+    _shield_project(tmp_path)
+    bridge, plan = _harden_plan(tmp_path)
+    summary = bridge.apply_plan(plan, str(tmp_path), mode="supervised", verify=True)
+    record = build_proof(summary, str(tmp_path))["fixes"][0]
+    assert record["risk_tier"] == 1

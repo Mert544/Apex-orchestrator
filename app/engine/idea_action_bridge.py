@@ -600,17 +600,40 @@ class IdeaActionBridge:
             )
             return self.apply_step(shield_step, project_root, mode=mode, verify=verify)
 
+        from app.execution.risk_tiers import tier_for
+
         for step in plan.executable_steps():
             if max_apply is not None and applied >= max_apply:
                 break
             shield_result = _shield(step)
+            tier = tier_for(step.action_type)
+            label = step.source_facts[0].split(":")[0].strip() if step.source_facts else ""
+
+            # RISK TIER GATE: a Tier-1 (behavior-adjacent) fix is only applied
+            # when the suite actually covers its target — already referenced,
+            # or just shielded. No coverage and no shield -> blocked, not gambled.
+            if tier >= 1 and verify and step.target.endswith(".py"):
+                shielded_now = bool(shield_result and shield_result.get("applied"))
+                if not shielded_now:
+                    from app.engine.verification_strength import module_referenced_by_suite
+
+                    if not module_referenced_by_suite(project_root, step.target):
+                        blocked += 1
+                        results.append({
+                            "branch": step.branch_path, "action": step.action_type,
+                            "operator": step.operator, "label": label,
+                            "target": step.target, "applied": False, "risk_tier": tier,
+                            "reason": ("tier-1 fix requires a covering test — none exists "
+                                       "and no shield test could be generated"),
+                        })
+                        continue
+
             # The first apply classifies the step (applied / rolled-back / blocked),
             # exactly one result row per step.
             r = self.apply_step(step, project_root, mode=mode, verify=verify)
-            label = step.source_facts[0].split(":")[0].strip() if step.source_facts else ""
             entry = {"branch": step.branch_path, "action": step.action_type,
                      "operator": step.operator, "label": label,
-                     "target": step.target, **r}
+                     "target": step.target, "risk_tier": tier, **r}
             if shield_result is not None and shield_result.get("applied"):
                 entry["shield_test"] = (shield_result.get("changed_files") or [""])[0]
                 ok_s, _h = _commit(shield_result, action_label="create_test_stub")

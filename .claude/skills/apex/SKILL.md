@@ -72,7 +72,13 @@ without the file). `apex auto` prints what it has learned.
 
 Safety model: `report` can't patch; `supervised` patches (test-verified, auto-rollback on
 failure) but never commits; `autonomous` also commits each fix individually. SafetyGates
-block sensitive paths / secrets / over-scope.
+block sensitive paths / secrets / over-scope. Risk tiers (`app/execution/risk_tiers.py`):
+Tier 0 (semantics-preserving) auto-applies; Tier 1 (behavior-adjacent) requires the suite
+to cover the target — the test-first shield generates a characterization test when nothing
+references the module, and with no coverage and no shield the fix is BLOCKED; Tier 2
+(design-level) is proposal-only. Verification strength (function/module/none) is graded
+per fix and recorded in `.apex/proof-of-fix.json`. New transforms default to Tier 1 —
+they must earn Tier 0 by being classified in TIER_BY_ACTION.
 
 ## Testing discipline (keep cost low)
 
