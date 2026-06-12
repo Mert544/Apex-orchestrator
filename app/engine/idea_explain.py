@@ -83,6 +83,13 @@ def explain_idea(report: IdeaTreeReport, branch_path: str) -> IdeaExplanation | 
             f"(no objective → weight shifts to the signals that vary) "
             f"= 0.2·{node.relevance} + 0.4·{node.novelty} + 0.4·{node.feasibility} = {node.value}"
         )
+    # The bounded bonuses are part of the score's story — name them when present.
+    from app.engine.idea_permutation import _magnitude_bonus
+
+    magnitude = _magnitude_bonus(node) if node.operator == "root" else 0.0
+    if magnitude:
+        formula += (f" (includes +{magnitude} magnitude bonus: the measured quantity "
+                    f"in the seeding fact — months exposed / commits / complexity)")
 
     # Reconstruct the deterministic derivations the engine used.
     if node.operator == "root":

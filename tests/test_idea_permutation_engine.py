@@ -751,3 +751,50 @@ def test_deep_zoom_budget_stretches_to_reach_level_3(tmp_path):
     ).run()
     levels = [i.branch_path.count(".f") for i in rep.ideas if i.kind == "facet"]
     assert levels and max(levels) >= 3, "deep zoom request should reach level 3"
+
+
+def test_magnitude_bonus_ranks_measured_facts():
+    # One mechanism for every measured signal: the number in the fact moves
+    # the ranking, bounded like the other scoring bonuses.
+    from app.engine.idea_permutation import _magnitude_bonus
+    from app.models.idea import IdeaNode
+
+    def _root(fact):
+        return IdeaNode(id="i", title="t", subject="s", operator="root",
+                        operator_chain=["root"], source_facts=[fact])
+
+    old = _magnitude_bonus(_root("security-finding: app/d.py (security finding, in the code ~14 months)"))
+    fresh = _magnitude_bonus(_root("security-finding: app/d.py (eval/os.system/pickle/... detected)"))
+    assert old > fresh == 0.0
+    busy = _magnitude_bonus(_root("churn-hotspot: app/cli.py (51 commits in recent history)"))
+    quiet = _magnitude_bonus(_root("churn-hotspot: app/q.py (4 commits in recent history)"))
+    assert busy > quiet > 0.0
+    assert busy == 0.08  # saturated at 50 commits
+    complex_fn = _magnitude_bonus(_root(
+        "hotspot-function: app/m.py::f (complexity 23, line 4, no direct tests)"))
+    assert 0.0 < complex_fn <= 0.08
+
+
+def test_magnitude_bonus_lifts_root_value_in_tree(tmp_path):
+    # End to end: an exposed-for-months security root outranks the identical
+    # fresh one in the scored tree.
+    from app.engine.idea_permutation import IdeaSeeder
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.tools.project_profile import ProjectProfile
+
+    eng = IdeaPermutationEngine({"max_total_ideas": 20, "max_idea_depth": 1}, tmp_path)
+    eng._has_objective = False
+    eng._chain_counts, eng._subject_counts = {}, {}
+    profile = ProjectProfile(
+        root=".",
+        security_finding_modules=["app/old.py", "app/new.py"],
+        security_finding_ages={"app/old.py": 430},   # new.py: no measured age
+        ci_files=["ci.yml"],
+    )
+    roots = IdeaSeeder().seed(profile)
+    scorer = RelevanceScorer("")
+    for r in roots:
+        eng._score(r, scorer)
+    by_subject = {r.subject: r for r in roots}
+    assert by_subject["app/old.py"].value > by_subject["app/new.py"].value
+    assert by_subject["app/old.py"].value <= 1.0

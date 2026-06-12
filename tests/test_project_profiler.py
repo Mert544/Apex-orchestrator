@@ -415,3 +415,30 @@ def test_debt_marker_age_empty_outside_git(tmp_path: Path):
     profile = ProjectProfiler(str(tmp_path)).profile()
     assert profile.debt_marker_modules  # flagged by count
     assert profile.debt_marker_ages == {}  # but no git history to date them
+
+
+def test_security_finding_age_measures_exposure_window(tmp_path: Path):
+    import os
+    import subprocess
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "danger.py").write_text("def run(e):\n    return eval(e)\n")
+
+    def _git(*args: str, date: str = "") -> None:
+        env = dict(os.environ)
+        if date:
+            env["GIT_AUTHOR_DATE"] = env["GIT_COMMITTER_DATE"] = date
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, env=env)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@t.com")
+    _git("config", "user.name", "t")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "old", date="2025-06-01T12:00:00 +0000")
+    (tmp_path / "app" / "fresh.py").write_text("F = 1\n")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "new", date="2026-06-01T12:00:00 +0000")
+
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    age = profile.security_finding_ages.get("app/danger.py")
+    assert age is not None and 358 <= age <= 372  # ~1 year exposure window

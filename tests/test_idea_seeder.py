@@ -299,3 +299,24 @@ def test_fresh_debt_markers_keep_plain_title():
     )
     root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/new.py")
     assert root.title == "Address the TODO/FIXME debt markers in app/new.py"
+
+
+def test_old_security_finding_narrates_exposure_window():
+    profile = _profile(
+        security_finding_modules=["app/danger.py"],
+        security_finding_ages={"app/danger.py": 430},
+        ci_files=["ci.yml"],
+    )
+    root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/danger.py")
+    assert "exposed for ~14 months" in root.title
+    assert "in the code ~14 months" in root.source_facts[0]
+
+
+def test_fresh_security_finding_keeps_plain_title():
+    profile = _profile(
+        security_finding_modules=["app/danger.py"],
+        security_finding_ages={"app/danger.py": 20},
+        ci_files=["ci.yml"],
+    )
+    root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/danger.py")
+    assert root.title == "Fix the security findings in app/danger.py"

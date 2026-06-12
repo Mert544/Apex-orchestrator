@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -271,14 +272,24 @@ class IdeaSeeder:
             )
         # Content-based security findings: the file actually contains eval/
         # os.system/pickle/... — point harden straight at it, regardless of
-        # whether its *name* matched a sensitive hint.
+        # whether its *name* matched a sensitive hint. When git blame shows
+        # the finding has been sitting in the code for months, the idea says
+        # so: the EXPOSURE WINDOW is part of the fact, not editorializing.
+        sec_ages = getattr(profile, "security_finding_ages", {}) or {}
         for module in (getattr(profile, "security_finding_modules", []) or [])[:3]:
+            title = f"Fix the security findings in {module}"
+            fact_value = f"{module} (eval/os.system/pickle/... detected)"
+            age_days = sec_ages.get(module, 0)
+            if age_days >= 90:
+                months = age_days // 30
+                title += f" — exposed for ~{months} months"
+                fact_value = f"{module} (security finding, in the code ~{months} months)"
             self._append_root(
                 roots, seen_subjects,
-                title=f"Fix the security findings in {module}",
+                title=title,
                 subject=module,
                 fact_label="security-finding",
-                fact_value=f"{module} (eval/os.system/pickle/... detected)",
+                fact_value=fact_value,
             )
 
         # Fragility first (highest priority): heavily-depended-on but thinly
@@ -1220,6 +1231,16 @@ class IdeaPermutationEngine:
         # value-guided zoom drills into what is *demonstrably* there.
         if node.kind == "facet" and any(f.startswith("evidence:") for f in node.source_facts):
             node.value = round(min(1.0, node.value + 0.08), 4)
+        # Magnitude bonus: when the seeding fact carries a MEASURED quantity —
+        # months a finding/debt has sat in the code, commits of churn, branch
+        # complexity — the number itself moves the ranking (bounded like the
+        # other bonuses). One mechanism for every measured signal: a 14-month
+        # exposure outranks a fresh one, a 50-commit hotspot outranks a
+        # 5-commit one, without any signal-specific special cases.
+        if node.operator == "root":
+            bonus = _magnitude_bonus(node)
+            if bonus:
+                node.value = round(min(1.0, node.value + bonus), 4)
         # Feed operator/fact context so counterfactual caveats are relevant to
         # the development direction, not generic. Symbol-granular subjects
         # (``mod.py::Class.func``) also pass the symbol so caveats can name the
@@ -1264,6 +1285,28 @@ _OPERATOR_HINTS: dict[str, str] = {
     "extend": "validation guard new input",
     "generalize": "configurable check reusable",
 }
+# Measured magnitudes a seeding fact can carry, each with the value at which
+# the bonus saturates: ~16 months of exposure/debt, 50 commits of churn, or
+# branch complexity 24 all earn the full bonus. Shared cap matches the other
+# scoring bonuses (convergence/evidence) so no single mechanism dominates.
+_MAGNITUDE_PATTERNS: list[tuple[re.Pattern[str], float]] = [
+    (re.compile(r"~(\d+) months"), 16.0),
+    (re.compile(r"(\d+) commits"), 50.0),
+    (re.compile(r"complexity (\d+)"), 24.0),
+]
+_MAGNITUDE_CAP = 0.08
+
+
+def _magnitude_bonus(node: IdeaNode) -> float:
+    """Bounded value lift from the measured quantity in the seeding fact."""
+    fact = node.source_facts[0] if node.source_facts else ""
+    for pattern, saturation in _MAGNITUDE_PATTERNS:
+        m = pattern.search(fact)
+        if m:
+            return round(_MAGNITUDE_CAP * min(1.0, int(m.group(1)) / saturation), 4)
+    return 0.0
+
+
 _FACT_HINTS: dict[str, str] = {
     "sensitive-path": "guard validation secret check",
     "security-finding": "eval exec os.system pickle secret guard validation",

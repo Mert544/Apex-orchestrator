@@ -49,6 +49,9 @@ class ProjectProfile:
     # Age (days) of the OLDEST debt marker per flagged module, from git blame —
     # a 3-year-old FIXME is a different fact than one written yesterday.
     debt_marker_ages: dict[str, int] = field(default_factory=dict)
+    # Age (days) of the OLDEST security finding per flagged module — how long
+    # the risk has been sitting in the code (its exposure window).
+    security_finding_ages: dict[str, int] = field(default_factory=dict)
 
 
 class ProjectProfiler:
@@ -196,8 +199,35 @@ class ProjectProfiler:
         self._populate_python_structure(profile)
         self._scan_churn(profile)
         self._scan_debt_age(profile)
+        self._scan_security_exposure_age(profile)
         self._drop_fixture_signals(profile)
         return profile
+
+    def _scan_security_exposure_age(self, profile: ProjectProfile) -> None:
+        """How long each flagged module's OLDEST security finding has existed.
+
+        Uses the canonical detector for the finding lines and git blame for
+        their birth dates (HEAD-anchored, like debt age) — the *exposure
+        window* the idea engine narrates when prioritizing security work.
+        """
+        if not profile.security_finding_modules:
+            return
+        from app.engine.detectors import detect
+        from app.engine.exposure import blame_age_days
+
+        ages: dict[str, int] = {}
+        for module in profile.security_finding_modules:
+            try:
+                source = (self.root / module).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            line_ages = [
+                age for issue in detect(source) if issue.category == "security"
+                and (age := blame_age_days(self.root, module, issue.line)) is not None
+            ]
+            if line_ages:
+                ages[module] = max(line_ages)
+        profile.security_finding_ages = ages
 
     def _scan_debt_age(self, profile: ProjectProfile) -> None:
         """How long each flagged module's OLDEST debt marker has waited (days).

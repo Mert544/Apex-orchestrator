@@ -55,3 +55,33 @@ def test_explain_json(tmp_path, capsys):
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert "value_formula" in payload and "roi" in payload
+
+
+def test_explain_names_the_magnitude_bonus(tmp_path, capsys):
+    # An idea seeded from a measured fact explains its bonus in the formula.
+    import os
+    import subprocess
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "danger.py").write_text("def run(e):\n    return eval(e)\n")
+
+    def _git(*args: str, date: str = "") -> None:
+        env = dict(os.environ)
+        if date:
+            env["GIT_AUTHOR_DATE"] = env["GIT_COMMITTER_DATE"] = date
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, env=env)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@t.com")
+    _git("config", "user.name", "t")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "old", date="2025-01-01T12:00:00 +0000")
+    (tmp_path / "app" / "fresh.py").write_text("F = 1\n")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "new", date="2026-06-01T12:00:00 +0000")
+
+    rc = cmd_explain(_ns(tmp_path))
+    out = capsys.readouterr().out
+    assert rc == 0
+    if "magnitude bonus" in out:           # the exposed finding ranked top
+        assert "months exposed / commits / complexity" in out
