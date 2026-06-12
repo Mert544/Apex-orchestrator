@@ -85,9 +85,15 @@ def _lens_for(node: IdeaNode) -> str:
     return _LABEL_LENS.get(label, "extend")
 
 
-def build_brief(report: IdeaTreeReport, branch_path: str = "") -> Brief | None:
-    """The brief for ``branch_path`` — or for the most valuable design-level
-    idea when no branch is given. None when the tree has no such idea."""
+def build_brief(report: IdeaTreeReport, branch_path: str = "",
+                subject: str = "") -> Brief | None:
+    """The brief for ``branch_path``/``subject`` — or for the most valuable
+    design-level idea when neither is given. None when nothing matches.
+
+    Prefer ``subject`` (a module path) when saving for a later ``--check``:
+    branch paths drift run to run as the tree reseeds, but a subject names
+    the same work tomorrow.
+    """
     from app.engine.idea_action_bridge import IdeaActionBridge
 
     bridge = IdeaActionBridge()
@@ -96,11 +102,16 @@ def build_brief(report: IdeaTreeReport, branch_path: str = "") -> Brief | None:
         if branch_path and node.branch_path == branch_path:
             candidates = [node]
             break
-        if not branch_path and not bridge.plan_idea(node).executable:
+        if subject and not branch_path:
+            base = node.subject.split(" :: ", 1)[0].split("::", 1)[0]
+            if base == subject:
+                candidates.append(node)
+        elif not branch_path and not bridge.plan_idea(node).executable:
             candidates.append(node)
     if not candidates:
         return None
-    node = max(candidates, key=lambda n: (n.value, n.branch_path)) if not branch_path else candidates[0]
+    node = (candidates[0] if branch_path
+            else max(candidates, key=lambda n: (n.value, n.branch_path)))
 
     subject_module = node.subject.split(" :: ", 1)[0].split("::", 1)[0]
     fan_in = (report.stats.get("fan_in") or {}).get(subject_module)

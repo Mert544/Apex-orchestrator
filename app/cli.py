@@ -136,7 +136,8 @@ def cmd_brief(args: argparse.Namespace) -> int:
          "breadth": args.breadth},
         project_root=str(target),
     ).run(objective=args.objective or None)
-    brief = build_brief(report, branch_path=branch)
+    brief = build_brief(report, branch_path=branch,
+                        subject=getattr(args, "subject", "") or "")
     if brief is None:
         print("No design-level idea to brief (every idea is directly executable).")
         return 1
@@ -473,6 +474,9 @@ def main() -> int:
     brief_parser.add_argument("branch", nargs="?", default="",
                               help="Branch path (default: the top design-level idea)")
     brief_parser.add_argument("--target", default="", help="Target project root")
+    brief_parser.add_argument("--subject", default="",
+                              help="Target by MODULE PATH (stable across runs, "
+                                   "unlike branch paths — prefer this with --save)")
     brief_parser.add_argument("--objective", default="", help="Optional focus")
     brief_parser.add_argument("--depth", type=int, default=2)
     brief_parser.add_argument("--breadth", type=int, default=4)

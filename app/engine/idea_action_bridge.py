@@ -251,6 +251,27 @@ class IdeaActionBridge:
         text = cls._read(project_root, rel_path)
         return has_negated_comparison(text) if text is not None else False
 
+    # The detection ladder, most-severe first — DATA, not branches: each rung
+    # is (detector method, change strategy, title template). Adding a rung is
+    # one line; the dispatch below never changes. (This function was the
+    # brief's evidence pin: "8 branches" — the table dissolves them.)
+    _HARDEN_LADDER: tuple[tuple[str, str, str], ...] = (
+        ("_has_mutable_default", "mutable default argument",
+         "Fix mutable default arguments in {t}"),
+        ("_detect_modernization", "modernize none-comparison",
+         "Modernize comparisons in {t}"),
+        ("_detect_open_encoding", "open-encoding",
+         "Add explicit open() encoding in {t}"),
+        ("_detect_net_timeout", "net-timeout",
+         "Add request timeouts in {t}"),
+        ("_detect_identity_literal", "identity-literal",
+         "Fix identity-vs-literal comparisons in {t}"),
+        ("_detect_negated_comparison", "negated-comparison",
+         "Simplify negated comparisons in {t}"),
+        ("_detect_raise_from", "raise-from",
+         "Chain re-raised exceptions to their cause in {t}"),
+    )
+
     @classmethod
     def _harden_change_strategy(cls, project_root: str, target: str) -> tuple[list[str], str] | None:
         """Pick the harden fix for the most important *real* issue in ``target``.
@@ -263,20 +284,9 @@ class IdeaActionBridge:
         issue = cls._detect_security_issue(project_root, target)
         if issue:
             return [f"fix {issue} security"], f"Fix {issue} in {target}"
-        if cls._has_mutable_default(project_root, target):
-            return ["mutable default argument"], f"Fix mutable default arguments in {target}"
-        if cls._detect_modernization(project_root, target):
-            return ["modernize none-comparison"], f"Modernize comparisons in {target}"
-        if cls._detect_open_encoding(project_root, target):
-            return ["open-encoding"], f"Add explicit open() encoding in {target}"
-        if cls._detect_net_timeout(project_root, target):
-            return ["net-timeout"], f"Add request timeouts in {target}"
-        if cls._detect_identity_literal(project_root, target):
-            return ["identity-literal"], f"Fix identity-vs-literal comparisons in {target}"
-        if cls._detect_negated_comparison(project_root, target):
-            return ["negated-comparison"], f"Simplify negated comparisons in {target}"
-        if cls._detect_raise_from(project_root, target):
-            return ["raise-from"], f"Chain re-raised exceptions to their cause in {target}"
+        for detector, strategy, title in cls._HARDEN_LADDER:
+            if getattr(cls, detector)(project_root, target):
+                return [strategy], title.format(t=target)
         return None
 
     def _generate(self, step: ActionStep, project_root: str):

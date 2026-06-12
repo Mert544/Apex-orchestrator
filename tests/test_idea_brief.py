@@ -164,3 +164,15 @@ def test_cli_brief_save_then_check(tmp_path, capsys):
                              save=False, check=True)
     assert cmd_brief(ns2) == 0
     assert "Brief burndown" in capsys.readouterr().out
+
+
+def test_brief_targets_by_stable_subject(tmp_path):
+    # Branch paths drift between runs; a subject names the same work tomorrow.
+    from app.engine.idea_brief import build_brief
+
+    _hub_project(tmp_path)
+    report = _report(tmp_path)
+    brief = build_brief(report, subject="app/core.py")
+    assert brief is not None
+    assert brief.subject.split(" :: ", 1)[0] == "app/core.py"
+    assert build_brief(report, subject="app/ghost.py") is None
