@@ -37,6 +37,19 @@ def cmd_maintain(args: argparse.Namespace) -> int:
     bridge = IdeaActionBridge()
     plan = bridge.plan_tree(report, mode=args.mode, top=(args.top or None), project_root=str(target))
 
+    # --recipe: scope the pass to one named intent (typo fails loudly).
+    recipe = getattr(args, "recipe", "") or ""
+    if recipe:
+        from app.execution.recipes import filter_plan
+
+        try:
+            remaining = filter_plan(plan, recipe)
+        except ValueError as exc:
+            print(f"⛔ {exc}")
+            return 1
+        print(f"[maintain] scoped to recipe `{recipe}` — "
+              f"{remaining} executable step(s) in scope")
+
     # Dry-run: preview the diffs without touching anything.
     if getattr(args, "dry_run", False):
         preview = bridge.dry_run_plan(plan, str(target))

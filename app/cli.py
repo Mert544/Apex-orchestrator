@@ -192,6 +192,19 @@ def cmd_outcomes(args: argparse.Namespace) -> int:
     return 0 if report.passed else 1
 
 
+def cmd_recipes(args: argparse.Namespace) -> int:
+    """List the named, composable transform catalog."""
+    from app.execution.recipes import COMPOSITES, RECIPES, render_recipes_markdown
+
+    if args.json:
+        print(json.dumps({"recipes": [r.to_dict() for r in RECIPES.values()],
+                          "composites": {k: list(v) for k, v in COMPOSITES.items()}},
+                         indent=2))
+    else:
+        print(render_recipes_markdown())
+    return 0
+
+
 def cmd_grade(args: argparse.Namespace) -> int:
     """Give the project a single health grade (A–F) with a breakdown."""
     from app.engine.health_score import grade, render_grade_markdown
@@ -492,6 +505,14 @@ def main() -> int:
                                  help="Write a starter rubric to .apex/outcomes.json")
     outcomes_parser.add_argument("--json", action="store_true", help="Emit JSON")
     outcomes_parser.set_defaults(func=cmd_outcomes)
+
+    # recipes — the named, composable transform catalog
+    recipes_parser = subparsers.add_parser(
+        "recipes",
+        help="List the transform catalog as named, composable recipes",
+    )
+    recipes_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    recipes_parser.set_defaults(func=cmd_recipes)
 
     # evolve — self-improvement loop: apply → re-measure → prove progress
     evolve_parser = subparsers.add_parser(
@@ -1006,6 +1027,8 @@ def main() -> int:
         "--max-apply", type=int, default=0, dest="max_apply",
         help="Cap how many steps to apply (0 = no cap)",
     )
+    maintain_parser.add_argument("--recipe", default="",
+                                 help="Scope the pass to one recipe/composite (see `apex recipes`)")
     maintain_parser.add_argument("--json", action="store_true", help="Emit JSON summary")
     maintain_parser.add_argument("--out", default="", help="Write the Markdown report to this path")
     maintain_parser.add_argument(
