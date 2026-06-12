@@ -107,6 +107,7 @@ _FACET_CAVEAT_RULES: list[tuple[tuple[str, ...], str]] = [
     (("metric", "log", "trace", "span", "counter", "histogram", "correlation"), "What failure currently happens with no signal to catch it?"),
     (("schema", "contract", "field", "type and shape", "signatures and types"), "What consumer breaks when this contract shifts?"),
     (("cleanup", "rollback", "partial", "interrupted", "failure case", "failure mode", "failure semantics"), "When this fails midway, what partial state or resource is left behind?"),
+    (("error handling", "catch specificity", "error propagation"), "What exception type slips past — or gets silently swallowed by — this handler?"),
     (("dependency", "unavailable", "down"), "What if the thing this depends on is down or slow?"),
     (("dead code", "unreferenced", "unreachable", "redundant"), "What dynamic or reflective use makes this 'dead' code actually live?"),
     (("duplicat", "shared helper", "single source", "variants"), "What subtle difference between the copies does merging them erase?"),
@@ -440,6 +441,7 @@ class IdeaPermutationEngine:
         self.novelty = NoveltyScorer(graph)  # reuse the dedup-backed scorer
         self._chain_counts: dict[str, int] = {}  # per-run, for deterministic novelty
         self._subject_counts: dict[str, int] = {}  # subject-diversity novelty signal
+        self._source_cache: dict[str, str | None] = {}  # subject-module sources (facet evidence)
         # Security pressure: how strongly real findings should bias harden/test
         # weighting. Scales 1.0 (none) → up to 1.3 (many findings). Best-effort.
         self._security_pressure = self._scan_security_pressure()
@@ -971,8 +973,31 @@ class IdeaPermutationEngine:
             return subs
         return [c for c in _FACET_CASES if c not in used]
 
+    def _subject_source(self, subject: str) -> str | None:
+        """The subject module's source (cached per run) — or None for abstract
+        subjects ("CI pipeline") that have no file to look at."""
+        base = subject.split(" :: ", 1)[0].split("::", 1)[0]
+        if not base.endswith(".py"):
+            return None
+        if base not in self._source_cache:
+            try:
+                self._source_cache[base] = (Path(self.project_root) / base).read_text(
+                    encoding="utf-8", errors="ignore"
+                )
+            except OSError:
+                self._source_cache[base] = None
+        return self._source_cache[base]
+
     def _facet_children(self, node: IdeaNode, level: int) -> list[IdeaNode]:
-        """Build the facet sub-ideas that zoom into ``node`` at ``level``."""
+        """Build the facet sub-ideas that zoom into ``node`` at ``level``.
+
+        Each facet is *grounded where possible*: the canonical detector checks
+        the subject's actual code for the concern the phrase names, so a facet
+        is either a verified observation (with file:line evidence) or an honest
+        hypothesis — and the value-guided spike follows the evidence.
+        """
+        from app.engine.facet_evidence import evidence_for_facet
+
         children: list[IdeaNode] = []
         # The zoom path so far ("failure modes → partial or interrupted
         # operation") — the rationale should narrate the descent, not recite ids.
@@ -980,24 +1005,35 @@ class IdeaPermutationEngine:
             f.split("facet:", 1)[1].strip()
             for f in node.source_facts if f.startswith("facet:")
         ]
+        base = node.subject.split(" :: ", 1)[0]
+        source = self._subject_source(node.subject)
         for j, phrase in enumerate(self._facet_vocab(node, level)[: self.facets_per_idea]):
             trail = " → ".join([*zoom_path, phrase])
+            evidence = evidence_for_facet(source, phrase) if source else []
+            facts = list(node.source_facts) + [f"facet: {phrase}"]
+            rationale = (
+                f"Fractal zoom L{level} on {base}: {trail} — each level narrows "
+                f"the work to one concern an engineer can act on."
+            )
+            if evidence:
+                line, detail = evidence[0]
+                facts += [f"evidence: {base}:{ln} — {d}" for ln, d in evidence]
+                rationale = (
+                    f"Fractal zoom L{level} on {base}: {trail} — verified in the "
+                    f"code: line {line}, {detail}."
+                )
             children.append(
                 IdeaNode(
                     id=f"{node.id}-f{j}",
                     title=f"{node.title} — {phrase}",
                     subject=f"{node.subject} :: {phrase}",
-                    rationale=(
-                        f"Fractal zoom L{level} on {node.subject.split(' :: ', 1)[0]}: "
-                        f"{trail} — each level narrows the work to one concern an "
-                        f"engineer can act on."
-                    ),
+                    rationale=rationale,
                     branch_path=f"{node.branch_path}.f{j}",
                     depth=node.depth + 1,
                     parent_id=node.id,
                     operator=node.operator,
                     operator_chain=list(node.operator_chain),
-                    source_facts=list(node.source_facts) + [f"facet: {phrase}"],
+                    source_facts=facts,
                     feasibility=node.feasibility,
                     kind="facet",
                 )
@@ -1061,6 +1097,11 @@ class IdeaPermutationEngine:
         conv = convergence_labels(node)
         if len(conv) >= 2:
             node.value = round(min(1.0, node.value + 0.08 * (len(conv) - 1)), 4)
+        # Evidence bonus: a facet whose concern was verified in the actual code
+        # (a real finding at a real line) outranks a sibling hypothesis, so the
+        # value-guided zoom drills into what is *demonstrably* there.
+        if node.kind == "facet" and any(f.startswith("evidence:") for f in node.source_facts):
+            node.value = round(min(1.0, node.value + 0.08), 4)
         # Feed operator/fact context so counterfactual caveats are relevant to
         # the development direction, not generic. Symbol-granular subjects
         # (``mod.py::Class.func``) also pass the symbol so caveats can name the
@@ -1085,10 +1126,12 @@ class IdeaPermutationEngine:
         # stress-test of *that* concern so the fractal deepens the reasoning, not
         # just the title. The lens caveat stays as the second scenario.
         if node.kind == "facet" and node.source_facts:
-            phrase = node.source_facts[-1].split("facet:", 1)[-1].strip()
-            specific = self._facet_caveat(phrase)
-            if specific:
-                node.caveats = [specific] + [c for c in node.caveats if c != specific][:1]
+            facet_facts = [f for f in node.source_facts if f.startswith("facet:")]
+            if facet_facts:
+                phrase = facet_facts[-1].split("facet:", 1)[-1].strip()
+                specific = self._facet_caveat(phrase)
+                if specific:
+                    node.caveats = [specific] + [c for c in node.caveats if c != specific][:1]
 
 
 # Keyword-rich context per development lens so the CounterfactualGenerator
@@ -1259,10 +1302,14 @@ def render_markdown(report: IdeaTreeReport) -> str:
             # gives the context — repeating the whole title at every zoom level
             # buries the signal. Show only the *delta* (this level's sub-concern),
             # marked as a zoom.
-            phrase = (idea.source_facts[-1].split("facet:", 1)[-1].strip()
-                      if idea.source_facts else idea.title)
+            facet_facts = [f for f in idea.source_facts if f.startswith("facet:")]
+            phrase = (facet_facts[-1].split("facet:", 1)[-1].strip()
+                      if facet_facts else idea.title)
             caveat = f"  ⚠ {idea.caveats[0]}" if idea.caveats else ""
             lines.append(f"{indent}- 🔍 `{idea.branch_path}` {phrase}  (v {idea.value}){caveat}")
+            # Verified concerns show their proof; hypotheses don't pretend.
+            for ev in (f for f in idea.source_facts if f.startswith("evidence:")):
+                lines.append(f"{indent}  - 📌 {ev.split('evidence:', 1)[1].strip()}")
         else:
             caveat = f"  ⚠ {idea.caveats[0]}" if idea.caveats else ""
             lines.append(
@@ -1294,10 +1341,11 @@ def render_mermaid(report: IdeaTreeReport) -> str:
     """Render the idea tree as a Mermaid flowchart."""
     lines = ["```mermaid", "flowchart TD"]
     for idea in report.ideas:
-        if idea.kind == "facet" and idea.source_facts:
+        facet_facts = [f for f in idea.source_facts if f.startswith("facet:")]
+        if idea.kind == "facet" and facet_facts:
             # The edge to the parent already carries the context; a facet node
             # shows just its sub-concern, marked as a zoom.
-            phrase = idea.source_facts[-1].split("facet:", 1)[-1].strip()
+            phrase = facet_facts[-1].split("facet:", 1)[-1].strip()
             label = f"🔍 {phrase}".replace('"', "'")
         else:
             label = idea.title.replace('"', "'")

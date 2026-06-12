@@ -583,16 +583,23 @@ def test_facet_level2_uses_aspect_specific_subconcerns(tmp_path):
     facets = [i for i in rep.ideas if i.kind == "facet"]
     l2 = [f for f in facets if f.branch_path.count(".f") == 2]
     assert l2, "expected level-2 facets"
+
+    def facet_label(node):
+        # The LAST "facet:" fact is this node's own phrase (evidence facts may
+        # follow it, so source_facts[-1] is not a safe way to read it).
+        return [f for f in node.source_facts if f.startswith("facet:")][-1].split(
+            "facet:", 1)[1].strip()
+
     # at least one L2 facet's label is a real sub-aspect, not a generic case
     all_subaspects = {s for subs in _FACET_SUBASPECTS.values() for s in subs}
-    l2_labels = [f.source_facts[-1].split("facet:", 1)[1].strip() for f in l2]
+    l2_labels = [facet_label(f) for f in l2]
     assert any(lbl in all_subaspects for lbl in l2_labels)
     # and each such facet's parent label is the aspect it decomposes
     by_id = {i.id: i for i in rep.ideas}
     for f in l2:
-        lbl = f.source_facts[-1].split("facet:", 1)[1].strip()
+        lbl = facet_label(f)
         if lbl in all_subaspects:
-            parent_lbl = by_id[f.parent_id].source_facts[-1].split("facet:", 1)[1].strip()
+            parent_lbl = facet_label(by_id[f.parent_id])
             assert lbl in _FACET_SUBASPECTS.get(parent_lbl, []) or parent_lbl in _FACET_SUBASPECTS
             assert lbl not in _FACET_CASES        # genuinely not the generic triple
 
