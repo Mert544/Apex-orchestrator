@@ -151,6 +151,11 @@ def try_create_stub(root: Path, rel_path: str, title: str, task_id: str) -> Sema
     if not (len(parts) >= 2 and parts[0] == "tests"):
         return None
     module_name = parts[1].replace("test_", "").replace(".py", "")
+    # Dunder "modules" (__init__, __main__) are packaging, not behavior — and
+    # the name lookup would resolve to the WRONG package's file (found by
+    # dogfooding: a stub for app/agents/limbs/__init__.py imported app.__init__).
+    if module_name.startswith("__"):
+        return None
 
     # Locate the real source module so the generated test actually exercises it.
     source = _find_source_module(root, module_name)

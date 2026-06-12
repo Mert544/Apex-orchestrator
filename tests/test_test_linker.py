@@ -55,3 +55,17 @@ def test_test_linker_maps_modules_to_tests_and_critical_gaps(tmp_path: Path):
     assert m2t["app/router.py"] == ["tests/test_router.py"]
     assert m2t["services/order_service.py"] == []
     assert "services/order_service.py" in [str(Path(p).as_posix()) for p in coverage.critical_untested_modules]
+
+
+def test_init_py_never_surfaces_as_untested(tmp_path):
+    # __init__.py is packaging, not behavior: it must not become an
+    # "untested module" idea (found by dogfooding — the generated stub
+    # imported the WRONG package's __init__).
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "pkg" / "real.py").write_text("def f():\n    return 1\n")
+    from app.tools.test_linker import TestLinker
+
+    result = TestLinker(str(tmp_path)).analyze()
+    assert not any(m.endswith("__init__.py") for m in result.untested_modules)
+    assert any(m.endswith("real.py") for m in result.untested_modules)

@@ -49,7 +49,10 @@ class TestLinker:
         for module in modules:
             linked_tests = self._find_linked_tests(module, tests)
             module_to_tests[module] = linked_tests
-            if not linked_tests:
+            # `__init__.py` is packaging, not behavior — it must never surface
+            # as "untested" (a stub for it would test nothing and its name
+            # collides across every package).
+            if not linked_tests and Path(module).name != "__init__.py":
                 untested_modules.append(module)
 
         critical_untested_modules = [m for m in critical_modules if m in set(untested_modules)]
