@@ -414,3 +414,90 @@ def test_unmutated_class_level_mutable_is_not_flagged():
            "    def f(self, x):\n"
            "        return x + 1\n")
     assert _mutable_attr_lines(src) == []
+
+
+# --- broad silent except (swallows every error) ------------------------------
+
+_BROAD_SILENT_MSG = "broad except silently swallows all errors"
+
+
+def _broad_silent(src: str) -> list[Issue]:
+    return [i for i in detect(src) if _BROAD_SILENT_MSG in i.message]
+
+
+def test_except_exception_pass_is_flagged_broad():
+    from app.engine.detectors import has_silent_broad_except
+
+    src = "def f():\n    try:\n        g()\n    except Exception:\n        pass\n"
+    found = _broad_silent(src)
+    assert len(found) == 1
+    assert found[0].line == 4
+    assert found[0].category == "bug" and found[0].severity == "medium"
+    assert not found[0].auto_fixable  # detect-only: the fix is contextual
+    assert has_silent_broad_except(src)
+
+
+def test_except_base_exception_ellipsis_body_is_flagged():
+    from app.engine.detectors import has_silent_broad_except
+
+    # `...` body (Expr -> Ellipsis constant) is silent, just like pass.
+    src = "def f():\n    try:\n        g()\n    except BaseException:\n        ...\n"
+    found = _broad_silent(src)
+    assert len(found) == 1 and found[0].category == "bug" and found[0].severity == "medium"
+    assert has_silent_broad_except(src)
+
+
+def test_broad_except_docstring_only_body_is_flagged():
+    # A handler whose only statement is a bare string constant is still silent.
+    src = 'def f():\n    try:\n        g()\n    except Exception:\n        "ignore"\n'
+    assert len(_broad_silent(src)) == 1
+
+
+def test_broad_except_tuple_containing_exception_is_flagged():
+    from app.engine.detectors import has_silent_broad_except
+
+    src = ("def f():\n    try:\n        g()\n"
+           "    except (ValueError, Exception):\n        pass\n")
+    assert has_silent_broad_except(src)
+
+
+def test_narrow_silent_pass_is_not_flagged_broad():
+    from app.engine.detectors import has_silent_broad_except
+
+    # `except KeyError: pass` is often a deliberate best-effort — never flagged
+    # by the broad detector (though the generic "silently swallowed" still fires).
+    src = "def f():\n    try:\n        g()\n    except KeyError:\n        pass\n"
+    assert _broad_silent(src) == []
+    assert not has_silent_broad_except(src)
+
+
+def test_broad_except_with_real_body_is_not_flagged():
+    from app.engine.detectors import has_silent_broad_except
+
+    # A handler that actually does something (logs the error) is not silent.
+    src = "def f():\n    try:\n        g()\n    except Exception as e:\n        log(e)\n"
+    assert _broad_silent(src) == []
+    assert not has_silent_broad_except(src)
+
+
+def test_bare_except_pass_does_not_double_flag_broad():
+    from app.engine.detectors import has_silent_broad_except
+
+    # Non-duplication rule: bare `except: pass` is covered by the "bare except"
+    # security finding plus the generic "silently swallowed" bug finding — the
+    # broad detector deliberately stays silent so there is no third message.
+    src = "def f():\n    try:\n        g()\n    except:\n        pass\n"
+    assert _broad_silent(src) == []
+    assert not has_silent_broad_except(src)
+    msgs = [i.message for i in detect(src)]
+    assert any("bare except" in m for m in msgs)
+    assert any("silently swallowed" in m for m in msgs)
+
+
+def test_except_exception_pass_keeps_generic_silently_swallowed_finding():
+    # The broad finding is ADDITIVE: `except Exception: pass` still emits the
+    # generic "silently swallowed" message (other modules depend on its wording).
+    src = "def f():\n    try:\n        g()\n    except Exception:\n        pass\n"
+    msgs = [i.message for i in detect(src)]
+    assert any("silently swallowed" in m for m in msgs)
+    assert any(_BROAD_SILENT_MSG in m for m in msgs)

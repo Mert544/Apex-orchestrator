@@ -145,6 +145,26 @@ def detect(source: str) -> list[Issue]:
             if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
                 add(node.lineno, "bug", "medium",
                     "exception silently swallowed (except: pass) — log or handle it", "")
+            # Broad + silent. A handler that swallows a BROAD type (typed
+            # Exception/BaseException, or a tuple containing one) with a body that
+            # does nothing — `pass`, `...`, or only a docstring/constant.
+            #
+            # Non-duplication rule: we deliberately do NOT fire on the bare
+            # `except:` case (node.type is None). Bare-except is already covered
+            # by the "bare except" security finding above plus the generic
+            # "silently swallowed" finding, so adding a third message there would
+            # be noisy/confusing. The generic "silently swallowed" finding still
+            # fires for a pass-only body of any type (review/maintain depend on
+            # its exact wording); this finding adds the distinct broad-scope
+            # warning and uniquely covers the `...`/docstring-only silent bodies
+            # that the pass-only check misses. Narrow silent passes
+            # (`except KeyError: pass`) are intentionally left alone — they are
+            # frequently a deliberate best-effort. fix_kind is "" because the
+            # correct fix (log / narrow the type / re-raise) is contextual; no
+            # single ruff code maps cleanly, so suppression relies on a bare noqa.
+            if node.type is not None and _is_broad_exc(node.type) and _is_silent_body(node.body):
+                add(node.lineno, "bug", "medium",
+                    _SILENT_BROAD_EXCEPT_MSG, "")
             for lineno in _raise_without_from(node.body):
                 # Auto-fixable only when the handler binds the exception
                 # (`except E as err:`) — then `from err` is a pure, safe append.
@@ -320,6 +340,47 @@ def _is_text_open_without_encoding(node: ast.Call) -> bool:
 # BaseException subclasses that ``except Exception`` does NOT catch — so a later
 # handler for one of these stays reachable.
 _BASE_TIER = {"BaseException", "KeyboardInterrupt", "SystemExit", "GeneratorExit"}
+
+
+# Stable message for the silent-broad-except finding (fix_kind is "", so the
+# query helper and any consumer match on this text rather than a routing code).
+_SILENT_BROAD_EXCEPT_MSG = (
+    "broad except silently swallows all errors — log it, narrow the type, "
+    "or re-raise"
+)
+
+
+def _is_broad_exc(type_node: ast.expr) -> bool:
+    """True if a handler's type catches a BROAD class (Exception/BaseException).
+
+    ``except Exception:`` / ``except BaseException:`` qualify, as does a tuple
+    that contains one of them (``except (Exception, OSError):``). A narrow type
+    (``KeyError``) or an unreadable/dotted type does not. Bare ``except:`` is
+    handled separately by the caller (node.type is None) and never reaches here.
+    """
+    elts = type_node.elts if isinstance(type_node, ast.Tuple) else [type_node]
+    return any(
+        isinstance(e, ast.Name) and e.id in ("Exception", "BaseException")
+        for e in elts
+    )
+
+
+def _is_silent_body(body: list) -> bool:
+    """True if a handler body does nothing but swallow the exception.
+
+    A body is silent when every statement is inert: a ``pass``, a literal
+    ``...`` (an ``Expr`` whose value is an Ellipsis constant), or a bare
+    docstring/constant expression. Anything that logs, re-raises, or otherwise
+    runs code makes the handler non-silent. An empty body cannot occur (Python
+    requires at least one statement), so this is always evaluated over >=1 stmt.
+    """
+    for stmt in body:
+        if isinstance(stmt, ast.Pass):
+            continue
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+            continue  # docstring, `...` (Ellipsis), or any bare constant
+        return False
+    return True
 
 
 def _exc_names(type_node: ast.expr | None) -> list[str]:
@@ -614,6 +675,15 @@ def has_none_comparison(source: str) -> bool:
 
 def has_base_exception(source: str) -> bool:
     return any(i.fix_kind == "base-exception" for i in detect(source))
+
+
+def has_silent_broad_except(source: str) -> bool:
+    """True if any handler swallows a broad type (Exception/BaseException) silently.
+
+    The finding carries no fix_kind (the fix is contextual), so this matches on
+    the stable message text instead of a routing code.
+    """
+    return any(i.message == _SILENT_BROAD_EXCEPT_MSG for i in detect(source))
 
 
 def has_fixable_raise_without_from(source: str) -> bool:
