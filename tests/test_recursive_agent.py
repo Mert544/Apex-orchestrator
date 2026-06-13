@@ -45,8 +45,8 @@ class TestRecursiveAgent:
         parent = FakeSubAgent(name="p", role="parent")
         parent.spawn_sub_agent("sub-1", "child", {"x": 1})
         parent.reset()
-        assert len(parent.sub_agents) == 0
-        assert len(parent._sub_results) == 0
+        assert not parent.sub_agents
+        assert not parent._sub_results
 
     def test_to_dict_includes_subs(self):
         parent = FakeSubAgent(name="p", role="parent")

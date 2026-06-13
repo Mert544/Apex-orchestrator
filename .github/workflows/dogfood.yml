@@ -37,6 +37,9 @@ jobs:
         run: |
           python -m app.cli auto --apply --max-apply 4 --out .apex/dogfood-report.md
 
+      - name: Rule book holds (saved rewrite rules re-applied if drift returned)
+        run: python -m app.cli rewrite --all
+
       - name: Apex dreams (curate memory, extract patterns, write the digest)
         run: python -m app.cli dream --curate
 

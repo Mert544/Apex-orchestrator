@@ -17,7 +17,7 @@ class TestSecretDetection:
             "def foo():\n    pass", "def foo():\n    x = 1"
         )
         assert result.passed is True
-        assert len(result.detected_secrets) == 0
+        assert not result.detected_secrets
 
     def test_detects_password_assignment(self):
         result = detect_secrets_in_patch("", 'password = "abcd1234efgh5678"')

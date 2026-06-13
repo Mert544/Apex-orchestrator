@@ -49,4 +49,4 @@ class TestPerformanceBenchmark:
         baseline = tmp_path / "baseline.json"
         baseline.write_text('[{"name": "test", "avg_ms": 10.0}]')
         regressed = bench.has_regression(baseline, threshold=2.0)
-        assert len(regressed) == 0
+        assert not regressed

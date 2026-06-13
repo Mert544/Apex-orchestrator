@@ -19,7 +19,7 @@ def test_auto_merger_creates_commit(tmp_path):
 
     assert result.success
     assert result.commit_hash
-    assert len(result.errors) == 0
+    assert not result.errors
 
 
 def test_commit_aborts_on_staging_failure(tmp_path):

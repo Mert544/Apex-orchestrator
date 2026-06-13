@@ -34,7 +34,7 @@ class TestFractal5WhysEngine:
         collect(tree)
         assert len(level_3_nodes) >= 1
         for n in level_3_nodes:
-            assert len(n.children) == 0
+            assert not n.children
 
     def test_analyze_batch(self):
         engine = Fractal5WhysEngine(max_depth=3)
@@ -81,7 +81,7 @@ class TestFractal5WhysEngine:
         engine = Fractal5WhysEngine(max_depth=3, enable_counter_evidence=False)
         finding = {"issue": "eval() usage", "file": "auth.py"}
         tree = engine.analyze(finding)
-        assert len(tree.counter_evidence) == 0
+        assert not tree.counter_evidence
         assert tree.rebuttal == ""
 
     def test_meta_analysis_recommends_patch(self):

@@ -99,7 +99,7 @@ class CrossRepoWorkflow:
         report_path = str(self.project_root / f"apex_report.{output_format}")
 
         return WorkflowResult(
-            success=len(errors) == 0 or len(findings) > 0,
+            success=not errors or len(findings) > 0,
             findings=findings,
             fixed_files=fixed_files,
             test_passed=test_passed,

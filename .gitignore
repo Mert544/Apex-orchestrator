@@ -15,7 +15,10 @@ venv/
 .idea/
 
 # Apex runtime artifacts
-.apex/
+.apex/*
+# The rewrite rule book is durable project config, not a runtime artifact:
+# it must travel with the repo so the nightly `apex rewrite --all` enforces it.
+!.apex/rewrite-rules.json
 .epistemic/
 *.log
 

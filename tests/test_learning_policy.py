@@ -45,7 +45,7 @@ class TestLearningPolicy:
             "recommendations": ["No feedback history yet."],
         }
         policy.update_from_reflection(reflection)
-        assert len(policy.skip_issue_types) == 0
+        assert not policy.skip_issue_types
 
     def test_get_adjustments(self):
         policy = LearningPolicy()

@@ -9,7 +9,7 @@ class TestDebugEngine:
     def test_trace_disabled(self, tmp_path):
         d = DebugEngine(str(tmp_path), enabled=False)
         d.trace("test", "hello")
-        assert len(d._traces) == 0
+        assert not d._traces
 
     def test_trace_enabled(self, tmp_path):
         d = DebugEngine(str(tmp_path), enabled=True)

@@ -49,7 +49,7 @@ def detect_secrets_in_patch(old_code: str, new_code: str) -> SecretDetectionResu
                     "end": match.end(),
                 }
             )
-    passed = len(detected) == 0
+    passed = not detected
     return SecretDetectionResult(
         passed=passed,
         detected_secrets=detected,

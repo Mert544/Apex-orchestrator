@@ -13,7 +13,7 @@ class TestFractalPatchGenerator:
         finding = {"issue": "eval() usage", "file": "a.py"}
         meta = {"recommended_action": "review"}
         patches = gen.generate(finding, meta)
-        assert len(patches) == 0
+        assert not patches
 
     def test_patch_eval(self):
         gen = FractalPatchGenerator()

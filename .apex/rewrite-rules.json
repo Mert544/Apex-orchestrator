@@ -1,0 +1,7 @@
+[
+  {
+    "name": "no-len-eq-zero",
+    "pattern": "len($v1) == 0",
+    "replacement": "not $v1"
+  }
+]

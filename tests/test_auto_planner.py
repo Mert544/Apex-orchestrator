@@ -88,5 +88,5 @@ def test_auto_planner_no_actions_when_healthy():
     planner = AutoPlanner()
     result = planner.plan(report)
 
-    assert len(result.tasks) == 0
+    assert not result.tasks
     assert "No high-priority" in result.rationale

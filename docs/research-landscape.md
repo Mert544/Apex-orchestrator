@@ -106,3 +106,23 @@ Sources: [ast-grep comparison](https://ast-grep.github.io/advanced/tool-comparis
 [Moderne on determinism](https://www.moderne.ai/blog/understanding-openrewrite-beyond-the-myths) ·
 [rope](https://github.com/python-rope/rope) ·
 [Sourcery alternatives 2026](https://dev.to/rahulxsingh/sourcery-ai-alternatives-10-best-code-quality-tools-in-2026-98n)
+
+### How Apex leapfrogs (shipped 2026-06-13)
+
+Two competitor weaknesses, two counters — both live:
+
+1. **OpenRewrite's catalog is right; its contribution cost is wrong** (a
+   recipe = a compiler-grade visitor). Apex's rule book makes a recipe ONE
+   LINE: `apex rewrite 'len($x) == 0' 'not $x' --save no-len-eq-zero`. The
+   book is committed config; `apex rewrite --all` re-applies every rule,
+   each suite-verified — and the nightly run executes it, so saved rules
+   become **fitness functions that fix themselves**.
+
+2. **ast-grep's rules are hand-written; Sourcery's suggestions are ML.**
+   `apex teach` learns the rule from examples by deterministic
+   anti-unification: show two BEFORE/AFTER pairs, the differing subtrees
+   become metavariables, identical capture-pairs collapse to one variable,
+   and the learned rule must reproduce every example (self-check) before it
+   is ever displayed. First live run: taught from two examples, learned
+   `len($v1) == 0 → not $v1`, applied 19 matches across 16 of Apex's own
+   files, suite green. *Fix it once — Apex writes the law.*

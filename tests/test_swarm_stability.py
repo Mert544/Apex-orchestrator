@@ -32,7 +32,7 @@ class TestSwarmTimeout:
         timer.set_timeout("test", 0.5, callback)
         timer.cancel_timeout("test")
         time.sleep(0.6)
-        assert len(callback_called) == 0
+        assert not callback_called
 
     def test_cancel_all(self):
         timer = SwarmTimeout(default_timeout=30.0)
@@ -43,7 +43,7 @@ class TestSwarmTimeout:
         timer.set_timeout("test1", 0.5, callback)
         timer.set_timeout("test2", 0.5, callback)
         timer.cancel_all()
-        assert len(timer._timers) == 0
+        assert not timer._timers
 
 
 class TestGracefulShutdown:

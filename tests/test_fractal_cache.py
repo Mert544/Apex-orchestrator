@@ -37,7 +37,7 @@ class TestFractalCache:
         for i in range(3):
             cache.put({"issue": f"x{i}", "file": "a.py", "line": i}, FractalNode(level=1, question="Q", answer="A", confidence=0.5))
         cache.clear()
-        assert len(list(cache.cache_dir.glob("*.json"))) == 0
+        assert not list(cache.cache_dir.glob("*.json"))
 
     def test_cache_persistence(self, tmp_path: Path):
         cache = FractalCache(cache_dir=str(tmp_path / "cache"))

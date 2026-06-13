@@ -51,7 +51,7 @@ class RealWorldValidator:
             else:
                 missing.append(exp)
         return {
-            "all_found": len(missing) == 0,
+            "all_found": not missing,
             "found": found,
             "missing": missing,
             "total_risks": result["risk_count"],

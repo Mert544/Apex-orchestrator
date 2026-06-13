@@ -41,7 +41,7 @@ def test_debate_no_dissent_immediate_resolution():
 
     result = debate.resolve("test claim", votes)
     assert result.resolved
-    assert len(result.rounds) == 0  # No debate needed
+    assert not result.rounds  # No debate needed
 
 
 def test_debate_max_rounds_reached():

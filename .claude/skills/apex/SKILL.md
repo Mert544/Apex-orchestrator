@@ -105,6 +105,15 @@ without the file). `apex auto` prints what it has learned.
   verbatim. Multi-line matches are skipped with a warning; unbound replacement
   metavariables and bare-`$x` patterns block. Suite-verified with rollback —
   the ast-grep shape, plus the proof the neighbors don't run.
+- `apex rewrite --save NAME | --rule NAME | --rules | --all` — the project RULE BOOK
+  (`.apex/rewrite-rules.json`, committed): save a pattern as a named rule, run one, list
+  them, or `--all` to re-apply every rule (each verified) — drift that re-enters the
+  codebase gets rewritten back out; the nightly dogfood runs this as an enforcement step.
+- `apex teach BEFORE AFTER [BEFORE2 AFTER2 ...] [--save NAME]` — learn a rule FROM
+  EXAMPLES via deterministic anti-unification: differing subtrees become $metavariables,
+  the same capture-pair reuses one variable, and the rule SELF-CHECKS by reproducing every
+  example before it is shown. One pair = exact-match rule (honest note). Never applies —
+  preview + optional save; apply via `apex rewrite --rule NAME`.
 - `apex move SRC.py DST.py [--target=.] [--dry-run] [--no-verify]` — move/rename a module;
   every import form (`import x.y`, `from x.y import f`, `from x import y`, aliases) is
   rewritten project-wide, missing `__init__.py` created, relative-import cases block.

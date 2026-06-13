@@ -515,7 +515,7 @@ class CILimb(Limb):
         result["stages"].extend(self._run_tests(project_path))
 
         failed = [s for s in result["stages"] if not s.get("passed", True)]
-        result["passed"] = len(failed) == 0
+        result["passed"] = not failed
         result["failed_checks"] = [s["name"] for s in failed]
 
         result["summary"] = (
