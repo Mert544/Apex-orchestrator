@@ -324,3 +324,93 @@ def test_base_exception_with_reraise_or_noqa_is_exempt():
     assert not any(i.fix_kind == "base-exception" for i in detect(silenced))
     # plain `except Exception:` is fine
     assert not has_base_exception("def f():\n    try:\n        g()\n    except Exception:\n        log()\n")
+
+
+# --- mutable class attribute (shared-state bug) ------------------------------
+
+def _mutable_attr_lines(src: str) -> list[int]:
+    return sorted(i.line for i in detect(src)
+                  if "mutable class attribute" in i.message)
+
+
+def test_mutable_class_attr_list_mutated_is_flagged():
+    src = ("class Cart:\n"
+           "    items = []\n"
+           "    def add(self, x):\n"
+           "        self.items.append(x)\n")
+    assert _mutable_attr_lines(src) == [2]
+    issue = next(i for i in detect(src) if "mutable class attribute" in i.message)
+    assert issue.category == "bug" and issue.severity == "medium"
+    assert not issue.auto_fixable  # detect-only: the fix moves init into __init__
+
+
+def test_mutable_class_attr_dict_subscript_store_is_flagged():
+    src = ("class Reg:\n"
+           "    cache = {}\n"
+           "    def put(self, k, v):\n"
+           "        self.cache[k] = v\n")
+    assert _mutable_attr_lines(src) == [2]
+
+
+def test_mutable_class_attr_augassign_is_flagged():
+    src = ("class Acc:\n"
+           "    total = []\n"
+           "    def go(self, xs):\n"
+           "        self.total += xs\n")
+    assert _mutable_attr_lines(src) == [2]
+
+
+def test_mutable_class_attr_empty_constructor_call_is_flagged():
+    src = ("class C:\n"
+           "    seen = set()\n"
+           "    def mark(self, x):\n"
+           "        self.seen.add(x)\n")
+    assert _mutable_attr_lines(src) == [2]
+
+
+def test_mutable_class_attr_annotated_is_flagged():
+    src = ("class C:\n"
+           "    items: list = []\n"
+           "    def add(self, x):\n"
+           "        self.items.append(x)\n")
+    assert _mutable_attr_lines(src) == [2]
+
+
+def test_reassigned_in_init_is_not_flagged():
+    # __init__ rebinds self.items per instance — no shared state, no bug.
+    src = ("class C:\n"
+           "    items = []\n"
+           "    def __init__(self):\n"
+           "        self.items = []\n"
+           "    def add(self, x):\n"
+           "        self.items.append(x)\n")
+    assert _mutable_attr_lines(src) == []
+
+
+def test_read_only_class_constant_is_not_flagged():
+    # A class-level mutable that is only READ is a legitimate shared constant.
+    src = ("class C:\n"
+           "    DEFAULTS = [1, 2, 3]\n"
+           "    def first(self):\n"
+           "        return self.DEFAULTS[0]\n")
+    assert _mutable_attr_lines(src) == []
+
+
+def test_immutable_class_attr_is_not_flagged():
+    # A non-mutable class attribute is never a shared-state bug.
+    src = ("class C:\n"
+           "    NAME = 'x'\n"
+           "    LIMIT = 10\n"
+           "    def f(self):\n"
+           "        return self.NAME\n")
+    assert _mutable_attr_lines(src) == []
+
+
+def test_unmutated_class_level_mutable_is_not_flagged():
+    # Declared but never mutated in place (and never read either) — conservative:
+    # no mutation evidence means no flag.
+    src = ("class C:\n"
+           "    buf = []\n"
+           "    def f(self, x):\n"
+           "        return x + 1\n")
+    assert _mutable_attr_lines(src) == []

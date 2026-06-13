@@ -207,6 +207,10 @@ def detect(source: str) -> list[Issue]:
                         add(sub.lineno, "bug", "high",
                             "assignment to a frozen dataclass field raises FrozenInstanceError "
                             "at runtime — use dataclasses.replace()", "")
+            for line, attr in _mutable_class_attribute_lines(node).items():
+                add(line, "bug", "medium",
+                    f"mutable class attribute `{attr}` is shared across all instances and "
+                    "mutated in place — move it into __init__ (or use default_factory)", "")
         elif isinstance(node, ast.JoinedStr) and not any(
                 isinstance(v, ast.FormattedValue) for v in node.values):
             # An f-string with no interpolation is just a string with a
@@ -440,6 +444,81 @@ def _is_frozen_dataclass(node: ast.ClassDef) -> bool:
         ):
             return True
     return False
+
+
+_MUTATING_METHODS = frozenset({
+    "append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse",
+    "update", "add", "discard", "setdefault", "popitem",
+    "intersection_update", "difference_update", "symmetric_difference_update",
+})
+
+
+def _is_mutable_constructor(node: ast.AST) -> bool:
+    """True for a mutable-collection literal or an empty list()/dict()/set()."""
+    if isinstance(node, (ast.List, ast.Dict, ast.Set)):
+        return True
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id in ("list", "dict", "set")
+            and not node.args and not node.keywords)
+
+
+def _self_attr(node: ast.AST) -> str | None:
+    """The attribute name if ``node`` is ``self.<name>``, else None."""
+    if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+            and node.value.id == "self"):
+        return node.attr
+    return None
+
+
+def _mutable_class_attribute_lines(cls: ast.ClassDef) -> dict[int, str]:
+    """Class-level mutable attributes that are MUTATED in place by a method and
+    not reassigned per-instance — a shared-state bug (every instance sees the
+    same list/dict/set). Conservative: a class-level mutable that is only read,
+    or that ``__init__`` reassigns with ``self.x = ...``, is NOT flagged.
+
+    Returns ``{lineno: attr_name}`` for each flagged class-level assignment.
+    """
+    class_level: dict[str, int] = {}      # name -> class-body assignment line
+    for stmt in cls.body:                 # direct class body only (not nested)
+        if isinstance(stmt, ast.Assign):
+            if _is_mutable_constructor(stmt.value):
+                for t in stmt.targets:
+                    if isinstance(t, ast.Name):
+                        class_level[t.id] = stmt.lineno
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            if isinstance(stmt.target, ast.Name) and _is_mutable_constructor(stmt.value):
+                class_level[stmt.target.id] = stmt.lineno
+    if not class_level:
+        return {}
+
+    reassigned: set[str] = set()          # self.x = ... in __init__ → per-instance
+    mutated: set[str] = set()             # self.x mutated in place anywhere
+    for sub in ast.walk(cls):
+        if isinstance(sub, ast.FunctionDef) and sub.name == "__init__":
+            for n in ast.walk(sub):
+                if isinstance(n, ast.Assign):
+                    for t in n.targets:
+                        name = _self_attr(t)
+                        if name:
+                            reassigned.add(name)
+        # Mutation evidence: self.x.append(...) and friends.
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
+            name = _self_attr(sub.func.value)
+            if name and sub.func.attr in _MUTATING_METHODS:
+                mutated.add(name)
+        # self.x[...] = ...  /  del self.x[...]
+        elif isinstance(sub, ast.Subscript):
+            name = _self_attr(sub.value)
+            if name and isinstance(sub.ctx, (ast.Store, ast.Del)):
+                mutated.add(name)
+        # self.x += ...
+        elif isinstance(sub, ast.AugAssign):
+            name = _self_attr(sub.target)
+            if name:
+                mutated.add(name)
+
+    return {line: name for name, line in class_level.items()
+            if name in mutated and name not in reassigned}
 
 
 def _same_ref(a: ast.AST, b: ast.AST) -> bool:
