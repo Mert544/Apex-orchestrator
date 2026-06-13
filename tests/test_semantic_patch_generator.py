@@ -495,3 +495,21 @@ def test_organize_imports_never_touches_future_or_noqa(tmp_path: Path):
     assert "from __future__ import annotations" in new
     assert "import os  # noqa: F401" in new   # human-marked: intentional
     assert "import sys" not in new            # genuinely unused: still removed
+
+
+def test_stub_never_synthesizes_a_call_to_main(tmp_path: Path):
+    # main() conventionally parses sys.argv; calling it under pytest feeds it
+    # PYTEST'S argv (dogfood: a script stub red the suite and rolled back).
+    # The import-smoke test still covers the module.
+    _write(tmp_path / "scripts" / "tool.py",
+           "def main(argv: list | None = None) -> int:\n"
+           "    raise SystemExit(2)\n"
+           "\n"
+           "def helper() -> str:\n"
+           "    return 'ok'\n")
+    from app.execution.semantic.generators.stub import try_create_stub
+    result = try_create_stub(tmp_path, "tests/test_tool.py", "t", "task")
+    content = result.patch_requests[0]["new_content"]
+    assert "main(" not in content
+    assert "helper()" in content       # other callables still exercised
+    assert "test_tool_imports" in content

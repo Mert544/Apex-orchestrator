@@ -159,6 +159,19 @@ class IdeaActionBridge:
                 if self._harden_change_strategy(project_root, step.target) is None:
                     step.executable = False
                     step.description += " — no auto-fixable pattern found; human review"
+            elif step.action_type == "organize_imports":
+                # Probe the transform pair _generate would run (imports tidy,
+                # or the modernize swap): a file neither would change can only
+                # produce a draft note — that is work-order territory.
+                from app.execution.semantic.transforms import organize_imports as oi
+
+                text = self._read(project_root, step.target)
+                servable = text is not None and (
+                    self._detect_modernization(project_root, step.target)
+                    or oi.apply(step.target, text) is not None)
+                if not servable:
+                    step.executable = False
+                    step.description += " — imports already tidy; human review"
         return [step]
 
     def plan_idea(self, idea: IdeaNode) -> ActionStep:
@@ -393,7 +406,15 @@ class IdeaActionBridge:
             result = SemanticPatchGenerator().generate(project_root, patch_plan)
         except Exception:
             return None
-        return result if result.patch_requests else None
+        if result is None or not result.patch_requests:
+            return None
+        # A draft note under .apex/ is NOT a patch: counting it as "applied"
+        # poisons the report, the proof record and outcome memory (found by
+        # dogfooding: four organize_imports steps "landed" by writing .md
+        # files — and the dream then praised simplify's fake 100%).
+        if result.transform_type == "draft_fallback" or getattr(result, "mode", "") == "draft":
+            return None
+        return result
 
     def draft_patch(self, step: ActionStep, project_root: str) -> dict | None:
         """Draft a real patch *preview* for an executable step — never applied.

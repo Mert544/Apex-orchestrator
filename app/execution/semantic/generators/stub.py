@@ -90,6 +90,12 @@ def _call_specs(tree: ast.Module) -> list[tuple[str, str, str | None]]:
     for node in tree.body:
         if not isinstance(node, ast.FunctionDef) or node.name.startswith("_"):
             continue
+        # An entrypoint's contract is its CLI, not a synthesized call: main()
+        # conventionally parses sys.argv, and calling it under pytest feeds it
+        # PYTEST'S argv (found by dogfooding — the stub for a script red the
+        # whole suite and rolled back). Import-smoke still covers the module.
+        if node.name == "main":
+            continue
         a = node.args
         positional = a.posonlyargs + a.args
         n_required = len(positional) - len(a.defaults)

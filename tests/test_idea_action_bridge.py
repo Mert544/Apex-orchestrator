@@ -842,3 +842,48 @@ def test_dead_parameter_root_maps_to_command_carrying_work_order():
     assert step.action_type == "design_task"
     assert step.executable is False
     assert "apex signature drop" in step.description
+
+
+def test_draft_fallback_is_never_an_applicable_patch(tmp_path):
+    # Found by dogfooding: organize_imports on an already-tidy file fell back
+    # to a .apex/patch-drafts/*.md note, and apply_step counted writing that
+    # note as "applied" — poisoning the report and outcome memory. A draft is
+    # not a patch: generation must yield None instead.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "tidy.py").write_text(
+        "import json\n\ndef f():\n    return json.dumps({})\n")
+    idea = IdeaNode(
+        id="i", title="Simplify: app/tidy.py", subject="app/tidy.py",
+        operator="simplify", operator_chain=["simplify"],
+        source_facts=["churn-hotspot: app/tidy.py"],
+    )
+    bridge = IdeaActionBridge()
+    step = bridge.plan_idea(idea)
+    assert step.action_type == "organize_imports"
+    assert bridge._generate(step, str(tmp_path)) is None
+    result = bridge.apply_step(step, str(tmp_path), mode="supervised")
+    assert result["applied"] is False
+    assert not (tmp_path / ".apex" / "patch-drafts").exists()  # no md "fix"
+
+
+def test_expand_idea_demotes_already_tidy_organize_imports(tmp_path):
+    # And at PLAN time the same step demotes to a work order, so the nightly
+    # run doesn't re-block on it forever.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "tidy.py").write_text(
+        "import json\n\ndef f():\n    return json.dumps({})\n")
+    idea = IdeaNode(
+        id="i", title="Simplify: app/tidy.py", subject="app/tidy.py",
+        operator="simplify", operator_chain=["simplify"],
+        source_facts=["churn-hotspot: app/tidy.py"],
+    )
+    bridge = IdeaActionBridge()
+    step = bridge._expand_idea(idea, project_root=str(tmp_path))[0]
+    assert step.executable is False
+    assert "already tidy" in step.description
+
+    # A genuinely untidy file keeps its executable step.
+    (tmp_path / "app" / "tidy.py").write_text(
+        "import json\nimport os\n\ndef f():\n    return json.dumps({})\n")
+    step = bridge._expand_idea(idea, project_root=str(tmp_path))[0]
+    assert step.executable is True
