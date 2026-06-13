@@ -187,6 +187,23 @@ def _block_template(
     return template, ordered
 
 
+def _statement_fragment(stmt: ast.stmt, source: str) -> tuple[str, list[tuple[str, str]]]:
+    """One statement's structural template fragment and its value-leaf
+    ``(subpath, segment)`` list — computed ONCE, so overlapping windows reuse it
+    instead of re-walking shared statements.
+
+    The walk uses an empty root path, so subpaths are relative to the statement
+    (``.field[i]…``, or ``""`` for a root leaf). A window at index ``i`` prefixes
+    them with ``s{i}`` to recover the exact path :func:`_block_template` produced —
+    and the fragment STRING is path-independent (``_walk_template`` never writes
+    the path into the template), so concatenating fragments is identical to
+    templating the whole window."""
+    out: list[str] = []
+    wildcards: dict[str, str] = {}
+    _walk_template(stmt, source, "", out, wildcards)
+    return "".join(out), list(wildcards.items())
+
+
 def find_near_duplicates(
     project_root: str | Path,
     *,
@@ -227,9 +244,21 @@ def find_near_duplicates(
             if limit <= 0:
                 continue
             limit = min(limit, _MAX_WINDOWS_PER_FUNCTION)
+            # Template each statement that appears in any window ONCE; windows
+            # then concatenate fragments (they overlap by min_statements - 1).
+            needed = limit + min_statements - 1
+            frags = [_statement_fragment(body[k], source) for k in range(needed)]
             for start in range(limit):
-                window = body[start:start + min_statements]
-                template, wildcards = _block_template(window, source)
+                parts: list[str] = []
+                wc_items: list[tuple[str, str]] = []
+                for i in range(min_statements):
+                    frag_t, frag_wc = frags[start + i]
+                    parts.append(frag_t)
+                    parts.append("|")
+                    for subpath, seg in frag_wc:
+                        wc_items.append((f"s{i}{subpath}", seg))
+                template = "".join(parts)
+                wildcards = sorted(wc_items)
                 location = f"{rel}:{body[start].lineno}"
                 occ = buckets.setdefault(template, {})
                 if location in occ:
