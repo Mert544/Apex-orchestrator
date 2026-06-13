@@ -281,6 +281,49 @@ def _inline_findings(project_root: str,
     return out
 
 
+def _duplication_findings(project_root: str,
+                          changed: dict[str, set[int]]) -> list[ReviewFinding]:
+    """Copy-pasted blocks the diff introduces or sits on.
+
+    Duplication is a project-level signal (a block is "duplicated" only relative
+    to its OTHER copies elsewhere in the tree), so :func:`find_duplicates` runs
+    ONCE over the whole project — like :func:`_inline_findings`. For each
+    duplicated block, the reviewer keeps only the occurrence whose location lands
+    on the diff (a changed file AND a changed line): the PR either just added a
+    copy or is editing one that already had siblings. A duplicate sitting
+    entirely outside the change stays quiet — that's not this PR's problem to
+    flag. Read-only and non-auto-fixable: extracting a shared helper is a
+    judgment call (which copies, what name), so the reviewer proposes, never
+    applies."""
+    from app.engine.dedup import find_duplicates
+
+    out: list[ReviewFinding] = []
+    for block in find_duplicates(project_root):
+        # Split each "module:lineno" once; keep the ones on the diff.
+        parsed: list[tuple[str, int]] = []
+        for occ in block.occurrences:
+            mod, _, lineno = occ.rpartition(":")
+            if not mod or not lineno.isdigit():
+                continue
+            parsed.append((mod, int(lineno)))
+        for mod, lineno in parsed:
+            if _is_fixture_path(mod):
+                continue
+            lines = changed.get(mod)
+            if not lines or lineno not in lines:
+                continue  # this copy isn't on the diff — not this change's clone
+            others = [f"`{m}:{ln}`" for m, ln in parsed if (m, ln) != (mod, lineno)]
+            if not others:
+                continue  # no sibling copy left to point at
+            other_locations = ", ".join(others)
+            out.append(ReviewFinding(
+                file=mod, line=lineno, category="refactor", severity="low",
+                message=(f"this {block.lines}-statement block is duplicated at "
+                         f"{other_locations} — consider extracting a shared helper"),
+                auto_fixable=False, fix_kind="duplication"))
+    return out
+
+
 def review(project_root: str, base: str = "HEAD") -> ReviewResult:
     """Review only the lines changed since ``base``."""
     changes = changed_lines(project_root, base)
@@ -306,6 +349,9 @@ def review(project_root: str, base: str = "HEAD") -> ReviewResult:
     # Inlining is project-level (single-use across the whole tree), so it runs
     # ONCE over the full changed map rather than per file.
     findings.extend(_inline_findings(project_root, changes))
+    # Duplication is likewise project-level (a block is a clone only relative to
+    # its other copies), so it too runs ONCE over the full changed map.
+    findings.extend(_duplication_findings(project_root, changes))
     # Most serious first, then by file/line for stable output.
     sev_rank = {"high": 0, "medium": 1, "low": 2}
     findings.sort(key=lambda f: (sev_rank.get(f.severity, 3), f.file, f.line))
@@ -382,6 +428,8 @@ def render_review_markdown(result: ReviewResult, limit: int = 0) -> str:
                 fix = " · _refactor: run the command above_"
             elif f.fix_kind == "inline":
                 fix = " · _refactor: run the command above_"
+            elif f.fix_kind == "duplication":
+                fix = " · _refactor: extract a shared helper_"
             elif f.auto_fixable:
                 fix = " · _Apex can auto-fix_"
             else:

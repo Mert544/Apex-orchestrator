@@ -424,3 +424,101 @@ def test_review_flags_empty_constructor_with_suggestion(tmp_path):
     assert f.suggestion is not None
     old, new = f.suggestion
     assert "dict()" in old and "{}" in new
+
+
+# --- duplication on the diff (refactor findings) ------------------------------
+
+def _dup_body() -> str:
+    # A 5-statement block (>= the detector's default min_statements=5) — a clean
+    # copy-pasteable run identical in two functions.
+    return (
+        "    a = 1\n"
+        "    b = a + 2\n"
+        "    c = b * 3\n"
+        "    d = c - 4\n"
+        "    return d + 5\n"
+    )
+
+
+def test_review_flags_duplicated_block_added_by_pr(tmp_path):
+    # An existing function already carries the block; the PR adds a second copy.
+    body = _dup_body()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "base.py").write_text(f"def existing():\n{body}")
+    _git(tmp_path, ["git", "init", "-q"], ["git", "config", "user.email", "t@t.com"],
+         ["git", "config", "user.name", "t"], ["git", "add", "-A"],
+         ["git", "-c", "commit.gpgsign=false", "commit", "-qm", "init"])
+    (tmp_path / "app" / "base.py").write_text(
+        f"def existing():\n{body}\ndef added():\n{body}"
+    )
+    result = review(str(tmp_path))
+    dups = [f for f in result.findings if f.fix_kind == "duplication"]
+    assert len(dups) == 1
+    f = dups[0]
+    assert f.category == "refactor"
+    assert f.severity == "low"
+    assert not f.auto_fixable  # extracting a shared helper is a judgment call
+    assert f.file == "app/base.py"
+    # Names the block size and the OTHER copy's location.
+    assert "5-statement block is duplicated" in f.message
+    assert "app/base.py:2" in f.message  # the existing copy
+    assert "shared helper" in f.message
+
+
+def test_review_duplication_renders_with_refactor_hint(tmp_path):
+    body = _dup_body()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "base.py").write_text(f"def existing():\n{body}")
+    _git(tmp_path, ["git", "init", "-q"], ["git", "config", "user.email", "t@t.com"],
+         ["git", "config", "user.name", "t"], ["git", "add", "-A"],
+         ["git", "-c", "commit.gpgsign=false", "commit", "-qm", "init"])
+    (tmp_path / "app" / "base.py").write_text(
+        f"def existing():\n{body}\ndef added():\n{body}"
+    )
+    md = render_review_markdown(review(str(tmp_path)))
+    assert "extract a shared helper" in md
+    assert "[refactor]" in md
+
+
+def test_review_no_duplication_finding_when_copy_off_diff(tmp_path):
+    # Both copies committed earlier; the PR changes an UNRELATED line. Neither
+    # copy is on the diff, so no duplication finding fires.
+    body = _dup_body()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "base.py").write_text(
+        f"def existing():\n{body}\ndef twin():\n{body}\ndef other():\n    return 0\n"
+    )
+    _git(tmp_path, ["git", "init", "-q"], ["git", "config", "user.email", "t@t.com"],
+         ["git", "config", "user.name", "t"], ["git", "add", "-A"],
+         ["git", "-c", "commit.gpgsign=false", "commit", "-qm", "init"])
+    # Touch only the unrelated `other()` body.
+    (tmp_path / "app" / "base.py").write_text(
+        f"def existing():\n{body}\ndef twin():\n{body}\ndef other():\n    return 99\n"
+    )
+    result = review(str(tmp_path))
+    assert not [f for f in result.findings if f.fix_kind == "duplication"]
+
+
+def test_review_no_duplication_finding_for_unique_block(tmp_path):
+    # A single, unique 5-statement function — no second copy, no finding.
+    _repo(tmp_path)
+    (tmp_path / "app" / "base.py").write_text(f"def existing():\n    return 1\n\ndef solo():\n{_dup_body()}")
+    result = review(str(tmp_path))
+    assert not [f for f in result.findings if f.fix_kind == "duplication"]
+
+
+def test_review_duplication_excluded_for_fixture_paths(tmp_path):
+    # Duplicated blocks living under tests/ must NOT get a duplication finding
+    # (fixture/test code is excluded throughout the reviewer, and the detector
+    # itself skips fixtures).
+    body = _dup_body()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "base.py").write_text("def existing():\n    return 1\n")
+    _git(tmp_path, ["git", "init", "-q"], ["git", "config", "user.email", "t@t.com"],
+         ["git", "config", "user.name", "t"], ["git", "add", "-A"],
+         ["git", "-c", "commit.gpgsign=false", "commit", "-qm", "init"])
+    (tmp_path / "tests" / "base.py").write_text(
+        f"def existing():\n{body}\ndef added():\n{body}"
+    )
+    result = review(str(tmp_path))
+    assert not [f for f in result.findings if f.fix_kind == "duplication"]
