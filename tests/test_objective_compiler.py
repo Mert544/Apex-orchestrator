@@ -313,3 +313,59 @@ def test_shrink_functions_dry_run_does_not_write(tmp_path):
     r = compile_objective(str(tmp_path), objective="shrink-functions", apply=False)
     assert (tmp_path / "app" / "m.py").read_text() == before
     assert any(s.operator == "extract" for s in r.steps)
+
+
+# --- fourth objective: modernize tidy debt (content transforms) --------------
+
+def _tidy_project(tmp_path: Path) -> Path:
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "m.py").write_text(
+        "def check(x):\n    if x == None:\n        return dict()\n"
+        "    msg = f\"done\"\n    return msg\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "from app.m import check\ndef test_check():\n"
+        "    assert check(None) == {}\n    assert check(1) == 'done'\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_modernize_fitness_counts_tidy_debt(tmp_path):
+    from app.engine.objective_compiler import modernize_fitness
+    _tidy_project(tmp_path)
+    # == None + dead f-string + dict() = 3 tidy rewrites.
+    assert modernize_fitness(str(tmp_path)) == 3.0
+
+
+def test_modernize_objective_clears_all_tidy_debt(tmp_path):
+    _tidy_project(tmp_path)
+    r = compile_objective(str(tmp_path), objective="modernize", apply=True, verify=False)
+    assert r.fitness_start == 3.0 and r.fitness_end == 0.0
+    src = (tmp_path / "app" / "m.py").read_text()
+    assert "is None" in src and "== None" not in src
+    assert "return {}" in src and "dict()" not in src
+    assert 'msg = "done"' in src  # f-prefix dropped
+
+
+def test_modernize_dry_run_does_not_write(tmp_path):
+    _tidy_project(tmp_path)
+    before = (tmp_path / "app" / "m.py").read_text()
+    r = compile_objective(str(tmp_path), objective="modernize", apply=False)
+    assert (tmp_path / "app" / "m.py").read_text() == before
+    assert len(r.steps) == 3
+
+
+def test_compile_uses_sequence_memory_without_breaking(tmp_path):
+    # With a composition-memory file present, the compiler orders candidate
+    # moves by learned sequence preference — and still reaches the objective
+    # (a regression guard that memory loading/ordering never breaks the loop).
+    import json
+    _tidy_project(tmp_path)
+    (tmp_path / ".apex").mkdir()
+    (tmp_path / ".apex" / "idea-memory.json").write_text(json.dumps({
+        "by_operator": {}, "by_label": {},
+        "by_sequence": {"modernize>fix_collection": {"applied": 5, "rolled_back": 0, "blocked": 0}},
+    }), encoding="utf-8")
+    r = compile_objective(str(tmp_path), objective="modernize", apply=True, verify=False)
+    assert r.fitness_end == 0.0
+    assert len(r.steps) == 3

@@ -36,8 +36,8 @@ from app.execution.cross_file_rename import RenamePlan
 __all__ = [
     "Move", "CompileStep", "CompileResult",
     "dead_parameter_fitness", "inlinable_helper_fitness", "long_function_fitness",
-    "compile_objective", "dream_confluence_modules", "compile_from_dream",
-    "render_compile_markdown", "render_from_dream_markdown",
+    "modernize_fitness", "compile_objective", "dream_confluence_modules",
+    "compile_from_dream", "render_compile_markdown", "render_from_dream_markdown",
 ]
 
 
@@ -226,8 +226,82 @@ def _extract_moves(project_root: str | Path) -> list[Move]:
     return moves
 
 
+# --- Objective: modernize tidy debt (== None / dead f-string / dict()) --------
+
+# Each entry: (operator, human label, transform.apply). The transform rewrites
+# every instance of its pattern in a file at once and is behaviour-preserving.
+def _tidy_transforms() -> list[tuple[str, str, Callable]]:
+    from app.execution.semantic.transforms import (
+        collection_literal, fstring, modernize,
+    )
+    return [
+        ("modernize", "modernize None comparisons", modernize.apply),
+        ("fix_fstring", "drop dead f-string prefixes", fstring.apply),
+        ("fix_collection", "use collection literals", collection_literal.apply),
+    ]
+
+
+def _content_plan(project_root: str | Path, rel: str, apply_fn: Callable,
+                  title: str) -> RenamePlan:
+    """Wrap a content-producing transform (a SemanticPatchResult) as a RenamePlan
+    so the compiler can apply it through the same verified-with-rollback engine
+    as the structural moves."""
+    plan = RenamePlan(old=rel, new=title)
+    try:
+        source = (Path(project_root) / rel).read_text(encoding="utf-8")
+    except OSError:
+        return plan
+    try:
+        res = apply_fn(rel, source, title)
+    except Exception:
+        res = None
+    if res and getattr(res, "patch_requests", None):
+        new = res.patch_requests[0].get("new_content", "")
+        if new and new != source:
+            plan.originals[rel] = source
+            plan.new_contents[rel] = new
+            plan.edits_by_file[rel] = 1
+    return plan
+
+
+def _modernize_candidates(project_root: str | Path) -> list[tuple[str, str, str, Callable]]:
+    """(module, operator, label, apply_fn) for every tidy transform that would
+    actually change one of the project's own modules."""
+    out: list[tuple[str, str, str, Callable]] = []
+    transforms = _tidy_transforms()
+    for rel, source in _own_modules(project_root):
+        for op, label, fn in transforms:
+            try:
+                res = fn(rel, source, label)
+            except Exception:
+                res = None
+            if res and getattr(res, "patch_requests", None):
+                new = res.patch_requests[0].get("new_content", "")
+                if new and new != source:
+                    out.append((rel, op, label, fn))
+    return out
+
+
+def modernize_fitness(project_root: str | Path) -> float:
+    """Fitness = how many tidy-debt rewrites remain across the project's own
+    code (each is one module × one transform that would still change it)."""
+    return float(len(_modernize_candidates(project_root)))
+
+
+def _modernize_moves(project_root: str | Path) -> list[Move]:
+    """One move per (module, tidy-transform) that would change something now."""
+    moves: list[Move] = []
+    for rel, op, label, fn in _modernize_candidates(project_root):
+        moves.append(Move(
+            operator=op, target=f"{rel}:{op}", description=f"{label} in {rel}",
+            build_plan=lambda r=rel, f=fn, t=label: _content_plan(project_root, r, f, t),
+        ))
+    return moves
+
+
 _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
                              Callable[[str | Path], list[Move]]]] = {
+    "modernize": (modernize_fitness, _modernize_moves),
     "dead-params": (dead_parameter_fitness, _dead_param_moves),
     "shrink-functions": (long_function_fitness, _extract_moves),
     "inline-helpers": (inlinable_helper_fitness, _inline_moves),
@@ -264,10 +338,21 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     fitness, generate = _OBJECTIVES[objective]
     root = str(project_root)
 
+    # The organism uses what it learned: when several move types are available,
+    # prefer the operator that has historically LANDED best right after the last
+    # one that landed (the composition memory's sequence credit). A neutral 1.0
+    # for unknown pairs keeps the order stable — so a fresh project is unchanged.
+    from app.engine.idea_memory import IdeaMemory
+    memory = IdeaMemory.load(root)
+    last_operator = ""
+
     def candidates() -> list[Move]:
         moves = generate(root)
         if scope_module is not None:
             moves = [m for m in moves if _move_module(m) == scope_module]
+        if last_operator:
+            moves = sorted(
+                moves, key=lambda m: -memory.sequence_factor(last_operator, m.operator))
         return moves
 
     def measure() -> float:
@@ -315,6 +400,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
                 fitness_before=current, fitness_after=after,
                 verified=res.get("verified") is True))
             current = after
+            last_operator = mv.operator  # bias the next move's ordering
             advanced = True
             break  # re-generate against the new tree (line numbers shifted)
         if not advanced:
