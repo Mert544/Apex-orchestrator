@@ -428,6 +428,35 @@ def _extract_constant_moves(project_root: str | Path) -> list[Move]:
     ) for rel in _magic_constant_modules(project_root)]
 
 
+# --- Objective: merge isinstance chains (isinstance(x,A) or isinstance(x,B)) --
+
+def _merge_isinstance_modules(project_root: str | Path) -> list[str]:
+    """Own modules with a mergeable isinstance ``or`` chain."""
+    from app.execution.merge_isinstance import plan_merge_isinstance
+
+    out: list[str] = []
+    for rel, _src in _own_modules(project_root):
+        if plan_merge_isinstance(project_root, rel).new_contents:
+            out.append(rel)
+    return out
+
+
+def merge_isinstance_fitness(project_root: str | Path) -> float:
+    """Fitness = how many own modules still have a mergeable isinstance chain."""
+    return float(len(_merge_isinstance_modules(project_root)))
+
+
+def _merge_isinstance_moves(project_root: str | Path) -> list[Move]:
+    """One move per module with a mergeable isinstance chain."""
+    from app.execution.merge_isinstance import plan_merge_isinstance
+
+    return [Move(
+        operator="merge_isinstance", target=f"{rel}:merge-isinstance",
+        description=f"merge isinstance or-chains in {rel}",
+        build_plan=lambda r=rel: plan_merge_isinstance(project_root, r),
+    ) for rel in _merge_isinstance_modules(project_root)]
+
+
 # --- Objective: sort imports (group + alphabetize a clean import block) ------
 
 def _import_sort_modules(project_root: str | Path) -> list[str]:
@@ -523,6 +552,7 @@ _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
     "extract-constant": (magic_constant_fitness, _extract_constant_moves),
     "remove-unused-imports": (unused_import_fitness, _unused_import_moves),
     "sort-imports": (import_sort_fitness, _import_sort_moves),
+    "merge-isinstance": (merge_isinstance_fitness, _merge_isinstance_moves),
     "remove-dead-code": (dead_code_fitness, _dead_code_moves),
     "dedup": (duplication_fitness, _dedup_moves),
     "dead-params": (dead_parameter_fitness, _dead_param_moves),
