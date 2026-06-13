@@ -541,3 +541,211 @@ def test_class_determinism(tmp_path):
     assert first is not None and second is not None
     assert first.content == second.content
     assert first.functions == second.functions == ["A", "A.m", "B", "B.n"]
+
+
+# --- value oracles ----------------------------------------------------------
+
+
+def _run_generated(tmp_path, path):
+    """Run the generated test against the synthetic project (root on sys.path)."""
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", path, "-q"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_pure_function_gets_a_value_oracle(tmp_path):
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/pure.py",
+        """
+        def add(a: int, b: int):
+            return a + b
+        """,
+    )
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    # add(0, 0) == 0 is captured as a real value oracle (no try/except smoke).
+    assert "assert fn(0, 0) == 0" in shield.content
+    assert "it returns the captured value" in shield.content
+    # The captured-value test is NOT a smoke shape check.
+    assert "no value oracle" not in shield.content
+
+
+def test_value_oracle_test_passes_when_run(tmp_path):
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/pure.py",
+        """
+        def add(a: int, b: int):
+            return a + b
+        """,
+    )
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    path = write_shield_test(tmp_path, shield)
+    proc = _run_generated(tmp_path, path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_string_return_value_oracle(tmp_path):
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/greet.py",
+        """
+        def hello(name: str):
+            return "hi " + name
+        """,
+    )
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    # The captured str is rendered as a Python literal via repr.
+    assert "assert fn('') == 'hi '" in shield.content
+    path = write_shield_test(tmp_path, shield)
+    proc = _run_generated(tmp_path, path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_container_return_value_oracle(tmp_path):
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/cont.py",
+        """
+        def pair(n: int):
+            return {"lo": n, "hi": n + 1}
+        """,
+    )
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    # A dict of literals round-trips to a value oracle.
+    assert "assert fn(0) == {'lo': 0, 'hi': 1}" in shield.content
+    path = write_shield_test(tmp_path, shield)
+    proc = _run_generated(tmp_path, path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_non_literal_return_falls_back_to_smoke(tmp_path):
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/obj.py",
+        """
+        class Box:
+            pass
+
+        def build():
+            return Box()
+        """,
+    )
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    assert "build" in shield.functions
+    # A custom object is not a simple literal -> smoke fallback, no value oracle.
+    assert "no value oracle" in shield.content
+    assert "result = fn()" in shield.content
+    assert "== mypkg.obj.Box" not in shield.content
+    path = write_shield_test(tmp_path, shield)
+    proc = _run_generated(tmp_path, path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_function_that_raises_on_synthesized_args_falls_back_to_smoke(tmp_path):
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/boom.py",
+        """
+        def explode(x: int):
+            raise ValueError("nope")
+        """,
+    )
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    assert shield.functions == ["explode"]
+    # The call raises -> no value oracle, the existing smoke body is emitted.
+    assert "assert fn(0) ==" not in shield.content
+    assert "it is callable and runs" in shield.content
+    path = write_shield_test(tmp_path, shield)
+    proc = _run_generated(tmp_path, path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_none_return_gets_a_value_oracle(tmp_path):
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/noret.py",
+        """
+        def nothing(x: int):
+            return None
+        """,
+    )
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    # None is a simple literal -> the oracle pins it exactly.
+    assert "assert fn(0) == None" in shield.content
+    path = write_shield_test(tmp_path, shield)
+    proc = _run_generated(tmp_path, path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_unannotated_arg_that_breaks_the_call_falls_back_to_smoke(tmp_path):
+    # add(None, None) raises TypeError -> no oracle; smoke body is emitted.
+    rel = _make_pkg(tmp_path, "mypkg/un2.py", "def add(a, b):\n    return a + b\n")
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    assert "assert fn(None, None) ==" not in shield.content
+    assert "result = fn(None, None)" in shield.content
+
+
+def test_nan_return_does_not_get_a_value_oracle(tmp_path):
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/nan.py",
+        """
+        def bad(x: int):
+            return float("nan")
+        """,
+    )
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    # NaN is never equal to itself, so `== nan` is not a passing oracle -> smoke.
+    assert "assert fn(0) ==" not in shield.content
+    assert "no value oracle" in shield.content
+    path = write_shield_test(tmp_path, shield)
+    proc = _run_generated(tmp_path, path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_value_oracle_is_deterministic(tmp_path):
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/detoracle.py",
+        """
+        def add(a: int, b: int):
+            return a + b
+        """,
+    )
+    first = generate_characterization_test(tmp_path, rel)
+    second = generate_characterization_test(tmp_path, rel)
+    assert first is not None and second is not None
+    assert first.content == second.content
+    assert "assert fn(0, 0) == 0" in first.content
+
+
+def test_capture_leaves_sys_modules_and_path_unchanged(tmp_path):
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/clean.py",
+        """
+        def add(a: int, b: int):
+            return a + b
+        """,
+    )
+    modules_before = dict(sys.modules)
+    path_before = list(sys.path)
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    assert "assert fn(0, 0) == 0" in shield.content  # the import actually ran
+    # The controlled import leaves no trace in sys.modules or sys.path.
+    assert sys.path == path_before
+    assert set(sys.modules) == set(modules_before)
