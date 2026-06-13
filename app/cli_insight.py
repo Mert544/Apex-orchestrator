@@ -80,6 +80,31 @@ def cmd_brief(args: argparse.Namespace) -> int:
             print(render_check_markdown(result))
         return 0
 
+    if getattr(args, "develop", False):
+        from app.engine.brief_develop import (
+            develop_brief,
+            render_brief_develop_markdown,
+        )
+
+        result = develop_brief(
+            str(target), branch_path=branch,
+            subject=getattr(args, "subject", "") or "",
+            max_steps=getattr(args, "max_steps", 25),
+            verify=not getattr(args, "no_verify", False),
+            apply=getattr(args, "apply", False),
+            depth=args.depth, breadth=args.breadth, max_ideas=args.max_ideas,
+            objective_focus=args.objective or "")
+        if result is None:
+            print("No design-level idea to develop (every idea is directly executable).")
+            return 1
+        if args.json:
+            print(json.dumps(result.to_dict(), indent=2))
+        else:
+            print(render_brief_develop_markdown(result))
+            if not getattr(args, "apply", False):
+                print("[brief] Dry run — re-run with --develop --apply to land the moves.")
+        return 0
+
     from app.engine.idea_permutation import IdeaPermutationEngine
 
     report = IdeaPermutationEngine(
@@ -333,6 +358,15 @@ def register_parsers(subparsers) -> None:
                               help="Snapshot the brief's evidence baseline for --check")
     brief_parser.add_argument("--check", action="store_true",
                               help="Re-measure a saved brief: evidence gone = item resolved")
+    brief_parser.add_argument("--develop", action="store_true",
+                              help="Run the brief's evidenced concerns as verified develop "
+                                   "campaigns, then re-measure the burndown")
+    brief_parser.add_argument("--apply", action="store_true",
+                              help="With --develop: actually land the moves (default: dry run)")
+    brief_parser.add_argument("--max-steps", type=int, default=25, dest="max_steps",
+                              help="With --develop: cap moves per objective")
+    brief_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                              help="With --develop: skip the per-move suite gate (faster, unsafe)")
     brief_parser.add_argument("--json", action="store_true", help="Emit JSON")
     brief_parser.set_defaults(func=cmd_brief)
 
