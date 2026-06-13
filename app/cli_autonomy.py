@@ -434,6 +434,20 @@ def cmd_develop(args: argparse.Namespace) -> int:
     want_grade = getattr(args, "grade", False)
     grade_before = _grade_score(str(target)) if want_grade else None
 
+    goal = getattr(args, "goal", "") or ""
+    if goal:
+        from app.engine.fractal_develop import compile_goal, render_goal_markdown
+
+        gr = compile_goal(str(target), goal, max_steps=max_steps, verify=verify, apply=apply)
+        if args.json:
+            print(json.dumps(gr.to_dict(), indent=2))
+        else:
+            print(render_goal_markdown(gr))
+            if apply and gr.total_moves:
+                print("_Applied to your working tree, not committed — "
+                      "review with `git diff`._")
+        return 0 if gr.objectives else 1
+
     if getattr(args, "all_objectives", False):
         from app.engine.objective_compiler import compile_all, render_all_markdown
 
@@ -713,6 +727,9 @@ def register_parsers(subparsers) -> None:
     develop_parser.add_argument("--target", default="", help="Target project root")
     develop_parser.add_argument("--objective", default="dead-params",
                                 help="Objective to pursue (default: dead-params)")
+    develop_parser.add_argument("--goal", default="",
+                                help="Pursue a high-level GOAL that fractally decomposes into "
+                                     "objectives (e.g. reduce-debt, tidy, simplify-structure)")
     develop_parser.add_argument("--all", action="store_true", dest="all_objectives",
                                 help="Sweep EVERY objective in order (modernize, dead-params, "
                                      "shrink-functions, inline-helpers) — clean everything")
