@@ -45,7 +45,7 @@ def blocking_high_findings(result: "ReviewResult") -> list["ReviewFinding"]:
 class ReviewFinding:
     file: str
     line: int
-    category: str          # security | bug | style | docs | convention | refactor
+    category: str          # security | bug | style | docs | convention | refactor (extract/inline)
     severity: str          # high | medium | low
     message: str
     auto_fixable: bool
@@ -249,6 +249,38 @@ def _extraction_findings(rel: str, source: str, lines: set[int]) -> list[ReviewF
     return out
 
 
+def _inline_findings(project_root: str,
+                     changed: dict[str, set[int]]) -> list[ReviewFinding]:
+    """Tiny single-use helpers on the diff that ``apex inline`` would fold away.
+
+    The mirror image of :func:`_extraction_findings`: where extraction points at
+    a function long enough to split, this points at one small enough to dissolve
+    into its lone caller. Runs the project-level :func:`suggest_inlines` ONCE,
+    then keeps only the helpers whose definition line landed on the diff (the
+    helper was added or touched by THIS change) — an untouched helper elsewhere
+    stays quiet, the same discipline the extraction findings keep. Read-only and
+    non-auto-fixable: inlining is a judgment call, so the reviewer proposes the
+    runnable ``apex inline FUNC`` command, never applies it."""
+    from app.execution.inline_function import suggest_inlines
+
+    out: list[ReviewFinding] = []
+    for s in suggest_inlines(project_root):
+        rel = s["module"]
+        if _is_fixture_path(rel):
+            continue
+        lines = changed.get(rel)
+        if not lines or s["line"] not in lines:
+            continue  # the helper's def isn't on the diff — not this change's call
+        fn = s["function"]
+        n = s["call_sites"]
+        sites = f"{n} call site" if n == 1 else f"{n} call sites"
+        out.append(ReviewFinding(
+            file=rel, line=s["line"], category="refactor", severity="low",
+            message=(f"`{fn}()` is a single-use helper ({sites}) — `apex inline {fn}`"),
+            auto_fixable=False, fix_kind="inline"))
+    return out
+
+
 def review(project_root: str, base: str = "HEAD") -> ReviewResult:
     """Review only the lines changed since ``base``."""
     changes = changed_lines(project_root, base)
@@ -271,6 +303,9 @@ def review(project_root: str, base: str = "HEAD") -> ReviewResult:
             findings.extend(_rule_findings(project_root, rel, source, lines, compiled))
         if not _is_fixture_path(rel):
             findings.extend(_extraction_findings(rel, source, lines))
+    # Inlining is project-level (single-use across the whole tree), so it runs
+    # ONCE over the full changed map rather than per file.
+    findings.extend(_inline_findings(project_root, changes))
     # Most serious first, then by file/line for stable output.
     sev_rank = {"high": 0, "medium": 1, "low": 2}
     findings.sort(key=lambda f: (sev_rank.get(f.severity, 3), f.file, f.line))
@@ -344,6 +379,8 @@ def render_review_markdown(result: ReviewResult, limit: int = 0) -> str:
             elif f.fix_kind.startswith("rule:"):
                 fix = f" · _fix: `apex rewrite --rule {f.fix_kind[5:]}`_"
             elif f.fix_kind == "extract":
+                fix = " · _refactor: run the command above_"
+            elif f.fix_kind == "inline":
                 fix = " · _refactor: run the command above_"
             elif f.auto_fixable:
                 fix = " · _Apex can auto-fix_"

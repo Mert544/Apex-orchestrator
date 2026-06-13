@@ -322,6 +322,73 @@ def test_review_extract_finding_excluded_for_fixture_paths(tmp_path):
     assert not [f for f in result.findings if f.category == "refactor"]
 
 
+# --- inline suggestions on the diff (refactor findings) -----------------------
+
+def _single_use_helper_source() -> str:
+    # A tiny single-use helper (single `return EXPR`) plus its one call site —
+    # exactly what `apex inline` folds away.
+    return (
+        "def _double(x):\n"
+        "    return x * 2\n"
+        "\n"
+        "def caller(n):\n"
+        "    return _double(n) + 1\n"
+    )
+
+
+def test_review_flags_single_use_helper_with_inline_command(tmp_path):
+    _repo(tmp_path)
+    (tmp_path / "app" / "base.py").write_text(_single_use_helper_source())
+    result = review(str(tmp_path))
+    inlines = [f for f in result.findings if f.fix_kind == "inline"]
+    assert len(inlines) == 1
+    f = inlines[0]
+    assert f.category == "refactor"
+    assert f.severity == "low"
+    assert not f.auto_fixable  # inlining is a judgment call, never auto-applied
+    # The message carries the exact, runnable command and the call-site count.
+    assert "apex inline _double" in f.message
+    assert "1 call site" in f.message
+    # The finding points at the helper's definition line.
+    assert f.line == 1
+
+
+def test_review_inline_finding_renders_with_refactor_hint(tmp_path):
+    _repo(tmp_path)
+    (tmp_path / "app" / "base.py").write_text(_single_use_helper_source())
+    md = render_review_markdown(review(str(tmp_path)))
+    assert "refactor: run the command above" in md
+    assert "[refactor]" in md
+    assert "apex inline _double" in md
+
+
+def test_review_no_inline_finding_when_def_untouched(tmp_path):
+    # Commit a single-use helper, then change ONE unrelated line — the helper's
+    # def isn't on the diff, so no inline finding fires.
+    _repo(tmp_path)
+    src = _single_use_helper_source()
+    (tmp_path / "app" / "base.py").write_text(src)
+    _git(tmp_path, ["git", "add", "-A"],
+         ["git", "-c", "commit.gpgsign=false", "commit", "-qm", "helper"])
+    # Append a new, unrelated short function — only its lines are on the diff.
+    (tmp_path / "app" / "base.py").write_text(src + "\ndef other():\n    return 0\n")
+    result = review(str(tmp_path))
+    assert not [f for f in result.findings if f.fix_kind == "inline"]
+
+
+def test_review_inline_finding_excluded_for_fixture_paths(tmp_path):
+    # A single-use helper added under tests/ must NOT get an inline finding
+    # (fixture/test code is excluded throughout the reviewer).
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "base.py").write_text("def existing():\n    return 1\n")
+    _git(tmp_path, ["git", "init", "-q"], ["git", "config", "user.email", "t@t.com"],
+         ["git", "config", "user.name", "t"], ["git", "add", "-A"],
+         ["git", "-c", "commit.gpgsign=false", "commit", "-qm", "init"])
+    (tmp_path / "tests" / "base.py").write_text(_single_use_helper_source())
+    result = review(str(tmp_path))
+    assert not [f for f in result.findings if f.fix_kind == "inline"]
+
+
 # --- f-string-without-placeholder (style finding with inline suggestion) ------
 
 def test_review_flags_dead_fstring_with_suggestion(tmp_path):
