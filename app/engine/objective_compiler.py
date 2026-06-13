@@ -36,7 +36,8 @@ from app.execution.cross_file_rename import RenamePlan
 __all__ = [
     "Move", "CompileStep", "CompileResult",
     "dead_parameter_fitness", "inlinable_helper_fitness", "long_function_fitness",
-    "modernize_fitness", "dead_code_fitness", "duplication_fitness", "bool_return_fitness",
+    "modernize_fitness", "dead_code_fitness", "duplication_fitness",
+    "bool_return_fitness", "magic_constant_fitness",
     "compile_objective", "compile_all", "available_objectives",
     "ALL_OBJECTIVES", "dream_confluence_modules", "compile_from_dream",
     "render_compile_markdown", "render_from_dream_markdown", "render_all_markdown",
@@ -398,10 +399,40 @@ def _bool_return_moves(project_root: str | Path) -> list[Move]:
     ) for rel in _bool_return_modules(project_root)]
 
 
+# --- Objective: extract repeated magic literals into named constants ---------
+
+def _magic_constant_modules(project_root: str | Path) -> list[str]:
+    """Own modules with a repeated magic literal worth naming."""
+    from app.execution.extract_constant import plan_extract_constant
+
+    out: list[str] = []
+    for rel, _src in _own_modules(project_root):
+        if plan_extract_constant(project_root, rel).new_contents:
+            out.append(rel)
+    return out
+
+
+def magic_constant_fitness(project_root: str | Path) -> float:
+    """Fitness = how many own modules still hide a repeated magic literal."""
+    return float(len(_magic_constant_modules(project_root)))
+
+
+def _extract_constant_moves(project_root: str | Path) -> list[Move]:
+    """One move per module — name its most-repeated magic literal."""
+    from app.execution.extract_constant import plan_extract_constant
+
+    return [Move(
+        operator="extract_constant", target=f"{rel}:constant",
+        description=f"name a repeated magic literal in {rel}",
+        build_plan=lambda r=rel: plan_extract_constant(project_root, r),
+    ) for rel in _magic_constant_modules(project_root)]
+
+
 _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
                              Callable[[str | Path], list[Move]]]] = {
     "modernize": (modernize_fitness, _modernize_moves),
     "simplify-bool-return": (bool_return_fitness, _bool_return_moves),
+    "extract-constant": (magic_constant_fitness, _extract_constant_moves),
     "remove-dead-code": (dead_code_fitness, _dead_code_moves),
     "dedup": (duplication_fitness, _dedup_moves),
     "dead-params": (dead_parameter_fitness, _dead_param_moves),

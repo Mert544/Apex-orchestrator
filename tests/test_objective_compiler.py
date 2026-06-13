@@ -645,3 +645,33 @@ def test_simplify_bool_return_objective(tmp_path):
 def test_simplify_bool_return_in_all_objectives():
     from app.engine.objective_compiler import ALL_OBJECTIVES
     assert "simplify-bool-return" in ALL_OBJECTIVES
+
+
+# --- eighth objective: extract repeated magic literals to named constants -----
+
+def test_extract_constant_objective(tmp_path):
+    from app.engine.objective_compiler import magic_constant_fitness
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "m.py").write_text(
+        "def a():\n    return 86400 * 2\n\n\ndef b():\n    return 86400 + 1\n\n\n"
+        "def c():\n    return 86400 - 5\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "from app.m import a, b, c\ndef test_abc():\n"
+        "    assert a() == 172800 and b() == 86401 and c() == 86395\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    assert magic_constant_fitness(str(tmp_path)) == 1.0
+    r = compile_objective(str(tmp_path), objective="extract-constant", apply=True, verify=False)
+    assert any(s.operator == "extract_constant" for s in r.steps)
+    import re
+    src = (tmp_path / "app" / "m.py").read_text()
+    assert "= 86400" in src  # the constant's definition (NAME = 86400)
+    # The BARE literal 86400 (not part of the CONSTANT_86400 name) now appears
+    # exactly once — only in the constant's definition.
+    bare = re.findall(r"(?<![A-Za-z0-9_])86400(?![A-Za-z0-9_])", src)
+    assert len(bare) == 1
+
+
+def test_extract_constant_in_available_objectives():
+    from app.engine.objective_compiler import available_objectives
+    assert "extract-constant" in available_objectives()
