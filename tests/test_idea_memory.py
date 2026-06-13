@@ -110,3 +110,128 @@ def test_engine_applies_learned_nudge(tmp_path):
 
     assert base_harden and learned_harden
     assert max(learned_harden) >= max(base_harden)
+
+
+# --- composition / sequence memory (credit assignment over orderings) --------
+
+def test_sequence_recorded_only_after_a_landed_step():
+    from app.engine.idea_memory import IdeaMemory
+
+    m = IdeaMemory()
+    # test landed, then harden landed → the pair test>harden is credited.
+    m.record_outcomes({"results": [
+        {"operator": "test", "applied": True},
+        {"operator": "harden", "applied": True},
+    ]})
+    assert "test>harden" in m.by_sequence
+    assert m.by_sequence["test>harden"].applied == 1
+
+
+def test_sequence_not_recorded_when_first_step_did_not_land():
+    from app.engine.idea_memory import IdeaMemory
+
+    m = IdeaMemory()
+    # test BLOCKED, then harden ran — no composition (test changed nothing).
+    m.record_outcomes({"results": [
+        {"operator": "test", "blocked": True},
+        {"operator": "harden", "applied": True},
+    ]})
+    assert m.by_sequence == {}
+
+
+def test_sequence_records_second_step_outcome():
+    from app.engine.idea_memory import IdeaMemory
+
+    m = IdeaMemory()
+    m.record_outcomes({"results": [
+        {"operator": "test", "applied": True},
+        {"operator": "harden", "blocked": True},
+    ]})
+    assert m.by_sequence["test>harden"].blocked == 1
+    assert m.by_sequence["test>harden"].applied == 0
+
+
+def test_root_steps_break_the_chain():
+    from app.engine.idea_memory import IdeaMemory
+
+    m = IdeaMemory()
+    # A root step (operator "root") is not a development operator and must not
+    # participate in a composition pair.
+    m.record_outcomes({"results": [
+        {"operator": "test", "applied": True},
+        {"operator": "root", "applied": True},
+        {"operator": "harden", "applied": True},
+    ]})
+    # test>root and root>harden must NOT exist; test>harden is not adjacent.
+    assert "root" not in "".join(m.by_sequence.keys())
+    # The chain resumes from the last real operator (test) to harden.
+    assert "test>harden" in m.by_sequence
+
+
+def test_sequence_factor_bounds_and_neutrality():
+    from app.engine.idea_memory import IdeaMemory
+
+    m = IdeaMemory()
+    # No prior operator → neutral.
+    assert m.sequence_factor("", "harden") == 1.0
+    # Unknown pair → neutral.
+    assert m.sequence_factor("test", "harden") == 1.0
+    # Two clean landings → positive nudge, bounded by +10%.
+    for _ in range(2):
+        m.record_outcomes({"results": [
+            {"operator": "test", "applied": True},
+            {"operator": "harden", "applied": True},
+        ]})
+    f = m.sequence_factor("test", "harden")
+    assert 1.0 < f <= 1.10
+    # A consistently blocking pair drops below 1.0, bounded by -10%.
+    bad = IdeaMemory()
+    for _ in range(2):
+        bad.record_outcomes({"results": [
+            {"operator": "simplify", "applied": True},
+            {"operator": "harden", "blocked": True},
+        ]})
+    fb = bad.sequence_factor("simplify", "harden")
+    assert 0.90 <= fb < 1.0
+
+
+def test_sequence_persistence_round_trip(tmp_path):
+    from app.engine.idea_memory import IdeaMemory
+
+    m = IdeaMemory()
+    m.record_outcomes({"results": [
+        {"operator": "test", "applied": True},
+        {"operator": "harden", "applied": True},
+    ]})
+    m.save(str(tmp_path))
+    reloaded = IdeaMemory.load(str(tmp_path))
+    assert reloaded.by_sequence["test>harden"].applied == 1
+
+
+def test_old_memory_file_without_sequence_loads(tmp_path):
+    # Backward compatibility: a pre-existing memory file with no by_sequence key
+    # must load cleanly with an empty sequence table.
+    import json
+    from app.engine.idea_memory import MEMORY_REL, IdeaMemory
+
+    p = tmp_path / MEMORY_REL
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"by_operator": {"test": {"applied": 3, "rolled_back": 0, "blocked": 0}}}),
+                 encoding="utf-8")
+    m = IdeaMemory.load(str(tmp_path))
+    assert m.by_sequence == {}
+    assert m.by_operator["test"].applied == 3
+
+
+def test_summary_includes_reliable_sequences():
+    from app.engine.idea_memory import IdeaMemory
+
+    m = IdeaMemory()
+    for _ in range(2):
+        m.record_outcomes({"results": [
+            {"operator": "test", "applied": True},
+            {"operator": "harden", "applied": True},
+        ]})
+    s = m.summary()
+    assert s["sequences_tracked"] == 1
+    assert s["reliable_sequences"] and s["reliable_sequences"][0]["key"] == "test>harden"

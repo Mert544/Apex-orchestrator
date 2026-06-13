@@ -11,6 +11,16 @@ It is **opt-in by construction**: with no memory file, scoring is byte-identical
 to a fresh engine (so determinism and every existing test are unaffected). The
 nudge is bounded to ±10% and clamped, so memory shapes priorities without ever
 overriding the grounded scores. Persisted to ``.apex/idea-memory.json``.
+
+Beyond per-operator and per-label tallies, the memory also learns which
+operator **sequences** work — credit assignment over compositions, not just
+single steps. When operator B is applied right after operator A *landed* in the
+same plan, the pair ``A>B`` records B's outcome; over time the engine learns
+that ``test>harden`` tends to land (a stub shields the module, then the harden
+sticks) while a different order blocks. This is the deterministic core that the
+search/composition literature (GenProg's edit-list credit assignment,
+MAP-Elites' per-cell archive) identifies as the missing piece for an agent that
+already owns safe operators and a test oracle.
 """
 
 from __future__ import annotations
@@ -27,6 +37,8 @@ MEMORY_REL = ".apex/idea-memory.json"
 _MAX_NUDGE = 0.10
 # Don't trust a key until it has at least this many recorded outcomes.
 _MIN_SAMPLES = 2
+# Separator for a composition key "operatorA>operatorB" (ASCII, JSON-safe).
+_SEQ_SEP = ">"
 
 
 @dataclass
@@ -53,6 +65,9 @@ class IdeaMemory:
 
     by_operator: dict[str, _Stat] = field(default_factory=dict)
     by_label: dict[str, _Stat] = field(default_factory=dict)
+    # Composition credit: key "A>B" = operator B's outcome when applied right
+    # after operator A landed in the same plan. Sequence-level learning.
+    by_sequence: dict[str, _Stat] = field(default_factory=dict)
 
     # --- persistence ---------------------------------------------------------
 
@@ -68,6 +83,8 @@ class IdeaMemory:
         return cls(
             by_operator={k: _Stat(**v) for k, v in (data.get("by_operator") or {}).items()},
             by_label={k: _Stat(**v) for k, v in (data.get("by_label") or {}).items()},
+            # Backward-compatible: an old memory file has no by_sequence key.
+            by_sequence={k: _Stat(**v) for k, v in (data.get("by_sequence") or {}).items()},
         )
 
     def save(self, project_root: str | Path, path: str | Path | None = None) -> Path:
@@ -80,18 +97,31 @@ class IdeaMemory:
         return {
             "by_operator": {k: v.to_dict() for k, v in sorted(self.by_operator.items())},
             "by_label": {k: v.to_dict() for k, v in sorted(self.by_label.items())},
+            "by_sequence": {k: v.to_dict() for k, v in sorted(self.by_sequence.items())},
         }
 
     # --- recording -----------------------------------------------------------
 
     def record_outcomes(self, summary: dict[str, Any]) -> None:
-        """Tally the results of an apply_plan/maintenance summary."""
+        """Tally the results of an apply_plan/maintenance summary.
+
+        Single-step credit goes to ``by_operator``/``by_label`` as before. A
+        SEQUENCE credit ``A>B`` is recorded for each adjacent pair of
+        development-operator steps in the plan's order, but only when the first
+        step actually LANDED — so the pair captures "after A changed the code,
+        did B stick?", the composition signal (not a coincidence of ordering)."""
+        prev_op = ""           # last development operator seen
+        prev_applied = False   # ...and whether it landed
         for r in summary.get("results", []) or []:
             outcome = "applied" if r.get("applied") else ("rolled_back" if r.get("rolled_back") else "blocked")
             op = r.get("operator") or ""
             label = r.get("label") or ""
             if op and op != "root":
                 self._bump(self.by_operator, op, outcome)
+                if prev_op and prev_applied:
+                    self._bump(self.by_sequence, f"{prev_op}{_SEQ_SEP}{op}", outcome)
+                prev_op = op
+                prev_applied = outcome == "applied"
             if label:
                 self._bump(self.by_label, label, outcome)
 
@@ -118,6 +148,21 @@ class IdeaMemory:
         # success_rate 0.5 → neutral; 1.0 → +_MAX_NUDGE; 0.0 → -_MAX_NUDGE.
         return round(1.0 + (stat.success_rate - 0.5) * 2.0 * _MAX_NUDGE, 4)
 
+    def sequence_factor(self, prev_operator: str, operator: str) -> float:
+        """A bounded multiplier from the track record of running ``operator``
+        right after ``prev_operator`` landed — composition-level credit. Neutral
+        1.0 when there is no prior operator or too few samples for the pair.
+
+        A future composition planner consults this to prefer orderings the
+        engine has *seen work* on this codebase (e.g. test>harden over
+        harden>test), exactly as ``feasibility_factor`` biases single steps."""
+        if not prev_operator or not operator:
+            return 1.0
+        stat = self.by_sequence.get(f"{prev_operator}{_SEQ_SEP}{operator}")
+        if stat is None or stat.total < _MIN_SAMPLES:
+            return 1.0
+        return round(1.0 + (stat.success_rate - 0.5) * 2.0 * _MAX_NUDGE, 4)
+
     @classmethod
     def learn_from(cls, summary: dict[str, Any], project_root: str | Path,
                    path: str | Path | None = None) -> IdeaMemory:
@@ -138,6 +183,8 @@ class IdeaMemory:
         return {
             "operators_tracked": len(self.by_operator),
             "labels_tracked": len(self.by_label),
+            "sequences_tracked": len(self.by_sequence),
             "most_reliable": _top(self.by_operator, best=True),
             "least_reliable": _top(self.by_operator, best=False),
+            "reliable_sequences": _top(self.by_sequence, best=True),
         }
