@@ -128,15 +128,16 @@ def rank_objectives(project_root: str | Path,
     fix). Ties break by the objective's registration order, so the ranking is
     fully deterministic. Objectives with zero pending are included (pending 0)
     so callers can show the whole board; ``ascend`` skips them when choosing."""
-    from app.engine.objective_compiler import _OBJECTIVES
+    from app.engine.objective_compiler import _objectives_map
 
+    table = _objectives_map()
     names = objectives if objectives is not None else available_objectives()
     order = {name: i for i, name in enumerate(available_objectives())}
     rankings: list[GoalRanking] = []
     for name in names:
-        if name not in _OBJECTIVES:
+        if name not in table:
             continue
-        fitness_fn = _OBJECTIVES[name][0]
+        fitness_fn = table[name][0]
         try:
             pending = float(fitness_fn(project_root))
         except Exception:

@@ -428,98 +428,6 @@ def _extract_constant_moves(project_root: str | Path) -> list[Move]:
     ) for rel in _magic_constant_modules(project_root)]
 
 
-# --- Objective: cover gaps (write a characterization test for an untested module) --
-
-def _cover_gaps_modules(project_root: str | Path) -> list[str]:
-    """Own modules with no linked test that can be characterization-shielded."""
-    from app.engine.health_score import _is_fixture_path
-    from app.execution.cover_gaps import plan_cover_gaps
-    from app.tools.project_profile import ProjectProfiler
-
-    profile = ProjectProfiler(str(project_root)).profile()
-    untested = [m for m in (getattr(profile, "untested_modules", []) or [])
-                if isinstance(m, str) and m.endswith(".py") and not _is_fixture_path(m)]
-    out: list[str] = []
-    for rel in untested:
-        if plan_cover_gaps(project_root, rel).new_contents:
-            out.append(rel)
-    return out
-
-
-def cover_gaps_fitness(project_root: str | Path) -> float:
-    """Fitness = how many own modules still lack a test we can generate."""
-    return float(len(_cover_gaps_modules(project_root)))
-
-
-def _cover_gaps_moves(project_root: str | Path) -> list[Move]:
-    """One move per untested module — write its characterization test."""
-    from app.execution.cover_gaps import plan_cover_gaps
-
-    return [Move(
-        operator="cover_gaps", target=f"{rel}:cover-gaps",
-        description=f"write a characterization test for {rel}",
-        build_plan=lambda r=rel: plan_cover_gaps(project_root, r),
-    ) for rel in _cover_gaps_modules(project_root)]
-
-
-# --- Objective: collapse startswith/endswith or-chains into tuple form -------
-
-def _startswith_modules(project_root: str | Path) -> list[str]:
-    """Own modules with a collapsible startswith/endswith or-chain."""
-    from app.execution.startswith_tuple import plan_collapse_startswith
-
-    out: list[str] = []
-    for rel, _src in _own_modules(project_root):
-        if plan_collapse_startswith(project_root, rel).new_contents:
-            out.append(rel)
-    return out
-
-
-def startswith_fitness(project_root: str | Path) -> float:
-    """Fitness = how many own modules still have a collapsible startswith chain."""
-    return float(len(_startswith_modules(project_root)))
-
-
-def _startswith_moves(project_root: str | Path) -> list[Move]:
-    """One move per module with a collapsible startswith/endswith or-chain."""
-    from app.execution.startswith_tuple import plan_collapse_startswith
-
-    return [Move(
-        operator="collapse_startswith", target=f"{rel}:collapse-startswith",
-        description=f"collapse startswith/endswith or-chains in {rel}",
-        build_plan=lambda r=rel: plan_collapse_startswith(project_root, r),
-    ) for rel in _startswith_modules(project_root)]
-
-
-# --- Objective: merge isinstance chains (isinstance(x,A) or isinstance(x,B)) --
-
-def _merge_isinstance_modules(project_root: str | Path) -> list[str]:
-    """Own modules with a mergeable isinstance ``or`` chain."""
-    from app.execution.merge_isinstance import plan_merge_isinstance
-
-    out: list[str] = []
-    for rel, _src in _own_modules(project_root):
-        if plan_merge_isinstance(project_root, rel).new_contents:
-            out.append(rel)
-    return out
-
-
-def merge_isinstance_fitness(project_root: str | Path) -> float:
-    """Fitness = how many own modules still have a mergeable isinstance chain."""
-    return float(len(_merge_isinstance_modules(project_root)))
-
-
-def _merge_isinstance_moves(project_root: str | Path) -> list[Move]:
-    """One move per module with a mergeable isinstance chain."""
-    from app.execution.merge_isinstance import plan_merge_isinstance
-
-    return [Move(
-        operator="merge_isinstance", target=f"{rel}:merge-isinstance",
-        description=f"merge isinstance or-chains in {rel}",
-        build_plan=lambda r=rel: plan_merge_isinstance(project_root, r),
-    ) for rel in _merge_isinstance_modules(project_root)]
-
-
 # --- Objective: sort imports (group + alphabetize a clean import block) ------
 
 def _import_sort_modules(project_root: str | Path) -> list[str]:
@@ -615,9 +523,6 @@ _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
     "extract-constant": (magic_constant_fitness, _extract_constant_moves),
     "remove-unused-imports": (unused_import_fitness, _unused_import_moves),
     "sort-imports": (import_sort_fitness, _import_sort_moves),
-    "merge-isinstance": (merge_isinstance_fitness, _merge_isinstance_moves),
-    "collapse-startswith": (startswith_fitness, _startswith_moves),
-    "cover-gaps": (cover_gaps_fitness, _cover_gaps_moves),
     "remove-dead-code": (dead_code_fitness, _dead_code_moves),
     "dedup": (duplication_fitness, _dedup_moves),
     "dead-params": (dead_parameter_fitness, _dead_param_moves),
@@ -633,9 +538,23 @@ ALL_OBJECTIVES: tuple[str, ...] = ("modernize", "simplify-bool-return",
                                    "shrink-functions", "inline-helpers")
 
 
+def _objectives_map() -> dict[str, tuple[Callable[[str | Path], float],
+                                         Callable[[str | Path], list[Move]]]]:
+    """The full objective table: the built-ins above plus every objective that
+    self-registered under ``app/execution/objectives/`` (discovered once). A
+    built-in always wins a name clash, so discovery can only ADD objectives —
+    never silently change a built-in one."""
+    from app.engine.develop_registry import registered_specs
+
+    merged = {name: (spec.fitness, spec.moves)
+              for name, spec in registered_specs().items()}
+    merged.update(_OBJECTIVES)  # built-ins win the name clash
+    return merged
+
+
 def available_objectives() -> list[str]:
-    """The objective names the compiler can pursue."""
-    return list(_OBJECTIVES)
+    """The objective names the compiler can pursue — built-in and discovered."""
+    return list(_objectives_map())
 
 
 def _move_module(move: "Move") -> str:
@@ -660,12 +579,13 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     risky file its nightly dream flagged, not the whole project at once."""
     from app.execution.cross_file_rename import apply_rename
 
-    if objective not in _OBJECTIVES:
-        known = ", ".join(sorted(_OBJECTIVES))
+    objectives = _objectives_map()
+    if objective not in objectives:
+        known = ", ".join(sorted(objectives))
         return CompileResult(objective=objective, fitness_start=0.0, fitness_end=0.0,
                              blocked=[f"unknown objective '{objective}' (known: {known})"])
 
-    fitness, generate = _OBJECTIVES[objective]
+    fitness, generate = objectives[objective]
     root = str(project_root)
 
     # The organism uses what it learned: when several move types are available,
