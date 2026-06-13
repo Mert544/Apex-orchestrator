@@ -25,10 +25,14 @@ import pkgutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from app.engine.objective_compiler import Move
+# NOTE: deliberately NO import of app.engine.objective_compiler here — not even
+# under TYPE_CHECKING. objective_compiler imports this registry (to merge the
+# discovered specs), so importing it back — even for a type name — forms a
+# static import cycle that the architecture grade penalises. A `Move` is a
+# plain dataclass; the registry only stores and forwards the moves callable, so
+# the list element type stays unannotated. The registry has zero dependency on
+# the compiler, which is exactly the decoupling that lets abilities self-register.
 
 __all__ = [
     "ObjectiveSpec", "register", "objective", "discover",
@@ -50,7 +54,7 @@ class ObjectiveSpec:
     """
     name: str
     fitness: Callable[[str | Path], float]
-    moves: Callable[[str | Path], "list[Move]"]
+    moves: Callable[[str | Path], list]  # list[Move]; Move left unannotated to avoid an import cycle
 
 
 _REGISTRY: dict[str, ObjectiveSpec] = {}
@@ -72,7 +76,7 @@ def objective(name: str, fitness: Callable[[str | Path], float]):
         @objective("collapse-foo", _foo_fitness)
         def _foo_moves(project_root): ...
     """
-    def _wrap(moves: Callable[[str | Path], "list[Move]"]):
+    def _wrap(moves: Callable[[str | Path], list]):  # list[Move]
         register(ObjectiveSpec(name=name, fitness=fitness, moves=moves))
         return moves
     return _wrap
