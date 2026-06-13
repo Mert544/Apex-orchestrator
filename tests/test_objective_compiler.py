@@ -592,3 +592,30 @@ def test_shield_all_apply_builds_verified_tests(tmp_path, capsys):
     assert "Built" in capsys.readouterr().out
     # b.py got a written test that the verifier kept (it passes).
     assert (tmp_path / "tests" / "test_b.py").exists()
+
+
+# --- sixth objective: dedup (extract copy-pasted blocks to a shared helper) ---
+
+def test_dedup_objective_extracts_shared_helper(tmp_path):
+    from app.engine.objective_compiler import duplication_fitness
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    block = "\n".join(["    acc = acc + n", "    acc = acc * 2", "    acc = acc + 1",
+                       "    acc = acc - 3", "    acc = acc + 10"])
+    (tmp_path / "app" / "m.py").write_text(
+        f"def alpha(n):\n    acc = 0\n{block}\n    return acc + 100\n\n\n"
+        f"def beta(n):\n    acc = 0\n{block}\n    return acc + 200\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "from app.m import alpha, beta\ndef test_ab():\n"
+        "    assert alpha(5) == 118\n    assert beta(5) == 218\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    assert duplication_fitness(str(tmp_path)) >= 1.0
+    r = compile_objective(str(tmp_path), objective="dedup", apply=True, verify=False)
+    assert any(s.operator == "dedup_extract" for s in r.steps)
+    src = (tmp_path / "app" / "m.py").read_text()
+    assert "_shared" in src  # a shared helper was created and called
+
+
+def test_dedup_in_available_objectives():
+    from app.engine.objective_compiler import available_objectives
+    assert "dedup" in available_objectives()

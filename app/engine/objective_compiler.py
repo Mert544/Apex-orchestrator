@@ -36,7 +36,7 @@ from app.execution.cross_file_rename import RenamePlan
 __all__ = [
     "Move", "CompileStep", "CompileResult",
     "dead_parameter_fitness", "inlinable_helper_fitness", "long_function_fitness",
-    "modernize_fitness", "dead_code_fitness",
+    "modernize_fitness", "dead_code_fitness", "duplication_fitness",
     "compile_objective", "compile_all", "available_objectives",
     "ALL_OBJECTIVES", "dream_confluence_modules", "compile_from_dream",
     "render_compile_markdown", "render_from_dream_markdown", "render_all_markdown",
@@ -335,10 +335,45 @@ def _dead_code_moves(project_root: str | Path) -> list[Move]:
     return moves
 
 
+# --- Objective: de-duplicate (extract copy-pasted blocks to a shared helper) --
+
+def _duplicate_blocks(project_root: str | Path) -> list:
+    """The project's duplicated code blocks (the dedup detector's findings)."""
+    from app.engine.dedup import find_duplicates
+
+    return find_duplicates(str(project_root))
+
+
+def duplication_fitness(project_root: str | Path) -> float:
+    """Fitness = how many duplicated blocks remain. Each safely-extractable one
+    folds into a shared helper; blocks that can't be extracted safely stay (the
+    compiler skips them), so fitness reaches its achievable floor, not a false 0."""
+    return float(len(_duplicate_blocks(project_root)))
+
+
+def _dedup_moves(project_root: str | Path) -> list[Move]:
+    """One move per duplicated block — extract it into a shared helper, replace
+    every copy with a call (the dedup_extract transform, suite-verified)."""
+    from app.execution.dedup_extract import plan_dedup_extract
+
+    moves: list[Move] = []
+    for block in _duplicate_blocks(project_root):
+        occ = list(getattr(block, "occurrences", []) or [])
+        mod = occ[0].split(":", 1)[0] if occ else "?"
+        moves.append(Move(
+            operator="dedup_extract", target=f"{mod}:dup",
+            description=(f"extract a {block.lines}-statement block duplicated in "
+                        f"{len(occ)} place(s) into a shared helper"),
+            build_plan=lambda b=block: plan_dedup_extract(project_root, b),
+        ))
+    return moves
+
+
 _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
                              Callable[[str | Path], list[Move]]]] = {
     "modernize": (modernize_fitness, _modernize_moves),
     "remove-dead-code": (dead_code_fitness, _dead_code_moves),
+    "dedup": (duplication_fitness, _dedup_moves),
     "dead-params": (dead_parameter_fitness, _dead_param_moves),
     "shrink-functions": (long_function_fitness, _extract_moves),
     "inline-helpers": (inlinable_helper_fitness, _inline_moves),
