@@ -7,6 +7,7 @@ from app.engine.ascend import (
     GoalRanking,
     ascend,
     objective_parent,
+    payoff_weights,
     rank_objectives,
     render_ascend_markdown,
     render_plan_markdown,
@@ -58,6 +59,46 @@ def test_rank_objectives_orders_by_pending_desc(tmp_path):
     # The project has a dead parameter, so that objective carries pending > 0.
     by_name = {r.objective: r.pending for r in rankings}
     assert by_name.get("dead-params", 0) >= 1
+
+
+def test_goal_ranking_priority_amplifies_with_payoff():
+    # No history → priority is exactly pending (fresh project unchanged).
+    assert GoalRanking("x", 3.0, "tidy", payoff=0.0).priority == 3.0
+    # A proven payoff boosts priority above an equal-pending rival.
+    assert GoalRanking("x", 3.0, "tidy", payoff=2.0).priority == 9.0
+    # Negative/odd payoff never drops below pending.
+    assert GoalRanking("x", 3.0, "tidy", payoff=-5.0).priority == 3.0
+
+
+def test_payoff_weights_reads_history(tmp_path):
+    _clean_project(tmp_path)
+    from app.engine.dev_history import record_run
+    # Two recorded campaigns: dead-params gained 4 health over 2 moves (+2/move);
+    # modernize gained nothing.
+    record_run(str(tmp_path), "ascend:dead-params", 2, 80, 84)
+    record_run(str(tmp_path), "modernize", 3, 84, 84)
+    w = payoff_weights(str(tmp_path))
+    assert w["dead-params"] == 2.0
+    assert "modernize" not in w  # zero gain → no learned weight
+
+
+def test_learning_reorders_equal_pending(tmp_path, monkeypatch):
+    # Two objectives with identical pending; the one with a learned payoff wins.
+    import app.engine.ascend as asc
+
+    monkeypatch.setattr(asc, "payoff_weights", lambda root: {"modernize": 5.0})
+
+    def fake_map():
+        return {"modernize": (lambda r: 2.0, lambda r: []),
+                "dead-params": (lambda r: 2.0, lambda r: [])}
+    monkeypatch.setattr("app.engine.objective_compiler._objectives_map", fake_map)
+    monkeypatch.setattr(asc, "available_objectives", lambda: ["dead-params", "modernize"])
+
+    ranked = rank_objectives(str(tmp_path), ["dead-params", "modernize"])
+    # Despite equal pending and later registration order, the learned objective
+    # is ranked first.
+    assert ranked[0].objective == "modernize"
+    assert ranked[0].payoff == 5.0
 
 
 def test_rank_objectives_respects_goal_restriction(tmp_path):

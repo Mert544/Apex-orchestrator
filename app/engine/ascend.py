@@ -43,9 +43,20 @@ class GoalRanking:
     objective: str
     pending: float          # measured fitness: how many fixable items remain
     goal: str               # the nearest goal in the fractal tree it rolls up to
+    payoff: float = 0.0     # learned health-gain per move from past campaigns
+
+    @property
+    def priority(self) -> float:
+        """The score the climb ranks by: pending work AMPLIFIED by learned
+        payoff. A proven high-gain objective outranks an equal-pending one with
+        no track record; an objective with no history (payoff 0) ranks purely on
+        pending, so a fresh project behaves exactly as before."""
+        return self.pending * (1.0 + max(0.0, self.payoff))
 
     def to_dict(self) -> dict[str, Any]:
-        return {"objective": self.objective, "pending": self.pending, "goal": self.goal}
+        return {"objective": self.objective, "pending": self.pending,
+                "goal": self.goal, "payoff": round(self.payoff, 3),
+                "priority": round(self.priority, 3)}
 
 
 @dataclass
@@ -120,17 +131,45 @@ def objective_parent(objective: str) -> str:
     return objective
 
 
+def payoff_weights(project_root: str | Path) -> dict[str, float]:
+    """What the organism has LEARNED: health-gain per move for each objective,
+    from its own recorded campaigns (``.apex/dev-history.json``).
+
+    For each objective the weight is total grade-delta divided by total moves
+    across every past campaign that pursued it (the ``ascend:`` prefix is
+    stripped, so a climb's own rounds feed back in). Negative or absent history
+    yields no weight, so learning can only ever PROMOTE a proven-profitable
+    objective — never bury one that simply hasn't run yet."""
+    from app.engine.dev_history import DevHistory
+
+    gain: dict[str, float] = {}
+    moves: dict[str, float] = {}
+    for run in DevHistory.load(project_root).entries():
+        name = run.objective.split("ascend:", 1)[-1]
+        gain[name] = gain.get(name, 0.0) + run.delta
+        moves[name] = moves.get(name, 0.0) + run.moves
+    weights: dict[str, float] = {}
+    for name, total_moves in moves.items():
+        if total_moves > 0 and gain.get(name, 0.0) > 0:
+            weights[name] = gain[name] / total_moves
+    return weights
+
+
 def rank_objectives(project_root: str | Path,
                     objectives: list[str] | None = None) -> list[GoalRanking]:
-    """Every objective ranked by pending fixable debt, worst first.
+    """Every objective ranked by pending fixable debt AMPLIFIED by learned
+    payoff, worst-and-most-profitable first.
 
     Pending is the objective's own fitness (the count of items it could still
-    fix). Ties break by the objective's registration order, so the ranking is
-    fully deterministic. Objectives with zero pending are included (pending 0)
-    so callers can show the whole board; ``ascend`` skips them when choosing."""
+    fix). Each objective's ``payoff`` (learned health-gain per move, from
+    ``payoff_weights``) boosts its priority, so the organism climbs toward the
+    debt that has paid off best before. Ties break by registration order, so the
+    ranking is fully deterministic; with no history every payoff is 0 and the
+    order is exactly pending-descending (a fresh project is unchanged)."""
     from app.engine.objective_compiler import _objectives_map
 
     table = _objectives_map()
+    weights = payoff_weights(project_root)
     names = objectives if objectives is not None else available_objectives()
     order = {name: i for i, name in enumerate(available_objectives())}
     rankings: list[GoalRanking] = []
@@ -143,8 +182,9 @@ def rank_objectives(project_root: str | Path,
         except Exception:
             pending = 0.0
         rankings.append(GoalRanking(objective=name, pending=pending,
-                                    goal=objective_parent(name)))
-    rankings.sort(key=lambda r: (-r.pending, order.get(r.objective, 0)))
+                                    goal=objective_parent(name),
+                                    payoff=weights.get(name, 0.0)))
+    rankings.sort(key=lambda r: (-r.priority, order.get(r.objective, 0)))
     return rankings
 
 
@@ -229,13 +269,23 @@ def render_plan_markdown(rankings: list[GoalRanking]) -> str:
         lines += ["_Nothing to do: every objective is already at zero. The project",
                   "is at a develop fixpoint._", ""]
         return "\n".join(lines)
+    learned = any(r.payoff > 0 for r in actionable)
+    note = (" — ordered by pending debt **amplified by learned payoff** "
+            "(health gained per move in past runs)") if learned else ""
     lines.append(f"**{len(actionable)} objective(s) carry fixable debt.** "
-                 "The climb takes the worst first:")
+                 f"The climb takes the worst first{note}:")
     lines.append("")
-    lines.append("| # | Objective | Goal | Pending |")
-    lines.append("|---:|---|---|---:|")
-    for i, r in enumerate(actionable, 1):
-        lines.append(f"| {i} | `{r.objective}` | {r.goal} | {int(r.pending)} |")
+    if learned:
+        lines.append("| # | Objective | Goal | Pending | Learned ↑/move |")
+        lines.append("|---:|---|---|---:|---:|")
+        for i, r in enumerate(actionable, 1):
+            mark = f"+{r.payoff:.2f}" if r.payoff > 0 else "—"
+            lines.append(f"| {i} | `{r.objective}` | {r.goal} | {int(r.pending)} | {mark} |")
+    else:
+        lines.append("| # | Objective | Goal | Pending |")
+        lines.append("|---:|---|---|---:|")
+        for i, r in enumerate(actionable, 1):
+            lines.append(f"| {i} | `{r.objective}` | {r.goal} | {int(r.pending)} |")
     lines.append("")
     lines.append(f"Next move: develop **`{actionable[0].objective}`** "
                  f"(goal _{actionable[0].goal}_).")
