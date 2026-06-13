@@ -74,6 +74,12 @@ class ProjectProfile:
     # Each entry: {"module", "function", "line", "start", "end", "name",
     # "params", "returns", "lines_saved"}.
     extractable_blocks: list[dict] = field(default_factory=list)
+    # Tiny single-use helpers `apex inline` would cleanly accept — the engine's
+    # "fold a thin helper back into its call site" recommendation made into a
+    # concrete `apex inline FUNC` command. Conservative by construction (see
+    # _scan_inlinable_helpers). Each entry: {"module", "function", "line",
+    # "call_sites"}.
+    inlinable_helpers: list[dict] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -236,6 +242,7 @@ class ProjectProfiler:
         self._scan_doc_drift(profile)
         self._scan_dead_params(profile)
         self._scan_extractable_blocks(profile)
+        self._scan_inlinable_helpers(profile)
         self._drop_fixture_signals(profile)
         return profile
 
@@ -268,6 +275,22 @@ class ProjectProfiler:
                 found.append({"module": rel_str, **best})
         found.sort(key=lambda d: (-d["lines_saved"], d["module"]))
         profile.extractable_blocks = found[:5]
+
+    def _scan_inlinable_helpers(self, profile: ProjectProfile) -> None:
+        """Tiny single-use helpers ``apex inline`` would cleanly accept — turns
+        the "fold a thin helper back into its call site" recommendation into a
+        concrete, copy-pasteable ``apex inline FUNC`` command (mirrors the
+        extractable-block signal). The analyzer is conservative by construction
+        (see ``suggest_inlines``); here we just exclude fixture/test paths and
+        keep the strongest few (fewest call sites first, then module)."""
+        from app.execution.inline_function import suggest_inlines
+
+        found = [
+            h for h in suggest_inlines(self.root)
+            if not self._is_fixture_path(h["module"])
+        ]
+        found.sort(key=lambda d: (d["call_sites"], d["module"], d["function"]))
+        profile.inlinable_helpers = found[:5]
 
     def _scan_dead_params(self, profile: ProjectProfile) -> None:
         """Parameters no statement in the function body ever reads.

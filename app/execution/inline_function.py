@@ -47,7 +47,7 @@ from pathlib import Path
 
 from app.execution.cross_file_rename import RenamePlan, _py_files
 
-__all__ = ["plan_inline"]
+__all__ = ["plan_inline", "suggest_inlines"]
 
 
 def _segment(source: str, node: ast.AST) -> str:
@@ -360,3 +360,72 @@ def plan_inline(project_root: str | Path, function_name: str) -> RenamePlan:
             plan.edits_by_file.clear()
             return plan
     return plan
+
+
+# ── Suggestion: which helpers would `apex inline` cleanly accept? ──
+# A near-single-use helper is the strongest inline candidate; many call sites
+# would bloat code, so the scan caps the call-site count low.
+_SUGGEST_MAX_CALL_SITES = 2
+
+
+def suggest_inlines(project_root: str | Path) -> list[dict]:
+    """Project-level scan for tiny single-use helpers ``apex inline`` would
+    cleanly accept, made into a concrete ``apex inline FUNC`` command.
+
+    Conservative by construction — each rule is one of ``plan_inline``'s
+    qualification rules, applied here as a lightweight structural check (no
+    per-function ``plan_inline`` round-trip). A function qualifies only when it
+    is defined exactly ONCE project-wide, its body is a single ``return EXPR``
+    (an optional leading docstring is ignored), it is non-recursive, carries no
+    decorators, uses only regular positional-or-keyword params (no
+    ``*args``/``**kwargs``/posonly/kwonly), is NEVER referenced as a bare object
+    (only ever called — the ``object_refs`` guard from
+    ``ProjectProfiler._scan_dead_params``), and has a SMALL number of call sites
+    (1 or 2). When unsure, it doesn't suggest.
+
+    Returns a deterministic, sorted list of ``{module, function, line,
+    call_sites}`` dicts. Read-only and stdlib-only; the suggestion is a
+    proposal, the real ``plan_inline`` re-verifies."""
+    root = Path(project_root)
+    files = _py_files(root)
+    trees: dict[str, ast.Module] = {}
+    for rel, text in files:
+        try:
+            trees[rel] = ast.parse(text)
+        except SyntaxError:
+            continue
+
+    # Single-definition map: name → list of (module, FunctionDef) so we can keep
+    # only names that are defined exactly once at top level project-wide.
+    defs_by_name: dict[str, list[tuple[str, ast.FunctionDef]]] = {}
+    for rel in sorted(trees):
+        for node in trees[rel].body:
+            if isinstance(node, ast.FunctionDef):
+                defs_by_name.setdefault(node.name, []).append((rel, node))
+
+    found: list[dict] = []
+    for name in sorted(defs_by_name):
+        defs = defs_by_name[name]
+        if len(defs) != 1:
+            continue
+        rel, fn = defs[0]
+        if fn.decorator_list or not _simple_params(fn):
+            continue
+        expr = _return_expr(fn)
+        if expr is None:
+            continue
+        # Non-recursive: the body must not call back to its own name.
+        if any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(expr)):
+            continue
+        # Never travels as a bare object — only ever called.
+        if _has_object_ref(trees, name):
+            continue
+        sites = _call_sites(trees, name)
+        n_sites = len(sites)
+        if not (1 <= n_sites <= _SUGGEST_MAX_CALL_SITES):
+            continue
+        found.append({"module": rel, "function": name,
+                      "line": fn.lineno, "call_sites": n_sites})
+    # Fewest call sites first (strongest candidate), then module then function.
+    found.sort(key=lambda d: (d["call_sites"], d["module"], d["function"]))
+    return found

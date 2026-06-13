@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from app.execution.inline_function import plan_inline
+from app.execution.inline_function import plan_inline, suggest_inlines
 
 
 def _write(tmp_path, rel, src):
@@ -464,3 +464,149 @@ def test_cmd_inline_blocked_returns_one(tmp_path, capsys):
         dry_run=False, no_verify=True, json=False))
     assert rc == 1
     assert "blocked" in capsys.readouterr().out.lower()
+
+
+# ── suggest_inlines: which helpers would `apex inline` cleanly accept? ──
+
+def test_suggest_inlines_finds_single_use_return_helper(tmp_path):
+    _write(tmp_path, "m.py",
+           "def fee(x):\n"
+           "    return x * 2\n"
+           "\n"
+           "\n"
+           "def use(n):\n"
+           "    return fee(n)\n")
+    out = suggest_inlines(str(tmp_path))
+    assert len(out) == 1
+    s = out[0]
+    assert s == {"module": "m.py", "function": "fee", "line": 1, "call_sites": 1}
+
+
+def test_suggest_inlines_allows_two_call_sites(tmp_path):
+    _write(tmp_path, "m.py",
+           "def fee(x):\n"
+           "    return x * 2\n"
+           "\n"
+           "\n"
+           "def use(a, b):\n"
+           "    return fee(a) + fee(b)\n")
+    out = suggest_inlines(str(tmp_path))
+    assert [s["function"] for s in out] == ["fee"]
+    assert out[0]["call_sites"] == 2
+
+
+def test_suggest_inlines_ignores_many_call_sites(tmp_path):
+    # Three call sites — inlining would bloat code, so it's not a candidate.
+    _write(tmp_path, "m.py",
+           "def fee(x):\n"
+           "    return x * 2\n"
+           "\n"
+           "\n"
+           "def use(a, b, c):\n"
+           "    return fee(a) + fee(b) + fee(c)\n")
+    assert suggest_inlines(str(tmp_path)) == []
+
+
+def test_suggest_inlines_ignores_recursive_decorated_and_nonreturn(tmp_path):
+    _write(tmp_path, "rec.py",
+           "def fac(n):\n"
+           "    return n * fac(n - 1)\n"
+           "\n"
+           "\n"
+           "def use(n):\n"
+           "    return fac(n)\n")
+    _write(tmp_path, "deco.py",
+           "import functools\n"
+           "\n"
+           "\n"
+           "@functools.cache\n"
+           "def cached(x):\n"
+           "    return x * 2\n"
+           "\n"
+           "\n"
+           "def use2(n):\n"
+           "    return cached(n)\n")
+    _write(tmp_path, "body.py",
+           "def two_stmt(x):\n"
+           "    y = x * 2\n"
+           "    return y\n"
+           "\n"
+           "\n"
+           "def use3(n):\n"
+           "    return two_stmt(n)\n")
+    names = {s["function"] for s in suggest_inlines(str(tmp_path))}
+    assert "fac" not in names      # recursive
+    assert "cached" not in names   # decorated
+    assert "two_stmt" not in names # body isn't a single return
+
+
+def test_suggest_inlines_ignores_bare_referenced_helper(tmp_path):
+    # `fee` travels as a bare object (passed to map), so its identity is used.
+    _write(tmp_path, "m.py",
+           "def fee(x):\n"
+           "    return x * 2\n"
+           "\n"
+           "\n"
+           "def use(items):\n"
+           "    return list(map(fee, items))\n")
+    assert suggest_inlines(str(tmp_path)) == []
+
+
+def test_suggest_inlines_ignores_starargs_and_zero_sites(tmp_path):
+    _write(tmp_path, "m.py",
+           "def variadic(*args):\n"
+           "    return sum(args)\n"
+           "\n"
+           "\n"
+           "def orphan(x):\n"     # defined but never called
+           "    return x + 1\n"
+           "\n"
+           "\n"
+           "def use(a, b):\n"
+           "    return variadic(a, b)\n")
+    names = {s["function"] for s in suggest_inlines(str(tmp_path))}
+    assert "variadic" not in names  # *args
+    assert "orphan" not in names    # zero call sites
+    assert "use" not in names       # not a single-return helper
+
+
+def test_suggest_inlines_is_deterministic_and_sorted(tmp_path):
+    _write(tmp_path, "b.py",
+           "def beta(x):\n"
+           "    return x + 1\n"
+           "\n"
+           "\n"
+           "def ub(a, c):\n"        # two call sites
+           "    return beta(a) + beta(c)\n")
+    _write(tmp_path, "a.py",
+           "def alpha(x):\n"
+           "    return x - 1\n"
+           "\n"
+           "\n"
+           "def ua(n):\n"           # one call site
+           "    return alpha(n)\n")
+    out = suggest_inlines(str(tmp_path))
+    again = suggest_inlines(str(tmp_path))
+    assert out == again  # deterministic
+    # Fewest call sites first, then module: alpha (1 site) before beta (2 sites).
+    assert [(s["function"], s["call_sites"]) for s in out] == [("alpha", 1), ("beta", 2)]
+
+
+def test_suggested_helper_actually_inlines_cleanly(tmp_path):
+    # Round-trip: a suggested helper's plan_inline must apply, not block.
+    _write(tmp_path, "m.py",
+           "RATE = 3\n"
+           "\n"
+           "\n"
+           "def fee(x):\n"
+           "    return x * RATE\n"
+           "\n"
+           "\n"
+           "def total(price):\n"
+           "    return fee(price) + 1\n")
+    out = suggest_inlines(str(tmp_path))
+    assert out, "expected a suggestion"
+    name = out[0]["function"]
+    plan = plan_inline(str(tmp_path), name)
+    assert not plan.blockers, plan.blockers
+    assert plan.new_contents  # it produced a real edit

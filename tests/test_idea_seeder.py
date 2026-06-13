@@ -431,3 +431,29 @@ def test_extractable_block_routes_to_refine_phase():
     )
     root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/big.py")
     assert classify_phase(root) == REFINE
+
+
+def test_inlinable_helper_seeds_root_with_inline_command():
+    profile = _profile(
+        inlinable_helpers=[{"module": "app/calc.py", "function": "fee",
+                            "line": 12, "call_sites": 1}],
+        ci_files=["ci.yml"],
+    )
+    root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/calc.py")
+    assert "Inline the single-use helper fee() in app/calc.py" in root.title
+    assert root.source_facts[0].startswith("inlinable-helper:")
+    # The fact hands you the exact, runnable command.
+    assert "apex inline fee" in root.source_facts[0]
+    assert "app/calc.py:12" in root.source_facts[0]
+
+
+def test_inlinable_helper_routes_to_refine_phase():
+    from app.engine.idea_roadmap import REFINE, classify_phase
+
+    profile = _profile(
+        inlinable_helpers=[{"module": "app/calc.py", "function": "fee",
+                            "line": 12, "call_sites": 1}],
+        ci_files=["ci.yml"],
+    )
+    root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/calc.py")
+    assert classify_phase(root) == REFINE

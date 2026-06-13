@@ -667,3 +667,37 @@ def test_extractable_blocks_surfaces_concrete_extract_command(tmp_path: Path):
     assert eb["lines_saved"] >= 6
     # Fixtures/tests are excluded from the signal (their flaws are intentional).
     assert all(not b["module"].startswith("tests/") for b in blocks)
+
+
+def test_inlinable_helpers_surfaces_single_use_helper(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    # A tiny single-use return-only helper `apex inline` would cleanly accept.
+    (tmp_path / "app" / "calc.py").write_text(
+        "def fee(x):\n"
+        "    return x * 2\n"
+        "\n"
+        "\n"
+        "def total(price):\n"
+        "    return fee(price) + 1\n",
+        encoding="utf-8",
+    )
+    # A fixture/test helper of the same shape must NOT contribute a signal.
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "def helper(x):\n"
+        "    return x * 2\n"
+        "\n"
+        "\n"
+        "def use(n):\n"
+        "    return helper(n)\n",
+        encoding="utf-8",
+    )
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    helpers = profile.inlinable_helpers
+    assert helpers, "a single-use helper should yield an inlinable-helper signal"
+    ih = next(h for h in helpers if h["module"] == "app/calc.py")
+    assert ih["function"] == "fee"
+    assert ih["line"] == 1
+    assert ih["call_sites"] == 1
+    # Fixtures/tests are excluded from the signal (their flaws are intentional).
+    assert all(not h["module"].startswith("tests/") for h in helpers)

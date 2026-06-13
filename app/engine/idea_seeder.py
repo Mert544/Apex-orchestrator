@@ -341,6 +341,21 @@ class IdeaSeeder:
                             f"{eb['end']} {eb['name']}`"),
             )
 
+        # Inlinable helper: a tiny single-use helper that's a hop the reader has
+        # to follow, not a clean abstraction. The "fold it back into its call
+        # site" recommendation, now carrying the exact `apex inline` command,
+        # verified with rollback.
+        for ih in (getattr(profile, "inlinable_helpers", []) or [])[:2]:
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Inline the single-use helper {ih['function']}() "
+                       f"in {ih['module']}"),
+                subject=ih["module"],
+                fact_label="inlinable-helper",
+                fact_value=(f"{ih['module']}:{ih['line']} {ih['function']}() is a "
+                            f"single-use helper — `apex inline {ih['function']}`"),
+            )
+
         # Modernization debt → a safe, behavior-preserving cleanup direction.
         for module in (getattr(profile, "modernizable_modules", []) or [])[:2]:
             self._append_root(
