@@ -246,6 +246,17 @@ class ProjectProfiler:
         self._drop_fixture_signals(profile)
         return profile
 
+    def dead_params(self) -> list[dict]:
+        """Just the never-read parameters — the dead-param scan IN ISOLATION.
+
+        ``profile()`` also runs git-blame churn/age scans and the test linker,
+        which take ~200s on a large repo; the develop ``dead-params`` objective's
+        fitness and ranking only need this one list, so this pays for a single
+        AST scan instead of the whole profile."""
+        profile = ProjectProfile(root=str(self.root))
+        self._scan_dead_params(profile)
+        return list(profile.dead_params or [])
+
     def _scan_extractable_blocks(self, profile: ProjectProfile) -> None:
         """Long functions with a clean seam to extract — turns the engine's
         "extract a shared helper" recommendation into a concrete, copy-pasteable

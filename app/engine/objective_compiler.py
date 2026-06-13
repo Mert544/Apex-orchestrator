@@ -104,11 +104,11 @@ class CompileResult:
 # --- Objective: dead-parameter elimination -----------------------------------
 
 def _dead_params(project_root: str | Path) -> list[dict]:
-    """The project's never-read parameters (the profiler's own scan)."""
+    """The project's never-read parameters (the profiler's dead-param scan, run
+    in isolation — not the full ~200s profile, which this objective doesn't need)."""
     from app.tools.project_profile import ProjectProfiler
 
-    profile = ProjectProfiler(str(project_root)).profile()
-    return list(getattr(profile, "dead_params", []) or [])
+    return list(ProjectProfiler(str(project_root)).dead_params() or [])
 
 
 def dead_parameter_fitness(project_root: str | Path) -> float:
