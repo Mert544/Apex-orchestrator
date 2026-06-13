@@ -50,6 +50,7 @@ def test_cli_reexports_are_the_same_objects():
     assert cli.cmd_changelog is app.cli_insight.cmd_changelog
     assert cli.cmd_grade is app.cli_insight.cmd_grade
     assert cli.cmd_impact is app.cli_insight.cmd_impact
+    assert cli.cmd_mutants is app.cli_insight.cmd_mutants
     assert cli._get_project_root is _get_project_root
 
 
@@ -95,7 +96,7 @@ def test_family_parser_registration_covers_every_command():
 
     assert set(sub.choices) == {
         "auto", "simulate", "evolve", "maintain", "develop",
-        "grade", "impact", "brief", "dream", "outcomes", "recipes", "changelog", "explain",
+        "grade", "impact", "mutants", "brief", "dream", "outcomes", "recipes", "changelog", "explain",
         "ideate", "review", "rename", "move", "signature", "rewrite", "teach", "extract", "inline",
         "bench", "run",
         "scan", "agents", "consensus", "daemon", "self-audit",

@@ -1,0 +1,331 @@
+"""Mutation testing — a deterministic *test-strength* fitness signal.
+
+This is a multi-oracle "definition-of-done" measure: instead of asking whether
+the code passes its tests, it asks whether the *tests* would notice if the code
+broke. We seed tiny artificial faults ("mutants") into one target module — flip
+a ``==`` to ``!=``, a ``+`` to ``-``, ``and`` to ``or``, ``True`` to ``False`` —
+then run the project's existing test suite against each mutant in an isolated
+copy of the tree. A mutant the suite FAILS on is *killed* (the tests caught the
+bug); a mutant the suite still PASSES on *survived* (the tests are blind there).
+The mutation **score** = killed / total is a deterministic lower bound on suite
+strength, and the surviving mutants point at exactly *where* the tests are weak.
+
+Determinism: there is no randomness anywhere. Operators are tried in a fixed
+order and mutation sites are enumerated in document order (line, col), so the
+same project always yields the same ``MutationResult``.
+
+Caveat (theoretical): *equivalent mutants* — mutations that change the source
+but not its behaviour, hence unkillable by any test — cannot be detected in
+general (the problem is undecidable). They inflate the survivor count, so the
+reported score is an APPROXIMATE LOWER BOUND on the true suite strength.
+
+Safety: the real project tree is read-only throughout. Each mutant is verified
+in a fresh ``shutil.copytree`` of the project (excluding VCS / cache / venv
+dirs); the mutated file is written into the COPY, the suite runs in the COPY,
+and the copy is discarded. Only the single target module is ever mutated.
+"""
+
+from __future__ import annotations
+
+import ast
+import shutil
+import subprocess
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# Directories never worth copying into a mutant's throwaway sandbox.
+_COPY_EXCLUDE = shutil.ignore_patterns(
+    ".git", "__pycache__", ".apex", ".venv", "venv", "node_modules",
+)
+
+# Comparison-operator flips. Each maps an ``ast`` comparison op class to the
+# literal it is written as and the literal it becomes.
+_COMPARE_FLIPS: dict[type, tuple[str, str]] = {
+    ast.Eq: ("==", "!="),
+    ast.NotEq: ("!=", "=="),
+    ast.Lt: ("<", ">="),
+    ast.GtE: (">=", "<"),
+    ast.Gt: (">", "<="),
+    ast.LtE: ("<=", ">"),
+    ast.Is: ("is", "is not"),
+    ast.IsNot: ("is not", "is"),
+}
+
+# Arithmetic-operator flips on ``ast.BinOp``.
+_BINOP_FLIPS: dict[type, tuple[str, str]] = {
+    ast.Add: ("+", "-"),
+    ast.Sub: ("-", "+"),
+    ast.Mult: ("*", "/"),
+    ast.Div: ("/", "*"),
+}
+
+# Boolean-connective flips on ``ast.BoolOp``.
+_BOOLOP_FLIPS: dict[type, tuple[str, str]] = {
+    ast.And: ("and", "or"),
+    ast.Or: ("or", "and"),
+}
+
+# Boolean-constant flips.
+_BOOL_CONST_FLIPS: dict[bool, tuple[str, str]] = {
+    True: ("True", "False"),
+    False: ("False", "True"),
+}
+
+
+@dataclass
+class Mutant:
+    """One seeded fault: a single source span swapped for an equivalent-shape
+    alternative, leaving the rest of the module byte-for-byte identical."""
+
+    module: str
+    line: int
+    operator: str
+    original: str
+    mutated: str
+    killed: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "module": self.module,
+            "line": self.line,
+            "operator": self.operator,
+            "original": self.original,
+            "mutated": self.mutated,
+            "killed": self.killed,
+        }
+
+
+@dataclass
+class MutationResult:
+    """The aggregate test-strength reading for one module."""
+
+    module: str
+    total: int
+    killed: int
+    survived: int
+    score: float
+    survivors: list[Mutant] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "module": self.module,
+            "total": self.total,
+            "killed": self.killed,
+            "survived": self.survived,
+            "score": self.score,
+            "survivors": [m.to_dict() for m in self.survivors],
+        }
+
+
+@dataclass
+class _Site:
+    """A located, single-line span to be replaced — the raw material of a
+    mutant, before we splice the full module source."""
+
+    line: int
+    col: int
+    end_col: int
+    operator: str
+    original: str
+    mutated: str
+
+
+def _op_span(line: str, start: int, token: str) -> tuple[int, int] | None:
+    """Find the ``[start, end)`` span of ``token`` at or after ``start`` on a
+    single source line, returning ``None`` if it isn't there as expected."""
+    idx = line.find(token, start)
+    if idx < 0:
+        return None
+    return idx, idx + len(token)
+
+
+def _collect_sites(tree: ast.Module, source_lines: list[str]) -> list[_Site]:
+    """Enumerate every applicable mutation site in document order.
+
+    Only single-line nodes/operators are mutated so the source-span splice
+    stays exact (mirrors ``negated_comparison.py``). Each site flips exactly
+    one operator/constant token.
+    """
+    sites: list[_Site] = []
+
+    for node in ast.walk(tree):
+        # Comparison flips — one site per operator in a (possibly chained)
+        # Compare. We locate each operator token left-to-right across the
+        # comparator spans so chained compares (a < b < c) work.
+        if isinstance(node, ast.Compare):
+            if node.lineno != node.end_lineno:
+                continue
+            line = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
+            search_from = node.left.end_col_offset or 0
+            for op, comparator in zip(node.ops, node.comparators):
+                flip = _COMPARE_FLIPS.get(type(op))
+                comp_end = comparator.col_offset
+                if flip is not None:
+                    written, replacement = flip
+                    span = _op_span(line, search_from, written)
+                    if span is not None and span[1] <= comp_end and span[1] <= len(line):
+                        sites.append(_Site(
+                            line=node.lineno, col=span[0], end_col=span[1],
+                            operator=f"comparison:{written}>{replacement}",
+                            original=written, mutated=replacement,
+                        ))
+                search_from = comparator.end_col_offset or comp_end
+
+        elif isinstance(node, ast.BinOp):
+            flip = _BINOP_FLIPS.get(type(node.op))
+            if flip is None or node.lineno != node.end_lineno:
+                continue
+            line = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
+            written, replacement = flip
+            left_end = node.left.end_col_offset or 0
+            right_start = node.right.col_offset
+            span = _op_span(line, left_end, written)
+            if span is not None and span[1] <= right_start and span[1] <= len(line):
+                sites.append(_Site(
+                    line=node.lineno, col=span[0], end_col=span[1],
+                    operator=f"arithmetic:{written}>{replacement}",
+                    original=written, mutated=replacement,
+                ))
+
+        elif isinstance(node, ast.BoolOp):
+            flip = _BOOLOP_FLIPS.get(type(node.op))
+            if flip is None or node.lineno != node.end_lineno:
+                continue
+            line = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
+            written, replacement = flip
+            # One mutant per connective occurrence between successive values.
+            search_from = node.values[0].end_col_offset or 0
+            for value in node.values[1:]:
+                next_start = value.col_offset
+                span = _op_span(line, search_from, written)
+                if span is not None and span[1] <= next_start and span[1] <= len(line):
+                    sites.append(_Site(
+                        line=node.lineno, col=span[0], end_col=span[1],
+                        operator=f"boolean:{written}>{replacement}",
+                        original=written, mutated=replacement,
+                    ))
+                search_from = value.end_col_offset or next_start
+
+        elif isinstance(node, ast.Constant) and isinstance(node.value, bool):
+            if node.lineno != node.end_lineno:
+                continue
+            line = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
+            written, replacement = _BOOL_CONST_FLIPS[node.value]
+            start = node.col_offset
+            end = node.end_col_offset or 0
+            if end <= len(line) and line[start:end] == written:
+                sites.append(_Site(
+                    line=node.lineno, col=start, end_col=end,
+                    operator=f"constant:{written}>{replacement}",
+                    original=written, mutated=replacement,
+                ))
+
+    sites.sort(key=lambda s: (s.line, s.col, s.operator))
+    return sites
+
+
+def _splice(source_lines: list[str], site: _Site) -> str | None:
+    """Build the full module source with just this one span replaced; returns
+    ``None`` if the result fails to re-parse (a malformed/equivalent splice)."""
+    li = site.line - 1
+    if li >= len(source_lines):
+        return None
+    line = source_lines[li]
+    if site.end_col > len(line) or line[site.col:site.end_col] != site.original:
+        return None
+    mutated_lines = list(source_lines)
+    mutated_lines[li] = line[:site.col] + site.mutated + line[site.end_col:]
+    mutated_source = "".join(mutated_lines)
+    try:
+        ast.parse(mutated_source)
+    except SyntaxError:
+        return None
+    return mutated_source
+
+
+def _verify_killed(project_root: Path, module_rel: str,
+                   mutated_source: str, verify_timeout: int) -> bool:
+    """Run the suite against a mutant in an isolated copy of the project.
+
+    The real tree is never touched: we ``copytree`` the project (minus VCS /
+    cache / venv dirs), overwrite the target module in the COPY, run pytest in
+    the COPY, then discard it. Returns ``True`` if the suite FAILED (mutant
+    killed), ``False`` if it passed (mutant survived). A timeout counts as a
+    kill (the mutant broke the run).
+    """
+    tmp_dir = tempfile.mkdtemp(prefix="apex-mutant-")
+    copy_root = Path(tmp_dir) / "project"
+    try:
+        shutil.copytree(project_root, copy_root, ignore=_COPY_EXCLUDE)
+        (copy_root / module_rel).write_text(mutated_source, encoding="utf-8")
+        try:
+            proc = subprocess.run(
+                ["python", "-m", "pytest", "-q", "-x"],
+                cwd=str(copy_root),
+                timeout=verify_timeout,
+                capture_output=True,
+            )
+        except subprocess.TimeoutExpired:
+            return True  # mutant made the suite hang — counts as caught
+        return proc.returncode != 0
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def mutation_score(project_root, module_rel: str, max_mutants: int = 30,
+                   verify_timeout: int = 120) -> MutationResult:
+    """Measure how strongly the project's test suite constrains ``module_rel``.
+
+    Seeds up to ``max_mutants`` deterministic single-token faults into the
+    target module, verifies each against the existing suite in an isolated
+    copy, and reports the kill/survive split. ``score`` is ``killed / total``
+    (0.0 when there are no mutable sites). Survivors carry their line and
+    operator so the caller learns exactly where the tests are blind.
+
+    The original project tree is read-only throughout (see ``_verify_killed``).
+    """
+    root = Path(project_root)
+    module_path = root / module_rel
+    try:
+        source = module_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except (OSError, SyntaxError):
+        return MutationResult(module=module_rel, total=0, killed=0,
+                              survived=0, score=0.0, survivors=[])
+
+    source_lines = source.splitlines(keepends=True)
+    sites = _collect_sites(tree, source_lines)
+
+    # Build (Mutant, mutated source) pairs in document order, skipping any
+    # splice that fails to re-parse, capped at max_mutants.
+    pending: list[tuple[Mutant, str]] = []
+    for site in sites:
+        if len(pending) >= max_mutants:
+            break
+        mutated_source = _splice(source_lines, site)
+        if mutated_source is None:
+            continue
+        mutant = Mutant(
+            module=module_rel, line=site.line, operator=site.operator,
+            original=site.original, mutated=site.mutated,
+        )
+        pending.append((mutant, mutated_source))
+
+    killed = 0
+    survivors: list[Mutant] = []
+    mutants = [m for m, _ in pending]
+    for mutant, mutated_source in pending:
+        if _verify_killed(root, module_rel, mutated_source, verify_timeout):
+            mutant.killed = True
+            killed += 1
+        else:
+            survivors.append(mutant)
+
+    total = len(mutants)
+    survived = total - killed
+    score = killed / total if total else 0.0
+    return MutationResult(
+        module=module_rel, total=total, killed=killed,
+        survived=survived, score=score, survivors=survivors,
+    )

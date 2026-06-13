@@ -223,6 +223,38 @@ def cmd_impact(args: argparse.Namespace) -> int:
 
 
 
+def cmd_mutants(args: argparse.Namespace) -> int:
+    """Measure test STRENGTH by mutation: seed faults into a module and see how
+    many the suite kills vs. survives (survivors = where the tests are blind)."""
+    from app.engine.mutation_tester import mutation_score
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    result = mutation_score(
+        str(target), args.module,
+        max_mutants=args.max_mutants, verify_timeout=args.timeout,
+    )
+
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+        return 0
+
+    print(f"# Mutation score for {result.module}")
+    if result.total == 0:
+        print("\n_No mutable sites found (or the module didn't parse)._")
+        return 0
+    pct = round(result.score * 100, 1)
+    print(f"\nScore: {pct}%  ({result.killed} killed / {result.total} total, "
+          f"{result.survived} survived)")
+    if result.survivors:
+        print("\n## Survivors — the tests don't notice these breaks:")
+        for m in result.survivors:
+            print(f"  {result.module}:{m.line}  {m.operator}  "
+                  f"(`{m.original}` -> `{m.mutated}`)")
+    else:
+        print("\nNo survivors — the suite caught every seeded fault.")
+    return 0
+
+
 def register_parsers(subparsers) -> None:
     """Register the insight family's subcommands: grade, impact, brief, dream,
     outcomes, recipes, changelog, explain."""
@@ -249,6 +281,21 @@ def register_parsers(subparsers) -> None:
     impact_parser.add_argument("--target", default="", help="Target project root")
     impact_parser.add_argument("--json", action="store_true", help="Emit JSON")
     impact_parser.set_defaults(func=cmd_impact)
+
+    # mutants — mutation testing: how strong is the suite for one module?
+    mutants_parser = subparsers.add_parser(
+        "mutants",
+        help="Mutation testing: seed faults into a module and report how many the suite kills",
+    )
+    mutants_parser.add_argument("--module", required=True,
+                                help="Module to mutate, relative to the project root (e.g. app/foo.py)")
+    mutants_parser.add_argument("--target", default="", help="Target project root")
+    mutants_parser.add_argument("--max-mutants", type=int, default=30, dest="max_mutants",
+                                help="Cap the number of mutants verified (cost control)")
+    mutants_parser.add_argument("--timeout", type=int, default=120,
+                                help="Per-mutant pytest timeout in seconds")
+    mutants_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    mutants_parser.set_defaults(func=cmd_mutants)
 
     # brief — a design-level idea as an actionable engineering brief
     brief_parser = subparsers.add_parser(
