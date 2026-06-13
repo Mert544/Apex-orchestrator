@@ -22,10 +22,17 @@ it is SAFE to call blindly:
   - NOT decorated (a decorator may change the call contract entirely);
   - NOT ``async`` (a bare call returns a coroutine, not a value).
 
+Public CLASSES are covered the same way: a class is exercised when it is
+public, undecorated, and its ``__init__`` (or the default constructor) needs
+only synthesizable params. The generated test constructs an instance and then
+calls each public method whose params are synthesizable — every step wrapped so
+a runtime error does not fail the suite.
+
 Every exercised call is wrapped in ``try/except Exception`` so a runtime error
 on synthesized inputs does NOT fail the suite — the characterization is "it is
-callable and runs", not "it returns X". If nothing is safely callable, the
-generator falls back to a pure import-smoke test.
+callable and runs", not "it returns X". If nothing is safely exercisable
+(neither a function nor a class), the generator falls back to a pure
+import-smoke test.
 
 The generator only PROPOSES a :class:`ShieldTest`; the caller decides to write
 it (``write_shield_test``). An existing ``tests/test_<stem>.py`` is never
@@ -68,8 +75,10 @@ _TYPING_CONTAINER = {"List": "list", "Dict": "dict", "Tuple": "tuple", "Set": "s
 class ShieldTest:
     """A proposed characterization test, NOT yet written to disk.
 
-    ``functions`` is the document-ordered list of public functions the test
-    actually exercises (empty for a pure import-smoke fallback).
+    ``functions`` is the document-ordered list of public callables the test
+    actually exercises: top-level functions, plus safely-constructible public
+    classes (as ``"ClassName"``) and each exercised public method (as
+    ``"ClassName.method"``). Empty for a pure import-smoke fallback.
     """
     module: str
     test_path: str
@@ -164,13 +173,99 @@ def _safe_functions(tree: ast.Module) -> list[tuple[str, str]]:
     return out
 
 
+def _method_call_args(node: ast.FunctionDef) -> str | None:
+    """``call_args`` string for a bound method/``__init__`` we can call blindly.
+
+    Like :func:`_safe_call` but for METHODS: the leading ``self`` (the first
+    positional parameter) is dropped because the call is made on an instance.
+    Returns ``None`` when the contract is open-ended (``*args``/``**kwargs``) or
+    the method is decorated (a decorator may change the call contract). Required
+    positional and keyword-only args are synthesized; defaulted args are
+    omitted.
+    """
+    if node.decorator_list:  # a decorator may change the call contract
+        return None
+    a = node.args
+    if a.vararg is not None or a.kwarg is not None:  # *args / **kwargs
+        return None
+
+    positional = a.posonlyargs + a.args
+    if positional:  # drop the implicit `self`
+        positional = positional[1:]
+    n_required = len(positional) - len(a.defaults)
+    if n_required < 0:  # every param (incl. self) defaulted — nothing required
+        n_required = 0
+    literals: list[str] = [_arg_literal(p.annotation) for p in positional[:n_required]]
+
+    for kwarg, kdef in zip(a.kwonlyargs, a.kw_defaults):
+        if kdef is None:  # required keyword-only arg
+            literals.append(f"{kwarg.arg}={_arg_literal(kwarg.annotation)}")
+
+    return ", ".join(literals)
+
+
+def _safe_class(node: ast.ClassDef) -> tuple[str, str, list[tuple[str, str]]] | None:
+    """``(name, init_args, methods)`` for a class we can construct blindly, else
+    ``None``.
+
+    A class is "safely constructible" when it is public (name does not start
+    with ``_``), is NOT decorated (a class decorator may change construction),
+    and its ``__init__`` (or, with none, the implicit default constructor that
+    takes no args) only needs synthesizable params. ``methods`` is the
+    document-ordered list of ``(method_name, call_args)`` for each public method
+    with synthesizable params (dunders and ``__init__`` excluded; async methods
+    excluded — a bare call returns a coroutine).
+    """
+    if node.name.startswith("_"):
+        return None
+    if node.decorator_list:  # a class decorator may change construction
+        return None
+
+    init_args = ""  # default constructor: no args
+    methods: list[tuple[str, str]] = []
+    for item in node.body:
+        if not isinstance(item, ast.FunctionDef):  # excludes AsyncFunctionDef
+            continue
+        if item.name == "__init__":
+            args = _method_call_args(item)
+            if args is None:  # __init__ is not safely synthesizable
+                return None
+            init_args = args
+            continue
+        if item.name.startswith("_"):  # dunders and private methods
+            continue
+        args = _method_call_args(item)
+        if args is not None:
+            methods.append((item.name, args))
+
+    return node.name, init_args, methods
+
+
+def _safe_classes(tree: ast.Module) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """All safely-constructible public classes, in DOCUMENT ORDER (deterministic)."""
+    out: list[tuple[str, str, list[tuple[str, str]]]] = []
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        spec = _safe_class(node)
+        if spec is not None:
+            out.append(spec)
+    return out
+
+
 def _dotted_name(module_rel: str) -> str:
     """Importable dotted path for a module given relative to the project root."""
     return ".".join(Path(module_rel).with_suffix("").parts)
 
 
-def _render(module_stem: str, dotted: str, specs: list[tuple[str, str]]) -> str:
-    """The deterministic test source for ``dotted`` exercising ``specs``."""
+def _render(
+    module_stem: str,
+    dotted: str,
+    specs: list[tuple[str, str]],
+    class_specs: list[tuple[str, str, list[tuple[str, str]]]],
+) -> str:
+    """The deterministic test source for ``dotted`` exercising ``specs`` (public
+    functions) and ``class_specs`` (safely-constructible public classes)."""
     lines = [
         "# Generated by Apex Orchestrator - characterization test",
         f"# module: {dotted}",
@@ -203,6 +298,32 @@ def _render(module_stem: str, dotted: str, specs: list[tuple[str, str]]) -> str:
             "    # Shape check only — no value oracle (we cannot know the right answer).",
             "    assert result is not None or result is None",
         ]
+    for cname, init_args, methods in class_specs:
+        lines += [
+            "",
+            "",
+            f"def test_{module_stem}_{cname}_characterization():",
+            f'    """Characterize {cname}: it constructs and its public methods run."""',
+            f"    cls = {dotted}.{cname}",
+            "    assert callable(cls)",
+            "    try:",
+            f"        instance = cls({init_args})",
+            "    except Exception:",
+            "        # A runtime error on synthesized inputs does not fail the",
+            "        # characterization: 'it constructs' is what we pin.",
+            "        return",
+            "    assert instance is not None",
+        ]
+        for mname, call_args in methods:
+            lines += [
+                f"    method = getattr(instance, {mname!r}, None)",
+                "    assert callable(method)",
+                "    try:",
+                f"        method({call_args})",
+                "    except Exception:",
+                "        # 'it is callable and runs' is what we pin, not a value.",
+                "        pass",
+            ]
     return "\n".join(lines) + "\n"
 
 
@@ -242,12 +363,19 @@ def generate_characterization_test(
 
     dotted = _dotted_name(rel)
     specs = _safe_functions(tree)
-    content = _render(module_stem, dotted, specs)
+    class_specs = _safe_classes(tree)
+    content = _render(module_stem, dotted, specs, class_specs)
+
+    exercised = [name for name, _args in specs]
+    for cname, _init_args, methods in class_specs:
+        exercised.append(cname)
+        exercised.extend(f"{cname}.{mname}" for mname, _margs in methods)
+
     return ShieldTest(
         module=dotted,
         test_path=test_path,
         content=content,
-        functions=[name for name, _args in specs],
+        functions=exercised,
     )
 
 
