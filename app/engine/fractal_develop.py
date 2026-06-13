@@ -40,9 +40,14 @@ __all__ = [
 GOAL_TREE: dict[str, list[str]] = {
     "reduce-debt": ["tidy", "simplify-structure"],
     "tidy": ["modernize", "simplify-bool-return", "remove-dead-code",
-             "dead-params", "polish"],
+             "dead-params", "polish", "simplify-conditions"],
     "polish": ["remove-unused-imports", "sort-imports", "simplify-comprehension"],
+    "simplify-conditions": ["merge-isinstance", "collapse-startswith"],
     "simplify-structure": ["dedup", "shrink-functions", "inline-helpers"],
+    # A separate dimension from code-debt: the project's TEST safety net. Kept
+    # standalone (not under reduce-debt) so writing tests is an opt-in goal,
+    # pursued by name or chosen by `apex ascend` when it is the worst gap.
+    "harden": ["cover-gaps"],
 }
 
 

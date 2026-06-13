@@ -428,6 +428,40 @@ def _extract_constant_moves(project_root: str | Path) -> list[Move]:
     ) for rel in _magic_constant_modules(project_root)]
 
 
+# --- Objective: cover gaps (write a characterization test for an untested module) --
+
+def _cover_gaps_modules(project_root: str | Path) -> list[str]:
+    """Own modules with no linked test that can be characterization-shielded."""
+    from app.engine.health_score import _is_fixture_path
+    from app.execution.cover_gaps import plan_cover_gaps
+    from app.tools.project_profile import ProjectProfiler
+
+    profile = ProjectProfiler(str(project_root)).profile()
+    untested = [m for m in (getattr(profile, "untested_modules", []) or [])
+                if isinstance(m, str) and m.endswith(".py") and not _is_fixture_path(m)]
+    out: list[str] = []
+    for rel in untested:
+        if plan_cover_gaps(project_root, rel).new_contents:
+            out.append(rel)
+    return out
+
+
+def cover_gaps_fitness(project_root: str | Path) -> float:
+    """Fitness = how many own modules still lack a test we can generate."""
+    return float(len(_cover_gaps_modules(project_root)))
+
+
+def _cover_gaps_moves(project_root: str | Path) -> list[Move]:
+    """One move per untested module — write its characterization test."""
+    from app.execution.cover_gaps import plan_cover_gaps
+
+    return [Move(
+        operator="cover_gaps", target=f"{rel}:cover-gaps",
+        description=f"write a characterization test for {rel}",
+        build_plan=lambda r=rel: plan_cover_gaps(project_root, r),
+    ) for rel in _cover_gaps_modules(project_root)]
+
+
 # --- Objective: collapse startswith/endswith or-chains into tuple form -------
 
 def _startswith_modules(project_root: str | Path) -> list[str]:
@@ -583,6 +617,7 @@ _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
     "sort-imports": (import_sort_fitness, _import_sort_moves),
     "merge-isinstance": (merge_isinstance_fitness, _merge_isinstance_moves),
     "collapse-startswith": (startswith_fitness, _startswith_moves),
+    "cover-gaps": (cover_gaps_fitness, _cover_gaps_moves),
     "remove-dead-code": (dead_code_fitness, _dead_code_moves),
     "dedup": (duplication_fitness, _dedup_moves),
     "dead-params": (dead_parameter_fitness, _dead_param_moves),

@@ -15,18 +15,26 @@ def test_reduce_debt_decomposes_to_all_objectives():
     objs = resolve_goal("reduce-debt")
     assert objs == ["modernize", "simplify-bool-return", "remove-dead-code",
                     "dead-params", "remove-unused-imports", "sort-imports",
-                    "simplify-comprehension", "dedup", "shrink-functions",
-                    "inline-helpers"]
+                    "simplify-comprehension", "merge-isinstance", "collapse-startswith",
+                    "dedup", "shrink-functions", "inline-helpers"]
 
 
 def test_subgoals_decompose():
     assert resolve_goal("tidy") == ["modernize", "simplify-bool-return",
                                     "remove-dead-code", "dead-params",
                                     "remove-unused-imports", "sort-imports",
-                                    "simplify-comprehension"]
+                                    "simplify-comprehension", "merge-isinstance",
+                                    "collapse-startswith"]
     assert resolve_goal("polish") == ["remove-unused-imports", "sort-imports",
                                       "simplify-comprehension"]
+    assert resolve_goal("simplify-conditions") == ["merge-isinstance", "collapse-startswith"]
     assert resolve_goal("simplify-structure") == ["dedup", "shrink-functions", "inline-helpers"]
+
+
+def test_harden_is_a_standalone_test_dimension_goal():
+    # `harden` writes missing tests; deliberately NOT reachable from reduce-debt.
+    assert resolve_goal("harden") == ["cover-gaps"]
+    assert "cover-gaps" not in resolve_goal("reduce-debt")
 
 
 def test_an_objective_is_a_valid_leaf_goal():
