@@ -32,23 +32,15 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from app.execution._transform_base import apply_column_rewrites, is_fixture_path
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_collapse_startswith"]
 
 _METHODS = ("startswith", "endswith")
 
-
-def _is_fixture_path(path: str) -> bool:
-    """Example/fixture/test code is excluded (its repetition is often deliberate
-    boilerplate). A local copy — importing this from health_score created a
-    health_score <-> dedup import cycle, and the grade now reads dedup."""
-    p = path.replace("\\", "/").lower()
-    return (
-        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
-        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
-        or Path(p).name.startswith("test_")
-    )
+# The example/test/fixture exclusion, shared across the transforms.
+_is_fixture_path = is_fixture_path
 
 
 def _matching_call(node: ast.AST, method: str) -> ast.Call | None:
@@ -160,11 +152,10 @@ def _collect_rewrites(tree: ast.Module, source: str) -> list[_Rewrite]:
 def _apply(source: str, rewrites: list[_Rewrite]) -> str:
     """Apply all rewrites bottom-up and right-to-left so earlier column offsets
     stay valid."""
-    lines = source.splitlines(keepends=True)
-    for rw in sorted(rewrites, key=lambda r: (r.lineno, r.col), reverse=True):
-        line = lines[rw.lineno - 1]
-        lines[rw.lineno - 1] = line[:rw.col] + rw.text + line[rw.end_col:]
-    return "".join(lines)
+    return apply_column_rewrites(
+        source,
+        [(rw.lineno, rw.col, rw.end_col, rw.text) for rw in rewrites],
+    )
 
 
 def plan_collapse_startswith(project_root: str | Path,

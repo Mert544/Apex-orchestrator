@@ -43,20 +43,17 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from app.execution._transform_base import (
+    apply_line_rewrites,
+    is_fixture_path,
+    iter_statement_blocks,
+)
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_dict_comprehension"]
 
-
-def _is_fixture_path(path: str) -> bool:
-    """Example/fixture/test code is excluded as a subject (its repetition is
-    often deliberate boilerplate)."""
-    p = path.replace("\\", "/").lower()
-    return (
-        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
-        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
-        or Path(p).name.startswith("test_")
-    )
+# The example/test/fixture exclusion, shared across the transforms.
+_is_fixture_path = is_fixture_path
 
 
 def _assign_name(stmt: ast.AST) -> str | None:
@@ -144,23 +141,6 @@ def _single_line_segment(source: str, node: ast.AST) -> str | None:
     return ast.get_source_segment(source, node)
 
 
-def _statement_blocks(tree: ast.Module):
-    """Yield every list-of-statements in the tree (module body, function/class
-    bodies, if/for/while/with/try blocks). Order doesn't matter — rewrites are
-    sorted before they're applied."""
-    for node in ast.walk(tree):
-        for field in ("body", "orelse", "finalbody"):
-            block = getattr(node, field, None)
-            if isinstance(block, list) and block and all(
-                    isinstance(s, ast.stmt) for s in block):
-                yield block
-        handlers = getattr(node, "handlers", None)
-        if isinstance(handlers, list):
-            for handler in handlers:
-                if isinstance(handler, ast.ExceptHandler) and handler.body:
-                    yield handler.body
-
-
 def _try_accumulator(block: list[ast.stmt], idx: int, source: str,
                      out: list[_Rewrite]) -> int:
     """If ``block[idx]`` is ``<name> = {}`` followed by a matching accumulator
@@ -198,7 +178,7 @@ def _collect_rewrites(tree: ast.Module, source: str) -> list[_Rewrite]:
     ``for`` is the assignment's next sibling), so we walk every statement list
     rather than every node."""
     rewrites: list[_Rewrite] = []
-    for block in _statement_blocks(tree):
+    for block in iter_statement_blocks(tree):
         i = 0
         while i < len(block):
             i += _try_accumulator(block, i, source, rewrites)
@@ -206,14 +186,18 @@ def _collect_rewrites(tree: ast.Module, source: str) -> list[_Rewrite]:
 
 
 def _apply(source: str, rewrites: list[_Rewrite]) -> str:
-    """Apply all rewrites bottom-up so earlier line numbers stay valid."""
+    """Apply all rewrites bottom-up so earlier line numbers stay valid,
+    preserving the original last line's trailing-newline behaviour."""
     lines = source.splitlines(keepends=True)
-    for rw in sorted(rewrites, key=lambda r: r.lo, reverse=True):
-        last = lines[rw.hi - 1]
-        newline = "\n" if last.endswith("\n") else ""
-        new_line = " " * rw.indent + rw.text + newline
-        lines[rw.lo - 1:rw.hi] = [new_line]
-    return "".join(lines)
+
+    def _line(rw: _Rewrite) -> str:
+        newline = "\n" if lines[rw.hi - 1].endswith("\n") else ""
+        return " " * rw.indent + rw.text + newline
+
+    return apply_line_rewrites(
+        source,
+        [(rw.lo, rw.hi, [_line(rw)]) for rw in rewrites],
+    )
 
 
 def plan_dict_comprehension(project_root: str | Path,

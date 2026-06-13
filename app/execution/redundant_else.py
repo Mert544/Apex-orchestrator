@@ -37,23 +37,15 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from app.execution._transform_base import is_fixture_path, iter_statement_blocks
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_remove_redundant_else"]
 
 _TERMINALS = (ast.Return, ast.Raise, ast.Break, ast.Continue)
 
-
-def _is_fixture_path(path: str) -> bool:
-    """Example/fixture/test code is excluded (its repetition is often deliberate
-    boilerplate). A local copy — importing this from health_score created a
-    health_score <-> dedup import cycle, and the grade now reads dedup."""
-    p = path.replace("\\", "/").lower()
-    return (
-        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
-        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
-        or Path(p).name.startswith("test_")
-    )
+# The example/test/fixture exclusion, shared across the transforms.
+_is_fixture_path = is_fixture_path
 
 
 class _Rewrite:
@@ -69,23 +61,6 @@ class _Rewrite:
         self.body_lo = body_lo
         self.body_hi = body_hi
         self.unit = unit
-
-
-def _statement_blocks(tree: ast.Module):
-    """Yield every list-of-statements in the tree (module body, function/class
-    bodies, if/for/while/with/try blocks). Order doesn't matter — rewrites are
-    sorted before they're applied."""
-    for node in ast.walk(tree):
-        for field in ("body", "orelse", "finalbody"):
-            block = getattr(node, field, None)
-            if isinstance(block, list) and block and all(
-                    isinstance(s, ast.stmt) for s in block):
-                yield block
-        handlers = getattr(node, "handlers", None)
-        if isinstance(handlers, list):
-            for handler in handlers:
-                if isinstance(handler, ast.ExceptHandler) and handler.body:
-                    yield handler.body
 
 
 def _body_end(body: list[ast.stmt]) -> int:
@@ -142,7 +117,7 @@ def _try_if(stmt: ast.If, lines: list[str]) -> _Rewrite | None:
 def _collect_rewrites(tree: ast.Module, lines: list[str]) -> list[_Rewrite]:
     """Every redundant-else rewrite in ``tree``, across all statement blocks."""
     rewrites: list[_Rewrite] = []
-    for block in _statement_blocks(tree):
+    for block in iter_statement_blocks(tree):
         for stmt in block:
             if isinstance(stmt, ast.If):
                 rw = _try_if(stmt, lines)

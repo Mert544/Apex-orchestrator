@@ -110,41 +110,22 @@ The transform lives in :mod:`app.execution.{snake}`; this module only names it
 as a develop objective and registers itself with the develop registry, so it
 becomes a first-class `apex develop --objective {name}` (and shows up in
 `apex plan` / `apex ascend`) with no hub edit.
+
+This is a STANDARD spec: it runs one ``plan_{snake}`` over every own module, so
+it collapses to a single :func:`register_module_objective` call — the shared
+helper builds the identical ``_modules`` / ``fitness`` / ``moves`` trio.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+from app.execution.objectives._base import register_module_objective
+from app.execution.{snake} import plan_{snake}
 
-from app.engine.develop_registry import ObjectiveSpec, register
-
-
-def _modules(project_root: str | Path) -> list[str]:
-    from app.engine.objective_compiler import _own_modules
-    from app.execution.{snake} import plan_{snake}
-
-    return [rel for rel, _src in _own_modules(project_root)
-            if plan_{snake}(project_root, rel).new_contents]
-
-
-def fitness(project_root: str | Path) -> float:
-    """Fitness = how many own modules still match {name} (lower is better)."""
-    return float(len(_modules(project_root)))
-
-
-def moves(project_root: str | Path) -> list:
-    from app.engine.objective_compiler import Move
-    from app.execution.{snake} import plan_{snake}
-
-    return [Move(
-        operator="{snake}",
-        target=f"{{rel}}:{name}",
-        description=f"apply {name} in {{rel}}",
-        build_plan=lambda r=rel: plan_{snake}(project_root, r),
-    ) for rel in _modules(project_root)]
-
-
-register(ObjectiveSpec(name="{name}", fitness=fitness, moves=moves))
+register_module_objective(
+    "{name}", plan_{snake},
+    operator="{snake}",
+    description="apply {name} in {{rel}}",
+)
 '''
 
 

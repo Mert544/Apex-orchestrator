@@ -35,21 +35,17 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from app.execution._transform_base import (
+    apply_line_rewrites,
+    is_fixture_path,
+    iter_statement_blocks,
+)
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_simplify_bool_return"]
 
-
-def _is_fixture_path(path: str) -> bool:
-    """Example/fixture/test code is excluded (its repetition is often deliberate
-    boilerplate). A local copy — importing this from health_score created a
-    health_score <-> dedup import cycle, and the grade now reads dedup."""
-    p = path.replace("\\", "/").lower()
-    return (
-        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
-        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
-        or Path(p).name.startswith("test_")
-    )
+# The example/test/fixture exclusion, shared across the transforms.
+_is_fixture_path = is_fixture_path
 
 
 def _bool_const(node: ast.AST) -> bool | None:
@@ -134,23 +130,6 @@ def _try_if(stmt: ast.stmt, block: list[ast.stmt], idx: int, source: str,
     return 2
 
 
-def _statement_blocks(tree: ast.Module):
-    """Yield every list-of-statements in the tree (module body, function/class
-    bodies, if/for/while/with/try blocks). Order doesn't matter — rewrites are
-    sorted before they're applied."""
-    for node in ast.walk(tree):
-        for field in ("body", "orelse", "finalbody"):
-            block = getattr(node, field, None)
-            if isinstance(block, list) and block and all(
-                    isinstance(s, ast.stmt) for s in block):
-                yield block
-        handlers = getattr(node, "handlers", None)
-        if isinstance(handlers, list):
-            for handler in handlers:
-                if isinstance(handler, ast.ExceptHandler) and handler.body:
-                    yield handler.body
-
-
 def _collect_rewrites(tree: ast.Module, source: str) -> list[_Rewrite] | None:
     """Every bool-return rewrite in ``tree``. None signals an unsafe condition
     (a condition whose source segment can't be recovered) so the caller blocks.
@@ -158,7 +137,7 @@ def _collect_rewrites(tree: ast.Module, source: str) -> list[_Rewrite] | None:
     The no-else form needs each statement's position within its sibling block,
     so we walk every statement list rather than every node."""
     rewrites: list[_Rewrite] = []
-    for block in _statement_blocks(tree):
+    for block in iter_statement_blocks(tree):
         i = 0
         while i < len(block):
             consumed = _try_if(block[i], block, i, source, rewrites)
@@ -169,14 +148,20 @@ def _collect_rewrites(tree: ast.Module, source: str) -> list[_Rewrite] | None:
 
 
 def _apply(source: str, rewrites: list[_Rewrite]) -> str:
-    """Apply all rewrites bottom-up so earlier line numbers stay valid."""
+    """Apply all rewrites bottom-up so earlier line numbers stay valid.
+
+    Each rewrite becomes a single ``return`` line at its indent, preserving the
+    original last line's trailing-newline behaviour."""
     lines = source.splitlines(keepends=True)
-    for rw in sorted(rewrites, key=lambda r: r.lo, reverse=True):
-        last = lines[rw.hi - 1]
-        newline = "\n" if last.endswith("\n") else ""
-        new_line = " " * rw.indent + f"return {rw.expr}" + newline
-        lines[rw.lo - 1:rw.hi] = [new_line]
-    return "".join(lines)
+
+    def _line(rw: _Rewrite) -> str:
+        newline = "\n" if lines[rw.hi - 1].endswith("\n") else ""
+        return " " * rw.indent + f"return {rw.expr}" + newline
+
+    return apply_line_rewrites(
+        source,
+        [(rw.lo, rw.hi, [_line(rw)]) for rw in rewrites],
+    )
 
 
 def plan_simplify_bool_return(project_root: str | Path,

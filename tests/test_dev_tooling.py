@@ -74,7 +74,11 @@ def test_rendered_spec_parses_and_registers():
     scaffold = _load("new_objective.py")
     src = scaffold.render_spec("collapse-foo")
     ast.parse(src)
-    assert 'register(ObjectiveSpec(name="collapse-foo"' in src
+    # The scaffold now emits the one-liner: register via the shared helper rather
+    # than hand-copying the _modules/fitness/moves trio. Still a real, meaningful
+    # registration — assert it calls register_module_objective with the name.
+    assert "register_module_objective(" in src
+    assert '"collapse-foo"' in src
     assert "plan_collapse_foo" in src
 
 
