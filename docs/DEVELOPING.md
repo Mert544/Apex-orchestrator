@@ -84,17 +84,19 @@ parallel without colliding. Scaffold it:
 python scripts/new_objective.py collapse-foo --summary "collapse foo into bar"
 ```
 
-This writes three files (a registered no-op until you implement the rewrite):
+This writes three files (a registered no-op until you implement the rewrite),
+where `<snake>` is the objective name with hyphens turned to underscores (so
+`collapse-foo` → `collapse_foo`):
 
-1. **`app/execution/collapse_foo.py`** — `plan_collapse_foo(project_root,
+1. **`app/execution/<snake>.py`** — `plan_<snake>(project_root,
    module_rel) -> RenamePlan`. The transform. Follow the canonical pattern in
    **`app/execution/bool_return.py`**: read → `ast.parse` → collect line/column-
    span rewrites → apply bottom-up → re-parse-or-block. Conservative by design:
    any ambiguity is a blocker (or a skipped occurrence), never a guess.
-2. **`app/execution/objectives/collapse_foo.py`** — the `_modules` / `fitness` /
-   `moves` trio ending in `register(ObjectiveSpec(name="collapse-foo", ...))`.
-   Modules under `app/execution/objectives/` are discovered automatically.
-3. **`tests/test_collapse_foo.py`** — skeleton tests incl. a self-registration
+2. **`app/execution/objectives/<snake>.py`** — the `_modules` / `fitness` /
+   `moves` trio (now one `register_module_objective(...)` call). Modules under
+   `app/execution/objectives/` are discovered automatically.
+3. **`tests/test_<snake>.py`** — skeleton tests incl. a self-registration
    assertion. Add a real before/after test once the transform is implemented.
 
 Then implement the TODO, and verify (below). The objective is immediately live
