@@ -432,7 +432,7 @@ def _consolidate(root: Path, report: DreamReport) -> None:
 def render_dream_markdown(report: DreamReport) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = ["# Dream digest — what the organism learned while you were away",
-             "", f"_Curated {ts} · deterministic · zero tokens_", ""]
+             "", f"_Curated {ts} · deterministic · zero tokens · signed by barzeuss_", ""]
     if report.new_since or report.resolved_since:
         lines.append("## Since the last dream")
         lines += [f"- 🆕 {t}" for t in report.new_since]
