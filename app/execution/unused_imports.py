@@ -37,7 +37,7 @@ from pathlib import Path
 
 from app.execution.cross_file_rename import RenamePlan
 
-__all__ = ["plan_remove_unused_imports"]
+__all__ = ["plan_remove_unused_imports", "strip_unused_imports"]
 
 
 def _is_fixture_path(path: str) -> bool:
@@ -198,6 +198,48 @@ def _apply(lines: list[str], rewrites: list[_Rewrite]) -> str:
         else:
             out[rw.lo - 1:rw.hi] = [rw.text]
     return "".join(out)
+
+
+def strip_unused_imports(source: str) -> str | None:
+    """Return ``source`` with its unused TOP-LEVEL imports removed, or ``None``
+    when there is nothing safe to remove.
+
+    This is the path-free core that :func:`plan_remove_unused_imports` (and other
+    transforms, e.g. dedup-extract gate-cleaning its own output) reuse: it applies
+    the exact same conservative detector — ``from __future__`` and star-import
+    modules are never touched, ``# noqa`` lines and non-module-body imports are
+    left alone, and ``__all__`` exports are kept. ``None`` means "leave as-is":
+    the source doesn't parse, a star import makes the module a no-op, nothing was
+    unused, or the cleaned source would not re-parse.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+
+    if _has_star_import(tree):
+        return None  # too risky — names could be bound via the star (no-op)
+
+    import_nodes = {
+        id(node) for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+    }
+    used = _used_names(tree, import_nodes)
+    keep = _all_names(tree)
+
+    lines = source.splitlines(keepends=True)
+    rewrites = _collect_rewrites(tree, lines, used, keep)
+    if not rewrites:
+        return None  # nothing unused
+
+    new_source = _apply(lines, rewrites)
+    try:
+        ast.parse(new_source)
+    except SyntaxError:
+        return None  # never emit broken source
+    if new_source == source:
+        return None
+    return new_source
 
 
 def plan_remove_unused_imports(project_root: str | Path,

@@ -39,6 +39,7 @@ from app.execution.extract_method import (
     _reindent,
     _selected_statements,
 )
+from app.execution.unused_imports import strip_unused_imports
 
 __all__ = ["plan_dedup_extract"]
 
@@ -277,6 +278,17 @@ def plan_dedup_extract(project_root: str | Path, block) -> RenamePlan:
             plan.blockers.append(
                 f"{rel}: extraction would not parse ({e})")
             return plan
+
+        # Gate-clean: lifting the block out can strand the imports it used,
+        # leaving the emitted module with `F401 imported but unused`. Reuse the
+        # unused-import detector on the NEW source and drop exactly those dead
+        # top-level imports (`from __future__` / star-affected names are never
+        # touched, and the result is re-parse-checked inside the helper). Same
+        # extraction, same occurrences replaced — only now-dead imports go.
+        cleaned = strip_unused_imports(new_source)
+        if cleaned is not None:
+            new_source = cleaned
+
         new_contents[rel] = new_source
         edits[rel] = len(occs) + (1 if rel != first.rel else 0)
 
