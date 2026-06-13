@@ -428,6 +428,35 @@ def _extract_constant_moves(project_root: str | Path) -> list[Move]:
     ) for rel in _magic_constant_modules(project_root)]
 
 
+# --- Objective: simplify accumulator loops into comprehensions ---------------
+
+def _comprehension_modules(project_root: str | Path) -> list[str]:
+    """Own modules with an accumulator loop that can become a comprehension."""
+    from app.execution.comprehension import plan_simplify_comprehension
+
+    out: list[str] = []
+    for rel, _src in _own_modules(project_root):
+        if plan_simplify_comprehension(project_root, rel).new_contents:
+            out.append(rel)
+    return out
+
+
+def comprehension_fitness(project_root: str | Path) -> float:
+    """Fitness = how many own modules still have a simplifiable accumulator loop."""
+    return float(len(_comprehension_modules(project_root)))
+
+
+def _comprehension_moves(project_root: str | Path) -> list[Move]:
+    """One move per module with a simplifiable accumulator loop."""
+    from app.execution.comprehension import plan_simplify_comprehension
+
+    return [Move(
+        operator="simplify_comprehension", target=f"{rel}:comprehension",
+        description=f"simplify accumulator loops in {rel}",
+        build_plan=lambda r=rel: plan_simplify_comprehension(project_root, r),
+    ) for rel in _comprehension_modules(project_root)]
+
+
 # --- Objective: remove unused imports (drop dead top-level imports) ----------
 
 def _unused_import_modules(project_root: str | Path) -> list[str]:
@@ -461,6 +490,7 @@ _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
                              Callable[[str | Path], list[Move]]]] = {
     "modernize": (modernize_fitness, _modernize_moves),
     "simplify-bool-return": (bool_return_fitness, _bool_return_moves),
+    "simplify-comprehension": (comprehension_fitness, _comprehension_moves),
     "extract-constant": (magic_constant_fitness, _extract_constant_moves),
     "remove-unused-imports": (unused_import_fitness, _unused_import_moves),
     "remove-dead-code": (dead_code_fitness, _dead_code_moves),
