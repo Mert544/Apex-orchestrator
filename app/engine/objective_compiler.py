@@ -428,6 +428,35 @@ def _extract_constant_moves(project_root: str | Path) -> list[Move]:
     ) for rel in _magic_constant_modules(project_root)]
 
 
+# --- Objective: collapse startswith/endswith or-chains into tuple form -------
+
+def _startswith_modules(project_root: str | Path) -> list[str]:
+    """Own modules with a collapsible startswith/endswith or-chain."""
+    from app.execution.startswith_tuple import plan_collapse_startswith
+
+    out: list[str] = []
+    for rel, _src in _own_modules(project_root):
+        if plan_collapse_startswith(project_root, rel).new_contents:
+            out.append(rel)
+    return out
+
+
+def startswith_fitness(project_root: str | Path) -> float:
+    """Fitness = how many own modules still have a collapsible startswith chain."""
+    return float(len(_startswith_modules(project_root)))
+
+
+def _startswith_moves(project_root: str | Path) -> list[Move]:
+    """One move per module with a collapsible startswith/endswith or-chain."""
+    from app.execution.startswith_tuple import plan_collapse_startswith
+
+    return [Move(
+        operator="collapse_startswith", target=f"{rel}:collapse-startswith",
+        description=f"collapse startswith/endswith or-chains in {rel}",
+        build_plan=lambda r=rel: plan_collapse_startswith(project_root, r),
+    ) for rel in _startswith_modules(project_root)]
+
+
 # --- Objective: merge isinstance chains (isinstance(x,A) or isinstance(x,B)) --
 
 def _merge_isinstance_modules(project_root: str | Path) -> list[str]:
@@ -553,6 +582,7 @@ _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
     "remove-unused-imports": (unused_import_fitness, _unused_import_moves),
     "sort-imports": (import_sort_fitness, _import_sort_moves),
     "merge-isinstance": (merge_isinstance_fitness, _merge_isinstance_moves),
+    "collapse-startswith": (startswith_fitness, _startswith_moves),
     "remove-dead-code": (dead_code_fitness, _dead_code_moves),
     "dedup": (duplication_fitness, _dedup_moves),
     "dead-params": (dead_parameter_fitness, _dead_param_moves),
