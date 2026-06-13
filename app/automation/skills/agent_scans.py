@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from app.automation.models import AutomationContext
 from app.agents.skills import SecurityAgent, DocstringAgent, TestStubAgent, DependencyAgent
+from app.automation.models import AutomationContext
 
 
 def security_scan_skill(context: AutomationContext) -> dict:

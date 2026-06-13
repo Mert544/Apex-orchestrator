@@ -16,9 +16,7 @@ class TerminationEngine:
             self._node_deadline = max_expand_seconds
 
     def is_timed_out(self) -> bool:
-        if self._deadline is not None and time.perf_counter() >= self._deadline:
-            return True
-        return False
+        return bool(self._deadline is not None and time.perf_counter() >= self._deadline)
 
     def should_stop_before_expansion(self, node, budget_controller):
         if self.is_timed_out():

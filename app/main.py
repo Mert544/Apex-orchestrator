@@ -247,9 +247,7 @@ def main() -> None:
     print(pretty_json(report.model_dump()))
 
     # Persist findings across runs
-    findings = []
-    for key, conf in report.confidence_map.items():
-        findings.append({"claim": key, "confidence": conf, "branch": ""})
+    findings = [{"claim": key, "confidence": conf, "branch": ""} for key, conf in report.confidence_map.items()]
     memory_bridge.record_run(run_id, claims=findings)
     checkpoint.save_checkpoint(run_id, mode=policy.mode.value, goal=objective, stats={"claims": len(findings), "duration": duration})
 

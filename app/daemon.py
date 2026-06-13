@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import atexit
 import os
+from pathlib import Path
 import signal
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 
 class ApexDaemon:

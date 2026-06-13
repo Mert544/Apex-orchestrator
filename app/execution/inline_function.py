@@ -70,9 +70,7 @@ def _simple_params(fn: ast.FunctionDef) -> bool:
     """True only for a signature of regular positional-or-keyword params (with
     or without defaults) — no ``*args``/``**kwargs``/posonly/kwonly markers."""
     a = fn.args
-    if a.vararg or a.kwarg or a.posonlyargs or a.kwonlyargs:
-        return False
-    return True
+    return not (a.vararg or a.kwarg or a.posonlyargs or a.kwonlyargs)
 
 
 def _is_pure_simple(node: ast.expr) -> bool:

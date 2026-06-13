@@ -16,9 +16,9 @@ loads as an empty history, so this is always safe to read.
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from datetime import date
+import json
 from pathlib import Path
 from typing import Any
 

@@ -120,11 +120,11 @@ def main() -> int:
     avg_speedup = sum(results["speedups"]) / len(results["speedups"])
     avg_overall = sum(results["with_memory"]) / len(results["with_memory"])
 
-    print(f"\nResults:")
+    print("\nResults:")
     print(f"  Average cache hit rate: {avg_hit_rate:.1f}%")
     print(f"  Average warm-cache speedup: {avg_speedup:.2f}x")
     print(f"  Average overall speedup (no-memory vs warm-cache): {avg_overall:.2f}x")
-    print(f"\nPer-run details:")
+    print("\nPer-run details:")
     for i, (hit, speed, overall) in enumerate(zip(results["hit_rates"], results["speedups"], results["with_memory"])):
         print(f"  Run {i+1}: {hit*100:.1f}% hits, {speed:.2f}x warm, {overall:.2f}x overall")
 

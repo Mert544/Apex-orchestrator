@@ -47,9 +47,7 @@ def _line_suppresses(line: str, risk_type: str) -> bool:
     codes = {c.strip().upper() for c in codes_raw.replace(",", " ").split()}
     if any(c[:1] == "S" and c[1:].isdigit() for c in codes):
         return True
-    if risk_type == "bare_except" and "E722" in codes:
-        return True
-    return False
+    return bool(risk_type == "bare_except" and "E722" in codes)
 
 
 class SecurityAgent(Agent):

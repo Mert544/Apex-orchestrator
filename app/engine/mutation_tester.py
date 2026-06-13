@@ -30,11 +30,11 @@ and the copy is discarded. Only the single target module is ever mutated.
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass, field
+from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
-from pathlib import Path
 
 # Directories never worth copying into a mutant's throwaway sandbox.
 _COPY_EXCLUDE = shutil.ignore_patterns(

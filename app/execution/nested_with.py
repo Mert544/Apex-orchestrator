@@ -88,9 +88,7 @@ def _single_line_header(node: ast.With, source_lines: list[str]) -> bool:
     if node.lineno != first.lineno - 1:
         return False
     line = source_lines[node.lineno - 1]
-    if "#" in line:
-        return False
-    return True
+    return "#" not in line
 
 
 def _item_text(item: ast.withitem, source: str) -> str | None:

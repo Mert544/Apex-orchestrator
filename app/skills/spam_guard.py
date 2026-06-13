@@ -28,9 +28,7 @@ class SpamGuard:
             return True
         if q.lower() == parent.lower():
             return True
-        if any(pattern.match(q) for pattern in self.GENERIC_QUESTION_PATTERNS):
-            return True
-        return False
+        return bool(any(pattern.match(q) for pattern in self.GENERIC_QUESTION_PATTERNS))
 
     def is_low_value_claim(self, claim: str, parent_claim: str | None = None) -> bool:
         cleaned = self._clean(claim)
@@ -40,9 +38,7 @@ class SpamGuard:
             return True
         if cleaned.count(":") >= 4:
             return True
-        if parent_claim is not None and self._canonical(cleaned) == self._canonical(parent_claim):
-            return True
-        return False
+        return bool(parent_claim is not None and self._canonical(cleaned) == self._canonical(parent_claim))
 
     def filter_claims(self, claims: list[str], parent_claim: str | None = None) -> list[str]:
         filtered: list[str] = []

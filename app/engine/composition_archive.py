@@ -21,9 +21,9 @@ Persisted to ``.apex/composition-archive.json``; stdlib-only.
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from datetime import date
+import json
 from pathlib import Path
 from typing import Any
 

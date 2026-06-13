@@ -20,13 +20,13 @@ Manifest entries are either remote (``{"name", "url", "ref"}``) or local
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
+from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 

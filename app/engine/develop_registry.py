@@ -20,11 +20,11 @@ name — built-ins win, discovered ones extend. Stdlib-only, no LLM.
 
 from __future__ import annotations
 
-import importlib
-import pkgutil
 from collections.abc import Callable
 from dataclasses import dataclass
+import importlib
 from pathlib import Path
+import pkgutil
 
 # NOTE: deliberately NO import of app.engine.objective_compiler here — not even
 # under TYPE_CHECKING. objective_compiler imports this registry (to merge the

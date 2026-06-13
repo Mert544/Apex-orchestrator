@@ -12,10 +12,10 @@ Read-only and deterministic (a reviewer proposes, it never applies).
 
 from __future__ import annotations
 
-import re
-import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+import re
+import subprocess
 from typing import Any
 
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")

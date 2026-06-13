@@ -287,7 +287,7 @@ def _patch_eval(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchRe
         line_content = lines[lineno - 1] if lineno <= len(lines) else ""
         _get_indent(line_content)
 
-        if arg_source.startswith("ast.literal_eval(") or arg_source.startswith("json.loads("):
+        if arg_source.startswith(("ast.literal_eval(", "json.loads(")):
             return None
 
         new_line = line_content.replace(f"eval({arg_source})", f"ast.literal_eval({arg_source})")

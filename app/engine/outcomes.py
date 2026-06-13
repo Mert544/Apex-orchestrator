@@ -25,8 +25,8 @@ gate for "is the project meeting the bar we wrote down?".
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 from typing import Any
 

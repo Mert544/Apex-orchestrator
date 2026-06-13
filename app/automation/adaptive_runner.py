@@ -85,9 +85,8 @@ class AdaptiveRunner:
                     )
                     # Continue with fallback steps without incrementing idx
                     continue
-                else:
                     # Persistent failure — halt
-                    break
+                break
 
         return result
 

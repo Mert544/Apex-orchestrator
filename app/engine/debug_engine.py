@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import functools
 import json
-import time
-from dataclasses import dataclass, field
 from pathlib import Path
+import time
 from typing import Any, Callable
 
 
@@ -100,9 +100,7 @@ class BreakpointCondition:
             return False
         if self.claim_count_over is not None and context.get("claim_count", 0) <= self.claim_count_over:
             return False
-        if self.custom_fn and not self.custom_fn(context):
-            return False
-        return True
+        return not (self.custom_fn and not self.custom_fn(context))
 
 
 class DebugEngine:

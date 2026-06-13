@@ -140,9 +140,8 @@ class ConsensusEngine:
         if approve_weight / total > 0.5:
             conf = sum(v.confidence * v.weight for v in votes if v.verdict == Verdict.APPROVE) / approve_weight
             return Verdict.APPROVE, conf, True
-        else:
-            conf = sum(v.confidence * v.weight for v in votes if v.verdict == Verdict.REJECT) / reject_weight
-            return Verdict.REJECT, conf, True
+        conf = sum(v.confidence * v.weight for v in votes if v.verdict == Verdict.REJECT) / reject_weight
+        return Verdict.REJECT, conf, True
 
     def _supermajority(self, votes: list[Vote]) -> tuple[Verdict, float, bool]:
         approve_weight = sum(v.weight for v in votes if v.verdict == Verdict.APPROVE)

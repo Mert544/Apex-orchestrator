@@ -10,8 +10,8 @@ Deterministic, stdlib + subprocess only.
 from __future__ import annotations
 
 import ast
-import subprocess
 from pathlib import Path
+import subprocess
 
 
 def _extract_expr(line: str) -> str | None:

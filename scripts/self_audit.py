@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import ast
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -139,7 +138,7 @@ def main() -> None:
     lines = [
         "# Apex Self-Audit Report",
         "",
-        f"**Date:** 2026-04-25",
+        "**Date:** 2026-04-25",
         f"**App Files:** {len(app_files)}",
         f"**Test Files:** {len(test_files)}",
         "",
@@ -147,8 +146,8 @@ def main() -> None:
         "",
     ]
     if risks:
-        lines.append(f"| File | Line | Risk | Severity |")
-        lines.append(f"|------|------|------|----------|")
+        lines.append("| File | Line | Risk | Severity |")
+        lines.append("|------|------|------|----------|")
         for r in risks:
             lines.append(f"| {r['file']} | {r['line']} | {r['risk']} | {r['severity']} |")
     else:
@@ -166,7 +165,7 @@ def main() -> None:
         for m in missing_docs[:50]:
             lines.append(f"| {m['file']} | {m['line']} | {m['name']} | {m['type']} |")
         if len(missing_docs) > 50:
-            lines.append(f"| ... | ... | ... | ... |")
+            lines.append("| ... | ... | ... | ... |")
             lines.append(f"_Showing first 50 of {len(missing_docs)}_")
     lines.append("")
 

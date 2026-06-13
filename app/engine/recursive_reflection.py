@@ -139,5 +139,4 @@ class RecursiveReflectionEngine:
     def _generate_insight(text: str, evidence: list[str], verdict: str) -> str:
         if verdict == "valid":
             return f"The claim '{text[:40]}...' is well-supported. Consider documenting the boundary conditions explicitly."
-        else:
-            return f"The claim '{text[:40]}...' needs strengthening. Gather more direct evidence or narrow the scope."
+        return f"The claim '{text[:40]}...' needs strengthening. Gather more direct evidence or narrow the scope."

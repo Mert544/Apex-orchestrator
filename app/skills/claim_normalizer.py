@@ -80,9 +80,7 @@ class ClaimNormalizer:
         if lowered.count("?") > 0:
             return False
         punctuation_only = re.sub(r"[a-z0-9_/.-]", "", lowered)
-        if len(punctuation_only) > len(lowered) * 0.4:
-            return False
-        return True
+        return not (len(punctuation_only) > len(lowered) * 0.4)
 
     def _looks_like_question(self, text: str) -> bool:
         lowered = text.lower().strip()

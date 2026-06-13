@@ -25,8 +25,8 @@ already owns safe operators and a test oracle.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 from typing import Any
 

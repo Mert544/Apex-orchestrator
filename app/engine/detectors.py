@@ -12,8 +12,8 @@ Deterministic, stdlib-only (ast).
 from __future__ import annotations
 
 import ast
-import re
 from dataclasses import dataclass
+import re
 
 # Security labels in descending severity (the bridge's contract relies on this).
 _SECURITY_ORDER = ("eval", "os.system", "pickle", "yaml", "sql", "tempfile", "weak-hash", "bare except", "base-exception")
@@ -49,9 +49,7 @@ def _suppressed(line: str, category: str, fix_kind: str, message: str) -> bool:
         return True
     if _FIXKIND_NOQA.get(fix_kind) in codes:
         return True
-    if "F632" in codes and "identity check against a literal" in message:
-        return True
-    return False
+    return bool("F632" in codes and "identity check against a literal" in message)
 
 
 def _has_usedforsecurity_false(node: ast.Call) -> bool:
