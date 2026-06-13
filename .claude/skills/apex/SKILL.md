@@ -94,6 +94,11 @@ without the file). `apex auto` prints what it has learned.
   The drop-enabler: a `signature drop` blocked on positional callers chains through
   this. Positional-only params stay positional; calls feeding `*args` are left alone
   (warned); `f(*xs)` and paren-wrapped arguments block. Test-verified with rollback.
+- `apex signature reorder FUNC a,b,c [--dry-run] [--no-verify]` — change the REGULAR
+  parameters' order. Callers need no edit by construction: any caller passing them
+  positionally blocks with the chain hint (`keywordify` first). Positional-only,
+  `*args`, keyword-only and `**kwargs` sections stay put; an order that puts a
+  required param after a defaulted one blocks (it wouldn't compile).
 - `apex move SRC.py DST.py [--target=.] [--dry-run] [--no-verify]` — move/rename a module;
   every import form (`import x.y`, `from x.y import f`, `from x import y`, aliases) is
   rewritten project-wide, missing `__init__.py` created, relative-import cases block.

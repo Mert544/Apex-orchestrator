@@ -78,6 +78,12 @@ def cmd_signature(args: argparse.Namespace) -> int:
 
         plan = plan_keywordify(str(target), args.function)
         label = f"convert positional calls of `{args.function}()` to keywords"
+    elif args.op == "reorder":
+        from app.execution.param_reorder import plan_param_reorder
+
+        order = [s.strip() for s in (args.param or "").split(",") if s.strip()]
+        plan = plan_param_reorder(str(target), args.function, order)
+        label = f"reorder `{args.function}()` parameters to ({', '.join(order)})"
     elif args.op == "add":
         from app.execution.param_add import plan_param_add
 
@@ -208,14 +214,16 @@ def register_parsers(subparsers) -> None:
         help="Change a function's signature project-wide: drop an unused parameter, "
              "add one with a safe default, or keywordify positional calls (test-verified)",
     )
-    sig_parser.add_argument("op", choices=["drop", "add", "keywordify"],
+    sig_parser.add_argument("op", choices=["drop", "add", "keywordify", "reorder"],
                             help="drop: remove a parameter the body never reads; "
                                  "add: introduce a parameter with a safe default; "
-                                 "keywordify: rewrite positional call sites as keywords")
+                                 "keywordify: rewrite positional call sites as keywords; "
+                                 "reorder: change parameter order (callers must be keyword)")
     # NB: dest must not be "func" — that's the dispatch slot set_defaults uses.
     sig_parser.add_argument("function", help="Function whose signature changes")
     sig_parser.add_argument("param", nargs="?", default="",
-                            help="Parameter to drop/add (not used by keywordify)")
+                            help="Parameter to drop/add; for reorder, the full "
+                                 "comma-separated new order (e.g. b,a,c)")
     sig_parser.add_argument("--default", default="None",
                             help="Default expression for `add` (e.g. 0, None, \"utf-8\")")
     sig_parser.add_argument("--target", default="", help="Target project root")
