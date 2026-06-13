@@ -530,3 +530,28 @@ def test_cmd_shield_needs_a_module(capsys):
     from app.cli_autonomy import cmd_shield
     rc = cmd_shield(argparse.Namespace(target="", module="", apply=False, json=False))
     assert rc == 1
+
+
+# --- fifth objective: remove unreachable code (detection -> action) ----------
+
+def test_remove_dead_code_objective(tmp_path):
+    from app.engine.objective_compiler import dead_code_fitness
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "m.py").write_text(
+        "def f(x):\n    return x\n    print('dead')\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "from app.m import f\ndef test_f():\n    assert f(2) == 2\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    assert dead_code_fitness(str(tmp_path)) == 1.0
+    r = compile_objective(str(tmp_path), objective="remove-dead-code",
+                          apply=True, verify=False)
+    assert r.fitness_end == 0.0 and len(r.steps) == 1
+    src = (tmp_path / "app" / "m.py").read_text()
+    assert "print('dead')" not in src and "return x" in src
+
+
+def test_remove_dead_code_in_all_objectives():
+    from app.engine.objective_compiler import ALL_OBJECTIVES, available_objectives
+    assert "remove-dead-code" in ALL_OBJECTIVES
+    assert "remove-dead-code" in available_objectives()

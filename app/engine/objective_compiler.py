@@ -36,7 +36,8 @@ from app.execution.cross_file_rename import RenamePlan
 __all__ = [
     "Move", "CompileStep", "CompileResult",
     "dead_parameter_fitness", "inlinable_helper_fitness", "long_function_fitness",
-    "modernize_fitness", "compile_objective", "compile_all", "available_objectives",
+    "modernize_fitness", "dead_code_fitness",
+    "compile_objective", "compile_all", "available_objectives",
     "ALL_OBJECTIVES", "dream_confluence_modules", "compile_from_dream",
     "render_compile_markdown", "render_from_dream_markdown", "render_all_markdown",
 ]
@@ -300,9 +301,40 @@ def _modernize_moves(project_root: str | Path) -> list[Move]:
     return moves
 
 
+# --- Objective: remove unreachable (dead) code -------------------------------
+
+def _dead_code_modules(project_root: str | Path) -> list[str]:
+    """Own modules that contain unreachable code (after a terminal statement)."""
+    from app.engine.detectors import has_unreachable_code
+
+    return [rel for rel, src in _own_modules(project_root) if has_unreachable_code(src)]
+
+
+def dead_code_fitness(project_root: str | Path) -> float:
+    """Fitness = how many own modules still carry unreachable code. Removing it
+    is behaviour-preserving (the code never ran), so the objective is reached at
+    zero."""
+    return float(len(_dead_code_modules(project_root)))
+
+
+def _dead_code_moves(project_root: str | Path) -> list[Move]:
+    """One move per module with unreachable code — delete the dead statements."""
+    from app.execution.dead_code import plan_remove_dead_code
+
+    moves: list[Move] = []
+    for rel in _dead_code_modules(project_root):
+        moves.append(Move(
+            operator="remove_dead_code", target=f"{rel}:dead-code",
+            description=f"remove unreachable code in {rel}",
+            build_plan=lambda r=rel: plan_remove_dead_code(project_root, r),
+        ))
+    return moves
+
+
 _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
                              Callable[[str | Path], list[Move]]]] = {
     "modernize": (modernize_fitness, _modernize_moves),
+    "remove-dead-code": (dead_code_fitness, _dead_code_moves),
     "dead-params": (dead_parameter_fitness, _dead_param_moves),
     "shrink-functions": (long_function_fitness, _extract_moves),
     "inline-helpers": (inlinable_helper_fitness, _inline_moves),
@@ -311,7 +343,7 @@ _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
 
 # The objectives `apex develop --all` sweeps, in a deliberate order: tidy the
 # surface (modernize), trim it (dead-params), then restructure (shrink, inline).
-ALL_OBJECTIVES: tuple[str, ...] = ("modernize", "dead-params",
+ALL_OBJECTIVES: tuple[str, ...] = ("modernize", "remove-dead-code", "dead-params",
                                    "shrink-functions", "inline-helpers")
 
 
