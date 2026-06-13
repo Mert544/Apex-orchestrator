@@ -26,8 +26,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.engine.health_score import _is_fixture_path
 from app.execution.cross_file_rename import _py_files
+
+
+def _is_fixture_path(path: str) -> bool:
+    """Example/fixture/test code is excluded (its repetition is often deliberate
+    boilerplate). A local copy — importing this from health_score created a
+    health_score ↔ dedup import cycle, and the grade now reads dedup."""
+    p = path.replace("\\", "/").lower()
+    return (
+        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
+        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
+        or Path(p).name.startswith("test_")
+    )
 
 # Upper bound on windows examined per function body. A function with N statements
 # yields at most (N - min_statements + 1) windows; this cap keeps a single
