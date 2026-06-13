@@ -2,6 +2,8 @@
 # task: idea-x.h.c
 # title: Create a test stub covering app/lsp/server.py
 
+import io
+
 import app.lsp.server
 
 
@@ -10,6 +12,10 @@ def test_server_imports():
     assert app.lsp.server is not None
 
 
-def test_server_callable_contracts():
-    """Public callables run on synthesized inputs; annotated return types are checked."""
-    app.lsp.server.main()
+def test_server_callable_contracts(monkeypatch):
+    """main() runs the stdio LSP loop; feed it an empty stdin so it reads EOF
+    and exits cleanly. (Without this the test only passed when some earlier test
+    happened to leave sys.stdin readable — an ordering dependency that a chunked
+    run exposes; an empty StringIO makes it deterministic and self-contained.)"""
+    monkeypatch.setattr(app.lsp.server.sys, "stdin", io.StringIO(""))
+    assert app.lsp.server.main() == 0
