@@ -388,13 +388,26 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
                     fitness_before=start, fitness_after=max(0.0, start - 1), verified=False))
         return result
 
+    # Greedy fixpoint, scanned PER PASS, not per move. A full project scan
+    # (`candidates()`) is expensive on a large repo, so each pass scans once and
+    # then applies every move that still lands — each move's plan is re-derived
+    # against the CURRENT tree (build_plan is a thunk), so line numbers stay
+    # exact even as earlier moves in the same pass edit the file. A move whose
+    # precondition an earlier edit invalidated simply no-ops and is skipped; a
+    # NEW opportunity an edit created is picked up on the next pass. Each landed
+    # move clears one unit of debt, so fitness decrements by one (these
+    # objectives are monotone) — no re-measure scan per step.
     current = start
-    for _ in range(max_steps):
-        moves = candidates()
+    for _pass in range(max_steps + 1):
+        if len(result.steps) >= max_steps:
+            break
+        moves = candidates()  # one scan per pass
         if not moves:
             break
-        advanced = False
+        progressed = False
         for mv in moves:
+            if len(result.steps) >= max_steps:
+                break
             plan = mv.build_plan()
             if plan.blockers or not plan.new_contents:
                 if plan.blockers:
@@ -406,16 +419,15 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
                 if res.get("reason"):
                     result.blocked.append(f"{mv.target}: {res['reason']}")
                 continue
-            after = measure()
+            nxt = max(0.0, current - 1)
             result.steps.append(CompileStep(
                 operator=mv.operator, target=mv.target, description=mv.description,
-                fitness_before=current, fitness_after=after,
+                fitness_before=current, fitness_after=nxt,
                 verified=res.get("verified") is True))
-            current = after
+            current = nxt
             last_operator = mv.operator  # bias the next move's ordering
-            advanced = True
-            break  # re-generate against the new tree (line numbers shifted)
-        if not advanced:
+            progressed = True
+        if not progressed:
             break
 
     result.fitness_end = current
