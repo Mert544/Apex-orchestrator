@@ -160,3 +160,104 @@ def test_inline_objective_dry_run_lists_only_safe_moves(tmp_path):
     # Dry run lists the safe folds and never writes.
     assert (tmp_path / "app" / "m.py").read_text() == before
     assert any(s.operator == "inline" for s in r.steps)
+
+
+# --- dream -> action: scoped campaigns from the nightly discovery -------------
+
+import json as _json
+
+
+def _dream_project(tmp_path: Path) -> Path:
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / ".apex").mkdir()
+    (tmp_path / "app" / "hub.py").write_text(
+        "def render(text, color=None, width=80):\n    return text[:width]\n", encoding="utf-8")
+    (tmp_path / "app" / "other.py").write_text(
+        "def fetch(url, retries=3):\n    return url\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "from app.hub import render\nfrom app.other import fetch\n"
+        "def test_all():\n    assert render('hi', width=2) == 'hi'\n"
+        "    assert fetch('u') == 'u'\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    (tmp_path / ".apex" / "dream-promotions.json").write_text(
+        _json.dumps([{"key": "confluence:app/hub.py", "kind": "confluence", "streak": 20}]),
+        encoding="utf-8")
+    return tmp_path
+
+
+def test_dream_confluence_modules_reads_promotions(tmp_path):
+    from app.engine.objective_compiler import dream_confluence_modules
+    _dream_project(tmp_path)
+    assert dream_confluence_modules(str(tmp_path)) == ["app/hub.py"]
+
+
+def test_dream_confluence_modules_empty_when_no_store(tmp_path):
+    from app.engine.objective_compiler import dream_confluence_modules
+    assert dream_confluence_modules(str(tmp_path)) == []
+
+
+def test_dream_confluence_skips_nonexistent_modules(tmp_path):
+    from app.engine.objective_compiler import dream_confluence_modules
+    (tmp_path / ".apex").mkdir()
+    (tmp_path / ".apex" / "dream-promotions.json").write_text(
+        _json.dumps([{"key": "confluence:app/ghost.py"}]), encoding="utf-8")
+    assert dream_confluence_modules(str(tmp_path)) == []  # ghost.py doesn't exist
+
+
+def test_scope_module_confines_the_campaign(tmp_path):
+    _dream_project(tmp_path)
+    # Scoped to hub.py: only its dead param is dropped; other.py is untouched.
+    r = compile_objective(str(tmp_path), apply=True, verify=False, scope_module="app/hub.py")
+    assert r.fitness_start == 1.0 and r.fitness_end == 0.0
+    assert len(r.steps) == 1
+    assert all(s.target.startswith("app/hub.py") for s in r.steps)
+    assert "color" not in (tmp_path / "app" / "hub.py").read_text()
+    assert "retries" in (tmp_path / "app" / "other.py").read_text()  # untouched
+
+
+def test_compile_from_dream_cleans_only_confluence_modules(tmp_path):
+    from app.engine.objective_compiler import compile_from_dream
+    _dream_project(tmp_path)
+    results = compile_from_dream(str(tmp_path), apply=True, verify=False)
+    assert len(results) == 1               # one confluence module
+    assert results[0].fitness_end == 0.0
+    # hub.py cleaned; other.py (not a confluence) left with its dead param.
+    assert "color" not in (tmp_path / "app" / "hub.py").read_text()
+    assert "retries" in (tmp_path / "app" / "other.py").read_text()
+
+
+def test_compile_from_dream_empty_when_no_confluence(tmp_path):
+    from app.engine.objective_compiler import compile_from_dream
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+    assert compile_from_dream(str(tmp_path), apply=False) == []
+
+
+def test_render_from_dream_markdown(tmp_path):
+    from app.engine.objective_compiler import (
+        compile_from_dream, dream_confluence_modules, render_from_dream_markdown,
+    )
+    _dream_project(tmp_path)
+    mods = dream_confluence_modules(str(tmp_path))
+    md = render_from_dream_markdown(compile_from_dream(str(tmp_path), apply=False), mods)
+    assert "Develop from dream" in md and "app/hub.py" in md
+
+
+def test_render_from_dream_empty_message():
+    from app.engine.objective_compiler import render_from_dream_markdown
+    md = render_from_dream_markdown([], [])
+    assert "graduated no confluence" in md
+
+
+def test_cmd_develop_from_dream(tmp_path, capsys):
+    import argparse
+    from app.cli_autonomy import cmd_develop
+    _dream_project(tmp_path)
+    rc = cmd_develop(argparse.Namespace(
+        target=str(tmp_path), objective="dead-params", from_dream=True,
+        apply=True, max_steps=25, no_verify=True, json=False))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Develop from dream" in out and "app/hub.py" in out
+    assert "color" not in (tmp_path / "app" / "hub.py").read_text()

@@ -36,6 +36,8 @@ from app.execution.cross_file_rename import RenamePlan
 __all__ = [
     "Move", "CompileStep", "CompileResult",
     "dead_parameter_fitness", "inlinable_helper_fitness", "compile_objective",
+    "dream_confluence_modules", "compile_from_dream",
+    "render_compile_markdown", "render_from_dream_markdown",
 ]
 
 
@@ -181,16 +183,26 @@ _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
 }
 
 
+def _move_module(move: "Move") -> str:
+    """The module a move targets (the part before ':' in its target)."""
+    return move.target.split(":", 1)[0]
+
+
 def compile_objective(project_root: str | Path, objective: str = "dead-params",
                       max_steps: int = 25, verify: bool = True,
-                      apply: bool = True) -> CompileResult:
+                      apply: bool = True, scope_module: str | None = None) -> CompileResult:
     """Greedily compose verified moves toward ``objective``.
 
     Each iteration: regenerate candidate moves against the current tree, apply
     the first one that lands (suite-verified, auto-rolled-back on failure), and
     re-measure fitness. Stops at fixpoint (no candidate or none improving) or
     ``max_steps``. With ``apply=False`` it only reports the moves it WOULD make
-    (no writes), measuring the projected fitness from the candidate count."""
+    (no writes), measuring the projected fitness from the candidate count.
+
+    ``scope_module`` confines the campaign to one module (a dream confluence,
+    say): only moves targeting that module are composed, and fitness becomes the
+    count of those scoped moves remaining — so the organism can clean up the one
+    risky file its nightly dream flagged, not the whole project at once."""
     from app.execution.cross_file_rename import apply_rename
 
     if objective not in _OBJECTIVES:
@@ -200,13 +212,25 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
 
     fitness, generate = _OBJECTIVES[objective]
     root = str(project_root)
-    start = fitness(root)
+
+    def candidates() -> list[Move]:
+        moves = generate(root)
+        if scope_module is not None:
+            moves = [m for m in moves if _move_module(m) == scope_module]
+        return moves
+
+    def measure() -> float:
+        # Scoped runs measure the local debt (remaining scoped moves); a global
+        # run trusts the objective's own project-wide fitness function.
+        return float(len(candidates())) if scope_module is not None else fitness(root)
+
+    start = measure()
     result = CompileResult(objective=objective, fitness_start=start, fitness_end=start,
                            applied=apply)
 
     if not apply:
         # Dry run: list the moves available now (no writes, no suite runs).
-        for mv in generate(root)[:max_steps]:
+        for mv in candidates()[:max_steps]:
             plan = mv.build_plan()
             if plan.blockers:
                 result.blocked.append(f"{mv.target}: {plan.blockers[0]}")
@@ -218,7 +242,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
 
     current = start
     for _ in range(max_steps):
-        moves = generate(root)
+        moves = candidates()
         if not moves:
             break
         advanced = False
@@ -234,7 +258,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
                 if res.get("reason"):
                     result.blocked.append(f"{mv.target}: {res['reason']}")
                 continue
-            after = fitness(root)
+            after = measure()
             result.steps.append(CompileStep(
                 operator=mv.operator, target=mv.target, description=mv.description,
                 fitness_before=current, fitness_after=after,
@@ -284,4 +308,59 @@ def render_compile_markdown(result: CompileResult) -> str:
         for b in result.blocked[:10]:
             lines.append(f"- ⛔ {b}")
     lines.append("")
+    return "\n".join(lines)
+
+
+# --- Dream → action: act on the nightly structural discoveries ---------------
+
+def dream_confluence_modules(project_root: str | Path) -> list[str]:
+    """Modules the dream graduated as CONFLUENCES — files that carry many
+    structural signals at once (high churn × hub × co-change). Read from the
+    promotion store the dream writes (`.apex/dream-promotions.json`); these are
+    the organism's hardest-won, multi-night discoveries about where the risk
+    concentrates. Returns existing module paths only, sorted, deduplicated."""
+    import json
+
+    path = Path(project_root) / ".apex" / "dream-promotions.json"
+    try:
+        items = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out: list[str] = []
+    for it in items if isinstance(items, list) else []:
+        key = it.get("key", "") if isinstance(it, dict) else ""
+        if key.startswith("confluence:"):
+            module = key.split(":", 1)[1].strip()
+            if module and (Path(project_root) / module).exists():
+                out.append(module)
+    return sorted(set(out))
+
+
+def compile_from_dream(project_root: str | Path, objective: str = "dead-params",
+                       max_steps: int = 25, verify: bool = True,
+                       apply: bool = True) -> list[CompileResult]:
+    """Run a scoped develop campaign on each module the dream flagged as a
+    confluence — the closed loop: a 20-night structural discovery becomes a
+    morning's verified cleanup, no human choosing the next move. One
+    CompileResult per confluence module (empty list when the dream named none)."""
+    results: list[CompileResult] = []
+    for module in dream_confluence_modules(project_root):
+        results.append(compile_objective(
+            project_root, objective=objective, max_steps=max_steps,
+            verify=verify, apply=apply, scope_module=module))
+    return results
+
+
+def render_from_dream_markdown(results: list[CompileResult],
+                               modules: list[str]) -> str:
+    """Render the dream-driven multi-module campaign."""
+    if not modules:
+        return ("# Develop from dream\n\n_The dream has graduated no confluence "
+                "yet — run `apex dream --curate` over more nights first._\n")
+    lines = [f"# Develop from dream — {len(modules)} confluence module(s)", "",
+             "_The nightly dream flagged these files as risk confluences; "
+             "here is the verified cleanup it composed for each._", ""]
+    for module, result in zip(modules, results):
+        lines.append(f"## `{module}`")
+        lines.append(render_compile_markdown(result))
     return "\n".join(lines)

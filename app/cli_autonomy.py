@@ -399,16 +399,39 @@ def cmd_develop(args: argparse.Namespace) -> int:
 
     Where `maintain` applies whatever smell-fix it finds, `develop` pursues a
     measurable goal (e.g. zero dead parameters), composing the moves that reach
-    it and proving each step. Default is a dry run; `--apply` writes."""
+    it and proving each step. Default is a dry run; `--apply` writes.
+
+    With `--from-dream`, the campaign is scoped to the modules the nightly dream
+    flagged as confluences — the organism acting on its own discovery."""
+    objective = getattr(args, "objective", "dead-params") or "dead-params"
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    max_steps = getattr(args, "max_steps", 25)
+    verify = not getattr(args, "no_verify", False)
+    apply = getattr(args, "apply", False)
+
+    if getattr(args, "from_dream", False):
+        from app.engine.objective_compiler import (
+            compile_from_dream, dream_confluence_modules, render_from_dream_markdown,
+        )
+
+        modules = dream_confluence_modules(str(target))
+        results = compile_from_dream(str(target), objective=objective,
+                                     max_steps=max_steps, verify=verify, apply=apply)
+        if args.json:
+            print(json.dumps({"modules": modules,
+                              "campaigns": [r.to_dict() for r in results]}, indent=2))
+        else:
+            print(render_from_dream_markdown(results, modules))
+            if apply and any(r.steps for r in results):
+                print("_Applied to your working tree, not committed — "
+                      "review with `git diff`._")
+        return 0
+
     from app.engine.objective_compiler import compile_objective, render_compile_markdown
 
-    target = Path(args.target).resolve() if args.target else _get_project_root()
     result = compile_objective(
-        str(target),
-        objective=getattr(args, "objective", "dead-params") or "dead-params",
-        max_steps=getattr(args, "max_steps", 25),
-        verify=not getattr(args, "no_verify", False),
-        apply=getattr(args, "apply", False),
+        str(target), objective=objective, max_steps=max_steps,
+        verify=verify, apply=apply,
     )
     if args.json:
         print(json.dumps(result.to_dict(), indent=2))
@@ -500,6 +523,9 @@ def register_parsers(subparsers) -> None:
     develop_parser.add_argument("--target", default="", help="Target project root")
     develop_parser.add_argument("--objective", default="dead-params",
                                 help="Objective to pursue (default: dead-params)")
+    develop_parser.add_argument("--from-dream", action="store_true", dest="from_dream",
+                                help="Scope the campaign to the modules the nightly "
+                                     "dream flagged as confluences (dream → action)")
     develop_parser.add_argument("--apply", action="store_true",
                                 help="Apply the composed moves (default: dry run)")
     develop_parser.add_argument("--max-steps", type=int, default=25, dest="max_steps",
