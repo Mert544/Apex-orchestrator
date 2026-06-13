@@ -555,3 +555,40 @@ def test_remove_dead_code_in_all_objectives():
     from app.engine.objective_compiler import ALL_OBJECTIVES, available_objectives
     assert "remove-dead-code" in ALL_OBJECTIVES
     assert "remove-dead-code" in available_objectives()
+
+
+# --- apex shield --all: build the whole test safety net ----------------------
+
+def _two_module_project(tmp_path: Path) -> Path:
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "a.py").write_text("def add(x, y):\n    return x + y\n", encoding="utf-8")
+    (tmp_path / "app" / "b.py").write_text("def mul(x, y=2):\n    return x * y\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_a.py").write_text(
+        "from app.a import add\ndef test_add():\n    assert add(1, 2) == 3\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_shield_all_dry_run_lists_candidates(tmp_path, capsys):
+    import argparse
+    from app.cli_autonomy import cmd_shield
+    _two_module_project(tmp_path)
+    rc = cmd_shield(argparse.Namespace(target=str(tmp_path), module="", all_modules=True,
+                                       apply=False, json=False))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "would build" in out and "app/b.py" in out  # b.py is untested
+    assert not (tmp_path / "tests" / "test_b.py").exists()  # dry run writes nothing
+
+
+def test_shield_all_apply_builds_verified_tests(tmp_path, capsys):
+    import argparse
+    from app.cli_autonomy import cmd_shield
+    _two_module_project(tmp_path)
+    rc = cmd_shield(argparse.Namespace(target=str(tmp_path), module="", all_modules=True,
+                                       apply=True, json=False))
+    assert rc == 0
+    assert "Built" in capsys.readouterr().out
+    # b.py got a written test that the verifier kept (it passes).
+    assert (tmp_path / "tests" / "test_b.py").exists()

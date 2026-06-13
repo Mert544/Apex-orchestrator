@@ -518,18 +518,97 @@ def _print_grade_proof(target: str, before: int | None, applied: bool,
         pass  # history is best-effort; never fail a successful campaign on it
 
 
+def _untested_own_modules(target: str) -> list[str]:
+    """The project's own modules with no linked test (the gaps to shield)."""
+    from app.engine.health_score import _is_fixture_path
+    from app.tools.project_profile import ProjectProfiler
+
+    profile = ProjectProfiler(target).profile()
+    return [m for m in (getattr(profile, "untested_modules", []) or [])
+            if isinstance(m, str) and m.endswith(".py") and not _is_fixture_path(m)]
+
+
+def _verify_one_test(target: str, test_path: str, timeout: int = 120) -> bool:
+    """Run just the generated test file; True when it passes."""
+    import subprocess
+    try:
+        r = subprocess.run(["python", "-m", "pytest", "-q", "-x", test_path],
+                           cwd=target, capture_output=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
+def _shield_all(target: str, apply: bool, as_json: bool) -> int:
+    """Build a characterization test for EVERY untested module — verify each and
+    keep only the ones that pass (a written test that fails is worse than none).
+    Default previews which modules would be shielded; --apply writes + verifies."""
+    import json as _json
+    import os
+
+    from app.execution.test_shield import (
+        generate_characterization_test, write_shield_test,
+    )
+
+    built: list[str] = []
+    failed: list[str] = []
+    candidates: list[str] = []
+    for mod in _untested_own_modules(target):
+        shield = generate_characterization_test(target, mod)
+        if shield is None:
+            continue
+        candidates.append(mod)
+        if not apply:
+            continue
+        path = write_shield_test(target, shield)
+        if _verify_one_test(target, path):
+            built.append(path)
+        else:  # a generated test that doesn't pass is removed — never ship red
+            try:
+                os.remove(Path(target) / path)
+            except OSError:
+                pass
+            failed.append(mod)
+
+    if as_json:
+        print(_json.dumps({"candidates": candidates, "built": built,
+                           "failed": failed, "applied": apply}, indent=2))
+        return 0
+    if not candidates:
+        print("# Every module already has a test, or none is safely shieldable. 🎉")
+        return 0
+    if not apply:
+        print(f"# `apex shield --all` would build {len(candidates)} test(s) for "
+              "untested module(s):\n")
+        for m in candidates[:40]:
+            print(f"- {m}")
+        print("\n_Preview only — pass `--apply` to write and verify them._")
+        return 0
+    print(f"# Built {len(built)} verified test(s); {len(failed)} skipped (didn't pass).")
+    for p in built[:40]:
+        print(f"- ✅ {p}")
+    for m in failed[:10]:
+        print(f"- ↩️ {m} (generated test didn't pass — removed)")
+    return 0
+
+
 def cmd_shield(args: argparse.Namespace) -> int:
     """Build a characterization test for an untested module — Apex develops the
     project's test safety net, not just flags the gap. Default previews the
-    generated test; --apply writes it (never clobbers an existing test file)."""
+    generated test; --apply writes it (never clobbers an existing test file).
+    ``--all`` shields every untested module at once (each verified)."""
     from app.execution.test_shield import (
         generate_characterization_test, write_shield_test,
     )
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
     module = getattr(args, "module", "") or ""
+
+    if getattr(args, "all_modules", False):
+        return _shield_all(str(target), apply=getattr(args, "apply", False),
+                           as_json=args.json)
     if not module:
-        print("⛔ shield needs a MODULE (e.g. apex shield app/foo.py)")
+        print("⛔ shield needs a MODULE (e.g. apex shield app/foo.py), or --all")
         return 1
     shield = generate_characterization_test(str(target), module)
     if shield is None:
@@ -661,7 +740,10 @@ def register_parsers(subparsers) -> None:
         "shield",
         help="Build a characterization test for an untested module (preview; --apply writes it)",
     )
-    shield_parser.add_argument("module", help="Module to test (e.g. app/foo.py)")
+    shield_parser.add_argument("module", nargs="?", default="",
+                               help="Module to test (e.g. app/foo.py); omit with --all")
+    shield_parser.add_argument("--all", action="store_true", dest="all_modules",
+                               help="Shield EVERY untested module (each generated test is verified)")
     shield_parser.add_argument("--target", default="", help="Target project root")
     shield_parser.add_argument("--apply", action="store_true",
                                help="Write the generated test (never clobbers an existing one)")
