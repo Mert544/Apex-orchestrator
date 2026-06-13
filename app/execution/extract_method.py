@@ -334,17 +334,24 @@ def _iter_closure_free_functions(tree: ast.Module):
                     yield item, top
 
 
-def suggest_extractions(source: str) -> list[dict]:
+def suggest_extractions(source: str, tree: ast.Module | None = None) -> list[dict]:
     """For each long, closure-free function, the single best contiguous run to
     extract — the seam with the most lines saved for the smallest interface.
+
+    ``tree`` lets a caller that already parsed ``source`` (Apex's
+    mtime-fingerprinted source index) hand the parse in, skipping the re-parse
+    this otherwise does on every call. Left ``None`` the source is parsed here
+    exactly as before; a supplied ``tree`` must be ``ast.parse(source)``, so the
+    seams are identical either way.
 
     Returns dicts ``{function, line, start, end, name, params, returns,
     lines_saved}`` ready to become an ``apex extract`` command. Read-only and
     deterministic; the suggestion is a proposal, the real apply re-verifies."""
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return []
+    if tree is None:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return []
     out: list[dict] = []
     for fn, _container in _iter_closure_free_functions(tree):
         span = (fn.end_lineno or fn.lineno) - fn.lineno + 1

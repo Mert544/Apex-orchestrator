@@ -199,14 +199,21 @@ def _extract_suggestions(project_root: str | Path) -> list[tuple[str, dict]]:
 
     Functions named like the extractor's own output (``..._part``) are skipped
     so a campaign never cascades into the helpers it just created — one clean
-    extraction per real long function, not a chain of nested ``_part_part``."""
+    extraction per real long function, not a chain of nested ``_part_part``.
+
+    Runs over the source index's already-parsed trees, handing each cached parse
+    to ``suggest_extractions`` so a module is never re-parsed per scan. A module
+    that didn't parse yields no seams either way (``suggest_extractions`` returns
+    ``[]`` on a syntax error), so iterating the parsed modules is identical to
+    iterating every own source."""
+    from app.engine.source_index import indexed_project
     from app.execution.extract_method import suggest_extractions
 
     out: list[tuple[str, dict]] = []
-    for rel, source in _own_modules(project_root):
-        for seam in suggest_extractions(source):
+    for module in indexed_project(str(project_root)).parsed_modules():
+        for seam in suggest_extractions(module.source, module.tree):
             if not seam["function"].endswith("_part"):
-                out.append((rel, seam))
+                out.append((module.rel, seam))
     return out
 
 
@@ -402,12 +409,17 @@ def _bool_return_moves(project_root: str | Path) -> list[Move]:
 # --- Objective: extract repeated magic literals into named constants ---------
 
 def _magic_constant_modules(project_root: str | Path) -> list[str]:
-    """Own modules with a repeated magic literal worth naming."""
+    """Own modules with a repeated magic literal worth naming.
+
+    Each module's plan is built from the source the index already read, so the
+    scan never re-walks the whole project per module (``plan_extract_constant``
+    otherwise reads every file on every call). The plan is identical to the
+    disk-read path — same bytes in, same plan out."""
     from app.execution.extract_constant import plan_extract_constant
 
     out: list[str] = []
-    for rel, _src in _own_modules(project_root):
-        if plan_extract_constant(project_root, rel).new_contents:
+    for rel, src in _own_modules(project_root):
+        if plan_extract_constant(project_root, rel, source=src).new_contents:
             out.append(rel)
     return out
 

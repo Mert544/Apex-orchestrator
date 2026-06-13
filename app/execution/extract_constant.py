@@ -197,9 +197,17 @@ def plan_extract_constant(
     project_root: str | Path,
     module_rel: str,
     min_occurrences: int = 3,
+    source: str | None = None,
 ) -> RenamePlan:
     """Plan extracting the most-repeated magic literal in ``module_rel`` into a
-    named module-level constant, or surface the blockers that stop it."""
+    named module-level constant, or surface the blockers that stop it.
+
+    ``source`` lets a caller that already has the module's text in hand (Apex's
+    mtime-fingerprinted source index) pass it straight in, skipping the
+    project-wide ``_py_files`` walk this otherwise does on every call. Left
+    ``None`` the text is read from disk exactly as before, so every existing
+    caller is unchanged; a supplied ``source`` is the same bytes the walk would
+    have read, so the resulting plan is byte-for-byte identical."""
     plan = RenamePlan(old=module_rel, new="extract-constant")
     root = Path(project_root)
 
@@ -212,11 +220,12 @@ def plan_extract_constant(
         plan.blockers.append(f"{rel}: fixture/test/example module — skipped")
         return plan
 
-    sources = dict(_py_files(root))
-    if rel not in sources:
-        plan.blockers.append(f"{rel}: module not found under project root")
-        return plan
-    source = sources[rel]
+    if source is None:
+        sources = dict(_py_files(root))
+        if rel not in sources:
+            plan.blockers.append(f"{rel}: module not found under project root")
+            return plan
+        source = sources[rel]
     try:
         tree = ast.parse(source)
     except SyntaxError:

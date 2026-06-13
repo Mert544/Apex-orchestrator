@@ -675,3 +675,177 @@ def test_extract_constant_objective(tmp_path):
 def test_extract_constant_in_available_objectives():
     from app.engine.objective_compiler import available_objectives
     assert "extract-constant" in available_objectives()
+
+
+# --- cached-parse reuse: fitness scans reuse the source index, not disk --------
+# The dominant rank_objectives scans (extract-constant, shrink-functions,
+# inline-helpers) read+parse every module ONCE via the source index instead of
+# re-reading/re-parsing per module. These tests pin the optimization's contract:
+# every result is byte-for-byte identical to the from-scratch (uncached) path.
+
+def _mixed_debt_project(tmp_path: Path) -> Path:
+    """A project carrying all three optimized debts at once: a repeated magic
+    literal (extract-constant), a long function with a clean seam
+    (shrink-functions), and a single-use helper (inline-helpers)."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    body = "\n".join(f"    s{i} = start + {i}" for i in range(45))
+    (tmp_path / "app" / "m.py").write_text(
+        # long function with an extractable seam
+        f"def big(start):\n    total = start\n{body}\n    return total + s0\n\n\n"
+        # a repeated magic literal
+        "def a():\n    return 86400 * 2\n\n\n"
+        "def b():\n    return 86400 + 1\n\n\n"
+        "def c():\n    return 86400 - 5\n\n\n"
+        # a tiny single-use helper plus its one caller
+        "def double(x):\n    return x * 2\n\n\n"
+        "def use():\n    return double(5)\n", encoding="utf-8")
+    (tmp_path / "app" / "other.py").write_text(
+        "def plain(y):\n    return y + 1\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "import app.m, app.other\ndef test_import():\n"
+        "    assert app.m is not None and app.other is not None\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    return tmp_path
+
+
+def _from_scratch_magic_constant_modules(root: str) -> list[str]:
+    """Reference: the extract-constant scan WITHOUT any cached source — every
+    plan reads from disk (the pre-optimization behavior)."""
+    from app.engine.objective_compiler import _own_modules
+    from app.execution.extract_constant import plan_extract_constant
+    return [rel for rel, _src in _own_modules(root)
+            if plan_extract_constant(root, rel).new_contents]
+
+
+def _from_scratch_extract_suggestions(root: str) -> list[tuple[str, dict]]:
+    """Reference: the shrink-functions scan re-parsing every module from its
+    source text (the pre-optimization behavior)."""
+    from app.engine.objective_compiler import _own_modules
+    from app.execution.extract_method import suggest_extractions
+    out: list[tuple[str, dict]] = []
+    for rel, source in _own_modules(root):
+        for seam in suggest_extractions(source):  # no tree → re-parse
+            if not seam["function"].endswith("_part"):
+                out.append((rel, seam))
+    return out
+
+
+def test_extract_constant_fitness_matches_from_scratch(tmp_path):
+    from app.engine.objective_compiler import (
+        _magic_constant_modules, magic_constant_fitness,
+    )
+    _mixed_debt_project(tmp_path)
+    root = str(tmp_path)
+    # The cached-source scan names exactly the modules the disk scan would.
+    assert _magic_constant_modules(root) == _from_scratch_magic_constant_modules(root)
+    assert magic_constant_fitness(root) == 1.0  # only m.py hides 86400
+
+
+def test_extract_constant_plan_identical_with_explicit_source(tmp_path):
+    # The optional `source=` argument must produce the byte-identical plan the
+    # disk-read path produces — same bytes in, same plan out.
+    from app.execution.extract_constant import plan_extract_constant
+    _mixed_debt_project(tmp_path)
+    root = str(tmp_path)
+    src = (tmp_path / "app" / "m.py").read_text()
+    disk = plan_extract_constant(root, "app/m.py")
+    cached = plan_extract_constant(root, "app/m.py", source=src)
+    assert disk.new_contents == cached.new_contents
+    assert disk.blockers == cached.blockers
+    assert disk.edits_by_file == cached.edits_by_file
+
+
+def test_shrink_functions_fitness_matches_from_scratch(tmp_path):
+    from app.engine.objective_compiler import (
+        _extract_suggestions, long_function_fitness,
+    )
+    _mixed_debt_project(tmp_path)
+    root = str(tmp_path)
+    # Reusing the cached tree yields exactly the seams a fresh re-parse would.
+    assert _extract_suggestions(root) == _from_scratch_extract_suggestions(root)
+    assert long_function_fitness(root) == 1.0  # only big() has a clean seam
+
+
+def test_suggest_extractions_tree_arg_matches_reparse(tmp_path):
+    # Passing a pre-parsed tree is identical to letting it re-parse the source.
+    import ast as _ast
+
+    from app.execution.extract_method import suggest_extractions
+    _mixed_debt_project(tmp_path)
+    source = (tmp_path / "app" / "m.py").read_text()
+    assert suggest_extractions(source, _ast.parse(source)) == suggest_extractions(source)
+
+
+def test_inline_helper_fitness_matches_from_scratch(tmp_path):
+    from app.engine.objective_compiler import inlinable_helper_fitness
+    from app.execution.inline_function import suggest_inlines
+    _mixed_debt_project(tmp_path)
+    root = str(tmp_path)
+    # The objective's count equals a direct from-scratch suggest_inlines scan
+    # (the one-pass bare-object / call-site hoist preserves every suggestion).
+    assert inlinable_helper_fitness(root) == float(len(suggest_inlines(root)))
+    assert inlinable_helper_fitness(root) == 1.0  # only double() qualifies
+
+
+def test_suggest_inlines_one_pass_matches_per_name_scan(tmp_path):
+    # The hoisted whole-project scans (`_bare_object_names`,
+    # `_call_site_counts`) must be EXACTLY the per-name helpers they replace.
+    import ast as _ast
+
+    from app.execution.inline_function import (
+        _bare_object_names,
+        _call_site_counts,
+        _call_sites,
+        _has_object_ref,
+    )
+    _mixed_debt_project(tmp_path)
+    trees = {
+        "app/m.py": _ast.parse((tmp_path / "app" / "m.py").read_text()),
+        "app/other.py": _ast.parse((tmp_path / "app" / "other.py").read_text()),
+    }
+    bare = _bare_object_names(trees)
+    counts = _call_site_counts(trees)
+    for name in ("big", "a", "b", "c", "double", "use", "plain", "missing"):
+        assert (name in bare) == _has_object_ref(trees, name)
+        assert counts.get(name, 0) == len(_call_sites(trees, name))
+
+
+def test_suggest_inlines_trees_arg_matches_disk_parse(tmp_path):
+    # Handing in already-parsed trees yields the same suggestions as parsing the
+    # project from disk (the default path).
+    from app.execution.cross_file_rename import _py_files
+    from app.execution.inline_function import suggest_inlines
+    import ast as _ast
+    _mixed_debt_project(tmp_path)
+    root = str(tmp_path)
+    trees = {}
+    for rel, text in _py_files(tmp_path):
+        try:
+            trees[rel] = _ast.parse(text)
+        except SyntaxError:
+            pass
+    assert suggest_inlines(root, trees) == suggest_inlines(root)
+
+
+def test_optimized_fitness_on_empty_project(tmp_path):
+    # The empty / no-debt path: no modules → zero fitness, no crash, and the
+    # cached scans agree with the from-scratch scans (both empty).
+    from app.engine.objective_compiler import (
+        _extract_suggestions,
+        _magic_constant_modules,
+        inlinable_helper_fitness,
+        long_function_fitness,
+        magic_constant_fitness,
+    )
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f(x):\n    return x + 1\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    root = str(tmp_path)
+    assert magic_constant_fitness(root) == 0.0
+    assert long_function_fitness(root) == 0.0
+    assert inlinable_helper_fitness(root) == 0.0
+    assert _magic_constant_modules(root) == _from_scratch_magic_constant_modules(root) == []
+    assert _extract_suggestions(root) == _from_scratch_extract_suggestions(root) == []

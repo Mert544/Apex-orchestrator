@@ -97,6 +97,20 @@ def _call_sites(trees: dict[str, ast.Module], func_name: str) -> list[tuple[str,
     return out
 
 
+def _call_site_counts(trees: dict[str, ast.Module]) -> dict[str, int]:
+    """How many bare-Name ``NAME(...)`` calls each name has, project-wide, in ONE
+    walk. ``_call_site_counts(trees)[name]`` equals ``len(_call_sites(trees,
+    name))`` — the suggester only needs the COUNT, so it reads it from this map
+    instead of re-walking every tree per candidate (the same O(names × nodes) →
+    O(nodes) collapse as the bare-object set)."""
+    counts: dict[str, int] = {}
+    for tree in trees.values():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                counts[node.func.id] = counts.get(node.func.id, 0) + 1
+    return counts
+
+
 def _has_object_ref(trees: dict[str, ast.Module], func_name: str) -> bool:
     """True if ``func_name`` is ever used as a bare object (Name/Attribute
     outside a Call's callee position) — its identity is used, so we can't inline.
@@ -111,6 +125,29 @@ def _has_object_ref(trees: dict[str, ast.Module], func_name: str) -> bool:
                     and id(node) not in call_funcs:
                 return True
     return False
+
+
+def _bare_object_names(trees: dict[str, ast.Module]) -> set[str]:
+    """Every name used as a bare object (Name/Attribute outside a Call's callee
+    position) ANYWHERE in ``trees`` — the whole-project complement of
+    :func:`_has_object_ref`, computed in ONE walk instead of one per candidate.
+
+    ``name in _bare_object_names(trees)`` is exactly ``_has_object_ref(trees,
+    name)``: each tree's Call-func node ids are gathered once, then every bare
+    Name/Attribute contributes its name to the set under the identical guard
+    (Store-context Names are excluded). A project-wide scan that previously
+    re-walked all trees per candidate (O(names × nodes)) becomes a single
+    O(nodes) pass — the difference between minutes and seconds on a large repo."""
+    bare: set[str] = set()
+    for tree in trees.values():
+        call_funcs = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and id(node) not in call_funcs \
+                    and not isinstance(node.ctx, ast.Store):
+                bare.add(node.id)
+            elif isinstance(node, ast.Attribute) and id(node) not in call_funcs:
+                bare.add(node.attr)
+    return bare
 
 
 def _bind_arguments(plan: RenamePlan, source: str, fn: ast.FunctionDef,
@@ -368,7 +405,8 @@ def plan_inline(project_root: str | Path, function_name: str) -> RenamePlan:
 _SUGGEST_MAX_CALL_SITES = 2
 
 
-def suggest_inlines(project_root: str | Path) -> list[dict]:
+def suggest_inlines(project_root: str | Path,
+                    trees: dict[str, ast.Module] | None = None) -> list[dict]:
     """Project-level scan for tiny single-use helpers ``apex inline`` would
     cleanly accept, made into a concrete ``apex inline FUNC`` command.
 
@@ -383,17 +421,23 @@ def suggest_inlines(project_root: str | Path) -> list[dict]:
     ``ProjectProfiler._scan_dead_params``), and has a SMALL number of call sites
     (1 or 2). When unsure, it doesn't suggest.
 
+    ``trees`` lets a caller that already parsed the project once (Apex's
+    mtime-fingerprinted source index) hand the parses straight in, skipping the
+    re-walk + re-parse of every module; left ``None`` it reads and parses from
+    disk exactly as before, so every existing caller is unchanged.
+
     Returns a deterministic, sorted list of ``{module, function, line,
     call_sites}`` dicts. Read-only and stdlib-only; the suggestion is a
     proposal, the real ``plan_inline`` re-verifies."""
-    root = Path(project_root)
-    files = _py_files(root)
-    trees: dict[str, ast.Module] = {}
-    for rel, text in files:
-        try:
-            trees[rel] = ast.parse(text)
-        except SyntaxError:
-            continue
+    if trees is None:
+        root = Path(project_root)
+        files = _py_files(root)
+        trees = {}
+        for rel, text in files:
+            try:
+                trees[rel] = ast.parse(text)
+            except SyntaxError:
+                continue
 
     # Single-definition map: name → list of (module, FunctionDef) so we can keep
     # only names that are defined exactly once at top level project-wide.
@@ -402,6 +446,14 @@ def suggest_inlines(project_root: str | Path) -> list[dict]:
         for node in trees[rel].body:
             if isinstance(node, ast.FunctionDef):
                 defs_by_name.setdefault(node.name, []).append((rel, node))
+
+    # The bare-object guard and the call-site count are both whole-project and
+    # name-independent, so compute each ONCE (a single walk apiece) rather than
+    # re-walking every tree per candidate: `name in bare` is exactly
+    # `_has_object_ref(trees, name)`, and `call_counts.get(name, 0)` is exactly
+    # `len(_call_sites(trees, name))` — both just hoisted out of the loop.
+    bare = _bare_object_names(trees)
+    call_counts = _call_site_counts(trees)
 
     found: list[dict] = []
     for name in sorted(defs_by_name):
@@ -418,10 +470,9 @@ def suggest_inlines(project_root: str | Path) -> list[dict]:
         if any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(expr)):
             continue
         # Never travels as a bare object — only ever called.
-        if _has_object_ref(trees, name):
+        if name in bare:
             continue
-        sites = _call_sites(trees, name)
-        n_sites = len(sites)
+        n_sites = call_counts.get(name, 0)
         if not (1 <= n_sites <= _SUGGEST_MAX_CALL_SITES):
             continue
         found.append({"module": rel, "function": name,
