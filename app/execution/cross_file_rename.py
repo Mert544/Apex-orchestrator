@@ -27,8 +27,11 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# `.claude` holds agent git worktrees (full repo copies); scanning into them
+# makes every file look duplicated/renamable and could let a transform edit a
+# worktree copy. It is Apex's own metadata dir, like `.apex` — never project code.
 _SKIPPED_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules",
-                 ".apex", ".epistemic", "dist", "build"}
+                 ".apex", ".epistemic", ".claude", "dist", "build"}
 
 # A rename span: (line, col_start, col_end) — 1-based line, 0-based cols.
 Span = tuple[int, int, int]
