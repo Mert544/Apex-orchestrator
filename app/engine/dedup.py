@@ -26,19 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.execution.cross_file_rename import _py_files
+from app.engine.source_index import indexed_project
 
-
-def _is_fixture_path(path: str) -> bool:
-    """Example/fixture/test code is excluded (its repetition is often deliberate
-    boilerplate). A local copy — importing this from health_score created a
-    health_score ↔ dedup import cycle, and the grade now reads dedup."""
-    p = path.replace("\\", "/").lower()
-    return (
-        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
-        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
-        or Path(p).name.startswith("test_")
-    )
 
 # Upper bound on windows examined per function body. A function with N statements
 # yields at most (N - min_statements + 1) windows; this cap keeps a single
@@ -90,33 +79,43 @@ def find_duplicates(
     locations ("module:lineno") are reported. A window overlapping itself at the
     same location is counted once, never twice.
 
+    Internally each candidate window is *bucketed* by its normalized fingerprint:
+    grouping is a single dictionary insertion per window, so the dominant cost is
+    O(windows) hashing rather than an O(windows²) pairwise comparison. The
+    fingerprint string is built from a per-statement cache so each statement is
+    structurally dumped exactly once, even though overlapping windows share most
+    of their statements. Neither optimization changes the fingerprint a window
+    maps to — output is byte-for-byte identical to the naive scan.
+
     Returns a deterministic list sorted by ``lines`` descending, then by
     ``fingerprint``.
     """
-    root = Path(project_root)
     min_statements = max(1, int(min_statements))
     min_occurrences = max(1, int(min_occurrences))
 
     # fingerprint -> ordered, de-duplicated list of "module:lineno" locations.
     groups: dict[str, list[str]] = {}
 
-    for rel, source in _py_files(root):
-        if _is_fixture_path(rel):
-            continue
-        try:
-            tree = ast.parse(source)
-        except (SyntaxError, ValueError):
-            continue
+    # Reuse the parse-once index (fixtures/tests already excluded, broken modules
+    # carry ``tree is None``); this avoids re-reading and re-parsing every module.
+    for module in indexed_project(project_root).parsed_modules():
+        rel = module.rel
+        tree = module.tree
+        assert tree is not None  # parsed_modules() guarantees this
 
         for body in _function_bodies(tree):
             limit = len(body) - min_statements + 1
             if limit <= 0:
                 continue
             limit = min(limit, _MAX_WINDOWS_PER_FUNCTION)
+            # Dump each statement once; overlapping windows reuse these parts so
+            # the join below reproduces the exact "\n"-joined fingerprint without
+            # re-dumping a statement for every window it participates in.
+            window_count = limit + min_statements - 1
+            dumps = [_normalize_stmt(s) for s in body[:window_count]]
             for start in range(limit):
-                window = body[start:start + min_statements]
-                fingerprint = "\n".join(_normalize_stmt(s) for s in window)
-                location = f"{rel}:{window[0].lineno}"
+                fingerprint = "\n".join(dumps[start:start + min_statements])
+                location = f"{rel}:{body[start].lineno}"
                 seen = groups.setdefault(fingerprint, [])
                 if location not in seen:
                     seen.append(location)
