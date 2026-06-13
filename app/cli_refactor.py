@@ -174,6 +174,52 @@ def cmd_extract(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_inline(args: argparse.Namespace) -> int:
+    """Inline a tiny single-use helper into its one call site — the inverse of
+    `apex extract`.
+
+    The helper's `return EXPR` is spliced over the single call (arguments
+    substituted for parameters) and the now-dead definition is deleted. Every
+    ambiguity is a blocker, never a guess. Test-verified with rollback, like
+    every Apex change.
+    """
+    from app.execution.cross_file_rename import apply_rename
+    from app.execution.inline_function import plan_inline
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    plan = plan_inline(str(target), args.function)
+    label = f"inline `{args.function}()` into its call site"
+
+    if plan.blockers:
+        print(f"# Inline blocked: {label}\n")
+        for b in plan.blockers:
+            print(f"- ⛔ {b}")
+        return 1
+    if getattr(args, "dry_run", False):
+        print(f"# Inline (dry run): {label} — "
+              f"{sum(plan.edits_by_file.values())} edit(s) across {len(plan.new_contents)} file(s)\n")
+        print("```diff")
+        print(plan.render_diff().rstrip())
+        print("```")
+        for w in plan.warnings:
+            print(f"- ⚠️ {w}")
+        return 0
+
+    res = apply_rename(str(target), plan, verify=not getattr(args, "no_verify", False))
+    if args.json:
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("applied") else 1
+    if res.get("applied"):
+        print(f"✅ Inlined — {label} in {', '.join(res['changed_files'])}")
+        if res.get("verified") is True:
+            print("   tests pass — change is verified")
+        for w in res.get("warnings", []):
+            print(f"- ⚠️ {w}")
+        return 0
+    print(f"↩️ {res.get('reason', 'inline not applied')}")
+    return 1
+
+
 def cmd_move(args: argparse.Namespace) -> int:
     """Move/rename a module across the project — imports rewritten, test-verified."""
     from app.execution.move_module import apply_move, plan_move
@@ -439,6 +485,22 @@ def register_parsers(subparsers) -> None:
                                 help="Skip the test verification run")
     extract_parser.add_argument("--json", action="store_true", help="Emit JSON")
     extract_parser.set_defaults(func=cmd_extract)
+
+    # inline — fold a tiny single-use helper into its one call site, verified
+    inline_parser = subparsers.add_parser(
+        "inline",
+        help="Inline a tiny single-use helper (a single `return EXPR`) into its "
+             "one call site and delete the definition — the inverse of extract "
+             "(test-verified)",
+    )
+    inline_parser.add_argument("function", help="Helper function to inline")
+    inline_parser.add_argument("--target", default="", help="Target project root")
+    inline_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
+                               help="Preview the unified diff without changing files")
+    inline_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                               help="Skip the test verification run")
+    inline_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    inline_parser.set_defaults(func=cmd_inline)
 
     # signature — signature-family refactors (drop/add/keywordify), verified
     sig_parser = subparsers.add_parser(

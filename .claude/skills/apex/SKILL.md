@@ -124,6 +124,16 @@ without the file). `apex auto` prints what it has learned.
   top-level class); `return`/`yield`/`await`/`global`/`nonlocal` or a nested `def`/
   `lambda` in the range block; a `break`/`continue` whose loop is outside the selection
   blocks; the helper name must be free at module level. Suite-verified with rollback.
+- `apex inline FUNC [--target=.] [--dry-run] [--no-verify] [--json]` — the inverse of
+  `extract`: fold a tiny single-use helper (a body of exactly one `return EXPR`, optional
+  leading docstring) into its ONE call site and delete the definition. Arguments are
+  substituted for parameters by source-span splicing (formatting preserved), each spliced
+  in parenthesized. Conservative blockers: FUNC must be defined exactly once, never
+  recursive, decorator-free, with only regular params (no `*args`/`**kwargs`/posonly/
+  kwonly); never referenced as a bare object (only called); exactly one call site using
+  plain positional/keyword args (no `*`/`**` unpacking); a param used more than once whose
+  argument isn't a pure-simple expression blocks (no duplicated side effect). Suite-verified
+  with rollback.
 - `apex move SRC.py DST.py [--target=.] [--dry-run] [--no-verify]` — move/rename a module;
   every import form (`import x.y`, `from x.y import f`, `from x import y`, aliases) is
   rewritten project-wide, missing `__init__.py` created, relative-import cases block.
