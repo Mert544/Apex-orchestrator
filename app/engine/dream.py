@@ -253,6 +253,60 @@ def _promote(root: Path, report: DreamReport, curate: bool) -> None:
             f"promoted to the idea engine: {d['key']} "
             f"(confirmed {streaks.get(d['key'], 1)} dreams, "
             f"{int(d['confidence'] * 100)}% confidence)")
+    confluence_subjects = [d["key"].split(":", 1)[1] for d in promotable
+                           if d["kind"] == "confluence"]
+    _materialize_briefs(root, confluence_subjects, report)
+
+
+def _briefed_subjects(root: Path) -> set[str]:
+    """Module subjects that already have a saved OR archived brief.
+
+    Archived counts too: a just-resolved confluence keeps firing in the
+    churn window for a while, and re-materializing its work order the next
+    night would be exactly the cyclic noise the dream exists to prevent.
+    """
+    out: set[str] = set()
+    briefs = root / ".apex" / "briefs"
+    for path in [*briefs.glob("*.json"), *(briefs / "archive").glob("*.json")]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        out.add(data.get("subject", "").split(" :: ", 1)[0].split("::", 1)[0].strip())
+    return out
+
+
+def _materialize_briefs(root: Path, subjects: list[str],
+                        report: DreamReport) -> None:
+    """A promoted confluence becomes a SAVED work order, automatically.
+
+    The discovery loop used to stop at "promoted to the idea engine" — the
+    last step was always a human running ``apex brief --subject … --save``.
+    Now the dream closes it: each promoted confluence whose module has no
+    saved (or archived) brief gets one built from a fresh engine run, with
+    its evidence baseline snapshotted — the next morning starts with a
+    measurable order, not a hint.
+    """
+    todo = [s for s in subjects if s and s not in _briefed_subjects(root)]
+    if not todo:
+        return
+    try:
+        from app.engine.idea_brief import build_brief, save_brief
+        from app.engine.idea_permutation import IdeaPermutationEngine
+
+        tree = IdeaPermutationEngine(
+            {"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4},
+            project_root=str(root)).run()
+    except Exception:
+        return
+    for subject in todo:
+        brief = build_brief(tree, subject=subject)
+        if brief is None or not brief.subject.startswith(subject):
+            continue  # the tree didn't surface this subject this run — skip honestly
+        save_brief(brief, str(root))
+        report.curated.append(
+            f"work order materialized for the standing confluence: "
+            f"`apex brief {brief.branch_path} --check` ({subject})")
 
 
 def dream(project_root: str | Path, write_digest: bool = True,

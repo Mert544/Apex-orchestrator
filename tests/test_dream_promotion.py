@@ -94,3 +94,69 @@ def test_promotions_absent_means_no_insight_seeds(tmp_path):
     roots = IdeaSeeder(str(tmp_path)).seed(ProjectProfile(root="."))
     assert not any(r.source_facts and r.source_facts[0].startswith("dream-insight:")
                    for r in roots)
+
+
+def _confluence_profile() -> ProjectProfile:
+    # app/big.py carries FOUR signals while two leaf modules carry one each:
+    # breadth 4 > typical 1 and confidence 4/5 = 0.80 — a promotable
+    # confluence discovery (the gate is >= 0.80).
+    return ProjectProfile(
+        root=".",
+        churn_hotspots=[{"module": "app/big.py", "commits": 9},
+                        {"module": "app/small.py", "commits": 5},
+                        {"module": "app/tiny.py", "commits": 4}],
+        knowledge_risks=[{"module": "app/big.py", "share": 100, "commits": 9}],
+        dependency_hubs=["app/big.py"],
+        symbol_hubs=["app/big.py"],
+    )
+
+
+def _dream_confluence(tmp_path, monkeypatch):
+    import app.engine.dream as dm
+    from app.tools.project_profile import ProjectProfiler
+
+    prof = _confluence_profile()
+    monkeypatch.setattr(ProjectProfiler, "profile", lambda self: prof)
+    return dm.dream(tmp_path, curate=True)
+
+
+def test_promoted_confluence_materializes_a_saved_work_order(tmp_path, monkeypatch):
+    # The loop used to stop at "promoted to the idea engine" — a human still
+    # had to run `apex brief --subject ... --save`. Now the dream closes it.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "big.py").write_text("def hub():\n    return 1\n")
+    (tmp_path / "app" / "small.py").write_text("def leaf():\n    return 2\n")
+
+    _dream_confluence(tmp_path, monkeypatch)
+    _dream_confluence(tmp_path, monkeypatch)
+    assert not list((tmp_path / ".apex" / "briefs").glob("*.json")) \
+        if (tmp_path / ".apex" / "briefs").exists() else True
+
+    report = _dream_confluence(tmp_path, monkeypatch)  # streak hits the gate
+    assert any("work order materialized" in c for c in report.curated)
+    saved = list((tmp_path / ".apex" / "briefs").glob("*.json"))
+    assert len(saved) == 1
+    data = json.loads(saved[0].read_text())
+    assert data["subject"].startswith("app/big.py")
+    assert data.get("evidence") is not None  # measurable baseline, not a note
+
+    # Idempotent: the next dream must not mint a second order for the same
+    # standing confluence (that would be the cyclic noise dream prevents).
+    _dream_confluence(tmp_path, monkeypatch)
+    assert len(list((tmp_path / ".apex" / "briefs").glob("*.json"))) == 1
+
+
+def test_archived_brief_blocks_rematerialization(tmp_path, monkeypatch):
+    # A just-resolved confluence keeps firing in the churn window for a while;
+    # an ARCHIVED brief for the subject must also count as "already ordered".
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "big.py").write_text("def hub():\n    return 1\n")
+    (tmp_path / "app" / "small.py").write_text("def leaf():\n    return 2\n")
+    archive = tmp_path / ".apex" / "briefs" / "archive"
+    archive.mkdir(parents=True)
+    (archive / "x.z.json").write_text(json.dumps(
+        {"subject": "app/big.py", "evidence": {}}))
+
+    for _ in range(PROMOTE_STREAK + 1):
+        _dream_confluence(tmp_path, monkeypatch)
+    assert not list((tmp_path / ".apex" / "briefs").glob("*.json"))
