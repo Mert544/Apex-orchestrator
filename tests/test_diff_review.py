@@ -263,3 +263,60 @@ def test_review_with_no_rule_book_is_unchanged(tmp_path):
     )
     result = review(str(tmp_path))
     assert not any(f.category == "convention" for f in result.findings)
+
+
+# --- extraction suggestions on the diff (refactor findings) -------------------
+
+def _long_function_source(name: str = "compute") -> str:
+    body = "\n".join(f"    acc = acc + {i}" for i in range(45))
+    return f"def {name}(start):\n    acc = start\n{body}\n    return acc\n"
+
+
+def test_review_flags_long_function_with_extract_command(tmp_path):
+    _repo(tmp_path)
+    (tmp_path / "app" / "base.py").write_text(_long_function_source())
+    result = review(str(tmp_path))
+    refactors = [f for f in result.findings if f.category == "refactor"]
+    assert len(refactors) == 1
+    f = refactors[0]
+    assert f.severity == "low"
+    assert f.fix_kind == "extract"
+    assert not f.auto_fixable  # extraction is a judgment call, never auto-applied
+    # The message carries the exact, runnable command.
+    assert "apex extract app/base.py" in f.message
+    assert "_compute_part" in f.message
+
+
+def test_review_extract_finding_renders_with_refactor_hint(tmp_path):
+    _repo(tmp_path)
+    (tmp_path / "app" / "base.py").write_text(_long_function_source())
+    md = render_review_markdown(review(str(tmp_path)))
+    assert "refactor: run the command above" in md
+    assert "[refactor]" in md
+
+
+def test_review_no_extract_finding_when_seam_untouched(tmp_path):
+    # Commit a long function, then change ONE line far outside its seam — the
+    # seam isn't on the diff, so no extraction finding fires.
+    _repo(tmp_path)
+    src = _long_function_source()
+    (tmp_path / "app" / "base.py").write_text(src)
+    _git(tmp_path, ["git", "add", "-A"],
+         ["git", "-c", "commit.gpgsign=false", "commit", "-qm", "long"])
+    # Append a tiny new, short function — only its lines are on the diff.
+    (tmp_path / "app" / "base.py").write_text(src + "\ndef tiny():\n    return 0\n")
+    result = review(str(tmp_path))
+    assert not [f for f in result.findings if f.category == "refactor"]
+
+
+def test_review_extract_finding_excluded_for_fixture_paths(tmp_path):
+    # A long function added under tests/ must NOT get an extraction finding
+    # (fixture/test code is excluded throughout the reviewer).
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "base.py").write_text("def existing():\n    return 1\n")
+    _git(tmp_path, ["git", "init", "-q"], ["git", "config", "user.email", "t@t.com"],
+         ["git", "config", "user.name", "t"], ["git", "add", "-A"],
+         ["git", "-c", "commit.gpgsign=false", "commit", "-qm", "init"])
+    (tmp_path / "tests" / "base.py").write_text(_long_function_source())
+    result = review(str(tmp_path))
+    assert not [f for f in result.findings if f.category == "refactor"]

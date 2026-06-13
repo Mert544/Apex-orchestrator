@@ -45,7 +45,7 @@ def blocking_high_findings(result: "ReviewResult") -> list["ReviewFinding"]:
 class ReviewFinding:
     file: str
     line: int
-    category: str          # security | bug | style | docs | convention
+    category: str          # security | bug | style | docs | convention | refactor
     severity: str          # high | medium | low
     message: str
     auto_fixable: bool
@@ -220,6 +220,30 @@ def _rule_findings(project_root: str, rel: str, source: str,
     return out
 
 
+def _extraction_findings(rel: str, source: str, lines: set[int]) -> list[ReviewFinding]:
+    """Long functions on the diff with a clean seam to extract.
+
+    When a PR adds (or grows) a function long enough to have an extractable
+    block, the reviewer points at the exact seam and hands you the runnable
+    ``apex extract`` command — the same suggestion the roadmap surfaces, now on
+    the changed lines. Read-only and non-auto-fixable: extraction is a judgment
+    call (which seam, what name), so the reviewer proposes, never applies."""
+    from app.execution.extract_method import suggest_extractions
+
+    out: list[ReviewFinding] = []
+    for s in suggest_extractions(source):
+        touched = [ln for ln in lines if s["start"] <= ln <= s["end"]]
+        if not touched:
+            continue  # the PR didn't touch this seam — not on the diff
+        cmd = f"apex extract {rel} {s['start']} {s['end']} {s['name']}"
+        out.append(ReviewFinding(
+            file=rel, line=min(touched), category="refactor", severity="low",
+            message=(f"`{s['function']}()` has a {s['lines_saved']}-line extractable "
+                     f"block (lines {s['start']}-{s['end']}) — `{cmd}`"),
+            auto_fixable=False, fix_kind="extract"))
+    return out
+
+
 def review(project_root: str, base: str = "HEAD") -> ReviewResult:
     """Review only the lines changed since ``base``."""
     changes = changed_lines(project_root, base)
@@ -240,6 +264,8 @@ def review(project_root: str, base: str = "HEAD") -> ReviewResult:
                 findings.append(f)
         if compiled:
             findings.extend(_rule_findings(project_root, rel, source, lines, compiled))
+        if not _is_fixture_path(rel):
+            findings.extend(_extraction_findings(rel, source, lines))
     # Most serious first, then by file/line for stable output.
     sev_rank = {"high": 0, "medium": 1, "low": 2}
     findings.sort(key=lambda f: (sev_rank.get(f.severity, 3), f.file, f.line))
@@ -312,6 +338,8 @@ def render_review_markdown(result: ReviewResult, limit: int = 0) -> str:
                 fix = " · _suggested fix below_"
             elif f.fix_kind.startswith("rule:"):
                 fix = f" · _fix: `apex rewrite --rule {f.fix_kind[5:]}`_"
+            elif f.fix_kind == "extract":
+                fix = " · _refactor: run the command above_"
             elif f.auto_fixable:
                 fix = " · _Apex can auto-fix_"
             else:
