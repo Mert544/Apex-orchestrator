@@ -1,0 +1,254 @@
+"""Remove unused imports — drop module-level imports nothing references.
+
+A small, surgical refactor: a top-level ``import``/``from x import ...`` whose
+bound name is never used anywhere else in the module is dead weight. Apex
+removes exactly those bindings and nothing else:
+
+  - ``import os`` where ``os`` never appears       -> the line is deleted;
+  - ``from x import a, b`` where only ``b`` is used -> rewritten ``from x import b``
+    (surviving names keep their ORIGINAL order);
+  - ``from x import a, b`` where neither is used    -> the whole statement is
+    deleted (its full ``lineno..end_lineno`` span, parentheses included).
+
+A bound name is the ``asname`` if present, else the local name:
+``import a.b.c`` binds ``a``; ``import a.b as c`` binds ``c``;
+``from x import y as z`` binds ``z``. A name counts as *used* if it appears as
+an ``ast.Name`` load, or as the head of any attribute chain, anywhere in the
+module other than the import statement itself — plus any name listed as a string
+in a module-level ``__all__`` (treated as used, conservatively).
+
+Conservative by design — any ambiguity is left alone, never guessed:
+  - only TOP-LEVEL (module body) imports are considered;
+  - ``from __future__ import ...`` is never touched;
+  - a star import (``from x import *``) makes the whole module a no-op — names
+    could be bound through it, so removing anything is too risky;
+  - imports inside ``try``/``except`` or any non-module-body scope are ignored;
+  - a statement with a trailing ``# noqa`` on its line is left as written;
+  - the rewritten module must re-parse, or the whole plan blocks.
+
+Edits are line-span replacements applied bottom-up so earlier line numbers stay
+valid. Deterministic, stdlib-only; reuses :class:`RenamePlan`.
+"""
+
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+from app.execution.cross_file_rename import RenamePlan
+
+__all__ = ["plan_remove_unused_imports"]
+
+
+def _is_fixture_path(path: str) -> bool:
+    """Example/fixture/test code is excluded (its imports are often deliberate
+    boilerplate). A local copy — importing this from health_score created a
+    health_score <-> dedup import cycle, and the grade now reads dedup."""
+    p = path.replace("\\", "/").lower()
+    return (
+        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
+        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
+        or Path(p).name.startswith("test_")
+    )
+
+
+def _bound_name(alias: ast.alias) -> str:
+    """The local name an import alias binds: the asname if present, else the
+    head of the (possibly dotted) imported name (``import a.b.c`` binds ``a``)."""
+    if alias.asname is not None:
+        return alias.asname
+    return alias.name.split(".")[0]
+
+
+def _attr_head(node: ast.Attribute) -> ast.AST:
+    """The root of an attribute chain (``a.b.c`` -> the ``a`` node)."""
+    cur: ast.AST = node
+    while isinstance(cur, ast.Attribute):
+        cur = cur.value
+    return cur
+
+
+def _used_names(tree: ast.Module, import_nodes: set[int]) -> set[str]:
+    """Every name referenced in ``tree`` outside the import statements: any
+    ``ast.Name`` load id and the head id of any attribute chain. Nodes belonging
+    to a top-level import (identified by ``id()``) are skipped so a binding does
+    not count as its own use."""
+    skip: set[int] = set()
+    for node in tree.body:
+        if id(node) in import_nodes:
+            for sub in ast.walk(node):
+                skip.add(id(sub))
+
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if id(node) in skip:
+            continue
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            used.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            head = _attr_head(node)
+            if isinstance(head, ast.Name):
+                used.add(head.id)
+    return used
+
+
+def _all_names(tree: ast.Module) -> set[str]:
+    """String entries of a module-level ``__all__`` list/tuple — treated as
+    used so an export is never pruned."""
+    names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = node.targets
+        if not (len(targets) == 1 and isinstance(targets[0], ast.Name)
+                and targets[0].id == "__all__"):
+            continue
+        value = node.value
+        if isinstance(value, (ast.List, ast.Tuple)):
+            for elt in value.elts:
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                    names.add(elt.value)
+    return names
+
+
+def _has_star_import(tree: ast.Module) -> bool:
+    """Does any statement (anywhere) do ``from x import *``? If so the whole
+    module is a no-op — names could be bound through the star."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if any(alias.name == "*" for alias in node.names):
+                return True
+    return False
+
+
+def _has_noqa(lines: list[str], lineno: int, end_lineno: int) -> bool:
+    """Does any source line of the statement carry a ``# noqa`` comment?"""
+    for i in range(lineno - 1, end_lineno):
+        if "# noqa" in lines[i]:
+            return True
+    return False
+
+
+class _Rewrite:
+    """One located edit: replace lines [lo, hi] (1-based, inclusive) with
+    ``text`` (which may be None to delete the span entirely)."""
+
+    __slots__ = ("lo", "hi", "text")
+
+    def __init__(self, lo: int, hi: int, text: str | None) -> None:
+        self.lo = lo
+        self.hi = hi
+        self.text = text
+
+
+def _collect_rewrites(tree: ast.Module, lines: list[str], used: set[str],
+                      keep: set[str]) -> list[_Rewrite]:
+    """Every unused-import removal in the module body. ``keep`` holds names that
+    must never be pruned (``__all__`` exports)."""
+    rewrites: list[_Rewrite] = []
+    for node in tree.body:
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "__future__":
+                continue
+            if any(alias.name == "*" for alias in node.names):
+                continue
+        if _has_noqa(lines, node.lineno, node.end_lineno):
+            continue
+
+        survivors = [
+            alias for alias in node.names
+            if _bound_name(alias) in used or _bound_name(alias) in keep
+        ]
+        if len(survivors) == len(node.names):
+            continue  # nothing unused on this statement
+
+        indent = " " * node.col_offset
+        last = lines[node.end_lineno - 1]
+        newline = "\n" if last.endswith("\n") else ""
+
+        if not survivors:
+            rewrites.append(_Rewrite(node.lineno, node.end_lineno, None))
+            continue
+
+        parts = [
+            alias.name if alias.asname is None
+            else f"{alias.name} as {alias.asname}"
+            for alias in survivors
+        ]
+        if isinstance(node, ast.Import):
+            text = f"{indent}import {', '.join(parts)}{newline}"
+        else:
+            level = "." * node.level
+            module = node.module or ""
+            text = (f"{indent}from {level}{module} import "
+                    f"{', '.join(parts)}{newline}")
+        rewrites.append(_Rewrite(node.lineno, node.end_lineno, text))
+    return rewrites
+
+
+def _apply(lines: list[str], rewrites: list[_Rewrite]) -> str:
+    """Apply rewrites bottom-up so earlier line numbers stay valid. A ``None``
+    text deletes the span; otherwise it replaces it with a single line."""
+    out = list(lines)
+    for rw in sorted(rewrites, key=lambda r: r.lo, reverse=True):
+        if rw.text is None:
+            out[rw.lo - 1:rw.hi] = []
+        else:
+            out[rw.lo - 1:rw.hi] = [rw.text]
+    return "".join(out)
+
+
+def plan_remove_unused_imports(project_root: str | Path,
+                               module_rel: str) -> RenamePlan:
+    """Build the single-module unused-import removal plan, or its blockers.
+
+    ``module_rel`` is a project-relative path (as produced by ``_py_files``).
+    Top-level imports whose bound name is referenced nowhere else in the module
+    are dropped; an empty plan means nothing was unused (a no-op, not a
+    failure)."""
+    plan = RenamePlan(old=module_rel, new="remove-unused-imports")
+    root = Path(project_root)
+    path = root / module_rel
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError:
+        plan.blockers.append(f"cannot read {module_rel}")
+        return plan
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as e:
+        plan.blockers.append(f"{module_rel} doesn't parse: {e}")
+        return plan
+
+    if _has_star_import(tree):
+        return plan  # too risky — names could be bound via the star (no-op)
+
+    import_nodes = {
+        id(node) for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+    }
+    used = _used_names(tree, import_nodes)
+    keep = _all_names(tree)
+
+    lines = source.splitlines(keepends=True)
+    rewrites = _collect_rewrites(tree, lines, used, keep)
+    if not rewrites:
+        return plan  # nothing to do — empty plan (ok is False, no blockers)
+
+    new_source = _apply(lines, rewrites)
+    try:
+        ast.parse(new_source)
+    except SyntaxError as e:
+        plan.blockers.append(
+            f"{module_rel}: removal would not re-parse ({e}) — blocked")
+        return plan
+    if new_source == source:
+        return plan
+
+    plan.originals[module_rel] = source
+    plan.new_contents[module_rel] = new_source
+    plan.edits_by_file[module_rel] = len(rewrites)
+    return plan

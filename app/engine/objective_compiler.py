@@ -428,11 +428,41 @@ def _extract_constant_moves(project_root: str | Path) -> list[Move]:
     ) for rel in _magic_constant_modules(project_root)]
 
 
+# --- Objective: remove unused imports (drop dead top-level imports) ----------
+
+def _unused_import_modules(project_root: str | Path) -> list[str]:
+    """Own modules with a removable unused top-level import."""
+    from app.execution.unused_imports import plan_remove_unused_imports
+
+    out: list[str] = []
+    for rel, _src in _own_modules(project_root):
+        if plan_remove_unused_imports(project_root, rel).new_contents:
+            out.append(rel)
+    return out
+
+
+def unused_import_fitness(project_root: str | Path) -> float:
+    """Fitness = how many own modules still carry an unused import."""
+    return float(len(_unused_import_modules(project_root)))
+
+
+def _unused_import_moves(project_root: str | Path) -> list[Move]:
+    """One move per module with a removable unused import."""
+    from app.execution.unused_imports import plan_remove_unused_imports
+
+    return [Move(
+        operator="remove_unused_imports", target=f"{rel}:unused-import",
+        description=f"remove unused imports in {rel}",
+        build_plan=lambda r=rel: plan_remove_unused_imports(project_root, r),
+    ) for rel in _unused_import_modules(project_root)]
+
+
 _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
                              Callable[[str | Path], list[Move]]]] = {
     "modernize": (modernize_fitness, _modernize_moves),
     "simplify-bool-return": (bool_return_fitness, _bool_return_moves),
     "extract-constant": (magic_constant_fitness, _extract_constant_moves),
+    "remove-unused-imports": (unused_import_fitness, _unused_import_moves),
     "remove-dead-code": (dead_code_fitness, _dead_code_moves),
     "dedup": (duplication_fitness, _dedup_moves),
     "dead-params": (dead_parameter_fitness, _dead_param_moves),
