@@ -33,13 +33,18 @@ jobs:
         id: review
         run: |
           BASE="origin/${{ github.base_ref || 'main' }}"
-          # Human-readable review into the job summary (shows in the Actions UI).
-          python -m app.cli review --base "$BASE" | tee review.md >> "$GITHUB_STEP_SUMMARY"
+          # Full review into the job summary (the Actions UI holds large output).
+          python -m app.cli review --base "$BASE" | tee review-full.md >> "$GITHUB_STEP_SUMMARY"
+          # Bounded copy for the PR comment — GitHub caps a comment at 65 536
+          # chars, and a wide diff against a long-running base can list
+          # thousands of findings. The cap keeps the comment well under it.
+          python -m app.cli review --base "$BASE" --max-findings 40 > review.md
           # Machine-readable copy for any downstream step.
           python -m app.cli review --base "$BASE" --json > review.json || true
 
       - name: Post review as a PR comment
         if: github.event_name == 'pull_request'
+        continue-on-error: true  # a comment hiccup must never fail the review job
         uses: actions/github-script@v7
         with:
           script: |
@@ -47,6 +52,12 @@ jobs:
             let body = '';
             try { body = fs.readFileSync('review.md', 'utf8'); } catch (e) { return; }
             if (!body.trim()) return;
+            // Final guard: hard-cap below GitHub's 65 536-char comment limit.
+            const LIMIT = 64000;
+            if (body.length > LIMIT) {
+              body = body.slice(0, LIMIT) +
+                "\n\n_…truncated — see the full review in the workflow run summary._";
+            }
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -57,4 +68,5 @@ jobs:
       - name: Gate on high-severity issues
         run: |
           BASE="origin/${{ github.base_ref || 'main' }}"
+          # Excludes fixture/test code: its flaws are intentional test data.
           python -m app.cli review --base "$BASE" --fail-on-high

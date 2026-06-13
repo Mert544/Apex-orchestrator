@@ -73,7 +73,7 @@ without the file). `apex auto` prints what it has learned.
   calls a function (direct callers are precise; transitive is name-based + hub-stopped).
 - `apex review [--base REF] [--fail-on-high]` — diff-scoped code review (Apex as a PR
   reviewer): flags security/bug/style/docs issues on the *changed* lines only, noting which
-  Apex can auto-fix. `--fail-on-high` exits non-zero for CI gating.
+  Apex can auto-fix. Also flags violations of your saved REWRITE RULES on the changed lines (category `convention`, fixable by `apex rewrite --rule NAME`). `--fail-on-high` exits non-zero for CI gating — fixture/test code is excluded (its flaws are intentional); `--max-findings N` caps the comment so a wide diff stays under the PR comment size limit.
 - `apex rename OLD NEW [--target=.] [--dry-run] [--no-verify]` — cross-file rename of a
   top-level function/class: definition + imports + call sites, comment-preserving span
   edits, conservative blockers (ambiguity/shadow/collision), test-verified with rollback.

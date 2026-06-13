@@ -99,6 +99,41 @@ def _render(template: str, bindings: dict[str, str]) -> str:
     return _MV_RE.sub(lambda m: bindings[m.group(1)], template)
 
 
+def compile_pattern(pattern: str) -> ast.expr | None:
+    """The pattern AST for ``pattern``, or None when it can't be a real
+    structural pattern (unparseable, or a bare metavariable that would match
+    every expression). Shared by the planner and the diff reviewer."""
+    try:
+        tree = ast.parse(_encode_metavars(pattern), mode="eval").body
+    except SyntaxError:
+        return None
+    return None if _metavar(tree) is not None else tree
+
+
+def match_lines(source: str, pattern_tree: ast.expr) -> list[int]:
+    """The (1-based) line numbers where ``pattern_tree`` matches, outermost
+    only — the read-only half of the rewrite, for the reviewer to flag a saved
+    rule's violations without touching the tree."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    consumed: list[tuple[int, int, int]] = []
+    out: list[int] = []
+    for node in ast.walk(tree):  # parents before children: outermost wins
+        if not isinstance(node, ast.expr) or node.lineno != node.end_lineno:
+            continue
+        if not _match(node, pattern_tree, source, {}):
+            continue
+        span = (node.lineno, node.col_offset, node.end_col_offset)
+        if any(line == span[0] and start <= span[1] and span[2] <= end
+               for line, start, end in consumed):
+            continue
+        consumed.append(span)
+        out.append(span[0])
+    return out
+
+
 def plan_pattern_rewrite(project_root: str | Path, pattern: str,
                          replacement: str) -> RenamePlan:
     """Build the project-wide structural-rewrite plan."""

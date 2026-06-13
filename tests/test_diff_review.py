@@ -200,3 +200,66 @@ def test_render_includes_suggestion_diff_block(tmp_path):
     assert "suggested fix below" in md
     assert "```diff" in md
     assert '+ return open(p, encoding="utf-8").read()' in md
+
+
+# --- the workflow-failure fixes (comment cap, fixture gate, rule book) --------
+
+def test_render_caps_findings_with_a_summary_footer(tmp_path):
+    # The bug that spammed the user's email: a wide diff produced a comment
+    # over GitHub's 65 536-char limit. The renderer must bound its output.
+    from app.engine.diff_review import ReviewResult, ReviewFinding
+
+    findings = [ReviewFinding(f"app/m{i}.py", 1, "docs", "low",
+                              f"public function f{i} lacks a docstring", True)
+                for i in range(200)]
+    result = ReviewResult(base="origin/main", files_reviewed=200, findings=findings)
+    md = render_review_markdown(result, limit=40)
+    assert md.count("- 🔵") == 40
+    assert "and **160 more**" in md
+    # Unlimited still shows everything (terminal use).
+    assert render_review_markdown(result, limit=0).count("- 🔵") == 200
+
+
+def test_gate_ignores_fixture_secrets_but_flags_real_ones():
+    # tests/ and examples/ carry intentional flaws (the hardcoded secret used
+    # as test data). The CI gate must not fail a PR over them — but a real one
+    # in shipping code still blocks.
+    from app.engine.diff_review import ReviewResult, ReviewFinding, blocking_high_findings
+
+    fixture = ReviewFinding("tests/test_safety_gates.py", 190, "security", "high",
+                            "possible hardcoded secret", False)
+    example = ReviewFinding("examples/vuln/app.py", 3, "security", "high",
+                            "eval of untrusted input", False)
+    real = ReviewFinding("app/payments.py", 8, "security", "high",
+                         "possible hardcoded secret", False)
+    res = ReviewResult(base="HEAD", files_reviewed=3,
+                       findings=[fixture, example, real])
+    blocking = blocking_high_findings(res)
+    assert [f.file for f in blocking] == ["app/payments.py"]
+
+
+def test_saved_rule_violation_surfaces_as_a_review_finding(tmp_path):
+    from app.execution.rewrite_rules import save_rule
+
+    _repo(tmp_path)
+    save_rule(str(tmp_path), "no-len-zero", "len($x) == 0", "not $x")
+    # A PR introduces a line that re-enters the convention.
+    (tmp_path / "app" / "base.py").write_text(
+        "def existing():\n    return 1\n\ndef chk(xs):\n    return len(xs) == 0\n"
+    )
+    result = review(str(tmp_path))
+    rule_hits = [f for f in result.findings if f.category == "convention"]
+    assert len(rule_hits) == 1
+    assert rule_hits[0].line == 5
+    assert rule_hits[0].fix_kind == "rule:no-len-zero"
+    md = render_review_markdown(result)
+    assert "apex rewrite --rule no-len-zero" in md
+
+
+def test_review_with_no_rule_book_is_unchanged(tmp_path):
+    _repo(tmp_path)
+    (tmp_path / "app" / "base.py").write_text(
+        "def existing():\n    return 1\n\ndef chk(xs):\n    return len(xs) == 0\n"
+    )
+    result = review(str(tmp_path))
+    assert not any(f.category == "convention" for f in result.findings)

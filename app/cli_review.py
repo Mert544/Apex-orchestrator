@@ -41,14 +41,18 @@ def cmd_review(args: argparse.Namespace) -> int:
             payload["fixes"] = fix_report
         print(json.dumps(payload, indent=2))
     else:
-        print(render_review_markdown(result))
+        print(render_review_markdown(result, limit=getattr(args, "max_findings", 0) or 0))
         if fix_report is not None:
             print(_render_review_fixes_markdown(fix_report))
         if sarif_out:
             print(f"[review] SARIF written to {sarif_out}")
-    # Non-zero exit when high-severity issues land in the diff (CI-friendly).
-    if getattr(args, "fail_on_high", False) and any(f.severity == "high" for f in result.findings):
-        return 1
+    # Non-zero exit when a REAL high-severity issue lands in the diff
+    # (CI-friendly) — fixture/test code is excluded, its flaws are intentional.
+    if getattr(args, "fail_on_high", False):
+        from app.engine.diff_review import blocking_high_findings
+
+        if blocking_high_findings(result):
+            return 1
     return 0
 
 
@@ -130,5 +134,8 @@ def register_parsers(subparsers) -> None:
                                     "(GitHub code scanning compatible)")
     review_parser.add_argument("--fix", action="store_true",
                               help="Apply the auto-fixable findings on the changed files (test-verified)")
+    review_parser.add_argument("--max-findings", type=int, default=0, dest="max_findings",
+                              help="Cap how many findings the comment lists (0 = all; "
+                                   "use a bound in CI so the comment stays under the size limit)")
     review_parser.add_argument("--json", action="store_true", help="Emit JSON")
     review_parser.set_defaults(func=cmd_review)

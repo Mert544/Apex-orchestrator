@@ -21,11 +21,31 @@ from typing import Any
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
+def _is_fixture_path(path: str) -> bool:
+    """Example/fixture/test code carries intentional flaws (a hardcoded secret
+    used as test data, an `eval` in a vulnerability fixture). The grade already
+    excludes it; the review's CI GATE must too, or every PR fails on a flaw the
+    author deliberately put there. Mirrors ProjectProfiler._is_fixture_path."""
+    p = path.replace("\\", "/").lower()
+    return (
+        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
+        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
+        or Path(p).name.startswith("test_")
+    )
+
+
+def blocking_high_findings(result: "ReviewResult") -> list["ReviewFinding"]:
+    """High-severity findings outside fixture/test code — what a CI gate should
+    actually fail on (a real risk in shipping code, never a test's own data)."""
+    return [f for f in result.findings
+            if f.severity == "high" and not _is_fixture_path(f.file)]
+
+
 @dataclass
 class ReviewFinding:
     file: str
     line: int
-    category: str          # security | bug | style | docs
+    category: str          # security | bug | style | docs | convention
     severity: str          # high | medium | low
     message: str
     auto_fixable: bool
@@ -99,6 +119,21 @@ def changed_lines(project_root: str, base: str = "HEAD") -> dict[str, set[int]]:
     return {f: lns for f, lns in result.items() if lns}
 
 
+def _compiled_rules(project_root: str) -> list[tuple]:
+    """Saved rewrite rules, pre-compiled to (name, pattern, replacement, tree).
+    Unparseable / bare-metavariable patterns are silently dropped — a broken
+    rule must never break the review."""
+    from app.execution.pattern_rewrite import compile_pattern
+    from app.execution.rewrite_rules import load_rules
+
+    out: list[tuple] = []
+    for r in load_rules(project_root):
+        tree = compile_pattern(r["pattern"])
+        if tree is not None:
+            out.append((r["name"], r["pattern"], r.get("replacement", ""), tree))
+    return out
+
+
 def scan_findings(rel_path: str, source: str) -> list[ReviewFinding]:
     """All detector findings in a file (line-level), before diff filtering.
 
@@ -162,11 +197,35 @@ def _line_suggestion(rel: str, source: str, finding: ReviewFinding) -> tuple[str
     return None
 
 
+def _rule_findings(project_root: str, rel: str, source: str,
+                   lines: set[int], compiled: list[tuple]) -> list[ReviewFinding]:
+    """Violations of the project's saved rewrite rules on the changed lines.
+
+    A saved rule encodes a team convention ("we don't write `len(x) == 0`").
+    When a PR introduces a line the rule's pattern matches, that's the
+    convention slipping back in — flagged here, auto-fixable by the exact
+    `apex rewrite --rule NAME` that defines it. The review now enforces YOUR
+    standards, not only Apex's built-in detectors."""
+    from app.execution.pattern_rewrite import match_lines
+
+    out: list[ReviewFinding] = []
+    for name, pattern, replacement, tree in compiled:
+        for ln in match_lines(source, tree):
+            if ln in lines:
+                out.append(ReviewFinding(
+                    file=rel, line=ln, category="convention", severity="medium",
+                    message=(f"rule `{name}`: `{pattern}` → `{replacement}` "
+                             "(team convention re-entered)"),
+                    auto_fixable=True, fix_kind=f"rule:{name}"))
+    return out
+
+
 def review(project_root: str, base: str = "HEAD") -> ReviewResult:
     """Review only the lines changed since ``base``."""
     changes = changed_lines(project_root, base)
     findings: list[ReviewFinding] = []
     sources: dict[str, str] = {}
+    compiled = _compiled_rules(project_root)
     for rel, lines in sorted(changes.items()):
         path = Path(project_root) / rel
         try:
@@ -179,6 +238,8 @@ def review(project_root: str, base: str = "HEAD") -> ReviewResult:
                 if f.auto_fixable:
                     f.suggestion = _line_suggestion(rel, source, f)
                 findings.append(f)
+        if compiled:
+            findings.extend(_rule_findings(project_root, rel, source, lines, compiled))
     # Most serious first, then by file/line for stable output.
     sev_rank = {"high": 0, "medium": 1, "low": 2}
     findings.sort(key=lambda f: (sev_rank.get(f.severity, 3), f.file, f.line))
@@ -221,8 +282,14 @@ def _change_impacts(project_root: str, changes: dict[str, set[int]],
     return impacts
 
 
-def render_review_markdown(result: ReviewResult) -> str:
-    """Render the diff review as a PR-style comment."""
+def render_review_markdown(result: ReviewResult, limit: int = 0) -> str:
+    """Render the diff review as a PR-style comment.
+
+    ``limit`` caps how many findings are listed (highest-severity first,
+    already sorted) — a wide diff against a long-running base can produce
+    thousands of findings whose rendered comment would blow past a PR
+    comment's 65 536-char ceiling, so the CI workflow passes a bound and
+    the rest are summarized in a footer. ``0`` = unlimited (the terminal)."""
     lines = [f"# Apex review — changes since `{result.base}`", ""]
     if result.files_reviewed == 0:
         lines += ["_No changed Python files to review._", ""]
@@ -231,6 +298,8 @@ def render_review_markdown(result: ReviewResult) -> str:
         lines += [f"Reviewed {result.files_reviewed} changed file(s). "
                   "**No issues found in the changed lines** 🎉", ""]
     else:
+        shown = result.findings[:limit] if limit and limit > 0 else result.findings
+        hidden = len(result.findings) - len(shown)
         lines.append(
             f"Reviewed {result.files_reviewed} changed file(s) · "
             f"**{len(result.findings)} issue(s)** "
@@ -238,9 +307,11 @@ def render_review_markdown(result: ReviewResult) -> str:
         )
         lines.append("")
         icon = {"high": "🔴", "medium": "🟠", "low": "🔵"}
-        for f in result.findings:
+        for f in shown:
             if f.suggestion:
                 fix = " · _suggested fix below_"
+            elif f.fix_kind.startswith("rule:"):
+                fix = f" · _fix: `apex rewrite --rule {f.fix_kind[5:]}`_"
             elif f.auto_fixable:
                 fix = " · _Apex can auto-fix_"
             else:
@@ -253,6 +324,9 @@ def render_review_markdown(result: ReviewResult) -> str:
                 old, new = f.suggestion
                 # A reviewer that *proposes the patch*, not just flags the issue.
                 lines += ["", "  ```diff", f"  - {old}", f"  + {new}", "  ```", ""]
+        if hidden > 0:
+            lines.append(f"- … and **{hidden} more** finding(s) — run "
+                         "`apex review` locally, or see the full SARIF artifact.")
         lines.append("")
 
     if result.impacts:
