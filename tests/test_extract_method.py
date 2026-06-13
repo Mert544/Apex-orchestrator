@@ -240,3 +240,86 @@ def test_cmd_extract_blocked_returns_one(tmp_path, capsys):
         dry_run=False, no_verify=True, json=False))
     assert rc == 1
     assert "blocked" in capsys.readouterr().out.lower()
+
+
+# ── suggest_extractions: the proposal half of the feature ──
+
+def test_suggest_finds_clean_seam_in_long_function():
+    from app.execution.extract_method import suggest_extractions
+
+    # A 40+ line function with a cohesive accumulation block in the middle.
+    body = "\n".join(f"    s{i} = {i}" for i in range(45))
+    src = f"def big(start):\n    total = start\n{body}\n    return total\n"
+    sugs = suggest_extractions(src)
+    assert sugs, "a long function should yield at least one seam"
+    s = sugs[0]
+    assert s["function"] == "big"
+    assert s["start"] < s["end"]
+    assert s["name"] == "_big_part"
+    assert s["lines_saved"] >= 6
+
+
+def test_suggest_skips_short_functions():
+    from app.execution.extract_method import suggest_extractions
+
+    src = "def small(x):\n    y = x + 1\n    z = y * 2\n    return z\n"
+    assert suggest_extractions(src) == []
+
+
+def test_suggest_caps_helper_size():
+    from app.execution.extract_method import (
+        _SUGGEST_MAX_LINES, suggest_extractions,
+    )
+
+    body = "\n".join(f"    a{i} = {i}" for i in range(80))
+    src = f"def huge():\n{body}\n    return a0\n"
+    for s in suggest_extractions(src):
+        assert s["lines_saved"] <= _SUGGEST_MAX_LINES
+
+
+def test_suggest_respects_param_and_return_caps():
+    from app.execution.extract_method import (
+        _SUGGEST_MAX_PARAMS, _SUGGEST_MAX_RETURNS, suggest_extractions,
+    )
+
+    body = "\n".join(f"    v{i} = p{i} + 1" for i in range(45))
+    params = ", ".join(f"p{i}" for i in range(45))
+    src = f"def wide({params}):\n{body}\n    return v0\n"
+    for s in suggest_extractions(src):
+        assert len(s["params"]) <= _SUGGEST_MAX_PARAMS
+        assert len(s["returns"]) <= _SUGGEST_MAX_RETURNS
+
+
+def test_suggest_skips_function_with_only_blocking_statements():
+    from app.execution.extract_method import suggest_extractions
+
+    # A long generator: every statement region holds a yield → all ranges block.
+    body = "\n".join(f"    yield {i}" for i in range(45))
+    src = f"def gen():\n{body}\n"
+    assert suggest_extractions(src) == []
+
+
+def test_suggest_output_round_trips_through_plan_extract(tmp_path):
+    # A suggested seam must actually apply cleanly — the proposal is honest.
+    from app.execution.extract_method import plan_extract, suggest_extractions
+
+    lines = ["def compute(data):", "    acc = 0"]
+    for i in range(40):
+        lines.append(f"    acc = acc + {i}")
+    lines.append("    return acc")
+    src = "\n".join(lines) + "\n"
+    _write(tmp_path, "m.py", src)
+    sugs = suggest_extractions(src)
+    assert sugs
+    s = sugs[0]
+    plan = plan_extract(str(tmp_path), "m.py", s["start"], s["end"], s["name"])
+    assert not plan.blockers
+    assert plan.new_contents
+
+
+def test_suggest_is_deterministic():
+    from app.execution.extract_method import suggest_extractions
+
+    body = "\n".join(f"    x{i} = {i}" for i in range(45))
+    src = f"def f(start):\n    t = start\n{body}\n    return t\n"
+    assert suggest_extractions(src) == suggest_extractions(src)

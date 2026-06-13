@@ -643,3 +643,27 @@ def test_dead_params_flags_never_read_parameters_only(tmp_path: Path):
         {"module": "app/core.py", "function": "render", "param": "color", "line": 1},
         {"module": "app/core.py", "function": "fetch", "param": "retries", "line": 4},
     ]
+
+
+def test_extractable_blocks_surfaces_concrete_extract_command(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    # A long function with a clean accumulation seam in the middle.
+    body = "\n".join(f"    acc = acc + {i}" for i in range(45))
+    (tmp_path / "app" / "big.py").write_text(
+        f"def compute(start):\n    acc = start\n{body}\n    return acc\n"
+    )
+    # A vulnerability fixture must NOT contribute an extraction suggestion.
+    (tmp_path / "tests" / "test_big.py").write_text(
+        "def helper(x):\n" + "\n".join(f"    y{i} = {i}" for i in range(45)) + "\n"
+    )
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    blocks = profile.extractable_blocks
+    assert blocks, "a long function should yield an extractable-block signal"
+    eb = next(b for b in blocks if b["module"] == "app/big.py")
+    assert eb["function"] == "compute"
+    assert eb["start"] < eb["end"]
+    assert eb["name"] == "_compute_part"
+    assert eb["lines_saved"] >= 6
+    # Fixtures/tests are excluded from the signal (their flaws are intentional).
+    assert all(not b["module"].startswith("tests/") for b in blocks)

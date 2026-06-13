@@ -69,6 +69,11 @@ class ProjectProfile:
     # construction (see _scan_dead_params). Each entry:
     # {"module", "function", "param", "line"}.
     dead_params: list[dict] = field(default_factory=list)
+    # Long functions with a clean extractable seam — the engine's "extract a
+    # shared helper" recommendation made into a concrete `apex extract` command.
+    # Each entry: {"module", "function", "line", "start", "end", "name",
+    # "params", "returns", "lines_saved"}.
+    extractable_blocks: list[dict] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -230,8 +235,39 @@ class ProjectProfiler:
         self._scan_security_exposure_age(profile)
         self._scan_doc_drift(profile)
         self._scan_dead_params(profile)
+        self._scan_extractable_blocks(profile)
         self._drop_fixture_signals(profile)
         return profile
+
+    def _scan_extractable_blocks(self, profile: ProjectProfile) -> None:
+        """Long functions with a clean seam to extract — turns the engine's
+        "extract a shared helper" recommendation into a concrete, copy-pasteable
+        ``apex extract`` command (mirrors the dead-parameter signal). Only the
+        project's own non-fixture modules; the single best seam per file."""
+        from app.execution.extract_method import suggest_extractions
+
+        skipped = {".git", "__pycache__", ".apex", ".epistemic", "node_modules",
+                   ".venv", "venv", "dist", "build", ".turbo", ".next"}
+        found: list[dict] = []
+        scanned = 0
+        for path in sorted(self.root.rglob("*.py")):
+            if scanned >= self.max_files:
+                break
+            rel = path.relative_to(self.root)
+            rel_str = rel.as_posix()
+            if any(part in skipped for part in rel.parts) or self._is_fixture_path(rel_str):
+                continue
+            try:
+                source = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            scanned += 1
+            suggestions = suggest_extractions(source)
+            if suggestions:
+                best = suggestions[0]  # already sorted: most lines saved first
+                found.append({"module": rel_str, **best})
+        found.sort(key=lambda d: (-d["lines_saved"], d["module"]))
+        profile.extractable_blocks = found[:5]
 
     def _scan_dead_params(self, profile: ProjectProfile) -> None:
         """Parameters no statement in the function body ever reads.

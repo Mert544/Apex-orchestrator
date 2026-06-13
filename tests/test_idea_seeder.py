@@ -399,3 +399,35 @@ def test_dead_parameter_routes_to_refine_phase():
     )
     root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/core.py")
     assert classify_phase(root) == REFINE
+
+
+def test_extractable_block_seeds_root_with_extract_command():
+    profile = _profile(
+        extractable_blocks=[{"module": "app/big.py", "function": "process",
+                             "line": 10, "start": 14, "end": 42,
+                             "name": "_process_part", "params": ["data", "cfg"],
+                             "returns": ["total"], "lines_saved": 29}],
+        ci_files=["ci.yml"],
+    )
+    root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/big.py")
+    assert "Extract a helper from process()" in root.title
+    assert "saves 29 lines" in root.title
+    assert root.source_facts[0].startswith("extractable-block:")
+    # The fact hands you the exact, runnable command.
+    assert "apex extract app/big.py 14 42 _process_part" in root.source_facts[0]
+    # And it states the computed interface so the size of the move is visible.
+    assert "2 param(s) in, 1 value(s) out" in root.source_facts[0]
+
+
+def test_extractable_block_routes_to_refine_phase():
+    from app.engine.idea_roadmap import REFINE, classify_phase
+
+    profile = _profile(
+        extractable_blocks=[{"module": "app/big.py", "function": "process",
+                             "line": 10, "start": 14, "end": 42,
+                             "name": "_process_part", "params": ["data"],
+                             "returns": ["total"], "lines_saved": 29}],
+        ci_files=["ci.yml"],
+    )
+    root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/big.py")
+    assert classify_phase(root) == REFINE

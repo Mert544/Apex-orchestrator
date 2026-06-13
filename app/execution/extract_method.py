@@ -29,7 +29,7 @@ from pathlib import Path
 
 from app.execution.cross_file_rename import RenamePlan, _top_level_bindings
 
-__all__ = ["plan_extract"]
+__all__ = ["plan_extract", "suggest_extractions"]
 
 # Statements whose presence in the range would change control-flow semantics if
 # relocated into a helper (or that this pass deliberately doesn't analyze).
@@ -161,28 +161,47 @@ def _has_unenclosed_jump(node: ast.AST, in_loop: bool = False) -> bool:
     return False
 
 
-def _has_blocking_control(stmts: list, plan: RenamePlan) -> bool:
-    """Record a blocker for any relocate-unsafe node in the range."""
+def _blocking_reason(stmts: list) -> str | None:
+    """The reason this range can't be relocated into a helper, or None when it
+    is safe. Single source of truth for both the planner and the suggester."""
     for stmt in stmts:
         for n in ast.walk(stmt):
             if isinstance(n, _NESTED_SCOPE_NODES):
-                plan.blockers.append(
-                    "the range defines a nested function/lambda — its scope "
-                    "can't be analyzed; extract it separately first")
-                return True
+                return ("the range defines a nested function/lambda — its scope "
+                        "can't be analyzed; extract it separately first")
             if isinstance(n, _CONTROL_NODES):
                 kind = type(n).__name__.lower()
-                plan.blockers.append(
-                    f"the range contains `{kind}` — moving it into a helper "
-                    "would change the function's control flow")
-                return True
+                return (f"the range contains `{kind}` — moving it into a helper "
+                        "would change the function's control flow")
     for stmt in stmts:
         if _has_unenclosed_jump(stmt):
-            plan.blockers.append(
-                "the range contains a `break`/`continue` whose loop is outside "
-                "the selection — it can't be lifted out")
-            return True
+            return ("the range contains a `break`/`continue` whose loop is outside "
+                    "the selection — it can't be lifted out")
+    return None
+
+
+def _has_blocking_control(stmts: list, plan: RenamePlan) -> bool:
+    """Record a blocker for any relocate-unsafe node in the range."""
+    reason = _blocking_reason(stmts)
+    if reason:
+        plan.blockers.append(reason)
+        return True
     return False
+
+
+def _data_flow(fn, before: list, stmts: list, after: list) -> tuple[list[str], list[str]]:
+    """The (live_in, live_out) of extracting ``stmts`` from ``fn``: names read
+    from the surrounding scope become parameters, names defined here and read
+    afterward become return values. Single source of truth for the planner and
+    the suggester."""
+    params_and_prior = _function_param_names(fn) | _stores(before)
+    reads = _loads(stmts) | _augmented_targets(stmts)
+    live_in = sorted(n for n in reads if n in params_and_prior)
+
+    defined = _stores(stmts) | _augmented_targets(stmts)
+    reads_after = _loads(after)
+    live_out = sorted(n for n in defined if n in reads_after)
+    return live_in, live_out
 
 
 def _reindent(src_lines: list[str], base_indent: int) -> list[str]:
@@ -244,14 +263,7 @@ def plan_extract(project_root: str | Path, file_rel: str,
 
     before = fn.body[:fn.body.index(stmts[0])]
     after = fn.body[fn.body.index(stmts[-1]) + 1:]
-
-    params_and_prior = _function_param_names(fn) | _stores(before)
-    reads = _loads(stmts) | _augmented_targets(stmts)
-    live_in = sorted(n for n in reads if n in params_and_prior)
-
-    defined = _stores(stmts) | _augmented_targets(stmts)
-    reads_after = _loads(after)
-    live_out = sorted(n for n in defined if n in reads_after)
+    live_in, live_out = _data_flow(fn, before, stmts, after)
 
     # Build the helper and the replacement call from the real source text.
     lines = source.splitlines(keepends=True)
@@ -298,3 +310,79 @@ def plan_extract(project_root: str | Path, file_rel: str,
         plan.warnings.append("the helper takes no parameters and returns "
                              "nothing — confirm the range is self-contained")
     return plan
+
+
+# ── Suggestion: where in a long function is the cleanest seam to extract? ──
+_SUGGEST_MIN_STMTS = 3       # a run shorter than this isn't worth a helper
+_SUGGEST_MIN_LINES = 6       # ...nor one that saves fewer lines than this
+_SUGGEST_MAX_LINES = 40      # ...nor one so big the helper is itself a long fn
+_SUGGEST_MAX_RETURNS = 4     # a helper returning more than this is an ugly seam
+_SUGGEST_MAX_PARAMS = 5      # ...and one this wide isn't a clean seam either
+_SUGGEST_FN_FLOOR = 40       # only mine functions at least this many lines tall
+_SUGGEST_MAX_BODY = 60       # bound the O(n²) scan on pathological bodies
+
+
+def _iter_closure_free_functions(tree: ast.Module):
+    """Top-level functions and methods of top-level classes (no closures), each
+    with the module-level container the helper would sit before."""
+    for top in tree.body:
+        if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield top, top
+        elif isinstance(top, ast.ClassDef):
+            for item in top.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    yield item, top
+
+
+def suggest_extractions(source: str) -> list[dict]:
+    """For each long, closure-free function, the single best contiguous run to
+    extract — the seam with the most lines saved for the smallest interface.
+
+    Returns dicts ``{function, line, start, end, name, params, returns,
+    lines_saved}`` ready to become an ``apex extract`` command. Read-only and
+    deterministic; the suggestion is a proposal, the real apply re-verifies."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    out: list[dict] = []
+    for fn, _container in _iter_closure_free_functions(tree):
+        span = (fn.end_lineno or fn.lineno) - fn.lineno + 1
+        body = fn.body
+        if span < _SUGGEST_FN_FLOOR or not (_SUGGEST_MIN_STMTS <= len(body) <= _SUGGEST_MAX_BODY):
+            continue
+        best: tuple[int, dict] | None = None
+        for i in range(len(body)):
+            for j in range(i + _SUGGEST_MIN_STMTS, len(body) + 1):
+                if j - i == len(body):
+                    continue  # extracting the WHOLE body is a rename, not a seam
+                stmts = body[i:j]
+                if _blocking_reason(stmts) is not None:
+                    continue
+                lines_saved = (max(getattr(s, "end_lineno", s.lineno) for s in stmts)
+                               - stmts[0].lineno + 1)
+                if not (_SUGGEST_MIN_LINES <= lines_saved <= _SUGGEST_MAX_LINES):
+                    continue
+                live_in, live_out = _data_flow(fn, body[:i], stmts, body[j:])
+                if len(live_out) > _SUGGEST_MAX_RETURNS or len(live_in) > _SUGGEST_MAX_PARAMS:
+                    continue
+                # Favor a big body behind a small interface (few params/returns).
+                score = lines_saved - 2 * (len(live_in) + len(live_out))
+                cand = {
+                    "function": fn.name,
+                    "line": fn.lineno,
+                    "start": stmts[0].lineno,
+                    "end": max(getattr(s, "end_lineno", s.lineno) for s in stmts),
+                    "name": f"_{fn.name}_part",
+                    "params": live_in,
+                    "returns": live_out,
+                    "lines_saved": lines_saved,
+                }
+                # Deterministic tie-break: higher score, then earlier/smaller span.
+                key = (score, -cand["start"], -(cand["end"] - cand["start"]))
+                if best is None or key > best[0]:
+                    best = (key, cand)
+        if best is not None:
+            out.append(best[1])
+    out.sort(key=lambda d: (-d["lines_saved"], d["function"]))
+    return out

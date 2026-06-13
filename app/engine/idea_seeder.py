@@ -323,6 +323,24 @@ class IdeaSeeder:
                             f"never read — `apex signature drop {dp['function']} {dp['param']}`"),
             )
 
+        # Extractable seam: a long function with a clean block to lift into a
+        # helper. The "extract a shared helper" recommendation, now carrying the
+        # exact `apex extract` command (computed params/returns), verified.
+        for eb in (getattr(profile, "extractable_blocks", []) or [])[:2]:
+            iface = (f"{len(eb['params'])} param(s) in, "
+                     f"{len(eb['returns'])} value(s) out")
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Extract a helper from {eb['function']}() in {eb['module']} "
+                       f"(saves {eb['lines_saved']} lines)"),
+                subject=eb["module"],
+                fact_label="extractable-block",
+                fact_value=(f"{eb['module']}:{eb['line']} {eb['function']}() has a "
+                            f"clean seam at lines {eb['start']}-{eb['end']} ({iface}) "
+                            f"— `apex extract {eb['module']} {eb['start']} "
+                            f"{eb['end']} {eb['name']}`"),
+            )
+
         # Modernization debt → a safe, behavior-preserving cleanup direction.
         for module in (getattr(profile, "modernizable_modules", []) or [])[:2]:
             self._append_root(

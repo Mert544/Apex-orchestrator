@@ -988,6 +988,7 @@ _FACT_HINTS: dict[str, str] = {
     "churn-hotspot": "refactor interface boundary coupling simplify",
     "doc-drift": "documentation drift broken reference promise",
     "dead-parameter": "unused parameter signature api surface cleanup simplify",
+    "extractable-block": "extract a shared helper smaller unit single source refactor",
     "knowledge-risk": "bus factor onboarding documentation pairing review",
     "dream-insight": "structural pattern refactor architecture coupling confirmed",
     "convergence": "complex secret guard validation check edge cases",
