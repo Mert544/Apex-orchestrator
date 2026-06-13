@@ -15,6 +15,7 @@ from app.engine.mutation_tester import (
     Mutant,
     MutationResult,
     _collect_sites,
+    covering_test_files,
     mutation_score,
 )
 
@@ -190,10 +191,179 @@ def test_to_dict_round_trips_fields():
     m = Mutant(module="mod.py", line=2, operator="comparison:==>!=",
                original="==", mutated="!=", killed=True)
     res = MutationResult(module="mod.py", total=1, killed=1, survived=0,
-                         score=1.0, survivors=[])
+                         score=1.0, survivors=[], scoped_tests=["tests/test_mod.py"])
     assert m.to_dict()["killed"] is True
     d = res.to_dict()
     assert d["module"] == "mod.py" and d["score"] == 1.0 and d["survivors"] == []
+    assert d["scoped_tests"] == ["tests/test_mod.py"]
+
+
+# --- test scoping (deterministic, coverage-free) --------------------------
+
+def _write_pkg_module(root, src):
+    """Lay down an ``app/foo.py`` package module for the scoping tests."""
+    pkg = root / "app"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "foo.py").write_text(src, encoding="utf-8")
+    return "app/foo.py"
+
+
+def test_covering_test_files_finds_from_import(tmp_path):
+    rel = _write_pkg_module(tmp_path, _MODULE_SRC)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_foo.py").write_text(
+        "from app.foo import is_equal\n"
+        "def test_eq():\n    assert is_equal(1, 1) is True\n",
+        encoding="utf-8",
+    )
+    # An unrelated test that imports something else must be ignored.
+    (tests / "test_other.py").write_text(
+        "import os\ndef test_o():\n    assert os.sep\n", encoding="utf-8",
+    )
+    covering = covering_test_files(str(tmp_path), rel)
+    assert covering == ["tests/test_foo.py"]
+
+
+def test_covering_test_files_handles_import_forms(tmp_path):
+    rel = _write_pkg_module(tmp_path, _MODULE_SRC)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    # `import app.foo`
+    (tests / "test_a.py").write_text(
+        "import app.foo\ndef test_a():\n    assert app.foo.is_equal(1, 1)\n",
+        encoding="utf-8",
+    )
+    # `from app import foo` (parent package + member)
+    (tests / "test_b.py").write_text(
+        "from app import foo\ndef test_b():\n    assert foo.is_equal(1, 1)\n",
+        encoding="utf-8",
+    )
+    # `from app.foo import is_equal`
+    (tests / "test_c.py").write_text(
+        "from app.foo import is_equal\ndef test_c():\n    assert is_equal(1, 1)\n",
+        encoding="utf-8",
+    )
+    covering = covering_test_files(str(tmp_path), rel)
+    assert covering == ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py"]
+
+
+def test_covering_test_files_skips_parse_errors(tmp_path):
+    rel = _write_pkg_module(tmp_path, _MODULE_SRC)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_ok.py").write_text(
+        "from app.foo import is_equal\ndef test_ok():\n    assert is_equal(1, 1)\n",
+        encoding="utf-8",
+    )
+    # A syntactically broken test file must be skipped, not crash the scan.
+    (tests / "test_broken.py").write_text(
+        "from app.foo import is_equal\ndef test_x(:\n    pass\n", encoding="utf-8",
+    )
+    covering = covering_test_files(str(tmp_path), rel)
+    assert covering == ["tests/test_ok.py"]
+
+
+def test_covering_test_files_empty_when_unrelated(tmp_path):
+    rel = _write_pkg_module(tmp_path, _MODULE_SRC)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_other.py").write_text(
+        "import os\ndef test_o():\n    assert os.sep\n", encoding="utf-8",
+    )
+    assert covering_test_files(str(tmp_path), rel) == []
+
+
+def test_scoped_run_uses_only_covering_tests(tmp_path):
+    # Strong covering test kills the mutant; an unrelated test that would CRASH
+    # if executed proves only the covering test was actually run.
+    rel = _write_pkg_module(tmp_path, _MODULE_SRC)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_foo.py").write_text(
+        "from app.foo import is_equal\n"
+        "def test_eq():\n"
+        "    assert is_equal(1, 1) is True\n"
+        "    assert is_equal(1, 2) is False\n",
+        encoding="utf-8",
+    )
+    # This unrelated test does NOT import app.foo and would fail loudly if run.
+    (tests / "test_poison.py").write_text(
+        "def test_poison():\n    assert False, 'should not run'\n",
+        encoding="utf-8",
+    )
+    result = mutation_score(str(tmp_path), rel, max_mutants=10)
+    assert result.total == 1
+    assert result.killed == 1
+    assert result.score == 1.0
+    assert result.scoped_tests == ["tests/test_foo.py"]
+
+
+def test_scoped_run_no_covering_test_falls_back(tmp_path):
+    # No test imports the module -> scope is empty -> fall back to full suite.
+    # The full suite here has a weak test that doesn't import the module, so the
+    # mutant survives, and scoped_tests is empty to record the fallback.
+    rel = _write_pkg_module(tmp_path, _MODULE_SRC)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_unrelated.py").write_text(
+        "def test_u():\n    assert 1 == 1\n", encoding="utf-8",
+    )
+    result = mutation_score(str(tmp_path), rel, max_mutants=10)
+    assert result.total == 1
+    assert result.survived == 1
+    assert result.score == 0.0
+    assert result.scoped_tests == []
+
+
+def test_scope_tests_false_reproduces_full_suite(tmp_path):
+    # With scoping off, the original full-suite path runs; scoped_tests stays
+    # empty and a strong root-level test still kills the mutant.
+    test_src = (
+        "from mod import is_equal\n"
+        "def test_eq():\n"
+        "    assert is_equal(1, 1) is True\n"
+        "    assert is_equal(1, 2) is False\n"
+    )
+    rel = _write_project(tmp_path, _MODULE_SRC, test_src)
+    result = mutation_score(str(tmp_path), rel, max_mutants=10, scope_tests=False)
+    assert result.total == 1
+    assert result.killed == 1
+    assert result.score == 1.0
+    assert result.scoped_tests == []
+
+
+def test_scoped_determinism_two_runs_identical(tmp_path):
+    rel = _write_pkg_module(tmp_path, _MODULE_SRC)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_foo.py").write_text(
+        "from app.foo import is_equal\n"
+        "def test_eq():\n"
+        "    assert is_equal(1, 1) is True\n"
+        "    assert is_equal(1, 2) is False\n",
+        encoding="utf-8",
+    )
+    a = mutation_score(str(tmp_path), rel, max_mutants=10).to_dict()
+    b = mutation_score(str(tmp_path), rel, max_mutants=10).to_dict()
+    assert a == b
+    assert a["scoped_tests"] == ["tests/test_foo.py"]
+
+
+def test_scoped_run_original_tree_unchanged(tmp_path):
+    rel = _write_pkg_module(tmp_path, _MODULE_SRC)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_foo.py").write_text(
+        "from app.foo import is_equal\n"
+        "def test_eq():\n    assert is_equal(1, 1) is True\n",
+        encoding="utf-8",
+    )
+    before = (tmp_path / rel).read_text(encoding="utf-8")
+    mutation_score(str(tmp_path), rel, max_mutants=10)
+    after = (tmp_path / rel).read_text(encoding="utf-8")
+    assert after == before == _MODULE_SRC
 
 
 # --- CLI ------------------------------------------------------------------

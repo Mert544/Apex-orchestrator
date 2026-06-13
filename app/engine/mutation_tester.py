@@ -106,6 +106,7 @@ class MutationResult:
     survived: int
     score: float
     survivors: list[Mutant] = field(default_factory=list)
+    scoped_tests: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -115,6 +116,7 @@ class MutationResult:
             "survived": self.survived,
             "score": self.score,
             "survivors": [m.to_dict() for m in self.survivors],
+            "scoped_tests": list(self.scoped_tests),
         }
 
 
@@ -244,8 +246,95 @@ def _splice(source_lines: list[str], site: _Site) -> str | None:
     return mutated_source
 
 
+def _module_dotted_path(module_rel: str) -> str:
+    """Convert a module's repo-relative path to its dotted import path.
+
+    ``app/engine/foo.py`` -> ``app.engine.foo``; a bare ``mod.py`` -> ``mod``.
+    Trailing ``__init__`` is collapsed to its package (``app/engine/__init__``
+    -> ``app.engine``).
+    """
+    parts = list(Path(module_rel).with_suffix("").parts)
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _is_test_file(rel: str) -> bool:
+    """A path is a test file if it lives under ``tests/`` or its filename
+    matches ``test_*.py`` — the same convention pytest discovers by default."""
+    p = Path(rel)
+    if p.suffix != ".py":
+        return False
+    if "tests" in p.parts:
+        return True
+    return p.name.startswith("test_")
+
+
+def _imported_names(tree: ast.Module) -> set[str]:
+    """All dotted names referenced by ``import`` / ``from ... import`` in a
+    parsed module. For ``from a.b import c`` we record both ``a.b`` (the source
+    package) and ``a.b.c`` (the imported member) so either can match a module's
+    dotted path. Relative imports are ignored (no absolute path to match)."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level and node.level > 0 or not node.module:
+                continue
+            names.add(node.module)
+            for alias in node.names:
+                names.add(f"{node.module}.{alias.name}")
+    return names
+
+
+def covering_test_files(project_root, module_rel: str) -> list[str]:
+    """Test files whose source imports the target module — a cheap, coverage-free
+    scope for mutation testing.
+
+    "Imports the module" is decided deterministically from each test file's AST:
+    a test covers ``module_rel`` if any of its ``import`` / ``from ... import``
+    statements references the module's dotted path (``app.engine.foo``) or a
+    parent package of it (so ``from app.engine import foo`` and
+    ``import app.engine`` both count). Files that fail to parse are skipped.
+
+    Returns a sorted, de-duplicated list of test-file paths relative to
+    ``project_root`` (so the result is deterministic across runs).
+    """
+    root = Path(project_root)
+    dotted = _module_dotted_path(module_rel)
+    if not dotted:
+        return []
+    leaf = dotted.split(".")[-1]
+    # Every dotted prefix of the module path is an acceptable import target
+    # (``app``, ``app.engine``, ``app.engine.foo``); an import of any of these
+    # — or of the bare leaf name — means the test reaches the module.
+    parts = dotted.split(".")
+    targets = {".".join(parts[: i + 1]) for i in range(len(parts))}
+    targets.add(leaf)
+
+    matches: set[str] = set()
+    for path in root.rglob("*.py"):
+        rel = path.relative_to(root).as_posix()
+        if any(part in {".git", "__pycache__", ".apex", ".venv",
+                        "venv", "node_modules"} for part in path.parts):
+            continue
+        if not _is_test_file(rel):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, ValueError):
+            continue
+        imported = _imported_names(tree)
+        if imported & targets:
+            matches.add(rel)
+    return sorted(matches)
+
+
 def _verify_killed(project_root: Path, module_rel: str,
-                   mutated_source: str, verify_timeout: int) -> bool:
+                   mutated_source: str, verify_timeout: int,
+                   covering: list[str] | None = None) -> bool:
     """Run the suite against a mutant in an isolated copy of the project.
 
     The real tree is never touched: we ``copytree`` the project (minus VCS /
@@ -253,15 +342,22 @@ def _verify_killed(project_root: Path, module_rel: str,
     the COPY, then discard it. Returns ``True`` if the suite FAILED (mutant
     killed), ``False`` if it passed (mutant survived). A timeout counts as a
     kill (the mutant broke the run).
+
+    When ``covering`` is a non-empty list, only those test files are run (the
+    deterministic scope from ``covering_test_files``) — this is what keeps the
+    per-mutant run cheap on large repos. ``None`` / empty runs the whole suite.
     """
     tmp_dir = tempfile.mkdtemp(prefix="apex-mutant-")
     copy_root = Path(tmp_dir) / "project"
     try:
         shutil.copytree(project_root, copy_root, ignore=_COPY_EXCLUDE)
         (copy_root / module_rel).write_text(mutated_source, encoding="utf-8")
+        cmd = ["python", "-m", "pytest", "-q", "-x"]
+        if covering:
+            cmd.extend(covering)
         try:
             proc = subprocess.run(
-                ["python", "-m", "pytest", "-q", "-x"],
+                cmd,
                 cwd=str(copy_root),
                 timeout=verify_timeout,
                 capture_output=True,
@@ -274,7 +370,8 @@ def _verify_killed(project_root: Path, module_rel: str,
 
 
 def mutation_score(project_root, module_rel: str, max_mutants: int = 30,
-                   verify_timeout: int = 120) -> MutationResult:
+                   verify_timeout: int = 120,
+                   scope_tests: bool = True) -> MutationResult:
     """Measure how strongly the project's test suite constrains ``module_rel``.
 
     Seeds up to ``max_mutants`` deterministic single-token faults into the
@@ -282,6 +379,16 @@ def mutation_score(project_root, module_rel: str, max_mutants: int = 30,
     copy, and reports the kill/survive split. ``score`` is ``killed / total``
     (0.0 when there are no mutable sites). Survivors carry their line and
     operator so the caller learns exactly where the tests are blind.
+
+    Test scoping (``scope_tests=True``, the default): rather than run the whole
+    suite against every mutant — intractable on a large repo — we compute the
+    covering test files ONCE up front (``covering_test_files``) and run only
+    those per mutant. This is deterministic (the scope is sorted) and cheap. If
+    NO test imports the module the scope is empty: we fall back to the full
+    suite so correctness is never silently weakened (and ``scoped_tests`` stays
+    empty to record that we fell back). A genuinely untested module therefore
+    surfaces its survivors honestly. ``scope_tests=False`` keeps the original
+    full-suite behaviour for back-compat.
 
     The original project tree is read-only throughout (see ``_verify_killed``).
     """
@@ -292,7 +399,12 @@ def mutation_score(project_root, module_rel: str, max_mutants: int = 30,
         tree = ast.parse(source)
     except (OSError, SyntaxError):
         return MutationResult(module=module_rel, total=0, killed=0,
-                              survived=0, score=0.0, survivors=[])
+                              survived=0, score=0.0, survivors=[],
+                              scoped_tests=[])
+
+    covering: list[str] = []
+    if scope_tests:
+        covering = covering_test_files(root, module_rel)
 
     source_lines = source.splitlines(keepends=True)
     sites = _collect_sites(tree, source_lines)
@@ -316,7 +428,8 @@ def mutation_score(project_root, module_rel: str, max_mutants: int = 30,
     survivors: list[Mutant] = []
     mutants = [m for m, _ in pending]
     for mutant, mutated_source in pending:
-        if _verify_killed(root, module_rel, mutated_source, verify_timeout):
+        if _verify_killed(root, module_rel, mutated_source, verify_timeout,
+                          covering=covering):
             mutant.killed = True
             killed += 1
         else:
@@ -328,4 +441,5 @@ def mutation_score(project_root, module_rel: str, max_mutants: int = 30,
     return MutationResult(
         module=module_rel, total=total, killed=killed,
         survived=survived, score=score, survivors=survivors,
+        scoped_tests=list(covering),
     )
