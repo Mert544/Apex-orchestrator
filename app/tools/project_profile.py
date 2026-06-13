@@ -148,7 +148,28 @@ class ProjectProfiler:
         self.root = Path(root)
         self.max_files = max_files
 
-    def profile(self) -> ProjectProfile:
+    def profile(self, *, light: bool = False) -> ProjectProfile:
+        """Build the full project profile.
+
+        ``light=True`` SKIPS every scan whose output the GRADE never reads, so
+        ``health_score.grade`` can self-assess with a byte-identical result at a
+        fraction of the cost (`apex ascend` re-grades before+after every round).
+        Two skip groups, both proven safe — grade reads none of their fields:
+
+        - the four git/doc subprocess scans (``_scan_churn``, ``_scan_debt_age``,
+          ``_scan_security_exposure_age``, ``_scan_doc_drift``) → ``churn_hotspots``,
+          ``change_coupling``, ``knowledge_risks``, ``debt_marker_ages``,
+          ``security_finding_ages``, ``doc_drift``;
+        - the three AST refactor scans (``_scan_dead_params``,
+          ``_scan_extractable_blocks``, ``_scan_inlinable_helpers``) →
+          ``dead_params``, ``extractable_blocks``, ``inlinable_helpers``.
+
+        The grade's signals all come from ``_populate_python_structure`` and the
+        base file walk, which always run; ``_drop_fixture_signals`` (which
+        sanitizes the grade-read lists) also always runs. Default
+        ``light=False`` keeps current behavior byte-identical for every other
+        caller (the idea engine, seeding, develop fitness, ...).
+        """
         profile = ProjectProfile(root=str(self.root))
         if not self.root.exists():
             return profile
@@ -236,13 +257,19 @@ class ProjectProfiler:
         )[:5]
 
         self._populate_python_structure(profile)
-        self._scan_churn(profile)
-        self._scan_debt_age(profile)
-        self._scan_security_exposure_age(profile)
-        self._scan_doc_drift(profile)
-        self._scan_dead_params(profile)
-        self._scan_extractable_blocks(profile)
-        self._scan_inlinable_helpers(profile)
+        if not light:
+            # Scans the GRADE never reads — skipped in light mode. The four
+            # git/doc subprocess scans (cheap on a shallow repo, ~200s on a deep
+            # one) and the three AST refactor scans (extractable/inlinable
+            # dominate on a large codebase). _populate_python_structure above
+            # already produced every field the grade consumes.
+            self._scan_churn(profile)
+            self._scan_debt_age(profile)
+            self._scan_security_exposure_age(profile)
+            self._scan_doc_drift(profile)
+            self._scan_dead_params(profile)
+            self._scan_extractable_blocks(profile)
+            self._scan_inlinable_helpers(profile)
         self._drop_fixture_signals(profile)
         return profile
 

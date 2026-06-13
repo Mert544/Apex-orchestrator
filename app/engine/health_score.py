@@ -158,7 +158,11 @@ def grade(project_root: str | Path) -> HealthScore:
     """Compute the project's health grade from its real structure."""
     from app.tools.project_profile import ProjectProfiler
 
-    profile = ProjectProfiler(str(project_root)).profile()
+    # Light profile: skips the four slow git/doc subprocess scans (churn, debt
+    # age, security-exposure age, doc drift) the grade never reads — so grading
+    # (and `apex ascend`, which re-grades before+after every round) is ~200x
+    # faster on a large repo with a byte-identical grade. See ProjectProfiler.profile.
+    profile = ProjectProfiler(str(project_root)).profile(light=True)
 
     cycles = len(getattr(profile, "import_cycles", []) or [])
     fragile = len(getattr(profile, "fragile_modules", []) or [])

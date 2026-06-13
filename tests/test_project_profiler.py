@@ -701,3 +701,87 @@ def test_inlinable_helpers_surfaces_single_use_helper(tmp_path: Path):
     assert ih["call_sites"] == 1
     # Fixtures/tests are excluded from the signal (their flaws are intentional).
     assert all(not h["module"].startswith("tests/") for h in helpers)
+
+
+# --- light profile: the fast path health_score.grade uses to self-assess ---
+
+
+def test_light_profile_skips_git_scans_keeps_grade_signals(tmp_path: Path):
+    """profile(light=True) leaves the four git/doc + three AST refactor scans'
+    fields empty, yet still populates every signal the grade reads."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    # A module the grade scores: untested + modernizable (== None) so the
+    # grade-read lists are non-empty even on the light path.
+    (tmp_path / "app" / "old.py").write_text(
+        "def f(x):\n    return x == None\n", encoding="utf-8"
+    )
+    (tmp_path / "app" / "covered.py").write_text(
+        "def g(x):\n    return x + 1\n", encoding="utf-8"
+    )
+    (tmp_path / "tests" / "test_covered.py").write_text(
+        "from app.covered import g\ndef test_g():\n    assert g(1) == 2\n",
+        encoding="utf-8",
+    )
+
+    light = ProjectProfiler(str(tmp_path)).profile(light=True)
+
+    # Fields the SKIPPED scans populate stay at their empty defaults.
+    assert light.churn_hotspots == []
+    assert light.change_coupling == []
+    assert light.knowledge_risks == []
+    assert light.debt_marker_ages == {}
+    assert light.security_finding_ages == {}
+    assert light.doc_drift == []
+    assert light.dead_params == []
+    assert light.extractable_blocks == []
+    assert light.inlinable_helpers == []
+
+    # Fields the GRADE reads are still populated by _populate_python_structure.
+    assert "app/old.py" in light.untested_modules
+    assert "app/old.py" in light.modernizable_modules
+    assert "app/covered.py" not in light.untested_modules
+    assert "app/old.py" in light.module_to_tests
+    assert "app/covered.py" in light.module_to_tests
+
+
+def test_light_profile_does_not_invoke_git(tmp_path: Path, monkeypatch):
+    """The light path must not shell out to git at all (the whole point: no
+    per-module git blame / log subprocesses)."""
+    import subprocess
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    # Make this a real git repo so the full path WOULD invoke git.
+    def _git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True)
+    _git("init", "-q")
+    _git("config", "user.email", "t@t.com")
+    _git("config", "user.name", "t")
+    _git("add", "-A")
+    _git("-c", "commit.gpgsign=false", "commit", "-qm", "init")
+
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def spy_run(cmd, *a, **k):  # noqa: ANN001, ANN002, ANN003
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git":
+            calls.append(list(cmd))
+        return real_run(cmd, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", spy_run)
+    ProjectProfiler(str(tmp_path)).profile(light=True)
+    assert calls == [], f"light profile shelled out to git: {calls}"
+
+
+def test_light_profile_default_off_keeps_full_behavior(tmp_path: Path):
+    """light defaults to False: the full profile still runs every scan, so the
+    refactor-signal fields are populated as before for non-grade callers."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "calc.py").write_text(
+        "def fee(price):\n    return price * 0.1\n\n\n"
+        "def total(price):\n    return fee(price) + 1\n",
+        encoding="utf-8",
+    )
+    full = ProjectProfiler(str(tmp_path)).profile()  # default light=False
+    assert full.inlinable_helpers, "default profile must still run the AST scans"

@@ -82,7 +82,6 @@ def test_cmd_grade_json(tmp_path, capsys):
     (tmp_path / "app" / "m.py").write_text("def f(x):\n    return x\n")
     rc = cmd_grade(argparse.Namespace(target=str(tmp_path), min_score=0, json=True))
     assert rc == 0
-    import json
     payload = json.loads(capsys.readouterr().out)
     assert "score" in payload and "letter" in payload and "components" in payload
 
@@ -464,3 +463,67 @@ def test_cmd_grade_diff_no_snapshot_shows_current_grade(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "No grade snapshot found" in out
     assert "Project health" in out  # still shows the current grade
+
+
+def test_grade_identical_with_light_and_full_profile(tmp_path, monkeypatch):
+    """The grade VALUE and every component must be identical whether grade()
+    runs on the light profile (its real, fast path) or the full one. If a
+    skipped scan ever fed the grade, this would catch it."""
+    from app.tools.project_profile import ProjectProfiler
+
+    # A representative project that exercises several grade components:
+    # security (eval/yaml), code debt (== None, mutable default), an untested
+    # module, a duplicated block, and a branchy function (maintainability).
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "risky.py").write_text(
+        "import yaml\n\n\n"
+        "def load(s, cache=[]):\n"
+        "    if s == None:\n"
+        "        return eval(s)\n"
+        "    return yaml.load(s)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "app" / "untested.py").write_text(
+        "def helper(x):\n    return x + 1\n", encoding="utf-8"
+    )
+    branchy = "def grade_fn(n):\n    total = 0\n" + "".join(
+        f"    if n == {i}:\n        total += {i}\n" for i in range(14)
+    ) + "    return total\n"
+    dup = (
+        "    a = 1\n    b = 2\n    c = 3\n    d = 4\n    e = 5\n    return a + b + c + d + e\n"
+    )
+    (tmp_path / "app" / "big.py").write_text(
+        branchy + "\n\ndef one():\n" + dup + "\n\ndef two():\n" + dup,
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_big.py").write_text(
+        "from app.big import grade_fn\ndef test_g():\n    assert grade_fn(0) == 0\n",
+        encoding="utf-8",
+    )
+
+    light_grade = grade(str(tmp_path))  # the real path -> profile(light=True)
+
+    # Force the FULL profile and re-grade.
+    orig = ProjectProfiler.profile
+
+    def full_profile(self, *, light=False):  # noqa: ANN001, ARG001
+        return orig(self, light=False)
+
+    monkeypatch.setattr(ProjectProfiler, "profile", full_profile)
+    full_grade = grade(str(tmp_path))
+
+    assert light_grade.score == full_grade.score
+    assert light_grade.letter == full_grade.letter
+    assert light_grade.fixes == full_grade.fixes
+    lc = {c.name: c for c in light_grade.components}
+    fc = {c.name: c for c in full_grade.components}
+    assert lc.keys() == fc.keys()
+    for name, l in lc.items():
+        f = fc[name]
+        assert l.points_lost == f.points_lost, name
+        assert l.detail == f.detail, name
+        assert l.top_files == f.top_files, name
+    # The project is genuinely lossy, so this is a meaningful (not trivially
+    # clean) equality.
+    assert light_grade.score < 100
