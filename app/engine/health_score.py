@@ -55,6 +55,45 @@ def _is_fixture_path(path: str) -> bool:
 # Severity -> grade weight: a pile of medium smells must not score like RCEs.
 _SEVERITY_WEIGHT = {"critical": 6, "high": 4, "medium": 2, "low": 1}
 
+# Maintainability: cyclomatic complexity above which a single function is judged
+# "hard to maintain" (branch-node count, per code_metrics.function_complexities;
+# a tidy function scores 0-2, so this only fires on genuinely branchy code). The
+# penalty is small-capped so a complex codebase can't dominate the grade and a
+# clean one loses nothing.
+_COMPLEXITY_CEILING = 12
+_MAINT_CAP = 10
+
+
+def _scan_maintainability(
+    project_root: str | Path, profile: Any,
+) -> tuple[int, list[str]]:
+    """Count over-ceiling-complexity functions in the project's own modules.
+
+    Returns ``(over_threshold_count, top_files)`` where ``top_files`` is the
+    up-to-3 own modules with the most functions whose cyclomatic complexity
+    exceeds ``_COMPLEXITY_CEILING``, sorted by that count. Fixture/test files are
+    excluded (same rule as the other components); unreadable files are skipped.
+    """
+    from app.tools.code_metrics import function_complexities
+
+    root = Path(project_root)
+    over = 0
+    by_file: dict[str, int] = {}
+    for m in (getattr(profile, "module_to_tests", {}) or {}):
+        if not isinstance(m, str) or not m.endswith(".py") or _is_fixture_path(m):
+            continue
+        try:
+            text = (root / m).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        complex_fns = sum(1 for _name, _lineno, cx in function_complexities(text)
+                          if cx > _COMPLEXITY_CEILING)
+        if complex_fns:
+            by_file[m] = complex_fns
+            over += complex_fns
+    top = [f for f, _ in sorted(by_file.items(), key=lambda kv: -kv[1])[:3]]
+    return over, top
+
 
 def _scan_own_modules(
     project_root: str | Path, profile: Any,
@@ -192,7 +231,19 @@ def grade(project_root: str | Path) -> HealthScore:
              "return-in-finally, unreachable except, ...)" if corr_lost else None,
              top_files=top_bug_files)
 
-    score = max(0, 100 - (sec_lost + arch_lost + test_lost + debt_lost + corr_lost))
+    # Maintainability: the project's most complex / branch-heavy functions cost a
+    # small, capped amount — a clean codebase loses nothing, a sprawling one can't
+    # dominate the grade. Each over-ceiling function is 2 points up to _MAINT_CAP.
+    over_complex, maint_top = _scan_maintainability(project_root, profile)
+    maint_lost = min(_MAINT_CAP, over_complex * 2)
+    penalize("Maintainability",
+             maint_lost,
+             f"{over_complex} function(s) over complexity {_COMPLEXITY_CEILING}",
+             "extract helpers from the most complex functions — "
+             "see `apex develop --objective shrink-functions`" if maint_lost else None,
+             top_files=maint_top)
+
+    score = max(0, 100 - (sec_lost + arch_lost + test_lost + debt_lost + corr_lost + maint_lost))
     return HealthScore(score=score, letter=_letter(score), components=components, fixes=fixes)
 
 

@@ -52,7 +52,8 @@ def test_score_clamped_and_components_present(tmp_path):
     (tmp_path / "app" / "lots.py").write_text(body + "\n")
     h = grade(str(tmp_path))
     assert 0 <= h.score <= 100
-    assert {c.name for c in h.components} == {"Security", "Architecture", "Testing", "Code debt", "Correctness"}
+    assert {c.name for c in h.components} == {
+        "Security", "Architecture", "Testing", "Code debt", "Correctness", "Maintainability"}
 
 
 def test_render_markdown(tmp_path):
@@ -344,6 +345,63 @@ def test_cmd_grade_save_and_diff_flags(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "Grade trend" in out
+
+
+def test_maintainability_penalizes_complex_function(tmp_path):
+    # A function with many branches (high cyclomatic complexity) costs
+    # Maintainability points and names its file in top_files.
+    from app.engine.health_score import grade
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    branches = "\n".join(f"    if x == {i}:\n        return {i}" for i in range(20))
+    (tmp_path / "app" / "tangle.py").write_text(
+        f"def classify(x):\n{branches}\n    return -1\n", encoding="utf-8"
+    )
+    (tmp_path / "tests" / "test_tangle.py").write_text(
+        "from app.tangle import classify\ndef test_c():\n    assert classify(0) == 0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='p'\nversion='0'\n")
+    h = grade(str(tmp_path))
+    maint = next(c for c in h.components if c.name == "Maintainability")
+    assert maint.points_lost > 0
+    assert any("tangle.py" in f for f in maint.top_files)
+
+
+def test_maintainability_penalty_is_capped(tmp_path):
+    # Even a flood of complex functions can't dominate the grade (small cap).
+    from app.engine.health_score import _MAINT_CAP, grade
+
+    (tmp_path / "app").mkdir()
+    fns = []
+    for n in range(10):
+        branches = "\n".join(f"    if x == {i}:\n        return {i}" for i in range(20))
+        fns.append(f"def f{n}(x):\n{branches}\n    return -1\n")
+    (tmp_path / "app" / "many.py").write_text("\n".join(fns), encoding="utf-8")
+    h = grade(str(tmp_path))
+    maint = next(c for c in h.components if c.name == "Maintainability")
+    assert maint.points_lost == _MAINT_CAP
+
+
+def test_maintainability_zero_on_simple_project(tmp_path):
+    # A simple project's tiny functions are well under the complexity ceiling, so
+    # Maintainability costs nothing and contributes no top_files.
+    from app.engine.health_score import grade
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "calc.py").write_text(
+        'def add(a, b):\n    """Add."""\n    return a + b\n', encoding="utf-8"
+    )
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "from app.calc import add\ndef test_add():\n    assert add(1, 2) == 3\n",
+        encoding="utf-8",
+    )
+    h = grade(str(tmp_path))
+    maint = next(c for c in h.components if c.name == "Maintainability")
+    assert maint.points_lost == 0
+    assert maint.top_files == []
 
 
 def test_cmd_grade_diff_no_snapshot_shows_current_grade(tmp_path, capsys):
