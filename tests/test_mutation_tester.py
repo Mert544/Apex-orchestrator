@@ -51,6 +51,67 @@ def test_collect_sites_covers_all_operator_families():
     assert "constant:True>False" in ops
 
 
+def test_collect_sites_covers_new_operator_families():
+    src = (
+        "def f(x):\n"
+        "    x += 1\n"
+        "    return x + 1\n"
+    )
+    sites = _collect_sites(ast.parse(src), src.splitlines(keepends=True))
+    ops = [s.operator for s in sites]
+    assert "augassign:+=>-=" in ops
+    assert "number:1>2" in ops
+    assert "return:value>None" in ops
+
+
+def test_collect_sites_number_mutates_to_n_plus_one():
+    src = "x = 41\n"
+    sites = _collect_sites(ast.parse(src), src.splitlines(keepends=True))
+    num = [s for s in sites if s.operator.startswith("number:")]
+    assert len(num) == 1
+    assert num[0].original == "41" and num[0].mutated == "42"
+
+
+def test_collect_sites_float_number_mutates_in_kind():
+    src = "x = 1.5\n"
+    sites = _collect_sites(ast.parse(src), src.splitlines(keepends=True))
+    num = [s for s in sites if s.operator.startswith("number:")]
+    assert len(num) == 1
+    assert num[0].original == "1.5" and num[0].mutated == "2.5"
+
+
+def test_collect_sites_skips_bool_for_number_operator():
+    # ``True`` is a constant but a bool — it must stay a boolean-constant flip,
+    # never a number flip.
+    src = "x = True\n"
+    sites = _collect_sites(ast.parse(src), src.splitlines(keepends=True))
+    ops = [s.operator for s in sites]
+    assert "constant:True>False" in ops
+    assert not any(o.startswith("number:") for o in ops)
+
+
+def test_collect_sites_return_none_has_no_return_mutant():
+    # A bare ``return None`` (and ``return`` with no value) is excluded.
+    src = (
+        "def f():\n"
+        "    return None\n"
+        "def g():\n"
+        "    return\n"
+    )
+    sites = _collect_sites(ast.parse(src), src.splitlines(keepends=True))
+    assert not any(s.operator == "return:value>None" for s in sites)
+
+
+def test_collect_sites_skips_multiline_return():
+    src = (
+        "def f(a, b):\n"
+        "    return (a +\n"
+        "            b)\n"
+    )
+    sites = _collect_sites(ast.parse(src), src.splitlines(keepends=True))
+    assert not any(s.operator == "return:value>None" for s in sites)
+
+
 def test_collect_sites_is_deterministic_document_order():
     src = "x = (1 < 2) and (3 > 4)\n"
     sites = _collect_sites(ast.parse(src), src.splitlines(keepends=True))
@@ -82,15 +143,21 @@ def test_strong_suite_kills_comparison_mutant(tmp_path):
     )
     rel = _write_project(tmp_path, _MODULE_SRC, test_src)
     result = mutation_score(str(tmp_path), rel, max_mutants=10)
-    assert result.total == 1
-    assert result.killed == 1
+    # ``return a == b`` now seeds both a comparison flip and a return-value
+    # flip; the strong suite (exact True/False) kills every one of them.
+    assert result.total >= 1
+    assert result.killed == result.total
     assert result.survived == 0
     assert result.score == 1.0
     assert result.survivors == []
+    ops = {m.operator for m in result.survivors}
+    assert ops == set()
 
 
 def test_weak_suite_lets_mutant_survive(tmp_path):
-    # A suite that only checks "not None" never observes the flipped operator.
+    # A suite that only checks "not None" never observes the flipped operator,
+    # so the comparison mutant survives. (The return-value flip turns the
+    # result into ``None`` and IS caught by the ``is not None`` assertion.)
     test_src = (
         "from mod import is_equal\n"
         "def test_smoke():\n"
@@ -98,29 +165,121 @@ def test_weak_suite_lets_mutant_survive(tmp_path):
     )
     rel = _write_project(tmp_path, _MODULE_SRC, test_src)
     result = mutation_score(str(tmp_path), rel, max_mutants=10)
-    assert result.total == 1
-    assert result.killed == 0
-    assert result.survived == 1
-    assert result.score == 0.0
-    assert result.survivors and result.survivors[0].operator == "comparison:==>!="
-    assert result.survivors[0].line == 2
+    assert result.total >= 1
+    assert result.survived >= 1
+    survivor_ops = {m.operator for m in result.survivors}
+    assert "comparison:==>!=" in survivor_ops
+    comp = next(m for m in result.survivors if m.operator == "comparison:==>!=")
+    assert comp.line == 2
+
+
+_NUM_MODULE_SRC = '''\
+def add_one(x):
+    return x + 1
+'''
+
+
+def test_number_mutant_killed_by_strong_test(tmp_path):
+    # A strong test pins the exact value, so ``1 -> 2`` is caught. (The
+    # arithmetic ``+ -> -`` and return-value flips are caught too.)
+    test_src = (
+        "from mod import add_one\n"
+        "def test_add():\n"
+        "    assert add_one(1) == 2\n"
+    )
+    rel = _write_project(tmp_path, _NUM_MODULE_SRC, test_src)
+    result = mutation_score(str(tmp_path), rel, max_mutants=10)
+    ops = {m.operator for m in (result.survivors)}
+    # No survivor carries the number flip: the strong test killed it.
+    assert "number:1>2" not in ops
+    killed_ops = {m.operator for m in _mutants_of(result, str(tmp_path), rel)}
+    assert "number:1>2" in killed_ops
+    assert result.score == 1.0
+
+
+def test_number_mutant_survives_weak_test(tmp_path):
+    # A weak ``is not None`` test never observes the changed number value.
+    test_src = (
+        "from mod import add_one\n"
+        "def test_add():\n"
+        "    assert add_one(1) is not None\n"
+    )
+    rel = _write_project(tmp_path, _NUM_MODULE_SRC, test_src)
+    result = mutation_score(str(tmp_path), rel, max_mutants=10)
+    survivor_ops = {m.operator for m in result.survivors}
+    assert "number:1>2" in survivor_ops
+
+
+def test_return_value_mutant_killed_by_value_test(tmp_path):
+    module_src = (
+        "def make():\n"
+        "    return 7\n"
+        "def use():\n"
+        "    return make()\n"
+    )
+    test_src = (
+        "from mod import use\n"
+        "def test_use():\n"
+        "    assert use() == 7\n"
+    )
+    rel = _write_project(tmp_path, module_src, test_src)
+    result = mutation_score(str(tmp_path), rel, max_mutants=20)
+    # ``return make()`` -> ``return None`` is a seeded fault the value test kills.
+    all_ops = {m.operator for m in _mutants_of(result, str(tmp_path), rel)}
+    assert "return:value>None" in all_ops
+    assert not any(m.operator == "return:value>None" for m in result.survivors)
+
+
+def test_augmented_assign_mutant_generated(tmp_path):
+    module_src = (
+        "def accumulate(n):\n"
+        "    total = 0\n"
+        "    total += n\n"
+        "    return total\n"
+    )
+    test_src = (
+        "from mod import accumulate\n"
+        "def test_acc():\n"
+        "    assert accumulate(3) == 3\n"
+    )
+    rel = _write_project(tmp_path, module_src, test_src)
+    result = mutation_score(str(tmp_path), rel, max_mutants=20)
+    all_ops = {m.operator for m in _mutants_of(result, str(tmp_path), rel)}
+    assert "augassign:+=>-=" in all_ops
+    # The strong test (3 != -3) kills the ``+= -> -=`` flip.
+    assert not any(m.operator == "augassign:+=>-=" for m in result.survivors)
+
+
+def _mutants_of(result, root, rel):
+    """All mutants (killed + survived) re-derived from the source for assertion
+    on which operators were SEEDED, independent of kill/survive outcome."""
+    import ast as _ast
+
+    from app.engine.mutation_tester import _collect_sites
+    from pathlib import Path as _Path
+
+    src = (_Path(root) / rel).read_text(encoding="utf-8")
+    sites = _collect_sites(_ast.parse(src), src.splitlines(keepends=True))
+
+    class _M:
+        def __init__(self, op):
+            self.operator = op
+
+    return [_M(s.operator) for s in sites]
 
 
 def test_no_mutable_sites_returns_empty_result(tmp_path):
+    # A module with NO mutable sites: no operators, no numeric/return-value
+    # constants. ``return x`` would now seed a return-value mutant, and a bare
+    # ``return None`` is excluded, so we use a function whose body is ``pass``.
     module_src = (
-        "def greet(name):\n"
-        "    return \"hello \" + name\n"
-    )
-    # The only BinOp is string concatenation; "+" -> "-" still parses, so to
-    # get a genuinely empty module we use one with NO mutable operators.
-    module_src = (
-        "def passthrough(x):\n"
-        "    return x\n"
+        "def noop(x):\n"
+        "    pass\n"
     )
     test_src = (
-        "from mod import passthrough\n"
+        "from mod import noop\n"
         "def test_pt():\n"
-        "    assert passthrough(5) == 5\n"
+        "    assert noop(5) is None\n"
     )
     rel = _write_project(tmp_path, module_src, test_src)
     result = mutation_score(str(tmp_path), rel, max_mutants=10)
@@ -171,6 +330,37 @@ def test_determinism_two_runs_identical(tmp_path):
     a = mutation_score(str(tmp_path), rel, max_mutants=10).to_dict()
     b = mutation_score(str(tmp_path), rel, max_mutants=10).to_dict()
     assert a == b
+
+
+def test_determinism_two_runs_identical_new_operators(tmp_path):
+    # A module exercising number / return-value / augmented-assign operators
+    # must produce byte-identical results across two runs.
+    module_src = (
+        "def step(x):\n"
+        "    total = 0\n"
+        "    total += 1\n"
+        "    return total + x\n"
+    )
+    test_src = (
+        "from mod import step\n"
+        "def test_step():\n"
+        "    assert step(2) == 3\n"
+    )
+    rel = _write_project(tmp_path, module_src, test_src)
+    a = mutation_score(str(tmp_path), rel, max_mutants=20).to_dict()
+    b = mutation_score(str(tmp_path), rel, max_mutants=20).to_dict()
+    assert a == b
+
+
+def test_augassign_splice_keeps_equals_token():
+    # The augmented-assign flip mutates only the operator char, leaving ``=``.
+    from app.engine.mutation_tester import _Site, _splice
+    src = "x += 1\n"
+    lines = src.splitlines(keepends=True)
+    site = _Site(line=1, col=2, end_col=3, operator="augassign:+=>-=",
+                 original="+", mutated="-")
+    mutated = _splice(lines, site)
+    assert mutated == "x -= 1\n"
 
 
 def test_original_file_unchanged_after_run(tmp_path):
@@ -294,8 +484,8 @@ def test_scoped_run_uses_only_covering_tests(tmp_path):
         encoding="utf-8",
     )
     result = mutation_score(str(tmp_path), rel, max_mutants=10)
-    assert result.total == 1
-    assert result.killed == 1
+    assert result.total >= 1
+    assert result.killed == result.total
     assert result.score == 1.0
     assert result.scoped_tests == ["tests/test_foo.py"]
 
@@ -311,8 +501,8 @@ def test_scoped_run_no_covering_test_falls_back(tmp_path):
         "def test_u():\n    assert 1 == 1\n", encoding="utf-8",
     )
     result = mutation_score(str(tmp_path), rel, max_mutants=10)
-    assert result.total == 1
-    assert result.survived == 1
+    assert result.total >= 1
+    assert result.survived == result.total
     assert result.score == 0.0
     assert result.scoped_tests == []
 
@@ -328,8 +518,8 @@ def test_scope_tests_false_reproduces_full_suite(tmp_path):
     )
     rel = _write_project(tmp_path, _MODULE_SRC, test_src)
     result = mutation_score(str(tmp_path), rel, max_mutants=10, scope_tests=False)
-    assert result.total == 1
-    assert result.killed == 1
+    assert result.total >= 1
+    assert result.killed == result.total
     assert result.score == 1.0
     assert result.scoped_tests == []
 
@@ -399,17 +589,18 @@ def test_cmd_mutants_json_output(tmp_path, capsys):
     import json as _json
     payload = _json.loads(out)
     assert rc == 0
-    assert payload["total"] == 1
-    assert payload["survived"] == 1
-    assert payload["survivors"][0]["operator"] == "comparison:==>!="
+    assert payload["total"] >= 1
+    assert payload["survived"] >= 1
+    survivor_ops = {s["operator"] for s in payload["survivors"]}
+    assert "comparison:==>!=" in survivor_ops
 
 
 def test_cmd_mutants_empty_module(tmp_path, capsys):
-    module_src = "def passthrough(x):\n    return x\n"
+    module_src = "def noop(x):\n    pass\n"
     test_src = (
-        "from mod import passthrough\n"
+        "from mod import noop\n"
         "def test_pt():\n"
-        "    assert passthrough(1) == 1\n"
+        "    assert noop(1) is None\n"
     )
     rel = _write_project(tmp_path, module_src, test_src)
     args = argparse.Namespace(module=rel, target=str(tmp_path),

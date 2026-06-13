@@ -3,8 +3,10 @@
 This is a multi-oracle "definition-of-done" measure: instead of asking whether
 the code passes its tests, it asks whether the *tests* would notice if the code
 broke. We seed tiny artificial faults ("mutants") into one target module — flip
-a ``==`` to ``!=``, a ``+`` to ``-``, ``and`` to ``or``, ``True`` to ``False`` —
-then run the project's existing test suite against each mutant in an isolated
+a ``==`` to ``!=``, a ``+`` to ``-``, ``and`` to ``or``, ``True`` to ``False``,
+a number ``n`` to ``n + 1``, a ``return <expr>`` to ``return None``, or a
+``+=`` to ``-=`` — then run the project's existing test suite against each
+mutant in an isolated
 copy of the tree. A mutant the suite FAILS on is *killed* (the tests caught the
 bug); a mutant the suite still PASSES on *survived* (the tests are blind there).
 The mutation **score** = killed / total is a deterministic lower bound on suite
@@ -70,6 +72,16 @@ _BOOLOP_FLIPS: dict[type, tuple[str, str]] = {
 _BOOL_CONST_FLIPS: dict[bool, tuple[str, str]] = {
     True: ("True", "False"),
     False: ("False", "True"),
+}
+
+# Augmented-assignment operator flips on ``ast.AugAssign`` (``x += 1`` etc.).
+# The written token excludes the trailing ``=`` (we splice just the operator
+# part of the ``<op>=`` compound so the ``=`` stays put).
+_AUGASSIGN_FLIPS: dict[type, tuple[str, str]] = {
+    ast.Add: ("+", "-"),
+    ast.Sub: ("-", "+"),
+    ast.Mult: ("*", "/"),
+    ast.Div: ("/", "*"),
 }
 
 
@@ -223,8 +235,99 @@ def _collect_sites(tree: ast.Module, source_lines: list[str]) -> list[_Site]:
                     original=written, mutated=replacement,
                 ))
 
+        elif isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            # Number-constant flip (bools already handled above; exclude them).
+            # Deterministic rule: ``n -> n + 1``. The original literal must be
+            # spliced verbatim, so we only mutate when the source span matches
+            # the exact text we expect to replace.
+            if isinstance(node.value, bool) or node.lineno != node.end_lineno:
+                continue
+            line = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
+            start = node.col_offset
+            end = node.end_col_offset or 0
+            if end > len(line):
+                continue
+            written = line[start:end]
+            # Only handle plain numeric literals (no sign/whitespace inside the
+            # span); a textual round-trip of ``n + 1`` keeps int/float type.
+            replacement = _mutate_number(node.value, written)
+            if replacement is None or replacement == written:
+                continue
+            sites.append(_Site(
+                line=node.lineno, col=start, end_col=end,
+                operator=f"number:{written}>{replacement}",
+                original=written, mutated=replacement,
+            ))
+
+        elif isinstance(node, ast.Return) and node.value is not None:
+            # Return-value flip: ``return <expr>`` -> ``return None``. We splice
+            # just the value span (leaving the ``return`` keyword in place) so
+            # the replacement stays single-line and exact.
+            value = node.value
+            if value.lineno != value.end_lineno:
+                continue
+            line = source_lines[value.lineno - 1] if value.lineno - 1 < len(source_lines) else ""
+            start = value.col_offset
+            end = value.end_col_offset or 0
+            if end > len(line):
+                continue
+            written = line[start:end]
+            if not written or written == "None":
+                continue
+            sites.append(_Site(
+                line=value.lineno, col=start, end_col=end,
+                operator="return:value>None",
+                original=written, mutated="None",
+            ))
+
+        elif isinstance(node, ast.AugAssign):
+            # Augmented-assign operator flip (``x += 1`` -> ``x -= 1``). We
+            # splice just the operator token before the ``=``.
+            flip = _AUGASSIGN_FLIPS.get(type(node.op))
+            if flip is None or node.lineno != node.end_lineno:
+                continue
+            line = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
+            written, replacement = flip
+            # The ``<op>=`` token sits between the target and the value; search
+            # for ``<op>=`` from the end of the target so we don't catch any
+            # unrelated operator on the line.
+            target_end = node.target.end_col_offset or 0
+            value_start = node.value.col_offset
+            span = _op_span(line, target_end, written + "=")
+            if span is not None and span[1] <= value_start and span[1] <= len(line):
+                # Mutate only the operator char, keeping the ``=`` intact.
+                sites.append(_Site(
+                    line=node.lineno, col=span[0], end_col=span[0] + len(written),
+                    operator=f"augassign:{written}=>{replacement}=",
+                    original=written, mutated=replacement,
+                ))
+
     sites.sort(key=lambda s: (s.line, s.col, s.operator))
     return sites
+
+
+def _mutate_number(value: int | float, written: str) -> str | None:
+    """Deterministic numeric-literal mutation ``n -> n + 1``.
+
+    Returns the replacement text, or ``None`` when the source token is not a
+    plain decimal literal we can safely rewrite (e.g. hex/binary/underscored
+    forms, or a value carrying a sign that lives outside the constant span).
+    The text is produced from ``value + 1`` so an int stays an int and a float
+    stays a float, mirroring the literal's own kind.
+    """
+    # Refuse anything but the digits/dot Python would render for this value, so
+    # the splice round-trips and never corrupts an exotic literal form.
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        if written != str(value):
+            return None
+        return str(value + 1)
+    if isinstance(value, float):
+        if written != repr(value):
+            return None
+        return repr(value + 1.0)
+    return None
 
 
 def _splice(source_lines: list[str], site: _Site) -> str | None:
