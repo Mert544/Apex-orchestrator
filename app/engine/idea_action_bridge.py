@@ -337,6 +337,14 @@ class IdeaActionBridge:
         text = cls._read(project_root, rel_path)
         return has_negated_comparison(text) if text is not None else False
 
+    @classmethod
+    def _detect_fstring(cls, project_root: str, rel_path: str) -> bool:
+        """True if the file has an f-string without placeholders (a dead `f`)."""
+        from app.engine.detectors import has_fstring_no_placeholder
+
+        text = cls._read(project_root, rel_path)
+        return has_fstring_no_placeholder(text) if text is not None else False
+
     # The detection ladder, most-severe first — DATA, not branches: each rung
     # is (detector method, change strategy, title template). Adding a rung is
     # one line; the dispatch below never changes. (This function was the
@@ -356,6 +364,8 @@ class IdeaActionBridge:
          "Simplify negated comparisons in {t}"),
         ("_detect_raise_from", "raise-from",
          "Chain re-raised exceptions to their cause in {t}"),
+        ("_detect_fstring", "fstring-no-placeholder",
+         "Drop dead f-string prefixes in {t}"),
     )
 
     @classmethod

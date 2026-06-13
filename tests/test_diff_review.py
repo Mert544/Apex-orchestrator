@@ -320,3 +320,22 @@ def test_review_extract_finding_excluded_for_fixture_paths(tmp_path):
     (tmp_path / "tests" / "base.py").write_text(_long_function_source())
     result = review(str(tmp_path))
     assert not [f for f in result.findings if f.category == "refactor"]
+
+
+# --- f-string-without-placeholder (style finding with inline suggestion) ------
+
+def test_review_flags_dead_fstring_with_suggestion(tmp_path):
+    _repo(tmp_path)
+    (tmp_path / "app" / "base.py").write_text(
+        'def existing():\n    return 1\n\ndef greet():\n    return f"hello"\n'
+    )
+    result = review(str(tmp_path))
+    fstrings = [f for f in result.findings if f.fix_kind == "fstring-no-placeholder"]
+    assert len(fstrings) == 1
+    f = fstrings[0]
+    assert f.category == "style"
+    assert f.auto_fixable
+    # A tidy one-liner — the reviewer shows the before/after suggestion.
+    assert f.suggestion is not None
+    old, new = f.suggestion
+    assert 'f"hello"' in old and '"hello"' in new and "f" not in new.split('"')[0]

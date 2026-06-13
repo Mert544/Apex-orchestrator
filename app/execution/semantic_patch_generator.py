@@ -28,6 +28,7 @@ from app.execution.semantic.transforms import open_encoding
 from app.execution.semantic.transforms import identity_literal
 from app.execution.semantic.transforms import negated_comparison
 from app.execution.semantic.transforms import raise_from
+from app.execution.semantic.transforms import fstring
 
 
 class SemanticPatchGenerator:
@@ -170,6 +171,8 @@ class SemanticPatchGenerator:
                 result = negated_comparison.apply(rel_path, current, title)
             elif transform == "fix_raise_from":
                 result = raise_from.apply(rel_path, current, title)
+            elif transform == "fix_fstring":
+                result = fstring.apply(rel_path, current, title)
 
             if result:
                 return self._attach_metadata(self._estimate_and_return(result), selection, contexts, strategy)

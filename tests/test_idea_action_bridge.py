@@ -219,6 +219,24 @@ def test_harden_applies_open_encoding_fix(tmp_path):
         assert 'encoding="utf-8"' in src.read_text()
 
 
+def test_harden_drops_dead_fstring_prefix(tmp_path):
+    # A file whose only issue is an f-string without placeholders gets the
+    # dead-prefix removal via the harden detection ladder.
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "msg.py"
+    src.write_text('def banner():\n    return f"welcome"\n')
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Harden: app/msg.py", subject="app/msg.py",
+                    operator="harden", operator_chain=["harden"],
+                    source_facts=["sensitive-path: app/msg.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
+    if result["applied"]:
+        assert result["transform_type"] == "fix_fstring_no_placeholder"
+        assert 'f"welcome"' not in src.read_text()
+        assert '"welcome"' in src.read_text()
+
+
 def test_harden_makes_no_change_when_no_real_issue(tmp_path):
     # Clean code with no eval/os.system/bare-except/mutable/modernize/encoding/
     # timeout issue: harden_security must NOT fabricate a speculative guard — it

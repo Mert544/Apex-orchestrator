@@ -23,7 +23,8 @@ _SECURITY_ORDER = ("eval", "os.system", "pickle", "yaml", "sql", "tempfile", "we
 # explicit acknowledgement instead of re-flagging a line they already silenced.
 _SUPPRESS_RE = re.compile(r"#\s*(noqa|nosec)\b(?:\s*[:=]\s*([A-Za-z0-9 ,]+))?", re.IGNORECASE)
 # Lint codes that, when named in a suppression comment, suppress a finding.
-_FIXKIND_NOQA = {"bare except": "E722", "base-exception": "B036", "raise-from": "B904"}
+_FIXKIND_NOQA = {"bare except": "E722", "base-exception": "B036", "raise-from": "B904",
+                 "fstring-no-placeholder": "F541"}
 
 
 def _suppressed(line: str, category: str, fix_kind: str, message: str) -> bool:
@@ -201,6 +202,13 @@ def detect(source: str) -> list[Issue]:
                         add(sub.lineno, "bug", "high",
                             "assignment to a frozen dataclass field raises FrozenInstanceError "
                             "at runtime — use dataclasses.replace()", "")
+        elif isinstance(node, ast.JoinedStr) and not any(
+                isinstance(v, ast.FormattedValue) for v in node.values):
+            # An f-string with no interpolation is just a string with a
+            # misleading prefix — safe to drop the `f` (un-doubling braces).
+            add(node.lineno, "style", "low",
+                "f-string without placeholders — drop the `f` prefix",
+                "fstring-no-placeholder")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if _has_mutable_default(node):
                 add(node.lineno, "bug", "high", "mutable default argument — shared-state bug", "mutable-default")
@@ -534,6 +542,10 @@ def has_identity_literal(source: str) -> bool:
 
 def has_negated_comparison(source: str) -> bool:
     return any(i.fix_kind == "negated-comparison" for i in detect(source))
+
+
+def has_fstring_no_placeholder(source: str) -> bool:
+    return any(i.fix_kind == "fstring-no-placeholder" for i in detect(source))
 
 
 def _assert_is_substantive(test: ast.expr) -> bool:

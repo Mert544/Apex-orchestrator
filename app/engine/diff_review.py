@@ -157,7 +157,7 @@ def _line_suggestion(rel: str, source: str, finding: ReviewFinding) -> tuple[str
     add imports; flag-only fixes annotate) — those stay 'auto-fixable' without a
     shown diff."""
     from app.execution.semantic.transforms import (
-        modernize, open_encoding, identity_literal, negated_comparison, raise_from,
+        fstring, modernize, open_encoding, identity_literal, negated_comparison, raise_from,
     )
     from app.execution.semantic.transforms import security as security_transforms
 
@@ -173,6 +173,8 @@ def _line_suggestion(rel: str, source: str, finding: ReviewFinding) -> tuple[str
             res = negated_comparison.apply(rel, source, "negated-comparison")
         elif fk == "raise-from":
             res = raise_from.apply(rel, source, "raise-from")
+        elif fk == "fstring-no-placeholder":
+            res = fstring.apply(rel, source, "fstring no placeholder")
         elif fk in ("bare except", "base-exception"):
             res = security_transforms.apply(rel, source, f"fix {fk}")
         else:
