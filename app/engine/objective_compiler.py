@@ -35,7 +35,7 @@ from app.execution.cross_file_rename import RenamePlan
 
 __all__ = [
     "Move", "CompileStep", "CompileResult",
-    "dead_parameter_fitness", "compile_objective",
+    "dead_parameter_fitness", "inlinable_helper_fitness", "compile_objective",
 ]
 
 
@@ -128,9 +128,56 @@ def _dead_param_moves(project_root: str | Path) -> list[Move]:
     return moves
 
 
+# --- Objective: inline single-use helpers (reduce indirection) ---------------
+
+def _inlinable_helpers(project_root: str | Path) -> list[dict]:
+    """Tiny single-use helpers `apex inline` would cleanly fold away."""
+    from app.execution.inline_function import suggest_inlines
+
+    return list(suggest_inlines(str(project_root)))
+
+
+def inlinable_helper_fitness(project_root: str | Path) -> float:
+    """Fitness = how many single-use helpers remain to fold in. Lower is less
+    indirection; the objective is reached at 0."""
+    return float(len(_inlinable_helpers(project_root)))
+
+
+def _guarded_inline_plan(project_root: str | Path, function: str) -> RenamePlan:
+    """The inline plan for ``function``, but BLOCKED when it would fold the
+    helper into a test/fixture file. A function whose only caller is a test is a
+    public surface, not internal indirection — inlining it would dissolve real
+    code into a test assertion (and empty its module). Safety over activity."""
+    from app.engine.health_score import _is_fixture_path
+    from app.execution.inline_function import plan_inline
+
+    plan = plan_inline(str(project_root), function)
+    if plan.new_contents and any(_is_fixture_path(rel) for rel in plan.new_contents):
+        plan.blockers.append(
+            "inlining would edit a test/fixture file — the helper is a public "
+            "surface, not internal indirection; skipped")
+        plan.new_contents.clear()
+    return plan
+
+
+def _inline_moves(project_root: str | Path) -> list[Move]:
+    """One inline move per single-use helper found in the current tree."""
+    moves: list[Move] = []
+    for h in _inlinable_helpers(project_root):
+        fn, mod = h["function"], h["module"]
+        moves.append(Move(
+            operator="inline",
+            target=f"{mod}:{fn}()",
+            description=f"inline the single-use helper `{fn}()` in {mod}",
+            build_plan=lambda f=fn: _guarded_inline_plan(project_root, f),
+        ))
+    return moves
+
+
 _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
                              Callable[[str | Path], list[Move]]]] = {
     "dead-params": (dead_parameter_fitness, _dead_param_moves),
+    "inline-helpers": (inlinable_helper_fitness, _inline_moves),
 }
 
 
