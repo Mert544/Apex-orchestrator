@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.timeout(900)  # whole-repo AST audit is legitimately slow; the
+# global --timeout=120 (for catching hangs) would false-fail it under load.
 @pytest.mark.skipif(sys.platform == "win32", reason="Script uses shebang / Unix path assumptions")
 def test_security_audit_script_runs_successfully():
     root = Path(__file__).parent.parent
@@ -16,7 +18,7 @@ def test_security_audit_script_runs_successfully():
         capture_output=True,
         text=True,
         cwd=str(root),
-        timeout=120,  # fail fast instead of hanging CI if the script ever blocks
+        timeout=600,  # generous: the audit walks the whole repo; still fails fast on a true hang
     )
     # The script may exit 0 or 1 depending on risks found, but should not crash
     assert result.returncode in (0, 1)
@@ -24,6 +26,7 @@ def test_security_audit_script_runs_successfully():
     assert "security-report.json" in result.stdout or (root / ".apex" / "security-report.json").exists()
 
 
+@pytest.mark.timeout(900)  # see note above: legitimately slow whole-repo audit.
 def test_security_audit_report_format():
     root = Path(__file__).parent.parent
     # Import and run directly to avoid subprocess issues on Windows

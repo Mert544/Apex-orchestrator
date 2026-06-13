@@ -1,5 +1,13 @@
 # Apex Orchestrator — Agent Development Guide
 
+> ⚠️ **Current development model lives in [`docs/DEVELOPING.md`](docs/DEVELOPING.md).**
+> Apex today is a deterministic, stdlib-only project-**development** assistant
+> built around the Objective-Compiler, the fractal goal tree, the auto-registry,
+> and `apex develop` / `plan` / `ascend`. Verify with `python scripts/verify.py`
+> and add new abilities with `python scripts/new_objective.py`. The sections
+> below document earlier directions that still exist but are not where new work
+> goes — **when this file and `docs/DEVELOPING.md` disagree, DEVELOPING.md wins.**
+
 ## Product Identity
 
 - **Name:** Apex Orchestrator
