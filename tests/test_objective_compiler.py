@@ -369,3 +369,66 @@ def test_compile_uses_sequence_memory_without_breaking(tmp_path):
     r = compile_objective(str(tmp_path), objective="modernize", apply=True, verify=False)
     assert r.fitness_end == 0.0
     assert len(r.steps) == 3
+
+
+# --- develop --all: sweep every objective -----------------------------------
+
+def _multi_debt_project(tmp_path: Path) -> Path:
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "m.py").write_text(
+        "def render(text, color=None, width=80):\n"
+        "    if text == None:\n        return dict()\n"
+        "    msg = f\"out\"\n    return msg + text[:width]\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "from app.m import render\ndef test_r():\n"
+        "    assert render(None) == {}\n    assert render('hi', width=2) == 'outhi'\n",
+        encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_compile_all_sweeps_every_objective(tmp_path):
+    from app.engine.objective_compiler import compile_all
+    _multi_debt_project(tmp_path)
+    results = compile_all(str(tmp_path), apply=True, verify=False)
+    # modernize (3) + dead-params (1) had work; shrink/inline had none → skipped.
+    objectives = {r.objective for r in results}
+    assert "modernize" in objectives and "dead-params" in objectives
+    src = (tmp_path / "app" / "m.py").read_text()
+    assert "is None" in src and "return {}" in src and 'msg = "out"' in src
+    assert "color" not in src
+
+
+def test_compile_all_clean_project_has_no_work(tmp_path):
+    from app.engine.objective_compiler import compile_all
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f(x):\n    return x + 1\n", encoding="utf-8")
+    assert compile_all(str(tmp_path), apply=True, verify=False) == []
+
+
+def test_available_objectives_and_all_constant():
+    from app.engine.objective_compiler import ALL_OBJECTIVES, available_objectives
+    avail = available_objectives()
+    assert set(ALL_OBJECTIVES) <= set(avail)
+    assert "modernize" in avail and "dead-params" in avail
+
+
+def test_render_all_markdown_and_empty():
+    from app.engine.objective_compiler import compile_all, render_all_markdown
+    md = render_all_markdown([])
+    assert "Nothing to do" in md
+
+
+def test_cmd_develop_all_flag(tmp_path, capsys):
+    import argparse
+    from app.cli_autonomy import cmd_develop
+    _multi_debt_project(tmp_path)
+    rc = cmd_develop(argparse.Namespace(
+        target=str(tmp_path), objective="dead-params", all_objectives=True,
+        from_dream=False, playbook=False, apply=True, max_steps=25,
+        no_verify=True, json=False))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "all objectives" in out.lower()
+    assert "color" not in (tmp_path / "app" / "m.py").read_text()

@@ -421,6 +421,19 @@ def cmd_develop(args: argparse.Namespace) -> int:
             print(render_playbook_markdown(archive))
         return 0
 
+    if getattr(args, "all_objectives", False):
+        from app.engine.objective_compiler import compile_all, render_all_markdown
+
+        results = compile_all(str(target), max_steps=max_steps, verify=verify, apply=apply)
+        if args.json:
+            print(json.dumps([r.to_dict() for r in results], indent=2))
+        else:
+            print(render_all_markdown(results))
+            if apply and any(r.steps for r in results):
+                print("_Applied to your working tree, not committed — "
+                      "review with `git diff`._")
+        return 0
+
     if getattr(args, "from_dream", False):
         from app.engine.objective_compiler import (
             compile_from_dream, dream_confluence_modules, render_from_dream_markdown,
@@ -535,6 +548,9 @@ def register_parsers(subparsers) -> None:
     develop_parser.add_argument("--target", default="", help="Target project root")
     develop_parser.add_argument("--objective", default="dead-params",
                                 help="Objective to pursue (default: dead-params)")
+    develop_parser.add_argument("--all", action="store_true", dest="all_objectives",
+                                help="Sweep EVERY objective in order (modernize, dead-params, "
+                                     "shrink-functions, inline-helpers) — clean everything")
     develop_parser.add_argument("--from-dream", action="store_true", dest="from_dream",
                                 help="Scope the campaign to the modules the nightly "
                                      "dream flagged as confluences (dream → action)")

@@ -36,8 +36,9 @@ from app.execution.cross_file_rename import RenamePlan
 __all__ = [
     "Move", "CompileStep", "CompileResult",
     "dead_parameter_fitness", "inlinable_helper_fitness", "long_function_fitness",
-    "modernize_fitness", "compile_objective", "dream_confluence_modules",
-    "compile_from_dream", "render_compile_markdown", "render_from_dream_markdown",
+    "modernize_fitness", "compile_objective", "compile_all", "available_objectives",
+    "ALL_OBJECTIVES", "dream_confluence_modules", "compile_from_dream",
+    "render_compile_markdown", "render_from_dream_markdown", "render_all_markdown",
 ]
 
 
@@ -308,6 +309,17 @@ _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
 }
 
 
+# The objectives `apex develop --all` sweeps, in a deliberate order: tidy the
+# surface (modernize), trim it (dead-params), then restructure (shrink, inline).
+ALL_OBJECTIVES: tuple[str, ...] = ("modernize", "dead-params",
+                                   "shrink-functions", "inline-helpers")
+
+
+def available_objectives() -> list[str]:
+    """The objective names the compiler can pursue."""
+    return list(_OBJECTIVES)
+
+
 def _move_module(move: "Move") -> str:
     """The module a move targets (the part before ':' in its target)."""
     return move.target.split(":", 1)[0]
@@ -423,6 +435,35 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
 
 def _move_module_from_target(target: str) -> str:
     return target.split(":", 1)[0]
+
+
+def compile_all(project_root: str | Path, max_steps: int = 25, verify: bool = True,
+                apply: bool = True) -> list[CompileResult]:
+    """Sweep EVERY objective in order — tidy, trim, then restructure the code —
+    each its own suite-gated campaign. The one-shot "clean everything
+    measurable" pass; returns one CompileResult per objective (skipping those
+    already at zero, so the report shows only what actually had work)."""
+    results: list[CompileResult] = []
+    for objective in ALL_OBJECTIVES:
+        result = compile_objective(project_root, objective=objective,
+                                   max_steps=max_steps, verify=verify, apply=apply)
+        if result.steps or result.fitness_start > 0:
+            results.append(result)
+    return results
+
+
+def render_all_markdown(results: list[CompileResult]) -> str:
+    """Render the multi-objective sweep as one report."""
+    if not results:
+        return "# Develop — all objectives\n\n_Nothing to do: every objective is already at zero._\n"
+    total_moves = sum(len(r.steps) for r in results)
+    total_gain = sum(r.fitness_start - r.fitness_end for r in results)
+    lines = [f"# Develop — all objectives ({len(results)} with work)", "",
+             f"**{total_moves} verified move(s)**, total fitness gain "
+             f"**{total_gain:g}** across the sweep.", ""]
+    for r in results:
+        lines.append(render_compile_markdown(r))
+    return "\n".join(lines)
 
 
 def _record_composition(result: CompileResult, project_root: str) -> None:
