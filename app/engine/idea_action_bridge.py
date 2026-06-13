@@ -53,6 +53,34 @@ class IdeaActionBridge:
     proposes, it never applies.
     """
 
+    def _convergence_step(self, idea: IdeaNode, step: dict, n: int,
+                          target: str, project_root: str) -> ActionStep | None:
+        """One mini-roadmap entry, reality-checked — or None when its
+        precondition is already satisfied (a findingless harden)."""
+        action = step["action_type"]
+        executable = step["executable"] and bool(target)
+        text = step["step"]
+        if project_root and executable:
+            reason = self._unserviceable_reason(action, target, project_root)
+            if reason and action == "harden_security":
+                return None  # nothing to harden — precondition satisfied
+            if reason:
+                executable = False
+                text += f" — {reason}"
+        return ActionStep(
+            branch_path=f"{idea.branch_path}.{n}",
+            title=f"{step['phase']}: {text} in {idea.subject}",
+            operator="synthesis",
+            subject=idea.subject,
+            action_type=action,
+            target=target,
+            description=f"{text} ({idea.subject})",
+            executable=executable,
+            value=idea.value,
+            source_facts=idea.source_facts,
+            phase=step["phase"],
+        )
+
     def plan_convergence(self, idea: IdeaNode,
                          project_root: str = "") -> list[ActionStep]:
         """Expand a convergence idea into an ordered, phased mini-roadmap.
@@ -62,12 +90,9 @@ class IdeaActionBridge:
         deterministic transform exists. Empty for a non-convergence idea.
 
         With ``project_root``, each executable step is REALITY-CHECKED before
-        it enters the plan — a step whose precondition is already satisfied
-        must not be re-attempted (and re-blocked) night after night:
-          - a test step on a module the suite already references becomes a
-            work order (the stub transform would rightly refuse);
-          - a harden step with no actual finding in the file is dropped
-            (the label came from a path hint; there is nothing to do).
+        it enters the plan (see ``_unserviceable_reason``) — a step whose
+        precondition is already satisfied must not be re-attempted (and
+        re-blocked) night after night.
         """
         from app.engine.idea_permutation import convergence_labels, convergence_plan
 
@@ -77,38 +102,10 @@ class IdeaActionBridge:
         target = idea.subject.split("::", 1)[0]
         target = target if "/" in target or target.endswith(".py") else ""
         steps: list[ActionStep] = []
-        n = 0
-        for step in convergence_plan(labels):
-            action = step["action_type"]
-            executable = step["executable"] and bool(target)
-            text = step["step"]
-            if project_root and executable:
-                if action == "create_test_stub":
-                    from app.engine.verification_strength import module_referenced_by_suite
-
-                    if module_referenced_by_suite(project_root, target):
-                        executable = False
-                        text += " — linked tests already exist; deepen them by hand"
-                elif action == "harden_security":
-                    # The full ladder, not just security findings: harden also
-                    # acts on encodings/timeouts/etc. Only when NO rung fires
-                    # is there truly nothing for the hands to do.
-                    if self._harden_change_strategy(project_root, target) is None:
-                        continue  # nothing to harden — precondition satisfied
-            steps.append(ActionStep(
-                branch_path=f"{idea.branch_path}.{n}",
-                title=f"{step['phase']}: {text} in {idea.subject}",
-                operator="synthesis",
-                subject=idea.subject,
-                action_type=action,
-                target=target,
-                description=f"{text} ({idea.subject})",
-                executable=executable,
-                value=idea.value,
-                source_facts=idea.source_facts,
-                phase=step["phase"],
-            ))
-            n += 1
+        for spec in convergence_plan(labels):
+            built = self._convergence_step(idea, spec, len(steps), target, project_root)
+            if built is not None:
+                steps.append(built)
         return steps
 
     @staticmethod
@@ -130,6 +127,51 @@ class IdeaActionBridge:
             out.append(s)
         return out
 
+    def _stub_unserviceable(self, target: str, project_root: str) -> str:
+        from app.engine.verification_strength import module_referenced_by_suite
+
+        # A stub can only ever be the FIRST test layer. On a module the suite
+        # already references, generation either refuses (the test file
+        # exists) or writes a redundant smoke stub.
+        if module_referenced_by_suite(project_root, target):
+            return "linked tests already exist; deepen them by hand"
+        return ""
+
+    def _harden_unserviceable(self, target: str, project_root: str) -> str:
+        # The full ladder, not just security findings: harden also acts on
+        # encodings/timeouts/etc. Only when NO rung fires is there truly
+        # nothing for the hands to do.
+        if self._harden_change_strategy(project_root, target) is None:
+            return "no auto-fixable pattern found; human review"
+        return ""
+
+    def _imports_unserviceable(self, target: str, project_root: str) -> str:
+        # Probe the transform pair _generate would run (imports tidy, or the
+        # modernize swap): a file neither would change can only produce a
+        # draft note — that is work-order territory.
+        from app.execution.semantic.transforms import organize_imports as oi
+
+        text = self._read(project_root, target)
+        servable = text is not None and (
+            self._detect_modernization(project_root, target)
+            or oi.apply(target, text) is not None)
+        return "" if servable else "imports already tidy; human review"
+
+    def _unserviceable_reason(self, action_type: str, target: str,
+                              project_root: str) -> str:
+        """Why an executable step can't be served right now — "" when it can.
+
+        THE single source of truth for plan-time reality checks: a step that
+        enters the plan as executable must answer "can the hands act TODAY?"
+        or it will simply re-block every night.
+        """
+        probe = {
+            "create_test_stub": self._stub_unserviceable,
+            "harden_security": self._harden_unserviceable,
+            "organize_imports": self._imports_unserviceable,
+        }.get(action_type)
+        return probe(target, project_root) if probe else ""
+
     def _expand_idea(self, idea: IdeaNode, default_phase: str = "",
                      project_root: str = "") -> list[ActionStep]:
         """One idea -> one or more steps. A convergence idea becomes its phased
@@ -142,36 +184,11 @@ class IdeaActionBridge:
         if default_phase:
             step.phase = default_phase
         if project_root and step.executable and step.target:
-            if step.action_type == "create_test_stub":
-                from app.engine.verification_strength import module_referenced_by_suite
-
-                # A stub can only ever be the FIRST test layer. On a module the
-                # suite already references, generation either refuses (the test
-                # file exists -> nightly "blocked") or writes a redundant smoke
-                # stub. Either way the honest shape is a work order.
-                if module_referenced_by_suite(project_root, step.target):
-                    step.executable = False
-                    step.description += " — linked tests already exist; deepen them by hand"
-            elif step.action_type == "harden_security":
-                # Same reality check the convergence path applies: when no
-                # ladder rung fires there is nothing the hands can do, and an
-                # executable step would just re-block every night.
-                if self._harden_change_strategy(project_root, step.target) is None:
-                    step.executable = False
-                    step.description += " — no auto-fixable pattern found; human review"
-            elif step.action_type == "organize_imports":
-                # Probe the transform pair _generate would run (imports tidy,
-                # or the modernize swap): a file neither would change can only
-                # produce a draft note — that is work-order territory.
-                from app.execution.semantic.transforms import organize_imports as oi
-
-                text = self._read(project_root, step.target)
-                servable = text is not None and (
-                    self._detect_modernization(project_root, step.target)
-                    or oi.apply(step.target, text) is not None)
-                if not servable:
-                    step.executable = False
-                    step.description += " — imports already tidy; human review"
+            reason = self._unserviceable_reason(step.action_type, step.target,
+                                                project_root)
+            if reason:
+                step.executable = False
+                step.description += f" — {reason}"
         return [step]
 
     def plan_idea(self, idea: IdeaNode) -> ActionStep:
@@ -358,40 +375,71 @@ class IdeaActionBridge:
                 return [strategy], title.format(t=target)
         return None
 
-    def _generate(self, step: ActionStep, project_root: str):
-        """Run the semantic generator for an executable step. Returns the
-        SemanticPatchResult (proposed only) or None."""
+    def _stub_target(self, step: ActionStep, project_root: str) -> list[str] | None:
+        """The test-file target list for a create_test_stub step, or None
+        when stubbing is impossible (test files themselves; an existing
+        test file must never be clobbered)."""
+        stem = Path(step.target).stem
+        if stem.startswith("test_") or "/tests/" in f"/{step.target}" or step.target.startswith("tests/"):
+            return None
+        stub = f"tests/test_{stem}.py"
+        if (Path(project_root) / stub).exists():
+            return None
+        return [stub]
+
+    def _change_strategy_for(self, step: ActionStep,
+                             project_root: str) -> tuple[list[str], str] | None:
+        """The (change_strategy, title) the generator should pursue.
+
+        harden_security prefers a concrete AST security fix when the file
+        has a known dangerous pattern (None when no rung fires — don't
+        invent one); a "simplify" idea on a file with `== None` modernizes
+        it instead of only touching imports.
+        """
+        change_strategy = self._ACTION_STRATEGY[step.action_type]
+        title = step.description
+        if step.action_type == "harden_security":
+            return self._harden_change_strategy(project_root, step.target)
+        if step.action_type == "organize_imports" and self._detect_modernization(project_root, step.target):
+            return ["modernize none-comparison"], f"Modernize comparisons in {step.target}"
+        return change_strategy, title
+
+    def _step_targets(self, step: ActionStep,
+                      project_root: str) -> list[str] | None:
+        """The files the generator should write for this step, or None when
+        the step has nothing a transform can act on."""
         if not step.executable or step.action_type not in self._ACTION_STRATEGY:
             return None
         if not step.target or not step.target.endswith(".py"):
             return None
         if step.action_type == "create_test_stub":
-            # Don't generate tests *for* test files, and never overwrite an
-            # existing test file (that would clobber real tests).
-            stem = Path(step.target).stem
-            if stem.startswith("test_") or "/tests/" in f"/{step.target}" or step.target.startswith("tests/"):
-                return None
-            stub = f"tests/test_{stem}.py"
-            if (Path(project_root) / stub).exists():
-                return None
-            target_files = [stub]
-        else:
-            target_files = [step.target]
+            return self._stub_target(step, project_root)
+        return [step.target]
 
-        # harden_security: prefer a concrete AST security fix when the file has
-        # a known dangerous pattern; fall back to the generic guard-clause hint.
-        change_strategy = self._ACTION_STRATEGY[step.action_type]
-        title = step.description
-        if step.action_type == "harden_security":
-            ladder = self._harden_change_strategy(project_root, step.target)
-            if ladder is None:
-                return None  # no real, auto-fixable issue — don't invent one
-            change_strategy, title = ladder
-        elif step.action_type == "organize_imports" and self._detect_modernization(project_root, step.target):
-            # A "simplify" idea on a file with `== None` modernizes it (a safe,
-            # behavior-preserving cleanup) instead of only touching imports.
-            change_strategy = ["modernize none-comparison"]
-            title = f"Modernize comparisons in {step.target}"
+    @staticmethod
+    def _vet_result(result):
+        """Only a REAL patch counts. A draft note under .apex/ is not one:
+        counting it as "applied" poisons the report, the proof record and
+        outcome memory (found by dogfooding: four organize_imports steps
+        "landed" by writing .md files — and the dream then praised
+        simplify's fake 100%)."""
+        if result is None or not result.patch_requests:
+            return None
+        if result.transform_type == "draft_fallback" or getattr(result, "mode", "") == "draft":
+            return None
+        return result
+
+    def _generate(self, step: ActionStep, project_root: str):
+        """Run the semantic generator for an executable step. Returns the
+        SemanticPatchResult (proposed only) or None."""
+        target_files = self._step_targets(step, project_root)
+        if target_files is None:
+            return None
+
+        chosen = self._change_strategy_for(step, project_root)
+        if chosen is None:
+            return None  # no real, auto-fixable issue — don't invent one
+        change_strategy, title = chosen
 
         from app.execution.semantic_patch_generator import SemanticPatchGenerator
 
@@ -406,15 +454,7 @@ class IdeaActionBridge:
             result = SemanticPatchGenerator().generate(project_root, patch_plan)
         except Exception:
             return None
-        if result is None or not result.patch_requests:
-            return None
-        # A draft note under .apex/ is NOT a patch: counting it as "applied"
-        # poisons the report, the proof record and outcome memory (found by
-        # dogfooding: four organize_imports steps "landed" by writing .md
-        # files — and the dream then praised simplify's fake 100%).
-        if result.transform_type == "draft_fallback" or getattr(result, "mode", "") == "draft":
-            return None
-        return result
+        return self._vet_result(result)
 
     def draft_patch(self, step: ActionStep, project_root: str) -> dict | None:
         """Draft a real patch *preview* for an executable step — never applied.
@@ -467,23 +507,51 @@ class IdeaActionBridge:
             return {"applied": False, "reason": "no applicable patch generated"}
 
         patch_requests = result.patch_requests
+        gate_block = self._safety_gate_block(perms, patch_requests, project_root,
+                                             run_tests)
+        if gate_block is not None:
+            return gate_block
+
+        snapshot, applied = self._write_patches(project_root, patch_requests)
+        out = {
+            "applied": applied.ok,
+            "mode": mode,
+            "transform_type": result.transform_type,
+            "changed_files": applied.changed_files,
+            "skipped_files": applied.skipped_files,
+            "error": applied.error,
+        }
+        if applied.ok and applied.changed_files:
+            out["diff"] = self._evidence_diff(snapshot, patch_requests, applied.changed_files)
+        if not (verify and applied.ok and applied.changed_files):
+            return out
+        return self._verify_or_rollback(project_root, out, snapshot,
+                                        patch_requests, applied)
+
+    @staticmethod
+    def _safety_gate_block(perms, patch_requests: list[dict], project_root: str,
+                           run_tests: bool) -> dict | None:
+        """The blocked-result dict when SafetyGates refuse, else None."""
+        if not perms.requires_safety_gates:
+            return None
+        from app.policies.safety_gates import SafetyGates
+
         changed = [pr.get("path", "") for pr in patch_requests]
+        new_code = "\n".join(pr.get("new_content", "") or "" for pr in patch_requests)
+        old_code = "\n".join(pr.get("expected_old_content", "") or "" for pr in patch_requests)
+        gates = SafetyGates(project_root, max_changed_files=perms.max_changed_files)
+        report = gates.check_all(
+            changed_files=changed, old_code=old_code, new_code=new_code, skip_test=not run_tests
+        )
+        if report.blocked:
+            return {"applied": False, "reason": "blocked by safety gates", "summary": report.summary}
+        return None
 
-        if perms.requires_safety_gates:
-            from app.policies.safety_gates import SafetyGates
-
-            new_code = "\n".join(pr.get("new_content", "") or "" for pr in patch_requests)
-            old_code = "\n".join(pr.get("expected_old_content", "") or "" for pr in patch_requests)
-            gates = SafetyGates(project_root, max_changed_files=perms.max_changed_files)
-            report = gates.check_all(
-                changed_files=changed, old_code=old_code, new_code=new_code, skip_test=not run_tests
-            )
-            if report.blocked:
-                return {"applied": False, "reason": "blocked by safety gates", "summary": report.summary}
-
+    @staticmethod
+    def _write_patches(project_root: str, patch_requests: list[dict]):
+        """Snapshot originals (for rollback), then write every patch."""
         from app.skills.execution.apply_patch import ApplyPatchSkill, FilePatch
 
-        # Snapshot originals for rollback before touching the tree.
         root = Path(project_root)
         snapshot: dict[str, str | None] = {}
         for pr in patch_requests:
@@ -498,22 +566,13 @@ class IdeaActionBridge:
             )
             for pr in patch_requests
         ]
-        applied = ApplyPatchSkill().run(project_root, patches)
+        return snapshot, ApplyPatchSkill().run(project_root, patches)
 
-        out = {
-            "applied": applied.ok,
-            "mode": mode,
-            "transform_type": result.transform_type,
-            "changed_files": applied.changed_files,
-            "skipped_files": applied.skipped_files,
-            "error": applied.error,
-        }
-        if applied.ok and applied.changed_files:
-            out["diff"] = self._evidence_diff(snapshot, patch_requests, applied.changed_files)
-        if not (verify and applied.ok and applied.changed_files):
-            return out
-
-        # Verify: run tests; roll back the changed files if they fail.
+    @staticmethod
+    def _verify_or_rollback(project_root: str, out: dict,
+                            snapshot: dict[str, str | None],
+                            patch_requests: list[dict], applied) -> dict:
+        """Run the suite; on red, restore every changed file to its snapshot."""
         from app.engine.proof_of_fix import summarize_test_run
         from app.engine.verification_strength import assess_strength
         from app.skills.execution.run_tests import RunTestsSkill
@@ -533,6 +592,7 @@ class IdeaActionBridge:
             return out
 
         # Tests failed -> restore every changed file to its snapshot.
+        root = Path(project_root)
         for rel in applied.changed_files:
             original = snapshot.get(rel)
             fp = root / rel
@@ -567,6 +627,36 @@ class IdeaActionBridge:
             parts.append(diff or f"(new file) b/{rel}")
         return "\n".join(parts)
 
+    def _step_preview(self, step: ActionStep, project_root: str) -> dict:
+        """One step's dry-run row: a real unified diff, applied to nothing."""
+        import difflib
+
+        result = self._generate(step, project_root)
+        if result is None:
+            return {"branch": step.branch_path, "action": step.action_type,
+                    "target": step.target, "applicable": False}
+        root = Path(project_root)
+        diffs: list[str] = []
+        for pr in result.patch_requests:
+            rel = pr.get("path", "")
+            fp = root / rel
+            old = fp.read_text(encoding="utf-8") if fp.exists() else ""
+            new = pr.get("new_content", "") or ""
+            diff = "".join(
+                difflib.unified_diff(
+                    old.splitlines(keepends=True), new.splitlines(keepends=True),
+                    fromfile=f"a/{rel}", tofile=f"b/{rel}",
+                )
+            )
+            diffs.append(diff or f"(new file) b/{rel}")
+        return {
+            "branch": step.branch_path, "action": step.action_type,
+            "target": step.target, "applicable": True,
+            "transform_type": result.transform_type,
+            "files": [pr.get("path") for pr in result.patch_requests],
+            "diff": "\n".join(diffs),
+        }
+
     def dry_run_plan(self, plan: ActionPlan, project_root: str) -> dict:
         """Preview a maintenance pass without touching the tree.
 
@@ -574,38 +664,8 @@ class IdeaActionBridge:
         diff against the current file — so you can see exactly what
         `apply_plan` would change, applied to nothing.
         """
-        import difflib
-
-        root = Path(project_root)
-        previews: list[dict] = []
-        for step in plan.executable_steps():
-            result = self._generate(step, project_root)
-            if result is None:
-                previews.append({"branch": step.branch_path, "action": step.action_type,
-                                 "target": step.target, "applicable": False})
-                continue
-            diffs: list[str] = []
-            for pr in result.patch_requests:
-                rel = pr.get("path", "")
-                old = ""
-                fp = root / rel
-                if fp.exists():
-                    old = fp.read_text(encoding="utf-8")
-                new = pr.get("new_content", "") or ""
-                diff = "".join(
-                    difflib.unified_diff(
-                        old.splitlines(keepends=True), new.splitlines(keepends=True),
-                        fromfile=f"a/{rel}", tofile=f"b/{rel}",
-                    )
-                )
-                diffs.append(diff or f"(new file) b/{rel}")
-            previews.append({
-                "branch": step.branch_path, "action": step.action_type,
-                "target": step.target, "applicable": True,
-                "transform_type": result.transform_type,
-                "files": [pr.get("path") for pr in result.patch_requests],
-                "diff": "\n".join(diffs),
-            })
+        previews = [self._step_preview(step, project_root)
+                    for step in plan.executable_steps()]
         return {
             "dry_run": True,
             "total_executable": len(plan.executable_steps()),
@@ -641,131 +701,22 @@ class IdeaActionBridge:
         each successfully-applied step is committed individually via
         GitAutoCommit, so every change is an isolated, revertible commit.
         """
-        from app.policies.mode_policy import ModePolicy, mode_from_string
-
-        can_commit = False
-        committer = None
-        if commit:
-            perms = ModePolicy(mode=mode_from_string(mode)).permissions
-            can_commit = bool(perms.can_commit)
-            if can_commit:
-                from app.engine.git_auto_commit import GitAutoCommit
-
-                committer = GitAutoCommit(project_root)
-
-        results: list[dict] = []
-        applied = rolled_back = blocked = committed = 0
-        def _commit(r: dict, action_label: str | None = None) -> tuple[bool, str | None]:
-            if committer is None or not r.get("changed_files"):
-                return False, None
-            cres = committer.commit(changed_files=r["changed_files"],
-                                    finding=action_label or step.action_type, action="fix")
-            return bool(cres.success), getattr(cres, "commit_hash", None)
-
-        shield_attempted: set[str] = set()
-
-        def _shield(step: ActionStep) -> dict | None:
-            """Generate a characterization test for an unreferenced target
-            before fixing it. Returns the shield's apply result, or None when
-            no shield is needed/possible."""
-            if not (test_first and verify):
-                return None
-            target = step.target
-            if (step.action_type == "create_test_stub" or not target
-                    or target in shield_attempted):
-                return None
-            from app.engine.verification_strength import module_referenced_by_suite
-
-            if module_referenced_by_suite(project_root, target):
-                return None
-            shield_attempted.add(target)
-            shield_step = ActionStep(
-                branch_path=f"{step.branch_path}.shield",
-                title=f"Shield {target} with a characterization test before fixing it",
-                operator="test", subject=target,
-                action_type="create_test_stub", target=target, executable=True,
-            )
-            return self.apply_step(shield_step, project_root, mode=mode, verify=verify)
-
-        from app.execution.risk_tiers import tier_for
-
+        run = _MaintenancePass(self, project_root, mode=mode, verify=verify,
+                               test_first=test_first, commit=commit)
         for step in plan.executable_steps():
-            if max_apply is not None and applied >= max_apply:
+            if max_apply is not None and run.applied >= max_apply:
                 break
-            shield_result = _shield(step)
-            tier = tier_for(step.action_type)
-            label = step.source_facts[0].split(":")[0].strip() if step.source_facts else ""
-
-            # RISK TIER GATE: a Tier-1 (behavior-adjacent) fix is only applied
-            # when the suite actually covers its target — already referenced,
-            # or just shielded. No coverage and no shield -> blocked, not gambled.
-            if tier >= 1 and verify and step.target.endswith(".py"):
-                shielded_now = bool(shield_result and shield_result.get("applied"))
-                if not shielded_now:
-                    from app.engine.verification_strength import module_referenced_by_suite
-
-                    if not module_referenced_by_suite(project_root, step.target):
-                        blocked += 1
-                        results.append({
-                            "branch": step.branch_path, "action": step.action_type,
-                            "operator": step.operator, "label": label,
-                            "target": step.target, "applied": False, "risk_tier": tier,
-                            "reason": ("tier-1 fix requires a covering test — none exists "
-                                       "and no shield test could be generated"),
-                        })
-                        continue
-
-            # The first apply classifies the step (applied / rolled-back / blocked),
-            # exactly one result row per step.
-            r = self.apply_step(step, project_root, mode=mode, verify=verify)
-            entry = {"branch": step.branch_path, "action": step.action_type,
-                     "operator": step.operator, "label": label,
-                     "target": step.target, "risk_tier": tier, **r}
-            if shield_result is not None and shield_result.get("applied"):
-                entry["shield_test"] = (shield_result.get("changed_files") or [""])[0]
-                ok_s, _h = _commit(shield_result, action_label="create_test_stub")
-                if ok_s:
-                    committed += 1
-            real_fix = bool(r.get("applied")) and step.target in (r.get("changed_files") or [])
-            if r.get("rolled_back"):
-                rolled_back += 1
-            elif r.get("applied"):
-                applied += 1
-                ok, h = _commit(r)
-                entry["committed"] = ok
-                if ok:
-                    committed += 1
-                    entry["commit_hash"] = h
-                # CONVERGENCE: a harden_security step then fixes EVERY remaining
-                # auto-fixable issue in the same file (the detection ladder
-                # advances as each is fixed). These extra verified fixes don't
-                # create new rows — they're tracked on the step's entry — so one
-                # maintenance pass cleans the file instead of one fix per pass.
-                if step.action_type == "harden_security" and real_fix:
-                    extra = 0
-                    for _ in range(5):
-                        r2 = self.apply_step(step, project_root, mode=mode, verify=verify)
-                        if not (r2.get("applied") and step.target in (r2.get("changed_files") or [])):
-                            break
-                        extra += 1
-                        ok2, _h2 = _commit(r2)
-                        if ok2:
-                            committed += 1
-                    if extra:
-                        entry["converged_fixes"] = extra
-            else:
-                blocked += 1
-            results.append(entry)
+            run.run_step(step)
         return {
             "mode": mode,
             "verify": verify,
-            "commit": can_commit,
+            "commit": run.can_commit,
             "total_executable": len(plan.executable_steps()),
-            "applied": applied,
-            "rolled_back": rolled_back,
-            "blocked": blocked,
-            "committed": committed,
-            "results": results,
+            "applied": run.applied,
+            "rolled_back": run.rolled_back,
+            "blocked": run.blocked,
+            "committed": run.committed,
+            "results": run.results,
         }
 
     def plan_tree(
@@ -785,24 +736,69 @@ class IdeaActionBridge:
             steps.extend(self._expand_idea(i, project_root=root_for_checks))
         steps = self._dedupe_steps(steps)
         if draft:
-            root = project_root or report.project_root or "."
-            for step in steps:
-                if step.executable:
-                    step.patch_preview = self.draft_patch(step, root)
-        executable = sum(1 for s in steps if s.executable)
-        drafted = sum(1 for s in steps if s.patch_preview)
+            self._draft_previews(steps, project_root or report.project_root or ".")
         return ActionPlan(
             objective=report.objective,
             project_root=report.project_root,
             mode=mode,
             steps=steps,
-            stats={
-                "total_steps": len(steps),
-                "executable_steps": executable,
-                "design_tasks": len(steps) - executable,
-                "drafted_patches": drafted,
-            },
+            stats=self._plan_stats(steps),
         )
+
+    @staticmethod
+    def _filter_steps(steps: list[ActionStep], phase: str | None,
+                      top: int | None) -> list[ActionStep]:
+        """The --phase / --top narrowing. The phase filter applies to each
+        STEP'S own phase, so a convergence idea's Secure sub-step is kept
+        under --phase=Secure even though its parent sat in Stabilize."""
+        if phase:
+            steps = [s for s in steps if s.phase.lower() == phase.lower()]
+        if top is not None:
+            steps = steps[:top]
+        return steps
+
+    @staticmethod
+    def _plan_stats(steps: list[ActionStep]) -> dict:
+        """The stats block both planners share (single source of truth)."""
+        executable = sum(1 for s in steps if s.executable)
+        return {
+            "total_steps": len(steps),
+            "executable_steps": executable,
+            "design_tasks": len(steps) - executable,
+            "drafted_patches": sum(1 for s in steps if s.patch_preview),
+        }
+
+    def _draft_previews(self, steps: list[ActionStep], root: str) -> None:
+        """Attach patch previews to executable steps (shared by both planners)."""
+        for step in steps:
+            if step.executable:
+                step.patch_preview = self.draft_patch(step, root)
+
+    def _roadmap_steps(self, report: IdeaTreeReport, roadmap,
+                       root_for_checks: str) -> list[ActionStep]:
+        """Expand the roadmap's ideas into deduped, phase-ordered steps.
+
+        Convergence ideas carry their own phased sub-steps (a Stabilize test
+        before a Secure harden), so they may emit a phase other than where
+        the parent idea was placed; other ideas inherit the roadmap phase.
+        The final stable sort by canonical phase puts every step in its true
+        phase group — preserving test-before-harden order for free, since
+        Stabilize precedes Secure.
+        """
+        idea_by_path = {i.branch_path: i for i in report.ideas}
+        steps: list[ActionStep] = []
+        for ph in roadmap.phases:
+            for item in ph.items:
+                idea = idea_by_path.get(item.branch_path)
+                if idea is None:
+                    continue
+                steps.extend(self._expand_idea(idea, default_phase=ph.name,
+                                               project_root=root_for_checks))
+        steps = self._dedupe_steps(steps)
+        from app.engine.idea_roadmap import PHASE_ORDER
+        phase_rank = {name: i for i, name in enumerate(PHASE_ORDER)}
+        steps.sort(key=lambda s: phase_rank.get(s.phase, len(PHASE_ORDER)))
+        return steps
 
     def plan_roadmap(
         self,
@@ -824,62 +820,177 @@ class IdeaActionBridge:
         from app.engine.idea_roadmap import RoadmapSynthesizer
 
         roadmap = roadmap or RoadmapSynthesizer().build(report)
-        idea_by_path = {i.branch_path: i for i in report.ideas}
-
-        root_for_checks = project_root or report.project_root or ""
-        steps: list[ActionStep] = []
-        for ph in roadmap.phases:
-            for item in ph.items:
-                idea = idea_by_path.get(item.branch_path)
-                if idea is None:
-                    continue
-                # Convergence ideas carry their own phased sub-steps (a Stabilize
-                # test before a Secure harden), so they may emit a phase other
-                # than where the parent idea was placed; other ideas inherit this
-                # roadmap phase.
-                steps.extend(self._expand_idea(idea, default_phase=ph.name,
-                                               project_root=root_for_checks))
-
-        steps = self._dedupe_steps(steps)
-        # A convergence idea sits in one phase but emits sub-steps in others (a
-        # Stabilize test then a Secure harden). Stable-sort by canonical phase so
-        # every step joins its true phase group — which also preserves the
-        # test-before-harden order for free, since Stabilize precedes Secure.
-        from app.engine.idea_roadmap import PHASE_ORDER
-        phase_rank = {name: i for i, name in enumerate(PHASE_ORDER)}
-        steps.sort(key=lambda s: phase_rank.get(s.phase, len(PHASE_ORDER)))
+        steps = self._roadmap_steps(report, roadmap,
+                                    project_root or report.project_root or "")
         # The phase filter applies to each *step's own* phase, so a convergence
         # idea's Secure sub-step is kept under --phase=Secure even though its
         # parent sat in Stabilize (and vice-versa).
-        if phase:
-            steps = [s for s in steps if s.phase.lower() == phase.lower()]
-        if top is not None:
-            steps = steps[:top]
+        steps = self._filter_steps(steps, phase, top)
         if draft:
-            root = project_root or report.project_root or "."
-            for step in steps:
-                if step.executable:
-                    step.patch_preview = self.draft_patch(step, root)
+            self._draft_previews(steps, project_root or report.project_root or ".")
 
-        executable = sum(1 for s in steps if s.executable)
-        drafted = sum(1 for s in steps if s.patch_preview)
-        phase_counts: dict[str, int] = {}
-        for s in steps:
-            phase_counts[s.phase] = phase_counts.get(s.phase, 0) + 1
+        from collections import Counter
+        phase_counts = dict(Counter(s.phase for s in steps))
         return ActionPlan(
             objective=report.objective,
             project_root=report.project_root,
             mode=mode,
             steps=steps,
             stats={
-                "total_steps": len(steps),
-                "executable_steps": executable,
-                "design_tasks": len(steps) - executable,
-                "drafted_patches": drafted,
+                **self._plan_stats(steps),
                 "ordered_by": "roadmap",
                 "phase_counts": phase_counts,
             },
         )
+
+
+class _MaintenancePass:
+    """One ``apply_plan`` run: counters, committer, shield memory, entries.
+
+    Extracted from a 36-branch ``apply_plan`` — the engine's own brief on
+    this module named it. Behavior is unchanged; each concern (shield, tier
+    gate, convergence, commit bookkeeping) now reads on its own.
+    """
+
+    def __init__(self, bridge: IdeaActionBridge, project_root: str, *,
+                 mode: str, verify: bool, test_first: bool, commit: bool) -> None:
+        from app.policies.mode_policy import ModePolicy, mode_from_string
+
+        self.bridge = bridge
+        self.project_root = project_root
+        self.mode = mode
+        self.verify = verify
+        self.test_first = test_first
+        self.results: list[dict] = []
+        self.applied = self.rolled_back = self.blocked = self.committed = 0
+        self.can_commit = False
+        self.committer = None
+        if commit:
+            perms = ModePolicy(mode=mode_from_string(mode)).permissions
+            self.can_commit = bool(perms.can_commit)
+            if self.can_commit:
+                from app.engine.git_auto_commit import GitAutoCommit
+
+                self.committer = GitAutoCommit(project_root)
+        self._shield_attempted: set[str] = set()
+
+    def _commit(self, r: dict, action_label: str) -> tuple[bool, str | None]:
+        if self.committer is None or not r.get("changed_files"):
+            return False, None
+        cres = self.committer.commit(changed_files=r["changed_files"],
+                                     finding=action_label, action="fix")
+        return bool(cres.success), getattr(cres, "commit_hash", None)
+
+    def _shield(self, step: ActionStep) -> dict | None:
+        """Generate a characterization test for an unreferenced target
+        before fixing it. Returns the shield's apply result, or None when
+        no shield is needed/possible."""
+        if not (self.test_first and self.verify):
+            return None
+        target = step.target
+        if (step.action_type == "create_test_stub" or not target
+                or target in self._shield_attempted):
+            return None
+        from app.engine.verification_strength import module_referenced_by_suite
+
+        if module_referenced_by_suite(self.project_root, target):
+            return None
+        self._shield_attempted.add(target)
+        shield_step = ActionStep(
+            branch_path=f"{step.branch_path}.shield",
+            title=f"Shield {target} with a characterization test before fixing it",
+            operator="test", subject=target,
+            action_type="create_test_stub", target=target, executable=True,
+        )
+        return self.bridge.apply_step(shield_step, self.project_root,
+                                      mode=self.mode, verify=self.verify)
+
+    def _tier_blocked(self, step: ActionStep, tier: int, label: str,
+                      shield_result: dict | None) -> bool:
+        """RISK TIER GATE: a Tier-1 (behavior-adjacent) fix is only applied
+        when the suite actually covers its target — already referenced, or
+        just shielded. No coverage and no shield -> blocked, not gambled."""
+        if not (tier >= 1 and self.verify and step.target.endswith(".py")):
+            return False
+        if shield_result and shield_result.get("applied"):
+            return False
+        from app.engine.verification_strength import module_referenced_by_suite
+
+        if module_referenced_by_suite(self.project_root, step.target):
+            return False
+        self.blocked += 1
+        self.results.append({
+            "branch": step.branch_path, "action": step.action_type,
+            "operator": step.operator, "label": label,
+            "target": step.target, "applied": False, "risk_tier": tier,
+            "reason": ("tier-1 fix requires a covering test — none exists "
+                       "and no shield test could be generated"),
+        })
+        return True
+
+    def _converge_harden(self, step: ActionStep, entry: dict) -> None:
+        """CONVERGENCE: a harden_security step then fixes EVERY remaining
+        auto-fixable issue in the same file (the detection ladder advances
+        as each is fixed). Extra verified fixes don't create new rows —
+        they're tracked on the step's entry — so one maintenance pass
+        cleans the file instead of one fix per pass."""
+        extra = 0
+        for _ in range(5):
+            r2 = self.bridge.apply_step(step, self.project_root,
+                                        mode=self.mode, verify=self.verify)
+            if not (r2.get("applied") and step.target in (r2.get("changed_files") or [])):
+                break
+            extra += 1
+            ok2, _h2 = self._commit(r2, step.action_type)
+            if ok2:
+                self.committed += 1
+        if extra:
+            entry["converged_fixes"] = extra
+
+    def run_step(self, step: ActionStep) -> None:
+        from app.execution.risk_tiers import tier_for
+
+        shield_result = self._shield(step)
+        tier = tier_for(step.action_type)
+        label = step.source_facts[0].split(":")[0].strip() if step.source_facts else ""
+        if self._tier_blocked(step, tier, label, shield_result):
+            return
+
+        # The first apply classifies the step (applied / rolled-back /
+        # blocked), exactly one result row per step.
+        r = self.bridge.apply_step(step, self.project_root, mode=self.mode,
+                                   verify=self.verify)
+        entry = {"branch": step.branch_path, "action": step.action_type,
+                 "operator": step.operator, "label": label,
+                 "target": step.target, "risk_tier": tier, **r}
+        if shield_result is not None and shield_result.get("applied"):
+            entry["shield_test"] = (shield_result.get("changed_files") or [""])[0]
+            ok_s, _h = self._commit(shield_result, "create_test_stub")
+            if ok_s:
+                self.committed += 1
+        self._record_outcome(step, r, entry)
+
+    def _settle_applied(self, step: ActionStep, r: dict, entry: dict) -> None:
+        """Bookkeeping for an applied fix: commit, then harden-converge."""
+        self.applied += 1
+        ok, h = self._commit(r, step.action_type)
+        entry["committed"] = ok
+        if ok:
+            self.committed += 1
+            entry["commit_hash"] = h
+        real_fix = step.target in (r.get("changed_files") or [])
+        if step.action_type == "harden_security" and real_fix:
+            self._converge_harden(step, entry)
+
+    def _record_outcome(self, step: ActionStep, r: dict, entry: dict) -> None:
+        """Classify the apply result into exactly one counter + result row."""
+        if r.get("rolled_back"):
+            self.rolled_back += 1
+        elif r.get("applied"):
+            self._settle_applied(step, r, entry)
+        else:
+            self.blocked += 1
+        self.results.append(entry)
 
 
 def render_action_markdown(plan: ActionPlan) -> str:
@@ -910,6 +1021,46 @@ def render_action_markdown(plan: ActionPlan) -> str:
     return "\n".join(lines)
 
 
+def _applied_fix_line(r: dict) -> str:
+    """One applied-fix bullet: what the green suite proves, shield, commit."""
+    extra = ""
+    if r.get("verified") is True:
+        # Say what the green suite actually proves about THIS change.
+        level = (r.get("verification_strength") or {}).get("level", "")
+        extra += {
+            "function": " (tests pass — and name the changed function)",
+            "module": " (tests pass — suite references this module)",
+            "none": " (tests pass — ⚠️ no test references this module)",
+            "test-change": " (tests pass)",
+        }.get(level, " (tests pass)")
+    if r.get("shield_test"):
+        extra += f" 🛡️ shielded first by `{r['shield_test']}`"
+    if r.get("committed"):
+        extra += f" [commit {r.get('commit_hash', '')}]"
+    files = ", ".join(r.get("changed_files", [])) or r.get("target", "")
+    return f"- `{r['branch']}` **{r['action']}** — {files}{extra}"
+
+
+def _result_sections(results: list[dict]) -> list[str]:
+    """The Applied / Rolled back / Blocked sections, only when non-empty."""
+    sections = (
+        ("## ✅ Applied",
+         [r for r in results if r.get("applied")],
+         _applied_fix_line),
+        ("## ↩️ Rolled back (tests failed)",
+         [r for r in results if r.get("rolled_back")],
+         lambda r: f"- `{r['branch']}` **{r['action']}** — {r.get('target', '')}"),
+        ("## ⛔ Blocked / not applicable",
+         [r for r in results if not r.get("applied") and not r.get("rolled_back")],
+         lambda r: f"- `{r['branch']}` **{r['action']}** — {r.get('reason', '')}"),
+    )
+    lines: list[str] = []
+    for title, rows, fmt in sections:
+        if rows:
+            lines += [title, *[fmt(r) for r in rows], ""]
+    return lines
+
+
 def render_maintenance_markdown(summary: dict, project_root: str, objective: str = "") -> str:
     """Render an end-to-end maintenance run as a Markdown report."""
     from datetime import datetime, timezone
@@ -935,39 +1086,5 @@ def render_maintenance_markdown(summary: dict, project_root: str, objective: str
     if summary.get("commit"):
         lines.append(f"- Commits created: **{summary.get('committed', 0)}**")
     lines.append("")
-
-    applied = [r for r in summary.get("results", []) if r.get("applied")]
-    rolled = [r for r in summary.get("results", []) if r.get("rolled_back")]
-    blocked = [r for r in summary.get("results", []) if not r.get("applied") and not r.get("rolled_back")]
-
-    if applied:
-        lines.append("## ✅ Applied")
-        for r in applied:
-            extra = ""
-            if r.get("verified") is True:
-                # Say what the green suite actually proves about THIS change.
-                level = (r.get("verification_strength") or {}).get("level", "")
-                extra += {
-                    "function": " (tests pass — and name the changed function)",
-                    "module": " (tests pass — suite references this module)",
-                    "none": " (tests pass — ⚠️ no test references this module)",
-                    "test-change": " (tests pass)",
-                }.get(level, " (tests pass)")
-            if r.get("shield_test"):
-                extra += f" 🛡️ shielded first by `{r['shield_test']}`"
-            if r.get("committed"):
-                extra += f" [commit {r.get('commit_hash', '')}]"
-            files = ", ".join(r.get("changed_files", [])) or r.get("target", "")
-            lines.append(f"- `{r['branch']}` **{r['action']}** — {files}{extra}")
-        lines.append("")
-    if rolled:
-        lines.append("## ↩️ Rolled back (tests failed)")
-        for r in rolled:
-            lines.append(f"- `{r['branch']}` **{r['action']}** — {r.get('target', '')}")
-        lines.append("")
-    if blocked:
-        lines.append("## ⛔ Blocked / not applicable")
-        for r in blocked:
-            lines.append(f"- `{r['branch']}` **{r['action']}** — {r.get('reason', '')}")
-        lines.append("")
+    lines += _result_sections(summary.get("results", []))
     return "\n".join(lines)
