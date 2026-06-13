@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from app.execution.cross_file_rename import apply_rename, plan_rename
+from app.execution.cross_file_rename import RenamePlan, apply_rename, plan_rename
 
 
 def _project(tmp_path: Path) -> Path:
@@ -143,6 +143,43 @@ def test_apply_rolls_back_when_tests_fail(tmp_path):
     res = apply_rename(tmp_path, plan_rename(tmp_path, "compute", "calculate"), verify=True)
     assert res["applied"] is False and res["rolled_back"] is True
     assert (tmp_path / "app" / "core.py").read_text() == before
+
+
+def _new_file_plan(rel: str, content: str) -> RenamePlan:
+    """A plan that CREATES a brand-new file (no original to restore)."""
+    plan = RenamePlan(old=rel, new="generate")
+    plan.new_contents[rel] = content
+    plan.edits_by_file[rel] = 1
+    return plan
+
+
+def test_apply_creates_new_file_and_keeps_on_green(tmp_path):
+    _project(tmp_path)
+    plan = _new_file_plan("tests/test_generated.py",
+                          "def test_added():\n    assert True\n")
+    res = apply_rename(tmp_path, plan, verify=True)
+    assert res["applied"] is True and res["verified"] is True
+    assert res["rolled_back"] is False
+    assert (tmp_path / "tests" / "test_generated.py").exists()
+
+
+def test_apply_deletes_created_file_on_rollback(tmp_path):
+    _project(tmp_path)
+    # A generated file that DROPS the suite to red must be removed on rollback —
+    # there is no original to restore, so the orphan would otherwise linger.
+    plan = _new_file_plan("tests/test_generated_red.py",
+                          "def test_red():\n    assert False\n")
+    res = apply_rename(tmp_path, plan, verify=True)
+    assert res["applied"] is False and res["rolled_back"] is True
+    assert not (tmp_path / "tests" / "test_generated_red.py").exists()
+
+
+def test_apply_creates_nested_dirs(tmp_path):
+    _project(tmp_path)
+    plan = _new_file_plan("app/sub/pkg/new_mod.py", "VALUE = 1\n")
+    res = apply_rename(tmp_path, plan, verify=False)
+    assert res["applied"] is True
+    assert (tmp_path / "app" / "sub" / "pkg" / "new_mod.py").read_text() == "VALUE = 1\n"
 
 
 def test_cli_rename_dry_run_and_apply(tmp_path, capsys):

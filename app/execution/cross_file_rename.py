@@ -246,7 +246,13 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
     if not plan.ok:
         return {"applied": False, "reason": "; ".join(plan.blockers) or "nothing to rename"}
     root = Path(project_root)
+    # A plan may CREATE files (e.g. a generated test) as well as rewrite them.
+    # Note which targets did not exist before writing, so a rollback can delete
+    # them — restoring `originals` only un-edits files that were already there;
+    # a never-existed file has no original to restore and must be removed.
+    created = [rel for rel in plan.new_contents if not (root / rel).exists()]
     for rel, content in plan.new_contents.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(content, encoding="utf-8")
     out: dict = {"applied": True, "changed_files": sorted(plan.new_contents),
                  "edits": sum(plan.edits_by_file.values()), "warnings": plan.warnings}
@@ -264,6 +270,12 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
         return out
     for rel, original in plan.originals.items():
         (root / rel).write_text(original, encoding="utf-8")
+    for rel in created:
+        if rel not in plan.originals:
+            try:
+                (root / rel).unlink()
+            except OSError:
+                pass
     out.update(applied=False, rolled_back=True,
                reason="tests failed after rename; all files restored")
     return out
