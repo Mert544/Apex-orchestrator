@@ -432,3 +432,37 @@ def test_cmd_develop_all_flag(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "all objectives" in out.lower()
     assert "color" not in (tmp_path / "app" / "m.py").read_text()
+
+
+# --- develop --grade: prove the gain -----------------------------------------
+
+def test_cmd_develop_grade_proves_the_gain(tmp_path, capsys):
+    import argparse
+    from app.cli_autonomy import cmd_develop
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "m.py").write_text(
+        "def render(text, color=None, width=80):\n"
+        "    if text == None:\n        return dict()\n    return text[:width]\n",
+        encoding="utf-8")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "from app.m import render\ndef test_r():\n"
+        "    assert render(None) == {}\n    assert render('hi', width=2) == 'hi'\n",
+        encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    rc = cmd_develop(argparse.Namespace(
+        target=str(tmp_path), objective="dead-params", all_objectives=True,
+        from_dream=False, playbook=False, grade=True, apply=True,
+        max_steps=25, no_verify=True, json=False))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Health grade:" in out and "↑" in out  # the grade rose
+
+
+def test_grade_proof_silent_without_flag_or_changes(tmp_path, capsys):
+    from app.cli_autonomy import _print_grade_proof
+    # No baseline → nothing printed.
+    _print_grade_proof(str(tmp_path), None, True)
+    # Not applied → nothing printed.
+    _print_grade_proof(str(tmp_path), 90, False)
+    assert capsys.readouterr().out == ""

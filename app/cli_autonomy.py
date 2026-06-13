@@ -421,6 +421,9 @@ def cmd_develop(args: argparse.Namespace) -> int:
             print(render_playbook_markdown(archive))
         return 0
 
+    want_grade = getattr(args, "grade", False)
+    grade_before = _grade_score(str(target)) if want_grade else None
+
     if getattr(args, "all_objectives", False):
         from app.engine.objective_compiler import compile_all, render_all_markdown
 
@@ -432,6 +435,7 @@ def cmd_develop(args: argparse.Namespace) -> int:
             if apply and any(r.steps for r in results):
                 print("_Applied to your working tree, not committed — "
                       "review with `git diff`._")
+        _print_grade_proof(str(target), grade_before, apply and any(r.steps for r in results))
         return 0
 
     if getattr(args, "from_dream", False):
@@ -465,9 +469,34 @@ def cmd_develop(args: argparse.Namespace) -> int:
         if result.applied and result.steps:
             print("_Applied to your working tree, not committed — "
                   "review with `git diff`._")
+    _print_grade_proof(str(target), grade_before, result.applied and bool(result.steps))
     # Non-zero only when an explicitly named objective is unknown (a usage error).
     return 1 if (result.blocked and not result.steps
                  and any("unknown objective" in b for b in result.blocked)) else 0
+
+
+def _grade_score(target: str) -> int:
+    """The project's current health score (0–100), or -1 if it can't be read."""
+    try:
+        from app.engine.health_score import grade
+        return grade(target).score
+    except Exception:
+        return -1
+
+
+def _print_grade_proof(target: str, before: int | None, applied: bool) -> None:
+    """After an applied campaign, prove the gain: re-grade and show before→after.
+    A development tool should show it moved the needle, not just that it ran."""
+    if before is None or before < 0 or not applied:
+        return
+    after = _grade_score(target)
+    if after < 0:
+        return
+    arrow = "↑" if after > before else ("↓" if after < before else "→")
+    delta = after - before
+    sign = "+" if delta > 0 else ""
+    print(f"\n**Health grade: {before} → {after} ({sign}{delta} {arrow})** "
+          "— the campaign's measured effect on the project.")
 
 
 def register_parsers(subparsers) -> None:
@@ -551,6 +580,8 @@ def register_parsers(subparsers) -> None:
     develop_parser.add_argument("--all", action="store_true", dest="all_objectives",
                                 help="Sweep EVERY objective in order (modernize, dead-params, "
                                      "shrink-functions, inline-helpers) — clean everything")
+    develop_parser.add_argument("--grade", action="store_true",
+                                help="Measure the health grade before and after — prove the gain")
     develop_parser.add_argument("--from-dream", action="store_true", dest="from_dream",
                                 help="Scope the campaign to the modules the nightly "
                                      "dream flagged as confluences (dream → action)")
