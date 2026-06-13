@@ -129,15 +129,20 @@ def beta():
 '''
 
 
-def test_block_with_return_blocks(tmp_path):
+def test_self_contained_tail_return_extracts(tmp_path):
+    # A self-contained block (no params, no live-out) whose tail is a `return`
+    # now lifts into a no-arg returning helper — each copy becomes `return _shared_1()`.
     root = tmp_path
     _write(root, "mod.py", _WITH_RETURN)
     blocks = find_duplicates(root, min_statements=5, min_occurrences=2)
     assert blocks
     plan = plan_dedup_extract(root, blocks[0])
-    assert not plan.ok
-    assert any("return" in b for b in plan.blockers)
-    assert not plan.new_contents
+    assert plan.ok, f"tail-return block should extract, blockers={plan.blockers}"
+    new = plan.new_contents["mod.py"]
+    assert "def _shared_1():" in new
+    assert new.count("return _shared_1()") == 2
+    ns = _exec_module(new)
+    assert ns["alpha"]() == 10 and ns["beta"]() == 10
 
 
 # ── 4. cross-file: two modules sharing a block → helper here, import there ──
@@ -225,3 +230,71 @@ def test_malformed_occurrence_blocks(tmp_path):
     plan = plan_dedup_extract(root, block)
     assert not plan.ok
     assert not plan.new_contents
+
+
+# ── tail-return: a block ending in `return <expr>` → returning helper ──
+
+_TAIL_RETURN = '''\
+def alpha(x):
+    a = x + 1
+    b = a * 2
+    c = b - 3
+    d = c + 4
+    return d + 5
+
+
+def beta(x):
+    a = x + 1
+    b = a * 2
+    c = b - 3
+    d = c + 4
+    return d + 5
+'''
+
+
+def test_tail_return_block_extracts_returning_helper(tmp_path):
+    # Previously blocked ("the range contains a return"); now lifted into a
+    # helper that returns, with each copy rewritten to `return _shared_n(...)`.
+    _write(tmp_path, "pkg/mod.py", _TAIL_RETURN)
+    blocks = find_duplicates(tmp_path, min_statements=5, min_occurrences=2)
+    assert blocks
+    plan = plan_dedup_extract(tmp_path, blocks[0])
+    assert plan.ok, f"tail-return block should extract now, blockers={plan.blockers}"
+
+    new = plan.new_contents["pkg/mod.py"]
+    assert "def _shared_1(x):" in new
+    assert new.count("return _shared_1(x)") == 2   # both copies call-and-return
+    assert "return d + 5" in new                   # the return lives in the helper now
+
+    ns = _exec_module(new)
+    assert ns["alpha"](10) == 28 and ns["beta"](10) == 28   # behaviour preserved
+
+
+# ── an EARLY (non-tail) return still blocks ──
+
+_EARLY_RETURN = '''\
+def alpha(x):
+    a = x + 1
+    if a > 5:
+        return a
+    b = a * 2
+    c = b + 3
+    return c
+
+
+def beta(x):
+    a = x + 1
+    if a > 5:
+        return a
+    b = a * 2
+    c = b + 3
+    return c
+'''
+
+
+def test_early_return_still_blocks(tmp_path):
+    _write(tmp_path, "pkg/mod.py", _EARLY_RETURN)
+    blocks = find_duplicates(tmp_path, min_statements=5, min_occurrences=2)
+    assert blocks
+    plan = plan_dedup_extract(tmp_path, blocks[0])
+    assert not plan.ok and plan.blockers   # a non-tail return is not liftable

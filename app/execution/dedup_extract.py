@@ -19,11 +19,15 @@ Given a :class:`~app.engine.dedup.DuplicateBlock` (whose ``occurrences`` are
     ``live_out = _shared_n(live_in)`` (a bare call when there's no live-out),
     adding ``from <first_module> import _shared_n`` to any OTHER module.
 
-Conservative by design — reuses extract_method's :func:`_blocking_reason`, so a
-``return`` / ``yield`` / ``await`` / nested-def / escaping ``break`` in the block
-blocks the whole plan. Apply is suite-verified with automatic rollback via the
-shared :class:`RenamePlan` / ``apply_rename`` model, so even a data-flow corner
-case can never ship a broken extraction. Deterministic, stdlib-only.
+Conservative by design — a ``yield`` / ``await`` / nested-def / escaping
+``break`` in the block blocks the whole plan. One control-flow shape IS lifted:
+a block whose tail (and only) statement is ``return <value>`` becomes a
+*returning* helper (``def _shared_n(...): <block ending in return>``) and each
+copy becomes ``return _shared_n(...)`` — turning the common "the range contains
+a return" blocker into a clean action. An EARLY (non-tail) return still blocks.
+Apply is suite-verified with automatic rollback via the shared
+:class:`RenamePlan` / ``apply_rename`` model, so even a data-flow corner case
+can never ship a broken extraction. Deterministic, stdlib-only.
 """
 
 from __future__ import annotations
@@ -33,9 +37,11 @@ from pathlib import Path
 
 from app.execution.cross_file_rename import RenamePlan, _top_level_bindings
 from app.execution.extract_method import (
+    _NESTED_SCOPE_NODES,
     _blocking_reason,
     _data_flow,
     _enclosing_function,
+    _has_unenclosed_jump,
     _reindent,
     _selected_statements,
 )
@@ -82,14 +88,51 @@ def _locate_run(fn, start_line: int, n_statements: int):
     return run
 
 
+def _is_tail_return(run: list) -> bool:
+    """The run ends in ``return <value>`` and that is its ONLY return — the safe
+    shape to lift into a *returning* helper (the call site becomes
+    ``return _shared_n(...)``)."""
+    if not run or not isinstance(run[-1], ast.Return) or run[-1].value is None:
+        return False
+    returns = [n for s in run for n in ast.walk(s) if isinstance(n, ast.Return)]
+    return len(returns) == 1 and returns[0] is run[-1]
+
+
+def _block_reason(run: list) -> tuple[str | None, bool]:
+    """``(reason, is_tail_return)``. A plain block defers to extract_method's
+    ``_blocking_reason`` (a ``return`` anywhere blocks). A TAIL-return block is
+    allowed — it becomes a returning helper — yet is still blocked for
+    yield/await/global/nonlocal, a nested def/lambda, an EARLY (non-tail)
+    ``return``, or an unenclosed ``break``/``continue``."""
+    if not _is_tail_return(run):
+        return _blocking_reason(run), False
+    tail = run[-1]
+    for stmt in run:
+        for n in ast.walk(stmt):
+            if isinstance(n, _NESTED_SCOPE_NODES):
+                return ("the range defines a nested function/lambda — its scope "
+                        "can't be analyzed; extract it separately first", False)
+            if isinstance(n, (ast.Yield, ast.YieldFrom, ast.Await,
+                              ast.Global, ast.Nonlocal)):
+                return (f"the range contains `{type(n).__name__.lower()}` — moving "
+                        "it into a helper would change control flow", False)
+            if isinstance(n, ast.Return) and n is not tail:
+                return ("the range has an early `return` before its tail — it "
+                        "can't be one returning helper", False)
+    if any(_has_unenclosed_jump(stmt) for stmt in run):
+        return ("the range contains a `break`/`continue` whose loop is outside "
+                "the selection — it can't be lifted out", False)
+    return None, True
+
+
 class _Occurrence:
     """One resolved copy of the duplicated block, with everything the plan needs."""
 
     __slots__ = ("rel", "source", "lines", "fn", "container", "stmts",
-                 "live_in", "live_out", "span_lo", "span_hi")
+                 "live_in", "live_out", "span_lo", "span_hi", "tail_return")
 
     def __init__(self, rel, source, lines, fn, container, stmts,
-                 live_in, live_out, span_lo, span_hi):
+                 live_in, live_out, span_lo, span_hi, tail_return):
         self.rel = rel
         self.source = source
         self.lines = lines
@@ -100,6 +143,7 @@ class _Occurrence:
         self.live_out = live_out
         self.span_lo = span_lo
         self.span_hi = span_hi
+        self.tail_return = tail_return
 
 
 def _resolve_occurrence(root: Path, rel: str, start_line: int,
@@ -127,7 +171,7 @@ def _resolve_occurrence(root: Path, rel: str, start_line: int,
             f"of {n_statements} complete statements")
         return None
 
-    reason = _blocking_reason(run)
+    reason, tail_return = _block_reason(run)
     if reason:
         plan.blockers.append(f"{rel}:{start_line}: {reason}")
         return None
@@ -135,11 +179,16 @@ def _resolve_occurrence(root: Path, rel: str, start_line: int,
     before = fn.body[:fn.body.index(run[0])]
     after = fn.body[fn.body.index(run[-1]) + 1:]
     live_in, live_out = _data_flow(fn, before, run, after)
+    if tail_return:
+        # The block unconditionally returns, so any fn-body statement after it is
+        # unreachable — nothing flows out. The helper returns the value directly.
+        live_out = []
 
     span_lo = run[0].lineno
     span_hi = max(getattr(s, "end_lineno", s.lineno) for s in run)
     return _Occurrence(rel, source, source.splitlines(keepends=True), fn,
-                       container, run, live_in, live_out, span_lo, span_hi)
+                       container, run, live_in, live_out, span_lo, span_hi,
+                       tail_return)
 
 
 def _free_helper_name(trees: dict, rels: set[str]) -> str | None:
@@ -219,6 +268,11 @@ def plan_dedup_extract(project_root: str | Path, block) -> RenamePlan:
     live_in, live_out = sig0
 
     first = resolved[0]
+    tail_return = first.tail_return
+    if any(occ.tail_return != tail_return for occ in resolved[1:]):
+        plan.blockers.append("occurrences disagree on tail-return shape — "
+                             "not a clean shared helper")
+        return plan
     first_dotted = _module_dotted(first.rel)
     helper_name = _free_helper_name(trees, set(rels))
     if helper_name is None:
@@ -237,6 +291,9 @@ def plan_dedup_extract(project_root: str | Path, block) -> RenamePlan:
     call_expr = f"{helper_name}({', '.join(live_in)})"
 
     def _call_line(indent: str) -> str:
+        if tail_return:
+            # The block's own `return <expr>` is inside the helper — return its result.
+            return f"{indent}return {call_expr}\n"
         if live_out:
             return f"{indent}{', '.join(live_out)} = {call_expr}\n"
         return f"{indent}{call_expr}\n"
