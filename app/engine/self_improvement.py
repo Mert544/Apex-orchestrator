@@ -77,7 +77,6 @@ class SelfImprovementEngine:
             except (SyntaxError, OSError, UnicodeDecodeError):
                 continue
             for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    if not ast.get_docstring(node):
-                        missing += 1
+                if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))) and (not ast.get_docstring(node)):
+                    missing += 1
         return missing

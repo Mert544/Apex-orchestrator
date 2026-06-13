@@ -42,9 +42,8 @@ class SelfAuditAgent(Agent):
                             risks.append({"file": str(f), "line": node.lineno, "risk": "os.system()", "severity": "high"})
                         elif func.attr == "loads" and isinstance(func.value, ast.Name) and func.value.id == "pickle":
                             risks.append({"file": str(f), "line": node.lineno, "risk": "pickle.loads()", "severity": "high"})
-                elif isinstance(node, ast.ExceptHandler):
-                    if node.type is None:
-                        risks.append({"file": str(f), "line": node.lineno, "risk": "bare except", "severity": "medium"})
+                if (isinstance(node, ast.ExceptHandler)) and (node.type is None):
+                    risks.append({"file": str(f), "line": node.lineno, "risk": "bare except", "severity": "medium"})
         return risks
 
     def _analyze_docstrings(self, files: list[Path]) -> list[dict[str, Any]]:
@@ -55,9 +54,8 @@ class SelfAuditAgent(Agent):
             except SyntaxError:
                 continue
             for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    if not ast.get_docstring(node):
-                        missing.append({"file": str(f), "line": node.lineno, "name": node.name, "type": type(node).__name__})
+                if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))) and (not ast.get_docstring(node)):
+                    missing.append({"file": str(f), "line": node.lineno, "name": node.name, "type": type(node).__name__})
         return missing
 
     def _analyze_complexity(self, files: list[Path]) -> list[dict[str, Any]]:

@@ -60,9 +60,8 @@ def _function_bodies(tree: ast.Module) -> list[list[ast.stmt]]:
     """Every function/async-function body in the module (in source order)."""
     bodies: list[list[ast.stmt]] = []
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.body:
-                bodies.append(node.body)
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))) and (node.body):
+            bodies.append(node.body)
     return bodies
 
 

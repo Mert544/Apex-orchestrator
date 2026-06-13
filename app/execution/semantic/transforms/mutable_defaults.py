@@ -40,9 +40,8 @@ def _has_future_annotations(tree: ast.Module) -> bool:
     annotation untouched (runtime-correct, just slightly type-checker-noisy).
     """
     for node in tree.body:
-        if isinstance(node, ast.ImportFrom) and node.module == "__future__":
-            if any(alias.name == "annotations" for alias in node.names):
-                return True
+        if (isinstance(node, ast.ImportFrom) and node.module == "__future__") and (any(alias.name == "annotations" for alias in node.names)):
+            return True
     return False
 
 
@@ -51,9 +50,8 @@ def _mutable_literal(node: ast.expr) -> str | None:
     for typ, rep in _LITERALS.items():
         if isinstance(node, typ):
             return rep
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-        if node.func.id in _EMPTY_CALLS and not node.args and not node.keywords:
-            return _EMPTY_CALLS[node.func.id]
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)) and (node.func.id in _EMPTY_CALLS and not node.args and not node.keywords):
+        return _EMPTY_CALLS[node.func.id]
     return None
 
 

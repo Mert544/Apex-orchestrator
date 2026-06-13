@@ -37,9 +37,8 @@ def analyze_risks(files: list[Path]) -> list[dict[str, Any]]:
                         risks.append({"file": str(f), "line": node.lineno, "risk": "os.system()", "severity": "high"})
                     elif func.attr == "loads" and isinstance(func.value, ast.Name) and func.value.id == "pickle":
                         risks.append({"file": str(f), "line": node.lineno, "risk": "pickle.loads()", "severity": "high"})
-            elif isinstance(node, ast.ExceptHandler):
-                if node.type is None:
-                    risks.append({"file": str(f), "line": node.lineno, "risk": "bare except", "severity": "medium"})
+            if (isinstance(node, ast.ExceptHandler)) and (node.type is None):
+                risks.append({"file": str(f), "line": node.lineno, "risk": "bare except", "severity": "medium"})
     return risks
 
 
@@ -51,9 +50,8 @@ def analyze_docstrings(files: list[Path]) -> list[dict[str, Any]]:
         except SyntaxError:
             continue
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                if not ast.get_docstring(node):
-                    missing.append({"file": str(f), "line": node.lineno, "name": node.name, "type": type(node).__name__})
+            if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))) and (not ast.get_docstring(node)):
+                missing.append({"file": str(f), "line": node.lineno, "name": node.name, "type": type(node).__name__})
     return missing
 
 
@@ -115,9 +113,8 @@ def build_import_graph(files: list[Path]) -> dict[str, list[str]]:
                 for alias in node.names:
                     if alias.name.startswith("app."):
                         imports.append(alias.name)
-            elif isinstance(node, ast.ImportFrom):
-                if node.module and node.module.startswith("app."):
-                    imports.append(node.module)
+            if (isinstance(node, ast.ImportFrom)) and (node.module and node.module.startswith("app.")):
+                imports.append(node.module)
         if imports:
             graph[mod] = sorted(set(imports))
     return graph

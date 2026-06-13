@@ -89,9 +89,8 @@ class FeedbackLoop:
 
         time.time()
         for entry in reversed(self.entries[-10:]):
-            if entry.node_key == node_key and entry.run_id == run_id:
-                if entry.action_type == action_type:
-                    return True
+            if (entry.node_key == node_key and entry.run_id == run_id) and (entry.action_type == action_type):
+                return True
         return False
 
     def _apply_decay(self, entry: FeedbackEntry) -> float:

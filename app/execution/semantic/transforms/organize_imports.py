@@ -15,9 +15,8 @@ def apply(rel_path: str, source: str) -> SemanticPatchResult | None:
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
             used_names.add(node.id)
-        elif isinstance(node, ast.Attribute):
-            if isinstance(node.value, ast.Name):
-                used_names.add(node.value.id)
+        if (isinstance(node, ast.Attribute)) and (isinstance(node.value, ast.Name)):
+            used_names.add(node.value.id)
 
     src_lines = source.splitlines()
     unused_lines: set[int] = set()

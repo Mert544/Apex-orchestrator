@@ -334,9 +334,8 @@ class DebugEngine:
                 callee = t.detail.replace("()", "")
                 graph.setdefault(caller, []).append(callee)
                 stack.append(callee)
-            elif t.phase == "call_exit":
-                if stack:
-                    stack.pop()
+            if (t.phase == "call_exit") and (stack):
+                stack.pop()
         return graph
 
     # ── Internal helpers ──────────────────────────────────────────────

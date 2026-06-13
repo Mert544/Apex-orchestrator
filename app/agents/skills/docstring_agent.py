@@ -107,16 +107,15 @@ class DocstringAgent(Agent):
         modified = False
 
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                if ast.get_docstring(node) is None:
-                    indent = self._get_indent(lines[node.lineno - 1])
-                    body_indent = indent + "    "
-                    docstring = f'{body_indent}"""{node.name} implementation."""\n'
-                    insert_at = node.lineno
-                    if insert_at < len(lines) and lines[insert_at].strip().startswith('"""'):
-                        continue
-                    lines.insert(insert_at, docstring)
-                    modified = True
+            if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))) and (ast.get_docstring(node) is None):
+                indent = self._get_indent(lines[node.lineno - 1])
+                body_indent = indent + "    "
+                docstring = f'{body_indent}"""{node.name} implementation."""\n'
+                insert_at = node.lineno
+                if insert_at < len(lines) and lines[insert_at].strip().startswith('"""'):
+                    continue
+                lines.insert(insert_at, docstring)
+                modified = True
 
         return "".join(lines) if modified else source
 

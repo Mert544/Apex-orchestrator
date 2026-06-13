@@ -152,17 +152,16 @@ class LSPServer:
                         "message": "Apex: eval() detected — potential security risk",
                         "source": "apex-lsp",
                     })
-                elif isinstance(func, ast.Attribute):
-                    if func.attr == "system" and isinstance(func.value, ast.Name) and func.value.id == "os":
-                        diagnostics.append({
-                            "range": {
-                                "start": {"line": node.lineno - 1, "character": node.col_offset},
-                                "end": {"line": node.lineno - 1, "character": node.col_offset + 10},
-                            },
-                            "severity": 2,  # Warning
-                            "message": "Apex: os.system() detected — consider subprocess.run()",
-                            "source": "apex-lsp",
-                        })
+                if (isinstance(func, ast.Attribute)) and (func.attr == "system" and isinstance(func.value, ast.Name) and func.value.id == "os"):
+                    diagnostics.append({
+                        "range": {
+                            "start": {"line": node.lineno - 1, "character": node.col_offset},
+                            "end": {"line": node.lineno - 1, "character": node.col_offset + 10},
+                        },
+                        "severity": 2,  # Warning
+                        "message": "Apex: os.system() detected — consider subprocess.run()",
+                        "source": "apex-lsp",
+                    })
             elif isinstance(node, ast.ExceptHandler):
                 if node.type is None:
                     diagnostics.append({
@@ -174,17 +173,16 @@ class LSPServer:
                         "message": "Apex: bare except — use except Exception:",
                         "source": "apex-lsp",
                     })
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                if ast.get_docstring(node) is None:
-                    diagnostics.append({
-                        "range": {
-                            "start": {"line": node.lineno - 1, "character": 0},
-                            "end": {"line": node.lineno - 1, "character": len(node.name)},
-                        },
-                        "severity": 3,  # Information
-                        "message": f"Apex: missing docstring for {node.name}",
-                        "source": "apex-lsp",
-                    })
+            if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))) and (ast.get_docstring(node) is None):
+                diagnostics.append({
+                    "range": {
+                        "start": {"line": node.lineno - 1, "character": 0},
+                        "end": {"line": node.lineno - 1, "character": len(node.name)},
+                    },
+                    "severity": 3,  # Information
+                    "message": f"Apex: missing docstring for {node.name}",
+                    "source": "apex-lsp",
+                })
 
         return diagnostics
 

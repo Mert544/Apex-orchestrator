@@ -46,17 +46,16 @@ class AdaptiveRunner:
             step = steps[idx]
 
             # Supervised mode gate before patch skills
-            if plan.mode == "supervised" and self._is_patch_skill(step.skill_name):
-                if not self._confirm_step(step):
-                    step_result = AutomationStepResult(
-                        step_name=step.name,
-                        skill_name=step.skill_name,
-                        status="skipped",
-                        output="User declined patch step in supervised mode",
-                    )
-                    result.steps.append(step_result)
-                    idx += 1
-                    continue
+            if (plan.mode == "supervised" and self._is_patch_skill(step.skill_name)) and (not self._confirm_step(step)):
+                step_result = AutomationStepResult(
+                    step_name=step.name,
+                    skill_name=step.skill_name,
+                    status="skipped",
+                    output="User declined patch step in supervised mode",
+                )
+                result.steps.append(step_result)
+                idx += 1
+                continue
 
             # Execute with retry
             step_result = self._execute_with_retry(step, context)

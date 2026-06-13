@@ -134,9 +134,8 @@ class EnhancedSafetyGovernor:
                 current_count = 0
             elif line.startswith("--- a/") or line.startswith("+++ b/"):
                 current_file = line[6:]
-            elif line.startswith("+") or line.startswith("-"):
-                if not line.startswith("+++") and not line.startswith("---"):
-                    current_count += 1
+            if (line.startswith("+") or line.startswith("-")) and (not line.startswith("+++") and not line.startswith("---")):
+                current_count += 1
         if current_file:
             diffs[current_file] = current_count
         return diffs

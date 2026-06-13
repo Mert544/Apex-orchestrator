@@ -58,9 +58,8 @@ def apply(
     try:
         block_tree = ast.parse("".join(normalized_block))
         for node in ast.walk(block_tree):
-            if isinstance(node, ast.Assign):
-                if node.targets and isinstance(node.targets[0], ast.Name):
-                    return_var = node.targets[0].id
+            if (isinstance(node, ast.Assign)) and (node.targets and isinstance(node.targets[0], ast.Name)):
+                return_var = node.targets[0].id
     except SyntaxError:
         pass
 

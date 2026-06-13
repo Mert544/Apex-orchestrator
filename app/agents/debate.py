@@ -148,24 +148,20 @@ class DebateEngine:
 
         for vote in votes:
             # If agent dissented and arguments are persuasive, reconsider
-            if vote.verdict != Verdict.ABSTAIN:
-                # Security arguments are very persuasive
-                if "security" in arg_text and vote.agent_role != "security_auditor":
-                    if vote.verdict == Verdict.APPROVE and any(a["role"] == "security_auditor" for a in arguments):
-                        # Softened: reduce confidence, maybe flip
-                        new_confidence = max(0.1, vote.confidence - 0.3)
-                        if new_confidence < 0.4:
-                            new_votes.append(
-                                Vote(
-                                    agent_name=vote.agent_name,
-                                    agent_role=vote.agent_role,
-                                    verdict=Verdict.ABSTAIN,
-                                    confidence=0.3,
-                                    reasoning="Softened stance after security concerns raised",
-                                    weight=vote.weight,
-                                )
-                            )
-                            continue
+            if ((vote.verdict != Verdict.ABSTAIN) and ("security" in arg_text and vote.agent_role != "security_auditor")) and (vote.verdict == Verdict.APPROVE and any(a["role"] == "security_auditor" for a in arguments)):
+                new_confidence = max(0.1, vote.confidence - 0.3)
+                if new_confidence < 0.4:
+                    new_votes.append(
+                        Vote(
+                            agent_name=vote.agent_name,
+                            agent_role=vote.agent_role,
+                            verdict=Verdict.ABSTAIN,
+                            confidence=0.3,
+                            reasoning="Softened stance after security concerns raised",
+                            weight=vote.weight,
+                        )
+                    )
+                    continue
 
             new_votes.append(vote)
 

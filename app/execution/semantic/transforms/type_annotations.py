@@ -15,17 +15,15 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     modified = False
 
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.returns is None:
-                lineno = node.lineno - 1
-                line = lines[lineno]
-                stripped = line.rstrip()
-                if stripped.endswith(":"):
-                    if "->" not in stripped:
-                        new_line = stripped[:-1] + " -> None:\n"
-                        lines[lineno] = new_line
-                        modified = True
-                        break
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))) and (node.returns is None):
+            lineno = node.lineno - 1
+            line = lines[lineno]
+            stripped = line.rstrip()
+            if (stripped.endswith(":")) and ("->" not in stripped):
+                new_line = stripped[:-1] + " -> None:\n"
+                lines[lineno] = new_line
+                modified = True
+                break
 
     if not modified:
         return None

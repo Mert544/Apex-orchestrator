@@ -115,9 +115,8 @@ def _has_star_import(tree: ast.Module) -> bool:
     """Does any statement (anywhere) do ``from x import *``? If so the whole
     module is a no-op — names could be bound through the star."""
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            if any(alias.name == "*" for alias in node.names):
-                return True
+        if (isinstance(node, ast.ImportFrom)) and (any(alias.name == "*" for alias in node.names)):
+            return True
     return False
 
 

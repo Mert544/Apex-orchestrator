@@ -526,9 +526,8 @@ class ProjectProfiler:
                         ctime = int(line.split()[1])
                     except (IndexError, ValueError):
                         ctime = None
-                elif line.startswith("\t") and ctime is not None:
-                    if self.DEBT_MARKER_RE.search(line):
-                        oldest = ctime if oldest is None else min(oldest, ctime)
+                if (line.startswith("\t") and ctime is not None) and (self.DEBT_MARKER_RE.search(line)):
+                    oldest = ctime if oldest is None else min(oldest, ctime)
             if oldest is not None:
                 ages[module] = max(0, (now - oldest) // 86400)
         profile.debt_marker_ages = ages

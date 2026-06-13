@@ -595,14 +595,12 @@ def _mutable_class_attribute_lines(cls: ast.ClassDef) -> dict[int, str]:
     """
     class_level: dict[str, int] = {}      # name -> class-body assignment line
     for stmt in cls.body:                 # direct class body only (not nested)
-        if isinstance(stmt, ast.Assign):
-            if _is_mutable_constructor(stmt.value):
-                for t in stmt.targets:
-                    if isinstance(t, ast.Name):
-                        class_level[t.id] = stmt.lineno
-        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
-            if isinstance(stmt.target, ast.Name) and _is_mutable_constructor(stmt.value):
-                class_level[stmt.target.id] = stmt.lineno
+        if (isinstance(stmt, ast.Assign)) and (_is_mutable_constructor(stmt.value)):
+            for t in stmt.targets:
+                if isinstance(t, ast.Name):
+                    class_level[t.id] = stmt.lineno
+        if (isinstance(stmt, ast.AnnAssign) and stmt.value is not None) and (isinstance(stmt.target, ast.Name) and _is_mutable_constructor(stmt.value)):
+            class_level[stmt.target.id] = stmt.lineno
     if not class_level:
         return {}
 

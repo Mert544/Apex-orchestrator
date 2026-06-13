@@ -152,12 +152,11 @@ class DebugLimb(Limb):
             tree = ast.parse(content)
 
             for node in ast.walk(tree):
-                if isinstance(node, ast.Call):
-                    if isinstance(node.func, ast.Name):
-                        if node.func.id == "eval":
-                            issues.append(f"Found eval() at line {node.lineno}")
-                        if node.func.id == "exec":
-                            issues.append(f"Found exec() at line {node.lineno}")
+                if (isinstance(node, ast.Call)) and (isinstance(node.func, ast.Name)):
+                    if node.func.id == "eval":
+                        issues.append(f"Found eval() at line {node.lineno}")
+                    if node.func.id == "exec":
+                        issues.append(f"Found exec() at line {node.lineno}")
 
         except Exception as e:
             issues.append(f"Could not parse file: {e}")
@@ -457,9 +456,8 @@ class DocLimb(Limb):
                 has_module_doc = ast.get_docstring(tree)
 
                 for node in tree.body:
-                    if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-                        if not ast.get_docstring(node):
-                            missing_count += 1
+                    if (isinstance(node, (ast.FunctionDef, ast.ClassDef))) and (not ast.get_docstring(node)):
+                        missing_count += 1
 
                 if not has_module_doc:
                     result["missing_docs"].append(

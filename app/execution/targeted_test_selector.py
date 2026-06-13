@@ -85,13 +85,12 @@ class TargetedTestSelector:
                 tree = ast.parse(content)
 
                 for node in ast.walk(tree):
-                    if isinstance(node, ast.FunctionDef):
-                        if node.name.startswith("test_"):
-                            if (
-                                module_name in test_file.name
-                                or module_name in content[:500]
-                            ):
-                                test_names.append(f"{test_file.name}::{node.name}")
+                    if (isinstance(node, ast.FunctionDef)) and (node.name.startswith("test_")):
+                        if (
+                            module_name in test_file.name
+                            or module_name in content[:500]
+                        ):
+                            test_names.append(f"{test_file.name}::{node.name}")
 
             except Exception:
                 pass

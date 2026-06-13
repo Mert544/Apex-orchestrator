@@ -17,21 +17,20 @@ def apply(rel_path: str, source: str, repair: dict[str, Any]) -> SemanticPatchRe
     modified = False
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assert):
-            if node.msg is None:
-                lineno = node.lineno - 1
-                line = lines[lineno]
-                stripped = line.rstrip()
-                content = stripped.lstrip()
-                indent = stripped[: len(stripped) - len(content)]
-                if content.startswith("assert "):
-                    expr = content[7:]
-                    if not expr.endswith('"') and "#" not in expr:
-                        new_content = f'{content}, "Assertion failed: {expr}"'
-                        new_line = indent + new_content + "\n"
-                        lines[lineno] = new_line
-                        modified = True
-                        break
+        if (isinstance(node, ast.Assert)) and (node.msg is None):
+            lineno = node.lineno - 1
+            line = lines[lineno]
+            stripped = line.rstrip()
+            content = stripped.lstrip()
+            indent = stripped[: len(stripped) - len(content)]
+            if content.startswith("assert "):
+                expr = content[7:]
+                if not expr.endswith('"') and "#" not in expr:
+                    new_content = f'{content}, "Assertion failed: {expr}"'
+                    new_line = indent + new_content + "\n"
+                    lines[lineno] = new_line
+                    modified = True
+                    break
 
     if not modified:
         return None
