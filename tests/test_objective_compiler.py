@@ -466,3 +466,67 @@ def test_grade_proof_silent_without_flag_or_changes(tmp_path, capsys):
     # Not applied → nothing printed.
     _print_grade_proof(str(tmp_path), 90, False)
     assert capsys.readouterr().out == ""
+
+
+# --- development trajectory: dev_history wiring + apex shield -----------------
+
+def _graded_project(tmp_path: Path) -> Path:
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "m.py").write_text(
+        "def render(text, color=None, width=80):\n"
+        "    if text == None:\n        return dict()\n    return text[:width]\n",
+        encoding="utf-8")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "from app.m import render\ndef test_r():\n"
+        "    assert render(None) == {}\n    assert render('hi', width=2) == 'hi'\n",
+        encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_develop_grade_logs_to_dev_history(tmp_path, capsys):
+    import argparse
+    from app.cli_autonomy import cmd_develop
+    from app.engine.dev_history import DevHistory
+    _graded_project(tmp_path)
+    cmd_develop(argparse.Namespace(
+        target=str(tmp_path), objective="dead-params", all_objectives=True,
+        from_dream=False, playbook=False, history=False, grade=True, apply=True,
+        max_steps=25, no_verify=True, json=False))
+    capsys.readouterr()
+    hist = DevHistory.load(str(tmp_path))
+    assert len(hist.runs) == 1 and hist.runs[0].delta > 0
+    # --history renders the trajectory.
+    cmd_develop(argparse.Namespace(
+        target=str(tmp_path), objective="dead-params", all_objectives=False,
+        from_dream=False, playbook=False, history=True, grade=False, apply=False,
+        max_steps=25, no_verify=True, json=False))
+    assert "Development history" in capsys.readouterr().out
+
+
+def test_cmd_shield_generates_and_applies(tmp_path, capsys):
+    import argparse
+    from app.cli_autonomy import cmd_shield
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "calc.py").write_text(
+        "def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    # Preview: shows the test, writes nothing.
+    rc = cmd_shield(argparse.Namespace(target=str(tmp_path), module="app/calc.py",
+                                       apply=False, json=False))
+    assert rc == 0
+    assert "Characterization test" in capsys.readouterr().out
+    assert not (tmp_path / "tests" / "test_calc.py").exists()
+    # Apply: writes the test.
+    rc = cmd_shield(argparse.Namespace(target=str(tmp_path), module="app/calc.py",
+                                       apply=True, json=False))
+    assert rc == 0
+    assert (tmp_path / "tests" / "test_calc.py").exists()
+
+
+def test_cmd_shield_needs_a_module(capsys):
+    import argparse
+    from app.cli_autonomy import cmd_shield
+    rc = cmd_shield(argparse.Namespace(target="", module="", apply=False, json=False))
+    assert rc == 1

@@ -421,6 +421,16 @@ def cmd_develop(args: argparse.Namespace) -> int:
             print(render_playbook_markdown(archive))
         return 0
 
+    if getattr(args, "history", False):
+        from app.engine.dev_history import DevHistory, render_history_markdown
+
+        history = DevHistory.load(str(target))
+        if args.json:
+            print(json.dumps(history.to_dict(), indent=2))
+        else:
+            print(render_history_markdown(history))
+        return 0
+
     want_grade = getattr(args, "grade", False)
     grade_before = _grade_score(str(target)) if want_grade else None
 
@@ -435,7 +445,8 @@ def cmd_develop(args: argparse.Namespace) -> int:
             if apply and any(r.steps for r in results):
                 print("_Applied to your working tree, not committed — "
                       "review with `git diff`._")
-        _print_grade_proof(str(target), grade_before, apply and any(r.steps for r in results))
+        _print_grade_proof(str(target), grade_before, apply and any(r.steps for r in results),
+                           objective="all", moves=sum(len(r.steps) for r in results))
         return 0
 
     if getattr(args, "from_dream", False):
@@ -469,7 +480,8 @@ def cmd_develop(args: argparse.Namespace) -> int:
         if result.applied and result.steps:
             print("_Applied to your working tree, not committed — "
                   "review with `git diff`._")
-    _print_grade_proof(str(target), grade_before, result.applied and bool(result.steps))
+    _print_grade_proof(str(target), grade_before, result.applied and bool(result.steps),
+                       objective=objective, moves=len(result.steps))
     # Non-zero only when an explicitly named objective is unknown (a usage error).
     return 1 if (result.blocked and not result.steps
                  and any("unknown objective" in b for b in result.blocked)) else 0
@@ -484,9 +496,11 @@ def _grade_score(target: str) -> int:
         return -1
 
 
-def _print_grade_proof(target: str, before: int | None, applied: bool) -> None:
-    """After an applied campaign, prove the gain: re-grade and show before→after.
-    A development tool should show it moved the needle, not just that it ran."""
+def _print_grade_proof(target: str, before: int | None, applied: bool,
+                       objective: str = "", moves: int = 0) -> None:
+    """After an applied campaign, prove the gain: re-grade and show before→after,
+    and log the run to the development history so the assistant can show its
+    trajectory over time. A development tool should show it moved the needle."""
     if before is None or before < 0 or not applied:
         return
     after = _grade_score(target)
@@ -497,6 +511,49 @@ def _print_grade_proof(target: str, before: int | None, applied: bool) -> None:
     sign = "+" if delta > 0 else ""
     print(f"\n**Health grade: {before} → {after} ({sign}{delta} {arrow})** "
           "— the campaign's measured effect on the project.")
+    try:
+        from app.engine.dev_history import record_run
+        record_run(target, objective or "develop", moves, before, after)
+    except Exception:
+        pass  # history is best-effort; never fail a successful campaign on it
+
+
+def cmd_shield(args: argparse.Namespace) -> int:
+    """Build a characterization test for an untested module — Apex develops the
+    project's test safety net, not just flags the gap. Default previews the
+    generated test; --apply writes it (never clobbers an existing test file)."""
+    from app.execution.test_shield import (
+        generate_characterization_test, write_shield_test,
+    )
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    module = getattr(args, "module", "") or ""
+    if not module:
+        print("⛔ shield needs a MODULE (e.g. apex shield app/foo.py)")
+        return 1
+    shield = generate_characterization_test(str(target), module)
+    if shield is None:
+        print(f"# No test built for `{module}` — it already has a test, has no "
+              "safely-callable public function, or doesn't parse.")
+        return 0
+    if args.json:
+        print(json.dumps({"module": shield.module, "test_path": shield.test_path,
+                          "functions": shield.functions, "content": shield.content}, indent=2))
+        if getattr(args, "apply", False):
+            write_shield_test(str(target), shield)
+        return 0
+    print(f"# Characterization test for `{shield.module}` → `{shield.test_path}`")
+    print(f"_Pins {len(shield.functions)} public function(s): "
+          f"{', '.join(shield.functions) or '(import smoke only)'}_\n")
+    print("```python")
+    print(shield.content.rstrip())
+    print("```")
+    if getattr(args, "apply", False):
+        path = write_shield_test(str(target), shield)
+        print(f"\n✅ Wrote {path} — run `python -m pytest {path}` to verify.")
+    else:
+        print("\n_Preview only — pass `--apply` to write the test._")
+    return 0
 
 
 def register_parsers(subparsers) -> None:
@@ -582,6 +639,8 @@ def register_parsers(subparsers) -> None:
                                      "shrink-functions, inline-helpers) — clean everything")
     develop_parser.add_argument("--grade", action="store_true",
                                 help="Measure the health grade before and after — prove the gain")
+    develop_parser.add_argument("--history", action="store_true",
+                                help="Show the development trajectory (every graded campaign's gain)")
     develop_parser.add_argument("--from-dream", action="store_true", dest="from_dream",
                                 help="Scope the campaign to the modules the nightly "
                                      "dream flagged as confluences (dream → action)")
@@ -596,6 +655,18 @@ def register_parsers(subparsers) -> None:
                                 help="Skip the per-move test verification (not recommended)")
     develop_parser.add_argument("--json", action="store_true", help="Emit JSON")
     develop_parser.set_defaults(func=cmd_develop)
+
+    # shield — build a characterization test for an untested module (development)
+    shield_parser = subparsers.add_parser(
+        "shield",
+        help="Build a characterization test for an untested module (preview; --apply writes it)",
+    )
+    shield_parser.add_argument("module", help="Module to test (e.g. app/foo.py)")
+    shield_parser.add_argument("--target", default="", help="Target project root")
+    shield_parser.add_argument("--apply", action="store_true",
+                               help="Write the generated test (never clobbers an existing one)")
+    shield_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    shield_parser.set_defaults(func=cmd_shield)
 
     # maintain — one-shot scan -> ideate -> apply -> verify -> commit -> report
     maintain_parser = subparsers.add_parser(

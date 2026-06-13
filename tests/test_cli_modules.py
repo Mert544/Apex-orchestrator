@@ -95,7 +95,7 @@ def test_family_parser_registration_covers_every_command():
     cli._register_local_parsers(sub)
 
     assert set(sub.choices) == {
-        "auto", "simulate", "evolve", "maintain", "develop",
+        "auto", "simulate", "evolve", "maintain", "develop", "shield",
         "grade", "impact", "mutants", "duplication", "brief", "dream", "outcomes", "recipes", "changelog", "explain",
         "ideate", "review", "rename", "move", "signature", "rewrite", "teach", "extract", "inline",
         "bench", "run",

@@ -24,6 +24,7 @@ from app.cli_autonomy import (  # noqa: F401  (re-exports: import surface unchan
     cmd_develop,
     cmd_evolve,
     cmd_maintain,
+    cmd_shield,
     cmd_simulate,
 )
 from app.cli_common import _get_project_root  # noqa: F401  (re-export)
