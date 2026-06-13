@@ -428,6 +428,35 @@ def _extract_constant_moves(project_root: str | Path) -> list[Move]:
     ) for rel in _magic_constant_modules(project_root)]
 
 
+# --- Objective: sort imports (group + alphabetize a clean import block) ------
+
+def _import_sort_modules(project_root: str | Path) -> list[str]:
+    """Own modules whose import block can be sorted."""
+    from app.execution.import_sort import plan_sort_imports
+
+    out: list[str] = []
+    for rel, _src in _own_modules(project_root):
+        if plan_sort_imports(project_root, rel).new_contents:
+            out.append(rel)
+    return out
+
+
+def import_sort_fitness(project_root: str | Path) -> float:
+    """Fitness = how many own modules still have an unsorted import block."""
+    return float(len(_import_sort_modules(project_root)))
+
+
+def _import_sort_moves(project_root: str | Path) -> list[Move]:
+    """One move per module with a sortable import block."""
+    from app.execution.import_sort import plan_sort_imports
+
+    return [Move(
+        operator="sort_imports", target=f"{rel}:sort-imports",
+        description=f"sort the import block in {rel}",
+        build_plan=lambda r=rel: plan_sort_imports(project_root, r),
+    ) for rel in _import_sort_modules(project_root)]
+
+
 # --- Objective: simplify accumulator loops into comprehensions ---------------
 
 def _comprehension_modules(project_root: str | Path) -> list[str]:
@@ -493,6 +522,7 @@ _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
     "simplify-comprehension": (comprehension_fitness, _comprehension_moves),
     "extract-constant": (magic_constant_fitness, _extract_constant_moves),
     "remove-unused-imports": (unused_import_fitness, _unused_import_moves),
+    "sort-imports": (import_sort_fitness, _import_sort_moves),
     "remove-dead-code": (dead_code_fitness, _dead_code_moves),
     "dedup": (duplication_fitness, _dedup_moves),
     "dead-params": (dead_parameter_fitness, _dead_param_moves),

@@ -14,12 +14,18 @@ from app.engine.fractal_develop import (
 def test_reduce_debt_decomposes_to_all_objectives():
     objs = resolve_goal("reduce-debt")
     assert objs == ["modernize", "simplify-bool-return", "remove-dead-code",
-                    "dead-params", "dedup", "shrink-functions", "inline-helpers"]
+                    "dead-params", "remove-unused-imports", "sort-imports",
+                    "simplify-comprehension", "dedup", "shrink-functions",
+                    "inline-helpers"]
 
 
 def test_subgoals_decompose():
     assert resolve_goal("tidy") == ["modernize", "simplify-bool-return",
-                                    "remove-dead-code", "dead-params"]
+                                    "remove-dead-code", "dead-params",
+                                    "remove-unused-imports", "sort-imports",
+                                    "simplify-comprehension"]
+    assert resolve_goal("polish") == ["remove-unused-imports", "sort-imports",
+                                      "simplify-comprehension"]
     assert resolve_goal("simplify-structure") == ["dedup", "shrink-functions", "inline-helpers"]
 
 
