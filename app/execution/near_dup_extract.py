@@ -22,11 +22,13 @@ so the scope is the SIMPLEST safe shape and the safety bar is absolute.
 STRICT CONSERVATIVE SCOPE — every one of these is a hard gate; the slightest
 doubt is a BLOCKER with empty ``new_contents`` (correctness over coverage):
 
-  * EVERY differing leaf, in EVERY occurrence, must be an :class:`ast.Constant`
-    literal. If any differing position is a ``Name`` (or anything but a
-    Constant) in any occurrence → BLOCK. A differing constant becomes a plain
-    value parameter; a differing name would change what the block *reads* and is
-    deferred to a later, more careful version.
+  * EVERY differing leaf, in EVERY occurrence, must be a parameterizable VALUE:
+    an :class:`ast.Constant`, or an :class:`ast.Name` that is LOADED (read). Both
+    become a value parameter the call site passes. A differing loaded name is
+    safe precisely because a name BOUND inside the block is a ``Store`` (structure
+    the detector requires to match), so any differing loaded name is a FREE name
+    (global/builtin/outer scope) — passing its value is identical to reading it
+    inline. Anything else (a ``Store``/``Del`` target, an attribute) → BLOCK.
   * Each occurrence must re-resolve EXACTLY as dedup_extract requires (reusing
     its ``_resolve_occurrence`` path verbatim): inside one top-level
     function/method body, a clean contiguous statement run, no relocate-unsafe
@@ -258,17 +260,23 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
             "column mapping is unsound, refusing")
         return plan
 
-    # EVERY differing leaf, in EVERY occurrence, must be an ast.Constant. A
-    # differing Name (or anything else) defers to a later version — BLOCK.
+    # EVERY differing leaf must be a parameterizable VALUE in every occurrence:
+    # an ast.Constant, or an ast.Name LOADED (read). A differing loaded Name is
+    # provably safe — because the detector only wildcards value leaves and a
+    # name BOUND inside the block is a Store (structure that must match to group),
+    # any differing loaded Name is a FREE name (global/builtin/outer), so passing
+    # its value as an argument is identical to reading it inline. Anything else
+    # (a Store/Del target, an attribute — neither is a value leaf) blocks.
     for col in diff_cols:
         for i, occ in enumerate(resolved):
             node = per_occ_leaves[i][col][1]
-            if not isinstance(node, ast.Constant):
+            is_value = isinstance(node, ast.Constant) or (
+                isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load))
+            if not is_value:
                 plan.blockers.append(
-                    "a differing position is not a constant literal in every "
-                    f"occurrence ({_segment(occ.source, node)!r} at "
-                    f"{occ.rel}:{occ.span_lo}) — only differing CONSTANTS can "
-                    "become value parameters in this version")
+                    "a differing position is not a value (constant or loaded "
+                    f"name) in every occurrence ({_segment(occ.source, node)!r} "
+                    f"at {occ.rel}:{occ.span_lo}) — can't become a value parameter")
                 return plan
 
     first = resolved[0]

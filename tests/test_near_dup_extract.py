@@ -220,18 +220,22 @@ def beta(n):
 '''
 
 
-def test_differing_name_blocks(tmp_path: Path) -> None:
+def test_differing_free_name_extracts(tmp_path: Path) -> None:
     _write(tmp_path, "pkg/mod.py", _NAME_DIFF_A)
     group = _only_group(tmp_path)
-    # The detector groups a differing LOADED name as a near-dup...
+    # The detector groups a differing LOADED name (free module globals G/H)...
     assert group.diff_count == 1
     assert sorted(group.differences[0]) == ["G", "H"]
 
-    # ...but our conservative extractor refuses: only differing CONSTANTS qualify.
+    # ...and the extractor now parameterizes it — a bound name would be a Store
+    # and never group, so this loaded name is FREE; passing its value is identical
+    # to reading it inline.
     plan = plan_near_dup_extract(tmp_path, group)
-    assert not plan.ok
-    assert not plan.new_contents
-    assert any("constant" in b for b in plan.blockers)
+    assert plan.ok, f"a free loaded name should parameterize, blockers={plan.blockers}"
+    new = plan.new_contents["pkg/mod.py"]
+    assert "_shared_1(n, G)" in new and "_shared_1(n, H)" in new
+    ns = _exec_module(new)
+    assert ns["alpha"](5) == 108 and ns["beta"](5) == 208
 
 
 # ── 3b. a differing live-in NAME → blocked by the signature gate ──
@@ -597,3 +601,24 @@ def test_param_name_collision_avoided(tmp_path: Path) -> None:
     for v in (-4, 0, 6):
         assert after["alpha"](v) == before["alpha"](v)
         assert after["beta"](v) == before["beta"](v)
+
+
+def test_differing_free_name_becomes_a_value_param(tmp_path):
+    # A differing FREE (module-global) name is now parameterizable: the call site
+    # passes its own name's value — identical to reading it inline. (A bound name
+    # would be a Store and never group, so a differing loaded name is always free.)
+    _write(tmp_path, "pyproject.toml", "[project]\nname='m'\nversion='0'\n")
+    _write(tmp_path, "app/__init__.py", "")
+    _write(tmp_path, "app/m.py",
+           "G = 10\nH = 20\n\n\n"
+           "def alpha(n):\n    a = n + 1\n    b = a * 2\n    c = b + 3\n    d = c + G\n    return d\n\n\n"
+           "def beta(n):\n    a = n + 1\n    b = a * 2\n    c = b + 3\n    d = c + H\n    return d\n")
+    group = _only_group(tmp_path)
+    plan = plan_near_dup_extract(tmp_path, group)
+    assert plan.ok, f"a differing free name should parameterize now, blockers={plan.blockers}"
+    new = plan.new_contents["app/m.py"]
+    assert "def _shared_1(n, p0):" in new
+    assert "return _shared_1(n, G)" in new and "return _shared_1(n, H)" in new
+    ast.parse(new)
+    ns = _exec_module(new)
+    assert ns["alpha"](5) == 25 and ns["beta"](5) == 35
