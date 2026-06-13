@@ -649,8 +649,101 @@ def cmd_shield(args: argparse.Namespace) -> int:
     return 0
 
 
+_LETTER_MIN = {"A+": 97, "A": 93, "A-": 90, "B+": 87, "B": 83, "B-": 80,
+               "C+": 77, "C": 73, "C-": 70, "D+": 67, "D": 63, "D-": 60}
+
+
+def _target_score(value: str) -> int | None:
+    """Parse a `--until` target: an integer score, or a letter grade (its floor)."""
+    if not value:
+        return None
+    v = value.strip().upper()
+    if v in _LETTER_MIN:
+        return _LETTER_MIN[v]
+    try:
+        return int(v)
+    except ValueError:
+        return None
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    """Show the develop priority board — which objective the organism would
+    improve next, worst fixable debt first. Pure preview: changes nothing."""
+    from app.engine.ascend import rank_objectives, render_plan_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    goal = getattr(args, "goal", "") or ""
+    restrict = None
+    if goal:
+        from app.engine.fractal_develop import resolve_goal
+        restrict = resolve_goal(goal)
+    rankings = rank_objectives(str(target), restrict)
+    if args.json:
+        print(json.dumps([r.to_dict() for r in rankings], indent=2))
+    else:
+        print(render_plan_markdown(rankings))
+    return 0
+
+
+def cmd_ascend(args: argparse.Namespace) -> int:
+    """Autonomous self-improvement: each round develop the worst fixable debt,
+    suite-gated and grade-proven, to a fixpoint. Default dry run; --apply climbs."""
+    from app.engine.ascend import ascend, render_ascend_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    report = ascend(
+        str(target), max_rounds=getattr(args, "max_rounds", 4),
+        target_score=_target_score(getattr(args, "until", "") or ""),
+        apply=getattr(args, "apply", False),
+        verify=not getattr(args, "no_verify", False),
+        goal=getattr(args, "goal", "") or "",
+        max_steps=getattr(args, "max_steps", 25))
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(render_ascend_markdown(report))
+        if not getattr(args, "apply", False):
+            print("[ascend] Dry run — re-run with --apply to climb.")
+    return 0
+
+
 def register_parsers(subparsers) -> None:
     """Register the autonomy family's subcommands: auto, simulate, evolve, maintain."""
+    # plan — the develop priority board (what to improve next; changes nothing)
+    plan_parser = subparsers.add_parser(
+        "plan",
+        help="Show the develop priority board: which objective to improve next "
+             "(worst fixable debt first)",
+    )
+    plan_parser.add_argument("--target", default="", help="Target project root")
+    plan_parser.add_argument("--goal", default="",
+                             help="Restrict the board to one fractal goal's objectives")
+    plan_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    plan_parser.set_defaults(func=cmd_plan)
+
+    # ascend — autonomous goal-directed self-improvement to a fixpoint
+    ascend_parser = subparsers.add_parser(
+        "ascend",
+        help="Autonomous self-improvement: develop the worst fixable debt each "
+             "round, suite-gated and grade-proven, to a fixpoint (default dry run)",
+    )
+    ascend_parser.add_argument("--target", default="", help="Target project root")
+    ascend_parser.add_argument("--goal", default="",
+                               help="Restrict the climb to one fractal goal's objectives")
+    ascend_parser.add_argument("--apply", action="store_true",
+                               help="Climb for real (default: preview the next move)")
+    ascend_parser.add_argument("--max-rounds", type=int, default=4, dest="max_rounds",
+                               help="Maximum improvement rounds (default 4)")
+    ascend_parser.add_argument("--max-steps", type=int, default=25, dest="max_steps",
+                               help="Cap moves per objective per round (default 25)")
+    ascend_parser.add_argument("--until", default="",
+                               help="Stop once the health grade reaches this (e.g. 90 or A-)")
+    ascend_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                               help="Skip the per-move suite gate (faster, unsafe)")
+    ascend_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    ascend_parser.set_defaults(func=cmd_ascend)
+
+
     # auto — the recommended one-command entry point (no flags to memorize)
     auto_parser = subparsers.add_parser(
         "auto",
