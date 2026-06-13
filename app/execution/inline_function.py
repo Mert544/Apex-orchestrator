@@ -1,10 +1,14 @@
 """Inline Function — the inverse of Extract Method.
 
 A tiny single-use helper (``def fee(x): return x * RATE``) read once and called
-once is rarely a clean abstraction — it's a hop the reader has to follow. This
-is the hand that folds it back: the single call site is replaced by the helper's
-``return`` expression with the call's arguments substituted in, and the now-dead
-definition is deleted.
+back through a thin name is rarely a clean abstraction — it's a hop the reader
+has to follow. This is the hand that folds it back: EVERY call site of the
+helper, project-wide, is replaced by the helper's ``return`` expression with
+that call's own arguments substituted in, and the now-dead definition is deleted.
+
+Each call site is bound independently — different sites may pass different
+arguments — but the operation is all-or-nothing: if ANY site can't be inlined
+safely, the whole plan blocks rather than leave a half-folded helper behind.
 
 Conservative by design — any ambiguity is a **blocker**, never a guess:
   - the function must be defined exactly ONCE across the project;
@@ -16,19 +20,21 @@ Conservative by design — any ambiguity is a **blocker**, never a guess:
   - it must never travel as a bare object (only ever be *called*) — a Name or
     Attribute used outside a Call position means its identity is used, like the
     ``object_refs`` guard in ``ProjectProfiler._scan_dead_params``;
-  - there must be exactly ONE call site (zero → "nothing to inline", more than
-    one → out of scope for v1);
-  - the call must pass only plain positional/keyword arguments (no ``*`` / ``**``
-    unpacking);
-  - a parameter used more than once whose argument isn't a "pure simple"
-    expression blocks — inlining would duplicate a side-effecting evaluation.
+  - there must be at least ONE call site (zero → "nothing to inline");
+  - PER call site: it must pass only plain positional/keyword arguments (no
+    ``*`` / ``**`` unpacking), supply every required parameter, and not name a
+    keyword that isn't a parameter;
+  - PER call site: a parameter used more than once whose argument isn't a "pure
+    simple" expression blocks the WHOLE operation — inlining would duplicate a
+    side-effecting evaluation; the offending site is named.
 
 The substitution is done by source-span splicing inside the helper's own
 ``return`` text (never an ``ast.unparse`` round-trip), so the original spelling
-and formatting survive — exactly like the rest of the refactor family. Edits at
-the call site and the deletion of the definition may live in the same file, so
-they are applied bottom-up to keep line numbers valid. The result must re-parse
-or the plan blocks rather than write something broken.
+and formatting survive — exactly like the rest of the refactor family. Several
+call sites and/or the definition may live in the same file; edits within a file
+are applied bottom-up (highest line first) to keep line numbers valid, and edits
+across files ride the per-file ``new_contents`` as before. Every changed file
+must re-parse or the plan blocks rather than write something broken.
 
 Apply is suite-verified with automatic rollback via :class:`RenamePlan` /
 ``apply_rename``. Deterministic, stdlib-only.
@@ -108,10 +114,11 @@ def _has_object_ref(trees: dict[str, ast.Module], func_name: str) -> bool:
 
 
 def _bind_arguments(plan: RenamePlan, source: str, fn: ast.FunctionDef,
-                    call: ast.Call) -> dict[str, str] | None:
+                    call: ast.Call, site: str) -> dict[str, str] | None:
     """Map each parameter name → its argument SOURCE TEXT for this call: by
     position, then by keyword, falling back to the parameter's default. Blocks
-    (returns None) on a missing required argument."""
+    (returns None) on a missing required argument or unknown keyword. ``site``
+    is a ``rel:line`` label woven into any blocker message."""
     params = list(fn.args.args)
     defaults = list(fn.args.defaults)
     # Right-aligned defaults: the last len(defaults) params have one.
@@ -119,15 +126,22 @@ def _bind_arguments(plan: RenamePlan, source: str, fn: ast.FunctionDef,
     for p, d in zip(params[len(params) - len(defaults):], defaults):
         default_for[p.arg] = d
 
+    param_names = {p.arg for p in params}
     bound: dict[str, str] = {}
     if len(call.args) > len(params):
         plan.blockers.append(
-            f"call site passes {len(call.args)} positional args but "
+            f"{site}: call site passes {len(call.args)} positional args but "
             f"{plan.old}() takes {len(params)}")
         return None
     for p, arg in zip(params, call.args):
         bound[p.arg] = _segment(source, arg)
     kw_by_name = {kw.arg: kw for kw in call.keywords}
+    for name in kw_by_name:
+        if name not in param_names:
+            plan.blockers.append(
+                f"{site}: call site passes keyword '{name}' which is not a "
+                f"parameter of {plan.old}()")
+            return None
     for p in params:
         if p.arg in bound:
             continue
@@ -140,17 +154,19 @@ def _bind_arguments(plan: RenamePlan, source: str, fn: ast.FunctionDef,
                 or _segment(source, default_for[p.arg])
         else:
             plan.blockers.append(
-                f"call site does not supply required parameter '{p.arg}'")
+                f"{site}: call site does not supply required parameter "
+                f"'{p.arg}'")
             return None
     return bound
 
 
 def _substitute(expr_text: str, expr: ast.expr, params: set[str],
                 bound: dict[str, str], arg_nodes: dict[str, ast.expr],
-                plan: RenamePlan) -> str | None:
+                plan: RenamePlan, site: str) -> str | None:
     """Splice ``(arg_text)`` over every Name in EXPR that names a parameter.
     Spans are processed right-to-left so earlier offsets stay valid. Returns the
-    rewritten EXPR text, or None after recording a side-effect blocker."""
+    rewritten EXPR text, or None after recording a side-effect blocker naming
+    ``site``."""
     # Count parameter uses to gate the side-effect-duplication rule.
     uses: dict[str, list[ast.Name]] = {p: [] for p in params}
     for n in ast.walk(expr):
@@ -159,9 +175,9 @@ def _substitute(expr_text: str, expr: ast.expr, params: set[str],
     for name, nodes in uses.items():
         if len(nodes) > 1 and name in arg_nodes and not _is_pure_simple(arg_nodes[name]):
             plan.blockers.append(
-                f"parameter '{name}' is used {len(nodes)} times and its argument "
-                "isn't a pure simple expression — inlining would duplicate a "
-                "side-effecting evaluation")
+                f"{site}: parameter '{name}' is used {len(nodes)} times and its "
+                "argument isn't a pure simple expression — inlining would "
+                "duplicate a side-effecting evaluation")
             return None
 
     base_line = expr.lineno
@@ -253,79 +269,85 @@ def plan_inline(project_root: str | Path, function_name: str) -> RenamePlan:
     if not sites:
         plan.blockers.append(f"no call site for '{function_name}' — nothing to inline")
         return plan
-    if len(sites) > 1:
-        where = ", ".join(f"{rel}:{c.lineno}" for rel, c in sites)
-        plan.blockers.append(
-            f"'{function_name}' has {len(sites)} call sites ({where}) — "
-            "inline supports a single call site in v1")
-        return plan
-    call_rel, call = sites[0]
-    call_source = sources[call_rel]
-
-    if any(isinstance(a, ast.Starred) for a in call.args) \
-            or any(kw.arg is None for kw in call.keywords):
-        plan.blockers.append(
-            "the call site uses * or ** unpacking — only plain positional/"
-            "keyword arguments can be inlined")
-        return plan
-
-    bound = _bind_arguments(plan, call_source, fn, call)
-    if bound is None:
-        return plan
 
     params = {p.arg for p in fn.args.args}
-    arg_nodes: dict[str, ast.expr] = {}
-    for p, arg in zip(fn.args.args, call.args):
-        arg_nodes[p.arg] = arg
-    kw_by_name = {kw.arg: kw for kw in call.keywords}
-    for p in fn.args.args:
-        if p.arg not in arg_nodes and p.arg in kw_by_name:
-            arg_nodes[p.arg] = kw_by_name[p.arg].value
-
     expr_text = _segment(def_source, expr)
-    substituted = _substitute(expr_text, expr, params, bound, arg_nodes, plan)
-    if substituted is None:
-        return plan
-    inlined = f"({substituted})"
 
-    # The call span must be a single-line intra-line edit (like pattern_rewrite).
-    if call.lineno != call.end_lineno:
-        plan.blockers.append(
-            f"{call_rel}:{call.lineno}: the call spans multiple lines — "
-            "collapse it onto one line first")
-        return plan
+    # Resolve EVERY call site independently into an intra-line splice edit. The
+    # operation is all-or-nothing: any unsafe/unresolvable site blocks the whole
+    # plan, so existing call sites are never left half-folded.
+    # call_edits[rel] -> list of (call_lineno, col_offset, end_col_offset, text)
+    call_edits: dict[str, list[tuple[int, int, int, str]]] = {}
+    for call_rel, call in sites:
+        site = f"{call_rel}:{call.lineno}"
+        call_source = sources[call_rel]
 
-    # Build the new content. The call edit and the def deletion may be in the
-    # SAME file; apply bottom-up (higher line numbers first) so indices stay valid.
-    same_file = call_rel == defmod
-    if same_file:
-        lines = call_source.splitlines(keepends=True)
-        # Apply the edit that is LOWER in the file first so the other one's line
-        # numbers stay valid. If the call is below the def, edit the call first,
-        # then delete the (higher) def block. Otherwise delete the def (below the
-        # call) first — the call's line index is unaffected by a deletion under it.
-        if call.lineno > fn.lineno:
-            row = lines[call.lineno - 1]
-            lines[call.lineno - 1] = row[:call.col_offset] + inlined + row[call.end_col_offset:]
+        if any(isinstance(a, ast.Starred) for a in call.args) \
+                or any(kw.arg is None for kw in call.keywords):
+            plan.blockers.append(
+                f"{site}: the call site uses * or ** unpacking — only plain "
+                "positional/keyword arguments can be inlined")
+            return plan
+
+        bound = _bind_arguments(plan, call_source, fn, call, site)
+        if bound is None:
+            return plan
+
+        arg_nodes: dict[str, ast.expr] = {}
+        for p, arg in zip(fn.args.args, call.args):
+            arg_nodes[p.arg] = arg
+        kw_by_name = {kw.arg: kw for kw in call.keywords}
+        for p in fn.args.args:
+            if p.arg not in arg_nodes and p.arg in kw_by_name:
+                arg_nodes[p.arg] = kw_by_name[p.arg].value
+
+        substituted = _substitute(expr_text, expr, params, bound, arg_nodes,
+                                  plan, site)
+        if substituted is None:
+            return plan
+        inlined = f"({substituted})"
+
+        # The call span must be a single-line intra-line edit (like pattern_rewrite).
+        if call.lineno != call.end_lineno:
+            plan.blockers.append(
+                f"{site}: the call spans multiple lines — "
+                "collapse it onto one line first")
+            return plan
+
+        call_edits.setdefault(call_rel, []).append(
+            (call.lineno, call.col_offset, call.end_col_offset, inlined))
+
+    # Apply edits file by file. Call-site splices and the (single) def deletion
+    # may share a file; everything within a file is applied bottom-up (highest
+    # line first) so earlier line/column indices stay valid. Edits across files
+    # ride independent ``new_contents`` entries.
+    files_touched = set(call_edits) | {defmod}
+    for rel in files_touched:
+        source = sources[rel]
+        lines = source.splitlines(keepends=True)
+        edits = sorted(call_edits.get(rel, []), key=lambda e: (e[0], e[1]),
+                       reverse=True)
+        delete_here = rel == defmod
+        n_edits = len(call_edits.get(rel, [])) + (1 if delete_here else 0)
+
+        # Bottom-up: process whichever sits lower in the file first. The def
+        # deletion removes whole lines above-or-below; a deletion below a splice
+        # leaves that splice's line index untouched, and we apply splices that
+        # sit above the def before the deletion runs.
+        below_def = [e for e in edits if e[0] > fn.lineno]
+        above_def = [e for e in edits if e[0] <= fn.lineno]
+        for lineno, col, end_col, text in below_def:
+            row = lines[lineno - 1]
+            lines[lineno - 1] = row[:col] + text + row[end_col:]
+        if delete_here:
             lines = _delete_def_lines(lines, fn)
-        else:
-            lines = _delete_def_lines(lines, fn)
-            row = lines[call.lineno - 1]
-            lines[call.lineno - 1] = row[:call.col_offset] + inlined + row[call.end_col_offset:]
-        plan.originals[call_rel] = call_source
-        plan.new_contents[call_rel] = "".join(lines)
-        plan.edits_by_file[call_rel] = 2
-    else:
-        clines = call_source.splitlines(keepends=True)
-        row = clines[call.lineno - 1]
-        clines[call.lineno - 1] = row[:call.col_offset] + inlined + row[call.end_col_offset:]
-        plan.originals[call_rel] = call_source
-        plan.new_contents[call_rel] = "".join(clines)
-        plan.edits_by_file[call_rel] = 1
-        dlines = def_source.splitlines(keepends=True)
-        plan.originals[defmod] = def_source
-        plan.new_contents[defmod] = "".join(_delete_def_lines(dlines, fn))
-        plan.edits_by_file[defmod] = 1
+        for lineno, col, end_col, text in above_def:
+            row = lines[lineno - 1]
+            lines[lineno - 1] = row[:col] + text + row[end_col:]
+
+        plan.originals[rel] = source
+        plan.new_contents[rel] = "".join(lines)
+        plan.edits_by_file[rel] = n_edits
 
     for rel, content in plan.new_contents.items():
         try:

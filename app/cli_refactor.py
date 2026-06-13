@@ -486,11 +486,11 @@ def register_parsers(subparsers) -> None:
     extract_parser.add_argument("--json", action="store_true", help="Emit JSON")
     extract_parser.set_defaults(func=cmd_extract)
 
-    # inline — fold a tiny single-use helper into its one call site, verified
+    # inline — fold a tiny helper into every call site project-wide, verified
     inline_parser = subparsers.add_parser(
         "inline",
-        help="Inline a tiny single-use helper (a single `return EXPR`) into its "
-             "one call site and delete the definition — the inverse of extract "
+        help="Inline a tiny helper (a single `return EXPR`) into every call site "
+             "project-wide and delete the definition — the inverse of extract "
              "(test-verified)",
     )
     inline_parser.add_argument("function", help="Helper function to inline")

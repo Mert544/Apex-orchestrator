@@ -115,6 +115,171 @@ def test_inline_across_two_files(tmp_path):
     assert "((n) * 2)" in plan.new_contents["main.py"]
 
 
+# ── Multiple call sites ──
+
+def test_inline_two_sites_same_file(tmp_path):
+    # Two call sites in ONE file, both below the def. Both get folded and the
+    # def is removed; edits within the file apply bottom-up so line numbers
+    # don't drift.
+    _write(tmp_path, "m.py",
+           "def fee(x):\n"
+           "    return x * 2\n"
+           "\n"
+           "\n"
+           "def a():\n"
+           "    return fee(1)\n"
+           "\n"
+           "\n"
+           "def b():\n"
+           "    return fee(2)\n")
+    plan = plan_inline(str(tmp_path), "fee")
+    assert not plan.blockers, plan.blockers
+    new = plan.new_contents["m.py"]
+    assert "def fee" not in new
+    assert "fee(" not in new
+    assert "((1) * 2)" in new
+    assert "((2) * 2)" in new
+    assert plan.edits_by_file["m.py"] == 3  # two splices + the deletion
+    ns: dict = {}
+    exec(compile(new, "x", "exec"), ns)
+    assert ns["a"]() == 2
+    assert ns["b"]() == 4
+
+
+def test_inline_two_sites_same_file_def_between(tmp_path):
+    # A call ABOVE the def and a call BELOW it in the same file — the bottom-up
+    # ordering has to keep the above-def call's line index valid after the
+    # deletion removes the def block under it.
+    _write(tmp_path, "m.py",
+           "def above():\n"
+           "    return fee(3)\n"
+           "\n"
+           "\n"
+           "def fee(x):\n"
+           "    return x + 1\n"
+           "\n"
+           "\n"
+           "def below():\n"
+           "    return fee(7)\n")
+    plan = plan_inline(str(tmp_path), "fee")
+    assert not plan.blockers, plan.blockers
+    new = plan.new_contents["m.py"]
+    assert "def fee" not in new
+    assert "((3) + 1)" in new
+    assert "((7) + 1)" in new
+    ns: dict = {}
+    exec(compile(new, "x", "exec"), ns)
+    assert ns["above"]() == 4
+    assert ns["below"]() == 8
+
+
+def test_inline_two_sites_across_files(tmp_path):
+    _write(tmp_path, "helpers.py",
+           "def fee(x):\n"
+           "    return x * 2\n")
+    _write(tmp_path, "one.py",
+           "from helpers import fee\n"
+           "\n"
+           "\n"
+           "def use(n):\n"
+           "    return fee(n)\n")
+    _write(tmp_path, "two.py",
+           "from helpers import fee\n"
+           "\n"
+           "\n"
+           "def other(m):\n"
+           "    return fee(m) + 1\n")
+    plan = plan_inline(str(tmp_path), "fee")
+    assert not plan.blockers, plan.blockers
+    assert "def fee" not in plan.new_contents["helpers.py"]
+    assert "((n) * 2)" in plan.new_contents["one.py"]
+    assert "((m) * 2)" in plan.new_contents["two.py"]
+    assert plan.edits_by_file["helpers.py"] == 1
+    assert plan.edits_by_file["one.py"] == 1
+    assert plan.edits_by_file["two.py"] == 1
+
+
+def test_inline_sites_pass_different_arguments(tmp_path):
+    # Each site is bound independently: positional, keyword, and a default.
+    _write(tmp_path, "m.py",
+           "def fee(x, rate=10):\n"
+           "    return x * rate\n"
+           "\n"
+           "\n"
+           "def a():\n"
+           "    return fee(2, 5)\n"
+           "\n"
+           "\n"
+           "def b():\n"
+           "    return fee(rate=3, x=4)\n"
+           "\n"
+           "\n"
+           "def c():\n"
+           "    return fee(7)\n")
+    plan = plan_inline(str(tmp_path), "fee")
+    assert not plan.blockers, plan.blockers
+    new = plan.new_contents["m.py"]
+    assert "((2) * (5))" in new
+    assert "((4) * (3))" in new
+    assert "((7) * (10))" in new
+    ns: dict = {}
+    exec(compile(new, "x", "exec"), ns)
+    assert ns["a"]() == 10
+    assert ns["b"]() == 12
+    assert ns["c"]() == 70
+
+
+def test_block_when_one_of_many_sites_is_unsafe(tmp_path):
+    # Two sites: the first is safe, the second duplicates a side-effecting call
+    # into a twice-used parameter. The WHOLE operation must block, and the
+    # message must name the offending site.
+    _write(tmp_path, "m.py",
+           "def sq(x):\n"
+           "    return x * x\n"
+           "\n"
+           "\n"
+           "def safe():\n"
+           "    return sq(4)\n"
+           "\n"
+           "\n"
+           "def unsafe():\n"
+           "    return sq(compute())\n"
+           "\n"
+           "\n"
+           "def compute():\n"
+           "    return 5\n")
+    plan = plan_inline(str(tmp_path), "sq")
+    assert plan.blockers
+    assert any("side-effecting" in b for b in plan.blockers)
+    assert any("m.py:10" in b for b in plan.blockers)  # names the unsafe site
+    assert not plan.new_contents
+
+
+def test_functional_equivalence_two_sites(tmp_path):
+    src = ("def fee(x, rate=3):\n"
+           "    return (x + 1) * rate\n"
+           "\n"
+           "\n"
+           "def total(price):\n"
+           "    return fee(price) + 100\n"
+           "\n"
+           "\n"
+           "def discounted(price):\n"
+           "    return fee(price, 2) - 5\n")
+    _write(tmp_path, "m.py", src)
+    plan = plan_inline(str(tmp_path), "fee")
+    assert not plan.blockers, plan.blockers
+    new = plan.new_contents["m.py"]
+
+    ns_old: dict = {}
+    ns_new: dict = {}
+    exec(compile(src, "old", "exec"), ns_old)
+    exec(compile(new, "new", "exec"), ns_new)
+    for v in (0, 5, -2):
+        assert ns_old["total"](v) == ns_new["total"](v)
+        assert ns_old["discounted"](v) == ns_new["discounted"](v)
+
+
 # ── Blockers ──
 
 def test_block_side_effect_duplication(tmp_path):
@@ -146,23 +311,6 @@ def test_block_recursive(tmp_path):
     plan = plan_inline(str(tmp_path), "f")
     assert plan.blockers
     assert any("recursive" in b for b in plan.blockers)
-
-
-def test_block_multiple_call_sites(tmp_path):
-    _write(tmp_path, "m.py",
-           "def fee(x):\n"
-           "    return x * 2\n"
-           "\n"
-           "\n"
-           "def a():\n"
-           "    return fee(1)\n"
-           "\n"
-           "\n"
-           "def b():\n"
-           "    return fee(2)\n")
-    plan = plan_inline(str(tmp_path), "fee")
-    assert plan.blockers
-    assert any("single call site" in b for b in plan.blockers)
 
 
 def test_block_zero_call_sites(tmp_path):
