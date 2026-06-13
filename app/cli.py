@@ -21,6 +21,7 @@ from pathlib import Path
 from app.cli_autonomy import (  # noqa: F401  (re-exports: import surface unchanged)
     _working_tree_clean,
     cmd_auto,
+    cmd_develop,
     cmd_evolve,
     cmd_maintain,
     cmd_simulate,

@@ -393,6 +393,33 @@ def cmd_evolve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_develop(args: argparse.Namespace) -> int:
+    """Goal-directed composition: drive an OBJECTIVE metric to its target by
+    composing verified transforms, each suite-gated with auto-rollback.
+
+    Where `maintain` applies whatever smell-fix it finds, `develop` pursues a
+    measurable goal (e.g. zero dead parameters), composing the moves that reach
+    it and proving each step. Default is a dry run; `--apply` writes."""
+    from app.engine.objective_compiler import compile_objective, render_compile_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    result = compile_objective(
+        str(target),
+        objective=getattr(args, "objective", "dead-params") or "dead-params",
+        max_steps=getattr(args, "max_steps", 25),
+        verify=not getattr(args, "no_verify", False),
+        apply=getattr(args, "apply", False),
+    )
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        print(render_compile_markdown(result))
+        if result.applied and result.steps:
+            print("_Applied to your working tree, not committed — "
+                  "review with `git diff`._")
+    # Non-zero only when an explicitly named objective is unknown (a usage error).
+    return 1 if (result.blocked and not result.steps
+                 and any("unknown objective" in b for b in result.blocked)) else 0
 
 
 def register_parsers(subparsers) -> None:
@@ -463,6 +490,24 @@ def register_parsers(subparsers) -> None:
     evolve_parser.add_argument("--json", action="store_true", help="Emit JSON")
     evolve_parser.add_argument("--out", default="", help="Write the report to this path")
     evolve_parser.set_defaults(func=cmd_evolve)
+
+    # develop — goal-directed composition of verified transforms toward a metric
+    develop_parser = subparsers.add_parser(
+        "develop",
+        help="Drive an objective metric (e.g. zero dead parameters) by composing "
+             "verified transforms, each suite-gated (default dry run; --apply writes)",
+    )
+    develop_parser.add_argument("--target", default="", help="Target project root")
+    develop_parser.add_argument("--objective", default="dead-params",
+                                help="Objective to pursue (default: dead-params)")
+    develop_parser.add_argument("--apply", action="store_true",
+                                help="Apply the composed moves (default: dry run)")
+    develop_parser.add_argument("--max-steps", type=int, default=25, dest="max_steps",
+                                help="Maximum moves to compose (default 25)")
+    develop_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                                help="Skip the per-move test verification (not recommended)")
+    develop_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    develop_parser.set_defaults(func=cmd_develop)
 
     # maintain — one-shot scan -> ideate -> apply -> verify -> commit -> report
     maintain_parser = subparsers.add_parser(
