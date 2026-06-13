@@ -106,14 +106,37 @@ def _is_value_leaf(node: ast.AST) -> bool:
     return False
 
 
-def _segment(source: str, node: ast.AST) -> str:
-    """Source text of ``node`` (``ast.get_source_segment``), with a stable fallback.
+def _split_source_lines(source: str) -> list[str]:
+    """Split ``source`` into lines EXACTLY as :func:`ast.get_source_segment` does
+    (via the stdlib ``_splitlines_no_ff``), computed ONCE per module so segment
+    extraction becomes O(1) slicing instead of re-splitting the whole source on
+    every value leaf. The split is byte-for-byte identical to the stdlib's, so the
+    extracted segments are unchanged."""
+    return ast._splitlines_no_ff(source)  # type: ignore[attr-defined]
 
-    The fallback only fires for nodes lacking position info; for the Constant/Name
-    leaves we wildcard, positions are always present, so it stays deterministic."""
-    seg = ast.get_source_segment(source, node)
-    if seg is not None:
-        return seg
+
+def _segment(lines: list[str], node: ast.AST) -> str:
+    """Source text of ``node``, computed by slicing pre-split ``lines`` — an O(1)
+    re-implementation of :func:`ast.get_source_segment` (non-padded) that reuses a
+    per-module line split instead of re-splitting the source on every call.
+
+    The slicing logic mirrors ``get_source_segment`` byte-for-byte (same
+    ``.encode()[…].decode()`` byte-offset handling for multi-byte source), so the
+    returned segment is identical to the stdlib's. The fallback only fires for nodes
+    lacking position info; for the Constant/Name leaves we wildcard, positions are
+    always present, so it stays deterministic."""
+    end_lineno = getattr(node, "end_lineno", None)
+    end_col_offset = getattr(node, "end_col_offset", None)
+    if end_lineno is not None and end_col_offset is not None:
+        lineno = node.lineno - 1
+        end_lineno -= 1
+        col_offset = node.col_offset
+        if end_lineno == lineno:
+            return lines[lineno].encode()[col_offset:end_col_offset].decode()
+        first = lines[lineno].encode()[col_offset:].decode()
+        last = lines[end_lineno].encode()[:end_col_offset].decode()
+        middle = lines[lineno + 1:end_lineno]
+        return first + "".join(middle) + last
     if isinstance(node, ast.Constant):
         return repr(node.value)
     if isinstance(node, ast.Name):
@@ -123,7 +146,7 @@ def _segment(source: str, node: ast.AST) -> str:
 
 def _walk_template(
     node: ast.AST,
-    source: str,
+    lines: list[str],
     path: str,
     out: list[str],
     wildcards: dict[str, str],
@@ -143,7 +166,7 @@ def _walk_template(
         # Constant vs a loaded Name) IS still part of the template, so a Constant and
         # a Name never share a template even though both are wildcarded here.
         out.append(f"{type(node).__name__}({_WILDCARD})")
-        wildcards[path] = _segment(source, node)
+        wildcards[path] = _segment(lines, node)
         return
 
     out.append(type(node).__name__)
@@ -156,14 +179,14 @@ def _walk_template(
             out.append(f"[{len(value)}:")
             for i, item in enumerate(value):
                 if isinstance(item, ast.AST):
-                    _walk_template(item, source, f"{path}.{fname}[{i}]", out, wildcards)
+                    _walk_template(item, lines, f"{path}.{fname}[{i}]", out, wildcards)
                 else:
                     # Primitive list element (rare) — encode by repr.
                     out.append(repr(item))
                 out.append(",")
             out.append("]")
         elif isinstance(value, ast.AST):
-            _walk_template(value, source, f"{path}.{fname}", out, wildcards)
+            _walk_template(value, lines, f"{path}.{fname}", out, wildcards)
         else:
             # A primitive field: an operator class is identity-bearing structure, a
             # Store/Load ctx, an attribute/identifier name, a non-leaf constant, etc.
@@ -174,20 +197,25 @@ def _walk_template(
 
 
 def _block_template(
-    statements: list[ast.stmt], source: str
+    statements: list[ast.stmt], lines: list[str]
 ) -> tuple[str, list[tuple[str, str]]]:
-    """Template string + sorted ``(path, segment)`` wildcards for a window of stmts."""
+    """Template string + sorted ``(path, segment)`` wildcards for a window of stmts.
+
+    ``lines`` is the source pre-split via :func:`_split_source_lines` (segment
+    extraction slices it in O(1) instead of re-splitting the source per leaf)."""
     out: list[str] = []
     wildcards: dict[str, str] = {}
     for i, stmt in enumerate(statements):
-        _walk_template(stmt, source, f"s{i}", out, wildcards)
+        _walk_template(stmt, lines, f"s{i}", out, wildcards)
         out.append("|")
     template = "".join(out)
     ordered = sorted(wildcards.items())
     return template, ordered
 
 
-def _statement_fragment(stmt: ast.stmt, source: str) -> tuple[str, list[tuple[str, str]]]:
+def _statement_fragment(
+    stmt: ast.stmt, lines: list[str]
+) -> tuple[str, list[tuple[str, str]]]:
     """One statement's structural template fragment and its value-leaf
     ``(subpath, segment)`` list — computed ONCE, so overlapping windows reuse it
     instead of re-walking shared statements.
@@ -200,7 +228,7 @@ def _statement_fragment(stmt: ast.stmt, source: str) -> tuple[str, list[tuple[st
     templating the whole window."""
     out: list[str] = []
     wildcards: dict[str, str] = {}
-    _walk_template(stmt, source, "", out, wildcards)
+    _walk_template(stmt, lines, "", out, wildcards)
     return "".join(out), list(wildcards.items())
 
 
@@ -235,9 +263,11 @@ def find_near_duplicates(
 
     for module in indexed_project(project_root).parsed_modules():
         rel = module.rel
-        source = module.source
         tree = module.tree
         assert tree is not None  # parsed_modules() guarantees this
+        # Pre-split the source ONCE per module so each value-leaf's segment is an
+        # O(1) slice of these lines, not a fresh re-split of the whole source.
+        lines = _split_source_lines(module.source)
 
         for body in _function_bodies(tree):
             limit = len(body) - min_statements + 1
@@ -247,7 +277,7 @@ def find_near_duplicates(
             # Template each statement that appears in any window ONCE; windows
             # then concatenate fragments (they overlap by min_statements - 1).
             needed = limit + min_statements - 1
-            frags = [_statement_fragment(body[k], source) for k in range(needed)]
+            frags = [_statement_fragment(body[k], lines) for k in range(needed)]
             for start in range(limit):
                 parts: list[str] = []
                 wc_items: list[tuple[str, str]] = []

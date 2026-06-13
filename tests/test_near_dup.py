@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import ast
+
 from app.engine.near_dup import (
     NearDuplicateGroup,
+    _segment,
+    _split_source_lines,
     find_near_duplicates,
     render_near_duplicates_markdown,
 )
@@ -247,3 +251,93 @@ def test_block_shorter_than_min_not_reported(tmp_path: Path) -> None:
     # Shared block is only 3 statements; min is 5.
     groups = find_near_duplicates(tmp_path, min_statements=5, min_occurrences=2)
     assert groups == []
+
+
+# -- O(1) segment slicing: byte-for-byte equivalent to ast.get_source_segment ------
+
+def _all_value_leaf_segments(source: str) -> list[tuple[ast.AST, str]]:
+    """Every Constant/loaded-Name node paired with its fast _segment() text."""
+    lines = _split_source_lines(source)
+    tree = ast.parse(source)
+    out: list[tuple[ast.AST, str]] = []
+    for node in ast.walk(tree):
+        is_load_name = isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        if isinstance(node, ast.Constant) or is_load_name:
+            out.append((node, _segment(lines, node)))
+    return out
+
+
+def test_segment_matches_get_source_segment_single_and_multiline() -> None:
+    # Single-line, multi-line (a call spanning lines), and a triple-quoted string
+    # literal — the three slicing branches of the O(1) extractor.
+    source = (
+        "def f():\n"
+        "    a = compute(\n"
+        "        first,\n"
+        "        second,\n"
+        "    )\n"
+        '    doc = """line one\n'
+        "    line two"
+        '"""\n'
+        "    return a\n"
+    )
+    lines = _split_source_lines(source)
+    tree = ast.parse(source)
+    seen = 0
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Constant, ast.Name, ast.Call)):
+            # Compare the fast slicer against the stdlib for every positioned node,
+            # not only value leaves, to exercise multi-line spans too.
+            expected = ast.get_source_segment(source, node)
+            if expected is None:
+                continue
+            assert _segment(lines, node) == expected
+            seen += 1
+    assert seen > 0
+
+
+def test_segment_matches_get_source_segment_multibyte_unicode() -> None:
+    # Column offsets are BYTE offsets; a non-ASCII identifier/string exercises the
+    # .encode()[...].decode() path that the fast slicer must reproduce exactly.
+    source = (
+        "def f():\n"
+        "    é = 1\n"          # accented Store name (not a value leaf)
+        "    s = 'ééé tail'\n"  # multibyte string constant
+        "    return é + 1\n"   # loaded name read
+    )
+    for node, fast in _all_value_leaf_segments(source):
+        assert fast == ast.get_source_segment(source, node)
+
+
+def test_full_output_pinned_on_fixture_project(tmp_path: Path) -> None:
+    # A small project with two near-dup families plus an exact dup (excluded) and a
+    # unicode constant. The ENTIRE reported structure is pinned, so any change to the
+    # detector's grouping, ordering, diff positions, or recorded values is caught.
+    _write(tmp_path, "app/a.py", _func("alpha", _block("1")))
+    _write(tmp_path, "app/b.py", _func("beta", _block("2")))
+    _write(tmp_path, "app/c.py", _func("gamma", _block("'é'")))
+    other = ["    m = 5", "    n = m * 2", "    o = n * 2",
+             "    p = o * 2", "    return p"]
+    other2 = ["    m = 6", "    n = m * 2", "    o = n * 2",
+              "    p = o * 2", "    return p"]
+    _write(tmp_path, "app/d.py", _func("delta", other))
+    _write(tmp_path, "app/e.py", _func("epsilon", other2))
+
+    groups = find_near_duplicates(tmp_path, min_statements=5, min_occurrences=2)
+    actual = [g.to_dict() for g in groups]
+
+    expected = [
+        {
+            "occurrences": ["app/a.py:2", "app/b.py:2", "app/c.py:2"],
+            "lines": 5,
+            "diff_count": 1,
+            "differences": [["1", "2", "'é'"]],
+        },
+        {
+            "occurrences": ["app/d.py:2", "app/e.py:2"],
+            "lines": 5,
+            "diff_count": 1,
+            "differences": [["5", "6"]],
+        },
+    ]
+    assert actual == expected
