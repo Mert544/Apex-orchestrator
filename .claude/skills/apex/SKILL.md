@@ -114,6 +114,16 @@ without the file). `apex auto` prints what it has learned.
   the same capture-pair reuses one variable, and the rule SELF-CHECKS by reproducing every
   example before it is shown. One pair = exact-match rule (honest note). Never applies —
   preview + optional save; apply via `apex rewrite --rule NAME`.
+- `apex extract FILE START END NAME [--target=.] [--dry-run] [--no-verify]` — lift a
+  line range out of a function into a module-level helper NAME. Data flow is computed
+  automatically: names read from the surrounding scope become PARAMETERS, names defined
+  in the range and used afterward become RETURN VALUES (the call rebinds them). The
+  engine's own #1 structural recommendation ("extract a shared helper" for long
+  functions) made executable. Conservative blockers: the range must be a contiguous run
+  of complete statements in ONE closure-free function (top-level fn or a method of a
+  top-level class); `return`/`yield`/`await`/`global`/`nonlocal` or a nested `def`/
+  `lambda` in the range block; a `break`/`continue` whose loop is outside the selection
+  blocks; the helper name must be free at module level. Suite-verified with rollback.
 - `apex move SRC.py DST.py [--target=.] [--dry-run] [--no-verify]` — move/rename a module;
   every import form (`import x.y`, `from x.y import f`, `from x import y`, aliases) is
   rewritten project-wide, missing `__init__.py` created, relative-import cases block.

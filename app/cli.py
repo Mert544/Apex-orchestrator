@@ -69,7 +69,7 @@ from app.cli_review import (  # noqa: F401  (re-exports: import surface unchange
     _render_review_fixes_markdown,
     cmd_review,
 )
-from app.cli_refactor import cmd_move, cmd_rename, cmd_rewrite, cmd_signature, cmd_teach  # noqa: F401  (re-exports)
+from app.cli_refactor import cmd_extract, cmd_move, cmd_rename, cmd_rewrite, cmd_signature, cmd_teach  # noqa: F401  (re-exports)
 
 
 def cmd_bench(args: argparse.Namespace) -> int:

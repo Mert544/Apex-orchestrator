@@ -130,6 +130,50 @@ def cmd_signature(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_extract(args: argparse.Namespace) -> int:
+    """Extract a line range into a named helper — the engine's own #1
+    structural recommendation ("extract a shared helper") made executable.
+
+    Data flow is computed automatically: names read from the surrounding scope
+    become parameters, names defined and used afterward become return values.
+    Test-verified with rollback, like every Apex change.
+    """
+    from app.execution.cross_file_rename import apply_rename
+    from app.execution.extract_method import plan_extract
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    plan = plan_extract(str(target), args.file, args.start, args.end, args.name)
+    label = f"extract {args.file}:{args.start}-{args.end} → `{args.name}()`"
+
+    if plan.blockers:
+        print(f"# Extract blocked: {label}\n")
+        for b in plan.blockers:
+            print(f"- ⛔ {b}")
+        return 1
+    if getattr(args, "dry_run", False):
+        print(f"# Extract (dry run): {label}\n")
+        print("```diff")
+        print(plan.render_diff().rstrip())
+        print("```")
+        for w in plan.warnings:
+            print(f"- ⚠️ {w}")
+        return 0
+
+    res = apply_rename(str(target), plan, verify=not getattr(args, "no_verify", False))
+    if args.json:
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("applied") else 1
+    if res.get("applied"):
+        print(f"✅ Extracted — {label} in {', '.join(res['changed_files'])}")
+        if res.get("verified") is True:
+            print("   tests pass — change is verified")
+        for w in res.get("warnings", []):
+            print(f"- ⚠️ {w}")
+        return 0
+    print(f"↩️ {res.get('reason', 'extract not applied')}")
+    return 1
+
+
 def cmd_move(args: argparse.Namespace) -> int:
     """Move/rename a module across the project — imports rewritten, test-verified."""
     from app.execution.move_module import apply_move, plan_move
@@ -377,6 +421,24 @@ def register_parsers(subparsers) -> None:
                              help="Skip the test verification run")
     move_parser.add_argument("--json", action="store_true", help="Emit JSON")
     move_parser.set_defaults(func=cmd_move)
+
+    # extract — lift a line range into a helper (data flow auto-computed), verified
+    extract_parser = subparsers.add_parser(
+        "extract",
+        help="Extract a line range from a function into a named helper "
+             "(parameters/returns auto-computed from data flow, test-verified)",
+    )
+    extract_parser.add_argument("file", help="File containing the range (e.g. app/x.py)")
+    extract_parser.add_argument("start", type=int, help="First line of the range (1-based)")
+    extract_parser.add_argument("end", type=int, help="Last line of the range (inclusive)")
+    extract_parser.add_argument("name", help="Name for the extracted helper function")
+    extract_parser.add_argument("--target", default="", help="Target project root")
+    extract_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
+                                help="Preview the unified diff without changing files")
+    extract_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                                help="Skip the test verification run")
+    extract_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    extract_parser.set_defaults(func=cmd_extract)
 
     # signature — signature-family refactors (drop/add/keywordify), verified
     sig_parser = subparsers.add_parser(
