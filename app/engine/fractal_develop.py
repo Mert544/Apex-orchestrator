@@ -39,7 +39,7 @@ __all__ = [
 # valid one-node goal). The order encodes the engineering sequence.
 GOAL_TREE: dict[str, list[str]] = {
     "reduce-debt": ["tidy", "simplify-structure"],
-    "tidy": ["modernize", "remove-dead-code", "dead-params"],
+    "tidy": ["modernize", "simplify-bool-return", "remove-dead-code", "dead-params"],
     "simplify-structure": ["dedup", "shrink-functions", "inline-helpers"],
 }
 

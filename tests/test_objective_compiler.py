@@ -619,3 +619,29 @@ def test_dedup_objective_extracts_shared_helper(tmp_path):
 def test_dedup_in_available_objectives():
     from app.engine.objective_compiler import available_objectives
     assert "dedup" in available_objectives()
+
+
+# --- seventh objective: simplify boolean returns -----------------------------
+
+def test_simplify_bool_return_objective(tmp_path):
+    from app.engine.objective_compiler import bool_return_fitness
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "m.py").write_text(
+        "def is_pos(x):\n    if x > 0:\n        return True\n    else:\n        return False\n",
+        encoding="utf-8")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "from app.m import is_pos\ndef test_p():\n"
+        "    assert is_pos(5) is True\n    assert is_pos(-1) is False\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    assert bool_return_fitness(str(tmp_path)) == 1.0
+    r = compile_objective(str(tmp_path), objective="simplify-bool-return",
+                          apply=True, verify=False)
+    assert r.fitness_end == 0.0 and len(r.steps) == 1
+    src = (tmp_path / "app" / "m.py").read_text()
+    assert "return bool(x > 0)" in src and "return True" not in src
+
+
+def test_simplify_bool_return_in_all_objectives():
+    from app.engine.objective_compiler import ALL_OBJECTIVES
+    assert "simplify-bool-return" in ALL_OBJECTIVES

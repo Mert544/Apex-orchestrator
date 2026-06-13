@@ -36,7 +36,7 @@ from app.execution.cross_file_rename import RenamePlan
 __all__ = [
     "Move", "CompileStep", "CompileResult",
     "dead_parameter_fitness", "inlinable_helper_fitness", "long_function_fitness",
-    "modernize_fitness", "dead_code_fitness", "duplication_fitness",
+    "modernize_fitness", "dead_code_fitness", "duplication_fitness", "bool_return_fitness",
     "compile_objective", "compile_all", "available_objectives",
     "ALL_OBJECTIVES", "dream_confluence_modules", "compile_from_dream",
     "render_compile_markdown", "render_from_dream_markdown", "render_all_markdown",
@@ -369,9 +369,39 @@ def _dedup_moves(project_root: str | Path) -> list[Move]:
     return moves
 
 
+# --- Objective: simplify boolean returns (if c: return True ... → return c) --
+
+def _bool_return_modules(project_root: str | Path) -> list[str]:
+    """Own modules whose boolean returns can be simplified."""
+    from app.execution.bool_return import plan_simplify_bool_return
+
+    out: list[str] = []
+    for rel, _src in _own_modules(project_root):
+        if plan_simplify_bool_return(project_root, rel).new_contents:
+            out.append(rel)
+    return out
+
+
+def bool_return_fitness(project_root: str | Path) -> float:
+    """Fitness = how many own modules still have a simplifiable boolean return."""
+    return float(len(_bool_return_modules(project_root)))
+
+
+def _bool_return_moves(project_root: str | Path) -> list[Move]:
+    """One move per module with a simplifiable boolean return."""
+    from app.execution.bool_return import plan_simplify_bool_return
+
+    return [Move(
+        operator="simplify_bool_return", target=f"{rel}:bool-return",
+        description=f"simplify boolean returns in {rel}",
+        build_plan=lambda r=rel: plan_simplify_bool_return(project_root, r),
+    ) for rel in _bool_return_modules(project_root)]
+
+
 _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
                              Callable[[str | Path], list[Move]]]] = {
     "modernize": (modernize_fitness, _modernize_moves),
+    "simplify-bool-return": (bool_return_fitness, _bool_return_moves),
     "remove-dead-code": (dead_code_fitness, _dead_code_moves),
     "dedup": (duplication_fitness, _dedup_moves),
     "dead-params": (dead_parameter_fitness, _dead_param_moves),
@@ -382,7 +412,8 @@ _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
 
 # The objectives `apex develop --all` sweeps, in a deliberate order: tidy the
 # surface (modernize), trim it (dead-params), then restructure (shrink, inline).
-ALL_OBJECTIVES: tuple[str, ...] = ("modernize", "remove-dead-code", "dead-params",
+ALL_OBJECTIVES: tuple[str, ...] = ("modernize", "simplify-bool-return",
+                                   "remove-dead-code", "dead-params",
                                    "shrink-functions", "inline-helpers")
 
 
