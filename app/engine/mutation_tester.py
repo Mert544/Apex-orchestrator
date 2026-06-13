@@ -472,6 +472,104 @@ def _verify_killed(project_root: Path, module_rel: str,
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+# Letter-grade cutoffs on the mutation score (killed / total), highest first.
+# A+ is reserved for a near-perfect suite; F is the failing floor. The cutoffs
+# are inclusive lower bounds (``score >= cutoff``) and are documented constants
+# so the mapping is auditable and never drifts with the code.
+_GRADE_CUTOFFS: tuple[tuple[float, str], ...] = (
+    (0.97, "A+"),
+    (0.90, "A"),
+    (0.80, "B"),
+    (0.70, "C"),
+    (0.60, "D"),
+)
+
+# Emoji badge per letter — mirrors ``render_grade_markdown`` in health_score.
+_GRADE_BADGES: dict[str, str] = {
+    "A+": "🏆", "A": "🥇", "B": "🟢", "C": "🟡", "D": "🟠", "F": "🔴",
+}
+
+
+def test_strength_grade(score: float) -> str:
+    """Map a mutation score (``killed / total``, in ``[0.0, 1.0]``) to a letter.
+
+    The grade answers "how strong are the tests?" rather than "do they pass?":
+
+    * ``>= 0.97`` -> ``A+`` (the suite catches essentially every seeded fault)
+    * ``>= 0.90`` -> ``A``
+    * ``>= 0.80`` -> ``B``
+    * ``>= 0.70`` -> ``C``
+    * ``>= 0.60`` -> ``D``
+    * otherwise   -> ``F`` (more than 40% of seeded faults go unnoticed)
+
+    Pure and deterministic: the cutoffs are fixed constants, so the same score
+    always yields the same letter.
+    """
+    for cutoff, letter in _GRADE_CUTOFFS:
+        if score >= cutoff:
+            return letter
+    return "F"
+
+
+def render_mutation_markdown(result: MutationResult) -> str:
+    """Render a ``MutationResult`` as a memorable test-strength report.
+
+    Shows a badge + letter grade + the score as a percentage; the
+    killed/survived/total split; whether the run was scoped (and to which test
+    files) or fell back to the full suite; and — most usefully — the SURVIVORS
+    listed as ``file:line — operator`` so the developer sees exactly which
+    mutations the tests fail to catch (the test blind spots). The ``total == 0``
+    case (no mutable sites, or a module that didn't parse) renders cleanly.
+
+    Tone and shape mirror ``render_grade_markdown`` in ``health_score`` (badge
+    header + table + a "where to look" section). Pure and deterministic.
+    """
+    if result.total == 0:
+        return (
+            f"# Test strength for {result.module}\n\n"
+            "_No mutable sites found (or the module didn't parse) — "
+            "nothing to grade._\n"
+        )
+
+    letter = test_strength_grade(result.score)
+    badge = _GRADE_BADGES.get(letter, "🔴")
+    pct = round(result.score * 100, 1)
+    lines = [
+        f"# Test strength: {badge} **{letter}**  "
+        f"(Mutation score {pct}%)  —  {result.module}",
+        "",
+        "| Metric | Count |",
+        "|---|---:|",
+        f"| Mutants killed | {result.killed} |",
+        f"| Mutants survived | {result.survived} |",
+        f"| Total seeded | {result.total} |",
+        "",
+    ]
+
+    # Scope provenance: did we run a focused set of covering tests, or fall back
+    # to the full suite because nothing imports the module?
+    if result.scoped_tests:
+        files = ", ".join(f"`{f}`" for f in result.scoped_tests)
+        lines.append(f"_Scoped to {len(result.scoped_tests)} covering "
+                     f"test file(s): {files}._")
+    else:
+        lines.append("_No covering test imports this module — ran the full "
+                     "suite._")
+    lines.append("")
+
+    # Where to look: the survivors are the blind spots. List them
+    # ``file:line — operator`` in document order (survivors are already ordered).
+    if result.survivors:
+        lines.append("## Blind spots — survivors the tests don't catch")
+        for m in result.survivors:
+            lines.append(f"- `{m.module}:{m.line}` — {m.operator} "
+                         f"(`{m.original}` -> `{m.mutated}`)")
+    else:
+        lines.append("_No survivors — the suite caught every seeded fault._")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def mutation_score(project_root, module_rel: str, max_mutants: int = 30,
                    verify_timeout: int = 120,
                    scope_tests: bool = True) -> MutationResult:

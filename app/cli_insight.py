@@ -226,7 +226,10 @@ def cmd_impact(args: argparse.Namespace) -> int:
 def cmd_mutants(args: argparse.Namespace) -> int:
     """Measure test STRENGTH by mutation: seed faults into a module and see how
     many the suite kills vs. survives (survivors = where the tests are blind)."""
-    from app.engine.mutation_tester import mutation_score
+    from app.engine.mutation_tester import (
+        mutation_score,
+        render_mutation_markdown,
+    )
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
     result = mutation_score(
@@ -238,20 +241,7 @@ def cmd_mutants(args: argparse.Namespace) -> int:
         print(json.dumps(result.to_dict(), indent=2))
         return 0
 
-    print(f"# Mutation score for {result.module}")
-    if result.total == 0:
-        print("\n_No mutable sites found (or the module didn't parse)._")
-        return 0
-    pct = round(result.score * 100, 1)
-    print(f"\nScore: {pct}%  ({result.killed} killed / {result.total} total, "
-          f"{result.survived} survived)")
-    if result.survivors:
-        print("\n## Survivors — the tests don't notice these breaks:")
-        for m in result.survivors:
-            print(f"  {result.module}:{m.line}  {m.operator}  "
-                  f"(`{m.original}` -> `{m.mutated}`)")
-    else:
-        print("\nNo survivors — the suite caught every seeded fault.")
+    print(render_mutation_markdown(result))
     return 0
 
 

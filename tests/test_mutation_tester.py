@@ -17,6 +17,10 @@ from app.engine.mutation_tester import (
     _collect_sites,
     covering_test_files,
     mutation_score,
+    render_mutation_markdown,
+)
+from app.engine.mutation_tester import (
+    test_strength_grade as _test_strength_grade,
 )
 
 # --- tiny synthetic project scaffolding -----------------------------------
@@ -609,3 +613,98 @@ def test_cmd_mutants_empty_module(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "No mutable sites" in out
+
+
+# --- test-strength grade + markdown rendering -----------------------------
+
+def test_strength_grade_perfect_score_is_a_plus():
+    assert _test_strength_grade(1.0) == "A+"
+    # Just at the A+ cutoff.
+    assert _test_strength_grade(0.97) == "A+"
+
+
+def test_strength_grade_high_score_is_a():
+    # Below the A+ cutoff but at/above the A cutoff.
+    assert _test_strength_grade(0.96) == "A"
+    assert _test_strength_grade(0.90) == "A"
+
+
+def test_strength_grade_zero_score_is_f():
+    assert _test_strength_grade(0.0) == "F"
+    # Just below the D floor.
+    assert _test_strength_grade(0.59) == "F"
+
+
+def test_strength_grade_middle_bands():
+    assert _test_strength_grade(0.80) == "B"
+    assert _test_strength_grade(0.79) == "C"
+    assert _test_strength_grade(0.70) == "C"
+    assert _test_strength_grade(0.69) == "D"
+    assert _test_strength_grade(0.60) == "D"
+
+
+def test_render_mutation_markdown_with_survivors_shows_grade_and_blind_spots():
+    survivor = Mutant(module="app/foo.py", line=12,
+                      operator="comparison:==>!=", original="==", mutated="!=")
+    result = MutationResult(
+        module="app/foo.py", total=4, killed=3, survived=1, score=0.75,
+        survivors=[survivor], scoped_tests=["tests/test_foo.py"],
+    )
+    md = render_mutation_markdown(result)
+    # Letter grade for 0.75 is C, badge present.
+    assert "**C**" in md
+    # Percentage of the score.
+    assert "75.0%" in md
+    # Killed / survived / total split surfaces.
+    assert "| Mutants killed | 3 |" in md
+    assert "| Mutants survived | 1 |" in md
+    assert "| Total seeded | 4 |" in md
+    # Scope provenance: the covering test file is named.
+    assert "tests/test_foo.py" in md
+    # The survivor's file:line + operator is rendered (the blind spot).
+    assert "app/foo.py:12" in md
+    assert "comparison:==>!=" in md
+    assert "Blind spots" in md
+
+
+def test_render_mutation_markdown_perfect_score_no_survivors():
+    result = MutationResult(
+        module="mod.py", total=3, killed=3, survived=0, score=1.0,
+        survivors=[], scoped_tests=[],
+    )
+    md = render_mutation_markdown(result)
+    assert "**A+**" in md
+    assert "100.0%" in md
+    # No covering test -> full-suite fallback noted.
+    assert "full" in md
+    # No survivors -> the reassuring line, not a blind-spots section.
+    assert "No survivors" in md
+    assert "Blind spots" not in md
+
+
+def test_render_mutation_markdown_empty_total_is_clean():
+    result = MutationResult(module="mod.py", total=0, killed=0, survived=0,
+                            score=0.0, survivors=[], scoped_tests=[])
+    md = render_mutation_markdown(result)
+    assert "No mutable sites" in md
+    # Must not crash or claim a grade for a zero-site module.
+    assert "**F**" not in md
+
+
+def test_cmd_mutants_renders_grade(tmp_path, capsys):
+    # A strong covering suite scores 100% -> grade A+ in the rendered output.
+    test_src = (
+        "from mod import is_equal\n"
+        "def test_eq():\n"
+        "    assert is_equal(1, 1) is True\n"
+        "    assert is_equal(1, 2) is False\n"
+    )
+    rel = _write_project(tmp_path, _MODULE_SRC, test_src)
+    args = argparse.Namespace(module=rel, target=str(tmp_path),
+                              max_mutants=10, timeout=120, json=False)
+    rc = cmd_mutants(args)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Test strength:" in out
+    assert "**A+**" in out
+    assert "100.0%" in out
