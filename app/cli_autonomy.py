@@ -485,7 +485,7 @@ def cmd_develop(args: argparse.Namespace) -> int:
 
     result = compile_objective(
         str(target), objective=objective, max_steps=max_steps,
-        verify=verify, apply=apply,
+        verify=verify, apply=apply, scope_verify=getattr(args, "fast", False),
     )
     if args.json:
         print(json.dumps(result.to_dict(), indent=2))
@@ -697,7 +697,8 @@ def cmd_ascend(args: argparse.Namespace) -> int:
         apply=getattr(args, "apply", False),
         verify=not getattr(args, "no_verify", False),
         goal=getattr(args, "goal", "") or "",
-        max_steps=getattr(args, "max_steps", 25))
+        max_steps=getattr(args, "max_steps", 25),
+        scope_verify=getattr(args, "fast", False))
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
     else:
@@ -736,6 +737,10 @@ def register_parsers(subparsers) -> None:
                                help="Maximum improvement rounds (default 4)")
     ascend_parser.add_argument("--max-steps", type=int, default=25, dest="max_steps",
                                help="Cap moves per objective per round (default 25)")
+    ascend_parser.add_argument("--fast", action="store_true",
+                               help="Gate each move against only the impacted tests (fast "
+                                    "enough to climb a large project's own body; run the "
+                                    "full suite afterwards as the backstop)")
     ascend_parser.add_argument("--until", default="",
                                help="Stop once the health grade reaches this (e.g. 90 or A-)")
     ascend_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
@@ -842,6 +847,9 @@ def register_parsers(subparsers) -> None:
                                 help="Maximum moves to compose (default 25)")
     develop_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
                                 help="Skip the per-move test verification (not recommended)")
+    develop_parser.add_argument("--fast", action="store_true",
+                                help="Gate each move against only the impacted tests "
+                                     "(fast on a large project; run the full suite after)")
     develop_parser.add_argument("--json", action="store_true", help="Emit JSON")
     develop_parser.set_defaults(func=cmd_develop)
 

@@ -199,13 +199,16 @@ def _goal_objectives(goal: str) -> list[str] | None:
 
 def ascend(project_root: str | Path, max_rounds: int = 4,
            target_score: int | None = None, apply: bool = True,
-           verify: bool = True, goal: str = "", max_steps: int = 25) -> AscendReport:
+           verify: bool = True, goal: str = "", max_steps: int = 25,
+           scope_verify: bool = False) -> AscendReport:
     """Climb the project's health by repeatedly developing its worst fixable
     debt, each round suite-gated and grade-proven, to a fixpoint.
 
     ``goal`` restricts the climb to one fractal goal's objectives. ``apply=False``
     is a preview: it ranks the board and reports the move it WOULD make next,
-    changing nothing."""
+    changing nothing. ``scope_verify`` gates each move against only the impacted
+    tests (fast enough to climb a large project's OWN body); run the full suite
+    afterwards as the backstop."""
     from app.engine.dev_history import record_run
 
     restrict = _goal_objectives(goal)
@@ -229,7 +232,8 @@ def ascend(project_root: str | Path, max_rounds: int = 4,
         # next-worst until one lands a verified move.
         for choice in ranked:
             campaign = compile_objective(project_root, objective=choice.objective,
-                                         max_steps=max_steps, verify=verify, apply=True)
+                                         max_steps=max_steps, verify=verify, apply=True,
+                                         scope_verify=scope_verify)
             moves = len(campaign.steps)
             if moves == 0:
                 continue

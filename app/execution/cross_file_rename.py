@@ -241,8 +241,52 @@ def plan_rename(project_root: str | Path, old: str, new: str) -> RenamePlan:
     return plan
 
 
-def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True) -> dict:
-    """Write the plan, verify with the project's tests, roll back on failure."""
+def _rollback(root: Path, plan: RenamePlan, created: list[str]) -> None:
+    """Restore edited files to their originals and delete files the plan created
+    (a never-existed file has no original, so it must be removed, not rewritten)."""
+    for rel, original in plan.originals.items():
+        (root / rel).write_text(original, encoding="utf-8")
+    for rel in created:
+        if rel not in plan.originals:
+            try:
+                (root / rel).unlink()
+            except OSError:
+                pass
+
+
+def _verify_scoped(root: Path, plan: RenamePlan) -> tuple[bool, dict] | None:
+    """Verify a change by running ONLY the tests that exercise its changed files.
+
+    Returns ``(ok, evidence)`` when an impacted-test scope exists, or ``None``
+    when nothing covers the change (so the caller falls back to the full suite —
+    an unreferenced change can't be impact-verified). Deterministic: the scope
+    comes from AST import linkage, and the tests run in a fresh process."""
+    import os
+    import subprocess
+    import sys
+
+    from app.engine.test_impact import impacted_test_files
+
+    impacted = impacted_test_files(root, list(plan.new_contents))
+    if not impacted:
+        return None
+    env = {**os.environ,
+           "PYTHONPATH": str(root) + os.pathsep + os.environ.get("PYTHONPATH", "")}
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", *impacted],
+        cwd=str(root), capture_output=True, text=True, env=env)
+    ok = proc.returncode == 0
+    return ok, {"scoped": True, "tests": impacted, "passed": ok}
+
+
+def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True,
+                 impact_scope: bool = False) -> dict:
+    """Write the plan, verify with the project's tests, roll back on failure.
+
+    With ``impact_scope`` the per-move gate runs only the tests that exercise the
+    changed files (seconds, not the whole suite) — the speed that lets the
+    organism develop its own large body. The full suite stays the backstop, and
+    is used automatically when nothing covers the change."""
     if not plan.ok:
         return {"applied": False, "reason": "; ".join(plan.blockers) or "nothing to rename"}
     root = Path(project_root)
@@ -259,6 +303,22 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
     if not verify:
         return out
 
+    # Fast path: verify against just the impacted tests. Falls through to the
+    # full suite when nothing covers the change (scoped result is None).
+    if impact_scope:
+        scoped = _verify_scoped(root, plan)
+        if scoped is not None:
+            ok, evidence = scoped
+            out["verified"] = ok
+            out["test_evidence"] = evidence
+            if ok:
+                out["rolled_back"] = False
+                return out
+            _rollback(root, plan, created)
+            out.update(applied=False, rolled_back=True,
+                       reason="impacted tests failed after change; files restored")
+            return out
+
     from app.engine.proof_of_fix import summarize_test_run
     from app.skills.execution.run_tests import RunTestsSkill
 
@@ -268,14 +328,7 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
     if summary.ok or not summary.commands:
         out["rolled_back"] = False
         return out
-    for rel, original in plan.originals.items():
-        (root / rel).write_text(original, encoding="utf-8")
-    for rel in created:
-        if rel not in plan.originals:
-            try:
-                (root / rel).unlink()
-            except OSError:
-                pass
+    _rollback(root, plan, created)
     out.update(applied=False, rolled_back=True,
                reason="tests failed after rename; all files restored")
     return out

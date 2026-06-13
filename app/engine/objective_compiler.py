@@ -564,7 +564,8 @@ def _move_module(move: "Move") -> str:
 
 def compile_objective(project_root: str | Path, objective: str = "dead-params",
                       max_steps: int = 25, verify: bool = True,
-                      apply: bool = True, scope_module: str | None = None) -> CompileResult:
+                      apply: bool = True, scope_module: str | None = None,
+                      scope_verify: bool = False) -> CompileResult:
     """Greedily compose verified moves toward ``objective``.
 
     Each iteration: regenerate candidate moves against the current tree, apply
@@ -651,7 +652,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
                 if plan.blockers:
                     result.blocked.append(f"{mv.target}: {plan.blockers[0]}")
                 continue
-            res = apply_rename(root, plan, verify=verify)
+            res = apply_rename(root, plan, verify=verify, impact_scope=scope_verify)
             if not res.get("applied"):
                 # Suite failed (rolled back) or nothing applied — not a valid move.
                 if res.get("reason"):
