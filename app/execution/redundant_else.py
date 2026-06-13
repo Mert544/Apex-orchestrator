@@ -114,12 +114,33 @@ def _try_if(stmt: ast.If, lines: list[str]) -> _Rewrite | None:
     return _Rewrite(else_line, body_lo, body_hi, unit)
 
 
+def _elif_nodes(tree: ast.Module) -> set[int]:
+    """The ``id()`` of every ``ast.If`` that is an ``elif`` — the sole,
+    same-column ``orelse`` of a parent ``if``.
+
+    Removing an elif's ``else`` is unsafe: an EARLIER branch of the chain may
+    NOT exit, so dedenting the else-body would make it run on that branch's path
+    too. (`if A: <no exit>` / `elif B: raise` / `else: Y` — dropping the else
+    runs ``Y`` after ``A`` as well.) The if-body-terminal check only inspects the
+    elif's OWN body, so it can't see the earlier branch — we skip elifs entirely.
+    A nested ``if`` inside a real ``else:`` block is indented deeper, so the
+    same-column test distinguishes it from a true elif."""
+    elifs: set[int] = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.If) and len(node.orelse) == 1
+                and isinstance(node.orelse[0], ast.If)
+                and node.orelse[0].col_offset == node.col_offset):
+            elifs.add(id(node.orelse[0]))
+    return elifs
+
+
 def _collect_rewrites(tree: ast.Module, lines: list[str]) -> list[_Rewrite]:
     """Every redundant-else rewrite in ``tree``, across all statement blocks."""
+    elifs = _elif_nodes(tree)
     rewrites: list[_Rewrite] = []
     for block in iter_statement_blocks(tree):
         for stmt in block:
-            if isinstance(stmt, ast.If):
+            if isinstance(stmt, ast.If) and id(stmt) not in elifs:
                 rw = _try_if(stmt, lines)
                 if rw is not None:
                     rewrites.append(rw)

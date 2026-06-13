@@ -263,3 +263,27 @@ def test_missing_file_blocks(tmp_path):
 def test_objective_self_registered():
     from app.engine.objective_compiler import available_objectives
     assert "remove-redundant-else" in available_objectives()
+
+
+def test_elif_with_nonexiting_if_branch_is_untouched(tmp_path):
+    # Regression: dogfooding on Apex caught this. The elif `raise`s (exits) but
+    # the `if` branch does NOT — removing the elif's else would run its body on
+    # the `if` path too (a double-append). Must be left alone.
+    src = (
+        "def f(xs, ys):\n"
+        "    out = []\n"
+        "    if xs:\n"
+        "        out.append(1)\n"
+        "    elif ys:\n"
+        "        raise ValueError\n"
+        "    else:\n"
+        "        out.append(2)\n"
+        "    return out\n"
+    )
+    rel, plan = _result(tmp_path, src)
+    assert not plan.new_contents, "an elif's else must never be removed"
+
+    # And the behaviour the would-be-broken rewrite changed: xs truthy → [1] only.
+    ns: dict = {}
+    exec(compile(src, "<m>", "exec"), ns)  # noqa: S102 - controlled test src
+    assert ns["f"]([0], []) == [1]
