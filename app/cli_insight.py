@@ -174,14 +174,30 @@ def cmd_changelog(args: argparse.Namespace) -> int:
 
 def cmd_grade(args: argparse.Namespace) -> int:
     """Give the project a single health grade (A–F) with a breakdown."""
-    from app.engine.health_score import grade, render_grade_markdown
+    from app.engine.health_score import (
+        grade, load_grade_snapshot, render_grade_diff_markdown,
+        render_grade_markdown, save_grade_snapshot,
+    )
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
     h = grade(str(target))
-    if args.json:
+
+    if getattr(args, "diff", False):
+        old = load_grade_snapshot(str(target))
+        if old:
+            print(render_grade_diff_markdown(old, h))
+        else:
+            print("_No grade snapshot found — run `apex grade --save` first._\n")
+            print(render_grade_markdown(h))
+    elif args.json:
         print(json.dumps(h.to_dict(), indent=2))
     else:
         print(render_grade_markdown(h))
+
+    if getattr(args, "save", False):
+        save_grade_snapshot(str(target), h)
+        print("[grade] Snapshot saved to .apex/grade-snapshot.json")
+
     if getattr(args, "min_score", 0) and h.score < args.min_score:
         return 1
     return 0
@@ -217,6 +233,10 @@ def register_parsers(subparsers) -> None:
     grade_parser.add_argument("--target", default="", help="Target project root")
     grade_parser.add_argument("--min-score", type=int, default=0, dest="min_score",
                               help="Exit non-zero if the score is below this (CI gate)")
+    grade_parser.add_argument("--save", action="store_true",
+                              help="Snapshot the current grade to .apex/grade-snapshot.json")
+    grade_parser.add_argument("--diff", action="store_true",
+                              help="Compare to the saved snapshot and show what improved")
     grade_parser.add_argument("--json", action="store_true", help="Emit JSON")
     grade_parser.set_defaults(func=cmd_grade)
 

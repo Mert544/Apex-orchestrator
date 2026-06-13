@@ -61,11 +61,49 @@ def _apply_review_fixes(target: str, result) -> dict:
     `apex maintain` uses — risk tiers, test-first shield, convergence ladder,
     verification strength — so review fixes carry identical trust guarantees
     (a tier-1 fix on an uncovered file is shielded or blocked, never gambled).
+
+    Rule-book violations (fix_kind="rule:NAME") are applied directly via the
+    saved pattern rewrite rather than through the harden ladder — the rule IS
+    the fix, suite-verified with rollback exactly like every other Apex change.
     """
     from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.execution.cross_file_rename import apply_rename
+    from app.execution.pattern_rewrite import plan_pattern_rewrite
+    from app.execution.rewrite_rules import load_rules
     from app.models.idea import ActionPlan, ActionStep
 
-    files = sorted({f.file for f in result.findings if f.auto_fixable and f.file.endswith(".py")})
+    applied: list[dict] = []
+    blocked: list[dict] = []
+    fixes_total = 0
+
+    # ── Rule-book violations: run the saved rule directly (not via harden) ──
+    rule_names = sorted({f.fix_kind[5:] for f in result.findings
+                         if f.fix_kind.startswith("rule:") and f.auto_fixable})
+    if rule_names:
+        all_rules = {r["name"]: r for r in load_rules(target)}
+        for name in rule_names:
+            r = all_rules.get(name)
+            if not r:
+                continue
+            plan = plan_pattern_rewrite(target, r["pattern"], r["replacement"])
+            if plan.blockers:
+                blocked.append({"file": "(all)", "reason": f"rule:{name}: {plan.blockers[0]}"})
+                continue
+            if not plan.new_contents:
+                continue
+            res = apply_rename(target, plan, verify=True)
+            if res.get("applied"):
+                fixes_total += res.get("edits", 1)
+                for f in res.get("changed_files", []):
+                    applied.append({"file": f, "transform": f"rule:{name}"})
+            else:
+                blocked.append({"file": "(all)",
+                                 "reason": f"rule:{name}: {res.get('reason', 'rolled back')}"})
+
+    # ── Detector findings: harden ladder + docstring (skip rule-only files) ──
+    files = sorted({f.file for f in result.findings
+                    if f.auto_fixable and f.file.endswith(".py")
+                    and not f.fix_kind.startswith("rule:")})
     steps: list[ActionStep] = []
     for rel in files:
         # harden_security runs the detection ladder (security → mutable-default
@@ -78,24 +116,22 @@ def _apply_review_fixes(target: str, result) -> dict:
                                 operator="document", subject=rel, action_type="add_docstring",
                                 target=rel, executable=True,
                                 source_facts=[f"review-finding: {rel}"]))
-    summary = IdeaActionBridge().apply_plan(
-        ActionPlan(objective="apply review findings", steps=steps),
-        target, mode="supervised", verify=True)
+    if steps:
+        summary = IdeaActionBridge().apply_plan(
+            ActionPlan(objective="apply review findings", steps=steps),
+            target, mode="supervised", verify=True)
+        for r in summary.get("results", []):
+            if r.get("applied"):
+                entry = {"file": r["target"], "transform": r.get("transform_type")}
+                fixes_total += 1 + int(r.get("converged_fixes", 0) or 0)
+                if r.get("converged_fixes"):
+                    entry["converged_fixes"] = r["converged_fixes"]
+                if r.get("shield_test"):
+                    entry["shield_test"] = r["shield_test"]
+                applied.append(entry)
+            elif "tier-1" in (r.get("reason") or ""):
+                blocked.append({"file": r.get("target", ""), "reason": r["reason"]})
 
-    applied: list[dict] = []
-    blocked: list[dict] = []
-    fixes_total = 0
-    for r in summary.get("results", []):
-        if r.get("applied"):
-            entry = {"file": r["target"], "transform": r.get("transform_type")}
-            fixes_total += 1 + int(r.get("converged_fixes", 0) or 0)
-            if r.get("converged_fixes"):
-                entry["converged_fixes"] = r["converged_fixes"]
-            if r.get("shield_test"):
-                entry["shield_test"] = r["shield_test"]
-            applied.append(entry)
-        elif "tier-1" in (r.get("reason") or ""):
-            blocked.append({"file": r.get("target", ""), "reason": r["reason"]})
     return {"applied": applied, "applied_count": fixes_total,
             "files_touched": sorted({a["file"] for a in applied}),
             "blocked": blocked}

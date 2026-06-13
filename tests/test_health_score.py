@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 from app.cli import cmd_grade
-from app.engine.health_score import HealthScore, _letter, grade, render_grade_markdown
+from app.engine.health_score import (
+    HealthScore, _letter, grade, load_grade_snapshot, render_grade_diff_markdown,
+    render_grade_markdown, save_grade_snapshot,
+)
 
 
 def test_letter_boundaries():
@@ -246,3 +250,108 @@ def test_grade_security_reflects_detect_only_findings(tmp_path):
     (tmp_path / "pyproject.toml").write_text("[project]\nname='p'\nversion='0'\n")
     sec = next(c for c in grade(str(tmp_path)).components if c.name == "Security")
     assert sec.points_lost > 0
+
+
+def test_component_top_files_populated_for_security(tmp_path):
+    # A file with security issues should appear in the Security component's top_files.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "risky.py").write_text("def f(c):\n    return eval(c)\n")
+    h = grade(str(tmp_path))
+    sec = next(c for c in h.components if c.name == "Security")
+    assert sec.points_lost > 0
+    assert any("risky.py" in f for f in sec.top_files)
+
+
+def test_component_top_files_populated_for_testing(tmp_path):
+    # Untested modules should appear in the Testing component's top_files.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "unlinked.py").write_text("def f(x):\n    return x + 1\n")
+    h = grade(str(tmp_path))
+    test_comp = next(c for c in h.components if c.name == "Testing")
+    if test_comp.points_lost > 0:
+        assert any("unlinked.py" in f for f in test_comp.top_files)
+
+
+def test_clean_project_top_files_empty(tmp_path):
+    # A clean project has nothing to show in top_files.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "calc.py").write_text('def add(a, b):\n    """Add."""\n    return a + b\n')
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "from app.calc import add\ndef test_add():\n    assert add(1, 2) == 3\n"
+    )
+    h = grade(str(tmp_path))
+    for c in h.components:
+        if c.points_lost == 0:
+            assert c.top_files == []
+
+
+def test_render_markdown_shows_top_offenders(tmp_path):
+    # When there are security issues, the render includes a Top offenders section.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "risky.py").write_text("def f(c):\n    return eval(c)\n")
+    md = render_grade_markdown(grade(str(tmp_path)))
+    assert "Top offenders" in md
+    assert "risky.py" in md
+
+
+def test_grade_snapshot_save_and_load(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f(x):\n    return x\n")
+    h = grade(str(tmp_path))
+    save_grade_snapshot(str(tmp_path), h)
+    snap = load_grade_snapshot(str(tmp_path))
+    assert snap is not None
+    assert snap["score"] == h.score
+    assert snap["letter"] == h.letter
+    assert len(snap["components"]) == len(h.components)
+
+
+def test_grade_snapshot_load_returns_none_when_missing(tmp_path):
+    assert load_grade_snapshot(str(tmp_path)) is None
+
+
+def test_grade_diff_markdown(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "bad.py").write_text("def f(c):\n    return eval(c)\n")
+    h_bad = grade(str(tmp_path))
+    save_grade_snapshot(str(tmp_path), h_bad)
+
+    # "Fix" the project.
+    (tmp_path / "app" / "bad.py").write_text("import ast\ndef f(c):\n    return ast.literal_eval(c)\n")
+    h_good = grade(str(tmp_path))
+
+    snap = load_grade_snapshot(str(tmp_path))
+    md = render_grade_diff_markdown(snap, h_good)
+    assert "Grade trend" in md
+    assert "Security" in md
+
+
+def test_cmd_grade_save_and_diff_flags(tmp_path, capsys):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f(x):\n    return x\n")
+    # --save writes the snapshot
+    rc = cmd_grade(argparse.Namespace(target=str(tmp_path), min_score=0, json=False,
+                                      save=True, diff=False))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "grade-snapshot.json" in out
+    assert (tmp_path / ".apex" / "grade-snapshot.json").exists()
+
+    # --diff compares to the saved snapshot
+    rc = cmd_grade(argparse.Namespace(target=str(tmp_path), min_score=0, json=False,
+                                      save=False, diff=True))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Grade trend" in out
+
+
+def test_cmd_grade_diff_no_snapshot_shows_current_grade(tmp_path, capsys):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f(x):\n    return x\n")
+    rc = cmd_grade(argparse.Namespace(target=str(tmp_path), min_score=0, json=False,
+                                      save=False, diff=True))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "No grade snapshot found" in out
+    assert "Project health" in out  # still shows the current grade

@@ -280,15 +280,39 @@ def cmd_teach(args: argparse.Namespace) -> int:
     `apex teach 'len(xs) == 0' 'not xs' 'len(a.b) == 0' 'not a.b'` — the
     differing subtrees become $metavariables; the rule self-checks against
     every example before it is shown. Never applies; preview + optional save.
+
+    ``--from-git`` mines the last N single-line Python commits instead of
+    requiring explicit examples — pairs where both sides parse as expressions
+    are fed through the same anti-unification engine.
     """
     from app.execution.pattern_rewrite import plan_pattern_rewrite
     from app.execution.rewrite_rules import save_rule
     from app.execution.rule_learn import learn_rule
 
-    if len(args.examples) % 2 != 0:
-        print("⛔ teach takes BEFORE/AFTER pairs (an even number of expressions)")
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+
+    if getattr(args, "from_git", False):
+        from app.engine.git_rule_miner import mine_git_pairs
+        n = int(getattr(args, "commits", 50) or 50)
+        pairs = mine_git_pairs(str(target), n)
+        if not pairs:
+            print(f"No single-line expression changes found in the last {n} commit(s).")
+            return 0
+        print(f"Mined {len(pairs)} single-line change(s) from the last {n} commit(s).")
+        for b, a in pairs[:5]:
+            suffix = " …" if len(pairs) > 5 and (b, a) == pairs[4] else ""
+            print(f"  `{b}` → `{a}`{suffix}")
+    else:
+        examples = list(args.examples or [])
+        if len(examples) % 2 != 0:
+            print("⛔ teach takes BEFORE/AFTER pairs (an even number of expressions)")
+            return 1
+        pairs = list(zip(examples[::2], examples[1::2]))
+
+    if not pairs:
+        print("⛔ no example pairs to learn from")
         return 1
-    pairs = list(zip(args.examples[::2], args.examples[1::2]))
+
     rule = learn_rule(pairs)
     if not rule.ok:
         print("# Teach blocked\n")
@@ -300,7 +324,6 @@ def cmd_teach(args: argparse.Namespace) -> int:
     for n in rule.notes:
         print(f"- {n}")
 
-    target = Path(args.target).resolve() if args.target else _get_project_root()
     plan = plan_pattern_rewrite(str(target), rule.pattern, rule.replacement)
     if plan.new_contents:
         print(f"\nWould rewrite {sum(plan.edits_by_file.values())} match(es) "
@@ -412,9 +435,16 @@ def register_parsers(subparsers) -> None:
         "teach",
         help="Learn a $-pattern rule from BEFORE/AFTER example pairs (anti-unification, self-checked)",
     )
-    teach_parser.add_argument("examples", nargs="+",
-                              help="BEFORE AFTER [BEFORE2 AFTER2 ...] expression pairs")
+    teach_parser.add_argument("examples", nargs="*",
+                              help="BEFORE AFTER [BEFORE2 AFTER2 ...] expression pairs "
+                                   "(omit when using --from-git)")
     teach_parser.add_argument("--save", default="", metavar="NAME",
                               help="Save the learned rule to the project rule book")
+    teach_parser.add_argument("--from-git", action="store_true", dest="from_git",
+                              help="Mine single-line Python expression changes from git "
+                                   "history instead of requiring explicit examples")
+    teach_parser.add_argument("--commits", type=int, default=50, metavar="N",
+                              help="How many recent commits to mine (default: 50, "
+                                   "with --from-git)")
     teach_parser.add_argument("--target", default="", help="Target project root")
     teach_parser.set_defaults(func=cmd_teach)
