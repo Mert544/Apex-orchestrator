@@ -166,11 +166,18 @@ def rank_objectives(project_root: str | Path,
     debt that has paid off best before. Ties break by registration order, so the
     ranking is fully deterministic; with no history every payoff is 0 and the
     order is exactly pending-descending (a fresh project is unchanged)."""
+    from app.engine.develop_registry import expensive_names
     from app.engine.objective_compiler import _objectives_map
 
     table = _objectives_map()
     weights = payoff_weights(project_root)
-    names = objectives if objectives is not None else available_objectives()
+    if objectives is not None:
+        names = objectives
+    else:
+        # The default board skips EXPENSIVE objectives (e.g. the whole-project
+        # near-dup scan) so plan/ascend stay fast; they're run explicitly.
+        skip = expensive_names()
+        names = [n for n in available_objectives() if n not in skip]
     order = {name: i for i, name in enumerate(available_objectives())}
     rankings: list[GoalRanking] = []
     for name in names:

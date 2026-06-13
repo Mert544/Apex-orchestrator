@@ -36,7 +36,7 @@ import pkgutil
 
 __all__ = [
     "ObjectiveSpec", "register", "objective", "discover",
-    "registered_specs", "clear_registry",
+    "registered_specs", "clear_registry", "expensive_names",
 ]
 
 # The package every self-registering objective lives in. Dropping a module here
@@ -55,6 +55,11 @@ class ObjectiveSpec:
     name: str
     fitness: Callable[[str | Path], float]
     moves: Callable[[str | Path], list]  # list[Move]; Move left unannotated to avoid an import cycle
+    # A heavyweight objective whose fitness scan is slow (e.g. a whole-project
+    # structural near-dup search). The fast `apex plan` / `apex ascend` board
+    # skips these so the autonomous loop stays fast; they remain runnable
+    # explicitly via `apex develop --objective <name>`.
+    expensive: bool = False
 
 
 _REGISTRY: dict[str, ObjectiveSpec] = {}
@@ -109,6 +114,12 @@ def registered_specs() -> dict[str, ObjectiveSpec]:
     """The discovered objective specs (runs discovery on first call)."""
     discover()
     return dict(_REGISTRY)
+
+
+def expensive_names() -> set[str]:
+    """Names of discovered objectives flagged ``expensive`` — a heavy fitness
+    scan the fast plan/ascend board should skip (they stay runnable explicitly)."""
+    return {name for name, spec in registered_specs().items() if spec.expensive}
 
 
 def clear_registry() -> None:

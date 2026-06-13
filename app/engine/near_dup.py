@@ -296,6 +296,33 @@ def find_near_duplicates(
     return groups
 
 
+# Memoize by tree fingerprint so an objective's fitness AND moves share ONE
+# (~100s) scan instead of running the heavyweight detector twice.
+_NEAR_DUP_CACHE: dict[tuple, tuple] = {}
+
+
+def near_duplicates(project_root: str | Path, *, min_statements: int = 5,
+                    min_occurrences: int = 2, max_diffs: int = 3,
+                    fresh: bool = False) -> list[NearDuplicateGroup]:
+    """:func:`find_near_duplicates`, memoized by the project's ``(path, mtime)``
+    fingerprint (reusing the source index's staleness check). Rebuilds only when
+    files change or ``fresh`` is set — so the parameterized-dedup objective pays
+    the heavy scan once per tree state, not once per fitness/moves call."""
+    from app.engine.source_index import _fingerprint
+
+    root = Path(project_root).resolve()
+    key = (str(root), min_statements, min_occurrences, max_diffs)
+    fp = _fingerprint(root)
+    if not fresh:
+        cached = _NEAR_DUP_CACHE.get(key)
+        if cached is not None and cached[0] == fp:
+            return cached[1]
+    groups = find_near_duplicates(root, min_statements=min_statements,
+                                  min_occurrences=min_occurrences, max_diffs=max_diffs)
+    _NEAR_DUP_CACHE[key] = (fp, groups)
+    return groups
+
+
 def _group_key(group: NearDuplicateGroup) -> tuple[str, ...]:
     """A stable, template-free tie-breaker for two groups with equal size/occurrences.
 
