@@ -44,18 +44,25 @@ class GoalRanking:
     pending: float          # measured fitness: how many fixable items remain
     goal: str               # the nearest goal in the fractal tree it rolls up to
     payoff: float = 0.0     # learned health-gain per move from past campaigns
+    reliability: float = 1.0  # the organism's DREAMED land-rate for this objective
 
     @property
     def priority(self) -> float:
         """The score the climb ranks by: pending work AMPLIFIED by learned
-        payoff. A proven high-gain objective outranks an equal-pending one with
-        no track record; an objective with no history (payoff 0) ranks purely on
-        pending, so a fresh project behaves exactly as before."""
-        return self.pending * (1.0 + max(0.0, self.payoff))
+        payoff and DAMPED by the objective's proven land-rate.
+
+        ``reliability`` is what the organism learned in its own runs (the same
+        signal its nightly dream reads): an objective that reliably LANDS keeps
+        its priority, while one that mostly blocks/rolls back is pushed down — so
+        the climb stops wasting rounds on a proven blocker. With no track record
+        both factors are neutral (payoff 0, reliability 1), so a fresh project
+        ranks purely on pending work, exactly as before."""
+        return self.pending * (1.0 + max(0.0, self.payoff)) * self.reliability
 
     def to_dict(self) -> dict[str, Any]:
         return {"objective": self.objective, "pending": self.pending,
                 "goal": self.goal, "payoff": round(self.payoff, 3),
+                "reliability": round(self.reliability, 3),
                 "priority": round(self.priority, 3)}
 
 
@@ -155,6 +162,31 @@ def payoff_weights(project_root: str | Path) -> dict[str, float]:
     return weights
 
 
+_RELIABILITY_FLOOR = 0.15  # a proven blocker is heavily damped, never fully erased.
+
+
+def land_factors(project_root: str | Path) -> dict[str, float]:
+    """What the organism DREAMED about each objective: its proven land-rate, from
+    the idea memory (the SAME store the nightly dream reads when it says
+    "`sort_imports` fixes land 100%" or "`harden` lands only 0%"). An objective
+    whose operator landed reliably keeps a factor of 1.0; one that mostly
+    blocked/rolled back is damped toward a floor, so the climb stops spending
+    rounds on a proven blocker. Too-few-samples / untracked → a neutral 1.0.
+
+    An objective's operator is its name with hyphens as underscores — the
+    convention every self-registering objective follows — which is exactly how the
+    memory keys its ``by_operator`` stats."""
+    from app.engine.idea_memory import _MIN_SAMPLES, IdeaMemory
+
+    mem = IdeaMemory.load(project_root)
+    out: dict[str, float] = {}
+    for name in available_objectives():
+        stat = mem.by_operator.get(name.replace("-", "_"))
+        if stat is not None and stat.total >= _MIN_SAMPLES:
+            out[name] = max(_RELIABILITY_FLOOR, stat.success_rate)
+    return out
+
+
 def rank_objectives(project_root: str | Path,
                     objectives: list[str] | None = None) -> list[GoalRanking]:
     """Every objective ranked by pending fixable debt AMPLIFIED by learned
@@ -171,6 +203,7 @@ def rank_objectives(project_root: str | Path,
 
     table = _objectives_map()
     weights = payoff_weights(project_root)
+    reliab = land_factors(project_root)
     if objectives is not None:
         names = objectives
     else:
@@ -190,7 +223,8 @@ def rank_objectives(project_root: str | Path,
             pending = 0.0
         rankings.append(GoalRanking(objective=name, pending=pending,
                                     goal=objective_parent(name),
-                                    payoff=weights.get(name, 0.0)))
+                                    payoff=weights.get(name, 0.0),
+                                    reliability=reliab.get(name, 1.0)))
     rankings.sort(key=lambda r: (-r.priority, order.get(r.objective, 0)))
     return rankings
 

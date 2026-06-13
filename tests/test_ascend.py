@@ -234,3 +234,44 @@ def test_target_score_parsing():
     assert _target_score("b+") == 87
     assert _target_score("") is None
     assert _target_score("nonsense") is None
+
+
+# --- dream-aware ranking: the organism leads with what its dreams trust ---
+
+def test_reliability_damps_priority():
+    assert GoalRanking("x", 10.0, "tidy", reliability=1.0).priority == 10.0
+    assert GoalRanking("x", 10.0, "tidy", reliability=0.15).priority == 1.5
+    # reliability multiplies on top of pending and payoff.
+    assert GoalRanking("x", 10.0, "tidy", payoff=1.0, reliability=0.5).priority == 10.0
+
+
+def test_land_factors_reads_idea_memory(tmp_path):
+    import json
+    from app.engine.ascend import land_factors
+    (tmp_path / ".apex").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".apex" / "idea-memory.json").write_text(json.dumps({
+        "by_operator": {"sort_imports": {"applied": 0, "blocked": 5},     # 0% → blocker
+                        "merge_isinstance": {"applied": 5, "blocked": 0}},  # 100% → reliable
+        "by_label": {}}), encoding="utf-8")
+    f = land_factors(str(tmp_path))
+    assert f["sort-imports"] == 0.15        # proven blocker → floored
+    assert f["merge-isinstance"] == 1.0     # 100% land-rate → neutral
+    assert "fix-not-in-is" not in f         # no samples → absent (neutral 1.0 by default)
+
+
+def test_dream_aware_rank_demotes_a_proven_blocker(tmp_path, monkeypatch):
+    import app.engine.ascend as asc
+    monkeypatch.setattr(asc, "payoff_weights", lambda r: {})
+    monkeypatch.setattr(asc, "land_factors", lambda r: {"sort-imports": 0.15})
+
+    def fake_map():
+        return {"sort-imports": (lambda r: 10.0, lambda r: []),
+                "modernize": (lambda r: 5.0, lambda r: [])}
+    monkeypatch.setattr("app.engine.objective_compiler._objectives_map", fake_map)
+    monkeypatch.setattr(asc, "available_objectives", lambda: ["sort-imports", "modernize"])
+
+    ranked = asc.rank_objectives(str(tmp_path), ["sort-imports", "modernize"])
+    # sort-imports has MORE pending (10 vs 5) but its dreamed 0.15 reliability sinks
+    # it (10*0.15=1.5) below modernize (5*1.0=5) — the organism avoids the blocker.
+    assert ranked[0].objective == "modernize"
+    assert ranked[0].reliability == 1.0
