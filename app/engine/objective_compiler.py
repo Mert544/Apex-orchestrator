@@ -35,8 +35,8 @@ from app.execution.cross_file_rename import RenamePlan
 
 __all__ = [
     "Move", "CompileStep", "CompileResult",
-    "dead_parameter_fitness", "inlinable_helper_fitness", "compile_objective",
-    "dream_confluence_modules", "compile_from_dream",
+    "dead_parameter_fitness", "inlinable_helper_fitness", "long_function_fitness",
+    "compile_objective", "dream_confluence_modules", "compile_from_dream",
     "render_compile_markdown", "render_from_dream_markdown",
 ]
 
@@ -176,9 +176,60 @@ def _inline_moves(project_root: str | Path) -> list[Move]:
     return moves
 
 
+# --- Objective: shrink long functions by extracting helpers ------------------
+
+def _own_modules(project_root: str | Path) -> list[tuple[str, str]]:
+    """The project's own non-fixture .py modules as (rel, source)."""
+    from app.engine.health_score import _is_fixture_path
+    from app.execution.cross_file_rename import _py_files
+
+    return [(rel, src) for rel, src in _py_files(Path(project_root))
+            if not _is_fixture_path(rel)]
+
+
+def _extract_suggestions(project_root: str | Path) -> list[tuple[str, dict]]:
+    """The best extractable seam for each long function, as (module, seam).
+
+    Functions named like the extractor's own output (``..._part``) are skipped
+    so a campaign never cascades into the helpers it just created — one clean
+    extraction per real long function, not a chain of nested ``_part_part``."""
+    from app.execution.extract_method import suggest_extractions
+
+    out: list[tuple[str, dict]] = []
+    for rel, source in _own_modules(project_root):
+        for seam in suggest_extractions(source):
+            if not seam["function"].endswith("_part"):
+                out.append((rel, seam))
+    return out
+
+
+def long_function_fitness(project_root: str | Path) -> float:
+    """Fitness = how many long functions still have a clean seam to extract.
+    Lower means less sprawl; the objective is reached when none remain."""
+    return float(len(_extract_suggestions(project_root)))
+
+
+def _extract_moves(project_root: str | Path) -> list[Move]:
+    """One extract move per long function with a clean seam in the current tree."""
+    from app.execution.extract_method import plan_extract
+
+    moves: list[Move] = []
+    for rel, seam in _extract_suggestions(project_root):
+        moves.append(Move(
+            operator="extract",
+            target=f"{rel}:{seam['function']}()",
+            description=(f"extract a {seam['lines_saved']}-line helper "
+                        f"`{seam['name']}` from {seam['function']}() in {rel}"),
+            build_plan=lambda r=rel, s=seam: plan_extract(
+                str(project_root), r, s["start"], s["end"], s["name"]),
+        ))
+    return moves
+
+
 _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
                              Callable[[str | Path], list[Move]]]] = {
     "dead-params": (dead_parameter_fitness, _dead_param_moves),
+    "shrink-functions": (long_function_fitness, _extract_moves),
     "inline-helpers": (inlinable_helper_fitness, _inline_moves),
 }
 

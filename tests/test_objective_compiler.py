@@ -261,3 +261,55 @@ def test_cmd_develop_from_dream(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Develop from dream" in out and "app/hub.py" in out
     assert "color" not in (tmp_path / "app" / "hub.py").read_text()
+
+
+# --- third objective: shrink long functions via extraction -------------------
+
+def _long_fn_project(tmp_path: Path) -> Path:
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    body = "\n".join(f"    s{i} = start + {i}" for i in range(45))
+    (tmp_path / "app" / "m.py").write_text(
+        f"def big(start):\n    total = start\n{body}\n    return total + s0\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "from app.m import big\ndef test_big():\n    assert big(0) == 0\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_long_function_fitness_counts_seams(tmp_path):
+    from app.engine.objective_compiler import long_function_fitness
+    _long_fn_project(tmp_path)
+    assert long_function_fitness(str(tmp_path)) == 1.0
+
+
+def test_shrink_functions_extracts_one_clean_helper(tmp_path):
+    _long_fn_project(tmp_path)
+    r = compile_objective(str(tmp_path), objective="shrink-functions",
+                          apply=True, verify=False, max_steps=5)
+    assert r.fitness_end == 0.0
+    src = (tmp_path / "app" / "m.py").read_text()
+    defs = [ln for ln in src.splitlines() if ln.startswith("def ")]
+    # Exactly one helper extracted; NO cascading _part_part nesting.
+    assert "def _big_part(" in src
+    assert not any("_part_part" in d for d in defs)
+    assert {s.operator for s in r.steps} == {"extract"}
+
+
+def test_shrink_functions_does_not_cascade_into_generated_helpers(tmp_path):
+    # A function already named like the extractor's output is not re-targeted.
+    from app.engine.objective_compiler import _extract_suggestions
+    (tmp_path / "app").mkdir()
+    body = "\n".join(f"    s{i} = x + {i}" for i in range(45))
+    (tmp_path / "app" / "m.py").write_text(
+        f"def _helper_part(x):\n    t = x\n{body}\n    return t\n", encoding="utf-8")
+    # The only long function is a generated-helper-named one → no suggestions.
+    assert _extract_suggestions(str(tmp_path)) == []
+
+
+def test_shrink_functions_dry_run_does_not_write(tmp_path):
+    _long_fn_project(tmp_path)
+    before = (tmp_path / "app" / "m.py").read_text()
+    r = compile_objective(str(tmp_path), objective="shrink-functions", apply=False)
+    assert (tmp_path / "app" / "m.py").read_text() == before
+    assert any(s.operator == "extract" for s in r.steps)
