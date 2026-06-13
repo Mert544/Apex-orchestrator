@@ -501,3 +501,97 @@ def test_except_exception_pass_keeps_generic_silently_swallowed_finding():
     msgs = [i.message for i in detect(src)]
     assert any("silently swallowed" in m for m in msgs)
     assert any(_BROAD_SILENT_MSG in m for m in msgs)
+
+
+# --- unreachable (dead) code -------------------------------------------------
+
+from app.engine.detectors import has_unreachable_code  # noqa: E402
+
+
+def _unreachable(src: str) -> list[int]:
+    return [i.line for i in detect(src) if has_unreachable_code(src) and
+            i.message == "unreachable code — this runs after an unconditional "
+                         "return/raise/break/continue"]
+
+
+def test_unreachable_after_return():
+    src = "def f():\n    return 1\n    x = 2\n"
+    assert _unreachable(src) == [3]            # flagged at the `x = 2` line
+    assert has_unreachable_code(src)
+    issues = [i for i in detect(src) if i.line == 3 and "unreachable" in i.message]
+    assert issues and issues[0].category == "bug" and issues[0].severity == "medium"
+    assert issues[0].fix_kind == "" and not issues[0].auto_fixable
+
+
+def test_unreachable_after_raise():
+    src = "def f():\n    raise ValueError()\n    cleanup()\n"
+    assert _unreachable(src) == [3]
+    assert has_unreachable_code(src)
+
+
+def test_unreachable_after_break():
+    src = "def f():\n    for i in x:\n        break\n        y = i\n"
+    assert _unreachable(src) == [4]
+    assert has_unreachable_code(src)
+
+
+def test_unreachable_after_continue():
+    src = "def f():\n    for i in x:\n        continue\n        y = i\n"
+    assert _unreachable(src) == [4]
+    assert has_unreachable_code(src)
+
+
+def test_terminal_as_last_statement_not_flagged():
+    src = "def f():\n    x = 1\n    return x\n"
+    assert _unreachable(src) == []
+    assert not has_unreachable_code(src)
+
+
+def test_return_inside_if_does_not_make_following_unreachable():
+    # The return is a child of the `if`, not the function body; the print is
+    # reachable when the condition is false.
+    src = "def f(c):\n    if c:\n        return\n    print('after')\n"
+    assert _unreachable(src) == []
+    assert not has_unreachable_code(src)
+
+
+def test_dead_code_inside_branch_only():
+    # The return is a DIRECT child of the if-branch and not last → the next
+    # sibling inside that branch is dead. Code after the whole `if` is reachable.
+    src = (
+        "def f(c):\n"
+        "    if c:\n"
+        "        return 1\n"
+        "        z = 2\n"      # dead: inside the branch, after a direct return
+        "    print('after')\n"  # reachable: sibling of the `if`
+    )
+    assert _unreachable(src) == [4]
+    assert has_unreachable_code(src)
+
+
+def test_one_finding_per_block():
+    # Two distinct dead blocks → two findings (one each), in document order.
+    src = (
+        "def f():\n"
+        "    return 1\n"
+        "    a = 2\n"          # dead in f's body
+        "def g():\n"
+        "    raise X()\n"
+        "    b = 3\n"          # dead in g's body
+    )
+    assert _unreachable(src) == [3, 6]
+
+
+def test_only_first_statement_after_terminal_flagged():
+    # Multiple dead statements in one block → a single finding at the first.
+    src = "def f():\n    return 1\n    a = 2\n    b = 3\n"
+    assert _unreachable(src) == [3]
+
+
+def test_clean_code_has_no_unreachable_finding():
+    src = "def f(x):\n    y = x + 1\n    return y\n"
+    assert not has_unreachable_code(src)
+
+
+def test_unreachable_on_syntax_error_is_false():
+    assert not has_unreachable_code("def broken(:\n")

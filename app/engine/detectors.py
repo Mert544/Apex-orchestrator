@@ -87,6 +87,9 @@ def detect(source: str) -> list[Issue]:
     def add(line: int, cat: str, sev: str, msg: str, fix: str) -> None:
         out.append(Issue(line, cat, sev, msg, fix))
 
+    for lineno in _unreachable_code_lines(tree):
+        add(lineno, "bug", "medium", _UNREACHABLE_CODE_MSG, "")
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             if _is_network_call_without_timeout(node):
@@ -350,6 +353,14 @@ _SILENT_BROAD_EXCEPT_MSG = (
 )
 
 
+# Stable message for the unreachable-code finding (fix_kind is "" — removing dead
+# code is a judgment call — so the query helper matches on this text, not a code).
+_UNREACHABLE_CODE_MSG = (
+    "unreachable code — this runs after an unconditional "
+    "return/raise/break/continue"
+)
+
+
 def _is_broad_exc(type_node: ast.expr) -> bool:
     """True if a handler's type catches a BROAD class (Exception/BaseException).
 
@@ -489,6 +500,49 @@ def _escapes_finally(finalbody: list) -> list[int]:
                 walk_stmts(s.body, loop_depth)
 
     walk_stmts(finalbody, 0)
+    return found
+
+
+# Statement-list attributes that form an executable block (a sequence where a
+# terminal makes its successors dead). ``Try.handlers`` is intentionally absent —
+# each ExceptHandler carries its own ``body`` and is visited below.
+_BLOCK_FIELDS = ("body", "orelse", "finalbody")
+
+# Unconditional terminals: control never falls through to the next sibling.
+_TERMINALS = (ast.Return, ast.Raise, ast.Break, ast.Continue)
+
+
+def _unreachable_code_lines(tree: ast.AST) -> list[int]:
+    """Lines of the first dead statement in each block that has one.
+
+    For every executable statement list — a function body, both branches of an
+    ``if``, loop bodies/else, ``with`` bodies, the ``try``/``except``/``else``/
+    ``finally`` bodies, and the module body — an unconditional terminal
+    (``return``/``raise``/``break``/``continue``) that is a *direct* child and not
+    the last statement makes the statement immediately after it unreachable. One
+    line per such block, reported in document order.
+
+    Conservative by design: a terminal nested inside a child block (e.g. a
+    ``return`` guarded by an ``if``) does not make following siblings dead, so
+    only direct children are inspected.
+    """
+    found: list[int] = []
+
+    def scan(block: list) -> None:
+        for i, stmt in enumerate(block[:-1]):
+            if isinstance(stmt, _TERMINALS):
+                found.append(block[i + 1].lineno)
+                break  # one finding per block
+
+    for node in ast.walk(tree):
+        # ExceptHandler owns a ``body`` but isn't covered by _BLOCK_FIELDS' use of
+        # generic getattr on the same set; handle every block-bearing node here.
+        for field in _BLOCK_FIELDS:
+            block = getattr(node, field, None)
+            if isinstance(block, list) and block and all(
+                isinstance(s, ast.stmt) for s in block
+            ):
+                scan(block)
     return found
 
 
@@ -684,6 +738,15 @@ def has_silent_broad_except(source: str) -> bool:
     the stable message text instead of a routing code.
     """
     return any(i.message == _SILENT_BROAD_EXCEPT_MSG for i in detect(source))
+
+
+def has_unreachable_code(source: str) -> bool:
+    """True if any block has statements after an unconditional terminal.
+
+    The finding carries no fix_kind (removing dead code is a judgment call), so
+    this matches on the stable message text instead of a routing code.
+    """
+    return any(i.message == _UNREACHABLE_CODE_MSG for i in detect(source))
 
 
 def has_fixable_raise_without_from(source: str) -> bool:
