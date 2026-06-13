@@ -78,3 +78,31 @@ stdlib-only; anything external enters as an *optional* integration.
 - Spec-Kit: <https://github.com/github/spec-kit>
 - tree-sitter: <https://github.com/tree-sitter/tree-sitter>, <https://tree-sitter.github.io/>
 - Anthropic Dreams: <https://platform.claude.com/docs/en/managed-agents/dreams>, <https://claude.com/blog/new-in-claude-managed-agents>
+
+## 2026-06-13 — The codemod neighbors, and the move they validated
+
+Fresh scan of the structural-rewrite and behavioral-analysis space:
+
+| Neighbor | What it does | What Apex takes from the comparison |
+|---|---|---|
+| [ast-grep](https://github.com/ast-grep/ast-grep) | tree-sitter structural search/rewrite, polyglot, `$X` metavariables | The pattern language UX (metavariables) — but it rewrites **without running your tests** |
+| [Comby](https://github.com/untitaker/spacemod/blob/main/docs/alternatives.md) | parser-free structural match across any text | Robust but not AST-aware; spans can cross node boundaries |
+| [GritQL / Biome plugins](https://dev.to/herrington_darkholme/biomes-gritql-plugin-vs-ast-grep-your-guide-to-ast-based-code-transformation-for-jsts-devs-29j2) | a full query language over code | Powerful, but a language to learn; Apex keeps one expression + `$x` |
+| [OpenRewrite / Moderne](https://docs.openrewrite.org/) | deterministic recipe catalog over lossless semantic trees (JVM-first) | Direct validation of `apex recipes`' model: deterministic, composable, catalog-driven |
+| [CodeScene / code-maat](https://github.com/adamtornhill/code-maat) | behavioral analysis: hotspots = churn × complexity, knowledge maps | Apex grew the same signal family independently (churn, knowledge-risk, co-change, convergence) — and adds the apply+verify loop they stop short of |
+| [Rope](https://github.com/python-rope/rope) | the classic Python refactoring library | The bar for rename/extract correctness; Apex's surface is CLI-first + test-verified |
+| Sourcery | "not wrong but could be better" suggestions | Apex's idea tree plays this role with full provenance per idea |
+
+**The gap none of them fill** — and the move shipped today: a user-defined
+structural rewrite that is *verified*. `apex rewrite 'len($x) == 0' 'not $x'`
+matches structurally (AST, not text), keeps each capture's own spelling,
+skips multi-line matches honestly, refuses unbound metavariables — and then
+runs the project's suite, rolling back on red. ast-grep finds and rewrites;
+Apex finds, rewrites, **proves, or undoes**.
+
+Sources: [ast-grep comparison](https://ast-grep.github.io/advanced/tool-comparison.html) ·
+[CodeScene hotspots](https://docs.enterprise.codescene.io/versions/3.3.6/guides/technical/hotspots.html) ·
+[OpenRewrite docs](https://docs.openrewrite.org/) ·
+[Moderne on determinism](https://www.moderne.ai/blog/understanding-openrewrite-beyond-the-myths) ·
+[rope](https://github.com/python-rope/rope) ·
+[Sourcery alternatives 2026](https://dev.to/rahulxsingh/sourcery-ai-alternatives-10-best-code-quality-tools-in-2026-98n)

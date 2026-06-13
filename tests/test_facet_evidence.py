@@ -79,3 +79,25 @@ def test_engine_facets_carry_evidence_and_outrank_hypotheses(tmp_path):
     md = render_markdown(rep)
     assert "📌" in md
     assert any("verified in the code" in f.rationale for f in backed)
+
+
+def test_long_signature_is_evidence_for_parameterize_phrases():
+    src = ("def configure(host, port, user, password, timeout, retries, debug):\n"
+           "    return host\n")
+    ev = evidence_for_facet(src, "parameterize the variants")
+    assert ev and "configure() takes 7 parameters" in ev[0][1]
+    # A trim signature is honestly hypothesis-only.
+    assert evidence_for_facet("def f(a, b):\n    return a\n",
+                              "parameterize the variants") == []
+    # self/cls don't count against a method.
+    method = "class C:\n    def m(self, a, b, c, d, e):\n        return a\n"
+    assert evidence_for_facet(method, "api surface") == []
+
+
+def test_long_function_is_evidence_for_shared_helper_phrases():
+    body = "".join(f"    x{i} = {i}\n" for i in range(60))
+    src = f"def giant():\n{body}    return x0\n"
+    ev = evidence_for_facet(src, "extract a shared helper")
+    assert ev and "giant() spans 6" in ev[0][1]
+    assert evidence_for_facet("def small():\n    return 1\n",
+                              "extract a shared helper") == []

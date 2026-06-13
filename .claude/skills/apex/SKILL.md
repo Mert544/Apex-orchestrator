@@ -99,6 +99,12 @@ without the file). `apex auto` prints what it has learned.
   positionally blocks with the chain hint (`keywordify` first). Positional-only,
   `*args`, keyword-only and `**kwargs` sections stay put; an order that puts a
   required param after a defaulted one blocks (it wouldn't compile).
+- `apex rewrite 'PATTERN' 'REPLACEMENT' [--dry-run] [--no-verify]` — user-defined
+  STRUCTURAL rewrite, project-wide: `$name` matches any expression (AST, not text;
+  the same `$name` must capture the same source), the replacement reuses captures
+  verbatim. Multi-line matches are skipped with a warning; unbound replacement
+  metavariables and bare-`$x` patterns block. Suite-verified with rollback —
+  the ast-grep shape, plus the proof the neighbors don't run.
 - `apex move SRC.py DST.py [--target=.] [--dry-run] [--no-verify]` — move/rename a module;
   every import form (`import x.y`, `from x.y import f`, `from x import y`, aliases) is
   rewritten project-wide, missing `__init__.py` created, relative-import cases block.

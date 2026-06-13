@@ -45,6 +45,50 @@ _COMPLEXITY_KEYS = ("edge case", "deep nesting", "property invariant",
                     "boundary case", "duplicated logic", "extract inner")
 _COMPLEXITY_FLOOR = 8
 
+# Structural evidence beyond findings and branches (each threshold is the
+# point where the concern stops being taste and starts being measurable):
+# a parameter list this long IS the "parameterize / api surface" concern,
+# and a function this tall IS the "shared helper / split it" concern.
+_SIGNATURE_KEYS = ("parameterize", "api surface", "interface", "shared helper")
+_SIGNATURE_FLOOR = 6        # params (self/cls excluded)
+_LENGTH_KEYS = ("extract a shared helper", "single source of truth",
+                "smaller unit", "extract inner")
+_LENGTH_FLOOR = 60          # statements-spanning lines per function
+
+
+def _long_signatures(source: str) -> list[tuple[int, str]]:
+    import ast as _ast
+
+    out = []
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        return out
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            a = node.args
+            params = [p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)
+                      if p.arg not in ("self", "cls")]
+            if len(params) >= _SIGNATURE_FLOOR:
+                out.append((node.lineno, f"{node.name}() takes {len(params)} parameters"))
+    return out
+
+
+def _long_functions(source: str) -> list[tuple[int, str]]:
+    import ast as _ast
+
+    out = []
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        return out
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            span = (node.end_lineno or node.lineno) - node.lineno + 1
+            if span >= _LENGTH_FLOOR:
+                out.append((node.lineno, f"{node.name}() spans {span} lines"))
+    return out
+
 
 def evidence_for_facet(source: str, phrase: str, limit: int = 2) -> list[tuple[int, str]]:
     """Concrete ``(line, detail)`` evidence that ``phrase`` is a real concern in
@@ -60,6 +104,10 @@ def evidence_for_facet(source: str, phrase: str, limit: int = 2) -> list[tuple[i
                     out.append((i.line, i.message.split("—")[0].strip()[:64]))
             break
 
+    if not out and any(k in p for k in _SIGNATURE_KEYS):
+        out += _long_signatures(source)
+    if not out and any(k in p for k in _LENGTH_KEYS):
+        out += _long_functions(source)
     if not out and any(k in p for k in _COMPLEXITY_KEYS):
         from app.tools.code_metrics import function_complexities
 

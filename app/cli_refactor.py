@@ -173,6 +173,55 @@ def cmd_move(args: argparse.Namespace) -> int:
 
 
 
+def cmd_rewrite(args: argparse.Namespace) -> int:
+    """User-defined structural rewrite: `apex rewrite 'len($x) == 0' 'not $x'`.
+
+    $name metavariables match any expression (the same name must capture the
+    same text); applies project-wide, suite-verified with rollback.
+    """
+    from app.execution.cross_file_rename import apply_rename
+    from app.execution.pattern_rewrite import plan_pattern_rewrite
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    plan = plan_pattern_rewrite(str(target), args.pattern, args.replacement)
+    label = f"`{args.pattern}` → `{args.replacement}`"
+
+    if plan.blockers:
+        print(f"# Rewrite blocked: {label}\n")
+        for b in plan.blockers:
+            print(f"- ⛔ {b}")
+        return 1
+    if not plan.new_contents:
+        print(f"# Rewrite: {label} — no match in the project")
+        for w in plan.warnings:
+            print(f"- ⚠️ {w}")
+        return 0
+    if getattr(args, "dry_run", False):
+        print(f"# Rewrite (dry run): {label} — "
+              f"{sum(plan.edits_by_file.values())} match(es) across {len(plan.new_contents)} file(s)\n")
+        print("```diff")
+        print(plan.render_diff().rstrip())
+        print("```")
+        for w in plan.warnings:
+            print(f"- ⚠️ {w}")
+        return 0
+
+    res = apply_rename(str(target), plan, verify=not getattr(args, "no_verify", False))
+    if args.json:
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("applied") else 1
+    if res.get("applied"):
+        print(f"✅ Rewrote {label}: {res['edits']} match(es) in "
+              f"{len(res['changed_files'])} file(s): {', '.join(res['changed_files'])}")
+        if res.get("verified") is True:
+            print("   tests pass — change is verified")
+        for w in res.get("warnings", []):
+            print(f"- ⚠️ {w}")
+        return 0
+    print(f"↩️ {res.get('reason', 'rewrite not applied')}")
+    return 1
+
+
 def register_parsers(subparsers) -> None:
     """Register the refactor family's subcommands: rename, move, signature."""
     # rename — cross-file rename (definition + imports + call sites), verified
@@ -233,3 +282,19 @@ def register_parsers(subparsers) -> None:
                             help="Skip the test verification run")
     sig_parser.add_argument("--json", action="store_true", help="Emit JSON")
     sig_parser.set_defaults(func=cmd_signature)
+
+    # rewrite — user-defined structural rewrite with $metavariables, verified
+    rw_parser = subparsers.add_parser(
+        "rewrite",
+        help="Structural rewrite with $x metavariables, project-wide (test-verified): "
+             "apex rewrite 'len($x) == 0' 'not $x'",
+    )
+    rw_parser.add_argument("pattern", help="Expression pattern; $name matches any expression")
+    rw_parser.add_argument("replacement", help="Replacement template reusing the $name captures")
+    rw_parser.add_argument("--target", default="", help="Target project root")
+    rw_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
+                           help="Preview the unified diff without changing files")
+    rw_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
+                           help="Skip the test verification run")
+    rw_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    rw_parser.set_defaults(func=cmd_rewrite)
