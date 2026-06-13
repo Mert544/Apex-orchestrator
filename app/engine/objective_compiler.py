@@ -408,7 +408,21 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
 
     result.fitness_end = current
     _record_composition(result, root)
+    if apply and result.steps:
+        # Record the whole verified campaign as a candidate elite in the
+        # MAP-Elites playbook (best composition per objective × operator-mix).
+        from app.engine.composition_archive import record_campaign
+        try:
+            record_campaign(
+                root, objective, [s.operator for s in result.steps],
+                start, current, len({_move_module_from_target(s.target) for s in result.steps}))
+        except OSError:
+            pass  # the playbook is best-effort; never fail a good compile on it
     return result
+
+
+def _move_module_from_target(target: str) -> str:
+    return target.split(":", 1)[0]
 
 
 def _record_composition(result: CompileResult, project_root: str) -> None:

@@ -409,6 +409,18 @@ def cmd_develop(args: argparse.Namespace) -> int:
     verify = not getattr(args, "no_verify", False)
     apply = getattr(args, "apply", False)
 
+    if getattr(args, "playbook", False):
+        from app.engine.composition_archive import (
+            CompositionArchive, render_playbook_markdown,
+        )
+
+        archive = CompositionArchive.load(str(target))
+        if args.json:
+            print(json.dumps(archive.to_dict(), indent=2))
+        else:
+            print(render_playbook_markdown(archive))
+        return 0
+
     if getattr(args, "from_dream", False):
         from app.engine.objective_compiler import (
             compile_from_dream, dream_confluence_modules, render_from_dream_markdown,
@@ -526,6 +538,9 @@ def register_parsers(subparsers) -> None:
     develop_parser.add_argument("--from-dream", action="store_true", dest="from_dream",
                                 help="Scope the campaign to the modules the nightly "
                                      "dream flagged as confluences (dream → action)")
+    develop_parser.add_argument("--playbook", action="store_true",
+                                help="Show the learned composition playbook (best verified "
+                                     "recipe per objective) and exit")
     develop_parser.add_argument("--apply", action="store_true",
                                 help="Apply the composed moves (default: dry run)")
     develop_parser.add_argument("--max-steps", type=int, default=25, dest="max_steps",
