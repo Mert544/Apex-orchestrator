@@ -165,3 +165,25 @@ def test_to_dict_shape() -> None:
         "lines": 5,
         "occurrences": ["m:1", "n:2"],
     }
+
+
+def test_cmd_duplication(tmp_path, capsys):
+    import argparse
+
+    from app.cli_insight import cmd_duplication
+    block = "\n".join(f"    s{i} = {i}" for i in range(6))
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "a.py").write_text(f"def a():\n{block}\n    return s0\n", encoding="utf-8")
+    (tmp_path / "app" / "b.py").write_text(f"def b():\n{block}\n    return s0\n", encoding="utf-8")
+    rc = cmd_duplication(argparse.Namespace(
+        target=str(tmp_path), min_statements=5, json=False))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "uplicat" in out  # "Duplication"/"duplicated"
+    # JSON path works too.
+    rc = cmd_duplication(argparse.Namespace(
+        target=str(tmp_path), min_statements=5, json=True))
+    assert rc == 0
+    import json
+    payload = json.loads(capsys.readouterr().out)
+    assert isinstance(payload, list) and payload

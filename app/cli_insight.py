@@ -223,6 +223,22 @@ def cmd_impact(args: argparse.Namespace) -> int:
 
 
 
+def cmd_duplication(args: argparse.Namespace) -> int:
+    """Find copy-pasted code blocks across the project — fix the bug once, miss
+    the other three copies. Reports each duplicated block and where it lives."""
+    from app.engine.dedup import find_duplicates, render_duplicates_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    blocks = find_duplicates(str(target),
+                             min_statements=getattr(args, "min_statements", 5),
+                             min_occurrences=2)
+    if args.json:
+        print(json.dumps([b.to_dict() for b in blocks], indent=2))
+    else:
+        print(render_duplicates_markdown(blocks))
+    return 0
+
+
 def cmd_mutants(args: argparse.Namespace) -> int:
     """Measure test STRENGTH by mutation: seed faults into a module and see how
     many the suite kills vs. survives (survivors = where the tests are blind)."""
@@ -271,6 +287,17 @@ def register_parsers(subparsers) -> None:
     impact_parser.add_argument("--target", default="", help="Target project root")
     impact_parser.add_argument("--json", action="store_true", help="Emit JSON")
     impact_parser.set_defaults(func=cmd_impact)
+
+    # duplication — find copy-pasted code blocks across the project
+    dup_parser = subparsers.add_parser(
+        "duplication",
+        help="Find copy-pasted code blocks across the project (extract shared helpers)",
+    )
+    dup_parser.add_argument("--target", default="", help="Target project root")
+    dup_parser.add_argument("--min-statements", type=int, default=5, dest="min_statements",
+                            help="Minimum block size (statements) to report (default 5)")
+    dup_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    dup_parser.set_defaults(func=cmd_duplication)
 
     # mutants — mutation testing: how strong is the suite for one module?
     mutants_parser = subparsers.add_parser(
