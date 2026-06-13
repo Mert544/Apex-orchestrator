@@ -53,7 +53,8 @@ def test_score_clamped_and_components_present(tmp_path):
     h = grade(str(tmp_path))
     assert 0 <= h.score <= 100
     assert {c.name for c in h.components} == {
-        "Security", "Architecture", "Testing", "Code debt", "Correctness", "Maintainability"}
+        "Security", "Architecture", "Testing", "Code debt", "Correctness",
+        "Maintainability", "Duplication"}
 
 
 def test_render_markdown(tmp_path):
@@ -402,6 +403,56 @@ def test_maintainability_zero_on_simple_project(tmp_path):
     maint = next(c for c in h.components if c.name == "Maintainability")
     assert maint.points_lost == 0
     assert maint.top_files == []
+
+
+def test_duplication_penalizes_copy_pasted_block(tmp_path):
+    # Two modules sharing an identical >= 5-statement block cost Duplication
+    # points and name an offending file in top_files.
+    from app.engine.health_score import grade
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    block = (
+        "    a = 1\n"
+        "    b = 2\n"
+        "    c = a + b\n"
+        "    d = c * 2\n"
+        "    e = d - a\n"
+        "    return e\n"
+    )
+    (tmp_path / "app" / "one.py").write_text(f"def first():\n{block}", encoding="utf-8")
+    (tmp_path / "app" / "two.py").write_text(f"def second():\n{block}", encoding="utf-8")
+    (tmp_path / "tests" / "test_dup.py").write_text(
+        "from app.one import first\ndef test_first():\n    assert first() == 5\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='p'\nversion='0'\n")
+    h = grade(str(tmp_path))
+    dup = next(c for c in h.components if c.name == "Duplication")
+    assert dup.points_lost > 0
+    assert dup.top_files
+    assert any(f.endswith("one.py") or f.endswith("two.py") for f in dup.top_files)
+    assert "extract the duplicated blocks into shared helpers" in h.fixes
+
+
+def test_duplication_zero_when_no_duplication(tmp_path):
+    # A project with no duplicated blocks loses zero Duplication points and lists
+    # no offending files.
+    from app.engine.health_score import grade
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "calc.py").write_text(
+        'def add(a, b):\n    """Add."""\n    return a + b\n', encoding="utf-8"
+    )
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "from app.calc import add\ndef test_add():\n    assert add(1, 2) == 3\n",
+        encoding="utf-8",
+    )
+    h = grade(str(tmp_path))
+    dup = next(c for c in h.components if c.name == "Duplication")
+    assert dup.points_lost == 0
+    assert dup.top_files == []
 
 
 def test_cmd_grade_diff_no_snapshot_shows_current_grade(tmp_path, capsys):

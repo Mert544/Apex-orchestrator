@@ -63,6 +63,12 @@ _SEVERITY_WEIGHT = {"critical": 6, "high": 4, "medium": 2, "low": 1}
 _COMPLEXITY_CEILING = 12
 _MAINT_CAP = 10
 
+# Duplication: each copy-pasted block (>= 5 statements, in >= 2 places) costs one
+# point, small-capped so a duplication-heavy codebase can't dominate the grade and
+# a clean one loses nothing. Computed once per grade() from the dedup detector,
+# which already excludes fixtures/tests.
+_DUP_CAP = 10
+
 
 def _scan_maintainability(
     project_root: str | Path, profile: Any,
@@ -243,7 +249,26 @@ def grade(project_root: str | Path) -> HealthScore:
              "see `apex develop --objective shrink-functions`" if maint_lost else None,
              top_files=maint_top)
 
-    score = max(0, 100 - (sec_lost + arch_lost + test_lost + debt_lost + corr_lost + maint_lost))
+    # Duplication: copy-pasted blocks are a top maintainability hazard (a bug
+    # fixed in one copy is silently left in the rest). The detector walks the whole
+    # project, so call it ONCE here; it already excludes fixtures/tests. Each block
+    # costs one point up to a small cap — a clean codebase loses nothing.
+    from app.engine.dedup import find_duplicates
+
+    dup_blocks = find_duplicates(project_root)
+    dup_lost = min(_DUP_CAP, len(dup_blocks))
+    dup_by_file: dict[str, int] = {}
+    for block in dup_blocks:
+        for occ in block.occurrences:
+            module = occ.rsplit(":", 1)[0]  # occurrences are "module:lineno"
+            dup_by_file[module] = dup_by_file.get(module, 0) + 1
+    dup_top = [f for f, _ in sorted(dup_by_file.items(), key=lambda kv: (-kv[1], kv[0]))[:3]]
+    penalize("Duplication", dup_lost, f"{len(dup_blocks)} duplicated block(s)",
+             "extract the duplicated blocks into shared helpers" if dup_lost else None,
+             top_files=dup_top)
+
+    score = max(0, 100 - (sec_lost + arch_lost + test_lost + debt_lost
+                          + corr_lost + maint_lost + dup_lost))
     return HealthScore(score=score, letter=_letter(score), components=components, fixes=fixes)
 
 
