@@ -119,6 +119,10 @@ class EditStrategy:
             reasons.append("Keywords suggest dropping a dead f-string prefix.")
             return EditStrategyResult(strategy="fix_fstring", confidence=0.85, reasons=reasons)
 
+        if "collection-literal" in combined:
+            reasons.append("Keywords suggest replacing an empty constructor with a literal.")
+            return EditStrategyResult(strategy="fix_collection_literal", confidence=0.85, reasons=reasons)
+
         if "import" in combined or "unused" in combined or "cleanup" in combined:
             reasons.append("Keywords suggest import cleanup.")
             return EditStrategyResult(strategy="organize_imports", confidence=0.7, reasons=reasons)

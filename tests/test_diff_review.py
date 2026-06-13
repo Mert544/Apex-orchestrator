@@ -339,3 +339,21 @@ def test_review_flags_dead_fstring_with_suggestion(tmp_path):
     assert f.suggestion is not None
     old, new = f.suggestion
     assert 'f"hello"' in old and '"hello"' in new and "f" not in new.split('"')[0]
+
+
+# --- collection-literal modernization (style finding with inline suggestion) --
+
+def test_review_flags_empty_constructor_with_suggestion(tmp_path):
+    _repo(tmp_path)
+    (tmp_path / "app" / "base.py").write_text(
+        'def existing():\n    return 1\n\ndef build():\n    return dict()\n'
+    )
+    result = review(str(tmp_path))
+    coll = [f for f in result.findings if f.fix_kind == "collection-literal"]
+    assert len(coll) == 1
+    f = coll[0]
+    assert f.category == "style"
+    assert f.auto_fixable
+    assert f.suggestion is not None
+    old, new = f.suggestion
+    assert "dict()" in old and "{}" in new

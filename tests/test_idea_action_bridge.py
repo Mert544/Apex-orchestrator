@@ -237,6 +237,24 @@ def test_harden_drops_dead_fstring_prefix(tmp_path):
         assert '"welcome"' in src.read_text()
 
 
+def test_harden_modernizes_empty_collection_constructor(tmp_path):
+    # A file whose only issue is dict()/list()/tuple() gets the literal via the
+    # harden detection ladder.
+    (tmp_path / "app").mkdir()
+    src = tmp_path / "app" / "coll.py"
+    src.write_text("def build():\n    return dict()\n")
+    from app.models.idea import IdeaNode
+    idea = IdeaNode(id="i", title="Harden: app/coll.py", subject="app/coll.py",
+                    operator="harden", operator_chain=["harden"],
+                    source_facts=["sensitive-path: app/coll.py"])
+    step = IdeaActionBridge().plan_idea(idea)
+    result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
+    if result["applied"]:
+        assert result["transform_type"] == "modernize_collection_literal"
+        assert "dict()" not in src.read_text()
+        assert "return {}" in src.read_text()
+
+
 def test_harden_makes_no_change_when_no_real_issue(tmp_path):
     # Clean code with no eval/os.system/bare-except/mutable/modernize/encoding/
     # timeout issue: harden_security must NOT fabricate a speculative guard — it

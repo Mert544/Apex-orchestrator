@@ -345,6 +345,14 @@ class IdeaActionBridge:
         text = cls._read(project_root, rel_path)
         return has_fstring_no_placeholder(text) if text is not None else False
 
+    @classmethod
+    def _detect_collection_literal(cls, project_root: str, rel_path: str) -> bool:
+        """True if the file constructs an empty dict/list/tuple via a call."""
+        from app.engine.detectors import has_collection_literal
+
+        text = cls._read(project_root, rel_path)
+        return has_collection_literal(text) if text is not None else False
+
     # The detection ladder, most-severe first — DATA, not branches: each rung
     # is (detector method, change strategy, title template). Adding a rung is
     # one line; the dispatch below never changes. (This function was the
@@ -366,6 +374,8 @@ class IdeaActionBridge:
          "Chain re-raised exceptions to their cause in {t}"),
         ("_detect_fstring", "fstring-no-placeholder",
          "Drop dead f-string prefixes in {t}"),
+        ("_detect_collection_literal", "collection-literal",
+         "Use collection literals in {t}"),
     )
 
     @classmethod

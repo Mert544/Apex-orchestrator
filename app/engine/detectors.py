@@ -24,7 +24,7 @@ _SECURITY_ORDER = ("eval", "os.system", "pickle", "yaml", "sql", "tempfile", "we
 _SUPPRESS_RE = re.compile(r"#\s*(noqa|nosec)\b(?:\s*[:=]\s*([A-Za-z0-9 ,]+))?", re.IGNORECASE)
 # Lint codes that, when named in a suppression comment, suppress a finding.
 _FIXKIND_NOQA = {"bare except": "E722", "base-exception": "B036", "raise-from": "B904",
-                 "fstring-no-placeholder": "F541"}
+                 "fstring-no-placeholder": "F541", "collection-literal": "C408"}
 
 
 def _suppressed(line: str, category: str, fix_kind: str, message: str) -> bool:
@@ -101,6 +101,11 @@ def detect(source: str) -> list[Issue]:
                 add(node.lineno, "bug", "low",
                     "open() without encoding= is locale-dependent — pass encoding=\"utf-8\"",
                     "open-encoding")
+            elif (isinstance(f, ast.Name) and f.id in ("dict", "list", "tuple")
+                  and not node.args and not node.keywords):
+                lit = {"dict": "{}", "list": "[]", "tuple": "()"}[f.id]
+                add(node.lineno, "style", "low",
+                    f"use a literal `{lit}` instead of `{f.id}()`", "collection-literal")
             elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
                 owner, attr = f.value.id, f.attr
                 if owner == "os" and attr == "system":
@@ -546,6 +551,10 @@ def has_negated_comparison(source: str) -> bool:
 
 def has_fstring_no_placeholder(source: str) -> bool:
     return any(i.fix_kind == "fstring-no-placeholder" for i in detect(source))
+
+
+def has_collection_literal(source: str) -> bool:
+    return any(i.fix_kind == "collection-literal" for i in detect(source))
 
 
 def _assert_is_substantive(test: ast.expr) -> bool:
