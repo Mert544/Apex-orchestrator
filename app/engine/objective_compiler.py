@@ -181,12 +181,16 @@ def _inline_moves(project_root: str | Path) -> list[Move]:
 # --- Objective: shrink long functions by extracting helpers ------------------
 
 def _own_modules(project_root: str | Path) -> list[tuple[str, str]]:
-    """The project's own non-fixture .py modules as (rel, source)."""
-    from app.engine.health_score import _is_fixture_path
-    from app.execution.cross_file_rename import _py_files
+    """The project's own non-fixture .py modules as (rel, source).
 
-    return [(rel, src) for rel, src in _py_files(Path(project_root))
-            if not _is_fixture_path(rel)]
+    Backed by the parse-once source index: a campaign's many candidate scans
+    (modernize, extract, inline, remove-dead-code, all repeated each pass) reuse
+    ONE directory walk + read of the tree, rebuilt only when a move actually
+    changes a file (mtime fingerprint). On a large repo this is the difference
+    between re-walking 300 files on every scan and walking them once per pass."""
+    from app.engine.source_index import indexed_project
+
+    return indexed_project(str(project_root)).own_sources()
 
 
 def _extract_suggestions(project_root: str | Path) -> list[tuple[str, dict]]:
