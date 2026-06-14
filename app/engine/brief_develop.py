@@ -41,6 +41,12 @@ class BriefDevelopResult:
     results: list[CompileResult] = field(default_factory=list)
     check: dict | None = None                   # the burndown re-measure (or None)
     applied: bool = False
+    # Signal convergence (opt-in narrative): modules named by >= 3 distinct
+    # signal families at once, most-converged first. Each entry mirrors the
+    # profile's confluence record: {"module", "family_count", "families"}.
+    # Empty unless the engine surfaced a confluence, so the brief is unchanged
+    # for projects with no convergence.
+    confluences: list[dict] = field(default_factory=list)
 
     @property
     def total_moves(self) -> int:
@@ -61,13 +67,23 @@ class BriefDevelopResult:
             "results": [r.to_dict() for r in self.results],
             "total_moves": self.total_moves, "check": self.check,
             "resolved": self.resolved, "measured_total": self.measured_total,
-            "applied": self.applied,
+            "applied": self.applied, "confluences": self.confluences,
         }
 
 
 def _subject_module(brief: Any) -> str:
     """The brief's subject as a bare module path (drop any ``:: symbol`` tail)."""
     return brief.subject.split(" :: ", 1)[0].split("::", 1)[0]
+
+
+def _confluences_from_profile(profile: Any) -> list[dict]:
+    """The profile's confluence records (signal convergence), most-converged
+    first. Empty for a missing profile or one with no convergence, so the brief
+    narrative stays byte-identical when nothing converges. Reads only the scan
+    the engine already ran — no second pass.
+    """
+    convs = list(getattr(profile, "confluence_modules", None) or [])
+    return [c for c in convs if c.get("module") and c.get("families")]
 
 
 def concern_phrases(brief: Any) -> list[str]:
@@ -107,10 +123,11 @@ def develop_brief(project_root: str | Path, branch_path: str = "",
     from app.engine.idea_brief import build_brief, check_brief, save_brief
     from app.engine.idea_permutation import IdeaPermutationEngine
 
-    report = IdeaPermutationEngine(
+    engine = IdeaPermutationEngine(
         {"max_total_ideas": max_ideas, "max_idea_depth": depth, "breadth": breadth},
         project_root=str(project_root),
-    ).run(objective=objective_focus or None)
+    )
+    report = engine.run(objective=objective_focus or None)
     brief = build_brief(report, branch_path=branch_path, subject=subject)
     if brief is None:
         return None
@@ -120,6 +137,9 @@ def develop_brief(project_root: str | Path, branch_path: str = "",
     result = BriefDevelopResult(
         branch_path=brief.branch_path, title=brief.title, subject=subject_module,
         objectives=objectives, applied=apply,
+        # Reuse the engine's own profile scan — no second pass. Empty when the
+        # project has no convergence, which keeps the brief byte-identical.
+        confluences=_confluences_from_profile(getattr(engine, "last_profile", None)),
     )
 
     # Snapshot the evidence baseline so the post-campaign re-scan has something
@@ -137,12 +157,33 @@ def develop_brief(project_root: str | Path, branch_path: str = "",
     return result
 
 
+def _confluence_lines(confluences: list[dict]) -> list[str]:
+    """A short grounded note on the highest-leverage convergence target, or
+    ``[]`` when nothing converges (keeping the brief byte-identical). Names the
+    top module and exactly which signal families pile up on it — every claim is
+    a profile fact, framed as the next move to decouple/test before changing.
+    """
+    if not confluences:
+        return []
+    top = confluences[0]
+    module = top["module"]
+    families = list(top.get("families") or ())
+    count = top.get("family_count", len(families))
+    shown = ", ".join(families)
+    return ["",
+            f"**Convergence:** `{module}` is named by {count} independent signal "
+            f"families at once ({shown}). No single lens flags it, yet a module "
+            "under several pressures is the highest-leverage next move — decouple "
+            "and test it before changing it."]
+
+
 def render_brief_develop_markdown(result: BriefDevelopResult) -> str:
     """Render the brief→develop campaign: what it mapped to, did, and resolved."""
     from app.engine.idea_brief import render_check_markdown
 
     lines = [f"# Brief → develop — `{result.branch_path}` {result.title}", "",
              f"**Subject:** `{result.subject}`"]
+    lines += _confluence_lines(result.confluences)
     if not result.objectives:
         lines += ["",
                   "_No evidenced concern in this brief maps to a develop objective —",
