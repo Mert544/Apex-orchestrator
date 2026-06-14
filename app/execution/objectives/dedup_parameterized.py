@@ -1,14 +1,15 @@
-"""Self-registering objective: dedup-parameterized (EXPENSIVE).
+"""Self-registering objective: dedup-parameterized.
 
 Lift a NEAR-duplicate group — blocks structurally identical but differing at a
-few CONSTANT leaves — into one parameterized helper, the part of dedup's
-detect>>act gap exact-match extraction can't reach. It pairs the detector
+few CONSTANT or free-NAME leaves — into one parameterized helper, the part of
+dedup's detect>>act gap exact-match extraction can't reach. It pairs the detector
 (:func:`app.engine.near_dup.near_duplicates`, memoized) with the reviewed
 transform (:func:`app.execution.near_dup_extract.plan_near_dup_extract`).
 
-Flagged ``expensive``: the detector templates every window (~100s on a large
-repo), so the fast ``apex plan`` / ``apex ascend`` board SKIPS it. Run it
-explicitly: ``apex develop --objective dedup-parameterized --apply``.
+Once flagged ``expensive`` because the detector templated every window (~100s on
+a large repo); after the O(1) segment-slicing rewrite the whole scan is ~1.8s
+(memoized to ~1.3s for the fitness), so it now rides the fast ``apex plan`` /
+``apex ascend`` board like any other objective — no flag.
 """
 
 from __future__ import annotations
@@ -50,5 +51,4 @@ def moves(project_root: str | Path) -> list:
     return out
 
 
-register(ObjectiveSpec(name="dedup-parameterized", fitness=fitness, moves=moves,
-                       expensive=True))
+register(ObjectiveSpec(name="dedup-parameterized", fitness=fitness, moves=moves))

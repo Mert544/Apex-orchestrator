@@ -19,22 +19,21 @@ def _project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_registered_and_flagged_expensive():
+def test_registered_and_not_expensive():
     from app.engine.develop_registry import expensive_names
     from app.engine.objective_compiler import available_objectives
     assert "dedup-parameterized" in available_objectives()
-    assert "dedup-parameterized" in expensive_names()
+    # The near_dup detector is ~1.8s after the O(1) segment-slicing rewrite, so
+    # the objective no longer carries the expensive flag.
+    assert "dedup-parameterized" not in expensive_names()
 
 
-def test_skipped_by_the_default_fast_board(tmp_path):
-    # The fast plan/ascend board (no explicit objective list) must NOT include it.
+def test_on_the_default_fast_board(tmp_path):
+    # No longer expensive → the fast plan/ascend board (no explicit list) includes it.
     from app.engine.ascend import rank_objectives
     _project(tmp_path)
     board = {r.objective for r in rank_objectives(str(tmp_path))}
-    assert "dedup-parameterized" not in board
-    # …but it's there when explicitly requested.
-    explicit = {r.objective for r in rank_objectives(str(tmp_path), ["dedup-parameterized"])}
-    assert "dedup-parameterized" in explicit
+    assert "dedup-parameterized" in board
 
 
 def test_actionable_on_a_constant_near_duplicate(tmp_path):
