@@ -18,6 +18,11 @@ import ast
 from pathlib import Path
 from typing import Any
 
+from app.engine.runtime_trace import (
+    RuntimeEvidence,
+    StaticFinding,
+    confirm_findings,
+)
 from app.engine.skip_dirs import SKIPPED_DIRS
 
 # Canonical exclusions (incl. `.claude` agent worktrees) plus this report's own
@@ -92,8 +97,20 @@ def _candidates(tree: ast.Module) -> list[tuple[str, str, int]]:
     return out
 
 
-def find_dead_code(project_root: str, limit: int = 40) -> list[dict[str, Any]]:
-    """Module-level symbols defined in non-test code but referenced nowhere."""
+def find_dead_code(
+    project_root: str,
+    limit: int = 40,
+    evidence: RuntimeEvidence | None = None,
+) -> list[dict[str, Any]]:
+    """Module-level symbols defined in non-test code but referenced nowhere.
+
+    When ``evidence`` (a :class:`RuntimeEvidence` from running the project's own
+    tests under :mod:`app.engine.runtime_trace`) is supplied, each finding gains
+    an additive ``runtime`` key — ``"runtime-confirmed"`` (the def line never
+    ran), ``"refuted"`` (it did run, so the static guess is a false positive) or
+    ``"static-only"`` (the file was never loaded). With ``evidence=None`` the
+    output is byte-identical to before: no ``runtime`` key is added.
+    """
     root = Path(project_root)
     files = _iter_py(root)
     referenced: set[str] = set()
@@ -126,7 +143,23 @@ def find_dead_code(project_root: str, limit: int = 40) -> list[dict[str, Any]]:
                          "line": lineno, "confidence": confidence})
     # High-confidence (private) findings first — they're the safe, actionable ones.
     dead.sort(key=lambda d: (0 if d["confidence"] == "high" else 1, d["module"], d["line"]))
-    return dead[:limit]
+    dead = dead[:limit]
+    if evidence is not None:
+        # Confirm/refute each finding against what the tests actually executed.
+        # Findings carry a project-relative ``module``; resolve to an absolute
+        # path so it lines up with the traced (absolute) filenames.
+        findings = [
+            StaticFinding(path=str(root / d["module"]),
+                          lineno=d["line"], symbol=d["symbol"])
+            for d in dead
+        ]
+        by_key = {
+            (c.path, c.lineno, c.symbol): c.confidence
+            for c in confirm_findings(findings, evidence)
+        }
+        for d in dead:
+            d["runtime"] = by_key[(str(root / d["module"]), d["line"], d["symbol"])]
+    return dead
 
 
 def render_dead_code_markdown(rows: list[dict[str, Any]]) -> str:
