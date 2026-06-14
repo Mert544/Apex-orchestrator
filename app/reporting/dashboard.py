@@ -811,6 +811,98 @@ def _trackrecord_section(learned: dict[str, Any] | None, project_root: str) -> s
                  f"<div class='chips'>{chips}</div>{intro}{table}")
 
 
+def _outscope_test_corpus(project_root: str) -> list[str]:
+    """The lowercased text of every test file in the repo.
+
+    A non-Python source file counts as "tested" only when its basename literally
+    appears inside one of these — the honest, language-agnostic signal Apex can
+    read without a non-Python parser (``scan_polyglot_facts``' FileFact carries no
+    test flag here). Deterministic and pure: one ``is_skipped``-respecting
+    filesystem walk over test files, reading each locally; any unreadable file is
+    skipped (never raises). No git pass.
+    """
+    from app.engine.skip_dirs import is_skipped as _is_skipped
+
+    root = Path(project_root)
+    if not root.exists():
+        return []
+    corpus: list[str] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        if _is_skipped(rel):
+            continue
+        name_lower = path.name.lower()
+        rel_lower = rel.as_posix().lower()
+        is_test = (
+            name_lower.startswith("test_")
+            or name_lower.endswith("_test.py")
+            or "/tests/" in f"/{rel_lower}"
+            or rel_lower.startswith("tests/")
+        )
+        if not is_test:
+            continue
+        try:
+            corpus.append(path.read_text(encoding="utf-8", errors="ignore").lower())
+        except OSError:
+            continue
+    return corpus
+
+
+def _outscope_section(project_root: str) -> str:
+    """Apex's honest "outside analysis scope" awareness as a dashboard panel.
+
+    Names the biggest / most-active NON-Python source files (from
+    ``scan_polyglot_facts(root, limit=5)`` — a SINGLE git pass), each with its
+    language, LOC, churn, and a "(no test found)" flag for files no test file
+    references. Apex deep-analyses Python only and has no non-Python transform, so
+    this panel surfaces the blind spot honestly rather than over-promising.
+
+    Gated by construction: an all-Python repo has no out-of-scope files, so the
+    section returns "" and the page stays byte-identical. Every codebase-sourced
+    string is HTML-escaped; no timestamp (the page stamps once).
+    """
+    try:
+        from app.tools.polyglot_facts import scan_polyglot_facts
+
+        facts = scan_polyglot_facts(project_root, limit=5)
+    except Exception:
+        return ""
+    if not facts:
+        return ""
+
+    corpus = _outscope_test_corpus(project_root)
+
+    def _has_test(fact_path: str) -> bool:
+        base = Path(fact_path).name.lower()
+        return any(base in text for text in corpus)
+
+    rows = ""
+    for f in facts:
+        commit_word = "commit" if f.churn == 1 else "commits"
+        flag = (
+            "" if _has_test(f.path)
+            else " <span class='caveat'>(no test found)</span>"
+        )
+        rows += (
+            f"<tr><td><code>{_esc(f.path)}</code>{flag}</td>"
+            f"<td>{_esc(f.language)}</td>"
+            f"<td class='num'>{_esc(f.loc)}</td>"
+            f"<td class='num'>{_esc(f.churn)} {commit_word}</td></tr>"
+        )
+    caption = (
+        "<p class='muted'>Apex deep-analyses Python; these are the largest "
+        "active non-Python files — where the rest of the risk concentrates.</p>"
+    )
+    table = (
+        "<table><thead><tr><th>File</th><th>Language</th><th>LOC</th>"
+        "<th>Churn</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+    )
+    return _card("outscope", "🌐", "Outside analysis scope", f"{caption}{table}")
+
+
 def _reasoning_section(r: dict[str, Any]) -> str:
     if "error" in r:
         return _card("reasoning", "🧠", "Reasoning &amp; telemetry",
@@ -1053,6 +1145,9 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         nav_links.append(("learned", "Learned"))
     if _trackrecord_section(learned, project_root):
         nav_links.append(("trackrecord", "Track record"))
+    outscope_html = _outscope_section(project_root)
+    if outscope_html:
+        nav_links.append(("outscope", "Out of scope"))
     if (Path(project_root) / ".apex" / "dream-digest.md").exists():
         nav_links.append(("dream", "Dream"))
     nav_links += [("actions", "Actions"), ("reasoning", "Reasoning"), ("profile", "Profile")]
@@ -1079,6 +1174,7 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
             _trajectory_section(trajectory),
             _learned_section(learned),
             _trackrecord_section(learned, project_root),
+            outscope_html,
             _actions_section(action_plan),
             _reasoning_section(reasoning),
             _debug_section(debug),
