@@ -37,6 +37,10 @@ def branchy(x):
             total -= i
         else:
             total += 1
+        if i > 50:
+            total += 5
+        if i < -50:
+            total -= 5
         while total > 100:
             total -= 10
             if total < 0:
