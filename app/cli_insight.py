@@ -337,6 +337,148 @@ def cmd_objectives(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_proof_of_fix(root: Path) -> dict:
+    """The proof-of-fix evidence trail, read defensively (missing/corrupt → {}).
+
+    Mirrors the established readers in ``outcomes._last_proof`` /
+    ``changelog._fixes_section``: ``.apex/proof-of-fix.json`` is the artifact a
+    maintenance pass leaves behind, and a fresh repo simply has none.
+    """
+    path = root / ".apex" / "proof-of-fix.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _trackrecord(root: Path) -> dict:
+    """Assemble Apex's PROVEN track record on this repo from the two artifacts it
+    already keeps: the proof-of-fix evidence trail (what landed, test-verified,
+    with auto-rollback) and IdeaMemory's per-fix-type landing rates.
+
+    Deterministic and defensive: both sources read from disk, missing files
+    collapse to an empty record, and the per-type table is sorted by
+    (success_rate desc, key asc) so the output is byte-stable across runs.
+    """
+    from app.engine.idea_memory import IdeaMemory
+
+    proof = _read_proof_of_fix(root)
+    totals = proof.get("totals") or {}
+    fixes = proof.get("fixes") or []
+    verified = sum(
+        1 for f in fixes
+        if isinstance(f, dict) and f.get("outcome") == "applied"
+    )
+    rolled_back = sum(
+        1 for f in fixes
+        if isinstance(f, dict) and f.get("outcome") == "rolled_back"
+    )
+    # Prefer the recorded totals when present; fall back to counting fixes.
+    landed = int(totals.get("applied", verified) or 0) if totals else verified
+    reverted = int(totals.get("rolled_back", rolled_back) or 0) if totals else rolled_back
+
+    mem = IdeaMemory.load(root).summary()
+    reliable = mem.get("most_reliable") or []
+    risky = mem.get("least_reliable") or []
+
+    # Merge the two reliability views into one deterministically ordered table:
+    # every tracked fix-type once, best landing rate first, then key.
+    by_key: dict[str, dict] = {}
+    for row in [*reliable, *risky]:
+        key = row.get("key", "")
+        if key and key not in by_key:
+            by_key[key] = {
+                "key": key,
+                "success_rate": float(row.get("success_rate", 0.0)),
+                "samples": int(row.get("samples", 0)),
+            }
+    by_type = sorted(
+        by_key.values(),
+        key=lambda r: (-r["success_rate"], r["key"]),
+    )
+
+    has_record = landed > 0 or bool(by_type)
+    return {
+        "verified_fixes": landed,
+        "rolled_back": reverted,
+        "operators_tracked": int(mem.get("operators_tracked", 0) or 0),
+        "by_type": by_type,
+        "generated_at": proof.get("generated_at", ""),
+        "has_record": has_record,
+    }
+
+
+_RELIABLE_FLOOR = 0.75   # ≥ this landing rate → lead with it
+_RISKY_CEIL = 0.40       # ≤ this → expect blocks / rollbacks
+
+
+def render_trackrecord_markdown(rec: dict) -> str:
+    """The calm, factual, evidence-grounded track-record report."""
+    if not rec["has_record"]:
+        return ("# Apex track record\n\n"
+                "no track record yet — run `apex maintain` to start building one.")
+
+    landed = rec["verified_fixes"]
+    reverted = rec["rolled_back"]
+    lines = ["# Apex track record", ""]
+    fix_word = "fix" if landed == 1 else "fixes"
+    lines.append(
+        f"Apex has landed **{landed} {fix_word}** on this repo — each one "
+        "test-verified, with automatic rollback if the suite went red."
+    )
+    if reverted:
+        rb_word = "attempt" if reverted == 1 else "attempts"
+        lines.append(
+            f"A further {reverted} {rb_word} were rolled back automatically "
+            "rather than left broken — the safety net working as designed."
+        )
+    lines.append("")
+
+    by_type = rec["by_type"]
+    if by_type:
+        lines += ["## By fix type", "",
+                  "Landing rate per operator, measured on this codebase over "
+                  "time (lead with the reliable; expect blocks on the risky):", ""]
+        for row in by_type:
+            pct = round(row["success_rate"] * 100)
+            samples = row["samples"]
+            s_word = "sample" if samples == 1 else "samples"
+            if row["success_rate"] >= _RELIABLE_FLOOR:
+                flag = "reliable — lead with this"
+            elif row["success_rate"] <= _RISKY_CEIL:
+                flag = "risky — expect blocks/rollbacks"
+            else:
+                flag = "mixed"
+            lines.append(
+                f"- `{row['key']}` — {pct}% landed over {samples} {s_word} "
+                f"({flag})"
+            )
+        lines.append("")
+
+    lines.append(
+        "_Every number here is read from Apex's own evidence trail "
+        "(`.apex/proof-of-fix.json`, `.apex/idea-memory.json`) — deterministic, "
+        "zero-token, no model in the loop._"
+    )
+    return "\n".join(lines)
+
+
+def cmd_trackrecord(args: argparse.Namespace) -> int:
+    """Show Apex's PROVEN track record on this repo — how many fixes it has
+    landed (test-verified, auto-rollback) and the per-fix-type landing rates it
+    has measured over time. Reads only Apex's own artifacts; LLM-free."""
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    rec = _trackrecord(target)
+    if args.json:
+        print(json.dumps(rec, indent=2))
+    else:
+        print(render_trackrecord_markdown(rec))
+    return 0
+
+
 def register_parsers(subparsers) -> None:
     """Register the insight family's subcommands: grade, impact, brief, dream,
     outcomes, recipes, changelog, explain, objectives."""
@@ -467,6 +609,16 @@ def register_parsers(subparsers) -> None:
     )
     objectives_parser.add_argument("--json", action="store_true", help="Emit JSON")
     objectives_parser.set_defaults(func=cmd_objectives)
+
+    # trackrecord — Apex's proven, test-verified fix history on THIS repo
+    trackrecord_parser = subparsers.add_parser(
+        "trackrecord",
+        help="Show Apex's proven track record on this repo: fixes landed (test-verified, "
+             "auto-rollback) and per-fix-type landing rates over time",
+    )
+    trackrecord_parser.add_argument("--target", default="", help="Target project root")
+    trackrecord_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    trackrecord_parser.set_defaults(func=cmd_trackrecord)
 
     # explain — show why an idea scored what it did
     explain_parser = subparsers.add_parser(
