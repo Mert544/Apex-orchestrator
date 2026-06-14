@@ -86,31 +86,26 @@ def with_timeout(
 class ApexError(Exception):
     """Base exception for Apex errors."""
 
-    pass
 
 
 class SafetyError(ApexError):
     """Safety check failed."""
 
-    pass
 
 
 class PatchError(ApexError):
     """Patch application failed."""
 
-    pass
 
 
 class ApexTimeoutError(ApexError):
     """Operation timed out."""
 
-    pass
 
 
 class ValidationError(ApexError):
     """Validation failed."""
 
-    pass
 
 
 class ErrorCollector:

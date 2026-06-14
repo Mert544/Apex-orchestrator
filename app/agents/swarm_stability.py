@@ -7,7 +7,6 @@ from typing import Any, Callable
 class TimeoutError(Exception):
     """Raised when an operation times out."""
 
-    pass
 
 
 class SwarmTimeout:
