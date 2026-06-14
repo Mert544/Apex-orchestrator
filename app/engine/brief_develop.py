@@ -28,7 +28,7 @@ from app.engine.objective_compiler import CompileResult, compile_objective
 
 __all__ = [
     "BriefDevelopResult", "concern_phrases", "objectives_for_brief",
-    "develop_brief", "render_brief_develop_markdown",
+    "develop_brief", "render_brief_develop_markdown", "_loci_from_report",
 ]
 
 
@@ -47,6 +47,12 @@ class BriefDevelopResult:
     # Empty unless the engine surfaced a confluence, so the brief is unchanged
     # for projects with no convergence.
     confluences: list[dict] = field(default_factory=list)
+    # Function-level locus (opt-in narrative, complementary to confluence): the
+    # top recommendation's concrete starting point — the riskiest function(s)
+    # the idea names, each shaped {"module","symbol","line","metric"}, plus the
+    # idea's optional rationale string. Empty unless a top idea carried anchors,
+    # so the brief is byte-identical for idea sets with no function-grain data.
+    loci: list[dict] = field(default_factory=list)
 
     @property
     def total_moves(self) -> int:
@@ -68,6 +74,7 @@ class BriefDevelopResult:
             "total_moves": self.total_moves, "check": self.check,
             "resolved": self.resolved, "measured_total": self.measured_total,
             "applied": self.applied, "confluences": self.confluences,
+            "loci": self.loci,
         }
 
 
@@ -84,6 +91,60 @@ def _confluences_from_profile(profile: Any) -> list[dict]:
     """
     convs = list(getattr(profile, "confluence_modules", None) or [])
     return [c for c in convs if c.get("module") and c.get("families")]
+
+
+def _anchor_record(anchor: Any, idea_subject: str) -> dict | None:
+    """One well-formed anchor as ``{"module","symbol","line","metric"}`` — or
+    ``None`` when it names no concrete symbol. The module falls back to the
+    idea's own subject so the locus always carries a file even when the anchor
+    omits one. Read every field defensively (a parallel-agent shape)."""
+    if not isinstance(anchor, dict):
+        return None
+    symbol = str(anchor.get("symbol") or "").strip()
+    if not symbol:
+        return None
+    module = str(anchor.get("module") or "").strip() or idea_subject
+    return {
+        "module": module,
+        "symbol": symbol,
+        "line": anchor.get("line"),
+        "metric": str(anchor.get("metric") or "").strip(),
+    }
+
+
+def _loci_from_report(report: Any) -> list[dict]:
+    """The function-level loci of the report's TOP anchored recommendation.
+
+    Scans the report's ideas for the highest-value one that carries function
+    anchors (``IdeaNode.anchors``), read defensively via ``getattr`` so this
+    works whether or not the field is populated. Returns that idea's well-formed
+    anchors, each augmented with the idea's ``rationale`` so the render can weave
+    it in. Empty when no idea carries an anchor — which keeps the brief
+    byte-identical to today (the feature is gated on non-empty data).
+
+    Deterministic: ideas are ranked by descending value with a stable
+    ``branch_path``/``id`` tiebreak, never by time or insertion accident.
+    """
+    ideas = list(getattr(report, "ideas", None) or [])
+    ranked = sorted(
+        ideas,
+        key=lambda n: (-float(getattr(n, "value", 0.0) or 0.0),
+                       str(getattr(n, "branch_path", "") or ""),
+                       str(getattr(n, "id", "") or "")),
+    )
+    for idea in ranked:
+        subject = str(getattr(idea, "subject", "") or "").split("::", 1)[0].strip()
+        anchors = getattr(idea, "anchors", None) or []
+        rationale = str(getattr(idea, "rationale", "") or "").strip()
+        records: list[dict] = []
+        for a in anchors:
+            rec = _anchor_record(a, subject)
+            if rec is not None:
+                rec["rationale"] = rationale
+                records.append(rec)
+        if records:
+            return records
+    return []
 
 
 def concern_phrases(brief: Any) -> list[str]:
@@ -140,6 +201,9 @@ def develop_brief(project_root: str | Path, branch_path: str = "",
         # Reuse the engine's own profile scan — no second pass. Empty when the
         # project has no convergence, which keeps the brief byte-identical.
         confluences=_confluences_from_profile(getattr(engine, "last_profile", None)),
+        # Reuse the engine's already-run ideas — no second scan. Empty when no
+        # top idea carries function anchors, keeping the brief byte-identical.
+        loci=_loci_from_report(report),
     )
 
     # Snapshot the evidence baseline so the post-campaign re-scan has something
@@ -177,6 +241,35 @@ def _confluence_lines(confluences: list[dict]) -> list[str]:
             "and test it before changing it."]
 
 
+def _locus_phrase(locus: dict) -> str:
+    """``\\`_scan_churn\\` (app/tools/project_profile.py:550, cyclomatic 18)`` —
+    the file:line and metric are each optional, dropped cleanly when absent."""
+    symbol = str(locus.get("symbol") or "").strip()
+    module = str(locus.get("module") or "").strip()
+    line = locus.get("line")
+    loc = f"{module}:{line}" if module and line else (module or (str(line) if line else ""))
+    metric = str(locus.get("metric") or "").strip()
+    detail = ", ".join(p for p in (loc, metric) if p)
+    return f"`{symbol}` ({detail})" if detail else f"`{symbol}`"
+
+
+def _locus_lines(loci: list[dict]) -> list[str]:
+    """A concrete "Start here:" line naming the riskiest function(s) of the top
+    recommendation, or ``[]`` when no idea carried anchors (keeping the brief
+    byte-identical). Complements the module-level Convergence note above with a
+    function-grain starting point; when the idea named a rationale, weave it in.
+    """
+    if not loci:
+        return []
+    phrases = ", ".join(_locus_phrase(loc) for loc in loci)
+    line = f"**Start here:** {phrases}"
+    rationale = next((str(loc.get("rationale") or "").strip() for loc in loci
+                      if str(loc.get("rationale") or "").strip()), "")
+    if rationale:
+        line += f" — {rationale}"
+    return ["", line]
+
+
 def render_brief_develop_markdown(result: BriefDevelopResult) -> str:
     """Render the brief→develop campaign: what it mapped to, did, and resolved."""
     from app.engine.idea_brief import render_check_markdown
@@ -184,6 +277,7 @@ def render_brief_develop_markdown(result: BriefDevelopResult) -> str:
     lines = [f"# Brief → develop — `{result.branch_path}` {result.title}", "",
              f"**Subject:** `{result.subject}`"]
     lines += _confluence_lines(result.confluences)
+    lines += _locus_lines(result.loci)
     if not result.objectives:
         lines += ["",
                   "_No evidenced concern in this brief maps to a develop objective —",
