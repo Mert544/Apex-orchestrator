@@ -7,6 +7,15 @@ and roadmap reasoning — Apex is a project-development assistant; security stay
 an integrated supporting signal.
 
 ## Now (shipped)
+- **Development-team tooling** — `apex partition` (provably-disjoint parallel work
+  groups), `scripts/merge_train.py` (safe-order integration), `apex changed`
+  (change blast-radius), and the codified team process (`docs/development-team.md`).
+- **Capability efficiency** — 37 develop objectives (6 new transforms); the
+  splice-precedence bug class closed across all transforms; the idea engine now
+  routes **18** objectives (was 6) from discovered facets.
+- **Idea/fractal-engine depth** — two new lenses (`decouple`, `verify`), a
+  `purity`/`side-effects` fractal dimension, and the compounding `impure-untested`
+  seeding signal. `apex canvas` / `apex idea-html` visual exports.
 - **Self-measurement truth** — one canonical tree-walk exclusion
   (`app/engine/skip_dirs.py`) governs ~17 walkers; the health grade is now
   **worktree-immune** (proven byte-identical with 1145 worktree copies present

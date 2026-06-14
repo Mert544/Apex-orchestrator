@@ -2,16 +2,51 @@
 
 **Date**: 2026-06-14
 **Commit**: branch `claude/apex-orchestrator-eZbJO`
-**Tests**: 3400+ passing ✅
-**Status**: Self-measurement hardening + capability growth + team module — see "Latest milestone" below
+**Tests**: 3900+ passing ✅
+**Status**: Team-org tooling + capability efficiency + idea/fractal-engine depth — see "Latest milestone" below
 
-> Previous milestones: trust layer + multi-file refactoring (2026-06-12, 1921 tests);
+> Previous milestones: self-measurement truth + capability growth (2026-06-14, 3400 tests);
+> trust layer + multi-file refactoring (2026-06-12, 1921 tests);
 > idea-engine+action-bridge (2026-05-30, 786 tests);
 > autonomy-safety-core (2026-04-25, 633 tests).
 
 ---
 
-## Latest milestone: self-measurement truth + capability growth (2026-06-14)
+## Latest milestone: team-org tooling + capability efficiency + engine depth (2026-06-14)
+
+A sustained multi-agent campaign (orchestrator + parallel specialist agents in
+isolated worktrees, each gated and integrated under the green gate).
+
+**Development team as tooling.** The process is codified
+(`docs/development-team.md` + `docs/ordu-duzeni.{html,png}`): worktrees from
+current HEAD, an auditor every wave, isolated writers, value-sized headcount.
+Two tools back it: `apex partition` (`app/engine/work_partition.py` — computes
+provably-disjoint parallel work groups via the dependency graph + blast-radius)
+and `scripts/merge_train.py` (safe-order cherry-pick + gate integration). Plus
+`apex changed` (`app/engine/blast_radius.py` — a change's dependents, covering
+tests, and scope cohesion).
+
+**Capability efficiency.** 37 develop objectives. New transforms:
+`remove-unreachable-after-terminator`, `remove-pointless-pass`,
+`fold-literal-string-concat`, `simplify-negated-comparison`, `format-to-fstring`,
+`dedup-total-return`. The whole splice-precedence class (an auditor finding,
+H1-H7) is closed across every transform via the shared
+`_transform_base.splice_operand`; the dedup helper-insertion bug (H4) and a
+fractal-analyzer method double-count are fixed. The idea engine now routes **18**
+develop objectives (was 6) from discovered facets (`FACET_OBJECTIVE_MAP` +
+enriched `idea_facets.py` vocabulary).
+
+**Idea/fractal-engine depth.** Two new development lenses (`decouple`, `verify`)
+→ 10 operators. A `purity`/`side-effects` dimension in the function fractal
+analyzer, and a compounding `impure-untested` seeding signal that uses it to
+ground "isolate the side effect, then cover the core" ideas (→ `create_test_stub`).
+
+**Visualization.** `apex canvas --kind deps|idea` (JSONCanvas) and `apex
+idea-html` (self-contained HTML idea tree).
+
+---
+
+## Milestone: self-measurement truth + capability growth (2026-06-14)
 
 **Blind-spot class eliminated (and proven).** Apex was scanning its own
 `.claude/` agent worktrees — full repo COPIES — so tree-walks double-counted
