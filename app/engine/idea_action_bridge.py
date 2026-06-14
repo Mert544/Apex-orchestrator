@@ -31,6 +31,11 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     # untested high-leverage module — drop a safety-net test first (resolved in
     # _root_action, which can read the fact value's "untested" marker).
     "confluence": ("design_task", "Decouple and add tests to {s} before changing it — several independent pressures converge here", False),
+    # Co-change test-gap: a PAIR that co-changes but no single test exercises
+    # both. The grounded first move is to add a joint test, so route to the
+    # existing create_test_stub action (it is a test gap), executable like the
+    # other untested signals.
+    "cochange-testgap": ("create_test_stub", "Add a test that exercises {s} together — they co-change but nothing tests them jointly", True),
     "sensitive-path": ("harden_security", "Harden the sensitive path {s}", True),
     "security-finding": ("harden_security", "Fix the security findings in {s}", True),
     "correctness-bug": ("harden_security", "Fix the likely logic bug in {s}", True),

@@ -279,6 +279,27 @@ class IdeaSeeder:
                             f"{fan_in})"),
             )
 
+        # Co-change test-gap: module PAIRS that frequently change together (from
+        # git co-change) yet NO single test exercises BOTH — a change to one can
+        # silently break the other with nothing to catch it. The development move
+        # is to add a joint test, so this is framed as a DEVELOPMENT idea. The
+        # subject is the PAIR (so it never collides with a single-module subject)
+        # and the fact carries the co-change count so the rationale is concrete.
+        # Git-only, so light mode yields nothing (the family is simply empty).
+        for gap in (getattr(profile, "cochange_test_gaps", []) or [])[:3]:
+            a, b = gap["a"], gap["b"]
+            cochanges = gap.get("cochanges", 0)
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Add a test that exercises {a} and {b} together — they "
+                       f"co-change but nothing tests them jointly"),
+                subject=f"{a} + {b}",
+                fact_label="cochange-testgap",
+                fact_value=(f"{a} & {b} (co-change {cochanges}x but no single test "
+                            f"exercises both — a change to one can silently break "
+                            f"the other)"),
+            )
+
         # Technical-debt markers: modules carrying a cluster of TODO/FIXME/XXX/
         # HACK comments are concrete, traceable pockets of deferred work. When
         # git blame shows the oldest marker has waited months, the idea says so

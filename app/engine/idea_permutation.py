@@ -1003,6 +1003,7 @@ _FACT_HINTS: dict[str, str] = {
     "impure-untested": "side effect isolate decouple pure testable check validation edge cases",
     "hub-untested": "regression net test blast radius dependents safety net cover edge cases",
     "confluence": "decouple test boundary coupling blast radius safety net simplify check validation edge cases",
+    "cochange-testgap": "joint integration test co-change coupling safety net cover both modules together regression check validation edge cases",
     "missing-ci": "ci workflow run tests automation",
 }
 

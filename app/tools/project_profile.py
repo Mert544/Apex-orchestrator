@@ -73,6 +73,13 @@ class ProjectProfile:
     # commits — factually coupled whether or not an import connects them.
     # Each entry: {"a", "b", "commits"}.
     change_coupling: list[dict] = field(default_factory=list)
+    # Co-change test-gap: module PAIRS that frequently change together (from
+    # ``change_coupling``) yet NO single test file exercises BOTH — a change to
+    # one can silently break the other with no test to catch it. A grounded,
+    # high-value test gap no single-module signal sees. Reuses ``change_coupling``
+    # (git-only, EMPTY in light mode) and ``module_to_tests`` (no new scan). Each
+    # entry: {"a", "b", "cochanges" (int)}.
+    cochange_test_gaps: list[dict] = field(default_factory=list)
     # Knowledge concentration (DOA-inspired): modules whose recent changes
     # come overwhelmingly from ONE author — a bus-factor risk. Author names
     # are never stored. Each entry: {"module", "share" (percent), "commits"}.
@@ -359,6 +366,10 @@ class ProjectProfiler:
             self._scan_extractable_blocks(profile)
             self._scan_inlinable_helpers(profile)
         self._drop_fixture_signals(profile)
+        # Co-change test-gap reads the now-finalized ``change_coupling`` (git-only,
+        # EMPTY in light mode) and ``module_to_tests``; it adds no new scan and in
+        # light mode simply yields nothing.
+        self._scan_cochange_test_gaps(profile)
         # Confluence runs LAST: it reads only the now-finalized, fixture-filtered
         # family fields and counts how many DISTINCT families name each module.
         # In light mode the git/co-change families are simply absent, so only the
@@ -1227,6 +1238,36 @@ class ProjectProfiler:
             })
         out.sort(key=lambda d: (-d["family_count"], d["module"]))
         profile.confluence_modules = out[:5]
+
+    def _scan_cochange_test_gaps(self, profile: ProjectProfile) -> list[dict]:
+        """Co-change PAIRS that no single test exercises together — a test gap.
+
+        ``change_coupling`` already captures module pairs that frequently change
+        in the SAME commits (from git). When two modules co-change a lot but NO
+        single test file references BOTH, a change to one can silently break the
+        other with nothing to catch it — a grounded, high-value test gap. Reuses
+        ``change_coupling`` (git-only, EMPTY under ``light=True`` — so this yields
+        nothing in light mode, exactly like confluence) and the linker's
+        ``module_to_tests`` (no new scan). A pair has a "shared test" when some
+        test path appears in BOTH modules' linked-test lists; such pairs are
+        skipped. Deterministic: cochanges desc, then pair asc; capped at 5.
+        """
+        module_to_tests = profile.module_to_tests or {}
+        out: list[dict] = []
+        for entry in profile.change_coupling or []:
+            a, b = entry.get("a"), entry.get("b")
+            if not a or not b:
+                continue
+            if is_skipped(a) or is_skipped(b):
+                continue
+            tests_a = set(module_to_tests.get(a, []) or [])
+            tests_b = set(module_to_tests.get(b, []) or [])
+            if tests_a & tests_b:
+                continue  # a single test already exercises both — no gap
+            out.append({"a": a, "b": b, "cochanges": int(entry.get("commits", 0))})
+        out.sort(key=lambda d: (-d["cochanges"], d["a"], d["b"]))
+        profile.cochange_test_gaps = out[:5]
+        return profile.cochange_test_gaps
 
     def _scan_shallow_tests(self, module_to_tests: dict, limit: int | None = 5) -> list[str]:
         """Modules whose linked tests exist but assert no real behaviour (shallow).
