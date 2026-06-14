@@ -5,7 +5,7 @@
 ### A deterministic engineering agent that *reasons* about your codebase — and helps you act on it.
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-2100%2B%20passing-2ea44f)]()
+[![Tests](https://img.shields.io/badge/tests-3400%2B%20passing-2ea44f)]()
 [![Health grade](https://img.shields.io/badge/apex%20grade-A%2B%20(100)-2ea44f)]()
 [![No LLM required](https://img.shields.io/badge/LLM-optional%20·%20offline%20core-8957e5)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-24292f)](LICENSE)
@@ -69,6 +69,7 @@ flowchart LR
 | 📜 **Changelog** | Release notes **written from evidence, not memory**: commits since the last tag, verified fixes from the proof record, roadmap work that landed, the grade | `apex changelog` |
 | 💤 **Dream** | Nightly curator over Apex's own memory: extracts patterns, **discovers the project's own signal grammar** (open‑ended associations + confluences), narrates a **new/resolved flow** across nights, archives resolved briefs — deterministic, zero tokens | `apex dream` |
 | 📊 **Report** | One self‑contained HTML dashboard of everything above | `apex dashboard` |
+| 🎨 **Canvas** | Exports the dependency graph as a **JSONCanvas** (`.canvas`) — open it in Obsidian or any canvas tool and walk your project's structure as a map | `apex canvas` |
 
 Everything is **deterministic** (same input → same output) and **traceable** (every idea cites the concrete code fact that produced it). An optional LLM layer exists but is **off by default**.
 

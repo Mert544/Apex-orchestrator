@@ -1,12 +1,51 @@
 # Apex Autonomous Engineering Organism - Checkpoint
 
-**Date**: 2026-06-12
+**Date**: 2026-06-14
 **Commit**: branch `claude/apex-orchestrator-eZbJO`
-**Tests**: 1921+ passing ✅
-**Status**: Trust layer + multi-file refactoring + richer fact base shipped — see "Latest milestone" below
+**Tests**: 3400+ passing ✅
+**Status**: Self-measurement hardening + capability growth + team module — see "Latest milestone" below
 
-> Previous milestones: idea-engine+action-bridge (2026-05-30, 786 tests);
+> Previous milestones: trust layer + multi-file refactoring (2026-06-12, 1921 tests);
+> idea-engine+action-bridge (2026-05-30, 786 tests);
 > autonomy-safety-core (2026-04-25, 633 tests).
+
+---
+
+## Latest milestone: self-measurement truth + capability growth (2026-06-14)
+
+**Blind-spot class eliminated (and proven).** Apex was scanning its own
+`.claude/` agent worktrees — full repo COPIES — so tree-walks double-counted
+modules, collided test basenames, and (worst) the **health grade itself** was
+computed from worktree copies instead of real code (`.claude` sorts first, so a
+capped walk filled with copies). One canonical exclusion now governs every
+walk (`app/engine/skip_dirs.py`: `SKIPPED_DIRS` / `is_skipped` /
+`iter_source_files`); ~17 walkers route through it. Locked by regression tests:
+the grade is **byte-identical with 1145 worktree copies present and with zero** —
+worktree-immune. This is core differentiation: Apex measures correctly inside
+its own parallel-agent development environment, where naive tools silently skew.
+
+**Capability growth.** 32 develop objectives. New `dedup-total-return`
+(control-flow dedup: an exact-duplicate block whose every exit returns lifts into
+a shared helper). `dedup-parameterized` moved onto the fast board (near-dup scan
+~100s → ~1.8s). Dedup helpers and parameters now get **human-readable
+deterministic names** (`_generate_patch_skill`, not `_shared_1`).
+`extract-constant` skips idioms (`utf-8`, small ints) and names constants
+`CONTENT_TYPE`, not `CONST_X`. `extract-guard-clause` inverts membership/identity
+tests in place (no `not (a in b)`).
+
+**New capability — `apex canvas`.** Exports the dependency graph as a
+**JSONCanvas** (`.canvas`) for Obsidian / any canvas tool — Apex's deterministic
+structure as a navigable knowledge map.
+
+**Determinism + coverage.** Plugin discovery sorted; `python_structure` parse
+`except` narrowed (no silent module drops). `detectors.py` 91→100%,
+`idea_permutation.py` 94→99% coverage (+41 tests).
+
+**Development department.** The proven multi-agent process is a written module
+(`docs/development-team.md`): orchestrator + specialist agents (engineer /
+auditor / test-writer) in isolated worktrees, disjoint-file partitioning, the
+green gate (`scripts/verify.py`), agents-don't-push integration by cherry-pick,
+and the phantom-worktree rule.
 
 ---
 

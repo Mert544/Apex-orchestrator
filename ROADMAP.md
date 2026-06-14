@@ -7,6 +7,18 @@ and roadmap reasoning — Apex is a project-development assistant; security stay
 an integrated supporting signal.
 
 ## Now (shipped)
+- **Self-measurement truth** — one canonical tree-walk exclusion
+  (`app/engine/skip_dirs.py`) governs ~17 walkers; the health grade is now
+  **worktree-immune** (proven byte-identical with 1145 worktree copies present
+  vs zero), so Apex measures correctly inside its own parallel-agent dev
+  environment. Regression-tested.
+- **Capability growth** — 32 develop objectives; new `dedup-total-return`
+  (control-flow dedup), `dedup-parameterized` on the fast board, **human-readable
+  deterministic helper/constant names**, idiom-aware `extract-constant`.
+- **`apex canvas`** — exports the dependency graph as a **JSONCanvas** (`.canvas`)
+  for Obsidian / any canvas tool.
+- **Development department** — the multi-agent build process as a written module
+  (`docs/development-team.md`).
 - **Trust layer** — `proof-of-fix.json` evidence artifact (finding, diff, test
   run, rollback per fix), **coverage-aware verification strength** (does the
   green suite *name the changed function*, reference the module, or never look
