@@ -68,6 +68,95 @@ def test_collect_sites_covers_new_operator_families():
     assert "return:value>None" in ops
 
 
+def test_collect_sites_covers_membership_operators():
+    # ``in`` / ``not in`` membership flips are seeded as comparison sites.
+    src = (
+        "def f(x, allowed, banned):\n"
+        "    return x in allowed and x not in banned\n"
+    )
+    sites = _collect_sites(ast.parse(src), src.splitlines(keepends=True))
+    ops = [s.operator for s in sites]
+    assert "comparison:in>not in" in ops
+    assert "comparison:not in>in" in ops
+
+
+def test_collect_sites_membership_splices_exactly():
+    # The located span maps to a precise, re-parseable mutant for both
+    # directions, leaving the rest of the line byte-for-byte intact.
+    from app.engine.mutation_tester import _splice
+    src = "ok = x in allowed\n"
+    lines = src.splitlines(keepends=True)
+    sites = [s for s in _collect_sites(ast.parse(src), lines)
+             if s.operator.startswith("comparison:in")]
+    assert len(sites) == 1
+    assert _splice(lines, sites[0]) == "ok = x not in allowed\n"
+
+    src2 = "ok = x not in banned\n"
+    lines2 = src2.splitlines(keepends=True)
+    sites2 = [s for s in _collect_sites(ast.parse(src2), lines2)
+              if s.operator == "comparison:not in>in"]
+    assert len(sites2) == 1
+    assert _splice(lines2, sites2[0]) == "ok = x in banned\n"
+
+
+def test_collect_sites_membership_ignores_in_inside_identifier():
+    # An ``in`` substring inside an identifier (``points``) must not be mutated
+    # — only the real membership operator token in the operator gap is found.
+    src = "ok = x in points\n"
+    lines = src.splitlines(keepends=True)
+    sites = [s for s in _collect_sites(ast.parse(src), lines)
+             if s.operator.startswith("comparison:in")]
+    assert len(sites) == 1
+    assert sites[0].original == "in"
+    assert sites[0].col == 7 and sites[0].end_col == 9
+
+
+def test_collect_sites_covers_boundary_operators():
+    # Relational boundary flips (``<`` <-> ``<=`` etc.) are seeded ALONGSIDE the
+    # negation comparison flips for the same token, each with its own label.
+    src = (
+        "def f(x, n):\n"
+        "    return x < n and n >= 0\n"
+    )
+    sites = _collect_sites(ast.parse(src), src.splitlines(keepends=True))
+    ops = [s.operator for s in sites]
+    # Boundary (off-by-one) flips.
+    assert "boundary:<><=" in ops
+    assert "boundary:>=>>" in ops
+    # The existing negation flips for the same tokens still appear too.
+    assert "comparison:<>>=" in ops
+    assert "comparison:>=><" in ops
+
+
+def test_collect_sites_boundary_splices_exactly():
+    # Each boundary direction yields a precise, re-parseable mutant, leaving the
+    # rest of the line byte-for-byte intact.
+    from app.engine.mutation_tester import _splice
+    cases = {
+        "ok = a < b\n": ("boundary:<><=", "ok = a <= b\n"),
+        "ok = a <= b\n": ("boundary:<=><", "ok = a < b\n"),
+        "ok = a > b\n": ("boundary:>>>=", "ok = a >= b\n"),
+        "ok = a >= b\n": ("boundary:>=>>", "ok = a > b\n"),
+    }
+    for src, (op, expected) in cases.items():
+        lines = src.splitlines(keepends=True)
+        sites = [s for s in _collect_sites(ast.parse(src), lines)
+                 if s.operator == op]
+        assert len(sites) == 1, (src, op)
+        assert _splice(lines, sites[0]) == expected
+
+
+def test_collect_sites_boundary_and_negation_distinct_sites():
+    # The same ``<`` token must produce TWO distinct sites (boundary + negation)
+    # with different mutated text — proving they never collide.
+    src = "ok = a < b\n"
+    lines = src.splitlines(keepends=True)
+    sites = [s for s in _collect_sites(ast.parse(src), lines)
+             if s.original == "<"]
+    by_op = {s.operator: s.mutated for s in sites}
+    assert by_op == {"boundary:<><=": "<=", "comparison:<>>=": ">="}
+
+
 def test_collect_sites_number_mutates_to_n_plus_one():
     src = "x = 41\n"
     sites = _collect_sites(ast.parse(src), src.splitlines(keepends=True))
@@ -252,6 +341,118 @@ def test_augmented_assign_mutant_generated(tmp_path):
     assert "augassign:+=>-=" in all_ops
     # The strong test (3 != -3) kills the ``+= -> -=`` flip.
     assert not any(m.operator == "augassign:+=>-=" for m in result.survivors)
+
+
+_MEMBER_MODULE_SRC = '''\
+def is_allowed(x, allowed):
+    return x in allowed
+'''
+
+
+def test_membership_mutant_killed_by_strong_test(tmp_path):
+    # A suite that pins both an in-set and an out-of-set case catches the
+    # ``in -> not in`` flip.
+    test_src = (
+        "from mod import is_allowed\n"
+        "def test_member():\n"
+        "    assert is_allowed(1, [1, 2]) is True\n"
+        "    assert is_allowed(9, [1, 2]) is False\n"
+    )
+    rel = _write_project(tmp_path, _MEMBER_MODULE_SRC, test_src)
+    result = mutation_score(str(tmp_path), rel, max_mutants=10)
+    all_ops = {m.operator for m in _mutants_of(result, str(tmp_path), rel)}
+    assert "comparison:in>not in" in all_ops
+    assert not any(m.operator == "comparison:in>not in" for m in result.survivors)
+
+
+def test_membership_mutant_survives_weak_test(tmp_path):
+    # A suite that only checks the in-set case never observes the inverted
+    # membership test, so the ``in -> not in`` mutant survives. The assertion
+    # only checks the result is a bool (truthy/``is not None``), which holds for
+    # both ``in`` and ``not in``, so the flip is never observed.
+    test_src = (
+        "from mod import is_allowed\n"
+        "def test_member():\n"
+        "    assert is_allowed(1, [1, 2]) is not None\n"
+    )
+    rel = _write_project(tmp_path, _MEMBER_MODULE_SRC, test_src)
+    result = mutation_score(str(tmp_path), rel, max_mutants=10)
+    survivor_ops = {m.operator for m in result.survivors}
+    assert "comparison:in>not in" in survivor_ops
+
+
+def test_membership_determinism_two_runs_identical(tmp_path):
+    # A module exercising both membership directions must produce
+    # byte-identical results across two runs.
+    module_src = (
+        "def gate(x, allowed, banned):\n"
+        "    return x in allowed and x not in banned\n"
+    )
+    test_src = (
+        "from mod import gate\n"
+        "def test_gate():\n"
+        "    assert gate(1, [1], [2]) is True\n"
+    )
+    rel = _write_project(tmp_path, module_src, test_src)
+    a = mutation_score(str(tmp_path), rel, max_mutants=20).to_dict()
+    b = mutation_score(str(tmp_path), rel, max_mutants=20).to_dict()
+    assert a == b
+
+
+_BOUNDARY_MODULE_SRC = '''\
+def below(x):
+    return x < 10
+'''
+
+
+def test_boundary_mutant_killed_by_edge_test(tmp_path):
+    # A suite that pins the BOUNDARY value (x == 10) catches the ``< -> <=``
+    # off-by-one flip: under the mutant ``below(10)`` flips from False to True.
+    test_src = (
+        "from mod import below\n"
+        "def test_edge():\n"
+        "    assert below(9) is True\n"
+        "    assert below(10) is False\n"
+    )
+    rel = _write_project(tmp_path, _BOUNDARY_MODULE_SRC, test_src)
+    result = mutation_score(str(tmp_path), rel, max_mutants=10)
+    all_ops = {m.operator for m in _mutants_of(result, str(tmp_path), rel)}
+    assert "boundary:<><=" in all_ops
+    assert not any(m.operator == "boundary:<><=" for m in result.survivors)
+
+
+def test_boundary_mutant_survives_off_by_one_blind_test(tmp_path):
+    # A suite that never probes the boundary value (only x=5, x=20) is blind to
+    # ``< -> <=``: both operators agree away from the edge, so the mutant
+    # survives — exactly the off-by-one gap this operator is designed to expose.
+    test_src = (
+        "from mod import below\n"
+        "def test_blind():\n"
+        "    assert below(5) is True\n"
+        "    assert below(20) is False\n"
+    )
+    rel = _write_project(tmp_path, _BOUNDARY_MODULE_SRC, test_src)
+    result = mutation_score(str(tmp_path), rel, max_mutants=10)
+    survivor_ops = {m.operator for m in result.survivors}
+    assert "boundary:<><=" in survivor_ops
+
+
+def test_boundary_determinism_two_runs_identical(tmp_path):
+    # A module exercising several relational boundaries must produce
+    # byte-identical results across two runs (fixed operator + document order).
+    module_src = (
+        "def gate(x, y):\n"
+        "    return x < 10 and y >= 0 or x <= 5 and y > 1\n"
+    )
+    test_src = (
+        "from mod import gate\n"
+        "def test_gate():\n"
+        "    assert gate(1, 0) is True\n"
+    )
+    rel = _write_project(tmp_path, module_src, test_src)
+    a = mutation_score(str(tmp_path), rel, max_mutants=30).to_dict()
+    b = mutation_score(str(tmp_path), rel, max_mutants=30).to_dict()
+    assert a == b
 
 
 def _mutants_of(result, root, rel):

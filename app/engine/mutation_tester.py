@@ -4,8 +4,10 @@ This is a multi-oracle "definition-of-done" measure: instead of asking whether
 the code passes its tests, it asks whether the *tests* would notice if the code
 broke. We seed tiny artificial faults ("mutants") into one target module — flip
 a ``==`` to ``!=``, a ``+`` to ``-``, ``and`` to ``or``, ``True`` to ``False``,
-a number ``n`` to ``n + 1``, a ``return <expr>`` to ``return None``, or a
-``+=`` to ``-=`` — then run the project's existing test suite against each
+a number ``n`` to ``n + 1``, a ``return <expr>`` to ``return None``, a
+``+=`` to ``-=``, a membership ``in`` to ``not in``, or a relational boundary
+``<`` to ``<=`` (off-by-one) — then run the project's
+existing test suite against each
 mutant in an isolated
 copy of the tree. A mutant the suite FAILS on is *killed* (the tests caught the
 bug); a mutant the suite still PASSES on *survived* (the tests are blind there).
@@ -55,6 +57,32 @@ _COMPARE_FLIPS: dict[type, tuple[str, str]] = {
     ast.LtE: ("<=", ">"),
     ast.Is: ("is", "is not"),
     ast.IsNot: ("is not", "is"),
+    # Membership flips — catch tests blind to inclusion-vs-exclusion logic
+    # (``x in allowed`` vs ``x not in allowed``). Both tokens live in the gap
+    # between the left operand and the comparator, so the same gap-bounded
+    # ``_op_span`` search that already handles ``is``/``is not`` locates them
+    # exactly, never matching an ``in`` that sits inside an identifier (those
+    # live inside operand spans, not the operator gap).
+    ast.In: ("in", "not in"),
+    ast.NotIn: ("not in", "in"),
+}
+
+# Comparison BOUNDARY flips — a *different fault class* from the negation flips
+# above. Here we slide the relational operator across its boundary by one
+# (``<`` <-> ``<=``, ``>`` <-> ``>=``) without negating it. This catches the
+# classic off-by-one blind spot: a test that only exercises values strictly
+# inside (or strictly outside) a range never notices whether the boundary value
+# itself is included, so ``x < n`` vs ``x <= n`` looks identical to it. The
+# negation flips above (``<`` -> ``>=``) do NOT cover this — they invert the
+# relation, which a boundary value alone may still distinguish, whereas the
+# boundary flip changes ONLY the inclusivity at the edge. Both sites are seeded
+# for the same token; they carry distinct ``boundary:``/``comparison:`` labels
+# so the operator set never collides and stays deterministic.
+_COMPARE_BOUNDARY_FLIPS: dict[type, tuple[str, str]] = {
+    ast.Lt: ("<", "<="),
+    ast.LtE: ("<=", "<"),
+    ast.Gt: (">", ">="),
+    ast.GtE: (">=", ">"),
 }
 
 # Arithmetic-operator flips on ``ast.BinOp``.
@@ -186,6 +214,20 @@ def _collect_sites(tree: ast.Module, source_lines: list[str]) -> list[_Site]:
                             line=node.lineno, col=span[0], end_col=span[1],
                             operator=f"comparison:{written}>{replacement}",
                             original=written, mutated=replacement,
+                        ))
+                # Boundary flip on the SAME operator token (relational ops only):
+                # ``<`` -> ``<=`` etc. A distinct fault class and a distinct
+                # label, so it coexists with the negation flip above for the
+                # same span without collision.
+                boundary = _COMPARE_BOUNDARY_FLIPS.get(type(op))
+                if boundary is not None:
+                    b_written, b_replacement = boundary
+                    b_span = _op_span(line, search_from, b_written)
+                    if b_span is not None and b_span[1] <= comp_end and b_span[1] <= len(line):
+                        sites.append(_Site(
+                            line=node.lineno, col=b_span[0], end_col=b_span[1],
+                            operator=f"boundary:{b_written}>{b_replacement}",
+                            original=b_written, mutated=b_replacement,
                         ))
                 search_from = comparator.end_col_offset or comp_end
 
