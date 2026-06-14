@@ -99,9 +99,9 @@ def _walk_value_leaves(
 def _block_value_leaves(statements: list[ast.stmt]) -> list[tuple[str, ast.AST]]:
     """Sorted ``(path, node)`` value leaves for a run of statements.
 
-    Sorted by ``path`` so the column order matches near_dup's
-    ``_block_template`` (which sorts its wildcard dict the same way), making the
-    columns line up with :attr:`NearDuplicateGroup.differences`."""
+    Sorted by ``path`` so the column order matches near_dup's statement-fragment
+    templating (which sorts its wildcard leaves the same way), making the columns
+    line up with :attr:`NearDuplicateGroup.differences`."""
     out: list[tuple[str, ast.AST]] = []
     for i, stmt in enumerate(statements):
         _walk_value_leaves(stmt, f"s{i}", out)

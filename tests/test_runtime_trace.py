@@ -155,24 +155,43 @@ def test_deadcode_annotates_runtime_confirmed(tmp_path: Path):
     assert ghost["runtime"] == "static-only"
 
 
-def test_deadcode_refuted_when_def_line_runs(tmp_path: Path):
+def test_deadcode_refuted_when_body_line_runs(tmp_path: Path):
     root = _proj(tmp_path)
     rows_no = find_dead_code(str(root))
     ghost = next(r for r in rows_no if r["symbol"] == "ghost")
-    abs_path = str(root / ghost["module"])
-    ev = RuntimeEvidence(executed=frozenset({(os.path.realpath(abs_path), ghost["line"])}))
+    abs_path = os.path.realpath(str(root / ghost["module"]))
+    # The function BODY (def line + 1 -> ``return 2``) actually ran: the symbol
+    # is genuinely used at runtime, so the static dead-code guess is refuted.
+    ev = RuntimeEvidence(executed=frozenset({(abs_path, ghost["line"] + 1)}))
     rows = find_dead_code(str(root), evidence=ev)
     ghost2 = next(r for r in rows if r["symbol"] == "ghost")
     assert ghost2["runtime"] == "refuted"
 
 
-def test_deadcode_runtime_confirmed_when_file_loaded_but_def_not(tmp_path: Path):
+def test_deadcode_runtime_confirmed_when_def_runs_but_body_does_not(tmp_path: Path):
     root = _proj(tmp_path)
     rows_no = find_dead_code(str(root))
     ghost = next(r for r in rows_no if r["symbol"] == "ghost")
     abs_path = os.path.realpath(str(root / ghost["module"]))
-    # Some OTHER line of the file ran, but not the def line.
-    ev = RuntimeEvidence(executed=frozenset({(abs_path, ghost["line"] + 1)}))
+    # Only the def line ran (that happens at *import* even for dead code); the
+    # body never executed. Importing a module is not using its functions, so the
+    # dead finding stands -> runtime-confirmed (this is the honest signal: an
+    # LLM, and a naive def-line check, would wrongly call this "used").
+    ev = RuntimeEvidence(executed=frozenset({(abs_path, ghost["line"])}))
     rows = find_dead_code(str(root), evidence=ev)
     ghost2 = next(r for r in rows if r["symbol"] == "ghost")
     assert ghost2["runtime"] == "runtime-confirmed"
+
+
+def test_confirm_findings_keys_on_body_not_def_line(tmp_path: Path):
+    # Direct unit check of the body-line rule that powers the integration above.
+    f = _write_sample(tmp_path)
+    abs_f = os.path.realpath(str(f))
+    finding = StaticFinding(path=str(f), lineno=4, symbol="never_called",
+                            body_lines=frozenset({5}))
+    # Only the def line (4) ran -> not refuted; the body (5) never ran.
+    [res] = confirm_findings([finding], RuntimeEvidence(executed=frozenset({(abs_f, 4)})))
+    assert res.confidence == "runtime-confirmed"
+    # The body line (5) ran -> refuted.
+    [res2] = confirm_findings([finding], RuntimeEvidence(executed=frozenset({(abs_f, 5)})))
+    assert res2.confidence == "refuted"

@@ -199,6 +199,9 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 f"({best['samples']} samples) — I weight that in._\n"
             )
     except Exception:
+        # Best-effort enrichment only: a missing/corrupt memory ledger or an
+        # unexpected summary shape must never break the brief — we simply omit
+        # the "what I've learned" line rather than fail the whole command.
         pass
     emit_json = getattr(args, "json", False)
     if not emit_json:

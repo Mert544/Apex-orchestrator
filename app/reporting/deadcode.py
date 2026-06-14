@@ -79,9 +79,35 @@ def _collect_references(tree: ast.Module) -> tuple[set[str], set[str]]:
     return refs, exports
 
 
-def _candidates(tree: ast.Module) -> list[tuple[str, str, int]]:
-    """Module-level (name, kind, lineno) defs that could be dead, conservatively."""
-    out: list[tuple[str, str, int]] = []
+def _use_only_lines(node: ast.AST) -> frozenset[int]:
+    """Line numbers that run only when the symbol is *exercised* — the honest
+    runtime signal of deadness (see :func:`app.engine.runtime_trace.confirm_findings`).
+
+    For a function: every line inside its body (those run only on call). For a
+    class: the lines inside its *method bodies* only — a class's def header and
+    its class-level statements (method ``def`` lines, class vars) run at import
+    even if the class is never used, so they are excluded.
+    """
+    lines: set[int] = set()
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        for stmt in node.body:
+            for sub in ast.walk(stmt):
+                if hasattr(sub, "lineno"):
+                    lines.add(sub.lineno)
+    elif isinstance(node, ast.ClassDef):
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for stmt in item.body:
+                    for sub in ast.walk(stmt):
+                        if hasattr(sub, "lineno"):
+                            lines.add(sub.lineno)
+    return frozenset(lines)
+
+
+def _candidates(tree: ast.Module) -> list[tuple[str, str, int, frozenset[int]]]:
+    """Module-level (name, kind, lineno, use-only body lines) defs that could be
+    dead, conservatively."""
+    out: list[tuple[str, str, int, frozenset[int]]] = []
     for node in tree.body:  # top-level only
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
@@ -93,7 +119,7 @@ def _candidates(tree: ast.Module) -> list[tuple[str, str, int]]:
         if name in ("main",) or name.startswith("test_"):
             continue
         kind = "class" if isinstance(node, ast.ClassDef) else "function"
-        out.append((name, kind, node.lineno))
+        out.append((name, kind, node.lineno, _use_only_lines(node)))
     return out
 
 
@@ -128,10 +154,11 @@ def find_dead_code(
         exported |= exports
 
     dead: list[dict[str, Any]] = []
+    body_by_key: dict[tuple[str, str, int], frozenset[int]] = {}
     for rel, tree in parsed.items():
         if _is_excluded_candidate(rel):
             continue
-        for name, kind, lineno in _candidates(tree):
+        for name, kind, lineno, body_lines in _candidates(tree):
             if name in referenced or name in exported:
                 continue
             # A private (underscore-prefixed) symbol that nothing references is
@@ -141,6 +168,7 @@ def find_dead_code(
             confidence = "high" if name.startswith("_") else "review"
             dead.append({"module": rel, "symbol": name, "kind": kind,
                          "line": lineno, "confidence": confidence})
+            body_by_key[(rel, name, lineno)] = body_lines
     # High-confidence (private) findings first — they're the safe, actionable ones.
     dead.sort(key=lambda d: (0 if d["confidence"] == "high" else 1, d["module"], d["line"]))
     dead = dead[:limit]
@@ -150,7 +178,8 @@ def find_dead_code(
         # path so it lines up with the traced (absolute) filenames.
         findings = [
             StaticFinding(path=str(root / d["module"]),
-                          lineno=d["line"], symbol=d["symbol"])
+                          lineno=d["line"], symbol=d["symbol"],
+                          body_lines=body_by_key[(d["module"], d["symbol"], d["line"])])
             for d in dead
         ]
         by_key = {

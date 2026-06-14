@@ -69,11 +69,20 @@ class StaticFindingLike(Protocol):
 
 @dataclass(frozen=True)
 class StaticFinding:
-    """A static finding to be confirmed/refuted: a symbol at ``path``:``lineno``."""
+    """A static finding to be confirmed/refuted: a symbol at ``path``:``lineno``.
+
+    ``body_lines`` is the optional set of the symbol's *use-only* line numbers —
+    lines that run only when the symbol is actually exercised (a function's body
+    statements, a class's method bodies), NOT the ``def``/``class`` header or
+    class-level statements, which run at import even for never-used symbols. When
+    supplied, :func:`confirm_findings` keys on these instead of the def line,
+    which is the only honest runtime signal of deadness (see that function).
+    """
 
     path: str
     lineno: int
     symbol: str
+    body_lines: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -81,12 +90,12 @@ class ConfirmedFinding:
     """A static finding annotated with runtime ``confidence``.
 
     ``confidence`` is one of:
-      - ``"runtime-confirmed"`` — the file ran under the evidence but this def
-        line never did (static finding strengthened);
-      - ``"refuted"`` — the def line executed (the symbol *is* used at runtime;
-        the static finding is a false positive);
-      - ``"static-only"`` — no runtime evidence exists for the file at all, so
-        runtime can neither confirm nor refute.
+      - ``"runtime-confirmed"`` — the file ran under the evidence but the
+        symbol's use-only body never did (static finding strengthened);
+      - ``"refuted"`` — the symbol's body executed (it *is* used at runtime; the
+        static finding is a false positive);
+      - ``"static-only"`` — no runtime evidence for the file (or no use-only
+        body lines to observe), so runtime can neither confirm nor refute.
     """
 
     path: str
@@ -128,10 +137,16 @@ def confirm_findings(
 ) -> list[ConfirmedFinding]:
     """Annotate each static finding with a runtime ``confidence`` label.
 
-    Labelling rules (crisp, per finding):
-      - the def line executed                       -> ``"refuted"``
-      - the file has evidence but this line did not -> ``"runtime-confirmed"``
-      - the file has no evidence at all             -> ``"static-only"``
+    The honest signal of deadness is whether the symbol's *use-only* body ran —
+    NOT its ``def`` line. A ``def``/``class`` header (and a class's body) runs at
+    import even for a never-used symbol, so keying on the def line would label
+    *everything* in an imported module ``"refuted"``. When a finding carries
+    ``body_lines`` (the lines that run only on use), we key on those:
+      - any body line executed                          -> ``"refuted"``
+      - the file ran but no body line did               -> ``"runtime-confirmed"``
+      - the file has no evidence (or no body lines)      -> ``"static-only"``
+    A finding with no ``body_lines`` falls back to the def-line rule (best a
+    generic caller can do without body information).
 
     Pure and deterministic: outputs are sorted by ``(path, lineno, symbol)`` and
     paths in the result are the findings' original (un-normalised) values.
@@ -139,7 +154,15 @@ def confirm_findings(
     out: list[ConfirmedFinding] = []
     for f in findings:
         path, lineno, symbol = f.path, f.lineno, f.symbol
-        if evidence.was_executed(path, lineno):
+        body_lines = getattr(f, "body_lines", None) or frozenset()
+        if body_lines:
+            if any(evidence.was_executed(path, ln) for ln in body_lines):
+                confidence = "refuted"
+            elif evidence.has_evidence_for(path):
+                confidence = "runtime-confirmed"
+            else:
+                confidence = "static-only"
+        elif evidence.was_executed(path, lineno):
             confidence = "refuted"
         elif evidence.has_evidence_for(path):
             confidence = "runtime-confirmed"

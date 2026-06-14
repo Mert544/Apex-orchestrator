@@ -86,8 +86,9 @@ an integrated supporting signal.
 > layer** (BS-2 is deferred — it works against the positioning).
 > Run it as a team (army): `apex partition` to plan disjoint work, worktree
 > agents + a standing auditor per wave, `scripts/merge_train.py` to integrate,
-> one green gate. Dogfood hygiene alongside: one dead symbol
-> (`_block_template` in `app/engine/near_dup.py`) and ~6 `except: pass` to audit.
+> one green gate. Dogfood hygiene runs alongside each wave (e.g. the dead
+> `_block_template` symbol removed and the one broad-silent `except` in
+> `cli_autonomy` justified — most silent passes are legitimate best-effort).
 
 1. **Refactor family growth** on the span-edit machinery: signature change
    with call-site update; `apex rename --from-idea` (the engine proposes the

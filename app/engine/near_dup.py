@@ -196,23 +196,6 @@ def _walk_template(
     out.append(")")
 
 
-def _block_template(
-    statements: list[ast.stmt], lines: list[str]
-) -> tuple[str, list[tuple[str, str]]]:
-    """Template string + sorted ``(path, segment)`` wildcards for a window of stmts.
-
-    ``lines`` is the source pre-split via :func:`_split_source_lines` (segment
-    extraction slices it in O(1) instead of re-splitting the source per leaf)."""
-    out: list[str] = []
-    wildcards: dict[str, str] = {}
-    for i, stmt in enumerate(statements):
-        _walk_template(stmt, lines, f"s{i}", out, wildcards)
-        out.append("|")
-    template = "".join(out)
-    ordered = sorted(wildcards.items())
-    return template, ordered
-
-
 def _statement_fragment(
     stmt: ast.stmt, lines: list[str]
 ) -> tuple[str, list[tuple[str, str]]]:
@@ -222,10 +205,10 @@ def _statement_fragment(
 
     The walk uses an empty root path, so subpaths are relative to the statement
     (``.field[i]…``, or ``""`` for a root leaf). A window at index ``i`` prefixes
-    them with ``s{i}`` to recover the exact path :func:`_block_template` produced —
-    and the fragment STRING is path-independent (``_walk_template`` never writes
-    the path into the template), so concatenating fragments is identical to
-    templating the whole window."""
+    them with ``s{i}`` to recover the exact per-window wildcard path — and the
+    fragment STRING is path-independent (``_walk_template`` never writes the path
+    into the template), so concatenating fragments is identical to templating the
+    whole window."""
     out: list[str] = []
     wildcards: dict[str, str] = {}
     _walk_template(stmt, lines, "", out, wildcards)
