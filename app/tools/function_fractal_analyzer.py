@@ -68,8 +68,22 @@ class FunctionFractalAnalyzer:
         results = []
         module_name = self._module_name_from_path(path)
 
+        # Methods (direct children of a class) are emitted by the ClassDef branch
+        # below with their class-qualified name. Collect them so the ast.walk loop
+        # — which yields EVERY FunctionDef at any depth — doesn't ALSO emit them
+        # as bare-name duplicates (the double-count that inflated functions_analyzed
+        # and the security-audit risk counts).
+        class_methods = {
+            item
+            for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
+            for item in cls.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node in class_methods:
+                    continue  # handled, class-qualified, by the ClassDef branch
                 fn_info = self._analyze_function(node, module_name, source)
                 results.append(fn_info)
             elif isinstance(node, ast.ClassDef):

@@ -273,3 +273,25 @@ def test_purity_dimension_is_deterministic(tmp_path: Path):
     assert first == second
     assert first[0]["purity"] == "impure"
     assert first[0]["side_effects"] == ["module:logging"]
+
+
+def test_class_methods_are_not_double_counted(tmp_path):
+    # A method must be emitted ONCE (class-qualified), not also as a bare-name
+    # duplicate via the ast.walk loop — the double-count that inflated
+    # functions_analyzed and the security-audit risk tallies.
+    p = tmp_path / "m.py"
+    p.write_text(
+        "class C:\n"
+        "    def method(self):\n"
+        "        return 1\n"
+        "    async def amethod(self):\n"
+        "        return 2\n"
+        "def top():\n"
+        "    return 3\n",
+        encoding="utf-8",
+    )
+    from app.tools.function_fractal_analyzer import FunctionFractalAnalyzer
+    names = [r["name"] for r in FunctionFractalAnalyzer().analyze_file(p)]
+    assert sorted(names) == ["C.amethod", "C.method", "top"]
+    assert "method" not in names and "amethod" not in names  # no bare duplicate
+    assert len(names) == len(set(names))  # each function exactly once
