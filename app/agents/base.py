@@ -105,7 +105,7 @@ class Agent:
         self.state = AgentState.PAUSED
 
     def resume(self) -> None:
-        if not (self.state == AgentState.PAUSED):
+        if self.state != AgentState.PAUSED:
             return
         self.state = AgentState.RUNNING
 

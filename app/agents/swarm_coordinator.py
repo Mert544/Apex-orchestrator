@@ -154,7 +154,7 @@ class SwarmCoordinator:
 
     def _handle_scan_complete(self, agent: Agent, msg: AgentMessage) -> None:
         """Trigger agent run when scan completes."""
-        if not (agent.state == AgentState.IDLE):
+        if agent.state != AgentState.IDLE:
             return
         project_root = msg.payload.get("project_root", ".")
         result = agent.run(project_root=project_root)
