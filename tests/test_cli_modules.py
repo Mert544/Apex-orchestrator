@@ -10,6 +10,7 @@ import app.cli_plugins
 import app.cli_reporting
 import app.cli_refactor
 import app.cli_review
+import app.cli_viz
 from app import cli
 from app.cli_common import _get_project_root
 
@@ -90,7 +91,8 @@ def test_family_parser_registration_covers_every_command():
     parser = argparse.ArgumentParser(prog="apex")
     sub = parser.add_subparsers(dest="command")
     for mod in (app.cli_autonomy, app.cli_insight, app.cli_ideate, app.cli_review,
-                app.cli_refactor, app.cli_ops, app.cli_reporting, app.cli_plugins):
+                app.cli_refactor, app.cli_ops, app.cli_reporting, app.cli_plugins,
+                app.cli_viz):
         mod.register_parsers(sub)
     cli._register_local_parsers(sub)
 
