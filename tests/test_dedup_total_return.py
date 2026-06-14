@@ -559,3 +559,73 @@ def test_unreadable_module_blocks(tmp_path):
     plan = plan_dedup_total_return(tmp_path, block)
     assert not plan.ok
     assert any("cannot read" in b for b in plan.blockers)
+
+
+# ── regression (H4): same-file copy ABOVE the first-in-emit-order container ──
+
+# Identical 3-statement TOTAL-RETURN block (`a = x + 1` / `b = a + 2` /
+# `return a + b`) in two functions of ONE file: `bar` is TOPMOST and IS the
+# block; `foo` is at the bottom and carries one REACHABLE leading statement
+# (`s0 = x + 100`) before its copy of the block. The emit order handed to the
+# planner is [foo, bar] (foo first), so `first = resolved[0]` is `foo` — first
+# in EMIT order but NOT topmost in the file. `bar`'s copy sits ABOVE foo's
+# container, so the bottom-up rewrite of bar's span (3 lines → 1) shrinks the
+# buffer above foo's `def`. The old code inserted the helper at the ORIGINAL
+# `container.lineno - 1`, an over-count that dropped `def _shared_n` INSIDE
+# foo's body — between `s0 = ...` and the `return _shared_n(...)` call — so
+# foo's call became unreachable (it returned None) yet the module still
+# re-parsed, slipping past the re-parse guard. The fix rebases the anchor by
+# the net line-delta of every replacement above it.
+_ABOVE_CONTAINER_TR = '''\
+def bar(x):
+    a = x + 1
+    b = a + 2
+    return a + b
+
+
+def foo(x):
+    s0 = x + 100
+    a = x + 1
+    b = a + 2
+    return a + b
+'''
+
+
+def test_same_file_copy_above_container_inserts_helper_at_module_level(tmp_path):
+    _write(tmp_path, "mod.py", _ABOVE_CONTAINER_TR)
+    # bar's block first stmt is line 2 (topmost); foo's block first stmt (`a`)
+    # is line 9 (bottom). Hand the planner emit order [foo, bar] so `first` is
+    # the BOTTOM function and bar's copy sits above its container.
+    block = DuplicateBlock(fingerprint="x", lines=3,
+                           occurrences=["mod.py:9", "mod.py:2"])
+    plan = plan_dedup_total_return(tmp_path, block)
+    assert plan.ok, f"expected a clean plan, blockers={plan.blockers}"
+    new_src = plan.new_contents["mod.py"]
+
+    # Re-parses (the OLD broken output also re-parsed — that is the point), and
+    # the helper is at MODULE level, not nested inside foo.
+    tree = ast.parse(new_src)
+    helper = plan.new
+    top_defs = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
+    assert helper in top_defs, (
+        f"helper must be a top-level def, not nested; module defs={top_defs}\n"
+        f"--- emitted ---\n{new_src}")
+    # No nested function definitions anywhere — the helper never landed in a body.
+    for fn in tree.body:
+        if isinstance(fn, ast.FunctionDef):
+            assert not any(isinstance(n, ast.FunctionDef)
+                           for n in ast.walk(fn) if n is not fn), (
+                f"a function ended up nested inside {fn.name}:\n{new_src}")
+    # Each surviving call site is a `return _shared_n(...)`.
+    assert new_src.count(f"return {helper}(") == 2
+
+    # Exec-equivalence: original and rewritten module compute the SAME outputs.
+    before = _exec_module(_ABOVE_CONTAINER_TR)
+    after = _exec_module(new_src)
+    for x in (-5, 0, 10, 33):
+        assert before["foo"](x) == after["foo"](x), (
+            f"foo lost behaviour at x={x}: {before['foo'](x)} != {after['foo'](x)}")
+        assert before["bar"](x) == after["bar"](x)
+    # Concretely: foo reaches its `return a + b` (the old bug returned None).
+    assert after["foo"](10) == 24
+    assert after["bar"](10) == 24

@@ -304,12 +304,25 @@ def plan_dedup_total_return(project_root: str | Path, block) -> RenamePlan:
             lines[occ.span_lo - 1:occ.span_hi] = [_call_line(indent)]
 
         if rel == first.rel:
-            # Insert the helper above the first occurrence's container.
+            # Insert the helper above the first occurrence's container. The
+            # anchor is an ORIGINAL-tree line number, but the bottom-up
+            # replacements above just collapsed each copy's span (hi-lo+1 lines)
+            # to ONE call line, shrinking the buffer. `first` is first in EMIT
+            # order, NOT topmost in the file, so a copy may sit ABOVE this
+            # container; rebase the anchor by the net line-delta of every
+            # replacement whose span ends above it, or the def lands inside an
+            # earlier function's body (the same above/below partition
+            # inline_function uses so splice and deletions don't interfere).
             container = first.container
-            insert_at = min(
+            anchor = min(
                 [container.lineno]
                 + [d.lineno for d in getattr(container, "decorator_list", [])]
-            ) - 1
+            )
+            delta_above = sum(
+                1 - (o.span_hi - o.span_lo + 1)
+                for o in occs if o.span_hi < anchor
+            )
+            insert_at = anchor - 1 + delta_above
             lines[insert_at:insert_at] = [helper_block]
         else:
             # Another module: import the helper at the top (after __future__).

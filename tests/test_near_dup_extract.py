@@ -662,3 +662,71 @@ def test_constant_holes_keep_neutral_param_fallback(tmp_path):
     helper = plan.new
     first_src = plan.new_contents[plan.defined_in]
     assert f"def {helper}(n, p0):" in first_src
+
+
+# ── regression (H4): same-file copy ABOVE the first-in-emit-order container ──
+
+# Identical 3-statement near-duplicate block (differing in ONE constant) in two
+# functions of ONE file: `bar` is TOPMOST, `foo` is at the bottom. The group is
+# built with emit order [foo, bar] (foo first), so `first = resolved[0]` is
+# `foo` — first in EMIT order but NOT topmost. `bar`'s copy sits ABOVE foo's
+# container, so the bottom-up rewrite of bar's span (3 lines → 1) shrinks the
+# buffer above foo's `def`. The old code inserted the helper at the ORIGINAL
+# `container.lineno - 1`, an over-count that dropped `def _shared_n` INSIDE
+# foo's body and silently sheared off foo's trailing statements — yet it still
+# re-parsed. The fix rebases the anchor by the net line-delta above it.
+_ABOVE_CONTAINER_ND = '''\
+def bar(x):
+    a = x + 1
+    b = a * 2
+    c = b + 100
+    return c
+
+
+def foo(x):
+    a = x + 1
+    b = a * 2
+    c = b + 5
+    return c
+'''
+
+
+def test_same_file_copy_above_container_inserts_helper_at_module_level(tmp_path):
+    _write(tmp_path, "mod.py", _ABOVE_CONTAINER_ND)
+    # bar's block first stmt is line 2 (topmost); foo's is line 9 (bottom). Hand
+    # the planner emit order [foo, bar] so `first` is the BOTTOM function. The
+    # `differences` column is parallel to occurrences: foo's const is 5, bar's 100.
+    group = NearDuplicateGroup(occurrences=["mod.py:9", "mod.py:2"], lines=3,
+                               diff_count=1, differences=[["5", "100"]])
+    plan = plan_near_dup_extract(tmp_path, group)
+    assert plan.ok, f"expected a clean plan, blockers={plan.blockers}"
+    new_src = plan.new_contents["mod.py"]
+
+    # Re-parses (the OLD broken output also re-parsed — that is the point), and
+    # the helper is at MODULE level, not nested inside foo.
+    tree = ast.parse(new_src)
+    helper = plan.new
+    top_defs = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
+    assert helper in top_defs, (
+        f"helper must be a top-level def, not nested; module defs={top_defs}\n"
+        f"--- emitted ---\n{new_src}")
+    # No nested function definitions anywhere — the helper never landed in a body.
+    for fn in tree.body:
+        if isinstance(fn, ast.FunctionDef):
+            assert not any(isinstance(n, ast.FunctionDef)
+                           for n in ast.walk(fn) if n is not fn), (
+                f"a function ended up nested inside {fn.name}:\n{new_src}")
+    # Each occurrence's OWN constant reached its OWN call site.
+    assert f"{helper}(x, 5)" in new_src
+    assert f"{helper}(x, 100)" in new_src
+
+    # Exec-equivalence: original and rewritten module compute the SAME outputs.
+    before = _exec_module(_ABOVE_CONTAINER_ND)
+    after = _exec_module(new_src)
+    for x in (-5, 0, 10, 33):
+        assert before["foo"](x) == after["foo"](x), (
+            f"foo lost behaviour at x={x}: {before['foo'](x)} != {after['foo'](x)}")
+        assert before["bar"](x) == after["bar"](x)
+    # Concretely: foo keeps its trailing `return c` (the old bug returned None).
+    assert after["foo"](10) == 27
+    assert after["bar"](10) == 122
