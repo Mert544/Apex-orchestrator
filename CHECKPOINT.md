@@ -2,7 +2,7 @@
 
 **Date**: 2026-06-14
 **Commit**: branch `claude/apex-orchestrator-eZbJO`
-**Tests**: 3900+ passing ✅
+**Tests**: 4000+ passing ✅
 **Status**: Team-org tooling + capability efficiency + idea/fractal-engine depth — see "Latest milestone" below
 
 > Previous milestones: self-measurement truth + capability growth (2026-06-14, 3400 tests);
@@ -26,20 +26,26 @@ and `scripts/merge_train.py` (safe-order cherry-pick + gate integration). Plus
 `apex changed` (`app/engine/blast_radius.py` — a change's dependents, covering
 tests, and scope cohesion).
 
-**Capability efficiency.** 37 develop objectives. New transforms:
+**Capability efficiency.** 39 develop objectives. New transforms:
 `remove-unreachable-after-terminator`, `remove-pointless-pass`,
 `fold-literal-string-concat`, `simplify-negated-comparison`, `format-to-fstring`,
-`dedup-total-return`. The whole splice-precedence class (an auditor finding,
-H1-H7) is closed across every transform via the shared
-`_transform_base.splice_operand`; the dedup helper-insertion bug (H4) and a
-fractal-analyzer method double-count are fixed. The idea engine now routes **18**
-develop objectives (was 6) from discovered facets (`FACET_OBJECTIVE_MAP` +
-enriched `idea_facets.py` vocabulary).
+`dedup-total-return`, plus two detect>>act bug-fixers that close real detector
+gaps — `fix-assert-tuple` (the always-true `assert (cond, "msg")` typo) and
+`simplify-bool-comparison` (`x is True` → `x`, a rigorously proved-safe subset).
+The whole splice-precedence class (an auditor finding, H1-H7) is closed across
+every transform via the shared `_transform_base.splice_operand`; the dedup
+helper-insertion bug (H4) and a fractal-analyzer method double-count are fixed.
+The idea engine now routes **20** develop objectives (was 6) from discovered
+facets (`FACET_OBJECTIVE_MAP` + enriched `idea_facets.py` vocabulary).
 
 **Idea/fractal-engine depth.** Two new development lenses (`decouple`, `verify`)
-→ 10 operators. A `purity`/`side-effects` dimension in the function fractal
-analyzer, and a compounding `impure-untested` seeding signal that uses it to
-ground "isolate the side effect, then cover the core" ideas (→ `create_test_stub`).
+→ 10 operators (the `decouple` lens then drove the real cli.py de-coupling — a
+full ideate→act loop). A `purity`/`side-effects` dimension in the function
+fractal analyzer, and two compounding seeding signals — `impure-untested` (uses
+the purity dimension) and `hub-untested` (high-fan-in untested modules) — that
+ground "cover the high-leverage core first" ideas (→ `create_test_stub`).
+Stronger "prove which is solid": new mutation operators (membership `in↔not in`,
+relational boundary `<↔<=` for off-by-one blindness).
 
 **Visualization.** `apex canvas --kind deps|idea` (JSONCanvas) and `apex
 idea-html` (self-contained HTML idea tree).
