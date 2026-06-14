@@ -286,9 +286,60 @@ def cmd_mutants(args: argparse.Namespace) -> int:
     return 0
 
 
+def _objective_reachability() -> tuple[list[str], set[str]]:
+    """Every registered develop objective, plus the subset the idea engine can
+    actually PROPOSE (i.e. a value in ``FACET_OBJECTIVE_MAP``).
+
+    Honest self-measurement: an objective the compiler knows how to pursue is
+    still *unreachable* unless some facet phrase routes to it. Both sets are read
+    live from the registries, so the answer tracks the code, never a snapshot.
+    """
+    from app.engine.facet_develop import FACET_OBJECTIVE_MAP
+    from app.engine.objective_compiler import available_objectives
+
+    registered = sorted(set(available_objectives()))
+    # Reachable == mapped AND actually registered (a map value naming a retired
+    # objective is not a capability the compiler can deliver).
+    reachable = set(FACET_OBJECTIVE_MAP.values()) & set(registered)
+    return registered, reachable
+
+
+def cmd_objectives(args: argparse.Namespace) -> int:
+    """List every registered develop objective with whether the idea engine can
+    reach it — surfacing objectives wired into the compiler but not yet routed
+    from any facet phrase (``FACET_OBJECTIVE_MAP``)."""
+    registered, reachable = _objective_reachability()
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "objectives": [
+                {"name": name, "reachable": name in reachable}
+                for name in registered
+            ],
+            "total": len(registered),
+            "reachable": sorted(reachable),
+            "unreachable": [n for n in registered if n not in reachable],
+            "reachable_count": len(reachable),
+            "unreachable_count": len(registered) - len(reachable),
+        }, indent=2))
+        return 0
+
+    width = max((len(n) for n in registered), default=9)
+    print(f"{'OBJECTIVE':<{width}}  REACH")
+    print(f"{'-' * width}  -----")
+    for name in registered:
+        flag = "REACHABLE" if name in reachable else "unreachable"
+        print(f"{name:<{width}}  {flag}")
+    n, m = len(registered), len(reachable)
+    print()
+    print(f"{n} objectives, {m} reachable from the idea engine, "
+          f"{n - m} not yet wired")
+    return 0
+
+
 def register_parsers(subparsers) -> None:
     """Register the insight family's subcommands: grade, impact, brief, dream,
-    outcomes, recipes, changelog, explain."""
+    outcomes, recipes, changelog, explain, objectives."""
     # grade — single project health grade (A-F)
     grade_parser = subparsers.add_parser(
         "grade", help="Give the project a single health grade (A-F) with a breakdown",
@@ -408,6 +459,14 @@ def register_parsers(subparsers) -> None:
     changelog_parser.add_argument("--target", default="", help="Target project root")
     changelog_parser.add_argument("--out", default="", help="Write the Markdown to this path")
     changelog_parser.set_defaults(func=cmd_changelog)
+
+    # objectives — the develop catalog and its idea-engine reachability
+    objectives_parser = subparsers.add_parser(
+        "objectives",
+        help="List registered develop objectives and which the idea engine can reach",
+    )
+    objectives_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    objectives_parser.set_defaults(func=cmd_objectives)
 
     # explain — show why an idea scored what it did
     explain_parser = subparsers.add_parser(
