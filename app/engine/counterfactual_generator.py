@@ -7,50 +7,58 @@ from typing import Any
 # Distinct stress-test scenarios per development lens. Each lens introduces its
 # own class of risk, so the counterfactual that pressure-tests it differs — this
 # is what stops every idea collapsing onto one generic "malformed input" caveat.
+#
+# Coverage invariant: every operator name in DEVELOPMENT_OPERATORS
+# (app/engine/idea_permutation.py) must have an entry here, so no development
+# lens ever falls through to the generic keyword fallback. The test suite
+# (tests/test_counterfactual_depth.py) enforces this. Each scenario names a
+# *concrete* failure mode — a test gap, a rollback risk, a coupling seam, a
+# SafetyGates rejection — never a vague "something could break". Security stays
+# a supporting signal (it surfaces under harden/fortify), never the headline.
 _LENS_SCENARIOS: dict[str, list[str]] = {
     "extend": [
-        "What new failure mode does this capability add that nothing exercises yet?",
-        "What if the new path interacts with an existing one in a way no test covers?",
+        "What untested path does this new capability add, so its first failure lands in production unguarded?",
+        "What existing behavior does the new code path quietly perturb, with no regression test pinning the old contract?",
     ],
     "harden": [
-        "What if an attacker provides None, malformed, or maximum-size input?",
-        "What legitimate edge case might the new guard wrongly reject?",
+        "What if an attacker reaches this with None, malformed, or maximum-size input the new guard never anticipated?",
+        "What legitimate edge case does the tightened guard now wrongly reject, breaking a caller that relied on the looser behavior?",
     ],
     "test": [
-        "What behavior is asserted nowhere, so a regression would pass silently?",
-        "What boundary (empty, single, maximum) does the current suite skip?",
+        "What behavior is asserted nowhere, so a regression merges green and ships unnoticed?",
+        "What boundary (empty, single, maximum) does the current suite skip, leaving that branch unexercised?",
     ],
     "simplify": [
-        "What subtle behavior could silently change when this is refactored?",
-        "What currently depends on the exact structure a cleanup would remove?",
+        "What subtle behavior could the refactor silently change, with no characterization test to flag the rollback?",
+        "What caller depends on the exact structure or ordering this cleanup removes?",
     ],
     "document": [
-        "What contract do callers assume that is written down nowhere?",
-        "What breaks when the behavior changes but the documentation does not?",
+        "What contract do callers already assume that is written down nowhere, so the docs codify a guess?",
+        "What drifts the moment the behavior changes but the documentation does not, misleading the next reader?",
     ],
     "integrate": [
-        "What if the other subsystem is down, slow, or returns an unexpected shape?",
-        "What version skew or contract mismatch could break this seam?",
+        "What if the other subsystem is down, slow, or returns an unexpected shape this seam never validates?",
+        "What version skew or contract mismatch across this new coupling breaks both sides at once?",
     ],
     "generalize": [
-        "What assumption breaks when a second caller uses this with different config?",
-        "What hard-coded default becomes wrong once this is reused elsewhere?",
+        "What assumption breaks when a second caller drives this with different config than the original use?",
+        "What hard-coded default silently becomes wrong once this is reused outside its first context?",
     ],
     "observe": [
-        "What failure currently happens invisibly, with no metric or log to catch it?",
-        "What early signal would reveal this degrading before it fails outright?",
+        "What failure currently happens invisibly here, with no metric or log to catch it before users do?",
+        "What early signal would reveal this degrading, and does the new instrumentation actually emit it under load?",
     ],
     "decouple": [
-        "What hidden behavior of the concrete dependency does a caller secretly rely on?",
-        "What breaks once this talks to an interface instead of the real collaborator?",
+        "What hidden behavior of the concrete dependency does a caller secretly rely on, that the new interface drops?",
+        "What coupling does swapping in an abstraction merely relocate rather than remove, leaving the seam just as fragile?",
     ],
     "verify": [
-        "What invariant does this code assume but never actually assert or prove?",
+        "What invariant does this code assume but never actually assert, so the proof rests on an unchecked premise?",
         "What input would make the proof's preconditions false, so the guarantee silently stops holding?",
     ],
     "fortify": [
-        "What edge input (None, empty, malformed, or past the boundary) reaches this unhandled today?",
-        "What legitimate value would the new minimal guard wrongly reject or alter behavior for?",
+        "What edge input (None, empty, malformed, or past the boundary) reaches this unhandled today and trips the failure the guard is meant to close?",
+        "What legitimate value would the new minimal guard wrongly reject or alter behavior for, regressing a passing caller?",
     ],
 }
 
