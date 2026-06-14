@@ -1516,10 +1516,20 @@ def render_analysis_scope_line(profile: ProjectProfile) -> str:
     exists (``out_of_scope_ratio > 0`` with a non-empty breakdown), so it is
     purely additive and never noise on a single-language Python project.
 
+    When real out-of-scope content exists, the counts line is followed by a
+    concrete attention clause (from ``app.tools.polyglot_facts``) naming the
+    biggest / most-churned non-Python files — so the honest boundary becomes
+    actionable instead of stopping at a percentage. That clause is purely
+    additive: it appears ONLY inside the out-of-scope branch, so an all-Python
+    repo's line is byte-identical (and empty).
+
     Example::
 
         Scope: analysing 62% of the repo (Python). 38% is outside analysis
-        scope — JavaScript 41 files, HTML 12, CSS 7.
+        scope — JavaScript 41 files, HTML 12, CSS 7. Largest / most-active files
+        outside analysis scope: `src/app.js` (412 LOC, 8 commits), … — Apex
+        can't deep-analyse these yet, but they're where the non-Python risk
+        concentrates.
     """
     if profile.source_file_count <= 0:
         return ""
@@ -1532,7 +1542,18 @@ def render_analysis_scope_line(profile: ProjectProfile) -> str:
     items = list(profile.language_breakdown.items())
     parts = [f"{lang} {count} files" if i == 0 else f"{lang} {count}"
              for i, (lang, count) in enumerate(items)]
-    return (
+    line = (
         f"Scope: analysing {analysed_pct}% of the repo (Python). "
         f"{out_pct}% is outside analysis scope — {', '.join(parts)}."
     )
+    # Name the concrete files behind that percentage, reusing the profile's
+    # existing root. Only reached when out-of-scope content exists, so the
+    # all-Python path above never imports/runs this — output stays identical.
+    from app.tools.polyglot_facts import (
+        render_polyglot_attention,
+        scan_polyglot_facts,
+    )
+    attention = render_polyglot_attention(scan_polyglot_facts(profile.root))
+    if attention:
+        line = f"{line} {attention}"
+    return line

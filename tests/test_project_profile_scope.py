@@ -46,10 +46,15 @@ def test_render_helper_exact_string_for_known_mix(tmp_path: Path):
     _polyglot_repo(tmp_path)
     profile = ProjectProfiler(str(tmp_path)).profile()
     line = render_analysis_scope_line(profile)
-    assert line == (
+    # The honest counts clause is preserved verbatim; on a polyglot repo it is
+    # now followed by the additive, language-agnostic attention clause naming the
+    # concrete out-of-scope files (from app.tools.polyglot_facts).
+    assert line.startswith(
         "Scope: analysing 30% of the repo (Python). "
         "70% is outside analysis scope — JavaScript 4 files, HTML 2, CSS 1."
     )
+    assert "Largest / most-active files outside analysis scope:" in line
+    assert "non-Python risk concentrates." in line
 
 
 def test_render_helper_empty_when_all_python(tmp_path: Path):
