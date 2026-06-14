@@ -36,10 +36,19 @@ import shutil
 import subprocess
 import tempfile
 
+# Directory names that are never project source — VCS, caches, virtualenvs,
+# build output, and Apex's own metadata/worktree areas. `.claude` holds agent
+# git worktrees (full repo copies); walking or copying into them double-counts
+# every module and collides test-file basenames (eight copies of
+# ``test_foo.py`` break pytest collection), so it must be skipped everywhere the
+# tree is scanned or copied.
+_SKIP_DIRS = frozenset({
+    ".git", "__pycache__", ".apex", ".epistemic", ".claude",
+    ".venv", "venv", "node_modules", "dist", "build",
+})
+
 # Directories never worth copying into a mutant's throwaway sandbox.
-_COPY_EXCLUDE = shutil.ignore_patterns(
-    ".git", "__pycache__", ".apex", ".venv", "venv", "node_modules",
-)
+_COPY_EXCLUDE = shutil.ignore_patterns(*sorted(_SKIP_DIRS))
 
 # Comparison-operator flips. Each maps an ``ast`` comparison op class to the
 # literal it is written as and the literal it becomes.
@@ -420,8 +429,7 @@ def covering_test_files(project_root, module_rel: str) -> list[str]:
     matches: set[str] = set()
     for path in root.rglob("*.py"):
         rel = path.relative_to(root).as_posix()
-        if any(part in {".git", "__pycache__", ".apex", ".venv",
-                        "venv", "node_modules"} for part in path.parts):
+        if any(part in _SKIP_DIRS for part in path.parts):
             continue
         if not _is_test_file(rel):
             continue

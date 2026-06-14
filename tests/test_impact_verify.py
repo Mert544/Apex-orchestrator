@@ -52,6 +52,19 @@ def test_uncovered_module_has_no_impacted_tests(tmp_path):
     assert impacted_test_files(tmp_path, ["app/lonely.py"]) == []
 
 
+def test_worktree_test_copies_are_excluded(tmp_path):
+    # Agent git worktrees live under `.claude/worktrees/<id>/` as full repo
+    # copies. Walking into them would double-count the covering test and collide
+    # its basename, blocking every develop move. They must be skipped so only the
+    # real `tests/test_core.py` is returned.
+    _project(tmp_path)
+    wt = tmp_path / ".claude" / "worktrees" / "agent-x" / "tests"
+    wt.mkdir(parents=True)
+    (wt / "test_core.py").write_text(
+        "from app.core import f\ndef test_f():\n    assert f() == 1\n", encoding="utf-8")
+    assert impacted_test_files(tmp_path, ["app/core.py"]) == ["tests/test_core.py"]
+
+
 # --- apply_rename(impact_scope=True) ------------------------------------------
 
 def test_scoped_keeps_a_passing_change(tmp_path):
