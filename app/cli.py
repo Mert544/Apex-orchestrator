@@ -60,6 +60,12 @@ from app.cli_reporting import (  # noqa: F401  (re-exports: import surface uncha
     cmd_hotspots,
     cmd_report,
 )
+from app.cli_viz import (  # noqa: F401  (re-exports: import surface unchanged)
+    cmd_canvas,
+    cmd_changed,
+    cmd_idea_html,
+    cmd_partition,
+)
 from app.cli_plugins import (  # noqa: F401  (re-exports: import surface unchanged)
     cmd_hook,
     cmd_marketplace,
