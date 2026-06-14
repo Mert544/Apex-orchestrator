@@ -489,6 +489,150 @@ def cmd_trackrecord(args: argparse.Namespace) -> int:
     return 0
 
 
+def _scope_report(root: Path) -> dict:
+    """Assemble Apex's honest analysis-scope report for this repo.
+
+    Grounded entirely in ``ProjectProfiler('.').profile()`` (the scope-accounting
+    fields ``analyzed_ratio`` / ``out_of_scope_ratio`` / ``language_breakdown``,
+    already computed over the canonical skip-dir walk) and the language-agnostic
+    ``scan_polyglot_facts`` (the biggest / most-active non-Python files). Both are
+    deterministic and offline; this assembler adds no time/random and never
+    crashes — a profile failure collapses to the empty (all-Python) shape.
+
+    Determinism: ``language_breakdown`` is already sorted (count desc, then name)
+    by the profiler, and ``scan_polyglot_facts`` ranks by ``(-churn, -loc, path)``.
+    The ``has_test`` flag on each out-of-scope file is read from the profile's
+    ``test_files`` (a non-Python file is "tested" only if a sibling/test path
+    names its stem), so the untested flag tracks the repo, never a guess.
+    """
+    from app.tools.polyglot_facts import scan_polyglot_facts
+    from app.tools.project_profile import ProjectProfiler
+
+    try:
+        profile = ProjectProfiler(str(root)).profile(light=True)
+    except Exception:
+        profile = None
+
+    if profile is None or profile.source_file_count <= 0:
+        # Empty repo (no source-bearing files at all): nothing to disclose, but
+        # the honest answer is still "all of what little there is".
+        return {
+            "source_file_count": 0,
+            "python_file_count": 0,
+            "analyzed_pct": 100,
+            "out_of_scope_pct": 0,
+            "all_python": True,
+            "language_breakdown": [],
+            "files": [],
+        }
+
+    analysed_pct = round(profile.analyzed_ratio * 100)
+    out_pct = round(profile.out_of_scope_ratio * 100)
+    all_python = not (profile.out_of_scope_ratio > 0 and profile.language_breakdown)
+
+    breakdown = [
+        {"language": lang, "files": count}
+        for lang, count in profile.language_breakdown.items()
+    ]
+
+    # A non-Python file is "tested" when some test file's stem names it — Apex's
+    # test files are linked by name, so an out-of-scope file with no such mention
+    # is honestly flagged "no test found".
+    test_stems = {
+        Path(t).stem for t in getattr(profile, "test_files", []) or []
+    }
+    files: list[dict] = []
+    for fact in scan_polyglot_facts(str(root)):
+        stem = Path(fact.path).stem
+        has_test = stem in test_stems or any(stem in t for t in test_stems)
+        files.append({
+            "path": fact.path,
+            "language": fact.language,
+            "loc": fact.loc,
+            "churn": fact.churn,
+            "has_test": has_test,
+        })
+
+    return {
+        "source_file_count": profile.source_file_count,
+        "python_file_count": profile.python_file_count,
+        "analyzed_pct": analysed_pct,
+        "out_of_scope_pct": out_pct,
+        "all_python": all_python,
+        "language_breakdown": breakdown,
+        "files": files,
+    }
+
+
+def render_scope_markdown(rep: dict) -> str:
+    """The calm, honest analysis-scope report: what Apex covers and what it
+    doesn't. All-Python repo → the "100% (all Python)" reassurance; a polyglot
+    repo → the headline ratio, the out-of-scope language breakdown, and the
+    biggest / most-active out-of-scope files (untested ones flagged)."""
+    lines = ["# Apex analysis scope", ""]
+
+    if rep["all_python"]:
+        lines.append("Apex analyses 100% of this repo (all Python).")
+        lines.append("")
+        lines.append(
+            "_Every source-bearing file here is Python — the subset Apex deep-"
+            "analyses — so its grade speaks for the whole repo._"
+        )
+        return "\n".join(lines)
+
+    analysed = rep["analyzed_pct"]
+    out_pct = rep["out_of_scope_pct"]
+    lines.append(
+        f"Apex analyses {analysed}% of this repo (Python). "
+        f"{out_pct}% is outside its analysis scope."
+    )
+    lines.append("")
+
+    breakdown = rep["language_breakdown"]
+    if breakdown:
+        lines += ["## Outside analysis scope", "",
+                  "The non-Python remainder, by language:", ""]
+        for row in breakdown:
+            n = row["files"]
+            f_word = "file" if n == 1 else "files"
+            lines.append(f"- {row['language']} — {n} {f_word}")
+        lines.append("")
+
+    files = rep["files"]
+    if files:
+        lines += ["## Largest / most-active out-of-scope files", "",
+                  "Where the non-Python risk concentrates — Apex can name these "
+                  "but can't deep-analyse them yet:", ""]
+        for f in files:
+            commit_word = "commit" if f["churn"] == 1 else "commits"
+            flag = "" if f["has_test"] else " — no test found"
+            lines.append(
+                f"- `{f['path']}` ({f['language']}, {f['loc']} LOC, "
+                f"{f['churn']} {commit_word}){flag}"
+            )
+        lines.append("")
+
+    lines.append(
+        "_Apex names its own limits: it grades only Python, and says so. Every "
+        "number here is read from its own deterministic profile of this repo — "
+        "zero-token, no model in the loop._"
+    )
+    return "\n".join(lines)
+
+
+def cmd_scope(args: argparse.Namespace) -> int:
+    """Report, honestly, how much of THIS repo Apex's Python-only analysis covers
+    and name the biggest out-of-scope files. The trust differentiator over a tool
+    that silently grades only Python. Deterministic, stdlib-only, LLM-free."""
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    rep = _scope_report(target)
+    if args.json:
+        print(json.dumps(rep, indent=2))
+    else:
+        print(render_scope_markdown(rep))
+    return 0
+
+
 def register_parsers(subparsers) -> None:
     """Register the insight family's subcommands: grade, impact, brief, dream,
     outcomes, recipes, changelog, explain, objectives."""
@@ -629,6 +773,17 @@ def register_parsers(subparsers) -> None:
     trackrecord_parser.add_argument("--target", default="", help="Target project root")
     trackrecord_parser.add_argument("--json", action="store_true", help="Emit JSON")
     trackrecord_parser.set_defaults(func=cmd_trackrecord)
+
+    # scope — how much of THIS repo Apex's Python analysis covers (and what it
+    # honestly leaves outside that scope)
+    scope_parser = subparsers.add_parser(
+        "scope",
+        help="Report honestly how much of this repo Apex analyses (Python) and "
+             "name the biggest out-of-scope files",
+    )
+    scope_parser.add_argument("--target", default="", help="Target project root")
+    scope_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    scope_parser.set_defaults(func=cmd_scope)
 
     # explain — show why an idea scored what it did
     explain_parser = subparsers.add_parser(
