@@ -126,6 +126,16 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # to the fold transform.
     "implicitly concatenated literals": "fold-literal-string-concat",
 
+    # Redundant f-string prefix: an ``f"..."`` with NO ``{...}`` placeholder is a
+    # plain string wearing an ``f`` for no reason (ruff F541). The dedicated
+    # remove-redundant-fstring transform strips only the noise prefix. This is a
+    # narrower, value-identical tidy than the broad ``modernize`` sweep, so the
+    # specific "redundant f-string prefix" phrasing routes to it directly. (Kept
+    # off the "f-string without placeholders" finding above, which stays on
+    # modernize so existing routing is unchanged.)
+    "a redundant f-string prefix": "remove-redundant-fstring",
+    "an f-string with no placeholders to strip": "remove-redundant-fstring",
+
     # Expression-level redundancy (the "redundant expressions" aspect). Each phrase
     # names one value-preserving rewrite and routes to its dedicated transform.
     # None of these phrasings is a substring of another key here, so order is free.
