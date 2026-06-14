@@ -457,3 +457,108 @@ def test_inlinable_helper_routes_to_refine_phase():
     )
     root = next(r for r in IdeaSeeder().seed(profile) if r.subject == "app/calc.py")
     assert classify_phase(root) == REFINE
+
+
+def test_seeds_impure_untested_function_idea(tmp_path):
+    from app.tools.project_profile import ProjectProfile
+    from app.engine.idea_permutation import IdeaSeeder, IdeaPermutationEngine
+    from app.skills.relevance_scorer import RelevanceScorer
+
+    profile = ProjectProfile(
+        root=str(tmp_path),
+        impure_untested_functions=[{
+            "module": "app/io_logic.py", "function": "emit",
+            "line": 5, "side_effects": ["global_state", "module:logging"],
+        }],
+    )
+    roots = IdeaSeeder().seed(profile)
+    imp = [r for r in roots if any(f.startswith("impure-untested:") for f in r.source_facts)]
+    assert imp
+    root = imp[0]
+    # Symbol-granular subject so it coexists with the module's other ideas.
+    assert root.subject == "app/io_logic.py::emit"
+    assert "Isolate the side effects of emit()" in root.title
+    assert "global_state" in root.source_facts[0] and "module:logging" in root.source_facts[0]
+    assert "no direct tests" in root.source_facts[0]
+
+    # The grounded root keeps the invariants: value in [0,1], root novelty 1.0.
+    engine = IdeaPermutationEngine(config={}, project_root=str(tmp_path))
+    engine._score(root, RelevanceScorer(objective=""))
+    assert 0.0 <= root.value <= 1.0
+    assert root.novelty == 1.0
+    assert root.kind == "permutation"
+
+
+def test_no_impure_untested_root_when_signal_absent(tmp_path):
+    # A profile with a pure/tested-only world surfaces no impure-untested root.
+    from app.tools.project_profile import ProjectProfile
+    from app.engine.idea_permutation import IdeaSeeder
+
+    profile = ProjectProfile(root=str(tmp_path), dependency_hubs=["app/a.py"])
+    roots = IdeaSeeder().seed(profile)
+    assert not any(
+        f.startswith("impure-untested:") for r in roots for f in r.source_facts
+    )
+
+
+def test_impure_untested_routes_to_stabilize_phase():
+    from app.engine.idea_roadmap import STABILIZE, classify_phase
+    from app.models.idea import IdeaNode
+
+    root = IdeaNode(
+        id="i", title="Isolate the side effects of emit() in app/io_logic.py and cover the core with tests",
+        subject="app/io_logic.py::emit", operator="root", operator_chain=["root"],
+        source_facts=["impure-untested: app/io_logic.py::emit (impure: module:logging, line 5, no direct tests)"],
+    )
+    # Cover before changing risky code -> Stabilize.
+    assert classify_phase(root) == STABILIZE
+
+
+def test_impure_untested_maps_to_executable_test_stub():
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.models.idea import IdeaNode
+
+    idea = IdeaNode(
+        id="i", title="Isolate the side effects of emit() in app/io_logic.py and cover the core with tests",
+        subject="app/io_logic.py::emit", operator="root",
+        source_facts=["impure-untested: app/io_logic.py::emit (impure: module:logging, line 5, no direct tests)"],
+    )
+    step = IdeaActionBridge().plan_idea(idea)
+    assert step.action_type == "create_test_stub"
+    assert step.executable is True
+    # Symbol-granular subject acts on the module file.
+    assert step.target == "app/io_logic.py"
+
+
+def test_impure_untested_yields_security_lens_caveat():
+    # The label is reliability-relevant, so scoring attaches an on-topic caveat
+    # (decouple/isolate side effects) rather than a generic one.
+    from app.engine.idea_permutation import _caveat_hint
+    from app.models.idea import IdeaNode
+
+    root = IdeaNode(
+        id="i", title="Isolate the side effects of emit() in app/io_logic.py and cover the core with tests",
+        subject="app/io_logic.py::emit", operator="root", operator_chain=["root"],
+        source_facts=["impure-untested: app/io_logic.py::emit (impure: module:logging, line 5, no direct tests)"],
+    )
+    hint = _caveat_hint(root)
+    assert "isolate" in hint and "side effect" in hint
+
+
+def test_complexity_hotspot_claims_subject_over_impure_untested():
+    # A function that is BOTH a complexity hotspot and impure-untested is framed
+    # by the more-severe hotspot root (it runs first); the impure root dedups.
+    from app.tools.project_profile import ProjectProfile
+    from app.engine.idea_permutation import IdeaSeeder
+
+    profile = ProjectProfile(
+        root=".",
+        hotspot_functions=[{"module": "app/m.py", "function": "f",
+                            "line": 3, "complexity": 12, "cognitive": 9}],
+        impure_untested_functions=[{"module": "app/m.py", "function": "f",
+                                    "line": 3, "side_effects": ["module:os"]}],
+    )
+    roots = IdeaSeeder().seed(profile)
+    claims = [r for r in roots if r.subject == "app/m.py::f"]
+    assert len(claims) == 1
+    assert claims[0].source_facts[0].startswith("hotspot-function:")

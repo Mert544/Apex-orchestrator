@@ -208,6 +208,30 @@ class IdeaSeeder:
                             + f", line {fn['line']}, no direct tests)"),
             )
 
+        # Purity violation: functions that mix observable side effects (I/O,
+        # global state, os/subprocess/logging calls) with logic AND that no test
+        # exercises. The development move is to isolate the effect so the core
+        # becomes pure and testable — so this biases the test/verify/decouple
+        # lenses (it is in _SECURITY_LABELS) toward the now-testable seam. A
+        # subject like ``mod.py::func`` keeps it distinct from its module's idea;
+        # if the same function is also a complexity hotspot, that more-severe
+        # root claimed the subject first and this one dedups under it.
+        for fn in (getattr(profile, "impure_untested_functions", []) or [])[:3]:
+            simple = fn["function"].rsplit(".", 1)[-1]
+            effects = fn.get("side_effects", []) or []
+            shown = ", ".join(effects[:3])
+            more = f" +{len(effects) - 3} more" if len(effects) > 3 else ""
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Isolate the side effects of {simple}() in {fn['module']} "
+                       f"and cover the core with tests"),
+                subject=f"{fn['module']}::{fn['function']}",
+                fact_label="impure-untested",
+                fact_value=(f"{fn['module']}::{fn['function']} (impure"
+                            + (f": {shown}{more}" if shown else "")
+                            + f", line {fn['line']}, no direct tests)"),
+            )
+
         # Technical-debt markers: modules carrying a cluster of TODO/FIXME/XXX/
         # HACK comments are concrete, traceable pockets of deferred work. When
         # git blame shows the oldest marker has waited months, the idea says so

@@ -800,3 +800,69 @@ def test_project_profiler_ignores_worktree_copies(tmp_path: Path):
     assert not any(".claude" in m for m in modules)
     # Only the single real source file is counted (not the two copies).
     assert profile.total_files == 1
+
+
+def test_profiler_flags_impure_untested_functions(tmp_path: Path):
+    # Inside a risky (heavily-imported) module, a function that mixes observable
+    # side effects (logging/global state) with logic and that NO test names is
+    # surfaced as impure-untested; a pure sibling and an impure-but-tested
+    # sibling are both cleared.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "io_logic.py").write_text(
+        "import logging\n\n"
+        "_CACHE = {}\n\n"
+        "def emit(x):\n"
+        "    global _CACHE\n"
+        "    logging.info('emit %s', x)\n"
+        "    _CACHE[x] = x\n"
+        "    return x + 1\n\n"
+        "def pure_add(x):\n"
+        "    return x + 1\n\n"
+        "def tested_emit(x):\n"
+        "    logging.info('tested %s', x)\n"
+        "    return x * 2\n",
+        encoding="utf-8",
+    )
+    # Three importers give io_logic.py the fan-in that puts it in the candidate set.
+    for i in range(3):
+        (tmp_path / "app" / f"c{i}.py").write_text(
+            f"from app.io_logic import emit\n\ndef u{i}():\n    return emit({i})\n",
+            encoding="utf-8",
+        )
+    (tmp_path / "tests" / "test_io.py").write_text(
+        "from app.io_logic import tested_emit\n\n"
+        "def test_t():\n    assert tested_emit(2) == 4\n",
+        encoding="utf-8",
+    )
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    by_fn = {f["function"]: f for f in profile.impure_untested_functions}
+    assert "emit" in by_fn                       # impure + untested -> flagged
+    assert by_fn["emit"]["module"].endswith("io_logic.py")
+    assert by_fn["emit"]["side_effects"]         # carries the concrete reasons
+    assert by_fn["emit"]["line"] >= 1
+    assert "pure_add" not in by_fn               # pure -> never flagged
+    assert "tested_emit" not in by_fn            # impure but a test names it
+
+
+def test_impure_untested_scan_is_deterministic(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "svc.py").write_text(
+        "import os\n\n"
+        "def runner(x):\n"
+        "    os.system('echo ' + str(x))\n"
+        "    return x\n\n"
+        "def writer(x):\n"
+        "    open('/tmp/z', 'w').write(str(x))\n"
+        "    return x\n",
+        encoding="utf-8",
+    )
+    for i in range(3):
+        (tmp_path / "app" / f"c{i}.py").write_text(
+            f"from app.svc import runner, writer\n\ndef u{i}():\n    return runner({i})\n",
+            encoding="utf-8",
+        )
+    a = ProjectProfiler(str(tmp_path)).profile().impure_untested_functions
+    b = ProjectProfiler(str(tmp_path)).profile().impure_untested_functions
+    assert a == b                                # same input -> same output
+    assert a, "expected at least one impure-untested function"

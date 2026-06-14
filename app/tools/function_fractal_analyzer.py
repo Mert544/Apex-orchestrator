@@ -177,6 +177,7 @@ class FunctionFractalAnalyzer:
             "risks": risks,
             "risk_score": round(min(risk_score, 1.0), 2),
             "line_count": lines,
+            "lineno": node.lineno,
             "arg_count": arg_count,
             "purity": purity,
             "side_effects": side_effects,

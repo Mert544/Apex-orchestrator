@@ -45,6 +45,11 @@ class ProjectProfile:
     # Symbol granularity: complex functions no linked test ever names.
     # Each entry: {"module", "function", "line", "complexity"}.
     hotspot_functions: list[dict] = field(default_factory=list)
+    # Purity-violation: functions that mix observable side effects (I/O, global
+    # state, effect-module calls) with logic AND that no linked test exercises —
+    # impure-and-untested, the high-leverage "isolate the effect, then test it"
+    # target. Each entry: {"module", "function", "line", "side_effects"}.
+    impure_untested_functions: list[dict] = field(default_factory=list)
     # Change-frequency hotspots from git history: where development energy
     # concentrates. Each entry: {"module", "commits"}.
     churn_hotspots: list[dict] = field(default_factory=list)
@@ -657,6 +662,11 @@ class ProjectProfiler:
                 f for f in profile.hotspot_functions
                 if not self._is_fixture_path(str(f.get("module", "")))
             ]
+        if profile.impure_untested_functions:
+            profile.impure_untested_functions = [
+                f for f in profile.impure_untested_functions
+                if not self._is_fixture_path(str(f.get("module", "")))
+            ]
         if profile.churn_hotspots:
             profile.churn_hotspots = [
                 c for c in profile.churn_hotspots
@@ -764,30 +774,31 @@ class ProjectProfiler:
         ))
         profile.hotspot_functions = self._scan_hotspot_functions(candidates, profile.module_to_tests)
 
+        # Purity-violation: impure functions in those same risky modules that no
+        # test exercises — "isolate the side effect, then cover the core". Reuses
+        # the already-built candidate set and the same coverage check, so it adds
+        # no extra whole-repo scan on the hot path.
+        profile.impure_untested_functions = self._scan_impure_untested_functions(
+            candidates, profile.module_to_tests
+        )
+
     @staticmethod
     def _is_test_path(rel: str) -> bool:
         r = rel.replace("\\", "/").lower()
         return (r.startswith(("tests/", "test/")) or "/tests/" in f"/{r}"
                 or Path(r).stem.startswith("test_"))
 
-    def _scan_hotspot_functions(self, candidates: list[str], module_to_tests: dict) -> list[dict]:
-        """Complex functions inside risky modules that no linked test exercises.
+    def _whole_suite_text_factory(self):
+        """A memoized loader for the concatenated test-suite source.
 
-        "Exercises" is name-based but wrapper-aware: a function counts as
-        covered when a linked test names it directly, names its enclosing
-        class (tests driving ``Limb.run()`` exercise ``Limb._execute``), or
-        names a sibling function that references it (a private helper tested
-        through its public wrapper). Direct-name-only was too strict — it kept
-        flagging code that real tests already drive.
+        Read at most once per scan (the fallback corpus for modules the linker
+        doesn't track), so reusing the same callable across function-level scans
+        never re-walks the tree.
         """
-        import ast
-        from app.tools.code_metrics import function_complexities
-
-        all_tests_text: str | None = None  # lazy fallback corpus, read once
+        cache: dict[str, str] = {}
 
         def _whole_suite_text() -> str:
-            nonlocal all_tests_text
-            if all_tests_text is None:
+            if "v" not in cache:
                 parts: list[str] = []
                 for p in sorted(self.root.rglob("*.py")):
                     rel = str(p.relative_to(self.root))
@@ -796,8 +807,79 @@ class ProjectProfiler:
                             parts.append(p.read_text(encoding="utf-8", errors="ignore"))
                         except OSError:
                             continue
-                all_tests_text = "\n".join(parts)
-            return all_tests_text
+                cache["v"] = "\n".join(parts)
+            return cache["v"]
+
+        return _whole_suite_text
+
+    def _coverage_checker(self, module: str, source: str, module_to_tests: dict,
+                          whole_suite_text):
+        """Return an ``_exercised(qualified_name) -> bool`` for one module.
+
+        Coverage is name-based but wrapper-aware (shared by every function-level
+        scan): a function counts as covered when a linked test names it
+        directly, names its enclosing class (tests driving ``Limb.run()``
+        exercise ``Limb._execute``), or names a sibling function that references
+        it (a private helper tested through its public wrapper). Modules the
+        linker doesn't track fall back to the whole-suite corpus before being
+        accused of being untested.
+        """
+        import ast
+
+        if module in module_to_tests:
+            test_text = ""
+            for rel in module_to_tests.get(module, []) or []:
+                try:
+                    test_text += (self.root / rel).read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+        else:
+            test_text = whole_suite_text()
+
+        # Map each function in the module to the simple names it references,
+        # so a private helper inherits coverage from a test-named wrapper.
+        refs_by_func: dict[str, set[str]] = {}
+        try:
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+                    names |= {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+                    refs_by_func[node.name] = names
+        except SyntaxError:
+            refs_by_func = {}
+
+        def _named(token: str) -> bool:
+            # Whole-word match, not substring: 'run' must not be "covered"
+            # by 'rerun'/'prerun_hook', nor 'add' by 'self.address'.
+            return re.search(rf"\b{re.escape(token)}\b", test_text) is not None
+
+        def _exercised(qualified: str) -> bool:
+            simple = qualified.rsplit(".", 1)[-1]
+            if _named(simple):
+                return True  # named directly
+            if any(          # a test-named sibling calls this helper
+                caller != simple and _named(caller) and simple in refs
+                for caller, refs in refs_by_func.items()
+            ):
+                return True
+            # Coverage flows down the nesting chain: a method is exercised
+            # when its class is, a closure when its enclosing function is.
+            if "." in qualified:
+                return _exercised(qualified.rsplit(".", 1)[0])
+            return False
+
+        return _exercised
+
+    def _scan_hotspot_functions(self, candidates: list[str], module_to_tests: dict) -> list[dict]:
+        """Complex functions inside risky modules that no linked test exercises.
+
+        "Exercises" is wrapper-aware (see ``_coverage_checker``).
+        """
+        from app.tools.code_metrics import function_complexities
+        from app.tools.cognitive_complexity import function_cognitive_complexities
+
+        whole_suite_text = self._whole_suite_text_factory()
 
         out: list[dict] = []
         for module in candidates:
@@ -807,52 +889,8 @@ class ProjectProfiler:
                 source = (self.root / module).read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
-            if module in module_to_tests:
-                test_text = ""
-                for rel in module_to_tests.get(module, []) or []:
-                    try:
-                        test_text += (self.root / rel).read_text(encoding="utf-8", errors="ignore")
-                    except OSError:
-                        continue
-            else:
-                # The linker doesn't track this module (e.g. code living in an
-                # __init__.py) — check the whole suite before accusing it.
-                test_text = _whole_suite_text()
-
-            # Map each function in the module to the simple names it references,
-            # so a private helper inherits coverage from a test-named wrapper.
-            refs_by_func: dict[str, set[str]] = {}
-            try:
-                tree = ast.parse(source)
-                for node in ast.walk(tree):
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
-                        names |= {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
-                        refs_by_func[node.name] = names
-            except SyntaxError:
-                refs_by_func = {}
-
-            def _named(token: str) -> bool:
-                # Whole-word match, not substring: 'run' must not be "covered"
-                # by 'rerun'/'prerun_hook', nor 'add' by 'self.address'.
-                return re.search(rf"\b{re.escape(token)}\b", test_text) is not None
-
-            def _exercised(qualified: str) -> bool:
-                simple = qualified.rsplit(".", 1)[-1]
-                if _named(simple):
-                    return True  # named directly
-                if any(          # a test-named sibling calls this helper
-                    caller != simple and _named(caller) and simple in refs
-                    for caller, refs in refs_by_func.items()
-                ):
-                    return True
-                # Coverage flows down the nesting chain: a method is exercised
-                # when its class is, a closure when its enclosing function is.
-                if "." in qualified:
-                    return _exercised(qualified.rsplit(".", 1)[0])
-                return False
-
-            from app.tools.cognitive_complexity import function_cognitive_complexities
+            _exercised = self._coverage_checker(module, source, module_to_tests,
+                                                whole_suite_text)
 
             # Branch counts keep driving the threshold (stable scores);
             # cognitive complexity narrates how hard the code READS.
@@ -871,6 +909,58 @@ class ProjectProfiler:
                             "line": lineno, "complexity": complexity,
                             "cognitive": cognitive_by_name.get(name, 0)})
         out.sort(key=lambda d: (-d["complexity"], d["module"], d["function"]))
+        return out[:5]
+
+    def _scan_impure_untested_functions(self, candidates: list[str],
+                                        module_to_tests: dict) -> list[dict]:
+        """Impure functions inside risky modules that no linked test exercises.
+
+        Reuses the just-added purity dimension of ``FunctionFractalAnalyzer``:
+        a function is impure when it mixes observable side effects (I/O, global/
+        nonlocal state, effect-module calls like ``os.system``/``logging.info``)
+        with logic. An impure-AND-untested function is the high-leverage "isolate
+        the side effect, then cover the now-testable core" target. Scanned over
+        the SAME bounded candidate set as the complexity hotspots — no extra
+        whole-repo walk on the hot path — and sharing the wrapper-aware coverage
+        check, so the two scans agree on what "untested" means.
+        """
+        from app.tools.function_fractal_analyzer import FunctionFractalAnalyzer
+
+        analyzer = FunctionFractalAnalyzer()
+        whole_suite_text = self._whole_suite_text_factory()
+
+        out: list[dict] = []
+        for module in candidates:
+            if not module.endswith(".py") or self._is_test_path(module):
+                continue
+            path = self.root / module
+            try:
+                source = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            try:
+                fns = analyzer.analyze_file(path)
+            except (OSError, SyntaxError):
+                continue
+            if not fns:
+                continue
+            _exercised = self._coverage_checker(module, source, module_to_tests,
+                                                whole_suite_text)
+            for fn in fns:
+                if fn.get("purity") != "impure":
+                    continue
+                name = fn["name"]
+                simple = name.rsplit(".", 1)[-1]
+                if simple.startswith("__") and simple.endswith("__"):
+                    continue
+                if _exercised(name):
+                    continue
+                out.append({"module": module, "function": name,
+                            "line": fn.get("lineno", 0),
+                            "side_effects": list(fn.get("side_effects", []))})
+        # Most side-effect reasons first (the broadest violation), then stable
+        # by module/function so the ordering is deterministic.
+        out.sort(key=lambda d: (-len(d["side_effects"]), d["module"], d["function"]))
         return out[:5]
 
     def _scan_shallow_tests(self, module_to_tests: dict, limit: int | None = 5) -> list[str]:

@@ -998,11 +998,12 @@ _FACT_HINTS: dict[str, str] = {
     "dream-insight": "structural pattern refactor architecture coupling confirmed",
     "convergence": "complex secret guard validation check edge cases",
     "shallow-coverage": "check validation edge cases assert behaviour",
+    "impure-untested": "side effect isolate decouple pure testable check validation edge cases",
     "missing-ci": "ci workflow run tests automation",
 }
 
 # Root fact labels where reliability/security lenses matter most.
-_SECURITY_LABELS = {"sensitive-path", "security-finding", "correctness-bug", "critical-untested", "untested", "partial-coverage", "fragile", "complexity-hotspot", "shallow-coverage", "hotspot-function", "convergence"}
+_SECURITY_LABELS = {"sensitive-path", "security-finding", "correctness-bug", "critical-untested", "untested", "partial-coverage", "fragile", "complexity-hotspot", "shallow-coverage", "hotspot-function", "impure-untested", "convergence"}
 
 
 def _context_weight(node: IdeaNode, op_name: str, security_pressure: float = 1.0) -> float:
