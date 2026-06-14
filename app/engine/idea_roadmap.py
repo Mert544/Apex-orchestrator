@@ -245,10 +245,11 @@ def classify_phase(node: IdeaNode) -> str:
 
     # Permutation / root nodes: lens first (most specific action), then label.
     if op == "test" or label in _STABILIZE_LABELS:
-        # A 'harden' lens on an untested module still needs the safety net first,
-        # but an explicit harden on a sensitive path is a Secure action.
-        if op == "harden" and label in _SECURE_LABELS:
-            return SECURE
+        # A 'harden' lens on an untested/stabilize-labelled module still needs
+        # the safety net (test) first, so it stays Stabilize here. An explicit
+        # harden on a sensitive path is classified Secure by the rule below —
+        # the secure and stabilize label sets are disjoint, so it never enters
+        # this block.
         if op in _REFINE_OPS:
             return REFINE
         if op in _EVOLVE_OPS:

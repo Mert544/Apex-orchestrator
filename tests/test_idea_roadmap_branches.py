@@ -11,7 +11,6 @@ memory); no time, randomness, or order-dependent assertions.
 
 from __future__ import annotations
 
-import pytest
 
 from app.engine.idea_roadmap import (
     EVOLVE,
@@ -52,23 +51,15 @@ def test_synthesis_theme_empty_chain_falls_back_to_evolve():
     assert classify_phase(node) == EVOLVE
 
 
-@pytest.mark.xfail(
-    reason="Unreachable branch: classify_phase line 251 (op=='harden' and "
-    "first-label in _SECURE_LABELS) sits INSIDE the `op=='test' or first-label "
-    "in _STABILIZE_LABELS` block. With op=='harden' the block is only entered "
-    "when the first fact label is a stabilize label, but _STABILIZE_LABELS and "
-    "_SECURE_LABELS are disjoint, so the first label can never satisfy both -> "
-    "the SECURE override at line 251 is dead code. A harden+secure idea instead "
-    "classifies via the later `op=='harden'` rule. Reported, not fixed.",
-    strict=True,
-)
-def test_harden_on_secure_label_overrides_test_first_branch():
-    # Intends to reach the dead SECURE override at line 251. _first_label only
-    # reads source_facts[0], and a single label cannot be in both disjoint sets,
-    # so this asserts the (unreachable) intended behavior and xfails.
+def test_harden_on_sensitive_path_classifies_secure():
+    # A harden lens whose first fact is a sensitive-path (secure) label is a
+    # Secure action. The secure and stabilize label sets are disjoint, so it
+    # bypasses the stabilize-first block and is classified by the `op=='harden'`
+    # rule. (This previously had a dead duplicate override inside the stabilize
+    # block, since removed.)
     node = _node(operator="harden",
-                 source_facts=["untested: app/auth.py",
-                               "sensitive-path: app/auth.py"])
+                 source_facts=["sensitive-path: app/auth.py",
+                               "untested: app/auth.py"])
     assert classify_phase(node) == SECURE
 
 
