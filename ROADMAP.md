@@ -7,6 +7,15 @@ and roadmap reasoning — Apex is a project-development assistant; security stay
 an integrated supporting signal.
 
 ## Now (shipped)
+- **The cell — proof-carrying, multi-language-aware, self-knowing.** A runnable
+  recommendation shows its proof: the exact draft diff, a re-parse verdict, the
+  before→after metric delta (`transform_impact`), and whether the tests exercise
+  the change (verification strength) — `apex ideate --actions --prove`. BS-1
+  (Python-only) is broken open: `polyglot_facts` names the biggest / most-churned
+  non-Python files with a test-presence flag and a debt-marker count, surfaced as
+  honest recommend-only ideas, in `apex scope`, and a dashboard panel. Apex knows
+  itself: `apex trackrecord` shows its proven fix history; `apex pulse` is the
+  one-screen vital-signs snapshot (grade + scope + next-moves + track record).
 - **A learning, concrete idea engine** — roadmap ranking now learns from the
   repo's own `IdeaMemory` outcome ledger (historically-landing fixes rank up;
   no-op on a fresh repo), activated on `apex ideate`. Two new grounded signals:

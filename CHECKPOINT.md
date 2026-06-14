@@ -2,14 +2,57 @@
 
 **Date**: 2026-06-14
 **Commit**: branch `claude/apex-orchestrator-eZbJO`
-**Tests**: 4700+ passing ✅
-**Status**: A learning, concrete idea engine — see "Latest milestone" below
+**Tests**: 5100+ passing ✅
+**Status**: The cell — proof-carrying, multi-language-aware, self-knowing — see "Latest milestone" below
 
-> Previous milestones: team-org tooling + capability efficiency + engine depth (2026-06-14, 4000 tests);
+> Previous milestones: a learning, concrete idea engine (2026-06-14, 4700 tests);
+> team-org tooling + capability efficiency + engine depth (2026-06-14, 4000 tests);
 > self-measurement truth + capability growth (2026-06-14, 3400 tests);
 > trust layer + multi-file refactoring (2026-06-12, 1921 tests);
 > idea-engine+action-bridge (2026-05-30, 786 tests);
 > autonomy-safety-core (2026-04-25, 633 tests).
+
+---
+
+## Latest milestone: the cell — proof-carrying, multi-language-aware, self-knowing (2026-06-14)
+
+Apex grew from "a learning, concrete idea engine" into a self-contained **cell**:
+a deterministic, zero-token unit that develops the project it sits in, *proves*
+its recommendations, knows its own limits, and reaches beyond Python — the wedge
+an LLM structurally cannot match.
+
+**Proof-carrying recommendations.** A runnable recommendation now shows the
+**exact draft diff** (computed, never applied), a deterministic **re-parse
+verdict**, the **before→after metric delta** (max nesting / complexity /
+cognitive, via the new `transform_impact` module), and whether the project's
+**tests actually exercise the change** (verification strength) — "proof: +4 −2,
+re-parses cleanly ✓, max nesting 3→1, your tests reference this module ✓". Opt-in
+via `apex ideate --actions --prove`; applied fixes carry the same proof-of-value
+into the maintenance report and `proof-of-fix.json`.
+
+**Concrete to the symbol/line.** `IdeaNode.anchors` pinpoints the riskiest
+*function* (by complexity, test-status-independent — a dogfood fix so it fires on
+well-tested repos) with its line and a quantified payoff (fan-in / named
+decoupling targets), flowing through ideate / explain / brief / dashboard / the
+generated test stub.
+
+**Multi-language awareness (BS-1).** Apex no longer abandons the non-Python part
+of a polyglot repo: `polyglot_facts` names the biggest / most-churned non-Python
+files with a convention-based **test-presence** flag and a language-agnostic
+**debt-marker** count. Surfaced as honest, recommend-only ideas (Apex has no
+non-Python transform and says so), in the new `apex scope` command, and a
+dashboard panel. `apex scope` reports e.g. "analysing 93% of this repo (Python);
+7% outside scope" and names the files.
+
+**Self-knowing.** `apex trackrecord` (+ a dashboard panel) shows Apex's proven
+fix history on the repo — landing rates per fix type from its own evidence trail.
+The roadmap **learns** from those outcomes. `apex pulse` synthesizes grade +
+scope + top grounded next-moves + track record into one snapshot.
+
+**Dogfood bug fixes the agents found and proved** (5 this campaign): a
+dependency-planner infinite-hang, an unreachable duplicate candidate in the
+fractal analyzer, a dead `_block_template`, a dead SECURE override in
+`classify_phase`, and a null/missing-key asymmetry in trackrecord counting.
 
 ---
 
