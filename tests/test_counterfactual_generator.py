@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.engine.counterfactual_generator import CounterfactualGenerator, CounterfactualResult
+from app.engine.counterfactual_generator import CounterfactualGenerator
 
 
 def test_generates_counterfactual_for_missing_guard():
@@ -99,3 +99,15 @@ def test_backward_compatible_without_operator_or_fact():
     res = gen.generate({"text": "Function lacks input validation guard"})
     assert res.scenarios and any("attacker" in s.lower() or "input" in s.lower()
                                  for s in res.scenarios)
+
+
+def test_verify_lens_has_its_own_scenario():
+    # The `verify` lens gets a correctness/proof-flavored counterfactual, not the
+    # generic "malformed input" fallback shared by un-keyed claims.
+    gen = CounterfactualGenerator()
+    res = gen.generate({"text": "verify app/x.py", "operator": "verify"})
+    joined = " ".join(res.scenarios).lower()
+    assert "invariant" in joined or "proof" in joined or "precondition" in joined
+    # And it differs from a sibling lens (harden) on the same subject.
+    harden = gen.generate({"text": "harden app/x.py", "operator": "harden"}).scenarios[0]
+    assert res.scenarios[0] != harden

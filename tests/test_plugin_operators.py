@@ -1,7 +1,7 @@
 """Plugins can contribute development operators to the Idea Permutation Engine."""
 from pathlib import Path
 
-from app.engine.idea_permutation import IdeaPermutationEngine, Operator
+from app.engine.idea_permutation import DEVELOPMENT_OPERATORS, IdeaPermutationEngine, Operator
 from app.plugins.registry import PluginRegistry
 
 _PLUGIN_SRC = '''
@@ -29,8 +29,13 @@ def test_proxy_collects_operators(tmp_path):
 def test_engine_uses_plugin_operator(tmp_path):
     _project(tmp_path)
     extra = [{"name": "trace", "template": "Add distributed tracing to {x}", "feasibility": 0.5}]
+    # Breadth must span the whole alphabet (built-ins + the plugin) so the
+    # appended operator is reachable regardless of how many built-in lenses
+    # exist — otherwise a single-module project fills its budget with the
+    # earlier lenses and never applies the plugin's.
+    breadth = len(DEVELOPMENT_OPERATORS) + len(extra)
     rep = IdeaPermutationEngine(
-        {"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 9}, tmp_path,
+        {"max_total_ideas": 40, "max_idea_depth": 2, "breadth": breadth}, tmp_path,
         extra_operators=extra,
     ).run()
     assert any(i.operator == "trace" for i in rep.ideas)

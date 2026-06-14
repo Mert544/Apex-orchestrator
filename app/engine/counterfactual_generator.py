@@ -40,6 +40,14 @@ _LENS_SCENARIOS: dict[str, list[str]] = {
         "What failure currently happens invisibly, with no metric or log to catch it?",
         "What early signal would reveal this degrading before it fails outright?",
     ],
+    "decouple": [
+        "What hidden behavior of the concrete dependency does a caller secretly rely on?",
+        "What breaks once this talks to an interface instead of the real collaborator?",
+    ],
+    "verify": [
+        "What invariant does this code assume but never actually assert or prove?",
+        "What input would make the proof's preconditions false, so the guarantee silently stops holding?",
+    ],
 }
 
 
