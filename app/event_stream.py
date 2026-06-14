@@ -139,9 +139,10 @@ class ApexEventStreamServer:
         self._thread.start()
 
     def stop(self) -> None:
-        if self._server:
-            self._server.shutdown()
-            self._server = None
+        if not (self._server):
+            return
+        self._server.shutdown()
+        self._server = None
 
     def emit(self, topic: str, payload: dict[str, Any], node_id: str = "local") -> None:
         self.stream.publish(StreamEvent(

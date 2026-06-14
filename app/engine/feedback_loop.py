@@ -66,12 +66,13 @@ class FeedbackLoop:
         self._load()
 
     def _load(self) -> None:
-        if self.log_path.exists():
-            try:
-                data = json.loads(self.log_path.read_text(encoding="utf-8"))
-                self.entries = [FeedbackEntry(**e) for e in data.get("entries", [])]
-            except Exception:
-                self.entries = []
+        if not (self.log_path.exists()):
+            return
+        try:
+            data = json.loads(self.log_path.read_text(encoding="utf-8"))
+            self.entries = [FeedbackEntry(**e) for e in data.get("entries", [])]
+        except Exception:
+            self.entries = []
 
     def _save(self) -> None:
         self.log_path.write_text(

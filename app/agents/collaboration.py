@@ -120,16 +120,17 @@ class ApexCollaborationProtocol:
         self._threads.append(t)
 
     def _handle_remote_event(self, msg: dict[str, Any]) -> None:
-        if self.bus and msg.get("topic"):
-            from app.agents.base import AgentMessage
-            self.bus.publish(
-                AgentMessage(
-                    sender=msg.get("sender", "remote"),
-                    recipient=msg.get("recipient"),
-                    topic=msg["topic"],
-                    payload=msg.get("payload", {}),
-                )
+        if not (self.bus and msg.get("topic")):
+            return
+        from app.agents.base import AgentMessage
+        self.bus.publish(
+            AgentMessage(
+                sender=msg.get("sender", "remote"),
+                recipient=msg.get("recipient"),
+                topic=msg["topic"],
+                payload=msg.get("payload", {}),
             )
+        )
 
     def _wire_bus(self) -> None:
         """Forward local bus events to remote peers."""

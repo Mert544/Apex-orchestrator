@@ -60,12 +60,13 @@ class RunComparison:
         self._load()
 
     def _load(self) -> None:
-        if self.log_path.exists():
-            try:
-                data = json.loads(self.log_path.read_text(encoding="utf-8"))
-                self.runs = [RunSnapshot(**r) for r in data.get("runs", [])]
-            except Exception:
-                self.runs = []
+        if not (self.log_path.exists()):
+            return
+        try:
+            data = json.loads(self.log_path.read_text(encoding="utf-8"))
+            self.runs = [RunSnapshot(**r) for r in data.get("runs", [])]
+        except Exception:
+            self.runs = []
 
     def _save(self) -> None:
         self.log_path.write_text(

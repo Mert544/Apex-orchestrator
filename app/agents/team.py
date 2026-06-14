@@ -39,9 +39,10 @@ class AgentTeam:
         self.agents[agent.name] = agent
 
     def remove(self, name: str) -> None:
-        if name in self.agents:
-            self.agents[name].bus = None
-            del self.agents[name]
+        if name not in self.agents:
+            return
+        self.agents[name].bus = None
+        del self.agents[name]
 
     def broadcast(self, topic: str, payload: dict[str, Any]) -> None:
         self.bus.broadcast(sender=self.name, topic=topic, payload=payload)

@@ -233,7 +233,8 @@ class ActionExecutor:
 
     def cleanup(self) -> None:
         """Remove sandbox directory."""
-        if self.sandbox_dir and self.sandbox_dir.exists():
-            shutil.rmtree(self.sandbox_dir.parent, ignore_errors=True)
-            self.sandbox_dir = None
-            self._last_changed_files.clear()
+        if not (self.sandbox_dir and self.sandbox_dir.exists()):
+            return
+        shutil.rmtree(self.sandbox_dir.parent, ignore_errors=True)
+        self.sandbox_dir = None
+        self._last_changed_files.clear()

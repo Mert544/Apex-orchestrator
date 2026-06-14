@@ -93,7 +93,7 @@ class LearningPolicy:
         by_type: defaultdict[str, list[float]] = defaultdict(list)
         for entry in feedback_entries:
             parts = entry.node_key.split(":")
-            if len(parts) >= 1:
+            if bool(parts):
                 issue_type = parts[0]
                 by_type[issue_type].append(entry.feedback_score)
 

@@ -104,8 +104,9 @@ class ApexDaemon:
         self.pid_file.write_text(str(os.getpid()))
 
     def _remove_pid(self) -> None:
-        if self.pid_file.exists():
-            self.pid_file.unlink()
+        if not (self.pid_file.exists()):
+            return
+        self.pid_file.unlink()
 
     def _register_signal_handlers(self) -> None:
         def _handler(signum, _frame):

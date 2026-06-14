@@ -85,14 +85,16 @@ class _ShelveBackend(_BaseBackend):
             self._db.sync()
 
     def close(self) -> None:
-        if self._db is not None:
-            self._db.close()
-            self._db = None
+        if self._db is None:
+            return
+        self._db.close()
+        self._db = None
 
     def _ensure_open(self) -> None:
-        if self._db is None:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self._db = shelve.open(str(self.path), flag="c")
+        if self._db is not None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._db = shelve.open(str(self.path), flag="c")
 
     @staticmethod
     def _default() -> dict[str, Any]:

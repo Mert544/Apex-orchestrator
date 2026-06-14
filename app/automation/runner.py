@@ -139,8 +139,9 @@ class SkillAutomationRunner:
         return True
 
     def _run_hook(self, hook_name: str, context: dict) -> None:
-        if self.plugins is not None:
-            self.plugins.run_hook(hook_name, context)
+        if self.plugins is None:
+            return
+        self.plugins.run_hook(hook_name, context)
 
 
 def _classify_error(exc: Exception) -> str:

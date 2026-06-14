@@ -154,18 +154,19 @@ class SwarmCoordinator:
 
     def _handle_scan_complete(self, agent: Agent, msg: AgentMessage) -> None:
         """Trigger agent run when scan completes."""
-        if agent.state == AgentState.IDLE:
-            project_root = msg.payload.get("project_root", ".")
-            result = agent.run(project_root=project_root)
-            self._results.append(result)
-            self.record_outcome("scan", result.get("findings_count", 0) >= 0)
-            # Emit findings
-            if result.get("risks"):
-                self.bus.broadcast(
-                    sender=agent.name,
-                    topic="security.alert",
-                    payload={"risks": result["risks"], "project_root": project_root},
-                )
+        if not (agent.state == AgentState.IDLE):
+            return
+        project_root = msg.payload.get("project_root", ".")
+        result = agent.run(project_root=project_root)
+        self._results.append(result)
+        self.record_outcome("scan", result.get("findings_count", 0) >= 0)
+        # Emit findings
+        if result.get("risks"):
+            self.bus.broadcast(
+                sender=agent.name,
+                topic="security.alert",
+                payload={"risks": result["risks"], "project_root": project_root},
+            )
 
     def _route_to_evaluator(self, msg: AgentMessage) -> None:
         """Route security alerts to claim evaluator."""

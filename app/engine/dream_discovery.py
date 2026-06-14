@@ -60,8 +60,9 @@ def _module_tags(profile: Any) -> dict[str, set[str]]:
     tags: dict[str, set[str]] = {}
 
     def add(module: str, tag: str) -> None:
-        if module:
-            tags.setdefault(module, set()).add(tag)
+        if not (module):
+            return
+        tags.setdefault(module, set()).add(tag)
 
     str_fields = {
         "security_finding_modules": "security",

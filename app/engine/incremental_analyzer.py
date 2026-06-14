@@ -36,12 +36,13 @@ class IncrementalAnalyzer:
         self._load_state()
 
     def _load_state(self) -> None:
-        if self._state_path.exists():
-            try:
-                with open(self._state_path, encoding="utf-8") as f:
-                    self._previous = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                self._previous = {}
+        if not (self._state_path.exists()):
+            return
+        try:
+            with open(self._state_path, encoding="utf-8") as f:
+                self._previous = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            self._previous = {}
 
     def _save_state(self, current: dict[str, dict[str, Any]]) -> None:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)

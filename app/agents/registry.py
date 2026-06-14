@@ -19,8 +19,9 @@ class AgentRegistry:
 
     def register(self, agent_type: str, factory: Callable[..., Agent] | None = None) -> None:
         """Register an agent factory by type name, or an instance directly."""
-        if factory is not None:
-            self._factories[agent_type] = factory
+        if factory is None:
+            return
+        self._factories[agent_type] = factory
 
     def register_instance(self, agent: Agent) -> None:
         """Register an existing agent instance."""
@@ -56,8 +57,9 @@ class AgentRegistry:
         return self._instances
 
     def remove(self, name: str) -> None:
-        if name in self._instances:
-            del self._instances[name]
+        if name not in self._instances:
+            return
+        del self._instances[name]
 
     def reset_all(self) -> None:
         self._instances.clear()

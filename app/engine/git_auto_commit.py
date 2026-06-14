@@ -17,8 +17,9 @@ class GitCommitResult:
     error: str = ""
 
     def __post_init__(self):
-        if self.changed_files is None:
-            self.changed_files = []
+        if self.changed_files is not None:
+            return
+        self.changed_files = []
 
     def to_dict(self) -> dict[str, Any]:
         return {

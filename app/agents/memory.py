@@ -48,34 +48,35 @@ class AgentMemory:
         return hashlib.sha256(claim.encode()).hexdigest()[:16]
 
     def _load(self) -> None:
-        if self.memory_dir and (self.memory_dir / "agent_memory.json").exists():
-            try:
-                with open(self.memory_dir / "agent_memory.json", encoding="utf-8") as f:
-                    data = json.load(f)
-                for entry_data in data.get("entries", []):
-                    votes = [
-                        Vote(
-                            agent_name=v["agent_name"],
-                            agent_role=v["agent_role"],
-                            verdict=getattr(importlib.import_module("app.agents.consensus").Verdict, v["verdict"]),
-                            confidence=v["confidence"],
-                            reasoning=v["reasoning"],
-                            weight=v.get("weight", 1.0),
-                        )
-                        for v in entry_data["votes"]
-                    ]
-                    entry = MemoryEntry(
-                        claim_hash=entry_data["claim_hash"],
-                        claim_preview=entry_data["claim_preview"],
-                        votes=votes,
-                        final_verdict=entry_data["final_verdict"],
-                        timestamp=entry_data["timestamp"],
-                        hit_count=entry_data.get("hit_count", 1),
+        if not (self.memory_dir and (self.memory_dir / "agent_memory.json").exists()):
+            return
+        try:
+            with open(self.memory_dir / "agent_memory.json", encoding="utf-8") as f:
+                data = json.load(f)
+            for entry_data in data.get("entries", []):
+                votes = [
+                    Vote(
+                        agent_name=v["agent_name"],
+                        agent_role=v["agent_role"],
+                        verdict=getattr(importlib.import_module("app.agents.consensus").Verdict, v["verdict"]),
+                        confidence=v["confidence"],
+                        reasoning=v["reasoning"],
+                        weight=v.get("weight", 1.0),
                     )
-                    self._entries[entry.claim_hash] = entry
-                self._pattern_confidence = data.get("pattern_confidence", {})
-            except (json.JSONDecodeError, KeyError, OSError):
-                pass
+                    for v in entry_data["votes"]
+                ]
+                entry = MemoryEntry(
+                    claim_hash=entry_data["claim_hash"],
+                    claim_preview=entry_data["claim_preview"],
+                    votes=votes,
+                    final_verdict=entry_data["final_verdict"],
+                    timestamp=entry_data["timestamp"],
+                    hit_count=entry_data.get("hit_count", 1),
+                )
+                self._entries[entry.claim_hash] = entry
+            self._pattern_confidence = data.get("pattern_confidence", {})
+        except (json.JSONDecodeError, KeyError, OSError):
+            pass
 
     def _save(self) -> None:
         if not self.memory_dir:

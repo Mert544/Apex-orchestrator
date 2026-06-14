@@ -35,10 +35,11 @@ class AgentBus:
         self._subscribers[topic].append((agent_name, handler))
 
     def unsubscribe(self, agent_name: str, topic: str) -> None:
-        if topic in self._subscribers:
-            self._subscribers[topic] = [
-                (a, h) for a, h in self._subscribers[topic] if a != agent_name
-            ]
+        if topic not in self._subscribers:
+            return
+        self._subscribers[topic] = [
+            (a, h) for a, h in self._subscribers[topic] if a != agent_name
+        ]
 
     def publish(self, msg: AgentMessage) -> None:
         self._history.append(msg)

@@ -65,12 +65,13 @@ class RollbackJournal:
         self._load()
 
     def _load(self) -> None:
-        if self.journal_path.exists():
-            try:
-                data = json.loads(self.journal_path.read_text(encoding="utf-8"))
-                self.records = [PatchRecord(**r) for r in data.get("records", [])]
-            except Exception:
-                self.records = []
+        if not (self.journal_path.exists()):
+            return
+        try:
+            data = json.loads(self.journal_path.read_text(encoding="utf-8"))
+            self.records = [PatchRecord(**r) for r in data.get("records", [])]
+        except Exception:
+            self.records = []
 
     def _save(self) -> None:
         self.journal_path.write_text(

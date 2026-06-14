@@ -152,9 +152,10 @@ class PluginMarketplaceServer:
         print(f"Plugin Marketplace Server running on http://{self.host}:{self.port}")
 
     def stop(self) -> None:
-        if self._server:
-            self._server.shutdown()
-            self._server = None
+        if not (self._server):
+            return
+        self._server.shutdown()
+        self._server = None
 
     def __enter__(self) -> PluginMarketplaceServer:
         self.start()

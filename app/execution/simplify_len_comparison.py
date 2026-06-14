@@ -130,8 +130,9 @@ def _boolean_context_compares(tree: ast.Module) -> set[int]:
     ids: set[int] = set()
 
     def _mark(child: ast.AST | None) -> None:
-        if isinstance(child, ast.Compare):
-            ids.add(id(child))
+        if not (isinstance(child, ast.Compare)):
+            return
+        ids.add(id(child))
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.If, ast.While, ast.IfExp, ast.Assert)):

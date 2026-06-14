@@ -89,8 +89,9 @@ class SecurityAgent(Agent):
 
     def record_result(self, pattern: str, success: bool) -> None:
         """Record whether a detection was correct (for learning)."""
-        if self.learning:
-            self.learning.record_result("security", pattern, success)
+        if not (self.learning):
+            return
+        self.learning.record_result("security", pattern, success)
 
     def _execute(self, project_root: str | Path = ".", **kwargs: Any) -> dict[str, Any]:
         root = Path(project_root).resolve()

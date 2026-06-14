@@ -95,8 +95,9 @@ class ModePolicy:
     custom_permissions: ModePermissions | None = None
 
     def __post_init__(self) -> None:
-        if isinstance(self.mode, str):
-            self.mode = ApexMode(self.mode)
+        if not (isinstance(self.mode, str)):
+            return
+        self.mode = ApexMode(self.mode)
 
     @property
     def permissions(self) -> ModePermissions:

@@ -323,7 +323,7 @@ class RefactorLimb(Limb):
                 i for i in result["issues_found"] if target_pattern.lower() in i.lower()
             ]
 
-        if len(result["issues_found"]) > 0:
+        if bool(result["issues_found"]):
             result["refactors_applied"].append(
                 f"Found {len(result['issues_found'])} refactoring opportunities"
             )

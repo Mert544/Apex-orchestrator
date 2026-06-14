@@ -75,14 +75,15 @@ class Agent:
         recipient: str | None = None,
     ) -> None:
         """Send a message via the bus."""
-        if self.bus:
-            msg = AgentMessage(
-                sender=self.name,
-                recipient=recipient,
-                topic=topic,
-                payload=payload,
-            )
-            self.bus.publish(msg)
+        if not (self.bus):
+            return
+        msg = AgentMessage(
+            sender=self.name,
+            recipient=recipient,
+            topic=topic,
+            payload=payload,
+        )
+        self.bus.publish(msg)
 
     def run(self, **kwargs: Any) -> dict[str, Any]:
         """Main execution hook. Override in subclasses."""
@@ -104,8 +105,9 @@ class Agent:
         self.state = AgentState.PAUSED
 
     def resume(self) -> None:
-        if self.state == AgentState.PAUSED:
-            self.state = AgentState.RUNNING
+        if not (self.state == AgentState.PAUSED):
+            return
+        self.state = AgentState.RUNNING
 
     def reset(self) -> None:
         self.state = AgentState.IDLE
