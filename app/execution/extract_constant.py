@@ -3,9 +3,14 @@
 A detection -> action refactor: find a literal value (a non-trivial int, a
 float, or a short string) that appears many times in ONE module as a bare
 standalone literal, name it once at the top of the file, and replace every
-occurrence with that name. The reader gains a meaning ("86400" becomes
-``SECONDS_PER_DAY``-shaped ``CONSTANT_86400``) and the editor gains a single
-place to change the value.
+occurrence with that name. The reader gains a meaning (``'content-type'``
+becomes ``CONTENT_TYPE``) and the editor gains a single place to change the
+value.
+
+Names are derived from the literal's VALUE, not stamped with a machine-ish
+``CONST_`` prefix: a clean string slugs to UPPER_SNAKE (``'utf-16'`` ->
+``UTF_16``), a number with no natural name falls back to a readable
+``VALUE_<n>`` form. The choice is deterministic and uniquified at module level.
 
 Conservative by design, like its neighbors — every ambiguity is a **blocker**,
 never a guess. Only literals that can be safely named and spliced are touched:
@@ -16,6 +21,8 @@ never a guess. Only literals that can be safely named and spliced are touched:
   - f-strings, bytes, and any multi-line literal are skipped (the splice is
     intra-line by design, so comments and formatting survive);
   - trivial literals (-1, 0, 1, 2, the empty/one-char string) are never named;
+  - well-known IDIOMS — encodings, error handlers, file modes, ``__main__`` —
+    stay inline; naming them hurts readability (see ``_IDIOM_DENYLIST``);
   - a literal seen fewer than ``min_occurrences`` times is not worth a name.
 
 Exactly ONE constant — the most-repeated qualifying literal — is extracted per
@@ -44,6 +51,37 @@ __all__ = ["plan_extract_constant"]
 # Integers so common they read as structure, not magic — naming them adds noise.
 _TRIVIAL_INTS = {-1, 0, 1, 2}
 
+# Well-known idioms a human writes inline; naming them HURTS readability. This is
+# a conservative, hand-curated denylist — a literal here is never extracted (so
+# the objective's fitness/moves stop counting modules that only repeat idioms).
+# Kept deliberately small and specific; ambiguous values stay extractable.
+_IDIOM_DENYLIST: frozenset[object] = frozenset({
+    # Common text encodings.
+    "utf-8", "utf8", "ascii", "latin-1",
+    # codecs error-handler strings.
+    "strict", "replace", "ignore",
+    # open()/file-mode strings.
+    "r", "w", "rb", "wb", "a",
+    # Structural string idioms (empty / single space / main-guard).
+    "", " ", "__main__",
+    # The small integers that read as structure, not magic.
+    -1, 0, 1, 2,
+})
+
+
+def _is_idiom(value: object) -> bool:
+    """Is ``value`` a well-known idiom that should stay inline (never named)?
+
+    Membership is by value AND exact type — ``True``/``False`` are ``int``
+    subclasses but must not match ``1``/``0`` in the denylist, and a stray
+    ``1.0`` float must not match the integer ``1``."""
+    if isinstance(value, bool):
+        return False
+    for idiom in _IDIOM_DENYLIST:
+        if value == idiom and type(value) is type(idiom):
+            return True
+    return False
+
 
 def _is_fixture_path(path: str) -> bool:
     """Example/fixture/test code is excluded (its repetition is often deliberate
@@ -61,6 +99,9 @@ def _qualifies(value: object) -> bool:
     """Is ``value`` a literal worth extracting into a named constant?"""
     # bool is an int subclass — True/False are already named, never extract.
     if isinstance(value, bool):
+        return False
+    # Well-known idioms read better inline than behind a name.
+    if _is_idiom(value):
         return False
     if isinstance(value, int):
         return value not in _TRIVIAL_INTS
@@ -147,21 +188,36 @@ def _slugify_string(value: str) -> str:
 
 
 def _base_name(value: object) -> str:
-    """A deterministic constant-name base for ``value`` (no collision suffix)."""
+    """A deterministic, human-readable constant-name base for ``value`` (no
+    collision suffix).
+
+    Strings name themselves: the value is slugged to UPPER_SNAKE, so
+    ``'content-type'`` -> ``CONTENT_TYPE`` and ``'utf-16'`` -> ``UTF_16``. A
+    value that slugs to nothing usable (leading digit, all-symbol) gets a
+    readable ``VALUE_<slug>`` prefix rather than the old machine-ish ``CONST_``.
+    Numbers have no natural name, so they fall back to a neutral ``VALUE_<n>``
+    base (``86400`` -> ``VALUE_86400``, ``-1`` would be denylisted; ``3.14`` ->
+    ``VALUE_3_14``) — deterministic and clearly placeholder-shaped for a human
+    to rename. The result is always a valid, non-keyword identifier."""
     if isinstance(value, str):
+        # The slug is UPPER_SNAKE, so it can never be a (lowercase) keyword;
+        # only a leading digit or an all-symbol value blocks the bare name.
         core = _slugify_string(value)
-        if not core or not (core[0].isalpha() or core[0] == "_"):
-            core = f"STR_{core}" if core else "STR"
-        name = f"CONST_{core}"
+        if core and (core[0].isalpha() or core[0] == "_"):
+            name = core
+        elif core:
+            name = f"VALUE_{core}"
+        else:
+            name = "VALUE"
     elif isinstance(value, int):
         sign = "NEG_" if value < 0 else ""
-        name = f"CONSTANT_{sign}{abs(value)}"
+        name = f"VALUE_{sign}{abs(value)}"
     else:  # float
         text = repr(value).replace("-", "NEG_").replace(".", "_").replace("+", "")
         text = re.sub(r"[^0-9A-Za-z_]+", "_", text).strip("_").upper()
-        name = f"CONSTANT_{text}"
+        name = f"VALUE_{text}"
     if not name.isidentifier() or keyword.iskeyword(name):
-        name = "CONSTANT"
+        name = "VALUE"
     return name
 
 

@@ -42,8 +42,8 @@ def test_repeated_int_extracted_and_equivalent(tmp_path):
     assert plan.ok, plan.blockers
     new = plan.new_contents["app/timing.py"]
 
-    assert "CONSTANT_86400 = 86400\n" in new
-    assert new.count("CONSTANT_86400") == 4  # 1 definition + 3 replacements
+    assert "VALUE_86400 = 86400\n" in new
+    assert new.count("VALUE_86400") == 4  # 1 definition + 3 replacements
     # The literal survives only as the constant's own value (one bare 86400).
     assert new.count("86400") == 5  # 4 names contain it + the assignment RHS
     assert plan.edits_by_file["app/timing.py"] == 3
@@ -73,7 +73,7 @@ def test_repeated_string_extracted_to_upper_snake(tmp_path):
     assert plan.ok, plan.blockers
     new = plan.new_contents["app/client.py"]
 
-    assert "CONST_HTTPS_API_EXAMPLE_COM = 'https://api.example.com'\n" in new
+    assert "HTTPS_API_EXAMPLE_COM = 'https://api.example.com'\n" in new
     # All three standalone occurrences became the name.
     assert plan.edits_by_file["app/client.py"] == 3
     assert new.count("'https://api.example.com'") == 1  # only the definition
@@ -119,7 +119,7 @@ def test_trivial_literals_never_extracted(tmp_path):
 def test_name_collision_resolved_with_suffix(tmp_path):
     # A top-level binding already owns the synthesized base name.
     src = (
-        "CONSTANT_500 = 'reserved'\n"
+        "VALUE_500 = 'reserved'\n"
         "def a():\n"
         "    return 500\n"
         "def b():\n"
@@ -133,8 +133,8 @@ def test_name_collision_resolved_with_suffix(tmp_path):
     assert plan.ok, plan.blockers
     new = plan.new_contents["app/coll.py"]
     # Base name is taken -> suffixed, and the original binding survives intact.
-    assert "CONSTANT_500_2 = 500\n" in new
-    assert "CONSTANT_500 = 'reserved'\n" in new
+    assert "VALUE_500_2 = 500\n" in new
+    assert "VALUE_500 = 'reserved'\n" in new
     assert plan.edits_by_file["app/coll.py"] == 3
     ast.parse(new)
 
@@ -208,7 +208,7 @@ def test_insertion_after_imports_and_docstring(tmp_path):
     assert plan.ok, plan.blockers
     new_lines = plan.new_contents["app/ordered.py"].splitlines()
     assign_idx = next(i for i, ln in enumerate(new_lines)
-                      if ln.startswith("CONSTANT_4096"))
+                      if ln.startswith("VALUE_4096"))
     # The constant lands after the import block, before the first def.
     assert new_lines[assign_idx - 1] == "import os"
     ast.parse(plan.new_contents["app/ordered.py"])
@@ -246,8 +246,8 @@ def test_most_repeated_literal_wins(tmp_path):
     assert plan.ok, plan.blockers
     new = plan.new_contents["app/most.py"]
     # 222 appears 3x, 111 twice -> 222 is chosen, 111 left as a literal.
-    assert "CONSTANT_222 = 222\n" in new
-    assert "CONSTANT_111" not in new
+    assert "VALUE_222 = 222\n" in new
+    assert "VALUE_111" not in new
     assert "111" in new
     assert plan.edits_by_file["app/most.py"] == 3
 
@@ -266,7 +266,7 @@ def test_float_literal_extracted(tmp_path):
     plan = plan_extract_constant(tmp_path, "app/flt.py", min_occurrences=3)
     assert plan.ok, plan.blockers
     new = plan.new_contents["app/flt.py"]
-    assert "CONSTANT_3_14 = 3.14\n" in new
+    assert "VALUE_3_14 = 3.14\n" in new
     assert plan.edits_by_file["app/flt.py"] == 3
     ast.parse(new)
 
@@ -275,3 +275,187 @@ def test_module_not_found_blocks(tmp_path):
     plan = plan_extract_constant(tmp_path, "app/missing.py")
     assert not plan.new_contents
     assert plan.blockers
+
+
+# --- Idiom denylist + descriptive naming -------------------------------------
+
+def test_idiom_encoding_not_extracted(tmp_path):
+    # 'utf-8' is a well-known idiom — repeating it never earns a constant.
+    src = (
+        "def a():\n"
+        "    return b''.decode('utf-8')\n"
+        "def b():\n"
+        "    return b''.decode('utf-8')\n"
+        "def c():\n"
+        "    return b''.decode('utf-8')\n"
+    )
+    _write(tmp_path, "app/enc.py", src)
+
+    plan = plan_extract_constant(tmp_path, "app/enc.py", min_occurrences=3)
+    assert not plan.new_contents  # idiom skipped -> nothing to do
+    assert not plan.blockers
+
+
+def test_idiom_among_real_magic_only_real_is_chosen(tmp_path):
+    # 'utf-8' appears 3x (idiom, skipped); 'content-type' 3x (real, chosen).
+    src = (
+        "def a():\n"
+        "    return ('content-type', 'utf-8')\n"
+        "def b():\n"
+        "    return ('content-type', 'utf-8')\n"
+        "def c():\n"
+        "    return ('content-type', 'utf-8')\n"
+    )
+    _write(tmp_path, "app/hdr.py", src)
+
+    plan = plan_extract_constant(tmp_path, "app/hdr.py", min_occurrences=3)
+    assert plan.ok, plan.blockers
+    new = plan.new_contents["app/hdr.py"]
+    # The idiom stays inline; the real header literal becomes a clean name.
+    assert "CONTENT_TYPE = 'content-type'\n" in new
+    assert new.count("'utf-8'") == 3  # untouched
+    assert new.count("'content-type'") == 1  # only the definition
+    assert plan.edits_by_file["app/hdr.py"] == 3
+    ast.parse(new)
+
+
+def test_content_type_named_descriptively(tmp_path):
+    # A clean string slugs straight to UPPER_SNAKE, no CONST_ prefix.
+    src = (
+        "def a():\n"
+        "    return get('content-type')\n"
+        "def b():\n"
+        "    return get('content-type')\n"
+        "def c():\n"
+        "    return get('content-type')\n"
+        "\n"
+        "def get(x):\n"
+        "    return x\n"
+    )
+    _write(tmp_path, "app/ct.py", src)
+
+    plan = plan_extract_constant(tmp_path, "app/ct.py", min_occurrences=3)
+    assert plan.ok, plan.blockers
+    new = plan.new_contents["app/ct.py"]
+    assert "CONTENT_TYPE = 'content-type'\n" in new
+    assert "CONST_" not in new  # the machine-ish prefix is gone for good
+    ast.parse(new)
+
+
+def test_utf16_kept_descriptive_not_denylisted(tmp_path):
+    # 'utf-16' is NOT in the denylist (only utf-8/utf8/ascii/latin-1 are);
+    # it extracts to a self-describing UTF_16 name.
+    src = (
+        "def a():\n"
+        "    return enc('utf-16')\n"
+        "def b():\n"
+        "    return enc('utf-16')\n"
+        "def c():\n"
+        "    return enc('utf-16')\n"
+        "\n"
+        "def enc(x):\n"
+        "    return x\n"
+    )
+    _write(tmp_path, "app/u16.py", src)
+
+    plan = plan_extract_constant(tmp_path, "app/u16.py", min_occurrences=3)
+    assert plan.ok, plan.blockers
+    new = plan.new_contents["app/u16.py"]
+    assert "UTF_16 = 'utf-16'\n" in new
+    ast.parse(new)
+
+
+def test_naming_is_deterministic(tmp_path):
+    src = (
+        "def a():\n"
+        "    return tag('content-type')\n"
+        "def b():\n"
+        "    return tag('content-type')\n"
+        "def c():\n"
+        "    return tag('content-type')\n"
+        "\n"
+        "def tag(x):\n"
+        "    return x\n"
+    )
+    _write(tmp_path, "app/det.py", src)
+
+    first = plan_extract_constant(tmp_path, "app/det.py", min_occurrences=3)
+    second = plan_extract_constant(tmp_path, "app/det.py", min_occurrences=3)
+    # Same input -> byte-identical output, including the synthesized name.
+    assert first.new_contents == second.new_contents
+    assert "CONTENT_TYPE = 'content-type'\n" in first.new_contents["app/det.py"]
+
+
+def test_descriptive_name_collision_suffixed(tmp_path):
+    # The slugged base name is already a top-level binding -> deterministic
+    # _2 suffix, original binding untouched.
+    src = (
+        "CONTENT_TYPE = 'reserved'\n"
+        "def a():\n"
+        "    return tag('content-type')\n"
+        "def b():\n"
+        "    return tag('content-type')\n"
+        "def c():\n"
+        "    return tag('content-type')\n"
+        "\n"
+        "def tag(x):\n"
+        "    return x\n"
+    )
+    _write(tmp_path, "app/ctcoll.py", src)
+
+    plan = plan_extract_constant(tmp_path, "app/ctcoll.py", min_occurrences=3)
+    assert plan.ok, plan.blockers
+    new = plan.new_contents["app/ctcoll.py"]
+    assert "CONTENT_TYPE_2 = 'content-type'\n" in new
+    assert "CONTENT_TYPE = 'reserved'\n" in new
+    ast.parse(new)
+
+
+def test_denylist_boundaries(tmp_path):
+    from app.execution.extract_constant import _IDIOM_DENYLIST, _qualifies
+
+    # Members of the denylist are refused...
+    for idiom in ("utf-8", "utf8", "ascii", "latin-1", "strict", "replace",
+                  "ignore", "r", "w", "rb", "wb", "a", "", " ", "__main__"):
+        assert idiom in _IDIOM_DENYLIST
+        assert _qualifies(idiom) is False, idiom
+    for n in (-1, 0, 1, 2):
+        assert n in _IDIOM_DENYLIST
+        assert _qualifies(n) is False
+
+    # ...but near-neighbours just outside the boundary still qualify.
+    for keep in ("utf-16", "content-type", "rw", "main", "exec"):
+        assert keep not in _IDIOM_DENYLIST
+        assert _qualifies(keep) is True, keep
+    for n in (3, -2, 100):
+        assert n not in _IDIOM_DENYLIST
+        assert _qualifies(n) is True
+
+    # bool is not an int idiom: True/False must not collapse onto 1/0.
+    assert _qualifies(True) is False  # bool is never extractable anyway
+    assert True not in _IDIOM_DENYLIST or _qualifies(True) is False
+
+
+def test_leading_digit_slug_falls_back_to_value_prefix(tmp_path):
+    # A string whose clean slug starts with a digit ('3d-model' -> '3D_MODEL')
+    # is not a valid identifier on its own; it falls back to a readable
+    # VALUE_-prefixed name rather than a machine-ish CONST_.
+    src = (
+        "def a():\n"
+        "    return pick('3d-model')\n"
+        "def b():\n"
+        "    return pick('3d-model')\n"
+        "def c():\n"
+        "    return pick('3d-model')\n"
+        "\n"
+        "def pick(x):\n"
+        "    return x\n"
+    )
+    _write(tmp_path, "app/dig.py", src)
+
+    plan = plan_extract_constant(tmp_path, "app/dig.py", min_occurrences=3)
+    assert plan.ok, plan.blockers
+    new = plan.new_contents["app/dig.py"]
+    assert "VALUE_3D_MODEL = '3d-model'\n" in new
+    assert "CONST_" not in new
+    ast.parse(new)
