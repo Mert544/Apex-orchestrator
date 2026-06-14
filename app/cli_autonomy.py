@@ -434,6 +434,9 @@ def cmd_develop(args: argparse.Namespace) -> int:
             print(render_history_markdown(history))
         return 0
 
+    if getattr(args, "top", False):
+        return _develop_top(args, target)
+
     want_grade = getattr(args, "grade", False)
     grade_before = _grade_score(str(target)) if want_grade else None
 
@@ -502,6 +505,179 @@ def cmd_develop(args: argparse.Namespace) -> int:
     # Non-zero only when an explicitly named objective is unknown (a usage error).
     return 1 if (result.blocked and not result.steps
                  and any("unknown objective" in b for b in result.blocked)) else 0
+
+
+def _top_runnable_step(plan):
+    """The #1 EXECUTABLE step in plan order, or None when the plan is all
+    advisory. The plan is already phase-ordered (roadmap) / value-sorted, so the
+    first executable step IS the highest-value runnable recommendation — picking
+    by plan order keeps the choice deterministic (no time/random tie-break)."""
+    for step in plan.steps:
+        if step.executable and step.target and str(step.target).endswith(".py"):
+            return step
+    return None
+
+
+def _top_proof_lines(step, proof: dict | None) -> list[str]:
+    """The chosen step's full proof block: title, concrete anchor focus, and the
+    proof line (diff stat + re-parse verdict + impact + coverage verdict)."""
+    lines = [
+        f"## Top recommendation: `{step.branch_path}` — {step.title}",
+        f"- action: **{step.action_type}** on `{step.target}`",
+        f"- focus: {step.description}  (value {step.value})",
+    ]
+    if not proof:
+        lines.append("- proof: _(the generator declined to draft a concrete "
+                     "diff for this step)_")
+        return lines
+    verdict = ("re-parses cleanly ✓" if proof.get("reparses")
+               else "⚠️ re-parse check failed")
+    impact = proof.get("impact") or ""
+    impact_clause = f", {impact}" if impact else ""
+    coverage = ("your tests reference this module ✓" if proof.get("covered")
+                else "⚠️ no test exercises this — add one first")
+    lines.append(
+        f"- proof: +{proof.get('added', 0)} −{proof.get('removed', 0)}, "
+        f"{verdict}{impact_clause} · {coverage}"
+    )
+    return lines
+
+
+def _develop_top(args, target) -> int:
+    """`apex develop --top`: close the loop on the SINGLE highest-value proven,
+    runnable recommendation through the guarded apply loop, COVERAGE-AWARE so a
+    green suite can never claim a false "verified" on a module no test exercises.
+
+    Default is a dry run (show the proof, change nothing). ``--apply`` lands the
+    one step via the existing guarded ``apply_plan`` (single-step, verified,
+    auto-rollback). The BLIND-SPOT GUARD refuses to auto-apply a fix on an
+    unreferenced module (the suite can't see it → false green) and returns
+    non-zero so CI notices, UNLESS ``--force`` is passed.
+    """
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.engine.idea_permutation import IdeaPermutationEngine
+    from app.engine.verification_strength import module_referenced_by_suite
+
+    root = str(target)
+    apply = getattr(args, "apply", False)
+    force = getattr(args, "force", False)
+    as_json = getattr(args, "json", False)
+
+    engine = IdeaPermutationEngine(
+        config={"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4},
+        project_root=root,
+    )
+    report = engine.run(objective=getattr(args, "objective", "") or None)
+    bridge = IdeaActionBridge()
+    plan = bridge.plan_roadmap(report, mode="supervised", project_root=root, proof=True)
+
+    step = _top_runnable_step(plan)
+    if step is None:
+        msg = "No runnable recommendation right now (the top ideas are advisory)."
+        if as_json:
+            print(json.dumps({"top": None, "applied": False,
+                              "reason": "no-runnable-step"}, indent=2))
+        else:
+            print(msg)
+        return 0
+
+    # The proof the step carries (attach_proofs loaded it onto patch_preview);
+    # fall back to a fresh draft so a step beyond the proof budget still proves.
+    proof = step.patch_preview if (step.patch_preview and "diff" in step.patch_preview) else None
+    if proof is None:
+        proof = bridge.prove_step(step, root)
+    covered = module_referenced_by_suite(root, step.target)
+
+    payload: dict = {
+        "top": {
+            "branch": step.branch_path, "title": step.title,
+            "action": step.action_type, "target": step.target,
+            "value": step.value, "description": step.description,
+        },
+        "covered": covered,
+        "proof": proof,
+        "applied": False,
+        "verified": None,
+    }
+
+    proof_lines = _top_proof_lines(step, proof)
+
+    # THE BLIND-SPOT FIX: a fix on a module NO test references can't be vouched
+    # for by a green suite — applying it would be a FALSE green. Refuse to
+    # auto-apply (rc != 0 so automation notices) unless --force overrides.
+    if apply and not covered and not force:
+        warning = (
+            f"⚠️ Your tests don't exercise `{step.target}`. Applying this and "
+            "getting a green suite would be a FALSE green — the suite can't see "
+            "the change. Add a test first, or re-run with --force to apply anyway."
+        )
+        payload["reason"] = "false-green-guard"
+        payload["warning"] = warning
+        if as_json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print("\n".join(proof_lines))
+            print(f"\n{warning}")
+        return 2
+
+    # Dry run (default): show the proof, change nothing.
+    if not apply:
+        if as_json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print("\n".join(proof_lines))
+            if not covered:
+                print("\n⚠️ Heads up: no test exercises this module — a green "
+                      "suite here would be a false green. Add a test first, or "
+                      "use --force when applying.")
+            print("\nre-run with --apply to land it.")
+        return 0
+
+    # Apply EXACTLY this one step through the existing guarded loop (single-step,
+    # verified, auto-rollback). Reuse apply_plan with max_apply=1 over a plan
+    # holding only the chosen step — no reimplementation of the guarded loop.
+    from app.models.idea import ActionPlan
+
+    one = ActionPlan(objective=plan.objective, project_root=plan.project_root,
+                     mode="supervised", steps=[step],
+                     stats={"total_steps": 1, "executable_steps": 1})
+    summary = bridge.apply_plan(one, root, mode="supervised",
+                                verify=not getattr(args, "no_verify", False),
+                                max_apply=1)
+    result = (summary.get("results") or [{}])[0]
+    applied = bool(result.get("applied"))
+    rolled_back = bool(result.get("rolled_back"))
+    verified = result.get("verified")
+    payload.update({"applied": applied, "rolled_back": rolled_back,
+                    "verified": verified, "apply_summary": summary})
+
+    # Honest verdict. A --force apply on an unreferenced module is "weak
+    # verification" — the suite passed but never looked at the change, so it is
+    # NOT a plain "verified".
+    if rolled_back:
+        verdict = "↩️ rolled back — tests failed after the patch; tree restored."
+    elif not applied:
+        verdict = f"⛔ not applied — {result.get('reason', 'no applicable patch')}."
+    elif not covered:
+        verdict = ("✅ applied (weak verification — tests don't exercise it; a "
+                   "green suite here does not prove this change)."
+                   if force else "✅ applied.")
+    elif verified:
+        verdict = "✅ applied and verified (your tests exercise this module)."
+    else:
+        verdict = "✅ applied (no test command detected — nothing to verify against)."
+    payload["verdict"] = verdict
+
+    if as_json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print("\n".join(proof_lines))
+        print(f"\n{verdict}")
+        if applied and not rolled_back:
+            print("_Applied to your working tree, not committed — "
+                  "review with `git diff`._")
+    # Non-zero when the one step we set out to land did not actually land.
+    return 0 if (applied and not rolled_back) else 1
 
 
 def _grade_score(target: str) -> int:
@@ -844,6 +1020,16 @@ def register_parsers(subparsers) -> None:
     develop_parser.add_argument("--playbook", action="store_true",
                                 help="Show the learned composition playbook (best verified "
                                      "recipe per objective) and exit")
+    develop_parser.add_argument(
+        "--top", action="store_true",
+        help="Close the loop on the SINGLE highest-value proven, runnable "
+             "recommendation: show its full proof and (with --apply) land it "
+             "through the guarded loop, coverage-aware so a green suite can't "
+             "claim a false 'verified'")
+    develop_parser.add_argument(
+        "--force", action="store_true",
+        help="With --top --apply: apply even when no test exercises the target "
+             "(labels the result weak verification — overrides the false-green guard)")
     develop_parser.add_argument("--apply", action="store_true",
                                 help="Apply the composed moves (default: dry run)")
     develop_parser.add_argument("--max-steps", type=int, default=25, dest="max_steps",
