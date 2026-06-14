@@ -140,6 +140,31 @@ class IdeaSeeder:
                 fact_value=fact_value,
             )
 
+        # Confluences (signal convergence): modules named by >= 3 DISTINCT signal
+        # families at once — no single lens names them, yet a module under
+        # several independent pressures is the highest-leverage development
+        # target ("decouple/test before you change"). Framed BEFORE the generic
+        # per-family signals so the convergence is the headline, not any one
+        # pressure; security stays a SUPPORTING family in the list, never the
+        # title. Claiming the subject here dedups it out of fragile/hub-untested/
+        # complexity below, so a confluence module is seeded once.
+        for conv in (getattr(profile, "confluence_modules", []) or [])[:3]:
+            module = conv["module"]
+            families = conv.get("families", ()) or ()
+            count = conv.get("family_count", len(families))
+            shown = ", ".join(families)
+            untested = "untested" in families
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Untangle {module} — {count} independent pressures "
+                       f"converge ({shown})"),
+                subject=module,
+                fact_label="confluence",
+                fact_value=(f"{module} ({count} signal families converge: {shown}"
+                            + ("; untested" if untested else "")
+                            + ")"),
+            )
+
         # Fragility first (highest priority): heavily-depended-on but thinly
         # tested modules — the biggest blast-radius risk.
         for module in (getattr(profile, "fragile_modules", []) or [])[:3]:

@@ -25,6 +25,12 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "hotspot-function": ("create_test_stub", "Write behavioral tests for the complex function {s}", True),
     "impure-untested": ("create_test_stub", "Cover the impure function {s} with tests (then isolate its side effects)", True),
     "hub-untested": ("create_test_stub", "Add a regression-net test for the dependency hub {s} (it has many dependents)", True),
+    # A confluence is a "decouple/test before you change" signal, not a blind
+    # auto-fix: recommend-only by default. The sole exception is an UNTESTED
+    # confluence, where the grounded first move is the same as every other
+    # untested high-leverage module — drop a safety-net test first (resolved in
+    # _root_action, which can read the fact value's "untested" marker).
+    "confluence": ("design_task", "Decouple and add tests to {s} before changing it — several independent pressures converge here", False),
     "sensitive-path": ("harden_security", "Harden the sensitive path {s}", True),
     "security-finding": ("harden_security", "Fix the security findings in {s}", True),
     "correctness-bug": ("harden_security", "Fix the likely logic bug in {s}", True),
@@ -221,7 +227,18 @@ class IdeaActionBridge:
 
     @staticmethod
     def _root_action(idea: IdeaNode) -> tuple[str, str, bool]:
-        label = idea.source_facts[0].split(":")[0].strip() if idea.source_facts else ""
+        fact = idea.source_facts[0] if idea.source_facts else ""
+        label = fact.split(":")[0].strip()
+        # A confluence is recommend-only UNLESS the converging module is also
+        # untested — then the grounded first move is a safety-net test stub, the
+        # same action every other untested high-leverage module routes to. The
+        # marker rides on the fact value the seeder wrote, so no new label/action
+        # type is introduced.
+        if label == "confluence" and "untested" in fact:
+            return ("create_test_stub",
+                    "Add a safety-net test for {s} before changing it "
+                    "(several independent pressures converge, and it is untested)",
+                    True)
         return _FACT_ACTIONS.get(label, ("design_task", "Develop {s}", False))
 
     # action_type -> change_strategy hint that steers EditStrategy to the

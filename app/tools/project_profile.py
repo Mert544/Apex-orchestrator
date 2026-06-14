@@ -58,6 +58,14 @@ class ProjectProfile:
     # and thin-coverage set, so it adds no new scan. Each entry:
     # {"module", "fan_in"}.
     hub_untested_modules: list[dict] = field(default_factory=list)
+    # Confluences (signal convergence): modules named by >= 3 DISTINCT signal
+    # families at once (e.g. complex-function + high-churn + hub + symbol-hub).
+    # No single lens names them, yet a module under several independent pressures
+    # is the highest-leverage development target — "decouple/test before you
+    # change". Reuses only fields already on the profile (no new scan); each
+    # family is counted at most once. Each entry: {"module", "family_count",
+    # "families" (sorted tuple of family names)}.
+    confluence_modules: list[dict] = field(default_factory=list)
     # Change-frequency hotspots from git history: where development energy
     # concentrates. Each entry: {"module", "commits"}.
     churn_hotspots: list[dict] = field(default_factory=list)
@@ -351,6 +359,12 @@ class ProjectProfiler:
             self._scan_extractable_blocks(profile)
             self._scan_inlinable_helpers(profile)
         self._drop_fixture_signals(profile)
+        # Confluence runs LAST: it reads only the now-finalized, fixture-filtered
+        # family fields and counts how many DISTINCT families name each module.
+        # In light mode the git/co-change families are simply absent, so only the
+        # families actually populated this run are counted — the scan never
+        # claims a family ran that didn't.
+        self._scan_confluences(profile)
         return profile
 
     def dead_params(self) -> list[dict]:
@@ -1135,6 +1149,84 @@ class ProjectProfiler:
         # the ordering is deterministic.
         out.sort(key=lambda d: (-d["fan_in"], d["module"]))
         return out[:5]
+
+    # The DISTINCT signal families a confluence converges, mapped to a stable,
+    # human-readable family name. Each entry yields the set of modules that
+    # family names this run; a family that didn't run (light mode, no git, etc.)
+    # simply contributes nothing, so confluence never over-counts. Order here is
+    # irrelevant — family names are sorted at output for determinism.
+    _CONFLUENCE_MIN_FAMILIES = 3
+
+    @staticmethod
+    def _confluence_families(profile: "ProjectProfile") -> dict[str, set[str]]:
+        """Per-family set of modules named, reusing only existing profile fields.
+
+        Every family is a list/dict already populated by an earlier scan; a
+        module never contributes to the same family twice (sets dedup), so the
+        family count is a count of DISTINCT independent pressures, not of facts.
+        Families absent this run (e.g. churn/co-change in light mode) yield an
+        empty set and are skipped — the scan never claims a family that didn't
+        run.
+        """
+        def _flat(values) -> set[str]:
+            return {str(v) for v in (values or []) if v}
+
+        def _key(entries, key: str) -> set[str]:
+            return {str(e.get(key, "")) for e in (entries or []) if e.get(key)}
+
+        families: dict[str, set[str]] = {
+            "complex-function": (
+                _key(getattr(profile, "hotspot_functions", []), "module")
+                | _flat(getattr(profile, "hotspot_modules", []))
+            ),
+            "high-churn": _key(getattr(profile, "churn_hotspots", []), "module"),
+            "hub": _flat(getattr(profile, "dependency_hubs", [])),
+            "symbol-hub": _flat(getattr(profile, "symbol_hubs", [])),
+            "fragile": _flat(getattr(profile, "fragile_modules", [])),
+            "untested": (
+                _flat(getattr(profile, "untested_modules", []))
+                | _flat(getattr(profile, "critical_untested_modules", []))
+                | _key(getattr(profile, "hub_untested_modules", []), "module")
+            ),
+            "shallow-coverage": _flat(getattr(profile, "shallow_tested_modules", [])),
+            "impure": _key(getattr(profile, "impure_untested_functions", []), "module"),
+            "security": _flat(getattr(profile, "security_finding_modules", [])),
+            "correctness-bug": _flat(getattr(profile, "correctness_bug_modules", [])),
+            "debt-markers": _flat(getattr(profile, "debt_marker_modules", [])),
+            "modernizable": _flat(getattr(profile, "modernizable_modules", [])),
+            "co-change": (
+                _key(getattr(profile, "change_coupling", []), "a")
+                | _key(getattr(profile, "change_coupling", []), "b")
+            ),
+        }
+        return {name: mods for name, mods in families.items() if mods}
+
+    def _scan_confluences(self, profile: ProjectProfile) -> None:
+        """Modules named by >= 3 DISTINCT signal families — signal convergence.
+
+        A module under several independent pressures is the highest-leverage
+        development target, yet no single lens names it. This reuses only fields
+        already on the profile (no new scan), counts each family at most once,
+        and respects light mode (absent families contribute nothing). Output is
+        deterministic: family_count desc, then module asc, with a sorted family
+        tuple per entry.
+        """
+        families = self._confluence_families(profile)
+        per_module: dict[str, set[str]] = {}
+        for name, modules in families.items():
+            for module in modules:
+                per_module.setdefault(module, set()).add(name)
+        out: list[dict] = []
+        for module, names in per_module.items():
+            if len(names) < self._CONFLUENCE_MIN_FAMILIES:
+                continue
+            out.append({
+                "module": module,
+                "family_count": len(names),
+                "families": tuple(sorted(names)),
+            })
+        out.sort(key=lambda d: (-d["family_count"], d["module"]))
+        profile.confluence_modules = out[:5]
 
     def _scan_shallow_tests(self, module_to_tests: dict, limit: int | None = 5) -> list[str]:
         """Modules whose linked tests exist but assert no real behaviour (shallow).
