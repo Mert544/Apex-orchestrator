@@ -22,8 +22,7 @@ import ast
 import re
 from pathlib import Path
 
-_SKIPPED_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules",
-                 ".apex", ".epistemic", "dist", "build"}
+from app.engine.skip_dirs import SKIPPED_DIRS as _SKIPPED_DIRS
 _RANK = {"none": 0, "module": 1, "function": 2}
 _MAX_TEST_FILE_BYTES = 400_000  # don't slurp generated monsters
 

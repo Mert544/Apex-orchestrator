@@ -18,8 +18,12 @@ import ast
 from pathlib import Path
 from typing import Any
 
-_SKIP_DIRS = {".git", "__pycache__", ".apex", ".epistemic", ".venv", "venv",
-              "node_modules", "dist", "build", ".tox", ".mypy_cache"}
+from app.engine.skip_dirs import SKIPPED_DIRS
+
+# Canonical exclusions (incl. `.claude` agent worktrees) plus this report's own
+# extras — a dead-code scan that descended into worktree copies would see a
+# symbol "used" in a stale copy and wrongly call it live.
+_SKIP_DIRS = SKIPPED_DIRS | {".tox", ".mypy_cache"}
 
 
 def _iter_py(root: Path) -> list[Path]:
