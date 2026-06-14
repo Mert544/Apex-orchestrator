@@ -25,9 +25,22 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.models.idea import IdeaNode, IdeaTreeReport
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from app.engine.idea_memory import IdeaMemory
+
+# --- Historical-outcome (learned) re-ranking ---------------------------------
+
+# How far a perfect/abysmal track record may nudge an idea's ROI for ranking.
+# Deliberately tiny: this re-ranks ties and nudges neighbours; it never
+# overrides the grounded impact/effort signal. Additive in ROI space.
+_OUTCOME_MAX_ADJUST = 0.05
+# Don't let a single fluke swing ranking: a key needs at least this many
+# recorded outcomes before its landing rate influences the roadmap at all.
+_OUTCOME_MIN_SAMPLES = 3
 
 # --- Phase model --------------------------------------------------------------
 
@@ -251,6 +264,58 @@ def classify_phase(node: IdeaNode) -> str:
     return EVOLVE
 
 
+# --- Learned re-ranking (historical landing rate) -----------------------------
+
+def _outcome_rates(memory: IdeaMemory | None) -> dict[str, dict[str, float]]:
+    """Best-effort ``key -> {success_rate, samples}`` from a memory ledger.
+
+    Reads :meth:`IdeaMemory.summary`'s ``most_reliable`` / ``least_reliable``
+    operator tracks (the only per-key landing-rate views the memory exposes).
+    Wrapped defensively: a missing or malformed ledger must never break roadmap
+    generation, so any failure collapses to an empty (no-opinion) map. Empty
+    memory yields ``{}`` — and an empty map produces a byte-identical roadmap.
+    """
+    if memory is None:
+        return {}
+    rates: dict[str, dict[str, float]] = {}
+    try:
+        summary = memory.summary()
+        for bucket in ("most_reliable", "least_reliable"):
+            for entry in summary.get(bucket, []) or []:
+                key = entry.get("key")
+                if not key:
+                    continue
+                rates[key] = {
+                    "success_rate": float(entry.get("success_rate", 0.0)),
+                    "samples": int(entry.get("samples", 0)),
+                }
+    except Exception:  # pragma: no cover - defensive; corrupt/foreign ledger
+        return {}
+    return rates
+
+
+def _outcome_adjustment(node: IdeaNode, rates: dict[str, dict[str, float]]) -> float:
+    """Bounded, additive ROI nudge in ``[-_OUTCOME_MAX_ADJUST, +_OUTCOME_MAX_ADJUST]``.
+
+    Looks up the idea's *dominant* key — its development ``operator`` (or, for a
+    root, its seeding fact label) — in the historical-outcome map. A landing
+    rate above 0.5 yields a small boost; below 0.5 a small penalty; exactly 0.5
+    is neutral. Keys with fewer than ``_OUTCOME_MIN_SAMPLES`` recorded outcomes
+    are ignored entirely (returns 0.0), so one fluke can't move the ranking.
+
+    Returns 0.0 — a true no-op — when ``rates`` is empty (no memory).
+    """
+    if not rates:
+        return 0.0
+    op = node.operator
+    key = op if (op and op != "root") else _first_label(node)
+    entry = rates.get(key)
+    if entry is None or entry.get("samples", 0) < _OUTCOME_MIN_SAMPLES:
+        return 0.0
+    # success_rate 0.5 -> 0.0; 1.0 -> +MAX; 0.0 -> -MAX.
+    return round((entry["success_rate"] - 0.5) * 2.0 * _OUTCOME_MAX_ADJUST, 4)
+
+
 # --- Synthesizer --------------------------------------------------------------
 
 class RoadmapSynthesizer:
@@ -260,13 +325,19 @@ class RoadmapSynthesizer:
         self.quick_win_count = quick_win_count
         self.quick_win_min_roi = quick_win_min_roi
 
-    def build(self, report: IdeaTreeReport) -> Roadmap:
+    def build(self, report: IdeaTreeReport, memory: IdeaMemory | None = None) -> Roadmap:
         # Measured structural signals from the engine: fan-in (blast radius) and
         # per-module size/complexity (effort). Both ground the ROI in real code.
         stats = report.stats or {}
         fan_in = stats.get("fan_in", {})
         metrics = stats.get("metrics", {})
+        # Learned landing-rate map (empty -> no-op, byte-identical roadmap).
+        rates = _outcome_rates(memory)
         items: list[RoadmapItem] = []
+        # Ranking ROI per item: grounded ROI plus a tiny, bounded learned nudge.
+        # The reported ``item.roi`` stays exactly impact/effort; only the *sort*
+        # sees the adjustment, so a fresh repo's roadmap is unchanged.
+        ranked_roi: dict[int, float] = {}
         for node in report.ideas:
             base_subject = node.subject.split(" :: ", 1)[0]
             subj_fan_in = fan_in.get(base_subject, 0)
@@ -276,40 +347,45 @@ class RoadmapSynthesizer:
             impact = estimate_impact(node, fan_in=subj_fan_in)
             effort = estimate_effort(node, loc=loc, complexity=complexity)
             roi = round(impact / effort, 4)
-            items.append(
-                RoadmapItem(
-                    branch_path=node.branch_path,
-                    title=node.title,
-                    subject=node.subject,
-                    phase=classify_phase(node),
-                    impact=impact,
-                    effort=effort,
-                    roi=roi,
-                    value=node.value,
-                    kind=node.kind,
-                    rationale=node.rationale,
-                    fan_in=subj_fan_in,
-                    loc=loc,
-                    source_facts=list(node.source_facts),
-                )
+            item = RoadmapItem(
+                branch_path=node.branch_path,
+                title=node.title,
+                subject=node.subject,
+                phase=classify_phase(node),
+                impact=impact,
+                effort=effort,
+                roi=roi,
+                value=node.value,
+                kind=node.kind,
+                rationale=node.rationale,
+                fan_in=subj_fan_in,
+                loc=loc,
+                source_facts=list(node.source_facts),
             )
+            items.append(item)
+            # Keep the ranking ROI clamped to [0, 1]-ish ROI space sanely: ROI is
+            # impact/effort (impact<=1, effort>=0.1 -> roi<=10), and the nudge is
+            # additive and tiny, so the ranking key stays well-defined and the
+            # grounded signal continues to dominate.
+            ranked_roi[id(item)] = round(roi + _outcome_adjustment(node, rates), 4)
 
-        # Group into ordered phases; sort each by ROI then raw value, both desc.
+        # Group into ordered phases; sort each by ranking-ROI then raw value, desc.
         phases: list[RoadmapPhase] = []
         for name in PHASE_ORDER:
             phase_items = sorted(
                 (i for i in items if i.phase == name),
-                key=lambda i: (i.roi, i.value),
+                key=lambda i: (ranked_roi[id(i)], i.value),
                 reverse=True,
             )
             if phase_items:
                 phases.append(RoadmapPhase(name=name, theme=PHASE_THEME[name], items=phase_items))
 
-        # Quick wins: best ROI across the whole tree, above a floor. A tie on ROI
-        # breaks toward higher impact so "big & cheap" beats "small & cheap".
+        # Quick wins: best ROI across the whole tree, above a floor (measured on
+        # the grounded ROI). A tie on ranking-ROI breaks toward higher impact so
+        # "big & cheap" beats "small & cheap".
         quick_wins = sorted(
             (i for i in items if i.roi >= self.quick_win_min_roi),
-            key=lambda i: (i.roi, i.impact),
+            key=lambda i: (ranked_roi[id(i)], i.impact),
             reverse=True,
         )[: self.quick_win_count]
 
