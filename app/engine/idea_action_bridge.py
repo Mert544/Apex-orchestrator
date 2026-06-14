@@ -24,6 +24,7 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "critical-untested": ("create_test_stub", "Create a safety-net test for {s}", True),
     "hotspot-function": ("create_test_stub", "Write behavioral tests for the complex function {s}", True),
     "impure-untested": ("create_test_stub", "Cover the impure function {s} with tests (then isolate its side effects)", True),
+    "hub-untested": ("create_test_stub", "Add a regression-net test for the dependency hub {s} (it has many dependents)", True),
     "sensitive-path": ("harden_security", "Harden the sensitive path {s}", True),
     "security-finding": ("harden_security", "Fix the security findings in {s}", True),
     "correctness-bug": ("harden_security", "Fix the likely logic bug in {s}", True),

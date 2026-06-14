@@ -232,6 +232,28 @@ class IdeaSeeder:
                             + f", line {fn['line']}, no direct tests)"),
             )
 
+        # Dependency hubs (high fan-in: many modules import them) that are also
+        # untested or shallow-tested — the highest-leverage place to add a
+        # regression net, because a break in a hub propagates to every dependent.
+        # The Stabilize move is to cover it first (it is in _STABILIZE_LABELS).
+        # The fact carries the dependent count so the rationale is concrete. If a
+        # hub is also fragile/a complexity hotspot, that more-severe root claimed
+        # the module subject first (and the profiler already deduped it out), so
+        # this one only fires for hubs the other module-level signals missed.
+        for hub in (getattr(profile, "hub_untested_modules", []) or [])[:3]:
+            module = hub["module"]
+            fan_in = hub.get("fan_in", 0)
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Cover the dependency hub {module} first "
+                       f"({fan_in} modules import it, no/shallow tests)"),
+                subject=module,
+                fact_label="hub-untested",
+                fact_value=(f"{module} (dependency hub: {fan_in} dependents, "
+                            f"untested or shallow — a regression here breaks all "
+                            f"{fan_in})"),
+            )
+
         # Technical-debt markers: modules carrying a cluster of TODO/FIXME/XXX/
         # HACK comments are concrete, traceable pockets of deferred work. When
         # git blame shows the oldest marker has waited months, the idea says so

@@ -50,6 +50,14 @@ class ProjectProfile:
     # impure-and-untested, the high-leverage "isolate the effect, then test it"
     # target. Each entry: {"module", "function", "line", "side_effects"}.
     impure_untested_functions: list[dict] = field(default_factory=list)
+    # Dependency HUBS (high fan-in: many modules import it) that are ALSO
+    # untested or only shallow-tested. A regression in a hub breaks every
+    # dependent, so an untested hub is the highest-leverage place to add tests.
+    # Uses a strictly higher fan-in bar than fragile_modules (a true hub, not
+    # merely "depended on by >=2"); reuses the already-built dependency graph
+    # and thin-coverage set, so it adds no new scan. Each entry:
+    # {"module", "fan_in"}.
+    hub_untested_modules: list[dict] = field(default_factory=list)
     # Change-frequency hotspots from git history: where development energy
     # concentrates. Each entry: {"module", "commits"}.
     churn_hotspots: list[dict] = field(default_factory=list)
@@ -667,6 +675,11 @@ class ProjectProfiler:
                 f for f in profile.impure_untested_functions
                 if not self._is_fixture_path(str(f.get("module", "")))
             ]
+        if profile.hub_untested_modules:
+            profile.hub_untested_modules = [
+                h for h in profile.hub_untested_modules
+                if not self._is_fixture_path(str(h.get("module", "")))
+            ]
         if profile.churn_hotspots:
             profile.churn_hotspots = [
                 c for c in profile.churn_hotspots
@@ -780,6 +793,19 @@ class ProjectProfiler:
         # no extra whole-repo scan on the hot path.
         profile.impure_untested_functions = self._scan_impure_untested_functions(
             candidates, profile.module_to_tests
+        )
+
+        # Dependency hubs (high fan-in) that are also untested/shallow — the
+        # highest-leverage place to add a regression net, because a break there
+        # propagates to every dependent. Reuses the already-built dependency
+        # graph (``n.in_degree`` = fan-in), the linker's ``module_to_tests`` (a
+        # module is untested when it has no linked tests) and the shallow set —
+        # no new scan. Deduped against the more-severe module-level signals
+        # (fragile/hotspot), which frame such a module first.
+        shallow = set(self._scan_shallow_tests(profile.module_to_tests, limit=None))
+        profile.hub_untested_modules = self._scan_hub_untested_modules(
+            graph, profile.module_to_tests, shallow,
+            claimed=set(profile.fragile_modules) | set(profile.hotspot_modules),
         )
 
     @staticmethod
@@ -961,6 +987,47 @@ class ProjectProfiler:
         # Most side-effect reasons first (the broadest violation), then stable
         # by module/function so the ordering is deterministic.
         out.sort(key=lambda d: (-len(d["side_effects"]), d["module"], d["function"]))
+        return out[:5]
+
+    # Fan-in bar for a *hub* (not merely "depended on by >=2", which is the
+    # fragility floor): a module many others import, where a regression has the
+    # widest blast radius. Kept strictly above the fragility floor so the two
+    # signals describe different populations rather than restating each other.
+    _HUB_FAN_IN_FLOOR = 3
+
+    def _scan_hub_untested_modules(self, graph: dict, module_to_tests: dict,
+                                   shallow: set, claimed: set) -> list[dict]:
+        """High-fan-in hub modules that are also untested or shallow-tested.
+
+        A dependency HUB (``n.in_degree`` >= ``_HUB_FAN_IN_FLOOR`` — many modules
+        import it) with thin coverage is the highest-leverage place to add a
+        regression net: a break there propagates to every dependent. Reuses the
+        already-built dependency ``graph`` (fan-in is ``in_degree``, the SAME
+        measure ``fragile_modules`` uses), the linker's uncapped
+        ``module_to_tests`` (a module is untested when it has no linked tests)
+        and the ``shallow`` set — no new whole-repo scan. "Untested or shallow"
+        is the SAME coverage notion fragility uses, just read from an uncapped
+        source so a hub outside the top-5 ``untested_modules`` still counts.
+        Modules already framed by a more-severe module-level signal (``claimed``
+        = fragile + hotspot) are skipped so this never double-counts; mirrors how
+        impure-untested dedups under the more-severe hotspot-function root.
+        """
+        out: list[dict] = []
+        for node in graph.values():
+            path = node.path
+            if path in claimed:
+                continue  # a more-severe signal already frames this module
+            if node.in_degree < self._HUB_FAN_IN_FLOOR:
+                continue  # not a hub
+            if self._is_test_path(path):
+                continue  # test files are not the subject of a regression net
+            untested = not (module_to_tests.get(path) or [])
+            if not (untested or path in shallow):
+                continue  # already has real coverage
+            out.append({"module": path, "fan_in": node.in_degree})
+        # Widest blast radius first (most dependents), then stable by module so
+        # the ordering is deterministic.
+        out.sort(key=lambda d: (-d["fan_in"], d["module"]))
         return out[:5]
 
     def _scan_shallow_tests(self, module_to_tests: dict, limit: int | None = 5) -> list[str]:

@@ -562,3 +562,103 @@ def test_complexity_hotspot_claims_subject_over_impure_untested():
     claims = [r for r in roots if r.subject == "app/m.py::f"]
     assert len(claims) == 1
     assert claims[0].source_facts[0].startswith("hotspot-function:")
+
+
+def test_seeds_hub_untested_module_idea(tmp_path):
+    from app.tools.project_profile import ProjectProfile
+    from app.engine.idea_permutation import IdeaSeeder, IdeaPermutationEngine
+    from app.skills.relevance_scorer import RelevanceScorer
+
+    profile = ProjectProfile(
+        root=str(tmp_path),
+        hub_untested_modules=[{"module": "app/core.py", "fan_in": 7}],
+    )
+    roots = IdeaSeeder().seed(profile)
+    hub = [r for r in roots if any(f.startswith("hub-untested:") for f in r.source_facts)]
+    assert hub
+    root = hub[0]
+    # Module-granular subject (a hub is a file, not a symbol).
+    assert root.subject == "app/core.py"
+    assert "Cover the dependency hub app/core.py first" in root.title
+    assert "7 modules import it" in root.title
+    assert "7 dependents" in root.source_facts[0]
+    assert "regression here breaks all 7" in root.source_facts[0]
+
+    # Grounded root keeps the invariants: value in [0,1], root novelty 1.0.
+    engine = IdeaPermutationEngine(config={}, project_root=str(tmp_path))
+    engine._score(root, RelevanceScorer(objective=""))
+    assert 0.0 <= root.value <= 1.0
+    assert root.novelty == 1.0
+    assert root.kind == "permutation"
+
+
+def test_no_hub_untested_root_when_signal_absent(tmp_path):
+    # A profile without the signal surfaces no hub-untested root.
+    from app.tools.project_profile import ProjectProfile
+    from app.engine.idea_permutation import IdeaSeeder
+
+    profile = ProjectProfile(root=str(tmp_path), dependency_hubs=["app/a.py"])
+    roots = IdeaSeeder().seed(profile)
+    assert not any(
+        f.startswith("hub-untested:") for r in roots for f in r.source_facts
+    )
+
+
+def test_hub_untested_routes_to_stabilize_phase():
+    from app.engine.idea_roadmap import STABILIZE, classify_phase
+    from app.models.idea import IdeaNode
+
+    root = IdeaNode(
+        id="i", title="Cover the dependency hub app/core.py first (7 modules import it, no/shallow tests)",
+        subject="app/core.py", operator="root", operator_chain=["root"],
+        source_facts=["hub-untested: app/core.py (dependency hub: 7 dependents, untested or shallow — a regression here breaks all 7)"],
+    )
+    # Cover the hub before changing it -> Stabilize.
+    assert classify_phase(root) == STABILIZE
+
+
+def test_hub_untested_maps_to_executable_test_stub():
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.models.idea import IdeaNode
+
+    idea = IdeaNode(
+        id="i", title="Cover the dependency hub app/core.py first (7 modules import it, no/shallow tests)",
+        subject="app/core.py", operator="root",
+        source_facts=["hub-untested: app/core.py (dependency hub: 7 dependents, untested or shallow — a regression here breaks all 7)"],
+    )
+    step = IdeaActionBridge().plan_idea(idea)
+    assert step.action_type == "create_test_stub"
+    assert step.executable is True
+    assert step.target == "app/core.py"
+
+
+def test_hub_untested_yields_reliability_lens_caveat():
+    # The label is in _SECURITY_LABELS, so scoring attaches an on-topic caveat
+    # (regression net / dependents) rather than a generic one.
+    from app.engine.idea_permutation import _caveat_hint
+    from app.models.idea import IdeaNode
+
+    root = IdeaNode(
+        id="i", title="Cover the dependency hub app/core.py first (7 modules import it, no/shallow tests)",
+        subject="app/core.py", operator="root", operator_chain=["root"],
+        source_facts=["hub-untested: app/core.py (dependency hub: 7 dependents, untested or shallow — a regression here breaks all 7)"],
+    )
+    hint = _caveat_hint(root)
+    assert "regression net" in hint and "dependents" in hint
+
+
+def test_fragile_claims_subject_over_hub_untested():
+    # A module that is BOTH fragile and a hub-untested is framed by the
+    # more-severe fragile root (it runs first); the hub-untested root dedups.
+    from app.tools.project_profile import ProjectProfile
+    from app.engine.idea_permutation import IdeaSeeder
+
+    profile = ProjectProfile(
+        root=".",
+        fragile_modules=["app/core.py"],
+        hub_untested_modules=[{"module": "app/core.py", "fan_in": 7}],
+    )
+    roots = IdeaSeeder().seed(profile)
+    claims = [r for r in roots if r.subject == "app/core.py"]
+    assert len(claims) == 1
+    assert claims[0].source_facts[0].startswith("fragile:")

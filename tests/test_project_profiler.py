@@ -866,3 +866,73 @@ def test_impure_untested_scan_is_deterministic(tmp_path: Path):
     b = ProjectProfiler(str(tmp_path)).profile().impure_untested_functions
     assert a == b                                # same input -> same output
     assert a, "expected at least one impure-untested function"
+
+
+def _build_hub_repo(tmp_path: Path) -> None:
+    """Four untested hubs (descending fan-in) + one tested hub + importer leaves.
+
+    h0 fan-in 6 (becomes fragile), h1 fan-in 5 (has a real test), h2 fan-in 4
+    and h3 fan-in 3 (untested hubs). Every hub is imported by N leaf modules.
+    """
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    for name, fan_in in {"h0": 6, "h1": 5, "h2": 4, "h3": 3}.items():
+        (tmp_path / "app" / f"{name}.py").write_text(
+            "def f(x):\n    return x\n", encoding="utf-8")
+        for i in range(fan_in):
+            (tmp_path / "app" / f"{name}_c{i}.py").write_text(
+                f"from app.{name} import f\n\ndef u{i}():\n    return f({i})\n",
+                encoding="utf-8")
+    # h1 is the one hub with a real, substantive test — it must be cleared.
+    (tmp_path / "tests" / "test_h1.py").write_text(
+        "from app.h1 import f\n\ndef test_f():\n    assert f(3) == 3\n",
+        encoding="utf-8")
+
+
+def test_profiler_flags_hub_untested_modules(tmp_path: Path):
+    # A high-fan-in module that NO test names is surfaced as hub-untested; a
+    # tested hub is cleared, and a low-fan-in importer leaf never qualifies.
+    _build_hub_repo(tmp_path)
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    by_mod = {h["module"]: h for h in profile.hub_untested_modules}
+    # h2/h3 are untested hubs above the fan-in floor.
+    assert "app/h2.py" in by_mod
+    assert "app/h3.py" in by_mod
+    assert by_mod["app/h2.py"]["fan_in"] == 4   # fan-in = number of importers
+    assert by_mod["app/h3.py"]["fan_in"] == 3
+    # h1 has a real test -> not flagged. Importer leaves (fan-in 0) -> not hubs.
+    assert "app/h1.py" not in by_mod
+    assert not any(m.endswith("_c0.py") for m in by_mod)
+    # Sorted widest-blast-radius first.
+    fan_ins = [h["fan_in"] for h in profile.hub_untested_modules]
+    assert fan_ins == sorted(fan_ins, reverse=True)
+
+
+def test_hub_untested_dedups_under_fragile(tmp_path: Path):
+    # h0 (fan-in 6) is BOTH a hub and the top fragile module; the more-severe
+    # fragile signal claims it, so hub-untested must NOT also list it.
+    _build_hub_repo(tmp_path)
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert "app/h0.py" in profile.fragile_modules
+    hub_mods = {h["module"] for h in profile.hub_untested_modules}
+    assert "app/h0.py" not in hub_mods           # deduped under fragile
+
+
+def test_hub_untested_scan_is_deterministic(tmp_path: Path):
+    _build_hub_repo(tmp_path)
+    a = ProjectProfiler(str(tmp_path)).profile().hub_untested_modules
+    b = ProjectProfiler(str(tmp_path)).profile().hub_untested_modules
+    assert a == b                                # same input -> same output
+    assert a, "expected at least one hub-untested module"
+
+
+def test_low_fan_in_untested_module_is_not_a_hub(tmp_path: Path):
+    # A module imported by only ONE other module is untested but NOT a hub
+    # (below the fan-in floor), so it is not surfaced as hub-untested.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "leaf.py").write_text(
+        "def f(x):\n    return x\n", encoding="utf-8")
+    (tmp_path / "app" / "only.py").write_text(
+        "from app.leaf import f\n\ndef u():\n    return f(1)\n", encoding="utf-8")
+    profile = ProjectProfiler(str(tmp_path)).profile()
+    assert not any(h["module"] == "app/leaf.py" for h in profile.hub_untested_modules)
