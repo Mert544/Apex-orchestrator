@@ -12,7 +12,7 @@ Pure and deterministic — it reads a report (and derives the roadmap), no I/O.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from app.models.idea import IdeaNode, IdeaTreeReport
@@ -47,6 +47,8 @@ class IdeaExplanation:
     feasibility_explanation: str = ""
     impact_explanation: str = ""
     effort_explanation: str = ""
+    rationale: str = ""
+    anchors: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -148,7 +150,57 @@ def explain_idea(report: IdeaTreeReport, branch_path: str) -> IdeaExplanation | 
         feasibility_explanation=feasibility_exp,
         impact_explanation=impact_exp,
         effort_explanation=effort_exp,
+        rationale=(getattr(node, "rationale", "") or "").strip(),
+        anchors=_normalize_anchors(getattr(node, "anchors", []) or []),
     )
+
+
+def _normalize_anchors(raw: Any) -> list[dict[str, Any]]:
+    """Coerce an idea's ``anchors`` into a stable list of clean dicts.
+
+    Anchors are ``[{"module","symbol","line","metric"}]``. We read defensively
+    (the field may not exist yet) and keep only entries that name *something*
+    concrete, preserving the producer's order for determinism.
+    """
+    out: list[dict[str, Any]] = []
+    if not isinstance(raw, (list, tuple)):
+        return out
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        module = str(entry.get("module", "") or "").strip()
+        symbol = str(entry.get("symbol", "") or "").strip()
+        line = entry.get("line")
+        metric = str(entry.get("metric", "") or "").strip()
+        if not (module or symbol or metric):
+            continue
+        out.append({"module": module, "symbol": symbol, "line": line, "metric": metric})
+    return out
+
+
+def _render_anchor(anchor: dict[str, Any]) -> str:
+    """Render one anchor as ``symbol (module:line, metric)`` — omitting blanks."""
+    symbol = anchor.get("symbol") or ""
+    module = anchor.get("module") or ""
+    line = anchor.get("line")
+    metric = anchor.get("metric") or ""
+
+    locus_bits: list[str] = []
+    if module:
+        loc = module
+        if line is not None and str(line).strip() != "":
+            loc = f"{module}:{line}"
+        locus_bits.append(loc)
+    elif line is not None and str(line).strip() != "":
+        locus_bits.append(f"line {line}")
+    if metric:
+        locus_bits.append(metric)
+
+    head = f"`{symbol}`" if symbol else ""
+    paren = f"({', '.join(locus_bits)})" if locus_bits else ""
+    if head and paren:
+        return f"{head} {paren}"
+    return head or paren
 
 
 def render_explanation_markdown(exp: IdeaExplanation) -> str:
@@ -163,6 +215,22 @@ def render_explanation_markdown(exp: IdeaExplanation) -> str:
     for fact in exp.source_facts:
         lines.append(f"- {fact}")
     lines.append("")
+
+    # Concrete locus — only emitted when we actually have one, so an idea with
+    # neither anchors nor a rationale renders byte-identically to the legacy card.
+    anchors = exp.anchors or []
+    rationale = (exp.rationale or "").strip()
+    if anchors or rationale:
+        lines.append("## Where (the concrete locus)")
+        rendered = [_render_anchor(a) for a in anchors]
+        rendered = [r for r in rendered if r]
+        if rendered:
+            lines.append(f"- **Focus:** {rendered[0]}")
+            for extra in rendered[1:]:
+                lines.append(f"- also: {extra}")
+        if rationale:
+            lines.append(f"- {rationale}")
+        lines.append("")
 
     lines.append("## Score breakdown")
     lines.append(f"- **Relevance:** {exp.relevance}")
