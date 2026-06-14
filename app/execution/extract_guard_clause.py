@@ -114,6 +114,23 @@ def _sole_if(func: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.If | None:
     return stmt if isinstance(stmt, ast.If) else None
 
 
+_COMPARE_INVERT = {ast.In: "not in", ast.NotIn: "in", ast.Is: "is not", ast.IsNot: "is"}
+
+
+def _negated_test(test: ast.expr, source: str, test_src: str) -> str:
+    """The lint-clean negation of ``test`` for the guard. A single-operator
+    membership/identity compare inverts its operator (``a in b`` -> ``a not in b``,
+    ``a is b`` -> ``a is not b``) so the guard never emits ``not (a in b)`` (E713/
+    E714); anything else falls back to wrapping the original text in ``not (...)``."""
+    if (isinstance(test, ast.Compare) and len(test.ops) == 1
+            and type(test.ops[0]) in _COMPARE_INVERT):
+        left = ast.get_source_segment(source, test.left)
+        right = ast.get_source_segment(source, test.comparators[0])
+        if left is not None and right is not None:
+            return f"{left} {_COMPARE_INVERT[type(test.ops[0])]} {right}"
+    return f"not ({test_src})"
+
+
 def _try_func(func: ast.FunctionDef | ast.AsyncFunctionDef, source: str,
               lines: list[str]) -> _Rewrite | None:
     """If ``func``'s whole body is a single else-less ``if`` with an unambiguous
@@ -152,7 +169,7 @@ def _try_func(func: ast.FunctionDef | ast.AsyncFunctionDef, source: str,
 
     newline = "\n" if lines[node.lineno - 1].endswith("\n") else ""
     indent = " " * node.col_offset
-    header = f"{indent}if not ({test_src}):" + newline
+    header = f"{indent}if {_negated_test(node.test, source, test_src)}:" + newline
     ret = indent + " " * unit + "return" + (newline or "\n")
     return _Rewrite(node.lineno, body_hi, header, ret, body_lo, body_hi, unit)
 

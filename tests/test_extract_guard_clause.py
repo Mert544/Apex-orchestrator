@@ -231,6 +231,73 @@ def test_determinism(tmp_path):
     assert a == b
 
 
+def test_membership_test_inverts_operator_not_wrapped(tmp_path):
+    # ``if a in b`` must become ``if a not in b`` — wrapping it as
+    # ``if not (a in b)`` is lint-dirty (ruff E713). The guard inverts in place.
+    rel = _write(
+        tmp_path,
+        "def f(topic, subs):\n"
+        "    if topic in subs:\n"
+        "        return subs[topic]\n",
+    )
+    new = plan_extract_guard_clause(str(tmp_path), rel).new_contents[rel]
+    assert new == (
+        "def f(topic, subs):\n"
+        "    if topic not in subs:\n"
+        "        return\n"
+        "    return subs[topic]\n"
+    )
+    assert "not (" not in new  # never the E713 shape
+    assert _run_func(new, "f", "a", {"a": 1}) == 1
+    assert _run_func(new, "f", "z", {"a": 1}) is None
+
+
+def test_identity_test_inverts_operator(tmp_path):
+    # ``if x is None`` -> ``if x is not None`` (not ``not (x is None)``, E714).
+    rel = _write(
+        tmp_path,
+        "def f(x):\n"
+        "    if x is None:\n"
+        "        return 0\n",
+    )
+    new = plan_extract_guard_clause(str(tmp_path), rel).new_contents[rel]
+    assert new == (
+        "def f(x):\n"
+        "    if x is not None:\n"
+        "        return\n"
+        "    return 0\n"
+    )
+    assert _run_func(new, "f", None) == 0
+    assert _run_func(new, "f", 5) is None
+
+
+def test_not_in_test_inverts_to_in(tmp_path):
+    rel = _write(
+        tmp_path,
+        "def f(k, d):\n"
+        "    if k not in d:\n"
+        "        return None\n",
+    )
+    new = plan_extract_guard_clause(str(tmp_path), rel).new_contents[rel]
+    assert "    if k in d:\n" in new
+    assert "not (" not in new
+
+
+def test_multi_operator_compare_falls_back_to_wrap(tmp_path):
+    # A chained compare (a < b < c) is not a single-operator membership/identity
+    # test, so it stays wrapped in ``not (...)`` — still correct, just not inverted.
+    rel = _write(
+        tmp_path,
+        "def f(a, b, c):\n"
+        "    if a < b < c:\n"
+        "        return b\n",
+    )
+    new = plan_extract_guard_clause(str(tmp_path), rel).new_contents[rel]
+    assert "    if not (a < b < c):\n" in new
+    assert _run_func(new, "f", 1, 2, 3) == 2
+    assert _run_func(new, "f", 3, 2, 1) is None
+
+
 def test_self_registers():
     from app.engine.objective_compiler import available_objectives
     assert "extract-guard-clause" in available_objectives()  # via the registry
