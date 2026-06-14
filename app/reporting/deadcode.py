@@ -205,16 +205,36 @@ def render_dead_code_markdown(rows: list[dict[str, Any]]) -> str:
             f" {high} are private (underscore-prefixed) and high-confidence to remove; "
             "the rest are public and may be intended API."
         )
+    # Additive runtime column: only when findings carry a ``runtime`` label
+    # (i.e. evidence was supplied to find_dead_code). Without it, the output is
+    # byte-identical to the static-only report.
+    has_runtime = any("runtime" in r for r in rows)
+    if has_runtime:
+        summary += (
+            "\n\nRuntime legend: **runtime-confirmed** = the symbol never ran "
+            "while the tests executed (static finding strengthened); "
+            "**refuted** = it did run, so the static guess is a false positive; "
+            "**static-only** = the file never loaded, so runtime can't say."
+        )
+        header = "| Module | Symbol | Kind | Line | Confidence | Runtime |"
+        divider = "|---|---|---|---:|---|---|"
+    else:
+        header = "| Module | Symbol | Kind | Line | Confidence |"
+        divider = "|---|---|---|---:|---|"
     lines = [
         "# Dead code (possibly unused)",
         "",
         summary,
         "",
-        "| Module | Symbol | Kind | Line | Confidence |",
-        "|---|---|---|---:|---|",
+        header,
+        divider,
     ]
     for r in rows:
         conf = r.get("confidence", "review")
-        lines.append(f"| {r['module']} | `{r['symbol']}` | {r['kind']} | {r['line']} | {conf} |")
+        if has_runtime:
+            rt = r.get("runtime", "static-only")
+            lines.append(f"| {r['module']} | `{r['symbol']}` | {r['kind']} | {r['line']} | {conf} | {rt} |")
+        else:
+            lines.append(f"| {r['module']} | `{r['symbol']}` | {r['kind']} | {r['line']} | {conf} |")
     lines.append("")
     return "\n".join(lines)

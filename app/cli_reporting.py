@@ -87,7 +87,15 @@ def cmd_deadcode(args: argparse.Namespace) -> int:
     from app.reporting.deadcode import find_dead_code, render_dead_code_markdown
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
-    rows = find_dead_code(str(target), limit=args.limit)
+    evidence = None
+    if getattr(args, "confirm", False):
+        # Opt-in runtime confirmation: run the named tests under stdlib `trace`
+        # and harvest which lines actually executed, so each finding can be
+        # confirmed/refuted. May be slow for large suites — name a targeted path.
+        from app.engine.runtime_trace import trace_pytest
+
+        evidence = trace_pytest(getattr(args, "tests", "tests"), root=str(target))
+    rows = find_dead_code(str(target), limit=args.limit, evidence=evidence)
     if args.json:
         import json
         print(json.dumps(rows, indent=2))
@@ -227,6 +235,15 @@ def register_parsers(subparsers) -> None:
     dead_parser.add_argument("--target", default="", help="Target project root")
     dead_parser.add_argument("--limit", type=int, default=40, help="How many to show")
     dead_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    dead_parser.add_argument(
+        "--confirm", action="store_true",
+        help="Opt-in: run the project's own tests under stdlib trace to confirm/refute "
+             "each finding at runtime (may be slow; names a targeted --tests path)",
+    )
+    dead_parser.add_argument(
+        "--tests", default="tests",
+        help="Test path traced when --confirm is set (default: tests)",
+    )
     dead_parser.set_defaults(func=cmd_deadcode)
 
     # city — 3D "company city": modules as buildings, Apex agents as walking workers

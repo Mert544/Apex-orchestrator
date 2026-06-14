@@ -24,6 +24,7 @@ __all__ = [
     "StaticFinding",
     "ConfirmedFinding",
     "trace_callable",
+    "trace_pytest",
     "confirm_findings",
 ]
 
@@ -129,6 +130,48 @@ def trace_callable(
         for (filename, lineno) in results.counts
     }
     return RuntimeEvidence(executed=frozenset(executed))
+
+
+def trace_pytest(test_path: str, *, root: str | None = None) -> RuntimeEvidence:
+    """Run the project's own tests under stdlib ``trace`` and harvest evidence.
+
+    This is the opt-in *generator* of the :class:`RuntimeEvidence` that
+    :func:`confirm_findings` (and ``find_dead_code``) consume. It invokes
+    pytest's entry point **in-process** as the traced callable, so every
+    ``(file, line)`` pair the suite executes is recorded::
+
+        trace_callable(
+            lambda: __import__("pytest").main(
+                [test_path, "-q", "-p", "no:cacheprovider"]
+            )
+        )
+
+    ``test_path`` is the targeted path the user names (a single file or
+    directory) — keep it narrow: tracing a whole suite is correct but can be
+    **slow** and is therefore opt-in, never run by default. ``-p
+    no:cacheprovider`` keeps the run side-effect-free (no ``.pytest_cache``
+    written), so the only effect is running the named tests.
+
+    Deterministic: the result depends solely on which lines those tests run.
+    When ``root`` is given the run happens with that as the working directory
+    (restored afterwards) so a project-relative ``test_path`` resolves the same
+    way every time, independent of the caller's cwd.
+    """
+
+    def _run() -> int:
+        import pytest
+
+        return int(pytest.main([test_path, "-q", "-p", "no:cacheprovider"]))
+
+    if root is None:
+        return trace_callable(_run)
+
+    prev_cwd = os.getcwd()
+    try:
+        os.chdir(root)
+        return trace_callable(_run)
+    finally:
+        os.chdir(prev_cwd)
 
 
 def confirm_findings(
