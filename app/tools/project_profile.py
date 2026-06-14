@@ -78,7 +78,10 @@ class ProjectProfile:
     # one can silently break the other with no test to catch it. A grounded,
     # high-value test gap no single-module signal sees. Reuses ``change_coupling``
     # (git-only, EMPTY in light mode) and ``module_to_tests`` (no new scan). Each
-    # entry: {"a", "b", "cochanges" (int)}.
+    # entry: {"a", "b", "cochanges" (int), "links"}. ``links`` (additive) names
+    # the ACTUAL symbol(s) that connect the two modules — a sorted, capped list of
+    # {"from", "to", "symbol"} (one module ``import``-s ``symbol`` from the other),
+    # empty when they co-change without directly importing each other.
     cochange_test_gaps: list[dict] = field(default_factory=list)
     # Knowledge concentration (DOA-inspired): modules whose recent changes
     # come overwhelmingly from ONE author — a bus-factor risk. Author names
@@ -1251,6 +1254,16 @@ class ProjectProfiler:
         ``module_to_tests`` (no new scan). A pair has a "shared test" when some
         test path appears in BOTH modules' linked-test lists; such pairs are
         skipped. Deterministic: cochanges desc, then pair asc; capped at 5.
+
+        For each surviving pair, the actual code LINK is named: which symbol one
+        module imports from the other (``a`` from ``b`` and ``b`` from ``a``),
+        resolved by parsing the two files' ``from X import Y`` statements with
+        ``ast`` and mapping ``X`` back to the other file. Each gap gains an
+        additive ``links`` key: a deterministic, sorted list of
+        ``{"from","to","symbol"}`` (capped at 3) so the recommendation can name
+        the real interface, not just the pair. The key is OMITTED when no link is
+        found (they co-change but don't directly import each other) — keeping the
+        no-link dicts byte-identical to the original two-field shape.
         """
         module_to_tests = profile.module_to_tests or {}
         out: list[dict] = []
@@ -1266,8 +1279,100 @@ class ProjectProfiler:
                 continue  # a single test already exercises both — no gap
             out.append({"a": a, "b": b, "cochanges": int(entry.get("commits", 0))})
         out.sort(key=lambda d: (-d["cochanges"], d["a"], d["b"]))
-        profile.cochange_test_gaps = out[:5]
+        gaps = out[:5]
+        # Name the concrete link only for the surviving (capped) pairs — no parse
+        # for dropped entries. The module map is built once and shared.
+        module_map = self._cochange_module_map(gaps)
+        for gap in gaps:
+            links = self._cochange_links(gap["a"], gap["b"], module_map)
+            if links:
+                gap["links"] = links
+        profile.cochange_test_gaps = gaps
         return profile.cochange_test_gaps
+
+    def _cochange_module_map(self, gaps: list[dict]) -> dict[str, str]:
+        """Map ``dotted.module`` -> repo-relative file path for the gap modules.
+
+        Built only from the files referenced by ``gaps`` (the <=5 surviving pairs)
+        so it adds no full-repo walk. Mirrors ``DependencyGraphBuilder._module_map``
+        (drops the ``.py`` suffix, collapses ``__init__``). Returns ``{}`` when no
+        filesystem root is available (e.g. a profile-only scan) so link resolution
+        is a clean no-op rather than an error.
+        """
+        if not getattr(self, "root", None):
+            return {}
+        paths: set[str] = set()
+        for gap in gaps:
+            paths.add(gap["a"])
+            paths.add(gap["b"])
+        mapping: dict[str, str] = {}
+        for rel in paths:
+            parts = list(Path(rel).with_suffix("").parts)
+            if not parts:
+                continue
+            if parts[-1] == "__init__":
+                module_name = ".".join(parts[:-1])
+            else:
+                module_name = ".".join(parts)
+            if module_name:
+                mapping[module_name] = rel
+        return mapping
+
+    def _cochange_links(self, a: str, b: str, module_map: dict[str, str]) -> list[dict]:
+        """The symbols ``a`` imports from ``b`` (and ``b`` from ``a``), via ast.
+
+        Parses both files, walks ``ImportFrom`` nodes, resolves each ``node.module``
+        to a repo file (via ``module_map``, longest-prefix like the dependency
+        graph) and — when it resolves to the OTHER module of the pair — records the
+        imported names. Returns a deterministic, sorted list of
+        ``{"from","to","symbol"}`` capped at 3. Empty when the two co-change but
+        don't directly import each other, or when a file can't be parsed.
+        """
+        if not module_map:
+            return []
+        links: list[dict] = []
+        for src, dst in ((a, b), (b, a)):
+            for symbol in self._imported_symbols(src, dst, module_map):
+                links.append({"from": src, "to": dst, "symbol": symbol})
+        links.sort(key=lambda d: (d["from"], d["to"], d["symbol"]))
+        return links[:3]
+
+    def _imported_symbols(self, src: str, dst: str, module_map: dict[str, str]) -> list[str]:
+        """Names ``src`` imports from ``dst`` via ``from <dst-module> import ...``."""
+        root = getattr(self, "root", None)
+        if not root:
+            return []
+        try:
+            source = (root / src).read_text(encoding="utf-8", errors="ignore")
+            tree = ast.parse(source)
+        except (OSError, SyntaxError, ValueError):
+            return []
+        found: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or node.level:
+                continue  # relative imports carry no resolvable absolute module
+            module = node.module or ""
+            if not module:
+                continue
+            if self._resolve_cochange_module(module, module_map) != dst:
+                continue
+            for alias in node.names:
+                if alias.name and alias.name != "*":
+                    found.add(alias.name)
+        return sorted(found)
+
+    @staticmethod
+    def _resolve_cochange_module(import_name: str, module_map: dict[str, str]) -> str | None:
+        """Resolve a dotted import to a repo file (longest-prefix match)."""
+        if import_name in module_map:
+            return module_map[import_name]
+        parts = import_name.split(".")
+        while parts:
+            candidate = ".".join(parts)
+            if candidate in module_map:
+                return module_map[candidate]
+            parts.pop()
+        return None
 
     def _scan_shallow_tests(self, module_to_tests: dict, limit: int | None = 5) -> list[str]:
         """Modules whose linked tests exist but assert no real behaviour (shallow).

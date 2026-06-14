@@ -93,6 +93,82 @@ class IdeaSeeder:
         ]
 
     @staticmethod
+    def _cochange_link_phrase(links: list[dict]) -> str:
+        """A concrete clause naming the symbol(s) one module imports from the other.
+
+        ``links`` is the profile's sorted, capped ``[{"from","to","symbol"}, ...]``.
+        Produces e.g. ``app/b.py imports `foo` from app/a.py`` — one clause per
+        (from, to) direction, symbols joined with ``/``, directions joined with
+        ``; ``. Deterministic (the list is already sorted).
+        """
+        grouped: dict[tuple[str, str], list[str]] = {}
+        for link in links:
+            key = (link.get("from", ""), link.get("to", ""))
+            grouped.setdefault(key, []).append(link.get("symbol", ""))
+        parts = []
+        for (frm, to), symbols in grouped.items():
+            names = "/".join(f"`{s}`" for s in symbols if s)
+            parts.append(f"{frm} imports {names} from {to}")
+        return "; ".join(parts)
+
+    def _cochange_anchors(self, links: list[dict], cochanges: int) -> list[dict]:
+        """Anchors pointing at the linking symbol(s) in their defining module.
+
+        Each anchor is ``{"module","symbol","line","metric"}`` where ``module`` is
+        the symbol's DEFINING module (``link["to"]``, since ``from to import sym``),
+        ``line`` is its ``def``/``class``/assignment line when resolvable from
+        ``project_root`` (0 otherwise), and ``metric`` is ``"co-changes N"``.
+        Deterministic: links are pre-sorted; capped at 3; de-duped by (module,
+        symbol).
+        """
+        anchors: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for link in links:
+            module = link.get("to", "")
+            symbol = link.get("symbol", "")
+            if not module or not symbol:
+                continue
+            key = (module, symbol)
+            if key in seen:
+                continue
+            seen.add(key)
+            anchors.append({
+                "module": module,
+                "symbol": symbol,
+                "line": self._symbol_def_line(module, symbol),
+                "metric": f"co-changes {cochanges}",
+            })
+        return anchors[:3]
+
+    def _symbol_def_line(self, module: str, symbol: str) -> int:
+        """The definition line of ``symbol`` in ``module``, or 0 when unresolvable.
+
+        Parses ``module`` (under ``project_root``) and returns the line of the
+        top-level ``def``/``class``/assignment named ``symbol``. Returns 0 when no
+        root is wired, the file can't be parsed, or the symbol isn't defined there
+        — anchors stay valid ("where resolvable").
+        """
+        import ast
+        from pathlib import Path
+
+        root = getattr(self, "project_root", "")
+        if not root:
+            return 0
+        try:
+            tree = ast.parse((Path(root) / module).read_text(encoding="utf-8", errors="ignore"))
+        except (OSError, SyntaxError, ValueError):
+            return 0
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if node.name == symbol:
+                    return node.lineno
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == symbol:
+                        return node.lineno
+        return 0
+
+    @staticmethod
     def _anchor_phrase(anchors: list[dict]) -> str:
         """A concise concrete sentence naming the anchored function(s)."""
         parts = []
@@ -374,16 +450,38 @@ class IdeaSeeder:
         for gap in (getattr(profile, "cochange_test_gaps", []) or [])[:3]:
             a, b = gap["a"], gap["b"]
             cochanges = gap.get("cochanges", 0)
-            self._append_root(
-                roots, seen_subjects,
-                title=(f"Add a test that exercises {a} and {b} together — they "
-                       f"co-change but nothing tests them jointly"),
-                subject=f"{a} + {b}",
-                fact_label="cochange-testgap",
-                fact_value=(f"{a} & {b} (co-change {cochanges}x but no single test "
-                            f"exercises both — a change to one can silently break "
-                            f"the other)"),
-            )
+            links = gap.get("links") or []
+            if links:
+                # Concrete: name the ACTUAL symbol(s) that link the two modules,
+                # so the test recommendation targets the real interface instead
+                # of an abstract "exercise A and B together".
+                phrase = self._cochange_link_phrase(links)
+                anchors = self._cochange_anchors(links, cochanges)
+                self._append_root(
+                    roots, seen_subjects,
+                    title=(f"Add a test exercising the {a} ↔ {b} interaction "
+                           f"({phrase}) — they co-change but nothing tests them "
+                           f"jointly"),
+                    subject=f"{a} + {b}",
+                    fact_label="cochange-testgap",
+                    fact_value=(f"{a} & {b} (co-change {cochanges}x via {phrase}, "
+                                f"but no single test exercises both — a change to "
+                                f"one can silently break the other)"),
+                    anchors=anchors,
+                )
+            else:
+                # Fallback — byte-identical to the original module-pair phrasing
+                # when no direct import links the two modules.
+                self._append_root(
+                    roots, seen_subjects,
+                    title=(f"Add a test that exercises {a} and {b} together — they "
+                           f"co-change but nothing tests them jointly"),
+                    subject=f"{a} + {b}",
+                    fact_label="cochange-testgap",
+                    fact_value=(f"{a} & {b} (co-change {cochanges}x but no single test "
+                                f"exercises both — a change to one can silently break "
+                                f"the other)"),
+                )
 
         # Technical-debt markers: modules carrying a cluster of TODO/FIXME/XXX/
         # HACK comments are concrete, traceable pockets of deferred work. When
