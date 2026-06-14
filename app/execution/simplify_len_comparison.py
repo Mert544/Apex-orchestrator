@@ -43,7 +43,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from app.execution._transform_base import apply_column_rewrites, is_fixture_path
+from app.execution._transform_base import (
+    apply_column_rewrites,
+    is_fixture_path,
+    splice_operand,
+)
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_simplify_len_comparison"]
@@ -115,7 +119,10 @@ def _replacement_text(node: ast.Compare, source: str) -> str | None:
         return None
 
     if key in _NOT_SHAPES:
-        return f"not {x_src}"
+        # The `len(x) == 0 -> not x` shape splices x beside `not`, which binds
+        # tighter than or/and/ternary — so a non-atomic x must be parenthesised
+        # (`not (a or b)`, not `not a or b`).
+        return f"not {splice_operand(source, node.left.args[0])}"
     return f"bool({x_src})"
 
 

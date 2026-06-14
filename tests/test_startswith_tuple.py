@@ -159,3 +159,19 @@ def test_fixture_path_skipped(tmp_path):
     plan = plan_collapse_startswith(str(tmp_path), rel)
     assert not plan.new_contents
     assert not plan.blockers
+
+
+def test_receiver_parenthesised_when_low_precedence(tmp_path):
+    # `(a or b).startswith(...)` receiver stays wrapped: `a or b.startswith(...)`
+    # would be `a or (b.startswith(...))`.  [H6]
+    from app.execution.startswith_tuple import plan_collapse_startswith
+    (tmp_path / "app").mkdir(exist_ok=True)
+    (tmp_path / "app" / "m.py").write_text(
+        'def f(a, b):\n    return (a or b).startswith("x") or (a or b).startswith("y")\n',
+        encoding="utf-8")
+    new = plan_collapse_startswith(str(tmp_path), "app/m.py").new_contents["app/m.py"]
+    assert '(a or b).startswith(("x", "y"))' in new
+    ns: dict = {}
+    exec(compile(new, "<m>", "exec"), ns)  # noqa: S102
+    assert ns["f"]("zzz", "abc") is False
+    assert ns["f"]("", "xyz") is True

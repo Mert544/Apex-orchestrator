@@ -188,3 +188,18 @@ def test_exec_equivalence_while_gt_0(tmp_path):
     after = plan.new_contents["app/m.py"]
     assert _exec_fn(before)([1, 2, 3]) == _exec_fn(after)([1, 2, 3])
     assert _exec_fn(before)([]) == _exec_fn(after)([])
+
+
+def test_not_shape_parenthesises_low_precedence_arg(tmp_path):
+    # `len(a or b) == 0 -> not (a or b)`, never `not a or b` (== `(not a) or b`). [H7]
+    from app.execution.simplify_len_comparison import plan_simplify_len_comparison
+    (tmp_path / "app").mkdir(exist_ok=True)
+    (tmp_path / "app" / "m.py").write_text(
+        "def f(a, b):\n    if len(a or b) == 0:\n        return 1\n    return 2\n",
+        encoding="utf-8")
+    new = plan_simplify_len_comparison(str(tmp_path), "app/m.py").new_contents["app/m.py"]
+    assert "if not (a or b):" in new
+    ns: dict = {}
+    exec(compile(new, "<m>", "exec"), ns)  # noqa: S102
+    assert ns["f"]([1, 2], [3]) == 2
+    assert ns["f"]([], []) == 1

@@ -53,6 +53,7 @@ from pathlib import Path
 from app.execution._transform_base import (
     apply_line_rewrites,
     is_fixture_path,
+    splice_operand,
 )
 from app.execution.cross_file_rename import RenamePlan
 
@@ -124,8 +125,8 @@ def _negated_test(test: ast.expr, source: str, test_src: str) -> str:
     E714); anything else falls back to wrapping the original text in ``not (...)``."""
     if (isinstance(test, ast.Compare) and len(test.ops) == 1
             and type(test.ops[0]) in _COMPARE_INVERT):
-        left = ast.get_source_segment(source, test.left)
-        right = ast.get_source_segment(source, test.comparators[0])
+        left = splice_operand(source, test.left)
+        right = splice_operand(source, test.comparators[0])
         if left is not None and right is not None:
             return f"{left} {_COMPARE_INVERT[type(test.ops[0])]} {right}"
     return f"not ({test_src})"

@@ -301,3 +301,18 @@ def test_multi_operator_compare_falls_back_to_wrap(tmp_path):
 def test_self_registers():
     from app.engine.objective_compiler import available_objectives
     assert "extract-guard-clause" in available_objectives()  # via the registry
+
+
+def test_membership_inversion_parenthesises_low_precedence_operand(tmp_path):
+    # `(a if c else d) in lst` -> `(a if c else d) not in lst`, never
+    # `a if c else d not in lst` (== `a if c else (d not in lst)`).  [H5]
+    (tmp_path / "app").mkdir(exist_ok=True)
+    (tmp_path / "app" / "m.py").write_text(
+        "def f(a, c, d, lst, x):\n    if (a if c else d) in lst:\n        return x\n",
+        encoding="utf-8")
+    new = plan_extract_guard_clause(str(tmp_path), "app/m.py").new_contents["app/m.py"]
+    assert "if (a if c else d) not in lst:" in new
+    ns: dict = {}
+    exec(compile(new, "<m>", "exec"), ns)  # noqa: S102
+    assert ns["f"](5, True, 99, [5], 10) == 10
+    assert ns["f"](5, False, 99, [5], 10) is None

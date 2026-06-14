@@ -32,7 +32,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from app.execution._transform_base import apply_column_rewrites, is_fixture_path
+from app.execution._transform_base import (
+    apply_column_rewrites,
+    is_fixture_path,
+    splice_operand,
+)
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_collapse_startswith"]
@@ -118,7 +122,7 @@ def _try_boolop(node: ast.BoolOp, source: str) -> _Rewrite | None:
     if len(recv_dumps) != 1:
         return None
 
-    receiver_src = ast.get_source_segment(
+    receiver_src = splice_operand(
         source, calls[0].func.value)  # type: ignore[union-attr]
     if receiver_src is None:
         return None
