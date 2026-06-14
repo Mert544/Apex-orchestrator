@@ -658,6 +658,7 @@ class IdeaActionBridge:
         import difflib
 
         from app.engine.transform_impact import measure_impact, summarize
+        from app.engine.verification_strength import module_referenced_by_suite
 
         requests = getattr(result, "patch_requests", None) or []
         if not requests:
@@ -667,6 +668,10 @@ class IdeaActionBridge:
         impact_parts: list[str] = []
         added = removed = 0
         reparses = True
+        # Does the green suite actually EXERCISE this change? A passing run on a
+        # module no test references is a hollow guarantee — record whether ANY
+        # changed .py module is named by a test (pure file scan, no execution).
+        covered = False
         for pr in requests:
             rel = pr.get("path", "")
             new = pr.get("new_content", "") or ""
@@ -700,11 +705,18 @@ class IdeaActionBridge:
                     summary = summarize(measure_impact(old, new))
                     if summary:
                         impact_parts.append(summary)
+                # Proof of COVERAGE: a green suite only vouches for what its
+                # tests look at. If any changed module is referenced by a test
+                # file, the verdict isn't applied-blind. Pure file scan, bounded
+                # by the already-bounded top-K proof steps.
+                if not covered and module_referenced_by_suite(project_root, rel):
+                    covered = True
         diff_text = "\n".join(diff_parts)
         if not diff_text.strip():
             return None
         return {"diff": diff_text, "added": added, "removed": removed,
-                "reparses": reparses, "impact": "; ".join(impact_parts)}
+                "reparses": reparses, "impact": "; ".join(impact_parts),
+                "covered": covered}
 
     def prove_step(self, step: ActionStep, project_root: str) -> dict | None:
         """The proof a runnable step carries: the EXACT draft diff it would make
@@ -1340,8 +1352,18 @@ def _proof_affordance(step: ActionStep) -> str:
     # Proof of value, when the change measurably improves a metric.
     impact = pv.get("impact") or ""
     impact_clause = f", {impact}" if impact else ""
+    # Proof of coverage — separates a strong "verified" (a test names this
+    # module) from a hollow "applied blind" (no test ever looks at it). Only
+    # rendered when attach_proofs recorded the signal; older previews omit it.
+    if "covered" in pv:
+        coverage_clause = (" · your tests reference this module ✓"
+                           if pv.get("covered")
+                           else " · ⚠️ no test exercises this — add one first")
+    else:
+        coverage_clause = ""
     return (f"    proof: +{pv.get('added', 0)} −{pv.get('removed', 0)}, "
-            f"{verdict}{impact_clause} — `apex brief {step.branch_path}` for the full diff")
+            f"{verdict}{impact_clause}{coverage_clause} "
+            f"— `apex brief {step.branch_path}` for the full diff")
 
 
 def render_action_markdown(plan: ActionPlan) -> str:
