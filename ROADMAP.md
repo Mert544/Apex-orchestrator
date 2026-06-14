@@ -7,6 +7,20 @@ and roadmap reasoning — Apex is a project-development assistant; security stay
 an integrated supporting signal.
 
 ## Now (shipped)
+- **A learning, concrete idea engine** — roadmap ranking now learns from the
+  repo's own `IdeaMemory` outcome ledger (historically-landing fixes rank up;
+  no-op on a fresh repo), activated on `apex ideate`. Two new grounded signals:
+  *confluence* (3+ pressures converge on one module) and *co-change test-gap*
+  (modules that change together but share no test — naming the actual linking
+  symbol). Recommendations are now **concrete**: `IdeaNode.anchors`
+  (`symbol·line·metric`) pinpoint the riskiest function in a flagged module and
+  flow through `ideate`/`explain`/brief/dashboard and the `create_test_stub`
+  action (a real pytest skeleton naming the symbol). **BS-7 visible**:
+  `apex deadcode --confirm` confirms/refutes dead-code via the project's own
+  tests under stdlib `trace` (keyed on use-only body lines); `apex objectives`
+  reports catalog reachability (facet routing now reaches 40/40). Dogfood
+  bug-fixes the agents proved: a dependency-planner infinite-hang (cycle guard),
+  an unreachable `candidate2` in the fractal analyzer, a dead `_block_template`.
 - **Development-team tooling** — `apex partition` (provably-disjoint parallel work
   groups), `scripts/merge_train.py` (safe-order integration), `apex changed`
   (change blast-radius), and the codified team process (`docs/development-team.md`).

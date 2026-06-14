@@ -2,17 +2,69 @@
 
 **Date**: 2026-06-14
 **Commit**: branch `claude/apex-orchestrator-eZbJO`
-**Tests**: 4000+ passing ✅
-**Status**: Team-org tooling + capability efficiency + idea/fractal-engine depth — see "Latest milestone" below
+**Tests**: 4700+ passing ✅
+**Status**: A learning, concrete idea engine — see "Latest milestone" below
 
-> Previous milestones: self-measurement truth + capability growth (2026-06-14, 3400 tests);
+> Previous milestones: team-org tooling + capability efficiency + engine depth (2026-06-14, 4000 tests);
+> self-measurement truth + capability growth (2026-06-14, 3400 tests);
 > trust layer + multi-file refactoring (2026-06-12, 1921 tests);
 > idea-engine+action-bridge (2026-05-30, 786 tests);
 > autonomy-safety-core (2026-04-25, 633 tests).
 
 ---
 
-## Latest milestone: team-org tooling + capability efficiency + engine depth (2026-06-14)
+## Latest milestone: a learning, concrete idea engine (2026-06-14)
+
+Apex is a deterministic, LLM-free, stdlib-only assistant that **develops the
+project it sits in**. This campaign made its recommendations *learn* and get
+*concrete* — the wedge an LLM structurally cannot match (zero-token,
+reproducible, test-verified, and grounded in the project's own code/git/test
+facts).
+
+**The engine LEARNS what lands.** Roadmap ranking now reads the repo's own
+`IdeaMemory` outcome ledger and nudges historically-landing fixes up and
+blocked/rolled-back ones down (`idea_roadmap.py`, bounded ±0.05, no-op on a
+fresh repo). Activated on the user-facing `apex ideate` path.
+
+**Two new grounded seeding signals.** *Confluence* — modules where 3+
+independent pressures converge (complexity × churn × hub × test-gap), the
+highest-leverage development targets (promoted from the dream layer's
+discovery). *Co-change test-gap* — module pairs that change together in git but
+share no test, and it now names the **actual linking symbol** ("app/b.py imports
+`foo` from app/a.py").
+
+**Recommendations got CONCRETE (symbol · line · metric · payoff).** A new
+additive `IdeaNode.anchors` field (`{module,symbol,line,metric}`) pinpoints the
+riskiest *function* inside a flagged module — "Untangle project_profile.py"
+became "centers on `_scan_churn` (cyclomatic 18, line 550)". The concreteness
+flows through every surface: `apex ideate` render (`→ focus:`), `apex explain`
+("Where: the concrete locus"), the develop brief ("Start here:"), the HTML
+dashboard, and the `create_test_stub` action (which now emits a real pytest
+skeleton naming the actual symbol + import). Quantified payoff (fan-in /
+blast-radius) and executable-vs-advisory action marking are the current frontier.
+
+**BS-7 made visible.** `apex deadcode --confirm` runs the project's own tests
+under stdlib `trace` and labels each dead-code finding *runtime-confirmed* /
+*refuted* / *static-only* — keyed on the symbol's **use-only body lines** (a
+def line runs at import even for dead code, so it is not the honest signal).
+`apex objectives` honestly reports which of the catalog's transforms the idea
+engine can actually reach (facet routing now reaches **40/40**).
+
+**Dogfood bug fixes the agents found and proved.** An infinite-hang in the
+dependency planner (`execution_order`'s critical-path walk had no cycle guard);
+an unreachable duplicate `candidate2` in the fractal analyzer's `_resolve_call`;
+a dead `_block_template` symbol. Plus the catalog grew (`remove-redundant-fstring`
+→ 41 objectives) and counterfactual reasoning gained a grounded caveat for every
+lens. Coverage was driven to 100% across dozens of engine/CLI/reporting modules.
+
+Process: parallel specialist agents in isolated worktrees, a standing auditor
+every wave, cherry-pick onto a merge train, one conditional green gate per wave,
+worktrees pruned after. The auditor seat repeatedly caught duplicates (the
+transform catalog is mature) and integration traps before they shipped.
+
+---
+
+## Earlier milestone: team-org tooling + capability efficiency + engine depth (2026-06-14)
 
 A sustained multi-agent campaign (orchestrator + parallel specialist agents in
 isolated worktrees, each gated and integrated under the green gate).
