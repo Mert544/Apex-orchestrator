@@ -377,8 +377,18 @@ def _trackrecord(root: Path) -> dict:
         if isinstance(f, dict) and f.get("outcome") == "rolled_back"
     )
     # Prefer the recorded totals when present; fall back to counting fixes.
-    landed = int(totals.get("applied", verified) or 0) if totals else verified
-    reverted = int(totals.get("rolled_back", rolled_back) or 0) if totals else rolled_back
+    # A MISSING key and an explicit null both fall back (they mean "not
+    # recorded"); a real recorded value wins, defensively coerced.
+    def _count(value: object, fallback: int) -> int:
+        if value is None:
+            return fallback
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return fallback
+
+    landed = _count(totals.get("applied"), verified) if totals else verified
+    reverted = _count(totals.get("rolled_back"), rolled_back) if totals else rolled_back
 
     mem = IdeaMemory.load(root).summary()
     reliable = mem.get("most_reliable") or []

@@ -18,7 +18,6 @@ import io
 import json
 from pathlib import Path
 
-import pytest
 
 from app.cli_insight import (
     _read_proof_of_fix,
@@ -124,17 +123,9 @@ def test_totals_present_missing_rolled_back_falls_back_to_count(tmp_path):
     assert rec["rolled_back"] == 1
 
 
-@pytest.mark.xfail(
-    reason="REAL QUIRK app/cli_insight.py:380 — `int(totals.get('applied', "
-    "verified) or 0)` only falls back to the counted value when the `applied` "
-    "KEY is absent; an explicit JSON null collapses to 0 instead of counting "
-    "the two applied fixes. A missing key and a null value should behave the "
-    "same. Not fixing source per task constraints; documenting the asymmetry.",
-    strict=True,
-)
 def test_totals_present_none_applied_falls_back_to_count(tmp_path):
-    # totals.applied is explicitly null -> SHOULD fall back to counting applied
-    # fixes (2), but the source treats null as 0.
+    # totals.applied is explicitly null -> falls back to counting applied fixes
+    # (2), the same as a missing key. (Was a bug: null collapsed to 0; fixed.)
     _write_proof(tmp_path, {
         "totals": {"applied": None, "rolled_back": 0},
         "fixes": [{"outcome": "applied"}, {"outcome": "applied"}],
@@ -142,17 +133,6 @@ def test_totals_present_none_applied_falls_back_to_count(tmp_path):
     rec = _trackrecord(tmp_path)
     assert rec["verified_fixes"] == 2
     assert rec["rolled_back"] == 0
-
-
-def test_totals_present_none_applied_currently_yields_zero(tmp_path):
-    # Pins the CURRENT (quirky) behavior so the regression is visible: an
-    # explicit null `applied` yields 0, not the counted fallback.
-    _write_proof(tmp_path, {
-        "totals": {"applied": None, "rolled_back": 0},
-        "fixes": [{"outcome": "applied"}, {"outcome": "applied"}],
-    })
-    rec = _trackrecord(tmp_path)
-    assert rec["verified_fixes"] == 0
 
 
 def test_totals_present_zero_applied_is_honored(tmp_path):
