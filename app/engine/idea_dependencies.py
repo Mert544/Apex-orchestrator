@@ -109,10 +109,13 @@ def execution_order(ideas: list[IdeaNode]) -> list[ExecStep]:
         _level(i.id, set())
 
     # Critical path: walk back from a deepest node, always to a deepest prereq.
+    # ``crit`` doubles as the visited set: on a mutual dependency cycle the walk
+    # would otherwise oscillate between two nodes forever (``_level`` above is
+    # cycle-guarded, but this walk was not). Re-reaching a visited node ends it.
     crit: set[str] = set()
     if level:
         cur = max(ideas, key=lambda i: (level[i.id], i.value)).id
-        while True:
+        while cur not in crit:
             crit.add(cur)
             prereqs = [d for d in deps.get(cur, set()) if d in by_id]
             if not prereqs:

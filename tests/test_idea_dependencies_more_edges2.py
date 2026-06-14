@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import threading
 
-import pytest
 
 from app.engine.idea_dependencies import (
     ExecStep,
@@ -112,37 +111,35 @@ def test_layering_ties_break_by_value_then_branch_path():
     assert [s.branch_path for s in steps] == ["a.hi", "z.lo"]
 
 
-def test_mutual_dependency_cycle_hangs_critical_path_walk():
-    # KNOWN BUG: app/engine/idea_dependencies.py:115-120. The critical-path
-    # `while True` walk has no visited/cycle guard. When infer_dependencies
-    # produces a mutual dependency (two pair ideas that are each both a cycle
-    # break and an interface job over the same modules), the walk oscillates
-    # between the two nodes forever. _level() is guarded and terminates, but the
-    # critical-path walk is not. We prove liveness fails via a watchdog thread
-    # rather than asserting on wall-clock time.
+def test_mutual_dependency_cycle_terminates_with_finite_plan():
+    # Regression guard for the critical-path walk in execution_order. When
+    # infer_dependencies produces a MUTUAL dependency (two pair ideas that are
+    # each both a cycle break and an interface job over the same modules), the
+    # walk used to oscillate between the two nodes forever (`while True` with no
+    # visited guard; _level was guarded but the walk was not). `crit` now doubles
+    # as the visited set, so the walk terminates. We assert liveness via a
+    # watchdog thread so a regression fails fast instead of hanging the suite.
     a = _idea("a", "synthesis", "x.py↔y.py", kind="pair",
               title="Break the import cycle and standardize the interface x.py↔y.py")
     b = _idea("b", "synthesis", "x.py↔y.py", kind="pair",
               title="Break the import cycle and standardize the interface x.py↔y.py")
-    # Sanity: the inferred deps really are mutual (the trigger for the hang).
+    # Sanity: the inferred deps really are mutual (the trigger for the old hang).
     deps = infer_dependencies([a, b])
     assert "b" in deps["a"] and "a" in deps["b"]
 
+    result: dict[str, object] = {}
     done = threading.Event()
 
     def _run():
-        execution_order([a, b])
+        result["steps"] = execution_order([a, b])
         done.set()
 
     worker = threading.Thread(target=_run, daemon=True)
     worker.start()
-    finished = done.wait(timeout=3.0)
-    # If/when the source is fixed, this completes and the test will XPASS,
-    # flagging that the guard now exists.
-    if not finished:
-        pytest.xfail(
-            "critical-path walk in execution_order infinite-loops on a mutual "
-            "dependency cycle (idea_dependencies.py:115-120, no visited guard)"
-        )
-    # Reached only after a fix: a finite plan with both ideas.
-    assert True
+    finished = done.wait(timeout=5.0)
+    assert finished, "execution_order hung on a mutual dependency cycle (no visited guard)"
+    # A finite, complete plan with both ideas present.
+    steps = result["steps"]
+    assert {s.branch_path for s in steps} == {a.branch_path, b.branch_path}
+    # At least one node is on the (now finite) critical path.
+    assert any(s.on_critical_path for s in steps)
