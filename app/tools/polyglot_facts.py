@@ -71,12 +71,117 @@ _DENY_NAMES = {
 
 @dataclass(frozen=True)
 class FileFact:
-    """One non-Python source file Apex can name but not deep-analyse yet."""
+    """One non-Python source file Apex can name but not deep-analyse yet.
+
+    ``has_test`` is a conservative, convention-based, NO-execution guess at
+    whether the file is covered by a test (see ``_build_test_index`` /
+    ``_file_has_test``). It is additive and defaults to ``False`` so existing
+    facts/rankings keep their shape; an untested big active file is the
+    highest-leverage non-Python risk, so it is surfaced first on ties.
+    """
 
     path: str
     language: str
     loc: int
     churn: int
+    has_test: bool = False
+
+
+# Test-directory convention names: a file living under (or beside) one of these
+# directories, whose stem references the source stem, counts as a test.
+_TEST_DIR_NAMES = {"__tests__", "tests", "test", "spec"}
+
+# Sibling-name test conventions, as stem suffixes/prefixes (joined to the source
+# stem with the SAME extension): foo.test.ext, foo.spec.ext, foo_test.ext,
+# test_foo.ext, foo_spec.ext.
+def _conventional_test_stems(stem: str) -> set[str]:
+    """The stems a test file for source ``stem`` would conventionally carry.
+
+    Language-agnostic, name-only — never reads or executes anything. Returned as
+    lowercased stems (the extension is appended by the caller / handled by the
+    membership test on full names).
+    """
+    s = stem.lower()
+    return {
+        f"{s}.test", f"{s}.spec",
+        f"{s}_test", f"{s}_spec", f"test_{s}",
+    }
+
+
+def _build_test_index(
+    files: list[tuple[str, str]],
+) -> tuple[set[str], list[tuple[frozenset[str], str]]]:
+    """Build, in ONE pass over the already-collected file set, the lookup
+    structures used to answer "does source X have a test?" without re-walking.
+
+    ``files`` is ``(rel_posix, name_lower)`` for every non-skipped repo file
+    (test files included). Returns:
+
+      - ``test_names``: the set of lowercased basenames that match a sibling
+        naming convention for SOME stem (e.g. ``app.test.js``). A source's test
+        existence is then a single set lookup against the convention names its
+        own stem would produce.
+      - ``test_dir_files``: per file that lives under a recognised test
+        directory, the set of "reference tokens" its name/path contributes,
+        paired with the file's own stem — so a source can be matched if a
+        test-dir file's stem references the source stem.
+
+    Deterministic: derived purely from the sorted file set, no time/random.
+    """
+    test_names: set[str] = set()
+    test_dir_files: list[tuple[frozenset[str], str]] = []
+    for rel, name in files:
+        test_names.add(name)
+        parts = rel.split("/")
+        if any(part in _TEST_DIR_NAMES for part in parts[:-1]):
+            stem = name.rsplit(".", 1)[0] if "." in name else name
+            # Tokens this test-dir file's stem could reference a source by:
+            # the whole stem, and convention-stripped variants.
+            tokens = {stem}
+            for marker in ("_test", "_spec", ".test", ".spec"):
+                if stem.endswith(marker):
+                    tokens.add(stem[: -len(marker)])
+            for marker in ("test_", "spec_"):
+                if stem.startswith(marker):
+                    tokens.add(stem[len(marker):])
+            test_dir_files.append((frozenset(tokens), stem))
+    return test_names, test_dir_files
+
+
+def _file_has_test(
+    rel: str,
+    test_names: set[str],
+    test_dir_files: list[tuple[frozenset[str], str]],
+) -> bool:
+    """Conservative convention-based test-presence check for source ``rel``.
+
+    A test is deemed to exist when EITHER a sibling/anywhere file matches a
+    naming convention for this stem (``foo.test.ext`` etc.), OR a file under a
+    recognised test directory references this stem. When unsure, returns False
+    (a false "untested" is an acceptable prompt; a false "tested" would hide
+    risk). Pure: only set/list lookups, no I/O.
+    """
+    name = rel.rsplit("/", 1)[-1]
+    if "." in name:
+        stem, ext = name.rsplit(".", 1)
+        ext = "." + ext
+    else:
+        stem, ext = name, ""
+    stem_l = stem.lower()
+    # Sibling naming conventions: foo.test.ext, foo_test.ext, test_foo.ext, ...
+    for conv_stem in _conventional_test_stems(stem_l):
+        if f"{conv_stem}{ext}".lower() in test_names:
+            return True
+    # Test-directory convention: a file under tests/ __tests__/ … whose stem
+    # references this source's stem. Require the source stem to be a non-trivial
+    # token (len >= 2) so a 1-char stem can't match everything.
+    if len(stem_l) >= 2:
+        for tokens, t_stem in test_dir_files:
+            if stem_l == t_stem.lower():
+                return True
+            if stem_l in {t.lower() for t in tokens}:
+                return True
+    return False
 
 
 def _non_blank_loc(path: Path) -> int:
@@ -131,6 +236,10 @@ def scan_polyglot_facts(root: str, *, limit: int = 5) -> list[FileFact]:
     if limit <= 0 or not root_path.exists():
         return []
 
+    # SINGLE pass: collect both the non-Python source candidates AND the full
+    # (rel, name) file set the convention-based test index is built from. We
+    # never walk again per file and never shell out for test presence.
+    all_files: list[tuple[str, str]] = []  # (rel_posix, name_lower)
     candidates: list[tuple[str, str, int]] = []  # (rel_posix, language, loc)
     for path in root_path.rglob("*"):
         if not path.is_file():
@@ -138,6 +247,8 @@ def scan_polyglot_facts(root: str, *, limit: int = 5) -> list[FileFact]:
         rel = path.relative_to(root_path)
         if is_skipped(rel):
             continue
+        rel_posix = rel.as_posix()
+        all_files.append((rel_posix, path.name.lower()))
         ext = path.suffix.lower()
         if ext in _PYTHON_EXTENSIONS:
             continue
@@ -146,18 +257,28 @@ def scan_polyglot_facts(root: str, *, limit: int = 5) -> list[FileFact]:
             continue
         if path.name.lower() in _DENY_NAMES:
             continue
-        candidates.append((rel.as_posix(), language, _non_blank_loc(path)))
+        candidates.append((rel_posix, language, _non_blank_loc(path)))
 
     if not candidates:
         return []
 
+    # Deterministic test index, derived from the sorted file set.
+    all_files.sort()
+    test_names, test_dir_files = _build_test_index(all_files)
+
     churn_by_path = _git_churn(root_path, {rel for rel, _lang, _loc in candidates})
     facts = [
-        FileFact(path=rel, language=language, loc=loc,
-                 churn=churn_by_path.get(rel, 0))
+        FileFact(
+            path=rel, language=language, loc=loc,
+            churn=churn_by_path.get(rel, 0),
+            has_test=_file_has_test(rel, test_names, test_dir_files),
+        )
         for rel, language, loc in candidates
     ]
-    facts.sort(key=lambda f: (-f.churn, -f.loc, f.path))
+    # ``has_test`` is a LATER tiebreaker: primary ordering stays (-churn, -loc)
+    # so the pinned ranking in tests/test_polyglot_facts.py is unchanged; among
+    # otherwise-equal files, untested (False sorts before True) surfaces first.
+    facts.sort(key=lambda f: (-f.churn, -f.loc, f.has_test, f.path))
     return facts[:limit]
 
 
@@ -169,10 +290,19 @@ def render_polyglot_attention(facts: list[FileFact]) -> str:
     """
     if not facts:
         return ""
+    # Only annotate test presence when the set actually carries the signal —
+    # i.e. at least one file WAS found to have a test. On an all-untested set
+    # (which includes hand-built facts with the default has_test=False) there is
+    # nothing to contrast against, so the clause stays byte-identical to the
+    # pre-test-presence output and existing pinned renders don't shift.
+    annotate = any(f.has_test for f in facts)
     parts = []
     for fact in facts:
         commit_word = "commit" if fact.churn == 1 else "commits"
-        parts.append(f"`{fact.path}` ({fact.loc} LOC, {fact.churn} {commit_word})")
+        suffix = " (no test found)" if annotate and not fact.has_test else ""
+        parts.append(
+            f"`{fact.path}` ({fact.loc} LOC, {fact.churn} {commit_word}){suffix}"
+        )
     return (
         "Largest / most-active files outside analysis scope: "
         + ", ".join(parts)
