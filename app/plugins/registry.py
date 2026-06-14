@@ -70,7 +70,7 @@ class PluginRegistry:
             p = Path(d)
             if not p.exists():
                 continue
-            for f in p.glob("*.py"):
+            for f in sorted(p.glob("*.py")):
                 if f.name.startswith("_"):
                     continue
                 candidates.append(f)

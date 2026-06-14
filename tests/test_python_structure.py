@@ -30,3 +30,29 @@ def test_python_structure_ignores_worktree_copies(tmp_path: Path):
     results = PythonStructureAnalyzer(tmp_path).analyze()
     paths = {Path(m.path).as_posix() for m in results}
     assert paths == {"app/real.py"}
+
+
+def test_unparseable_file_is_dropped_returns_none(tmp_path: Path):
+    good = tmp_path / "good.py"
+    good.write_text("def ok():\n    return 1\n", encoding="utf-8")
+    bad = tmp_path / "bad.py"
+    bad.write_text("def broken(:\n    pass\n", encoding="utf-8")  # SyntaxError
+
+    analyzer = PythonStructureAnalyzer(tmp_path)
+    # The unparseable module is dropped (None) rather than raising...
+    assert analyzer._analyze_file(bad) is None
+    # ...while the valid module survives.
+    paths = {m.path for m in analyzer.analyze()}
+    assert "good.py" in paths
+    assert "bad.py" not in paths
+
+
+def test_narrowed_except_does_not_swallow_unrelated_error(tmp_path: Path):
+    analyzer = PythonStructureAnalyzer(tmp_path)
+    # A non-Path argument triggers AttributeError on .read_text, which is NOT in
+    # the narrowed (SyntaxError, OSError, ValueError) tuple, so it surfaces
+    # instead of being silently turned into None.
+    import pytest
+
+    with pytest.raises(AttributeError):
+        analyzer._analyze_file(object())  # type: ignore[arg-type]

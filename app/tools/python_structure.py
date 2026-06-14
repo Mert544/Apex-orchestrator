@@ -43,7 +43,7 @@ class PythonStructureAnalyzer:
         try:
             source = path.read_text(encoding="utf-8", errors="ignore")
             tree = ast.parse(source)
-        except Exception:
+        except (SyntaxError, OSError, ValueError):
             return None
 
         imports: list[str] = []
