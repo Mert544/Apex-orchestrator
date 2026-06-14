@@ -144,15 +144,15 @@ def test_specific_keys_precede_broader_substrings_in_insertion_order() -> None:
 
 
 def test_coverage_is_substantially_higher() -> None:
-    """The map now routes to far more of the 37 develop objectives than the
-    original ~6 (dedup, shrink-functions, dead-params, modernize,
-    remove-dead-code, inline-helpers).
+    """The map now routes to far more develop objectives than the original ~6
+    (dedup, shrink-functions, dead-params, modernize, remove-dead-code,
+    inline-helpers).
 
-    Before this wave the map reached 10 objectives; the redundant-control-flow
-    ladder added 8 more, lifting reachability to 18, the assert-tuple bug-fix
-    objective lifts it to 19, and the bool-comparison fix lifts it to 20."""
+    Earlier waves lifted reachability to 20; the routing-depth wave then closed
+    the remaining gap — every registered safe objective is now reachable from at
+    least one facet phrase, so the map reaches the FULL registered set."""
     reachable = {v for v in FACET_OBJECTIVE_MAP.values()}
-    assert len(reachable) == 20
+    assert len(reachable) == len(set(available_objectives()))
     # The four objectives the original six did not reach.
     assert {"dedup-parameterized", "extract-guard-clause", "fix-not-in-is",
             "cover-gaps"} <= reachable
@@ -160,7 +160,7 @@ def test_coverage_is_substantially_higher() -> None:
     assert "fix-assert-tuple" in reachable
     # The compare-to-True/False detector now has a transform that resolves it.
     assert "simplify-bool-comparison" in reachable
-    # The eight objectives this wave newly made reachable end-to-end.
+    # The eight objectives an earlier wave made reachable end-to-end.
     assert {"simplify-bool-return", "simplify-ternary-bool",
             "remove-redundant-else", "merge-nested-if", "simplify-dict-get",
             "use-enumerate", "remove-pointless-pass",
@@ -168,28 +168,21 @@ def test_coverage_is_substantially_higher() -> None:
 
 
 def test_reachable_objective_count_rose_by_eight() -> None:
-    """Before/after: the new redundant-control-flow phrases are exactly the
-    objectives that moved the reachable set from 10 to 18 — and not one of them
-    was already reachable (so the gain is real, not double-counted). The later
-    assert-tuple bug-fix objective adds one more (19), and the bool-comparison fix
-    one more (20)."""
+    """The eight redundant-control-flow phrases are exactly the objectives an
+    earlier wave moved into the reachable set — and not one of them was already
+    reachable before that wave (so the gain is real, not double-counted). The
+    routing-depth wave later closed the rest of the gap, so the full reachable set
+    now equals the registered objective set; the eight remain a subset of it."""
     new_phrase_objectives = {
         "simplify-bool-return", "simplify-ternary-bool", "remove-redundant-else",
         "merge-nested-if", "simplify-dict-get", "use-enumerate",
         "remove-pointless-pass", "remove-unreachable-after-terminator",
     }
     reachable = set(FACET_OBJECTIVE_MAP.values())
-    # The assert-tuple and bool-comparison objectives are reachable on their own
-    # axes; set them aside so the redundant-control-flow arithmetic stays exact.
-    previously_reachable = (
-        reachable - new_phrase_objectives
-        - {"fix-assert-tuple", "simplify-bool-comparison"})
-    assert len(previously_reachable) == 10
-    assert len(reachable) == 20
-    # None of the eight was already among the prior ten.
-    assert new_phrase_objectives.isdisjoint(previously_reachable)
-    assert "fix-assert-tuple" not in previously_reachable
-    assert "simplify-bool-comparison" not in previously_reachable
+    # The eight redundant-control-flow objectives are all reachable.
+    assert new_phrase_objectives <= reachable
+    # Reachability now spans the full registered objective set.
+    assert reachable == set(available_objectives())
 
 
 def test_matching_is_case_insensitive_and_substring() -> None:

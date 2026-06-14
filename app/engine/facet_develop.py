@@ -53,6 +53,15 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     "deep nesting": "shrink-functions",
     "long function": "shrink-functions",
 
+    # Trailing guard after setup: the sibling shape of the early-exit guard. Here
+    # an ``if`` wraps the TAIL of a function after some preamble (not a leading
+    # precondition) — the standalone guard-clause objective owns exactly this case,
+    # distinct from extract-guard-clause's leading-precondition rewrite. MUST
+    # precede the broader "guard clause" key below, which "trailing guard" sits
+    # apart from but which would otherwise out-rank a similar phrasing.
+    "trailing guard after setup": "guard-clause",
+    "a trailing guard": "guard-clause",
+
     # Flatten control flow: turn a nested if/else into early-exit guards. The
     # "early returns / guard clauses" sub-aspects of deep nesting name exactly
     # what the extract-guard-clause transform does (distinct from shrinking the
@@ -61,6 +70,19 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     "early return": "extract-guard-clause",
     "precondition exits": "extract-guard-clause",
     "error exits first": "extract-guard-clause",
+
+    # Fully-returning duplicate block: the control-flow half of dedup. The base
+    # ``dedup`` objective only lifts a duplicate that ends in a plain statement or
+    # a single tail return; a block whose EVERY exit path returns is the slice
+    # dedup-total-return closes — so this phrasing routes there, not to bare dedup.
+    # MUST precede the "duplicated logic"/"shared helper" dedup keys below.
+    "fully-returning duplicate": "dedup-total-return",
+
+    # Import-block hygiene: the "decouple → import direction" sub-aspects name the
+    # two mechanical import tidies. An import nothing references is dropped
+    # (remove-unused-imports); an unordered import block is sorted (sort-imports).
+    "an unused import": "remove-unused-imports",
+    "an unsorted import block": "sort-imports",
 
     # Signatures / API surface: the concern is the parameter list itself.
     "unused parameter": "dead-params",
@@ -83,6 +105,40 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # comparison", which the fix-not-in-is transform resolves. (Kept off the bare
     # ``is not`` substring, which also appears in the None-comparison finding.)
     "negating the comparison": "fix-not-in-is",
+
+    # Legacy string-formatting idioms: the "legacy idioms → pre-f-string
+    # formatting" sub-aspects name each pre-f-string shape and route to the
+    # dedicated transform that modernizes it — ``%`` formatting
+    # (percent-to-fstring), ``str.format`` calls (fstring-convert / the
+    # format-spec variant via format-to-fstring). Each is value-preserving.
+    "percent-style string format": "percent-to-fstring",
+    "explicit format-spec call": "format-to-fstring",
+    "str.format placeholder call": "fstring-convert",
+
+    # Redundant constructor calls: ``set([...])`` is a set literal; a dict built
+    # by an append-style loop is a dict comprehension. The "legacy idioms →
+    # redundant constructor call" sub-aspects route to those transforms.
+    "set from a list literal": "set-literal",
+    "dict built by a loop": "dict-comprehension",
+
+    # Adjacent string literals: implicitly concatenated literals ("a" "b") fold
+    # into one. The "legacy idioms → adjacent string literals" sub-aspect routes
+    # to the fold transform.
+    "implicitly concatenated literals": "fold-literal-string-concat",
+
+    # Expression-level redundancy (the "redundant expressions" aspect). Each phrase
+    # names one value-preserving rewrite and routes to its dedicated transform.
+    # None of these phrasings is a substring of another key here, so order is free.
+    "a double negation": "remove-double-negation",
+    "length compared to zero": "simplify-len-comparison",
+    "a negated equality comparison": "simplify-negated-comparison",
+    "an isinstance or-chain": "merge-isinstance",
+    "a startswith or endswith or-chain": "collapse-startswith",
+    "an unchained comparison range": "chain-comparison",
+    "a magic literal worth naming": "extract-constant",
+    "a self-referential augmented assignment": "combine-augmented-assign",
+    "nested with statements": "combine-nested-with",
+    "a comprehension wrapped in another call": "simplify-comprehension",
 
     # Always-true tuple assert: ``assert (cond, "msg")`` is a no-op (a non-empty
     # tuple is always truthy) — the author meant ``assert cond, "msg"``. The

@@ -111,21 +111,57 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "unreferenced symbols": ["exported but unused", "dynamic references", "test-only usage"],
     "unreachable branches": ["constant conditions", "shadowed cases", "dead error paths"],
     "redundant guards": ["already-validated input", "duplicate null checks", "tautological conditions"],
-    "extract a shared helper": ["naming the concept", "the parameter surface", "where it lives"],
+    "extract a shared helper": ["naming the concept", "the parameter surface", "where it lives",
+                                "a fully-returning duplicate block"],
     "parameterize the variants": ["the varying dimension", "flag versus strategy", "the default variant"],
     "single source of truth": ["which copy wins", "derivation direction", "drift detection"],
     "early returns": ["precondition exits", "error exits first", "happy path last"],
+    # The "guard clauses" sub-aspect splits into the two distinct guard shapes:
+    # the leading precondition (handled by extract-guard-clause, reached via the
+    # "early return"/"guard clause" keys) and the TRAILING guard after setup —
+    # an ``if`` wrapping the tail of a function after some preamble — which is the
+    # sibling shape the standalone guard-clause objective owns.
+    "guard clauses": ["a trailing guard after setup", "the leading precondition",
+                      "one exit per branch"],
     "extract inner blocks": ["loop body extraction", "nested conditional extraction", "naming the step"],
     # redundant-control-flow ladder: each L3 phrase names the exact tidy transform
     # FACET_OBJECTIVE_MAP routes to, so the zoom lands on a real develop objective.
+    # This wave EXTENDS each L2 group's L3 list with more provably-equivalent-but-
+    # noisier shapes (doubled negation, len-vs-zero, or-chains, legacy formatting,
+    # redundant constructors, magic literals, ...). They hang off the EXISTING L2
+    # groups rather than a new top-level aspect on purpose: adding no new L2 node
+    # keeps the per-level beam undisturbed, so the original control-flow phrases
+    # still reach L3 (guarded by test_idea_facets::test_engine_emits_every_new_l3).
+    # The original phrases stay FIRST in each list so their emission is preserved.
     "redundant conditionals": ["boolean return simplification",
                                "ternary that returns a boolean",
-                               "redundant else after return"],
+                               "redundant else after return",
+                               # added: condition-level value-preserving rewrites.
+                               "a double negation",
+                               "a negated equality comparison",
+                               "length compared to zero"],
     "collapsible structure": ["collapsible nested conditionals",
                               "get-with-default lookup",
-                              "manual index loop"],
+                              "manual index loop",
+                              # added: or-chains, comparison chains, and nested
+                              # statements that collapse into one equivalent form.
+                              "an isinstance or-chain",
+                              "a startswith or endswith or-chain",
+                              "an unchained comparison range",
+                              "nested with statements",
+                              "a self-referential augmented assignment",
+                              "a comprehension wrapped in another call"],
     "unreachable or no-op statements": ["redundant pass statement",
-                                        "statements after an unconditional return"],
+                                        "statements after an unconditional return",
+                                        # added: legacy surface idioms and magic
+                                        # literals — equivalent shapes a tidy sweeps.
+                                        "percent-style string format",
+                                        "explicit format-spec call",
+                                        "str.format placeholder call",
+                                        "set from a list literal",
+                                        "dict built by a loop",
+                                        "implicitly concatenated literals",
+                                        "a magic literal worth naming"],
     # document ladder
     "signatures and types": ["parameter meanings", "return type and None", "raised exceptions list"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
@@ -152,6 +188,12 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "level discipline": ["error versus warning", "the noise budget", "debug gating"],
     "no secret leakage": ["redaction rules", "exception payloads", "URL and query params"],
     "span boundaries": ["the unit of work", "async continuation", "batch operations"],
+    # decouple ladder: the "import direction" aspect zooms into the import block's
+    # own hygiene — imports nothing references, and an unordered import block. Both
+    # L3 phrases route (via FACET_OBJECTIVE_MAP) to the import-hygiene develop
+    # objectives (remove-unused-imports, sort-imports), so a zoom here lands on a
+    # real campaign rather than the generic case split.
+    "import direction": ["an unused import", "an unsorted import block"],
 }
 
 # A facet's caveat should interrogate *its* sub-concern, not recite the lens's
@@ -168,6 +210,17 @@ _FACET_CAVEAT_RULES: list[tuple[tuple[str, ...], str]] = [
       "get-with-default", "manual index loop", "redundant pass", "redundant conditionals",
       "collapsible structure", "no-op statements", "statements after an unconditional"),
      "What behavior changes if this 'equivalent' rewrite is wrong about a side effect or falsy edge?"),
+    # Surface-level / expression-level tidies (legacy formatting idioms, doubled
+    # negation, len-vs-zero, isinstance/startswith or-chains, magic literals,
+    # collapsible statements). Multi-word keys match only their own phrases, so
+    # they sit ahead of the broad single-word rules below.
+    (("string format", "format placeholder", "format-spec", "string literals",
+      "concatenated literals", "list literal", "dict built", "double negation",
+      "negated equality", "isinstance or-chain", "startswith", "endswith",
+      "compared to zero", "unchained comparison", "magic literal",
+      "augmented assignment", "nested with", "comprehension wrapped",
+      "trailing guard", "fully-returning duplicate"),
+     "What behavior changes if this 'equivalent' rewrite is wrong about a side effect or evaluation order?"),
     (("null", "empty"), "What does this do with None, an empty value, or a missing key?"),
     (("timeout", "hang", "timeout bounds"), "What if it never returns — is there a bound, and what fires when it trips?"),
     (("concurren", "race"), "What if two callers reach this at the same moment?"),
