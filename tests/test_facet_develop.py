@@ -37,6 +37,108 @@ def test_each_mapping(phrase: str, objective: str) -> None:
     assert facet_to_objective(phrase) == objective
 
 
+# Phrases the engine genuinely EMITS (facet vocabulary in idea_facets._FACETS /
+# _FACET_SUBASPECTS, plus detector message substrings) that the expanded map now
+# routes to a develop objective. Each pair is (real emitted phrase, objective).
+@pytest.mark.parametrize(
+    "phrase, objective",
+    [
+        # dedup-parameterized — the "parameterize the variants" sub-aspect.
+        ("parameterize the variants", "dedup-parameterized"),
+        ("the varying dimension", "dedup-parameterized"),
+        ("flag versus strategy", "dedup-parameterized"),
+        ("the default variant", "dedup-parameterized"),
+        # shrink-functions — extract-this-block sub-aspects of deep nesting.
+        ("nested conditional extraction", "shrink-functions"),
+        ("loop body extraction", "shrink-functions"),
+        # extract-guard-clause — flatten nesting with early-exit guards.
+        ("guard clauses", "extract-guard-clause"),
+        ("guard clause", "extract-guard-clause"),
+        ("early returns", "extract-guard-clause"),
+        ("early return", "extract-guard-clause"),
+        ("precondition exits", "extract-guard-clause"),
+        ("error exits first", "extract-guard-clause"),
+        # modernize — detector tidy-debt wordings.
+        ("compare to None with `is` / `is not`", "modernize"),
+        ("f-string without placeholders — drop the `f` prefix", "modernize"),
+        ("use a literal `{}` instead of `dict()`", "modernize"),
+        # fix-not-in-is — the negated-membership/identity finding.
+        ("use `not in` instead of negating the comparison", "fix-not-in-is"),
+        # remove-dead-code — dead/unreachable sub-aspects.
+        ("unreachable branches", "remove-dead-code"),
+        ("dead error paths", "remove-dead-code"),
+        ("constant conditions", "remove-dead-code"),
+        ("tautological conditions", "remove-dead-code"),
+        ("duplicate null checks", "remove-dead-code"),
+        ("shadowed cases", "remove-dead-code"),
+        # cover-gaps — the test lens's "this needs a test" concerns.
+        ("edge cases", "cover-gaps"),
+        ("failure modes", "cover-gaps"),
+        ("property invariants", "cover-gaps"),
+        ("round-trip stability", "cover-gaps"),
+        ("ordering independence", "cover-gaps"),
+        ("idempotence", "cover-gaps"),
+    ],
+)
+def test_each_new_mapping(phrase: str, objective: str) -> None:
+    assert facet_to_objective(phrase) == objective
+
+
+# Overlapping keys where a shorter key is a SUBSTRING of a longer one (or of a
+# phrase that should route elsewhere): the more-specific phrasing MUST be listed
+# first so the first-substring-match returns the intended objective.
+@pytest.mark.parametrize(
+    "phrase, objective",
+    [
+        # "parameterize the variants" contains "parameterize" (dead-params); the
+        # specific near-dup phrasing must win.
+        ("parameterize the variants", "dedup-parameterized"),
+        # the bare "parameterize" still routes to dead-params.
+        ("parameterize", "dead-params"),
+        # "redundant guards" contains "redundant guard" (remove-dead-code) but NOT
+        # "guard clause" (extract-guard-clause): it stays dead-code.
+        ("redundant guards", "remove-dead-code"),
+        ("redundant guard", "remove-dead-code"),
+        # "guard clauses" routes to the guard objective, not dead-code.
+        ("guard clauses", "extract-guard-clause"),
+    ],
+)
+def test_specific_before_broad_ordering(phrase: str, objective: str) -> None:
+    assert facet_to_objective(phrase) == objective
+
+
+def test_specific_keys_precede_broader_substrings_in_insertion_order() -> None:
+    """For any two keys where one is a substring of the other AND they map to
+    different objectives, the substring (broader) key must be inserted LATER so
+    the more-specific phrasing wins the first-match scan."""
+    keys = list(FACET_OBJECTIVE_MAP)
+    pos = {k: i for i, k in enumerate(keys)}
+    for short in keys:
+        for long in keys:
+            if short is long or short not in long:
+                continue
+            if FACET_OBJECTIVE_MAP[short] == FACET_OBJECTIVE_MAP[long]:
+                continue
+            # short is a substring of long with a DIFFERENT objective: long must
+            # come first, else facet_to_objective(long) would return short's obj.
+            assert pos[long] < pos[short], (
+                f"{long!r} (-> {FACET_OBJECTIVE_MAP[long]!r}) must precede its "
+                f"substring {short!r} (-> {FACET_OBJECTIVE_MAP[short]!r})"
+            )
+            assert facet_to_objective(long) == FACET_OBJECTIVE_MAP[long]
+
+
+def test_coverage_is_substantially_higher() -> None:
+    """The map now routes to far more of the 37 develop objectives than the
+    original ~6 (dedup, shrink-functions, dead-params, modernize,
+    remove-dead-code, inline-helpers)."""
+    reachable = {v for v in FACET_OBJECTIVE_MAP.values()}
+    assert len(reachable) == 10
+    # The four objectives the original six did not reach.
+    assert {"dedup-parameterized", "extract-guard-clause", "fix-not-in-is",
+            "cover-gaps"} <= reachable
+
+
 def test_matching_is_case_insensitive_and_substring() -> None:
     assert facet_to_objective("We should MODERNIZE this") == "modernize"
     assert facet_to_objective("...extract a shared helper here...") == "dedup"
