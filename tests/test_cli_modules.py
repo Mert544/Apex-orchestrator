@@ -98,7 +98,7 @@ def test_family_parser_registration_covers_every_command():
         "auto", "simulate", "evolve", "maintain", "develop", "shield", "plan", "ascend",
         "grade", "impact", "mutants", "duplication", "brief", "dream", "outcomes", "recipes", "changelog", "explain",
         "ideate", "review", "rename", "move", "signature", "rewrite", "teach", "extract", "inline",
-        "bench", "run", "canvas",
+        "bench", "run", "canvas", "changed",
         "scan", "agents", "consensus", "daemon", "self-audit",
         "fix-docstrings", "fix-coverage", "lsp", "metrics",
         "dashboard", "hotspots", "deadcode", "city", "report", "fractal", "debug",

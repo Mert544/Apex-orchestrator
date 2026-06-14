@@ -197,6 +197,23 @@ def cmd_canvas(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_changed(args: argparse.Namespace) -> int:
+    """Report the blast radius of a change — dependents, covering tests, scope cohesion."""
+    import json as _json
+
+    from app.engine.blast_radius import (
+        blast_radius, changed_from_git, render_blast_radius_markdown,
+    )
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    changed = changed_from_git(str(target), args.base)
+    br = blast_radius(str(target), changed)
+    if args.json:
+        print(_json.dumps(br.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(render_blast_radius_markdown(br))
+    return 0
+
+
 def _register_local_parsers(subparsers) -> None:
     """Subcommands whose cmd_* still lives in this module: bench, run."""
     # bench — grade pinned external codebases (calibration, reproducible)
@@ -277,6 +294,17 @@ def _register_local_parsers(subparsers) -> None:
         "--out", default="", help="Output .canvas path (default <target>/.apex/apex[-ideas].canvas)"
     )
     canvas_parser.set_defaults(func=cmd_canvas)
+
+    # changed — blast radius of a change (dependents, covering tests, cohesion)
+    changed_parser = subparsers.add_parser(
+        "changed", help="Report the blast radius of a change vs a git base"
+    )
+    changed_parser.add_argument("--target", default="", help="Target project root")
+    changed_parser.add_argument(
+        "--base", default="HEAD", help="Git base to diff against (default HEAD)"
+    )
+    changed_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    changed_parser.set_defaults(func=cmd_changed)
 
 
 def main() -> int:
