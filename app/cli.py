@@ -175,12 +175,20 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_canvas(args: argparse.Namespace) -> int:
-    """Export the dependency graph as a JSONCanvas (.canvas) file."""
-    from app.reporting.canvas_export import dependency_canvas, write_canvas
+    """Export a JSONCanvas (.canvas) file — the dependency graph or the idea tree."""
+    from app.reporting.canvas_export import write_canvas
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
-    canvas = dependency_canvas(str(target))
-    out_path = Path(args.out) if args.out else target / ".apex" / "apex.canvas"
+    kind = getattr(args, "kind", "deps")
+    if kind == "idea":
+        from app.reporting.idea_canvas import idea_canvas
+        canvas = idea_canvas(str(target))
+        default_name = "apex-ideas.canvas"
+    else:
+        from app.reporting.canvas_export import dependency_canvas
+        canvas = dependency_canvas(str(target))
+        default_name = "apex.canvas"
+    out_path = Path(args.out) if args.out else target / ".apex" / default_name
     write_canvas(canvas, out_path)
     print(
         f"[canvas] Written to {out_path} "
@@ -262,7 +270,11 @@ def _register_local_parsers(subparsers) -> None:
     )
     canvas_parser.add_argument("--target", default="", help="Target project root")
     canvas_parser.add_argument(
-        "--out", default="", help="Output .canvas path (default <target>/.apex/apex.canvas)"
+        "--kind", choices=["deps", "idea"], default="deps",
+        help="Which graph to export: 'deps' (dependency graph) or 'idea' (idea tree)"
+    )
+    canvas_parser.add_argument(
+        "--out", default="", help="Output .canvas path (default <target>/.apex/apex[-ideas].canvas)"
     )
     canvas_parser.set_defaults(func=cmd_canvas)
 

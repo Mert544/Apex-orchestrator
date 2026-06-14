@@ -6,9 +6,11 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Tests](https://img.shields.io/badge/tests-3400%2B%20passing-2ea44f)]()
-[![Health grade](https://img.shields.io/badge/apex%20grade-A%2B%20(100)-2ea44f)]()
+[![Self-grade](https://img.shields.io/badge/apex%20self--grade-B--%20(80%2F100)-dbab09)]()
 [![No LLM required](https://img.shields.io/badge/LLM-optional%20·%20offline%20core-8957e5)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-24292f)](LICENSE)
+
+<sub>That self‑grade is real and unspun — Apex runs its own A–F rubric on its own code. The only deductions are two **capped** axes (function complexity, duplication); security, architecture, testing, debt and correctness all score clean. A tool you'd trust to grade your code should survive its own grader first.</sub>
 
 <br/>
 
