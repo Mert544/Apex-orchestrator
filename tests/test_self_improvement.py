@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from app.engine.self_improvement import SelfImprovementEngine
 
 
@@ -51,3 +49,16 @@ class TestSelfImprovementEngine:
         assert summary["total_files"] >= 2
         plan = engine.analyze_and_plan(mode="report")
         assert plan.mode == "report"
+
+    def test_missing_docstrings_ignores_worktree_copies(self, tmp_path: Path):
+        # One real undocumented function.
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "real.py").write_text("def real():\n    return 1\n")
+        # Worktree copies with undocumented functions must not be counted.
+        copy = tmp_path / ".claude" / "worktrees" / "agent-1" / "app"
+        copy.mkdir(parents=True)
+        (copy / "real.py").write_text("def real():\n    return 1\n")
+        (copy / "extra.py").write_text("def extra():\n    return 2\n")
+
+        engine = SelfImprovementEngine(tmp_path)
+        assert engine._count_missing_docstrings() == 1

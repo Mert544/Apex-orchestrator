@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.base import Agent
+from app.engine.skip_dirs import iter_source_files
 
 
 class TestStubAgent(Agent):
@@ -79,9 +80,8 @@ class TestStubAgent(Agent):
     def _discover_source_files(self, root: Path) -> list[str]:
         return [
             str(p.relative_to(root).as_posix())
-            for p in root.rglob("*.py")
+            for p in iter_source_files(root)
             if "test_" not in p.name and "tests" not in p.parts
-            and ".apex" not in p.parts and "__pycache__" not in p.parts
         ]
 
     def _scan_file(self, rel_path: str, source: str) -> tuple[list[dict[str, Any]], int, int]:

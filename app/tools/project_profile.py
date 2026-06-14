@@ -6,6 +6,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.engine.skip_dirs import is_skipped
 from app.tools.dependency_graph import DependencyGraphBuilder
 from app.tools.python_structure import PythonStructureAnalyzer
 from app.tools.test_linker import TestLinker
@@ -180,7 +181,7 @@ class ProjectProfiler:
         security_finding_modules: list[str] = []
         correctness_bug_modules: list[str] = []
 
-        skipped_dirs = {".git", "__pycache__", ".apex", ".epistemic", "node_modules", ".venv", "venv", "dist", "build", ".turbo", ".next"}
+        skipped_dirs = {".turbo", ".next"}
         scanned = 0
         for path in self.root.rglob("*"):
             if scanned >= self.max_files:
@@ -189,8 +190,9 @@ class ProjectProfiler:
                 continue
             rel = path.relative_to(self.root)
             rel_str = str(rel)
-            # Skip known non-source directories
-            if any(part in skipped_dirs for part in rel.parts):
+            # Skip the canonical excluded dirs (incl. .claude worktrees) plus a
+            # couple of JS-toolchain caches the canonical set doesn't carry.
+            if is_skipped(rel) or any(part in skipped_dirs for part in rel.parts):
                 continue
             scanned += 1
             profile.total_files += 1

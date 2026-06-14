@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.engine.skip_dirs import is_skipped
+
 
 TEXT_EXTENSIONS = {
     ".py",
@@ -45,6 +47,8 @@ class RepoScanner:
             if not path.is_file():
                 continue
             if path.suffix.lower() not in TEXT_EXTENSIONS:
+                continue
+            if is_skipped(path.relative_to(self.root)):
                 continue
             try:
                 if path.stat().st_size > self.max_file_size:

@@ -115,3 +115,18 @@ def test_test_stub_agent_finds_coverage_gaps():
     agent = TestStubAgent()
     result = agent.run(project_root=root, generate=False)
     assert result["total_functions"] > result["tested_functions"], f"All functions are already tested in {root}"
+
+
+def test_real_world_validator_ignores_worktree_copies(tmp_path: Path):
+    # One real risky function under the project root.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "real.py").write_text("def run(code):\n    return eval(code)\n")
+    # A worktree COPY with the same risk must not be analyzed (would double-count).
+    copy = tmp_path / ".claude" / "worktrees" / "agent-1" / "app"
+    copy.mkdir(parents=True)
+    (copy / "real.py").write_text("def run(code):\n    return eval(code)\n")
+
+    report = RealWorldValidator(tmp_path).run()
+    # Exactly one function analyzed — the real one, not the copy.
+    assert report["functions_analyzed"] == 1
+    assert report["total_files"] == 1

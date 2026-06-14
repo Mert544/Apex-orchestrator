@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.engine.skip_dirs import iter_source_files
+
 
 @dataclass
 class FileFingerprint:
@@ -70,8 +72,7 @@ class IncrementalAnalyzer:
         if files is None:
             files = [
                 str(p.relative_to(self.root).as_posix())
-                for p in self.root.rglob("*.py")
-                if ".apex" not in p.parts and "__pycache__" not in p.parts
+                for p in iter_source_files(self.root)
             ]
 
         previous_paths = set(self._previous.keys())

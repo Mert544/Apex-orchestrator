@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.base import Agent, AgentState
+from app.engine.skip_dirs import iter_source_files
 
 
 class Limb(Agent):
@@ -296,7 +297,7 @@ class RefactorLimb(Limb):
             "files_modified": [],
         }
 
-        py_files = list(project_path.rglob("*.py"))
+        py_files = list(iter_source_files(project_path))
         for py_file in py_files:
             if "test" in py_file.name.lower():
                 continue
@@ -443,7 +444,7 @@ class DocLimb(Limb):
             "missing_docs": [],
         }
 
-        py_files = list(project_path.rglob("*.py"))
+        py_files = list(iter_source_files(project_path))
         missing_count = 0
 
         for py_file in py_files:
@@ -632,7 +633,7 @@ class PerformanceLimb(Limb):
     def _collect_metrics(self, project_path: Path) -> dict[str, Any]:
         metrics = {}
 
-        py_files = list(project_path.rglob("*.py"))
+        py_files = list(iter_source_files(project_path))
         total_lines = 0
         for py_file in py_files:
             if "test" in py_file.name.lower():

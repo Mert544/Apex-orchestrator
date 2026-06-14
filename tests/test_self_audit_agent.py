@@ -68,3 +68,17 @@ def test_self_audit_coverage_gap(tmp_path: Path):
     cov = result["coverage_gap"]
     assert "module_a" in cov["tested_modules"]
     assert "module_b" in cov["untested_modules"]
+
+
+def test_self_audit_ignores_worktree_copies(tmp_path: Path):
+    agent = SelfAuditAgent()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "clean.py").write_text("def hello():\n    '''Say hello.'''\n    return 'hi'\n")
+    # A worktree copy carrying a risky eval() must not be discovered.
+    copy = tmp_path / ".claude" / "worktrees" / "agent-1" / "app"
+    copy.mkdir(parents=True)
+    (copy / "risky.py").write_text("def run(code):\n    return eval(code)\n")
+
+    files = agent._find_python_files(tmp_path)
+    rels = {p.relative_to(tmp_path).as_posix() for p in files}
+    assert rels == {"app/clean.py"}

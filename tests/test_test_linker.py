@@ -69,3 +69,21 @@ def test_init_py_never_surfaces_as_untested(tmp_path):
     result = TestLinker(str(tmp_path)).analyze()
     assert not any(m.endswith("__init__.py") for m in result.untested_modules)
     assert any(m.endswith("real.py") for m in result.untested_modules)
+def test_test_linker_ignores_worktree_copies(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "real.py").write_text("def real(): pass\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_real.py").write_text(
+        "from app.real import real\n\ndef test_real():\n    real()\n", encoding="utf-8"
+    )
+    # Worktree copy = duplicate module AND duplicate test basename.
+    copy = tmp_path / ".claude" / "worktrees" / "agent-1"
+    (copy / "app").mkdir(parents=True)
+    (copy / "tests").mkdir(parents=True)
+    (copy / "app" / "real.py").write_text("def real(): pass\n", encoding="utf-8")
+    (copy / "tests" / "test_real.py").write_text("def test_real(): pass\n", encoding="utf-8")
+
+    coverage = TestLinker(tmp_path).analyze()
+    modules = {Path(m).as_posix() for m in coverage.module_to_tests}
+    assert "app/real.py" in modules
+    assert not any(".claude" in m for m in modules)

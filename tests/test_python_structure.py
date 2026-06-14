@@ -18,3 +18,15 @@ def test_python_structure_analyzer_extracts_imports_and_symbols(tmp_path: Path):
     assert "pathlib" in module.imports
     assert "Service" in module.symbols
     assert "build_path" in module.symbols
+
+
+def test_python_structure_ignores_worktree_copies(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "real.py").write_text("def real(): pass\n", encoding="utf-8")
+    copy = tmp_path / ".claude" / "worktrees" / "agent-1" / "app"
+    copy.mkdir(parents=True)
+    (copy / "copy.py").write_text("def copy(): pass\n", encoding="utf-8")
+
+    results = PythonStructureAnalyzer(tmp_path).analyze()
+    paths = {Path(m.path).as_posix() for m in results}
+    assert paths == {"app/real.py"}

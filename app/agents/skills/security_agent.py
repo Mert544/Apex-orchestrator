@@ -9,6 +9,7 @@ from typing import Any
 
 from app.agents.base import Agent
 from app.agents.learning import AgentLearning
+from app.engine.skip_dirs import iter_source_files
 
 
 def _has_shell_true(node: ast.Call) -> bool:
@@ -123,10 +124,10 @@ class SecurityAgent(Agent):
         }
 
     def _discover_files(self, root: Path) -> list[str]:
-        skipped = {"tests", "test", "validation", "__pycache__", ".git", ".apex", ".epistemic"}
+        skipped = {"tests", "test", "validation"}
         return [
             str(p.relative_to(root).as_posix())
-            for p in root.rglob("*.py")
+            for p in iter_source_files(root)
             if not any(part in skipped for part in p.relative_to(root).parts)
         ]
 

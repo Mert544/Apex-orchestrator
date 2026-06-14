@@ -46,3 +46,13 @@ def test_analyze_file_selection_is_deterministic_under_cap(tmp_path):
     second = [s.path for s in PythonStructureAnalyzer(tmp_path, max_files=5).analyze()]
     assert first == second                  # same machine, repeatable
     assert first == sorted(first)           # the deterministic (sorted) prefix
+def test_module_map_ignores_worktree_copies(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "real.py").write_text("def real(): pass\n")
+    copy = tmp_path / ".claude" / "worktrees" / "agent-1" / "app"
+    copy.mkdir(parents=True)
+    (copy / "real.py").write_text("def real(): pass\n")
+
+    mapping = DependencyGraphBuilder(tmp_path)._module_map()
+    assert "app.real" in mapping
+    assert not any(".claude" in v for v in mapping.values())

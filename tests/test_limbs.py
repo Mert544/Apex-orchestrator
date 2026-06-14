@@ -151,6 +151,10 @@ class TestLimbWithRealCode:
     def teardown_method(self):
         os.chdir(self.original_dir)
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(self.tmp_dir, ignore_errors=True)
+        except OSError:
+            pass
 
     def test_refactor_limb_finds_long_functions(self):
         (Path(self.tmp_dir) / "sample.py").write_text("""
@@ -302,3 +306,16 @@ class TestDocLimbBehavior:
         readme = DocLimb().run(project_root=root, target="readme")
         assert "README.md exists" in readme["updated_docs"]
         assert not any("API docs" in d for d in readme["generated_docs"])
+
+    def test_refactor_limb_ignores_worktree_copies(self, tmp_path):
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "real.py").write_text("def real():\n    return 1\n")
+        # A worktree copy with its own function must not surface.
+        copy = tmp_path / ".claude" / "worktrees" / "agent-1" / "app"
+        copy.mkdir(parents=True)
+        (copy / "copy.py").write_text("def copy():\n    return 2\n")
+
+        result = RefactorLimb().run(project_root=str(tmp_path))
+        joined = " ".join(result["issues_found"])
+        assert ".claude" not in joined
+        assert "copy.py" not in joined

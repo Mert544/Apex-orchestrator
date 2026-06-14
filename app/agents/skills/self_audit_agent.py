@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.base import Agent
+from app.engine.skip_dirs import iter_source_files
 
 
 class SelfAuditAgent(Agent):
@@ -20,7 +21,7 @@ class SelfAuditAgent(Agent):
         super().__init__(name="self_audit", role="code_auditor")
 
     def _find_python_files(self, root: Path) -> list[Path]:
-        return [p for p in root.rglob("*.py") if "__pycache__" not in p.parts and ".venv" not in p.parts]
+        return list(iter_source_files(root))
 
     def _analyze_risks(self, files: list[Path]) -> list[dict[str, Any]]:
         risks = []

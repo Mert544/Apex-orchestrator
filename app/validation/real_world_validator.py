@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from app.engine.skip_dirs import iter_source_files
 from app.tools.function_fractal_analyzer import FunctionFractalAnalyzer
 from app.tools.project_profile import ProjectProfiler
 
@@ -21,7 +22,7 @@ class RealWorldValidator:
         profile = ProjectProfiler(self.root).profile()
         fn_analyzer = FunctionFractalAnalyzer()
         fn_results = []
-        for py_file in self.root.rglob("*.py"):
+        for py_file in iter_source_files(self.root):
             if "test_" in py_file.name:
                 continue
             fn_results.extend(fn_analyzer.analyze_file(py_file))

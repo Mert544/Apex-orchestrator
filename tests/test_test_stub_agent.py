@@ -31,3 +31,16 @@ def test_stub_agent_skips_private(tmp_path: Path):
     (tmp_path / "app" / "calc.py").write_text("def _internal():\n    pass\n")
     result = agent.run(project_root=str(tmp_path))
     assert result["gaps_found"] == 0
+
+
+def test_stub_agent_ignores_worktree_copies(tmp_path: Path):
+    agent = TestStubAgent()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "real.py").write_text("def real(): pass\n")
+    copy = tmp_path / ".claude" / "worktrees" / "agent-1" / "app"
+    copy.mkdir(parents=True)
+    (copy / "copy.py").write_text("def copy(): pass\n")
+
+    sources = agent._discover_source_files(tmp_path)
+    assert "app/real.py" in sources
+    assert not any(".claude" in s for s in sources)

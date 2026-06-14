@@ -4,6 +4,8 @@ import ast
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.engine.skip_dirs import iter_source_files
+
 
 def count_test_functions(root: str | Path, test_files: list[str]) -> int:
     """Total ``test*`` functions/methods across the given linked test files.
@@ -65,9 +67,7 @@ class TestLinker:
 
     def _discover_test_files(self) -> list[Path]:
         tests: list[Path] = []
-        for path in self.root.rglob("*.py"):
-            if not path.is_file():
-                continue
+        for path in iter_source_files(self.root):
             rel = str(path.relative_to(self.root)).lower()
             if rel.startswith("tests/") or "/tests/" in f"/{rel}/" or path.stem.startswith("test_"):
                 tests.append(path)
@@ -75,9 +75,7 @@ class TestLinker:
 
     def _discover_module_files(self) -> list[str]:
         modules: list[str] = []
-        for path in self.root.rglob("*.py"):
-            if not path.is_file():
-                continue
+        for path in iter_source_files(self.root):
             rel = str(path.relative_to(self.root))
             rel_lower = rel.lower()
             if rel_lower.startswith("tests/") or "/tests/" in f"/{rel_lower}/" or path.stem.startswith("test_"):

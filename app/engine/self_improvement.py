@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from app.automation.planner import DynamicPlan
 
 from app.automation.planner import AutonomousPlanner
+from app.engine.skip_dirs import iter_source_files
 from app.intent.parser import IntentParser
 from app.tools.project_profile import ProjectProfiler
 
@@ -67,11 +68,8 @@ class SelfImprovementEngine:
 
     def _count_missing_docstrings(self) -> int:
         """Count functions/classes lacking a docstring via an AST scan."""
-        skip_dirs = {".venv", "venv", ".git", "node_modules", "__pycache__", "build", "dist"}
         missing = 0
-        for path in self.project_root.rglob("*.py"):
-            if any(part in skip_dirs for part in path.parts):
-                continue
+        for path in iter_source_files(self.project_root):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
             except (SyntaxError, OSError, UnicodeDecodeError):

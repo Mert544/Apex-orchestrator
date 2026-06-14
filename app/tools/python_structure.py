@@ -4,6 +4,8 @@ import ast
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.engine.skip_dirs import iter_source_files
+
 
 @dataclass
 class ModuleStructure:
@@ -23,15 +25,14 @@ class PythonStructureAnalyzer:
 
         results: list[ModuleStructure] = []
         scanned = 0
-        # Sort before applying max_files: rglob order is filesystem-dependent, so
-        # an unsorted cap would analyze a *different* 500 files on different
-        # machines (CI vs local) — non-deterministic, and it desynced this view
-        # from the all-files module map (a KeyError in the dependency graph).
-        for path in sorted(self.root.rglob("*.py")):
+        # iter_source_files is sorted AND prunes excluded/worktree dirs, so the
+        # max_files cap below is applied AFTER filtering: deterministic across
+        # machines (CI vs local), kept in sync with the all-files module map, and
+        # never filled with .claude worktree copies (which sort first and would
+        # otherwise crowd out every real module before the cap is reached).
+        for path in iter_source_files(self.root):
             if scanned >= self.max_files:
                 break
-            if not path.is_file():
-                continue
             scanned += 1
             structure = self._analyze_file(path)
             if structure is not None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.engine.skip_dirs import iter_source_files
 from app.tools.python_structure import PythonStructureAnalyzer
 
 
@@ -130,9 +131,7 @@ class DependencyGraphBuilder:
 
     def _module_map(self) -> dict[str, str]:
         mapping: dict[str, str] = {}
-        for path in self.root.rglob("*.py"):
-            if not path.is_file():
-                continue
+        for path in iter_source_files(self.root):
             rel = path.relative_to(self.root)
             rel_no_suffix = rel.with_suffix("")
             parts = list(rel_no_suffix.parts)

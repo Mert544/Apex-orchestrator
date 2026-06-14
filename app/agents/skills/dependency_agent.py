@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.base import Agent
+from app.engine.skip_dirs import iter_source_files
 
 
 class DependencyAgent(Agent):
@@ -54,8 +55,7 @@ class DependencyAgent(Agent):
     def _discover_files(self, root: Path) -> list[str]:
         return [
             str(p.relative_to(root).as_posix())
-            for p in root.rglob("*.py")
-            if ".apex" not in p.parts and "__pycache__" not in p.parts
+            for p in iter_source_files(root)
         ]
 
     def _scan_imports(self, rel_path: str, source: str) -> list[dict[str, Any]]:

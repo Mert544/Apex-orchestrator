@@ -785,3 +785,18 @@ def test_light_profile_default_off_keeps_full_behavior(tmp_path: Path):
     )
     full = ProjectProfiler(str(tmp_path)).profile()  # default light=False
     assert full.inlinable_helpers, "default profile must still run the AST scans"
+def test_project_profiler_ignores_worktree_copies(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "real.py").write_text("def real(): pass\n", encoding="utf-8")
+    # A full worktree COPY under .claude/ must not be counted.
+    copy = tmp_path / ".claude" / "worktrees" / "agent-1" / "app"
+    copy.mkdir(parents=True)
+    (copy / "real.py").write_text("def real(): pass\n", encoding="utf-8")
+    (copy / "extra.py").write_text("def extra(): pass\n", encoding="utf-8")
+
+    profile = ProjectProfiler(tmp_path).profile()
+    modules = {str(Path(m).as_posix()) for m in profile.untested_modules}
+    assert "app/real.py" in modules
+    assert not any(".claude" in m for m in modules)
+    # Only the single real source file is counted (not the two copies).
+    assert profile.total_files == 1
