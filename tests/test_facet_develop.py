@@ -64,6 +64,9 @@ def test_each_mapping(phrase: str, objective: str) -> None:
         ("use a literal `{}` instead of `dict()`", "modernize"),
         # fix-not-in-is — the negated-membership/identity finding.
         ("use `not in` instead of negating the comparison", "fix-not-in-is"),
+        # fix-assert-tuple — the always-true tuple-assert detector finding.
+        ("assert on a tuple is always true — remove the parentheses",
+         "fix-assert-tuple"),
         # remove-dead-code — dead/unreachable sub-aspects.
         ("unreachable branches", "remove-dead-code"),
         ("dead error paths", "remove-dead-code"),
@@ -146,12 +149,15 @@ def test_coverage_is_substantially_higher() -> None:
     remove-dead-code, inline-helpers).
 
     Before this wave the map reached 10 objectives; the redundant-control-flow
-    ladder adds 8 more, lifting reachability to 18."""
+    ladder added 8 more, lifting reachability to 18, and the assert-tuple bug-fix
+    objective lifts it to 19."""
     reachable = {v for v in FACET_OBJECTIVE_MAP.values()}
-    assert len(reachable) == 18
+    assert len(reachable) == 19
     # The four objectives the original six did not reach.
     assert {"dedup-parameterized", "extract-guard-clause", "fix-not-in-is",
             "cover-gaps"} <= reachable
+    # The assert-on-tuple detector now has a transform that resolves it.
+    assert "fix-assert-tuple" in reachable
     # The eight objectives this wave newly made reachable end-to-end.
     assert {"simplify-bool-return", "simplify-ternary-bool",
             "remove-redundant-else", "merge-nested-if", "simplify-dict-get",
@@ -162,18 +168,22 @@ def test_coverage_is_substantially_higher() -> None:
 def test_reachable_objective_count_rose_by_eight() -> None:
     """Before/after: the new redundant-control-flow phrases are exactly the
     objectives that moved the reachable set from 10 to 18 — and not one of them
-    was already reachable (so the gain is real, not double-counted)."""
+    was already reachable (so the gain is real, not double-counted). The
+    later assert-tuple bug-fix objective adds one more, lifting it to 19."""
     new_phrase_objectives = {
         "simplify-bool-return", "simplify-ternary-bool", "remove-redundant-else",
         "merge-nested-if", "simplify-dict-get", "use-enumerate",
         "remove-pointless-pass", "remove-unreachable-after-terminator",
     }
     reachable = set(FACET_OBJECTIVE_MAP.values())
-    previously_reachable = reachable - new_phrase_objectives
+    # The assert-tuple objective is reachable on its own axis; set it aside so the
+    # redundant-control-flow before/after arithmetic stays exact.
+    previously_reachable = reachable - new_phrase_objectives - {"fix-assert-tuple"}
     assert len(previously_reachable) == 10
-    assert len(reachable) == 18
+    assert len(reachable) == 19
     # None of the eight was already among the prior ten.
     assert new_phrase_objectives.isdisjoint(previously_reachable)
+    assert "fix-assert-tuple" not in previously_reachable
 
 
 def test_matching_is_case_insensitive_and_substring() -> None:

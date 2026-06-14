@@ -84,6 +84,12 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # ``is not`` substring, which also appears in the None-comparison finding.)
     "negating the comparison": "fix-not-in-is",
 
+    # Always-true tuple assert: ``assert (cond, "msg")`` is a no-op (a non-empty
+    # tuple is always truthy) — the author meant ``assert cond, "msg"``. The
+    # detector phrases the bug as "assert on a tuple is always true", which the
+    # fix-assert-tuple transform resolves by closing the parentheses bug.
+    "assert on a tuple": "fix-assert-tuple",
+
     # Dead / unreachable code. The "unreachable branches" and "redundant guards"
     # sub-aspects of dead code (constant/tautological conditions, shadowed cases,
     # duplicate null checks) are all provably-never-run or always-true — exactly
