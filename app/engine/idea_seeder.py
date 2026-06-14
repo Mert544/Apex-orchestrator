@@ -36,6 +36,72 @@ class IdeaSeeder:
         ("config_files", 1, "Make configuration {s} environment-aware", "config"),
     ]
 
+    def _module_anchors(self, profile: ProjectProfile, module: str) -> list[dict]:
+        """The riskiest function(s) WITHIN ``module``, as concrete anchors.
+
+        Looks up ``profile.hotspot_functions`` (and ``impure_untested_functions``
+        as a fallback) for entries whose ``module`` matches, takes the top 1-3 by
+        complexity, and returns anchors shaped
+        ``{"module", "symbol", "line", "metric}``. Order is deterministic:
+        complexity descending, then line ascending. When the module has no
+        function-grain data, returns an empty list (the anchors stay a no-op).
+        """
+        candidates: list[dict] = []
+        seen: set[tuple[str, int]] = set()
+        for fn in (getattr(profile, "hotspot_functions", []) or []):
+            if fn.get("module") != module:
+                continue
+            symbol = fn.get("function", "")
+            line = int(fn.get("line", 0) or 0)
+            complexity = int(fn.get("complexity", 0) or 0)
+            key = (symbol, line)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append({
+                "module": module,
+                "symbol": symbol,
+                "line": line,
+                "metric": f"cyclomatic {complexity}",
+                "_complexity": complexity,
+            })
+        # Impure-untested functions carry no cyclomatic count, so they only fill
+        # in when the module has no complexity hotspot (they still ground the
+        # idea on a real, named function + line).
+        if not candidates:
+            for fn in (getattr(profile, "impure_untested_functions", []) or []):
+                if fn.get("module") != module:
+                    continue
+                symbol = fn.get("function", "")
+                line = int(fn.get("line", 0) or 0)
+                key = (symbol, line)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append({
+                    "module": module,
+                    "symbol": symbol,
+                    "line": line,
+                    "metric": "impure, untested",
+                    "_complexity": 0,
+                })
+        candidates.sort(key=lambda a: (-a["_complexity"], a["line"], a["symbol"]))
+        return [
+            {"module": a["module"], "symbol": a["symbol"],
+             "line": a["line"], "metric": a["metric"]}
+            for a in candidates[:3]
+        ]
+
+    @staticmethod
+    def _anchor_phrase(anchors: list[dict]) -> str:
+        """A concise concrete sentence naming the anchored function(s)."""
+        parts = []
+        for a in anchors:
+            simple = a["symbol"].rsplit(".", 1)[-1]
+            parts.append(f"`{simple}` ({a['metric']}, line {a['line']})")
+        joined = " and ".join(parts)
+        return f"Centers on {joined} — decouple/test these first."
+
     def _append_root(
         self,
         roots: list[IdeaNode],
@@ -46,6 +112,7 @@ class IdeaSeeder:
         fact_label: str,
         fact_value: str,
         rationale: str | None = None,
+        anchors: list[dict] | None = None,
     ) -> None:
         """Append a traceable root idea unless its subject was already seeded."""
         if subject in seen_subjects:
@@ -60,16 +127,23 @@ class IdeaSeeder:
             title += (f" — accelerating: {trend['churn_before']}→{trend['churn_now']} "
                       f"commits while its {risks} risk ages")
             fact_value += f" (accelerating {trend['churn_before']}→{trend['churn_now']})"
+        anchors = anchors or []
+        base_rationale = rationale or f"Seeded from {fact_label}: {fact_value}"
+        # Fold the concrete locus into the rationale so the abstract module-level
+        # idea names a real function + line, while title/subject stay unchanged.
+        if anchors:
+            base_rationale = f"{base_rationale} {self._anchor_phrase(anchors)}"
         idx = len(roots)
         roots.append(
             IdeaNode(
                 id=f"idea-{idx}",
                 title=title,
                 subject=subject,
-                rationale=rationale or f"Seeded from {fact_label}: {fact_value}",
+                rationale=base_rationale,
                 branch_path=make_branch_path("x", idx),
                 depth=0,
                 operator="root",
+                anchors=anchors,
                 source_facts=[f"{fact_label}: {fact_value}"],
             )
         )
@@ -163,6 +237,7 @@ class IdeaSeeder:
                 fact_value=(f"{module} ({count} signal families converge: {shown}"
                             + ("; untested" if untested else "")
                             + ")"),
+                anchors=self._module_anchors(profile, module),
             )
 
         # Fragility first (highest priority): heavily-depended-on but thinly
@@ -174,17 +249,25 @@ class IdeaSeeder:
                 subject=module,
                 fact_label="fragile",
                 fact_value=f"{module} (high in-degree, thin tests)",
+                anchors=self._module_anchors(profile, module),
             )
 
         for attr, limit, title_tmpl, fact_label in self._RULES:
             values = getattr(profile, attr, []) or []
             for subject in values[:limit]:
+                # The "evolve central module" (dependency-hub) root is module-
+                # level — anchor it at the riskiest function within. Other rules
+                # (sensitive paths, config, entrypoints) are module-or-file
+                # subjects too; anchors are looked up by name and stay empty when
+                # there is no function-grain data, so this is a safe no-op there.
                 self._append_root(
                     roots, seen_subjects,
                     title=title_tmpl.format(s=subject),
                     subject=subject,
                     fact_label=fact_label,
                     fact_value=subject,
+                    anchors=(self._module_anchors(profile, subject)
+                             if fact_label == "dependency-hub" else None),
                 )
 
         # Coverage DEPTH is handled by the substance-based shallow-coverage signal
@@ -214,6 +297,7 @@ class IdeaSeeder:
                 subject=module,
                 fact_label="complexity-hotspot",
                 fact_value=f"{module} (high complexity x fan-in, thin tests)",
+                anchors=self._module_anchors(profile, module),
             )
 
         # Symbol granularity: the riskiest *functions* — heavy branching that no
@@ -277,6 +361,7 @@ class IdeaSeeder:
                 fact_value=(f"{module} (dependency hub: {fan_in} dependents, "
                             f"untested or shallow — a regression here breaks all "
                             f"{fan_in})"),
+                anchors=self._module_anchors(profile, module),
             )
 
         # Co-change test-gap: module PAIRS that frequently change together (from

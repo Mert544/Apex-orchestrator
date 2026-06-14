@@ -32,6 +32,14 @@ class IdeaNode(BaseModel):
     feasibility: float = 0.5
     value: float = 0.0
     caveats: list[str] = Field(default_factory=list)
+    # Concrete loci WITHIN a module-level idea: the riskiest function(s) the idea
+    # should act on first, so "Untangle module X" names a function + line +
+    # metric instead of just the file. Each anchor is a dict shaped
+    # ``{"module": str, "symbol": str, "line": int, "metric": str}`` where
+    # ``metric`` is a short grounded string (e.g. "cyclomatic 18"). Additive and
+    # default-empty: ideas with no function-grain data carry no anchors, keeping
+    # every existing idea set and render byte-identical.
+    anchors: list[dict] = Field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump()

@@ -1136,6 +1136,15 @@ def render_markdown(report: IdeaTreeReport) -> str:
             lines.append(f"## {idea.branch_path} — {idea.title}  (value {idea.value})")
             if idea.source_facts:
                 lines.append(f"{indent}- _facts: {', '.join(idea.source_facts)}_")
+            # Concrete loci: when the module-level idea names the riskiest
+            # function(s) within, render a focus line. Gated on non-empty so
+            # ideas with no anchors render BYTE-IDENTICALLY to before.
+            if idea.anchors:
+                foci = ", ".join(
+                    f"`{a['symbol'].rsplit('.', 1)[-1]}` ({a['metric']}, line {a['line']})"
+                    for a in idea.anchors
+                )
+                lines.append(f"{indent}  → focus: {foci}")
         elif idea.kind == "facet":
             # A facet is nested under the idea it refines, so the parent already
             # gives the context — repeating the whole title at every zoom level
