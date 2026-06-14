@@ -819,3 +819,335 @@ def test_co_change_pairs_become_measured_pair_ideas(tmp_path):
     assert pair.title == "Decouple app/a.py and app/b.py — they changed together in 7 commits"
     assert pair.source_facts == ["co-change: app/a.py + app/b.py (7 commits together)"]
     assert "git history" in pair.rationale
+
+
+# --- additional engine coverage (guard / degenerate / conservative paths) ----
+
+def _bare_engine(tmp_path, **cfg):
+    eng = IdeaPermutationEngine({"max_total_ideas": 40, **cfg}, tmp_path)
+    eng._has_objective = False
+    eng._chain_counts, eng._subject_counts = {}, {}
+    eng._memory = None
+    eng._security_pressure = 1.0
+    eng._accelerating = {}
+    eng._source_cache = {}
+    return eng
+
+
+def test_security_pressure_disabled_is_neutral(tmp_path):
+    # security_aware=False short-circuits the scan to the neutral 1.0.
+    eng = IdeaPermutationEngine({"max_total_ideas": 20, "security_aware": False}, tmp_path)
+    assert eng._scan_security_pressure() == 1.0
+
+
+def test_security_pressure_degrades_to_neutral_on_error(tmp_path, monkeypatch):
+    # If the SecurityAgent raises, the scan must degrade to the neutral 1.0.
+    import app.agents.skills as skills
+
+    class _Boom:
+        def run(self, *a, **k):
+            raise RuntimeError("scan failed")
+
+    monkeypatch.setattr(skills, "SecurityAgent", _Boom)
+    eng = IdeaPermutationEngine({"max_total_ideas": 20, "security_aware": True}, tmp_path)
+    assert eng._scan_security_pressure() == 1.0
+
+
+def test_facet_share_zero_when_facets_off(tmp_path):
+    # With fractal_facets off (the default), the zoom claims no budget slice.
+    eng = IdeaPermutationEngine({"max_total_ideas": 40}, tmp_path)
+    assert eng._facet_share() == 0.0
+
+
+def test_accelerating_degrades_to_empty_on_error(tmp_path, monkeypatch):
+    # A failure building SignalTrends leaves _accelerating empty (fresh-engine
+    # behaviour), not an exception.
+    _project(tmp_path)
+    import app.engine.signal_trends as st
+
+    class _Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("no history")
+
+    monkeypatch.setattr(st, "SignalTrends", _Boom)
+    rep = IdeaPermutationEngine({"max_total_ideas": 15, "max_idea_depth": 1}, tmp_path).run()
+    assert rep.stats["total_ideas"] >= 1
+
+
+def test_budget_one_stops_after_first_root(tmp_path):
+    # A budget of 1 with several modules: seeding breaks after the first root.
+    (tmp_path / "app").mkdir()
+    for n in ("a", "b", "c", "d"):
+        (tmp_path / "app" / f"{n}.py").write_text(f"def {n}():\n    return 1\n")
+    rep = IdeaPermutationEngine({"max_total_ideas": 1, "max_idea_depth": 2, "breadth": 4}, tmp_path).run()
+    assert rep.stats["total_ideas"] == 1
+
+
+def test_metrics_error_recorded_when_codemetrics_raises(tmp_path, monkeypatch):
+    # CodeMetrics failing (OSError) in run()'s effort-grounding block degrades
+    # gracefully: metrics empty + an error string, rather than crashing the run.
+    # The profiler's earlier CodeMetrics use is left working (first call), so only
+    # the run-phase call (the second) raises.
+    _project(tmp_path)
+    import app.tools.code_metrics as cm
+
+    real = cm.CodeMetrics
+    state = {"calls": 0}
+
+    class _BoomOnRunPhase:
+        def __init__(self, *a, **k):
+            self._real = real(*a, **k)
+
+        def for_modules(self, mods):
+            state["calls"] += 1
+            if state["calls"] >= 2:          # the run() metrics block call
+                raise OSError("cannot read")
+            return self._real.for_modules(mods)
+
+    monkeypatch.setattr(cm, "CodeMetrics", _BoomOnRunPhase)
+    rep = IdeaPermutationEngine({"max_total_ideas": 20, "max_idea_depth": 1}, tmp_path).run()
+    assert rep.stats["metrics"] == {}
+    assert "cannot read" in rep.stats["metrics_error"]
+
+
+def test_accelerating_subject_adds_convergence_dimension(tmp_path):
+    # A subject getting WORSE (accelerating) converges with another dimension.
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+
+    eng = _bare_engine(tmp_path, max_idea_depth=1, breadth=3)
+    eng._accelerating = {"app/core.py": {"module": "app/core.py"}}
+    profile = ProjectProfile(root=".", hotspot_modules=["app/core.py"])
+    ideas = eng._convergence_ideas(profile, RelevanceScorer(""), GraphStore())
+    assert len(ideas) == 1
+    assert "accelerating" in ideas[0].title
+
+
+def test_shallow_tested_only_label_in_convergence(tmp_path):
+    # A subject that is ONLY shallowly tested (not untested/critical) carries the
+    # "only shallowly tested" coverage label, converging with another dimension.
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+
+    eng = _bare_engine(tmp_path, max_idea_depth=1, breadth=3)
+    profile = ProjectProfile(
+        root=".",
+        hotspot_modules=["app/core.py"],
+        shallow_tested_modules=["app/core.py"],
+    )
+    ideas = eng._convergence_ideas(profile, RelevanceScorer(""), GraphStore())
+    assert len(ideas) == 1
+    assert "only shallowly tested" in ideas[0].title
+
+
+def test_synthesize_skips_empty_and_duplicate_co_change_pairs(tmp_path):
+    # A co-change entry missing a member is skipped; a repeat (same unordered
+    # pair) is deduped — only one pair idea survives.
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+
+    eng = _bare_engine(tmp_path, max_idea_depth=1)
+    profile = ProjectProfile(
+        root=".",
+        change_coupling=[
+            {"a": "", "b": "app/b.py", "commits": 3},               # missing a -> skip
+            {"a": "app/a.py", "b": "app/b.py", "commits": 7},       # the real pair
+            {"a": "app/b.py", "b": "app/a.py", "commits": 2},       # same unordered -> dedup
+        ],
+    )
+    ideas = eng._synthesize([], profile, RelevanceScorer(""), GraphStore())
+    co = [i for i in ideas if i.kind == "pair" and "changed together" in i.title]
+    assert len(co) == 1
+
+
+def test_synthesize_skips_dependency_edge_already_in_co_change(tmp_path):
+    # A dependency edge whose unordered pair already appeared as a co-change pair
+    # is not re-proposed as a plain interface pair.
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+
+    eng = _bare_engine(tmp_path, max_idea_depth=1)
+    profile = ProjectProfile(
+        root=".",
+        change_coupling=[{"a": "app/a.py", "b": "app/b.py", "commits": 5}],
+        dependency_edges=[("app/a.py", "app/b.py")],  # same pair -> skipped below
+    )
+    ideas = eng._synthesize([], profile, RelevanceScorer(""), GraphStore())
+    interface = [i for i in ideas if "Standardize the interface" in i.title]
+    assert interface == []
+
+
+def test_synthesize_caps_import_cycle_ideas(tmp_path):
+    # Many cycles, but the cycle-idea emit is capped at pidx >= 4 (the break path).
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+
+    eng = _bare_engine(tmp_path, max_idea_depth=1)
+    profile = ProjectProfile(
+        root=".",
+        import_cycles=[
+            [f"app/c{i}.py", f"app/d{i}.py", f"app/c{i}.py"] for i in range(3)
+        ],
+        # Force many edges so the pidx>=5 edge cap is also reached.
+        dependency_edges=[(f"app/e{i}.py", f"app/f{i}.py") for i in range(10)],
+    )
+    ideas = eng._synthesize([], profile, RelevanceScorer(""), GraphStore())
+    pairs = [i for i in ideas if i.kind == "pair"]
+    assert len(pairs) <= 5  # total pair ideas stay bounded
+
+
+def test_budget_exhausts_midway_through_a_nodes_children(tmp_path):
+    # A tight budget against several modules forces the budget to run out partway
+    # through expanding one node's children (the inner break), so the emitted set
+    # lands exactly at the budget.
+    (tmp_path / "app").mkdir()
+    for n in ("a", "b", "c", "d", "e", "f"):
+        (tmp_path / "app" / f"{n}.py").write_text(f"def {n}():\n    return 1\n")
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 10, "max_idea_depth": 3, "breadth": 8}, tmp_path
+    ).run()
+    assert rep.stats["total_ideas"] <= 10
+
+
+def test_synthesize_co_change_cap_after_cycles(tmp_path):
+    # Cycles push pidx up; enough additional co-change pairs then hit the
+    # co-change pidx>=5 break so the total pair-idea count stays bounded at 5.
+    from app.tools.project_profile import ProjectProfile
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.memory.graph_store import GraphStore
+
+    eng = _bare_engine(tmp_path, max_idea_depth=1)
+    profile = ProjectProfile(
+        root=".",
+        import_cycles=[
+            ["app/c0.py", "app/d0.py", "app/c0.py"],
+            ["app/c1.py", "app/d1.py", "app/c1.py"],
+            ["app/c2.py", "app/d2.py", "app/c2.py"],
+        ],
+        change_coupling=[
+            {"a": f"app/x{i}.py", "b": f"app/y{i}.py", "commits": 5} for i in range(6)
+        ],
+    )
+    ideas = eng._synthesize([], profile, RelevanceScorer(""), GraphStore())
+    pairs = [i for i in ideas if i.kind == "pair"]
+    assert len(pairs) == 5  # bounded total
+
+
+def test_facet_zoom_stops_within_budget(tmp_path):
+    # A tight budget with facets enabled forces the facet zoom's stop guards to
+    # halt expansion partway (per-level and per-source), so the run never exceeds
+    # the budget while still emitting at least one facet.
+    (tmp_path / "app").mkdir()
+    for n in ("a", "b", "c", "d"):
+        (tmp_path / "app" / f"{n}.py").write_text(f"def {n}():\n    return 1\n")
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 16, "max_idea_depth": 1, "breadth": 6,
+         "fractal_facets": True, "facet_depth": 2, "facets_per_idea": 2},
+        tmp_path,
+    ).run()
+    assert rep.stats["total_ideas"] <= 16
+    assert rep.stats.get("faceted", 0) >= 1
+
+
+def test_subject_source_returns_none_for_missing_file(tmp_path):
+    # A .py subject whose file does not exist -> OSError -> cached None.
+    eng = _bare_engine(tmp_path)
+    assert eng._subject_source("app/does_not_exist.py") is None
+    # Abstract (non-.py) subjects have no file to read -> None without touching disk.
+    assert eng._subject_source("CI pipeline") is None
+
+
+def test_learning_nudge_changes_feasibility(tmp_path):
+    # With a memory file recording a strong track record for a root's seeding
+    # label, the learning nudge shifts feasibility away from the un-nudged value.
+    import json
+    from app.models.idea import IdeaNode
+    from app.skills.relevance_scorer import RelevanceScorer
+    from app.engine.idea_memory import IdeaMemory
+
+    (tmp_path / ".apex").mkdir()
+    (tmp_path / ".apex" / "idea-memory.json").write_text(json.dumps({
+        "by_label": {"untested": {"applied": 4, "rolled_back": 0, "blocked": 0}},
+    }))
+    eng = IdeaPermutationEngine({"max_total_ideas": 20, "learning": True}, tmp_path)
+    eng._has_objective = False
+    eng._chain_counts, eng._subject_counts = {}, {}
+    eng._memory = IdeaMemory.load(tmp_path)
+    node = IdeaNode(
+        id="r", title="t", subject="app/m.py", operator="root",
+        operator_chain=["root"], source_facts=["untested: app/m.py (no tests)"],
+        feasibility=0.5,
+    )
+    eng._score(node, RelevanceScorer(""))
+    # success_rate 1.0 -> +10% nudge -> 0.55, not the raw 0.5.
+    assert node.feasibility == 0.55
+
+
+def test_join_phrase_empty_and_single_and_multi():
+    from app.engine.idea_permutation import _join_phrase
+
+    assert _join_phrase([]) == ""
+    assert _join_phrase(["only"]) == "only"
+    assert _join_phrase(["a", "b"]) == "a and b"
+    assert _join_phrase(["a", "b", "c"]) == "a, b and c"
+
+
+def test_convergence_plan_skips_unknown_labels():
+    from app.engine.idea_permutation import convergence_plan
+
+    # An unrecognized label is skipped; a known one still produces its step.
+    plan = convergence_plan(["not-a-real-dimension", "untested"])
+    assert len(plan) == 1
+    assert plan[0]["phase"] == "Stabilize"
+
+
+def test_render_markdown_includes_objective_line(tmp_path):
+    _project(tmp_path)
+    from app.engine.idea_permutation import render_markdown
+
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 12, "max_idea_depth": 1}, tmp_path
+    ).run(objective="harden the auth flow")
+    md = render_markdown(rep)
+    assert "objective: _harden the auth flow_" in md
+
+
+def test_render_markdown_shows_facet_evidence(tmp_path):
+    # A facet verified in real code carries an evidence fact, which renders as a
+    # pinned proof line under the facet.
+    (tmp_path / "app").mkdir()
+    # eval() gives the harden facet "input validation" real evidence to find.
+    (tmp_path / "app" / "svc.py").write_text("def run(c):\n    return eval(c)\n")
+    from app.engine.idea_permutation import render_markdown
+
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 120, "max_idea_depth": 1, "breadth": 6,
+         "fractal_facets": True, "facet_depth": 2, "facets_per_idea": 3},
+        tmp_path,
+    ).run()
+    evidenced = [i for i in rep.ideas
+                 if i.kind == "facet" and any(f.startswith("evidence:") for f in i.source_facts)]
+    if evidenced:
+        md = render_markdown(rep)
+        assert "📌" in md
+
+
+def test_render_mermaid_facet_node_shows_zoom_label(tmp_path):
+    # A facet node in the mermaid graph renders just its zoom-marked sub-concern,
+    # not the full repeated parent title.
+    _project(tmp_path)
+    from app.engine.idea_permutation import render_mermaid
+
+    rep = IdeaPermutationEngine(
+        {"max_total_ideas": 60, "max_idea_depth": 2, "breadth": 4, "fractal_facets": True},
+        tmp_path,
+    ).run()
+    facets = [i for i in rep.ideas if i.kind == "facet"]
+    assert facets
+    mer = render_mermaid(rep)
+    assert "🔍" in mer

@@ -595,3 +595,209 @@ def test_clean_code_has_no_unreachable_finding():
 
 def test_unreachable_on_syntax_error_is_false():
     assert not has_unreachable_code("def broken(:\n")
+
+
+# --- additional detector coverage (edge / guard paths) -----------------------
+
+def test_collection_literal_dict_list_tuple_flagged():
+    # Empty dict()/list()/tuple() constructors should be flagged as a style nit.
+    for call, lit in (("dict()", "{}"), ("list()", "[]"), ("tuple()", "()")):
+        out = detect(f"x = {call}\n")
+        flagged = [i for i in out if i.fix_kind == "collection-literal"]
+        assert flagged and any(lit in i.message for i in flagged)
+    # An argumentful constructor is left alone.
+    assert not any(i.fix_kind == "collection-literal" for i in detect("x = dict(a=1)\n"))
+    assert not any(i.fix_kind == "collection-literal" for i in detect("x = list([1])\n"))
+
+
+def test_yaml_load_and_tempfile_mktemp_flagged():
+    yaml_out = detect("import yaml\ndef f(s):\n    return yaml.load(s)\n")
+    assert any(i.fix_kind == "yaml" and i.severity == "medium" for i in yaml_out)
+    tmp_out = detect("import tempfile\ndef f():\n    return tempfile.mktemp()\n")
+    assert any(i.fix_kind == "tempfile" and i.severity == "medium" for i in tmp_out)
+
+
+def test_weak_hash_md5_sha1_flagged_unless_declared_non_security():
+    md5 = detect("import hashlib\ndef f(b):\n    return hashlib.md5(b)\n")
+    assert any(i.fix_kind == "weak-hash" for i in md5)
+    sha1 = detect("import hashlib\ndef f(b):\n    return hashlib.sha1(b)\n")
+    assert any(i.fix_kind == "weak-hash" for i in sha1)
+    # usedforsecurity=False declares it non-security -> not flagged.
+    ok = detect("import hashlib\ndef f(b):\n    return hashlib.md5(b, usedforsecurity=False)\n")
+    assert not any(i.fix_kind == "weak-hash" for i in ok)
+
+
+def test_assert_on_tuple_is_flagged():
+    out = detect("def f(x):\n    assert (x > 0, 'bad')\n")
+    assert any("assert on a tuple" in i.message and i.severity == "high" for i in out)
+    # A non-tuple single-value assert is fine.
+    assert not any("assert on a tuple" in i.message for i in detect("def f(x):\n    assert x > 0\n"))
+
+
+def test_negated_comparison_flagged():
+    from app.engine.detectors import has_negated_comparison
+
+    assert has_negated_comparison("y = not x in items\n")
+    assert has_negated_comparison("y = not x is None\n")
+    # The idiomatic forms are not flagged.
+    assert not has_negated_comparison("y = x not in items\n")
+    assert not has_negated_comparison("y = x is not None\n")
+    msgs = [i.message for i in detect("y = not x in items\n")]
+    assert any("not in" in m for m in msgs)
+
+
+def test_compare_to_bool_directly_flagged():
+    out = detect("y = flag == True\n")
+    assert any("True/False" in i.message and i.fix_kind == "" for i in out)
+
+
+def test_type_comparison_suggests_isinstance():
+    out = detect("y = type(x) == int\n")
+    assert any("isinstance()" in i.message and i.severity == "medium" for i in out)
+
+
+def test_fstring_without_placeholder_flagged():
+    from app.engine.detectors import has_fstring_no_placeholder
+
+    assert has_fstring_no_placeholder("x = f'no placeholder here'\n")
+    # A real interpolation is not flagged.
+    assert not has_fstring_no_placeholder("x = f'value {y}'\n")
+
+
+def test_net_timeout_branches():
+    from app.engine.detectors import has_network_call_without_timeout as needs_to
+
+    # requests/httpx verbs without timeout -> flagged.
+    assert needs_to("import requests\nrequests.get('http://x')\n")
+    assert needs_to("import httpx\nhttpx.post('http://x', data=1)\n")
+    # bare urlopen and urllib.request.urlopen -> flagged.
+    assert needs_to("from urllib.request import urlopen\nurlopen('http://x')\n")
+    assert needs_to("import urllib\nurllib.request.urlopen('http://x')\n")
+    # timeout= present -> not flagged.
+    assert not needs_to("import requests\nrequests.get('http://x', timeout=5)\n")
+    # **kwargs might carry timeout -> not flagged.
+    assert not needs_to("import requests\nrequests.get('http://x', **opts)\n")
+    # An unknown owner / non-net verb / plain name call is left alone.
+    assert not needs_to("import requests\nsession.get('http://x')\n")
+    assert not needs_to("import requests\nrequests.connect('http://x')\n")
+    assert not needs_to("frobnicate('http://x')\n")
+    # An attribute-named non-urlopen on a deeper chain is left alone.
+    assert not needs_to("import other\nother.thing.urlopen('http://x')\n")
+    # A callee that is neither a Name nor an Attribute (subscript/call result)
+    # is left alone — can't prove it's a network verb.
+    assert not needs_to("funcs['get']('http://x')\n")
+    assert not needs_to("get_client()('http://x')\n")
+
+
+def test_exc_names_attribute_form_in_unreachable_handler():
+    # A dotted exception type (`except mod.CustomError:`) is read via the
+    # Attribute branch; a broader Exception above it still shadows the dotted one.
+    src = ("def f():\n    try:\n        g()\n"
+           "    except Exception:\n        pass\n"
+           "    except mod.CustomError:\n        pass\n")
+    assert any("unreachable except" in i.message for i in detect(src))
+
+
+def test_raise_without_from_inside_nested_blocks():
+    from app.engine.detectors import has_fixable_raise_without_from
+
+    # The new raise is nested inside an if/for within the except body.
+    nested_if = ("def f():\n    try:\n        g()\n    except Exception as e:\n"
+                 "        if cond:\n            raise ValueError('bad')\n")
+    assert has_fixable_raise_without_from(nested_if)
+    nested_for = ("def f():\n    try:\n        g()\n    except Exception as e:\n"
+                  "        for x in xs:\n            raise ValueError('bad')\n")
+    assert has_fixable_raise_without_from(nested_for)
+
+
+def test_escapes_finally_inside_if_and_with():
+    def fin(src):
+        return any("finally block" in i.message and i.severity == "high" for i in detect(src))
+
+    # return guarded by an if inside finally still escapes.
+    assert fin("def f():\n    try:\n        pass\n    finally:\n        if c:\n            return 1\n")
+    # return inside a with-block inside finally escapes too.
+    assert fin("def f():\n    try:\n        pass\n    finally:\n        with ctx():\n            return 1\n")
+
+
+def test_mutable_default_via_constructor_call():
+    # The dict()/list()/set() call form (not just the literal) is a mutable default.
+    assert has_mutable_default("def f(x=list()):\n    return x\n")
+    assert has_mutable_default("def f(x=dict()):\n    return x\n")
+    assert has_mutable_default("def f(x=set()):\n    return x\n")
+    # Keyword-only default with a mutable literal also counts.
+    assert has_mutable_default("def f(*, x=[]):\n    return x\n")
+    # A constructor with args is not the empty-collection default.
+    assert has_mutable_default("def f(x=list([1])):\n    return x\n") is False
+
+
+def test_self_attr_none_path_via_non_self_mutation():
+    # A class-level mutable mutated through a NON-self reference yields no flag
+    # (exercises the _self_attr None return for the mutation-evidence scan).
+    src = ("class C:\n"
+           "    items = []\n"
+           "    def add(self, other, x):\n"
+           "        other.items.append(x)\n")
+    assert not any("mutable class attribute" in i.message for i in detect(src))
+
+
+def test_security_label_substring_fallback_returns_none():
+    # Unparseable AND no security needle -> the substring fallback returns None.
+    assert security_label("def broken(:\n    x = 1\n") is None
+
+
+def test_security_labels_all_present_most_severe_first():
+    from app.engine.detectors import security_labels
+
+    src = ("import os, pickle\n"
+           "def f(c, b):\n"
+           "    os.system(c)\n"
+           "    eval(c)\n"
+           "    return pickle.loads(b)\n")
+    labels = security_labels(src)
+    # eval outranks os.system outranks pickle in _SECURITY_ORDER.
+    assert labels[:3] == ["eval", "os.system", "pickle"]
+
+
+def test_security_labels_on_syntax_error_uses_fallback():
+    from app.engine.detectors import security_labels
+
+    # Unparseable but contains eval -> the single fallback label.
+    assert security_labels("def broken(:\n    eval(x)\n") == ["eval"]
+    # Unparseable and clean -> empty list.
+    assert security_labels("def broken(:\n    x = 1\n") == []
+
+
+def test_remaining_has_helpers():
+    from app.engine.detectors import (
+        has_collection_literal,
+        has_fixable_raise_without_from,
+        has_fstring_no_placeholder,
+        has_identity_literal,
+        has_negated_comparison,
+    )
+
+    assert has_identity_literal("def f(x):\n    return x is 5\n")
+    assert has_fixable_raise_without_from(
+        "def f():\n    try:\n        g()\n    except Exception as e:\n        raise ValueError('x')\n"
+    )
+    assert has_negated_comparison("y = not x in items\n")
+    assert has_fstring_no_placeholder("x = f'plain'\n")
+    assert has_collection_literal("x = dict()\n")
+    # The clean-input negatives.
+    assert has_identity_literal("def f(x):\n    return x is None\n") is False
+    assert has_collection_literal("x = {}\n") is False
+
+
+def test_assert_substantive_subscript_is_substantive():
+    # A subscript test (not Name/Attribute/Constant/Compare/Call/BoolOp/UnaryOp)
+    # falls through to the final `return True` — a real check.
+    from app.engine.detectors import test_has_substantive_assertions as subst
+
+    assert subst("def t():\n    assert data['k']\n") is True
+
+
+def test_substantive_assertions_on_syntax_error_is_false():
+    from app.engine.detectors import test_has_substantive_assertions as subst
+
+    assert subst("def broken(:\n") is False
