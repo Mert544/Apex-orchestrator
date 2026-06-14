@@ -152,6 +152,9 @@ class FunctionFractalAnalyzer:
                 risks.append("bare_except")
                 risk_score += 0.2
 
+        # Purity / side-effect dimension (additive; does NOT touch risks/risk_score).
+        purity, side_effects = self._analyze_purity(node)
+
         return {
             "name": name,
             "full_name": full_name,
@@ -161,7 +164,66 @@ class FunctionFractalAnalyzer:
             "risk_score": round(min(risk_score, 1.0), 2),
             "line_count": lines,
             "arg_count": arg_count,
+            "purity": purity,
+            "side_effects": side_effects,
         }
+
+    # Side-effecting builtins: calling these observably mutates I/O state.
+    _EFFECT_BUILTINS = frozenset({"print", "open", "input"})
+    # Root modules whose calls are observable side effects (I/O, process, net, log).
+    _EFFECT_MODULES = frozenset(
+        {"os", "sys", "subprocess", "shutil", "socket", "logging", "requests"}
+    )
+
+    def _analyze_purity(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> tuple[str, list[str]]:
+        """Classify a function as ``"pure"`` or ``"impure"`` from its AST alone.
+
+        Distinct from the risk/complexity/doc dimensions: it grounds "what to
+        develop here" guidance toward isolating I/O from logic so the core
+        becomes testable. A function is flagged ``"impure"`` (with a
+        deduplicated, sorted list of reasons in ``side_effects``) if ANY of these
+        conservative, AST-only signals appear anywhere in its body:
+
+        * a ``global`` or ``nonlocal`` statement — it rebinds enclosing-scope
+          state (reason ``"global_state"`` / ``"nonlocal_state"``);
+        * a bare call to a side-effecting builtin in ``_EFFECT_BUILTINS``
+          (``print``/``open``/``input``) — reason ``"builtin:<name>"``;
+        * a call whose attribute chain is rooted at a known effect module in
+          ``_EFFECT_MODULES`` (e.g. ``os.system``, ``sys.exit``,
+          ``subprocess.run``, ``logging.info``) — reason ``"module:<root>"``;
+        * a method call named ``write`` (e.g. ``f.write(...)``,
+          ``sys.stdout.write(...)``) — reason ``"io:write"``.
+
+        Otherwise the function is ``"pure"`` (computes from its args/locals and
+        returns) and ``side_effects`` is empty. The check is deterministic and a
+        pure function of the AST: nested functions/lambdas inside the body are
+        intentionally included, since their effects still belong to this scope.
+        Note this is a side-effect heuristic, not a formal purity proof — calls
+        to other user functions are not transitively inspected.
+        """
+        reasons: set[str] = set()
+        for subnode in ast.walk(node):
+            if isinstance(subnode, ast.Global):
+                reasons.add("global_state")
+            elif isinstance(subnode, ast.Nonlocal):
+                reasons.add("nonlocal_state")
+            elif isinstance(subnode, ast.Call):
+                func = subnode.func
+                if isinstance(func, ast.Name):
+                    if func.id in self._EFFECT_BUILTINS:
+                        reasons.add(f"builtin:{func.id}")
+                elif isinstance(func, ast.Attribute):
+                    if func.attr == "write":
+                        reasons.add("io:write")
+                    root = func.value
+                    while isinstance(root, ast.Attribute):
+                        root = root.value
+                    if isinstance(root, ast.Name) and root.id in self._EFFECT_MODULES:
+                        reasons.add(f"module:{root.id}")
+        purity = "impure" if reasons else "pure"
+        return purity, sorted(reasons)
 
     def build_call_graph(self, project_root: str | Path) -> dict[str, dict[str, Any]]:
         """Build a cross-file call graph: who calls whom."""
