@@ -128,4 +128,4 @@ def test_polyglot_hotspots_deterministic(tmp_path):
     assert first == second
     # Each entry carries exactly the documented keys.
     for h in first:
-        assert set(h) == {"path", "language", "loc", "churn"}
+        assert set(h) == {"path", "language", "loc", "churn", "debt_markers"}

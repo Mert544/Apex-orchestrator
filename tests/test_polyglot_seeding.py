@@ -68,7 +68,7 @@ def test_profiler_populates_field_from_polyglot_tree(tmp_path: Path):
     entry = next(h for h in hotspots if h["path"] == "web/app.js")
     assert entry["language"] == "JavaScript"
     assert entry["loc"] == 3
-    assert set(entry) == {"path", "language", "loc", "churn"}
+    assert set(entry) == {"path", "language", "loc", "churn", "debt_markers"}
     assert not any(h["path"].endswith(".py") for h in hotspots)
 
 

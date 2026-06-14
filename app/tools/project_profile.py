@@ -485,7 +485,8 @@ class ProjectProfiler:
             if self._is_apex_report(f.path):
                 continue
             hotspots.append(
-                {"path": f.path, "language": f.language, "loc": f.loc, "churn": f.churn}
+                {"path": f.path, "language": f.language, "loc": f.loc,
+                 "churn": f.churn, "debt_markers": f.debt_markers}
             )
             if len(hotspots) >= 3:
                 break

@@ -61,6 +61,7 @@ from app.cli_reporting import (  # noqa: F401  (re-exports: import surface uncha
     cmd_debug,
     cmd_fractal,
     cmd_hotspots,
+    cmd_pulse,
     cmd_report,
 )
 from app.cli_viz import (  # noqa: F401  (re-exports: import surface unchanged)
