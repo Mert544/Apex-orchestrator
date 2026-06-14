@@ -132,6 +132,12 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     "manual index loop": "use-enumerate",
     "redundant pass statement": "remove-pointless-pass",
     "statements after an unconditional return": "remove-unreachable-after-terminator",
+
+    # Redundant boolean comparison: the detector flags ``x == True`` / ``is
+    # False`` etc. ("compare to True/False directly") but ships no fix; the
+    # simplify-bool-comparison transform drops the redundant literal comparison
+    # (only when the operand is provably a bool, so it stays value-preserving).
+    "compare to true/false directly": "simplify-bool-comparison",
 }
 
 
