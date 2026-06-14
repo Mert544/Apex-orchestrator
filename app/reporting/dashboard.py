@@ -736,6 +736,81 @@ def _learned_section(learned: dict[str, Any] | None) -> str:
     return _card("learned", "🧠", "What Apex has learned", body)
 
 
+def _proof_applied_count(project_root: str) -> int:
+    """The number of test-verified fixes Apex has landed here, from
+    ``.apex/proof-of-fix.json``. Defensive: missing/corrupt → 0 (no scan)."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    path = _Path(project_root) / ".apex" / "proof-of-fix.json"
+    if not path.exists():
+        return 0
+    try:
+        proof = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    try:
+        return int((proof.get("totals") or {}).get("applied", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _trackrecord_section(learned: dict[str, Any] | None, project_root: str) -> str:
+    """Apex's PROVEN track record on *this* project — the evidence-backed
+    "proven over time" story an LLM cannot offer.
+
+    Combines two deterministic sources the dashboard already has access to:
+    the per-fix-type landing rates learned in ``.apex/idea-memory.json`` and the
+    count of test-verified, auto-rollback-guarded fixes recorded in
+    ``.apex/proof-of-fix.json``. Gated by construction: with no learned rates AND
+    no landed fixes the section returns "" (byte-identical to before this panel
+    existed). Every codebase-sourced string is HTML-escaped; no timestamp.
+    """
+    learned = learned or {}
+    # Landing rates per fix type: most/least reliable operators carry
+    # {"key","success_rate","samples"}. De-dup by key (an operator can appear in
+    # both lists when only one is tracked) and sort by rate desc, then key.
+    by_key: dict[str, dict[str, Any]] = {}
+    for row in (learned.get("most_reliable") or []) + (learned.get("least_reliable") or []):
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key", "")).strip()
+        if not key or key in by_key:
+            continue
+        by_key[key] = row
+    rates = sorted(
+        by_key.values(),
+        key=lambda r: (-float(r.get("success_rate", 0.0) or 0.0), str(r.get("key", ""))),
+    )
+    landed = _proof_applied_count(project_root)
+    if not rates and not landed:
+        return ""
+
+    chips = "".join([
+        _chip("verified fixes landed", landed),
+        _chip("fix types tracked", len(rates)),
+    ])
+    intro = (
+        "<p class='muted'>Every landed fix was test-verified with automatic "
+        "rollback on failure — an evidence record, not a promise.</p>"
+    )
+    rows = "".join(
+        f"<tr><td><code>{_esc(r.get('key', ''))}</code></td>"
+        f"<td class='num'>{int(float(r.get('success_rate', 0.0) or 0.0) * 100)}%</td>"
+        f"<td class='num'>{_esc(r.get('samples', 0))}</td></tr>"
+        for r in rates
+    )
+    table = ""
+    if rows:
+        table = (
+            "<table><thead><tr><th>Fix type</th><th>Landing rate</th>"
+            "<th>Samples</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+        )
+    return _card("trackrecord", "🏆", "Track record",
+                 f"<div class='chips'>{chips}</div>{intro}{table}")
+
+
 def _reasoning_section(r: dict[str, Any]) -> str:
     if "error" in r:
         return _card("reasoning", "🧠", "Reasoning &amp; telemetry",
@@ -976,6 +1051,8 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         nav_links.append(("trajectory", "Trajectory"))
     if learned and (learned.get("most_reliable") or learned.get("least_reliable")):
         nav_links.append(("learned", "Learned"))
+    if _trackrecord_section(learned, project_root):
+        nav_links.append(("trackrecord", "Track record"))
     if (Path(project_root) / ".apex" / "dream-digest.md").exists():
         nav_links.append(("dream", "Dream"))
     nav_links += [("actions", "Actions"), ("reasoning", "Reasoning"), ("profile", "Profile")]
@@ -1001,6 +1078,7 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
             _autonomy_section(autonomy),
             _trajectory_section(trajectory),
             _learned_section(learned),
+            _trackrecord_section(learned, project_root),
             _actions_section(action_plan),
             _reasoning_section(reasoning),
             _debug_section(debug),
