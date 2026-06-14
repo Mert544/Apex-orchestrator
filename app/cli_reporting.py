@@ -428,9 +428,190 @@ def cmd_pulse(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- apex gate: zero-config deterministic CI quality gate --------------------
+#
+# The complement to `apex outcomes` (which gates on a USER-WRITTEN rubric):
+# `apex gate` gates on Apex's OWN deterministic metrics with sensible defaults,
+# so a user can drop it into CI with no setup. Every number is read from this
+# repo's own structure (the health grade + ProjectProfile) — no time, no random,
+# no tokens. A CI can depend on this verdict; an LLM cannot gate reproducibly.
+#
+# Default-check behaviour (DOCUMENTED): the two correctness/security checks are
+# ON by conservative default — `--max-security 0` and `--max-bugs 0` — because a
+# clean repo has neither, so a bare `apex gate` PASSES a clean repo yet FAILS the
+# instant Apex's own detectors find a security finding or a likely-crash bug. The
+# two "softer" checks (`--min-score`, `--max-out-of-scope`) default OFF (0 / -1)
+# so they never spuriously fail and are opt-in for stricter pipelines.
+
+_GATE_MIN_SCORE_OFF = 0       # --min-score 0 => check disabled
+_GATE_MAX_OUT_OF_SCOPE_OFF = -1  # --max-out-of-scope < 0 => check disabled
+
+
+def _gate_metrics(root: Path) -> dict:
+    """Read Apex's own deterministic metrics for ``root``, defensively.
+
+    Pulls the health score from ``health_score.grade`` and the security /
+    correctness / scope counts from a light ``ProjectProfile``. Any failure on a
+    given source collapses that source to a neutral, never-crash shape (score
+    ``None``, empty module lists, ``0.0`` out-of-scope) so the gate always
+    renders a verdict rather than aborting CI with a traceback.
+    """
+    score: int | None = None
+    letter = ""
+    try:
+        from app.engine.health_score import grade
+
+        h = grade(str(root))
+        score = int(h.score)
+        letter = h.letter
+    except Exception:
+        score, letter = None, ""
+
+    security = 0
+    bugs = 0
+    out_of_scope = 0.0
+    try:
+        from app.tools.project_profile import ProjectProfiler
+
+        profile = ProjectProfiler(str(root)).profile(light=True)
+        security = len(getattr(profile, "security_finding_modules", []) or [])
+        bugs = len(getattr(profile, "correctness_bug_modules", []) or [])
+        out_of_scope = float(getattr(profile, "out_of_scope_ratio", 0.0) or 0.0)
+    except Exception:
+        security, bugs, out_of_scope = 0, 0, 0.0
+
+    return {
+        "score": score,
+        "letter": letter,
+        "security_modules": security,
+        "bug_modules": bugs,
+        "out_of_scope_pct": round(out_of_scope * 100, 1),
+    }
+
+
+def _gate_evaluate(metrics: dict, args: argparse.Namespace) -> dict:
+    """Apply the enabled checks to ``metrics`` and return a deterministic verdict.
+
+    A check is *skipped* (omitted from ``checks``) when its flag disables it. Each
+    emitted check carries ``name``, ``passed``, ``actual``, ``threshold``, and a
+    one-line ``detail``. The overall ``passed`` is the AND of every enabled check
+    (an empty check set passes — a pure metrics read-out).
+    """
+    min_score = int(getattr(args, "min_score", _GATE_MIN_SCORE_OFF) or _GATE_MIN_SCORE_OFF)
+    max_security = getattr(args, "max_security", 0)
+    max_bugs = getattr(args, "max_bugs", 0)
+    max_oos = getattr(args, "max_out_of_scope", _GATE_MAX_OUT_OF_SCOPE_OFF)
+
+    checks: list[dict] = []
+
+    # --min-score N (default 0 = off): fail if health score < N. A score of None
+    # (grading failed) cannot satisfy a threshold, so it fails the check honestly.
+    if min_score > _GATE_MIN_SCORE_OFF:
+        score = metrics["score"]
+        ok = score is not None and score >= min_score
+        actual = "n/a" if score is None else str(score)
+        checks.append({
+            "name": "min-score",
+            "passed": ok,
+            "actual": actual,
+            "threshold": min_score,
+            "detail": f"health score {actual} (need >= {min_score})",
+        })
+
+    # --max-security N (default 0): fail if security-finding modules > N.
+    if max_security is not None:
+        max_security = int(max_security)
+        actual = metrics["security_modules"]
+        ok = actual <= max_security
+        checks.append({
+            "name": "max-security",
+            "passed": ok,
+            "actual": actual,
+            "threshold": max_security,
+            "detail": f"{actual} security-finding module(s) (allow <= {max_security})",
+        })
+
+    # --max-bugs N (default 0): fail if correctness-bug modules > N.
+    if max_bugs is not None:
+        max_bugs = int(max_bugs)
+        actual = metrics["bug_modules"]
+        ok = actual <= max_bugs
+        checks.append({
+            "name": "max-bugs",
+            "passed": ok,
+            "actual": actual,
+            "threshold": max_bugs,
+            "detail": f"{actual} correctness-bug module(s) (allow <= {max_bugs})",
+        })
+
+    # --max-out-of-scope PCT (default -1 = off): fail if out_of_scope% > PCT.
+    if max_oos is not None and float(max_oos) >= 0:
+        max_oos = float(max_oos)
+        actual = metrics["out_of_scope_pct"]
+        ok = actual <= max_oos
+        checks.append({
+            "name": "max-out-of-scope",
+            "passed": ok,
+            "actual": actual,
+            "threshold": max_oos,
+            "detail": f"{actual}% out of scope (allow <= {max_oos}%)",
+        })
+
+    passed = all(c["passed"] for c in checks)
+    return {"passed": passed, "checks": checks, "metrics": metrics}
+
+
+def render_gate(verdict: dict) -> str:
+    """Render the gate verdict as a concise, deterministic CI-friendly report."""
+    metrics = verdict["metrics"]
+    checks = verdict["checks"]
+    lines = ["# Apex gate", ""]
+
+    letter = metrics.get("letter") or "—"
+    score = metrics.get("score")
+    score_str = "n/a" if score is None else f"{score}/100"
+    lines.append(f"Grade: {letter} ({score_str})")
+    lines.append("")
+
+    if checks:
+        for c in checks:
+            mark = "PASS" if c["passed"] else "FAIL"
+            lines.append(f"[{mark}] {c['name']}: {c['detail']}")
+    else:
+        lines.append("(no checks enabled — metrics read-out only)")
+    lines.append("")
+
+    lines.append("GATE PASSED" if verdict["passed"] else "GATE FAILED")
+    lines.append("")
+    lines.append(
+        "_Deterministic, stdlib-only, zero-token — every number read from this "
+        "repo's own structure. CI can depend on this verdict; an LLM can't gate "
+        "reproducibly._"
+    )
+    return "\n".join(lines)
+
+
+def cmd_gate(args: argparse.Namespace) -> int:
+    """The zero-config, deterministic CI quality gate: it gates on Apex's OWN
+    metrics (health grade + ProjectProfile) with sensible defaults, so a bare
+    `apex gate` passes a clean repo yet fails the instant Apex's detectors find a
+    security finding or a likely-crash bug. Each check is configurable via a flag
+    and skipped when that flag disables it. Returns 0 when all enabled checks
+    pass, 1 when any fails — the CI contract. Deterministic, stdlib-only, zero
+    tokens: a prover CI can depend on; an LLM cannot gate reproducibly."""
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    metrics = _gate_metrics(target)
+    verdict = _gate_evaluate(metrics, args)
+    if getattr(args, "json", False):
+        print(json.dumps(verdict, indent=2, default=str))
+    else:
+        print(render_gate(verdict))
+    return 0 if verdict["passed"] else 1
+
+
 def register_parsers(subparsers) -> None:
     """Register the reporting family's subcommands: dashboard, hotspots,
-    deadcode, city, report, fractal, debug, pulse."""
+    deadcode, city, report, fractal, debug, pulse, gate."""
     # dashboard
     dash_parser = subparsers.add_parser(
         "dashboard", help="Generate a self-contained HTML project dashboard"
@@ -566,3 +747,33 @@ def register_parsers(subparsers) -> None:
     pulse_parser.add_argument("--target", default="", help="Target project root")
     pulse_parser.add_argument("--json", action="store_true", help="Emit JSON")
     pulse_parser.set_defaults(func=cmd_pulse)
+
+    # gate — zero-config deterministic CI quality gate. Gates on Apex's OWN
+    # metrics with conservative defaults (no security findings, no correctness
+    # bugs); score-floor and out-of-scope ceiling are opt-in. Exit 0 pass / 1 fail.
+    gate_parser = subparsers.add_parser(
+        "gate",
+        help="Zero-config deterministic CI quality gate: PASS/FAIL on Apex's own "
+             "metrics (exit 0/1). Deterministic, zero-token — CI can depend on it, "
+             "an LLM can't gate reproducibly",
+    )
+    gate_parser.add_argument("--target", default="", help="Target project root")
+    gate_parser.add_argument(
+        "--min-score", type=int, default=_GATE_MIN_SCORE_OFF, dest="min_score",
+        help="Fail if health score < N (default 0 = off)",
+    )
+    gate_parser.add_argument(
+        "--max-security", type=int, default=0, dest="max_security",
+        help="Fail if security-finding modules > N (default 0)",
+    )
+    gate_parser.add_argument(
+        "--max-bugs", type=int, default=0, dest="max_bugs",
+        help="Fail if correctness-bug modules > N (default 0)",
+    )
+    gate_parser.add_argument(
+        "--max-out-of-scope", type=float, default=_GATE_MAX_OUT_OF_SCOPE_OFF,
+        dest="max_out_of_scope",
+        help="Fail if out-of-scope%% > PCT (default off)",
+    )
+    gate_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    gate_parser.set_defaults(func=cmd_gate)
