@@ -545,13 +545,20 @@ def _scope_report(root: Path) -> dict:
     for fact in scan_polyglot_facts(str(root)):
         stem = Path(fact.path).stem
         has_test = stem in test_stems or any(stem in t for t in test_stems)
-        files.append({
+        entry = {
             "path": fact.path,
             "language": fact.language,
             "loc": fact.loc,
             "churn": fact.churn,
             "has_test": has_test,
-        })
+        }
+        # Count of TODO/FIXME/HACK/XXX in the file, read defensively. Only
+        # ADDED to the entry when > 0, so a no-debt file's dict (and the
+        # --json shape) stays byte-identical to before this signal existed.
+        debt = int(getattr(fact, "debt_markers", 0) or 0)
+        if debt > 0:
+            entry["debt_markers"] = debt
+        files.append(entry)
 
     return {
         "source_file_count": profile.source_file_count,
@@ -606,9 +613,13 @@ def render_scope_markdown(rep: dict) -> str:
         for f in files:
             commit_word = "commit" if f["churn"] == 1 else "commits"
             flag = "" if f["has_test"] else " — no test found"
+            # Debt clause: additive, ONLY when the file carries >0 TODO/FIXME
+            # markers, so a no-debt line stays byte-identical to before.
+            debt = f.get("debt_markers", 0) or 0
+            debt_clause = f" — {debt} TODO/FIXME" if debt > 0 else ""
             lines.append(
                 f"- `{f['path']}` ({f['language']}, {f['loc']} LOC, "
-                f"{f['churn']} {commit_word}){flag}"
+                f"{f['churn']} {commit_word}){flag}{debt_clause}"
             )
         lines.append("")
 

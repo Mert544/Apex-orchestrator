@@ -664,17 +664,24 @@ class IdeaSeeder:
             churn = hot.get("churn", 0)
             language = hot.get("language", "")
             commit_word = "commit" if churn == 1 else "commits"
+            # Debt clause: additive, READY for when the profile's hotspot dict
+            # carries a TODO/FIXME count. The field isn't on the profile yet, so
+            # an absent/zero ``debt_markers`` leaves title + fact byte-identical.
+            # Stays recommend-only: never the token "untested" — "TODO/FIXME".
+            debt = hot.get("debt_markers") or 0
+            title_debt = f", {debt} TODO/FIXME marker(s)" if debt else ""
+            fact_debt = f", {debt} TODO/FIXME" if debt else ""
             self._append_root(
                 roots, seen_subjects,
                 title=(f"Review `{path}` — {loc} LOC, {churn} recent {commit_word}, "
                        f"the largest active surface outside Python analysis scope "
                        f"(Apex can't deep-analyse it, but it concentrates "
-                       f"non-Python risk)"),
+                       f"non-Python risk){title_debt}"),
                 subject=path,
                 fact_label="polyglot-hotspot",
                 fact_value=(f"{path} ({language}, {loc} LOC, {churn} recent "
-                            f"{commit_word} — biggest/most-active file outside "
-                            f"Apex's Python analysis scope)"),
+                            f"{commit_word}{fact_debt} — biggest/most-active file "
+                            f"outside Apex's Python analysis scope)"),
             )
 
         # Dream insights: discoveries the nightly dream CONFIRMED across multiple
