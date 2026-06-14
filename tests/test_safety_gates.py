@@ -1,14 +1,21 @@
-import os
-import tempfile
-from pathlib import Path
+import subprocess
 
 from app.policies.safety_gates import (
     SafetyGates,
     SafetyGatesReport,
-    SecretDetectionResult,
     detect_secrets_in_patch,
     verify_patch_with_tests,
 )
+from app.policies.safety_gates import (
+    TestVerificationResult as VerificationResult,  # aliased; pytest must not collect it
+)
+
+
+class _FakeCompleted:
+    def __init__(self, returncode, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 class TestSecretDetection:
@@ -199,3 +206,148 @@ class TestSecretDetectionPreExisting:
         new = 'x = 1\napi_key = "sk_introduced_1234567890abcd"\n'
         result = detect_secrets_in_patch(old, new)
         assert result.passed is False
+
+
+class TestVerifyPatchWithTests:
+    def test_returns_passed_on_zero_exit(self, tmp_path, monkeypatch):
+        def fake_run(*args, **kwargs):
+            return _FakeCompleted(0, stdout="3 passed")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        result = verify_patch_with_tests(tmp_path)
+        assert result.passed is True
+        assert result.return_code == 0
+        assert result.stdout == "3 passed"
+        assert result.message == "Tests passed"
+
+    def test_exit_code_5_no_tests_is_pass(self, tmp_path, monkeypatch):
+        # pytest exit code 5 == "no tests collected"; treated as a pass.
+        def fake_run(*args, **kwargs):
+            return _FakeCompleted(5)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        result = verify_patch_with_tests(tmp_path)
+        assert result.passed is True
+        assert result.return_code == 5
+
+    def test_nonzero_exit_fails(self, tmp_path, monkeypatch):
+        def fake_run(*args, **kwargs):
+            return _FakeCompleted(1, stderr="assert failed")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        result = verify_patch_with_tests(tmp_path)
+        assert result.passed is False
+        assert result.return_code == 1
+        assert "exit code 1" in result.message
+
+    def test_subprocess_exception_is_caught(self, tmp_path, monkeypatch):
+        def fake_run(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="pytest", timeout=120)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        result = verify_patch_with_tests(tmp_path)
+        assert result.passed is False
+        assert result.return_code == -1
+        assert "Test verification error" in result.message
+
+
+class TestCheckTestVerification:
+    def test_passing_tests_gate(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+        gates = SafetyGates(project_root=tmp_path)
+        result = gates.check_test_verification(["a.py"])
+        assert result.name == "test_verification"
+        assert result.passed is True
+        assert result.blocked is False
+
+    def test_failing_tests_block(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _FakeCompleted(1))
+        gates = SafetyGates(project_root=tmp_path)
+        result = gates.check_test_verification(["a.py"])
+        assert result.passed is False
+        assert result.blocked is True
+
+
+class TestRollbackReadiness:
+    def test_no_files_passes(self, tmp_path):
+        gates = SafetyGates(project_root=tmp_path)
+        result = gates.check_rollback_readiness([])
+        assert result.passed is True
+        assert result.message == "No files to protect"
+
+    def test_files_present_confirms_rollback(self, tmp_path):
+        (tmp_path / "a.py").write_text("x = 1\n")
+        gates = SafetyGates(project_root=tmp_path)
+        result = gates.check_rollback_readiness(["a.py", "missing.py"])
+        assert result.passed is True
+        assert result.message == "Rollback readiness confirmed"
+
+
+class TestCheckAll:
+    def test_all_pass_skipping_tests(self, tmp_path):
+        gates = SafetyGates(project_root=tmp_path, max_changed_files=5)
+        report = gates.check_all(
+            ["app/main.py", "tests/test_main.py"],
+            old_code="x = 1",
+            new_code="x = 2",
+            skip_test=True,
+        )
+        assert isinstance(report, SafetyGatesReport)
+        assert report.all_passed is True
+        assert report.blocked is False
+        # skip_test omits the test_verification gate -> 4 gates run.
+        assert len(report.results) == 4
+        assert "test_verification" not in {r.name for r in report.results}
+        assert "4/4 passed" in report.summary
+
+    def test_runs_test_gate_when_not_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+        gates = SafetyGates(project_root=tmp_path)
+        report = gates.check_all(["a.py"], skip_test=False)
+        assert len(report.results) == 5
+        assert "test_verification" in {r.name for r in report.results}
+        assert report.all_passed is True
+
+    def test_blocked_summary_lists_failing_gate(self, tmp_path):
+        # Too many changed files trips the patch_scope gate -> blocked.
+        gates = SafetyGates(project_root=tmp_path, max_changed_files=1)
+        report = gates.check_all(["a.py", "b.py", "c.py"], skip_test=True)
+        assert report.all_passed is False
+        assert report.blocked is True
+        assert "BLOCKED by: patch_scope" in report.summary
+
+    def test_sensitive_path_blocks_check_all(self, tmp_path):
+        gates = SafetyGates(project_root=tmp_path, max_changed_files=10)
+        report = gates.check_all([".env.production"], skip_test=True)
+        assert report.blocked is True
+        assert "sensitive_paths" in report.summary
+
+    def test_report_to_dict_roundtrips_results(self, tmp_path):
+        gates = SafetyGates(project_root=tmp_path)
+        report = gates.check_all(["a.py"], skip_test=True)
+        d = report.to_dict()
+        assert d["all_passed"] is report.all_passed
+        assert d["blocked"] is report.blocked
+        assert d["summary"] == report.summary
+        assert isinstance(d["results"], list)
+        assert all("name" in r and "passed" in r for r in d["results"])
+
+
+class TestVerificationResultDataclass:
+    def test_defaults(self):
+        result = VerificationResult(passed=True, return_code=0)
+        assert result.stdout == ""
+        assert result.stderr == ""
+        assert result.message == ""
+
+
+class TestSensitivePathBasenameMatch:
+    def test_basename_only_pattern_matches_nested_path(self, tmp_path):
+        # A non-glob pattern like "id_rsa" does not match the full nested path
+        # ("deep/nested/id_rsa") via fnmatch, but does match the basename — this
+        # exercises the p.name fallback branch.
+        gates = SafetyGates(project_root=tmp_path, sensitive_paths=["id_rsa"])
+        result = gates.check_sensitive_paths(["deep/nested/id_rsa"])
+        assert result.passed is False
+        assert result.blocked is True
+        assert "id_rsa" in result.message
