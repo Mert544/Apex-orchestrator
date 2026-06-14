@@ -60,6 +60,45 @@ scope ──► partition into disjoint streams ──► spawn specialists (wor
                               prune stale worktrees ──► report
 ```
 
+## Scaling up: the workflow organism (two teams)
+
+When the backlog holds enough genuinely disjoint work, the department scales to a
+two-level organism: **chief engineer → two team leads → three specialists each**
+(eight agents). The two standing teams map to the two halves of Apex's work:
+
+- **Team A — Correctness & Hardening.** Blind spots, determinism, measurement
+  truth (e.g. the grade chain), safety of transforms. Lead synthesizes findings
+  into one coherent, gated change set.
+- **Team B — Capabilities & Self-improvement.** New transforms/objectives,
+  capability quality (readable output), and dogfooding them on Apex's own body.
+
+**Tooling reality — read this before drawing an org chart.** Only the
+orchestrator can spawn agents; a specialist cannot spawn sub-agents. So a "team
+lead" is not a sub-commander — it is a **domain-synthesis role**: either the
+orchestrator wearing that hat, or a lead agent that prepares and reviews its
+team's disjoint outputs for integration. The spawn fan-out stays flat; the
+hierarchy is organizational, not literal.
+
+### The phantom-worktree rule (first-class safety)
+
+Every active worktree is a full repo COPY living under `.claude/`. To the
+analysis layer it is a phantom — a second (third, eighth) copy of every module
+that, unguarded, gets counted, graded, and searched as if it were real code.
+This is not a tidiness issue, it is a correctness one: with eight worktrees the
+copies outnumber the real tree, and because `.claude` sorts first, a capped
+walker fills entirely with phantoms before reaching one real file.
+
+Three rules keep the organism honest as it scales:
+
+1. **The measurement layer must exclude every phantom** — all tree-walks route
+   through `app/engine/skip_dirs.py`; a capped walk applies its cap AFTER the
+   skip, never before.
+2. **Headcount never outruns the gate.** Spawn only as many worktrees as there
+   is disjoint work; each extra seat is another phantom to exclude and more CPU
+   contending with the green gate. Seats are filled by value, never by quota.
+3. **Prune after every wave.** Integrate, then `git worktree remove` the stale
+   copies so the next measurement is clean. Branches survive; no commit is lost.
+
 ## Why this beats a single agent
 
 A lone agent serializes everything and has no second pair of eyes. The team
