@@ -37,6 +37,7 @@ from app.cli_insight import (  # noqa: F401  (re-exports: import surface unchang
     cmd_grade,
     cmd_impact,
     cmd_mutants,
+    cmd_objectives,
     cmd_outcomes,
     cmd_recipes,
 )
