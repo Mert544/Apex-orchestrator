@@ -61,6 +61,26 @@ an integrated supporting signal.
 - **Plugin-contributed operators** (`proxy.add_operator`) widen the alphabet.
 
 ## Next (near-term)
+
+> **Campaign — answer the buyer's probing questions by closing the open blind
+> spots.** Identity (binding): Apex's purpose is to *develop the project it sits
+> in* — it proves, concretizes, and **produces grounded ideas** (the fractal/idea
+> engine, develop objectives). Security is a grounding signal, **never** the
+> headline. The questions a buyer/investor will ask ("why Apex when I have a
+> local LLM?", "why pay?", "vs competitors?") map to the three still-open blind
+> spots on the closure scoreboard (§4b of `docs/market-positioning.md`):
+> **BS-1** (Python-only → language-plugin seam + honest "X% out of scope"),
+> **BS-2** (verifier-gated local-LLM *drafting* of creative tasks: LLM drafts →
+> Apex's pipeline AST-validates/test-verifies/rolls back → "LLM-drafted,
+> deterministically verified"; infra at `app/llm/router.py`, the verify-gate is
+> the missing piece), **BS-7** (runtime understanding: static-confidence labels +
+> pytest-trace to confirm/refute static findings). The wedge to make concrete:
+> *"LLMs write code fast; Apex proves which is solid and tells what to do next."*
+> Run it as a team (army): `apex partition` to plan disjoint work, worktree
+> agents + a standing auditor per wave, `scripts/merge_train.py` to integrate,
+> one green gate. Minor code hygiene to dogfood alongside: one dead symbol
+> (`_block_template` in `app/engine/near_dup.py`) and ~6 `except: pass` to audit.
+
 1. **Refactor family growth** on the span-edit machinery: signature change
    with call-site update; `apex rename --from-idea` (the engine proposes the
    rename it already suggests in ideas).
