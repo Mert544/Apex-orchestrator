@@ -174,6 +174,21 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_canvas(args: argparse.Namespace) -> int:
+    """Export the dependency graph as a JSONCanvas (.canvas) file."""
+    from app.reporting.canvas_export import dependency_canvas, write_canvas
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    canvas = dependency_canvas(str(target))
+    out_path = Path(args.out) if args.out else target / ".apex" / "apex.canvas"
+    write_canvas(canvas, out_path)
+    print(
+        f"[canvas] Written to {out_path} "
+        f"({len(canvas['nodes'])} nodes, {len(canvas['edges'])} edges)"
+    )
+    return 0
+
+
 def _register_local_parsers(subparsers) -> None:
     """Subcommands whose cmd_* still lives in this module: bench, run."""
     # bench — grade pinned external codebases (calibration, reproducible)
@@ -240,6 +255,16 @@ def _register_local_parsers(subparsers) -> None:
         help="Dry-run mode (validate only, no file changes)",
     )
     run_parser.set_defaults(func=cmd_run)
+
+    # canvas — export the dependency graph as a JSONCanvas (.canvas) file
+    canvas_parser = subparsers.add_parser(
+        "canvas", help="Export the dependency graph as a JSONCanvas (.canvas) file"
+    )
+    canvas_parser.add_argument("--target", default="", help="Target project root")
+    canvas_parser.add_argument(
+        "--out", default="", help="Output .canvas path (default <target>/.apex/apex.canvas)"
+    )
+    canvas_parser.set_defaults(func=cmd_canvas)
 
 
 def main() -> int:
