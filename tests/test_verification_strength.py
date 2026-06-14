@@ -238,3 +238,15 @@ def test_tier_recorded_in_proof(tmp_path):
     summary = bridge.apply_plan(plan, str(tmp_path), mode="supervised", verify=True)
     record = build_proof(summary, str(tmp_path))["fixes"][0]
     assert record["risk_tier"] == 1
+
+
+def test_worktree_test_copies_are_ignored(tmp_path):
+    # The real suite never names handler (level "none"); a .claude worktree copy
+    # whose test DOES reference it must not lift the measured strength.
+    _project(tmp_path, "def test_unrelated():\n    assert 1 + 1 == 2\n")
+    copy = tmp_path / ".claude" / "worktrees" / "agent-1" / "tests"
+    copy.mkdir(parents=True)
+    (copy / "test_phantom.py").write_text(
+        "from app.svc import handler\ndef test_h():\n    assert handler(1) == 2\n",
+        encoding="utf-8")
+    assert _assess(tmp_path)["level"] == "none"   # phantom test ignored

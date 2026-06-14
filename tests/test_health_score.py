@@ -527,3 +527,28 @@ def test_grade_identical_with_light_and_full_profile(tmp_path, monkeypatch):
     # The project is genuinely lossy, so this is a meaningful (not trivially
     # clean) equality.
     assert light_grade.score < 100
+
+
+def test_grade_is_immune_to_worktree_copies(tmp_path):
+    # The grade must measure the real tree only — never agent worktree COPIES
+    # under .claude/ (full repo copies that sort first and could crowd out real
+    # modules, skewing every component). A pile of low-quality, untested copy
+    # modules must not move the score by a single point. Locks the fix that
+    # routed the grade's walkers through app.engine.skip_dirs.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "calc.py").write_text(
+        'def add(a, b):\n    """Add."""\n    return a + b\n', encoding="utf-8")
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "from app.calc import add\ndef test_add():\n    assert add(1, 2) == 3\n",
+        encoding="utf-8")
+    before = grade(str(tmp_path))
+    wt = tmp_path / ".claude" / "worktrees" / "agent-1" / "app"
+    wt.mkdir(parents=True)
+    for i in range(20):
+        (wt / f"junk{i}.py").write_text(
+            "import yaml\ndef f(s, cache=[]):\n    if s == None:\n"
+            "        return eval(s)\n    return yaml.load(s)\n", encoding="utf-8")
+    after = grade(str(tmp_path))
+    assert after.score == before.score      # the 20 phantom copies are invisible
+    assert after.letter == before.letter

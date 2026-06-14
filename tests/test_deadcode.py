@@ -75,3 +75,18 @@ def test_render_includes_confidence_column_and_summary(tmp_path: Path):
 
 def test_empty_render():
     assert "No unreferenced" in render_dead_code_markdown([])
+
+
+def test_worktree_copies_are_ignored(tmp_path: Path):
+    # A .claude worktree copy must neither resurrect a dead symbol by
+    # "referencing" it nor contribute its own symbols to the report.
+    _proj(tmp_path)
+    copy = tmp_path / ".claude" / "worktrees" / "agent-1" / "pkg"
+    copy.mkdir(parents=True)
+    (copy / "uses_ghost.py").write_text(
+        "from pkg.dead import ghost\n\ndef c():\n    return ghost()\n", encoding="utf-8")
+    (copy / "lonely.py").write_text(
+        "def only_in_copy():\n    return 1\n", encoding="utf-8")
+    names = {r["symbol"] for r in find_dead_code(str(tmp_path))}
+    assert "ghost" in names              # copy's reference ignored -> still dead
+    assert "only_in_copy" not in names   # copy's own symbols never scanned
