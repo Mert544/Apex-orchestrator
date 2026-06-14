@@ -94,6 +94,24 @@ class ProjectProfile:
     # _scan_inlinable_helpers). Each entry: {"module", "function", "line",
     # "call_sites"}.
     inlinable_helpers: list[dict] = field(default_factory=list)
+    # Analysis-scope accounting — honest reporting of how much of the repo Apex's
+    # Python-only analysis actually covers (see _scan_analysis_scope). On a
+    # polyglot repo the grade reflects only the Python subset; these fields make
+    # that boundary explicit instead of silently grading a fraction as the whole.
+    #   - source_file_count: source-bearing files counted (skip dirs + binary/
+    #     asset extensions excluded);
+    #   - python_file_count: how many of those are Python (the analysed subset);
+    #   - language_breakdown: per-language file counts of the NON-Python files,
+    #     keyed by normalised language name (unmapped extensions → "other"),
+    #     sorted for stable rendering;
+    #   - analyzed_ratio: python_file_count / source_file_count, in [0,1]
+    #     (empty/all-Python repo → 1.0);
+    #   - out_of_scope_ratio: 1 - analyzed_ratio.
+    source_file_count: int = 0
+    python_file_count: int = 0
+    language_breakdown: dict[str, int] = field(default_factory=dict)
+    analyzed_ratio: float = 1.0
+    out_of_scope_ratio: float = 0.0
 
 
 class ProjectProfiler:
@@ -157,6 +175,49 @@ class ProjectProfiler:
     # 100% share carries no information).
     KNOWLEDGE_MIN_COMMITS = 5
     KNOWLEDGE_SHARE = 0.85
+    # Analysis-scope accounting. A small explicit extension→language map: only
+    # source-bearing files count toward the scope denominator, so binary/asset
+    # files (images, fonts, archives, compiled artifacts) are excluded entirely.
+    # ".py"/".pyi" are the IN-SCOPE (analysed) extensions; every other mapped
+    # extension is honestly reported as outside Apex's Python analysis. Unmapped
+    # source extensions are grouped under "other" so the count never lies.
+    _SCOPE_PYTHON_EXTENSIONS = {".py", ".pyi"}
+    _SCOPE_LANGUAGE_BY_EXT = {
+        ".py": "Python", ".pyi": "Python",
+        ".js": "JavaScript", ".jsx": "JavaScript", ".mjs": "JavaScript",
+        ".cjs": "JavaScript",
+        ".ts": "TypeScript", ".tsx": "TypeScript",
+        ".go": "Go",
+        ".rs": "Rust",
+        ".java": "Java",
+        ".rb": "Ruby",
+        ".php": "PHP",
+        ".c": "C", ".h": "C",
+        ".cc": "C++", ".cpp": "C++", ".cxx": "C++", ".hpp": "C++", ".hh": "C++",
+        ".cs": "C#",
+        ".kt": "Kotlin", ".kts": "Kotlin",
+        ".swift": "Swift",
+        ".sh": "Shell", ".bash": "Shell",
+        ".html": "HTML", ".htm": "HTML",
+        ".css": "CSS", ".scss": "CSS", ".sass": "CSS",
+        ".sql": "SQL",
+        ".yaml": "YAML", ".yml": "YAML",
+        ".json": "JSON",
+        ".md": "Markdown", ".markdown": "Markdown",
+        ".toml": "TOML",
+        ".xml": "XML",
+    }
+    # Obvious binary / asset extensions: present in a repo but carrying no source
+    # Apex (or any analyser) would grade, so they're excluded from the scope
+    # denominator rather than counted as "out of scope" code.
+    _SCOPE_BINARY_EXTENSIONS = {
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp",
+        ".pdf", ".zip", ".gz", ".tar", ".tgz", ".bz2", ".xz", ".7z", ".rar",
+        ".woff", ".woff2", ".ttf", ".otf", ".eot",
+        ".mp3", ".mp4", ".wav", ".avi", ".mov", ".webm", ".ogg",
+        ".pyc", ".pyo", ".so", ".dll", ".dylib", ".o", ".a", ".class",
+        ".exe", ".bin", ".db", ".sqlite", ".lock", ".whl", ".egg",
+    }
 
     def __init__(self, root: str | Path, max_files: int = 2000) -> None:
         self.root = Path(root)
@@ -272,6 +333,10 @@ class ProjectProfiler:
         )[:5]
 
         self._populate_python_structure(profile)
+        # Analysis-scope accounting always runs (cheap; folded onto the file
+        # walk's already-collected extension counts) so the grade can honestly
+        # report how much of a polyglot repo its Python analysis covers.
+        self._scan_analysis_scope(profile, ext_counter)
         if not light:
             # Scans the GRADE never reads — skipped in light mode. The four
             # git/doc subprocess scans (cheap on a shallow repo, ~200s on a deep
@@ -298,6 +363,47 @@ class ProjectProfiler:
         profile = ProjectProfile(root=str(self.root))
         self._scan_dead_params(profile)
         return list(profile.dead_params or [])
+
+    def _scan_analysis_scope(self, profile: ProjectProfile,
+                             ext_counter: Counter[str]) -> None:
+        """Account for what fraction of the repo Apex's Python analysis covers.
+
+        Apex grades only Python; on a polyglot repo that means the health grade
+        speaks for a subset, not the whole. This scan makes the boundary honest
+        and explicit. It reuses the base file walk's ``ext_counter`` (already
+        built over the canonical skip-dir exclusion via ``is_skipped``) rather
+        than re-walking the tree, so it stays cheap and deterministic.
+
+        Source-bearing files are everything whose extension is NOT an obvious
+        binary/asset type (``_SCOPE_BINARY_EXTENSIONS``); those form the
+        denominator. Python files (``.py``/``.pyi``) are the analysed numerator.
+        The non-Python remainder is bucketed by normalised language name
+        (``_SCOPE_LANGUAGE_BY_EXT``), with any unmapped source extension folded
+        into ``"other"`` so the breakdown's counts sum exactly. All dict outputs
+        are sorted (count desc, then name) for stable rendering. Divide-by-zero
+        (an empty or all-Python repo) yields ``analyzed_ratio == 1.0``.
+        """
+        source_total = 0
+        python_total = 0
+        breakdown: Counter[str] = Counter()
+        for ext, count in ext_counter.items():
+            if ext in self._SCOPE_BINARY_EXTENSIONS:
+                continue
+            source_total += count
+            if ext in self._SCOPE_PYTHON_EXTENSIONS:
+                python_total += count
+                continue
+            language = self._SCOPE_LANGUAGE_BY_EXT.get(ext, "other")
+            breakdown[language] += count
+
+        profile.source_file_count = source_total
+        profile.python_file_count = python_total
+        profile.language_breakdown = dict(
+            sorted(breakdown.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        ratio = 1.0 if source_total == 0 else python_total / source_total
+        profile.analyzed_ratio = ratio
+        profile.out_of_scope_ratio = 1.0 - ratio
 
     def _scan_extractable_blocks(self, profile: ProjectProfile) -> None:
         """Long functions with a clean seam to extract — turns the engine's
@@ -1128,3 +1234,37 @@ class ProjectProfiler:
                     out.append(m.path)
                     break
         return sorted(out)
+
+
+def render_analysis_scope_line(profile: ProjectProfile) -> str:
+    """One honest, factual line about how much of the repo Apex analysed.
+
+    Pure (no I/O) and deterministic — reads only the scope fields the profiler
+    already computed. The line reads as a strength: Apex states exactly what it
+    did and did NOT cover, rather than implying its Python grade speaks for a
+    polyglot whole. Returns ``""`` whenever there is nothing to disclose — an
+    empty repo, or an all-Python one where the Python grade genuinely speaks for
+    the whole project; the line appears only when real out-of-scope content
+    exists (``out_of_scope_ratio > 0`` with a non-empty breakdown), so it is
+    purely additive and never noise on a single-language Python project.
+
+    Example::
+
+        Scope: analysing 62% of the repo (Python). 38% is outside analysis
+        scope — JavaScript 41 files, HTML 12, CSS 7.
+    """
+    if profile.source_file_count <= 0:
+        return ""
+    if not (profile.out_of_scope_ratio > 0 and profile.language_breakdown):
+        return ""  # all-Python: the grade already speaks for the whole repo
+    analysed_pct = round(profile.analyzed_ratio * 100)
+    out_pct = round(profile.out_of_scope_ratio * 100)
+    # language_breakdown is already sorted (count desc, then name); render the
+    # first language with its " files" unit, the rest as bare counts.
+    items = list(profile.language_breakdown.items())
+    parts = [f"{lang} {count} files" if i == 0 else f"{lang} {count}"
+             for i, (lang, count) in enumerate(items)]
+    return (
+        f"Scope: analysing {analysed_pct}% of the repo (Python). "
+        f"{out_pct}% is outside analysis scope — {', '.join(parts)}."
+    )

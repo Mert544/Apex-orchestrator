@@ -34,6 +34,10 @@ class HealthScore:
     letter: str
     components: list[Component] = field(default_factory=list)
     fixes: list[str] = field(default_factory=list)
+    # One honest line about how much of a polyglot repo the grade actually
+    # speaks for (Apex analyses only Python). Empty when the repo is all-Python
+    # / has no out-of-scope content, so the grade reads unchanged there.
+    scope_line: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -273,7 +277,13 @@ def grade(project_root: str | Path) -> HealthScore:
 
     score = max(0, 100 - (sec_lost + arch_lost + test_lost + debt_lost
                           + corr_lost + maint_lost + dup_lost))
-    return HealthScore(score=score, letter=_letter(score), components=components, fixes=fixes)
+    # Honest scope line — only non-empty on a polyglot repo with out-of-scope
+    # content, so an all-Python project's grade output is unchanged.
+    from app.tools.project_profile import render_analysis_scope_line
+
+    scope_line = render_analysis_scope_line(profile)
+    return HealthScore(score=score, letter=_letter(score), components=components,
+                       fixes=fixes, scope_line=scope_line)
 
 
 def render_grade_markdown(h: HealthScore) -> str:
@@ -301,6 +311,12 @@ def render_grade_markdown(h: HealthScore) -> str:
     else:
         lines.append("_Clean bill of health — nothing is costing points._")
     lines.append("")
+    # Honest analysis-scope line — present only on a polyglot repo with content
+    # outside Apex's Python analysis, so an all-Python project's grade reads
+    # unchanged. Stated as a strength: exactly what the grade did and did NOT cover.
+    if h.scope_line:
+        lines.append(f"_{h.scope_line}_")
+        lines.append("")
     return "\n".join(lines)
 
 
