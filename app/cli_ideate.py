@@ -13,6 +13,48 @@ from pathlib import Path
 
 from app.cli_common import _get_project_root
 
+
+def _confluence_entries(profile) -> list[dict]:
+    """Normalize ``profile.confluence_modules`` into a stable, JSON-safe list.
+
+    Each entry is ``{"module", "family_count", "families"}``; ``families`` is
+    coerced to a sorted-as-stored list (the profiler already emits a sorted
+    tuple). Returns ``[]`` for a missing/empty signal so callers can gate the
+    whole section and keep no-confluence output byte-identical.
+    """
+    raw = getattr(profile, "confluence_modules", None) or []
+    out: list[dict] = []
+    for conv in raw:
+        families = list(conv.get("families", ()) or ())
+        out.append({
+            "module": conv["module"],
+            "family_count": int(conv.get("family_count", len(families))),
+            "families": families,
+        })
+    return out
+
+
+def _render_confluence_markdown(entries: list[dict]) -> str:
+    """Render the convergence-hotspots development guidance section.
+
+    Only called when ``entries`` is non-empty; the caller gates on that so the
+    no-confluence path emits nothing additional.
+    """
+    lines = [
+        "## Convergence hotspots",
+        "",
+        "These modules sit under the most independent pressures — they are the "
+        "highest-leverage development targets. Stabilize and test them first.",
+        "",
+    ]
+    for e in entries:
+        fams = ", ".join(e["families"])
+        lines.append(
+            f"- `{e['module']}` — {e['family_count']} converging families: {fams}"
+        )
+    return "\n".join(lines)
+
+
 def cmd_ideate(args: argparse.Namespace) -> int:
     """Generate a permutation tree of development ideas from the codebase."""
     from app.engine.idea_permutation import (
@@ -226,12 +268,19 @@ def cmd_ideate(args: argparse.Namespace) -> int:
                 commit=getattr(args, "commit", False),
             )
 
+    # Surface signal convergence (the seeder's #1 development target) prominently
+    # in the default ideate view. ADDITIVE and gated: emitted only when the
+    # profile names confluence modules, so the no-confluence path is unchanged.
+    confluence = _confluence_entries(getattr(engine, "last_profile", None))
+
     if args.json:
         payload = report.model_dump()
         if action_plan is not None:
             payload["action_plan"] = action_plan.model_dump()
         if apply_results is not None:
             payload["apply_results"] = apply_results
+        if confluence:
+            payload["confluence"] = confluence
         print(json.dumps(payload, indent=2))
     elif action_plan is not None:
         print(render_action_markdown(action_plan))
@@ -265,6 +314,9 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         if args.mermaid:
             print()
             print(render_mermaid(report))
+        if confluence:
+            print()
+            print(_render_confluence_markdown(confluence))
 
     if args.out:
         out_path = Path(args.out)
