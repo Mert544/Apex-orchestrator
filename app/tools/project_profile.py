@@ -374,12 +374,13 @@ class ProjectProfiler:
         # walk's already-collected extension counts) so the grade can honestly
         # report how much of a polyglot repo its Python analysis covers.
         self._scan_analysis_scope(profile, ext_counter)
-        # Polyglot hotspots: name the biggest / most-churned NON-Python source
-        # files so the idea engine can recommend attention on them. A single
-        # bounded git pass (no second whole-repo walk beyond the scan's own);
-        # churn is git-only/empty in light mode, and an all-Python repo yields [].
-        self._scan_polyglot_hotspots(profile)
         if not light:
+            # Polyglot hotspots: name the biggest / most-churned NON-Python
+            # source files for the idea engine to recommend attention on. A
+            # bounded git pass + walk that the GRADE never reads, so it is gated
+            # out of the light path (the idea engine profiles with light=False;
+            # an all-Python repo yields []).
+            self._scan_polyglot_hotspots(profile)
             # Scans the GRADE never reads — skipped in light mode. The four
             # git/doc subprocess scans (cheap on a shallow repo, ~200s on a deep
             # one) and the three AST refactor scans (extractable/inlinable
