@@ -375,10 +375,6 @@ class FunctionFractalAnalyzer:
                 candidate = f"{imported}::{name}"
                 if candidate in all_functions:
                     return candidate
-                # Maybe imported is module, function name is same
-                candidate2 = f"{imported}::{name}"
-                if candidate2 in all_functions:
-                    return candidate2
             # Local function
             local = f"{current_module}::{name}"
             if local in all_functions:

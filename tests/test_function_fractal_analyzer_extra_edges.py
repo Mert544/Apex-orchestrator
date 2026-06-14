@@ -7,17 +7,14 @@ Targets the two branches the existing suites leave open:
 * the ``_resolve_call`` imported-name path where the ``imported::name``
   candidate is NOT a known function so the resolver falls through.
 
-A dead-code branch in ``_resolve_call`` is documented with an ``xfail`` (see
-``test_resolve_call_dead_duplicate_candidate_is_unreachable``). All inputs are
-explicit synthetic sources; nothing asserts on time, randomness, or ordering.
+All inputs are explicit synthetic sources; nothing asserts on time, randomness,
+or ordering.
 """
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
-
-import pytest
 
 from app.tools.function_fractal_analyzer import FunctionFractalAnalyzer
 
@@ -83,25 +80,3 @@ def test_resolve_call_imported_candidate_matches(tmp_path: Path):
     all_functions = {"app.lib::helper": "app/lib.py"}
     resolved = analyzer._resolve_call(call, imports, "app.mod", all_functions)
     assert resolved == "app.lib::helper"
-
-
-@pytest.mark.xfail(
-    reason="Dead code: app/tools/function_fractal_analyzer.py:379-381 build a "
-    "second candidate identical to the first (both `f'{imported}::{name}'`); "
-    "since line 376 already returned on a hit, the line 380 re-check is always "
-    "False and the line 381 `return candidate2` is unreachable.",
-    strict=True,
-)
-def test_resolve_call_dead_duplicate_candidate_is_unreachable():
-    # There is no input for which the SECOND candidate check (line 380) can
-    # succeed while the FIRST (line 376) failed — they test the identical
-    # string. This test asserts the contrary to mark the dead branch as a
-    # known bug without weakening the real behavior.
-    analyzer = FunctionFractalAnalyzer()
-    call = ast.parse("helper()", mode="eval").body
-    imports = {"helper": "app.lib"}
-    # Crafted so candidate (line 375) is absent but a hypothetical "second"
-    # candidate would differ — impossible, because candidate2 == candidate.
-    all_functions = {"app.lib::helper_other": "app/lib.py"}
-    # If 381 were reachable this would return a value; it cannot, so it is None.
-    assert analyzer._resolve_call(call, imports, "app.mod", all_functions) is not None
