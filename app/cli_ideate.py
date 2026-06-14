@@ -87,6 +87,13 @@ def cmd_ideate(args: argparse.Namespace) -> int:
     )
     report = engine.run(objective=args.objective or None)
 
+    # Outcome-learned ranking: bias the roadmap toward the kinds of fixes that
+    # historically LAND in this repo (and away from ones that get blocked /
+    # rolled back). Best-effort + no-op on a fresh repo with no memory ledger,
+    # so the roadmap is byte-identical until real outcomes accumulate.
+    from app.engine.idea_memory import IdeaMemory
+    _roadmap_memory = IdeaMemory.load(str(target))
+
     # --roadmap (without --actions): view the prioritized, phase-ordered plan.
     # With --actions, the roadmap instead drives the *order* of the action plan
     # below (Stabilize first), so this view-only branch is skipped.
@@ -96,7 +103,7 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             render_roadmap_markdown,
         )
 
-        roadmap = RoadmapSynthesizer().build(report)
+        roadmap = RoadmapSynthesizer().build(report, memory=_roadmap_memory)
         snapshot_path = target / ".apex" / "roadmap-snapshot.json"
 
         # --diff: compare this roadmap against the last saved snapshot.
@@ -186,7 +193,7 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         from app.engine.idea_pareto import frontier_from_roadmap, render_pareto_markdown
         from app.engine.idea_roadmap import RoadmapSynthesizer
 
-        roadmap = RoadmapSynthesizer().build(report)
+        roadmap = RoadmapSynthesizer().build(report, memory=_roadmap_memory)
         points = frontier_from_roadmap(roadmap)
         if args.json:
             print(json.dumps([p.to_dict() for p in points], indent=2))
