@@ -298,3 +298,94 @@ def test_early_return_still_blocks(tmp_path):
     assert blocks
     plan = plan_dedup_extract(tmp_path, blocks[0])
     assert not plan.ok and plan.blockers   # a non-tail return is not liftable
+
+
+# ── descriptive helper naming: common tokens of enclosing function names ──
+
+_COMMON_TOKENS = '''\
+def generate_patch_requests_skill():
+    a = 1
+    b = 2
+    c = a + b
+    d = c * 3
+    e = d - 1
+    return e
+
+
+def generate_semantic_patch_skill():
+    a = 1
+    b = 2
+    c = a + b
+    d = c * 3
+    e = d - 1
+    return e + 100
+'''
+
+
+def test_descriptive_helper_name_from_common_function_tokens(tmp_path):
+    # generate_patch_requests_skill + generate_semantic_patch_skill share the
+    # ORDERED tokens generate, patch, skill → the helper is `_generate_patch_skill`.
+    _write(tmp_path, "pkg/mod.py", _COMMON_TOKENS)
+    blocks = find_duplicates(tmp_path, min_statements=5, min_occurrences=2)
+    assert blocks
+    plan = plan_dedup_extract(tmp_path, blocks[0])
+    assert plan.ok, f"expected a clean plan, blockers={plan.blockers}"
+    assert plan.new == "_generate_patch_skill"
+    new = plan.new_contents["pkg/mod.py"]
+    assert "def _generate_patch_skill():" in new
+    assert new.count("_generate_patch_skill()") >= 2
+    # Behaviour preserved.
+    before = _exec_module(_COMMON_TOKENS)
+    after = _exec_module(new)
+    assert before["generate_patch_requests_skill"]() == \
+        after["generate_patch_requests_skill"]()
+
+
+# ── fallback: no common tokens → the machine `_shared_<n>` scheme still fires ──
+
+_NO_COMMON_TOKENS = '''\
+def alpha():
+    a = 1
+    b = 2
+    c = a + b
+    d = c * 3
+    e = d - 1
+    return e
+
+
+def beta():
+    a = 1
+    b = 2
+    c = a + b
+    d = c * 3
+    e = d - 1
+    return e + 100
+'''
+
+
+def test_no_common_tokens_falls_back_to_shared(tmp_path):
+    # `alpha` and `beta` share no identifier tokens → there is no descriptive
+    # base, so the helper keeps the deterministic `_shared_<n>` machine name.
+    _write(tmp_path, "pkg/mod.py", _NO_COMMON_TOKENS)
+    blocks = find_duplicates(tmp_path, min_statements=5, min_occurrences=2)
+    assert blocks
+    plan = plan_dedup_extract(tmp_path, blocks[0])
+    assert plan.ok, f"expected a clean plan, blockers={plan.blockers}"
+    assert plan.new == "_shared_1"
+    assert "def _shared_1():" in plan.new_contents["pkg/mod.py"]
+
+
+def test_descriptive_name_collision_appends_suffix(tmp_path):
+    # When the descriptive base is already bound at module level, the planner
+    # appends `_2`, `_3`, … rather than colliding or silently falling back.
+    src = (
+        "_generate_patch_skill = 1\n\n\n"
+        + _COMMON_TOKENS
+    )
+    _write(tmp_path, "pkg/mod.py", src)
+    blocks = find_duplicates(tmp_path, min_statements=5, min_occurrences=2)
+    assert blocks
+    plan = plan_dedup_extract(tmp_path, blocks[0])
+    assert plan.ok, f"expected a clean plan, blockers={plan.blockers}"
+    assert plan.new == "_generate_patch_skill_2"
+    assert "def _generate_patch_skill_2():" in plan.new_contents["pkg/mod.py"]

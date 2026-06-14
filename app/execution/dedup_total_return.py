@@ -46,6 +46,7 @@ from pathlib import Path
 from app.execution.cross_file_rename import RenamePlan
 from app.execution.dedup_extract import (
     _Occurrence,
+    _descriptive_helper_name,
     _free_helper_name,
     _import_insert_index,
     _locate_run,
@@ -260,7 +261,11 @@ def plan_dedup_total_return(project_root: str | Path, block) -> RenamePlan:
 
     first = resolved[0]
     first_dotted = _module_dotted(first.rel)
-    helper_name = _free_helper_name(trees, set(rels))
+    # Human-readable name from the common tokens of the enclosing function names,
+    # falling back to the machine `_shared_<n>` scheme when none is clean/free.
+    fn_names = [occ.fn.name for occ in resolved]
+    helper_name = (_descriptive_helper_name(fn_names, trees, set(rels))
+                   or _free_helper_name(trees, set(rels)))
     if helper_name is None:
         plan.blockers.append("could not find a free `_shared_<n>` helper name")
         return plan

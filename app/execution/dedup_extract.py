@@ -33,6 +33,7 @@ can never ship a broken extraction. Deterministic, stdlib-only.
 from __future__ import annotations
 
 import ast
+import keyword
 from pathlib import Path
 
 from app.execution.cross_file_rename import RenamePlan, _top_level_bindings
@@ -194,13 +195,116 @@ def _resolve_occurrence(root: Path, rel: str, start_line: int,
 def _free_helper_name(trees: dict, rels: set[str]) -> str | None:
     """The first ``_shared_<n>`` name free at module level in every involved
     module (so the def and its imports never collide), or ``None`` if exhausted."""
-    bound: set[str] = set()
-    for rel in rels:
-        bound |= _top_level_bindings(trees[rel])
+    bound = _all_top_level_bindings(trees, rels)
     for n in range(1, 1000):
         name = f"_shared_{n}"
         if name not in bound:
             return name
+    return None
+
+
+def _all_top_level_bindings(trees: dict, rels: set[str]) -> set[str]:
+    """Union of module-level bindings across every involved module — the set a
+    helper name must avoid so its def and cross-module imports never collide."""
+    bound: set[str] = set()
+    for rel in rels:
+        bound |= _top_level_bindings(trees[rel])
+    return bound
+
+
+def _split_identifier_tokens(name: str) -> list[str]:
+    """Lower-cased tokens of an identifier, split on ``_`` AND CamelCase.
+
+    ``"generate_patch_requests_skill"`` → ``["generate", "patch", "requests",
+    "skill"]``; ``"PatchRequestGenerator"`` → ``["patch", "request",
+    "generator"]``. Splits a camel/Pascal hump at every lower→upper boundary and
+    on each underscore run; purely structural and deterministic (no data tables).
+    """
+    tokens: list[str] = []
+    for part in name.split("_"):
+        if not part:
+            continue
+        start = 0
+        for i in range(1, len(part)):
+            prev, cur = part[i - 1], part[i]
+            if cur.isupper() and (prev.islower() or prev.isdigit()):
+                tokens.append(part[start:i].lower())
+                start = i
+        tokens.append(part[start:].lower())
+    return [t for t in tokens if t]
+
+
+def _ordered_common_subsequence(seqs: list[list[str]]) -> list[str]:
+    """The ordered longest common subsequence of tokens shared by ALL ``seqs``.
+
+    Folds a pairwise LCS over the list left-to-right; the result preserves the
+    relative order the tokens appear in. Empty input (or any empty member) yields
+    ``[]``. Deterministic: the pairwise LCS prefers the earliest match, so the
+    same inputs always produce the same subsequence."""
+    if not seqs:
+        return []
+    common = seqs[0]
+    for seq in seqs[1:]:
+        common = _pairwise_lcs(common, seq)
+        if not common:
+            return []
+    return common
+
+
+def _pairwise_lcs(a: list[str], b: list[str]) -> list[str]:
+    """Longest common subsequence of two token lists (classic DP, deterministic)."""
+    if not a or not b:
+        return []
+    n, m = len(a), len(b)
+    dp = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            if a[i] == b[j]:
+                dp[i][j] = dp[i + 1][j + 1] + 1
+            else:
+                dp[i][j] = max(dp[i + 1][j], dp[i][j + 1])
+    out: list[str] = []
+    i = j = 0
+    while i < n and j < m:
+        if a[i] == b[j]:
+            out.append(a[i])
+            i += 1
+            j += 1
+        elif dp[i + 1][j] >= dp[i][j + 1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+def _descriptive_helper_name(fn_names: list[str], trees: dict,
+                             rels: set[str]) -> str | None:
+    """A HUMAN-READABLE ``_<token>_<token>...`` helper base derived from the
+    tokens common to ALL enclosing function names, free at module level in every
+    involved module, or ``None`` to fall back to the ``_shared_<n>`` scheme.
+
+    Algorithm: tokenize each function name (on ``_`` and CamelCase), take the
+    ordered longest common subsequence shared by every name, and join with ``_``
+    under a leading ``_``. The base is rejected (→ fallback) when it is empty, not
+    a valid identifier, a Python keyword, or already bound at module level in any
+    module. On a collision with a live binding, ``_2``, ``_3``, … are tried before
+    falling back, so the descriptive name is still guaranteed free everywhere."""
+    if not fn_names or any(not n for n in fn_names):
+        return None
+    token_lists = [_split_identifier_tokens(n) for n in fn_names]
+    common = _ordered_common_subsequence(token_lists)
+    if not common:
+        return None
+    base = "_" + "_".join(common)
+    if not base.isidentifier() or keyword.iskeyword(base) or keyword.iskeyword(base.lstrip("_")):
+        return None
+    bound = _all_top_level_bindings(trees, rels)
+    if base not in bound:
+        return base
+    for suffix in range(2, 100):
+        candidate = f"{base}_{suffix}"
+        if candidate not in bound:
+            return candidate
     return None
 
 
@@ -274,7 +378,12 @@ def plan_dedup_extract(project_root: str | Path, block) -> RenamePlan:
                              "not a clean shared helper")
         return plan
     first_dotted = _module_dotted(first.rel)
-    helper_name = _free_helper_name(trees, set(rels))
+    # Prefer a human-readable name from the common tokens of the enclosing
+    # function names; fall back to the machine `_shared_<n>` scheme when no clean
+    # descriptive base exists (or it isn't free in every module).
+    fn_names = [occ.fn.name for occ in resolved]
+    helper_name = (_descriptive_helper_name(fn_names, trees, set(rels))
+                   or _free_helper_name(trees, set(rels)))
     if helper_name is None:
         plan.blockers.append("could not find a free `_shared_<n>` helper name")
         return plan

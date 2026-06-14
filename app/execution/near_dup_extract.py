@@ -51,15 +51,19 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import keyword
+
 from app.engine.near_dup import _is_value_leaf
 from app.execution.cross_file_rename import RenamePlan
 from app.execution.dedup_extract import (
     _Occurrence,
+    _descriptive_helper_name,
     _free_helper_name,
     _import_insert_index,
     _module_dotted,
     _parse_occurrence,
     _resolve_occurrence,
+    _split_identifier_tokens,
 )
 from app.execution.extract_method import _reindent
 from app.execution.unused_imports import strip_unused_imports
@@ -118,6 +122,71 @@ def _segment(source: str, node: ast.AST) -> str:
     if isinstance(node, ast.Name):
         return node.id
     return type(node).__name__
+
+
+def _common_affix_token(names: list[str]) -> str | None:
+    """A descriptive param base from a SHARED token suffix or prefix of NAME
+    holes, or ``None`` when there's no good common token.
+
+    Each value is tokenized like an identifier (on ``_`` and CamelCase, lowered);
+    if every value shares the SAME LAST token (suffix), that token is the base —
+    e.g. ``PatchRequestGenerator``/``SemanticPatchGenerator`` share ``generator``.
+    Otherwise a shared FIRST token (prefix) is tried. The base must be a valid
+    identifier and not a keyword. Deterministic."""
+    if len(names) < 2:
+        return None
+    token_lists = [_split_identifier_tokens(n) for n in names]
+    if any(not toks for toks in token_lists):
+        return None
+    # Require the values to actually DIFFER (a column only reaches here when its
+    # segments vary), and share a single affix token to name the parameter after.
+    suffix = {toks[-1] for toks in token_lists}
+    prefix = {toks[0] for toks in token_lists}
+    base: str | None = None
+    if len(suffix) == 1:
+        base = next(iter(suffix))
+    elif len(prefix) == 1:
+        base = next(iter(prefix))
+    if base is None or not base.isidentifier() or keyword.iskeyword(base):
+        return None
+    return base
+
+
+def _hole_param_names(diff_node_segments: list[list[tuple[ast.AST, str]]],
+                      live_in: list[str]) -> list[str]:
+    """Deterministic param names for the holes: a descriptive name from a common
+    NAME affix token where one exists, else the neutral ``p<n>`` fallback.
+
+    ``diff_node_segments[k]`` is the per-occurrence ``(node, segment)`` for the
+    k-th differing column. A descriptive name is used only when EVERY occurrence's
+    leaf at that column is an ``ast.Name`` and they share an affix token. Names
+    never collide with each other or with the helper's ``live_in`` params and are
+    never keywords; on any clash (or no good token) we fall back to ``p<n>``.
+    Order is preserved so the result is fully deterministic."""
+    taken = set(live_in)
+    names: list[str] = []
+    fallback_n = 0
+    for col_nodes in diff_node_segments:
+        nodes = [node for node, _ in col_nodes]
+        chosen: str | None = None
+        if all(isinstance(node, ast.Name) for node in nodes):
+            base = _common_affix_token([node.id for node in nodes])  # type: ignore[union-attr]
+            if base is not None and base not in taken:
+                chosen = base
+            elif base is not None:
+                for suffix in range(2, 100):
+                    candidate = f"{base}_{suffix}"
+                    if candidate not in taken:
+                        chosen = candidate
+                        break
+        if chosen is None:
+            while f"p{fallback_n}" in taken:
+                fallback_n += 1
+            chosen = f"p{fallback_n}"
+            fallback_n += 1
+        taken.add(chosen)
+        names.append(chosen)
+    return names
 
 
 def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
@@ -281,22 +350,24 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
 
     first = resolved[0]
     first_dotted = _module_dotted(first.rel)
-    helper_name = _free_helper_name(trees, set(rels))
+    # Human-readable helper name from the common tokens of the enclosing function
+    # names, falling back to the machine `_shared_<n>` scheme when none is free.
+    fn_names = [occ.fn.name for occ in resolved]
+    helper_name = (_descriptive_helper_name(fn_names, trees, set(rels))
+                   or _free_helper_name(trees, set(rels)))
     if helper_name is None:
         plan.blockers.append("could not find a free `_shared_<n>` helper name")
         return plan
 
-    # Fresh parameter names for the holes (p0, p1, …), not colliding with live_in.
-    param_names: list[str] = []
-    taken = set(live_in)
-    n = 0
-    for _ in diff_cols:
-        while f"p{n}" in taken:
-            n += 1
-        name = f"p{n}"
-        param_names.append(name)
-        taken.add(name)
-        n += 1
+    # Parameter names for the holes: a descriptive name from a common NAME affix
+    # token where every occurrence's leaf agrees, else the neutral `p<n>` fallback.
+    # Never collide with each other or with live_in (which seeds `taken`).
+    diff_node_segments = [
+        [(per_occ_leaves[i][col][1], _segment(occ.source, per_occ_leaves[i][col][1]))
+         for i, occ in enumerate(resolved)]
+        for col in diff_cols
+    ]
+    param_names = _hole_param_names(diff_node_segments, live_in)
 
     # ── Splice the FIRST occurrence's source: replace each differing constant
     # with its parameter name, located by source span (structural, not textual).

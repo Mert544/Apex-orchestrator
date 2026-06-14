@@ -622,3 +622,43 @@ def test_differing_free_name_becomes_a_value_param(tmp_path):
     ast.parse(new)
     ns = _exec_module(new)
     assert ns["alpha"](5) == 25 and ns["beta"](5) == 35
+
+
+def test_differing_name_holes_share_suffix_token_descriptive_param(tmp_path):
+    # The differing free names PATCH_LIMIT / SEMANTIC_LIMIT share the suffix token
+    # `limit`, so the value param is named `limit` instead of the neutral `p0`.
+    # The function names (alpha/beta) share no tokens → helper stays `_shared_1`,
+    # isolating the param-naming behaviour under test.
+    _write(tmp_path, "pyproject.toml", "[project]\nname='m'\nversion='0'\n")
+    _write(tmp_path, "app/__init__.py", "")
+    _write(tmp_path, "app/m.py",
+           "PATCH_LIMIT = 10\nSEMANTIC_LIMIT = 20\n\n\n"
+           "def alpha(n):\n    a = n + 1\n    b = a * 2\n    c = b + 3\n    d = c + PATCH_LIMIT\n    return d\n\n\n"
+           "def beta(n):\n    a = n + 1\n    b = a * 2\n    c = b + 3\n    d = c + SEMANTIC_LIMIT\n    return d\n")
+    group = _only_group(tmp_path)
+    plan = plan_near_dup_extract(tmp_path, group)
+    assert plan.ok, f"a shared-suffix name hole should parameterize, blockers={plan.blockers}"
+    new = plan.new_contents["app/m.py"]
+    assert "def _shared_1(n, limit):" in new
+    assert "return _shared_1(n, PATCH_LIMIT)" in new
+    assert "return _shared_1(n, SEMANTIC_LIMIT)" in new
+    assert "p0" not in new
+    ast.parse(new)
+    ns = _exec_module(new)
+    assert ns["alpha"](5) == 25 and ns["beta"](5) == 35
+
+
+def test_constant_holes_keep_neutral_param_fallback(tmp_path):
+    # CONSTANT holes carry no identifier token, so the neutral `p<n>` fallback is
+    # kept (safety never regresses to a guessed name for a literal).
+    _write(tmp_path, "pyproject.toml", "[project]\nname='m'\nversion='0'\n")
+    _write(tmp_path, "app/__init__.py", "")
+    _write(tmp_path, "app/m.py",
+           "def alpha(n):\n    a = n + 1\n    b = a * 2\n    c = b + 3\n    d = c + 10\n    return d\n\n\n"
+           "def beta(n):\n    a = n + 1\n    b = a * 2\n    c = b + 3\n    d = c + 20\n    return d\n")
+    group = _only_group(tmp_path)
+    plan = plan_near_dup_extract(tmp_path, group)
+    assert plan.ok, f"constant holes should still parameterize, blockers={plan.blockers}"
+    helper = plan.new
+    first_src = plan.new_contents[plan.defined_in]
+    assert f"def {helper}(n, p0):" in first_src
