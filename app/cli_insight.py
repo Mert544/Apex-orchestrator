@@ -560,6 +560,17 @@ def _scope_report(root: Path) -> dict:
             entry["debt_markers"] = debt
         files.append(entry)
 
+    # Cross-language coupling: file pairs git shows moving together across the
+    # Python/non-Python boundary — a "keep these in sync" signal Apex can surface
+    # even though it can't deep-analyse the non-Python side. Defensive: [] on any
+    # git error, so an all-Python / shallow-history repo adds nothing.
+    from app.engine.cross_language_coupling import cross_language_coupling
+    cross_links = [
+        {"py": c.py, "other": c.other, "language": c.other_language,
+         "cochanges": c.cochanges}
+        for c in cross_language_coupling(str(root))
+    ]
+
     return {
         "source_file_count": profile.source_file_count,
         "python_file_count": profile.python_file_count,
@@ -568,6 +579,7 @@ def _scope_report(root: Path) -> dict:
         "all_python": all_python,
         "language_breakdown": breakdown,
         "files": files,
+        "cross_links": cross_links,
     }
 
 
@@ -620,6 +632,20 @@ def render_scope_markdown(rep: dict) -> str:
             lines.append(
                 f"- `{f['path']}` ({f['language']}, {f['loc']} LOC, "
                 f"{f['churn']} {commit_word}){flag}{debt_clause}"
+            )
+        lines.append("")
+
+    cross = rep.get("cross_links") or []
+    if cross:
+        lines += ["## Cross-language coupling (keep in sync)", "",
+                  "Files git shows changing together across the Python boundary — "
+                  "Apex can't deep-analyse the non-Python side, but they move as a "
+                  "unit, so a change to one likely needs the other:", ""]
+        for c in cross:
+            cw = "co-change" if c["cochanges"] == 1 else "co-changes"
+            lines.append(
+                f"- `{c['py']}` ↔ `{c['other']}` ({c['language']}, "
+                f"{c['cochanges']} {cw})"
             )
         lines.append("")
 
