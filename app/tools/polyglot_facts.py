@@ -23,6 +23,7 @@ without pretending to deep-analyse them. It is deliberately neutral and pure:
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +61,14 @@ _LANGUAGE_BY_EXT: dict[str, str] = {
 # Python is the IN-scope subset Apex already deep-analyses — never named here.
 _PYTHON_EXTENSIONS = {".py", ".pyi"}
 
+# Language-agnostic technical-debt markers. Word-boundary, case-insensitive, so
+# ``TODO`` matches but ``TODOLIST`` does not; works on ANY text file regardless
+# of comment syntax. A precompiled, deterministic regex — no time/random.
+_DEBT_MARKER_RE = re.compile(r"\b(TODO|FIXME|HACK|XXX)\b", re.IGNORECASE)
+
+# Sanity cap: a pathological generated file shouldn't report an absurd count.
+_DEBT_MARKER_CAP = 9999
+
 # Explicit deny set: lockfiles / generated manifests whose extension might map to
 # a language but whose CONTENT is machine-written, so naming them as "files worth
 # attention" would be noise. Matched on the full lowercased basename.
@@ -78,6 +87,11 @@ class FileFact:
     ``_file_has_test``). It is additive and defaults to ``False`` so existing
     facts/rankings keep their shape; an untested big active file is the
     highest-leverage non-Python risk, so it is surfaced first on ties.
+
+    ``debt_markers`` is a language-agnostic count of ``TODO``/``FIXME``/``HACK``/
+    ``XXX`` occurrences (case-insensitive, word-boundary) found in the file's
+    text. It is additive and defaults to ``0``; it is purely informational and
+    does NOT affect ranking. Counted in the SAME local read used for LOC.
     """
 
     path: str
@@ -85,6 +99,7 @@ class FileFact:
     loc: int
     churn: int
     has_test: bool = False
+    debt_markers: int = 0
 
 
 # Test-directory convention names: a file living under (or beside) one of these
@@ -184,13 +199,21 @@ def _file_has_test(
     return False
 
 
-def _non_blank_loc(path: Path) -> int:
-    """Non-blank line count. Degrades to 0 on any read error (never raises)."""
+def _loc_and_debt(path: Path) -> tuple[int, int]:
+    """Non-blank LOC and debt-marker count from a SINGLE local read.
+
+    Returns ``(loc, debt_markers)``. ``loc`` is the non-blank line count;
+    ``debt_markers`` is the capped count of ``TODO``/``FIXME``/``HACK``/``XXX``
+    matches (case-insensitive, word-boundary). Degrades to ``(0, 0)`` on any
+    read error (never raises). No second read or walk is performed.
+    """
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        return 0
-    return sum(1 for line in text.splitlines() if line.strip())
+        return 0, 0
+    loc = sum(1 for line in text.splitlines() if line.strip())
+    debt = min(len(_DEBT_MARKER_RE.findall(text)), _DEBT_MARKER_CAP)
+    return loc, debt
 
 
 def _git_churn(root: Path, candidates: set[str]) -> dict[str, int]:
@@ -240,7 +263,8 @@ def scan_polyglot_facts(root: str, *, limit: int = 5) -> list[FileFact]:
     # (rel, name) file set the convention-based test index is built from. We
     # never walk again per file and never shell out for test presence.
     all_files: list[tuple[str, str]] = []  # (rel_posix, name_lower)
-    candidates: list[tuple[str, str, int]] = []  # (rel_posix, language, loc)
+    # (rel_posix, language, loc, debt_markers)
+    candidates: list[tuple[str, str, int, int]] = []
     for path in root_path.rglob("*"):
         if not path.is_file():
             continue
@@ -257,7 +281,8 @@ def scan_polyglot_facts(root: str, *, limit: int = 5) -> list[FileFact]:
             continue
         if path.name.lower() in _DENY_NAMES:
             continue
-        candidates.append((rel_posix, language, _non_blank_loc(path)))
+        loc, debt = _loc_and_debt(path)
+        candidates.append((rel_posix, language, loc, debt))
 
     if not candidates:
         return []
@@ -266,14 +291,17 @@ def scan_polyglot_facts(root: str, *, limit: int = 5) -> list[FileFact]:
     all_files.sort()
     test_names, test_dir_files = _build_test_index(all_files)
 
-    churn_by_path = _git_churn(root_path, {rel for rel, _lang, _loc in candidates})
+    churn_by_path = _git_churn(
+        root_path, {rel for rel, _lang, _loc, _debt in candidates}
+    )
     facts = [
         FileFact(
             path=rel, language=language, loc=loc,
             churn=churn_by_path.get(rel, 0),
             has_test=_file_has_test(rel, test_names, test_dir_files),
+            debt_markers=debt,
         )
-        for rel, language, loc in candidates
+        for rel, language, loc, debt in candidates
     ]
     # ``has_test`` is a LATER tiebreaker: primary ordering stays (-churn, -loc)
     # so the pinned ranking in tests/test_polyglot_facts.py is unchanged; among
@@ -296,12 +324,23 @@ def render_polyglot_attention(facts: list[FileFact]) -> str:
     # nothing to contrast against, so the clause stays byte-identical to the
     # pre-test-presence output and existing pinned renders don't shift.
     annotate = any(f.has_test for f in facts)
+    # Debt markers are annotated the same gated, additive way as test presence:
+    # only when at least one file actually carries the signal, and per-file only
+    # when that file's count is > 0. On a no-debt set this stays byte-identical
+    # to the pre-debt output, so existing pinned renders don't shift.
+    annotate_debt = any(f.debt_markers for f in facts)
     parts = []
     for fact in facts:
         commit_word = "commit" if fact.churn == 1 else "commits"
         suffix = " (no test found)" if annotate and not fact.has_test else ""
+        debt_suffix = (
+            f" ({fact.debt_markers} TODO/FIXME)"
+            if annotate_debt and fact.debt_markers
+            else ""
+        )
         parts.append(
-            f"`{fact.path}` ({fact.loc} LOC, {fact.churn} {commit_word}){suffix}"
+            f"`{fact.path}` ({fact.loc} LOC, {fact.churn} {commit_word})"
+            f"{suffix}{debt_suffix}"
         )
     return (
         "Largest / most-active files outside analysis scope: "
