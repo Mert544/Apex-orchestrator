@@ -1160,13 +1160,26 @@ def render_action_markdown(plan: ActionPlan) -> str:
         f"{plan.stats.get('executable_steps', 0)} executable · "
         f"{plan.stats.get('design_tasks', 0)} design tasks"
     )
+    # Lead with what Apex can concretely carry out vs. what's recommend-only,
+    # so the user sees the executable contributions at a glance.
+    runnable = sum(1 for s in plan.steps if s.executable)
+    total = len(plan.steps)
+    lines.append(f"**{runnable} of {total} steps are runnable now** "
+                 "(▶ runnable = Apex can apply + test-verify; ✎ advisory = recommend-only)")
     lines.append("")
     for s in plan.steps:
         tag = "🛠️" if s.executable else "📐"
+        marker = (
+            "▶ runnable — Apex can apply this and verify with your tests "
+            "(auto-rollback on failure)"
+            if s.executable
+            else "✎ advisory — recommend-only"
+        )
         phase = f"[{s.phase}] " if s.phase else ""
         lines.append(
             f"- {tag} `{s.branch_path}` {phase}**{s.action_type}** — {s.description}  (v {s.value})"
         )
+        lines.append(f"    {marker}")
         if s.patch_preview:
             files = ", ".join(s.patch_preview.get("files", []))
             lines.append(
