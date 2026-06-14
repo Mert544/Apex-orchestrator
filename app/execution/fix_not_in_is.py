@@ -37,7 +37,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from app.execution._transform_base import apply_column_rewrites, is_fixture_path
+from app.execution._transform_base import (
+    apply_column_rewrites,
+    is_fixture_path,
+    splice_operand,
+)
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_fix_not_in_is"]
@@ -82,8 +86,8 @@ def _try_unaryop(node: ast.UnaryOp, source: str) -> _Rewrite | None:
     if node.lineno != node.end_lineno:  # only single-line splices
         return None
 
-    left = ast.get_source_segment(source, compare.left)
-    right = ast.get_source_segment(source, compare.comparators[0])
+    left = splice_operand(source, compare.left)
+    right = splice_operand(source, compare.comparators[0])
     if left is None or right is None:  # can't recover source — skip
         return None
 

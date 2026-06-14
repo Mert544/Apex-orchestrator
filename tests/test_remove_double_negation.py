@@ -231,3 +231,23 @@ def test_double_negation_inside_compare_operand(tmp_path):
     new, _ = _rewrite(tmp_path, "r = (not not y) == z\n")
     assert new == "r = (bool(y)) == z\n"
     ast.parse(new)
+
+
+def test_low_precedence_operand_is_parenthesised(tmp_path):
+    # A ternary operand binds looser than the rewritten !=, so it MUST be wrapped:
+    # `a != b if c else d` would parse as `(a != b) if c else d` (H1 regression).
+    (tmp_path / "app").mkdir(exist_ok=True)
+    (tmp_path / "app" / "m.py").write_text(
+        "y = not a == (b if c else d)\n", encoding="utf-8")
+    new = plan_remove_double_negation(str(tmp_path), "app/m.py").new_contents["app/m.py"]
+    assert new == "y = a != (b if c else d)\n"
+    for env in ({"a": 1, "b": 2, "c": 0, "d": 1}, {"a": 1, "b": 1, "c": 1, "d": 9}):
+        assert (eval("not a == (b if c else d)", dict(env))  # noqa: S307
+                == eval("a != (b if c else d)", dict(env)))  # noqa: S307
+
+
+def test_atomic_operands_stay_unparenthesised(tmp_path):
+    (tmp_path / "app").mkdir(exist_ok=True)
+    (tmp_path / "app" / "m.py").write_text("y = not a == b\n", encoding="utf-8")
+    new = plan_remove_double_negation(str(tmp_path), "app/m.py").new_contents["app/m.py"]
+    assert new == "y = a != b\n"  # the common atomic case keeps no needless parens

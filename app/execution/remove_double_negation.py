@@ -55,7 +55,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from app.execution._transform_base import apply_column_rewrites, is_fixture_path
+from app.execution._transform_base import (
+    apply_column_rewrites,
+    is_fixture_path,
+    splice_operand,
+)
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_remove_double_negation"]
@@ -117,8 +121,8 @@ def _try_unaryop(node: ast.UnaryOp, source: str) -> _Rewrite | None:
     if joiner is None:  # ordering op or unhandled — leave it alone
         return None
 
-    left = ast.get_source_segment(source, operand.left)
-    right = ast.get_source_segment(source, operand.comparators[0])
+    left = splice_operand(source, operand.left)
+    right = splice_operand(source, operand.comparators[0])
     if left is None or right is None:  # can't recover source — skip
         return None
 

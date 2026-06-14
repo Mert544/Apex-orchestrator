@@ -41,7 +41,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from app.execution._transform_base import apply_column_rewrites, is_fixture_path
+from app.execution._transform_base import (
+    apply_column_rewrites,
+    is_fixture_path,
+    splice_operand,
+)
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_chain_comparison"]
@@ -128,9 +132,9 @@ def _try_boolop(node: ast.BoolOp, source: str) -> _Rewrite | None:
     if not _is_side_effect_free(middle_left):
         return None
 
-    x_src = ast.get_source_segment(source, left.left)
-    y_src = ast.get_source_segment(source, middle_left)
-    z_src = ast.get_source_segment(source, right.comparators[0])
+    x_src = splice_operand(source, left.left)
+    y_src = splice_operand(source, middle_left)
+    z_src = splice_operand(source, right.comparators[0])
     if x_src is None or y_src is None or z_src is None:
         return None
 

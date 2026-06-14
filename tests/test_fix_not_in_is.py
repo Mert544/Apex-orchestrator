@@ -179,3 +179,15 @@ def test_fixture_subject_is_skipped(tmp_path):
 def test_self_registers():
     from app.engine.objective_compiler import available_objectives
     assert "fix-not-in-is" in available_objectives()  # discovered via the registry
+
+
+def test_low_precedence_operand_is_parenthesised(tmp_path):
+    # `a not in b if c else d` would parse as `(a not in b) if c else d` (H2).
+    (tmp_path / "app").mkdir(exist_ok=True)
+    (tmp_path / "app" / "m.py").write_text(
+        "y = not a in (b if c else d)\n", encoding="utf-8")
+    new = plan_fix_not_in_is(str(tmp_path), "app/m.py").new_contents["app/m.py"]
+    assert new == "y = a not in (b if c else d)\n"
+    for env in ({"a": 1, "b": [1], "c": 0, "d": [2]}, {"a": 2, "b": [1], "c": 1, "d": [2]}):
+        assert (eval("not a in (b if c else d)", dict(env))   # noqa: S307
+                == eval("a not in (b if c else d)", dict(env)))  # noqa: S307

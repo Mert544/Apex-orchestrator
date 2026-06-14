@@ -112,3 +112,31 @@ def iter_statement_blocks(tree: ast.AST) -> Iterator[list[ast.stmt]]:
             for handler in handlers:
                 if isinstance(handler, ast.ExceptHandler) and handler.body:
                     yield handler.body
+
+
+# Operand node types that NEVER need wrapping parens when their source is spliced
+# verbatim into a binding-operator context (``==`` ``!=`` ``in`` ``is`` ``<`` …):
+# each is atomic or self-bracketing, so surrounding precedence can't re-associate
+# it. Anything else — a ternary (``a if c else d``), ``or``/``and``, ``lambda``, a
+# walrus, a nested comparison — binds looser than the operator it is spliced
+# beside, so it MUST be parenthesised or the rewrite silently changes meaning
+# (``not (a == (b if c else d))`` -> ``a != b if c else d`` == ``(a != b) if c
+# else d``). ``ast.get_source_segment`` strips an operand's own wrapping parens,
+# so the splice site can't rely on them surviving.
+_ATOMIC_OPERANDS = (ast.Name, ast.Constant, ast.Attribute, ast.Subscript, ast.Call)
+
+
+def operand_needs_parens(node: ast.expr) -> bool:
+    """True if ``node`` must be wrapped in parens to keep its meaning when its
+    source is spliced into a binding-operator expression."""
+    return not isinstance(node, _ATOMIC_OPERANDS)
+
+
+def splice_operand(source: str, node: ast.expr) -> str | None:
+    """The source text of ``node``, parenthesised iff precedence could otherwise
+    change its meaning when spliced beside a binding operator. ``None`` if the
+    source can't be recovered (the caller skips the occurrence)."""
+    src = ast.get_source_segment(source, node)
+    if src is None:
+        return None
+    return f"({src})" if operand_needs_parens(node) else src

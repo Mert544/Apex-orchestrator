@@ -202,3 +202,18 @@ def test_semantically_equivalent_across_inputs(tmp_path):
                     env = {"a": a, "b": b, "c": c}
                     assert _eval(before, env) == _eval(after, env), (
                         before, after, env)
+
+
+def test_low_precedence_edge_operand_is_parenthesised(tmp_path):
+    # The x/z operands aren't side-effect-gated; a low-precedence one (`a or b`)
+    # must be wrapped or `a or b < m < c` parses as `a or (b < m < c)` (H3).
+    import itertools
+    (tmp_path / "app").mkdir(exist_ok=True)
+    src = "y = (a or b) < m and m < c\n"
+    (tmp_path / "app" / "m.py").write_text(src, encoding="utf-8")
+    new = plan_chain_comparison(str(tmp_path), "app/m.py").new_contents["app/m.py"]
+    assert new == "y = (a or b) < m < c\n"
+    for a, b, m, c in itertools.product([0, 1], repeat=4):
+        env = {"a": a, "b": b, "m": m, "c": c}
+        assert (eval("(a or b) < m and m < c", dict(env))  # noqa: S307
+                == eval("(a or b) < m < c", dict(env)))    # noqa: S307
