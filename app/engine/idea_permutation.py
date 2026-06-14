@@ -53,6 +53,7 @@ DEVELOPMENT_OPERATORS: list[Operator] = [
     Operator("observe", "Add metrics and logging around {x}", 0.7),
     Operator("decouple", "Decouple {x} from its direct dependencies", 0.45),
     Operator("verify", "Strengthen the proof that {x} is correct", 0.5),
+    Operator("fortify", "Add the smallest guard that removes an edge-input failure mode in {x}", 0.5),
 ]
 
 
@@ -943,6 +944,7 @@ _OPERATOR_HINTS: dict[str, str] = {
     "generalize": "configurable check reusable",
     "decouple": "coupling dependency import interface seam",
     "verify": "invariant assertion proof correctness contract precondition postcondition",
+    "fortify": "edge case None empty boundary malformed guard validation failure mode defensive",
 }
 # Measured magnitudes a seeding fact can carry, each with the value at which
 # the bonus saturates: ~16 months of exposure/debt, 50 commits of churn, or

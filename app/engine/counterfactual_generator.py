@@ -48,6 +48,10 @@ _LENS_SCENARIOS: dict[str, list[str]] = {
         "What invariant does this code assume but never actually assert or prove?",
         "What input would make the proof's preconditions false, so the guarantee silently stops holding?",
     ],
+    "fortify": [
+        "What edge input (None, empty, malformed, or past the boundary) reaches this unhandled today?",
+        "What legitimate value would the new minimal guard wrongly reject or alter behavior for?",
+    ],
 }
 
 

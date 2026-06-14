@@ -18,6 +18,7 @@ _FACETS: dict[str, list[str]] = {
     "observe": ["key metrics", "structured logs", "trace spans"],
     "decouple": ["dependency inversion", "seam interface", "import direction"],
     "verify": ["stated invariants", "boundary assertions", "proof obligations"],
+    "fortify": ["null and empty inputs", "boundary and range limits", "the explicit error path"],
 }
 
 # Deeper-than-level-1 facets decompose any aspect into the engineering case
