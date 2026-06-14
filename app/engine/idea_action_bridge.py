@@ -633,6 +633,115 @@ class IdeaActionBridge:
             "applied": False,
         }
 
+    # How many of the top runnable steps carry a generated proof diff. Bounded
+    # so a plan with many executable steps stays cheap: only the first few
+    # runnable steps actually run a transform; the rest keep their light preview.
+    _MAX_PROOFS = 3
+
+    @staticmethod
+    def _diff_and_verdict(result, project_root: str) -> dict | None:
+        """Turn an in-memory patch result into a PROOF: the exact draft diff
+        (computed, not applied), its +added/−removed line stats, and a
+        deterministic ``reparses`` verdict (the transformed source still
+        parses with ``ast.parse``).
+
+        Pure: parse + diff + count, no file writes, no subprocess. Returns
+        None when the result carries nothing to draft.
+        """
+        import ast
+        import difflib
+
+        requests = getattr(result, "patch_requests", None) or []
+        if not requests:
+            return None
+        root = Path(project_root)
+        diff_parts: list[str] = []
+        added = removed = 0
+        reparses = True
+        for pr in requests:
+            rel = pr.get("path", "")
+            new = pr.get("new_content", "") or ""
+            fp = root / rel
+            try:
+                old = fp.read_text(encoding="utf-8") if fp.exists() else ""
+            except OSError:
+                old = ""
+            diff = "".join(difflib.unified_diff(
+                old.splitlines(keepends=True), new.splitlines(keepends=True),
+                fromfile=f"a/{rel}", tofile=f"b/{rel}",
+            ))
+            diff_parts.append(diff or f"(new file) b/{rel}")
+            for ln in diff.splitlines():
+                if ln.startswith("+") and not ln.startswith("+++"):
+                    added += 1
+                elif ln.startswith("-") and not ln.startswith("---"):
+                    removed += 1
+            # The honest, cheap safety proof: does the transformed source still
+            # parse? Only .py content is parse-checked; anything else can't
+            # claim a parse verdict, so it doesn't get to vouch "reparses".
+            if rel.endswith(".py"):
+                try:
+                    ast.parse(new)
+                except SyntaxError:
+                    reparses = False
+        diff_text = "\n".join(diff_parts)
+        if not diff_text.strip():
+            return None
+        return {"diff": diff_text, "added": added, "removed": removed,
+                "reparses": reparses}
+
+    def prove_step(self, step: ActionStep, project_root: str) -> dict | None:
+        """The proof a runnable step carries: the EXACT draft diff it would make
+        plus a deterministic safety verdict — recommend-only, never applied.
+
+        Reuses the existing dry-run/draft generator (``_generate`` →
+        ``SemanticPatchGenerator``, the same in-memory path ``dry_run_plan``
+        uses) so the diff is the real one, computed against the current file
+        without writing anything. Returns None when the generator finds nothing
+        to change (or declines), so the step stays proofless and graceful.
+        """
+        try:
+            result = self._generate(step, project_root)
+        except Exception:
+            return None
+        if result is None:
+            return None
+        try:
+            return self._diff_and_verdict(result, project_root)
+        except Exception:
+            return None
+
+    def attach_proofs(self, plan: ActionPlan, project_root: str,
+                      max_proofs: int | None = None) -> ActionPlan:
+        """Make a plan's top runnable steps PROOF-CARRYING (recommend-only).
+
+        For the first ``max_proofs`` executable steps with a real ``.py``
+        target and a mapped transform objective, generate the actual draft diff
+        in memory and merge its proof fields (``diff``/``added``/``removed``/
+        ``reparses``) into ``patch_preview`` (existing shape preserved). Bounded
+        so a large plan stays cheap; deterministic (same plan → same proof
+        bytes). A step the generator can't serve is left exactly as-is. Mutates
+        and returns the plan for convenience.
+        """
+        budget = self._MAX_PROOFS if max_proofs is None else max_proofs
+        proven = 0
+        for step in plan.steps:
+            if proven >= budget:
+                break
+            if not (step.executable and step.target
+                    and step.target.endswith(".py")
+                    and step.action_type in self._ACTION_STRATEGY):
+                continue
+            proof = self.prove_step(step, project_root)
+            if proof is None:
+                continue
+            base = dict(step.patch_preview) if step.patch_preview else {}
+            base.update(proof)
+            base.setdefault("applied", False)
+            step.patch_preview = base
+            proven += 1
+        return plan
+
     def apply_step(
         self,
         step: ActionStep,
@@ -883,6 +992,7 @@ class IdeaActionBridge:
         top: int | None = None,
         draft: bool = False,
         project_root: str | None = None,
+        proof: bool = False,
     ) -> ActionPlan:
         ideas = sorted(report.ideas, key=lambda i: i.value, reverse=True)
         if top is not None:
@@ -894,13 +1004,19 @@ class IdeaActionBridge:
         steps = self._dedupe_steps(steps)
         if draft:
             self._draft_previews(steps, project_root or report.project_root or ".")
-        return ActionPlan(
+        plan = ActionPlan(
             objective=report.objective,
             project_root=report.project_root,
             mode=mode,
             steps=steps,
             stats=self._plan_stats(steps),
         )
+        # Proof-carrying is opt-in (default off) so existing idea sets and
+        # plan bytes don't shift; when on, the top runnable steps gain the
+        # exact draft diff + a re-parse verdict (recommend-only, bounded).
+        if proof:
+            self.attach_proofs(plan, root_for_checks or ".")
+        return plan
 
     @staticmethod
     def _filter_steps(steps: list[ActionStep], phase: str | None,
@@ -966,6 +1082,7 @@ class IdeaActionBridge:
         top: int | None = None,
         draft: bool = False,
         project_root: str | None = None,
+        proof: bool = False,
     ) -> ActionPlan:
         """Plan actions in roadmap order (Stabilize→Secure→Evolve→Refine).
 
@@ -988,7 +1105,7 @@ class IdeaActionBridge:
 
         from collections import Counter
         phase_counts = dict(Counter(s.phase for s in steps))
-        return ActionPlan(
+        plan = ActionPlan(
             objective=report.objective,
             project_root=report.project_root,
             mode=mode,
@@ -999,6 +1116,10 @@ class IdeaActionBridge:
                 "phase_counts": phase_counts,
             },
         )
+        if proof:
+            self.attach_proofs(
+                plan, project_root or report.project_root or ".")
+        return plan
 
 
 class _MaintenancePass:
@@ -1150,6 +1271,24 @@ class _MaintenancePass:
         self.results.append(entry)
 
 
+def _proof_affordance(step: ActionStep) -> str:
+    """The compact proof line for a proof-carrying runnable step, or "".
+
+    When ``attach_proofs`` has loaded the step's ``patch_preview`` with the
+    exact draft diff stats (``added``/``removed``/``reparses``), surface a
+    short, deterministic affordance — the stat + re-parse verdict IS the
+    proof; the full diff stays available via ``apex brief <branch>`` so the
+    plan itself stays scannable. Steps without proof fields get no line.
+    """
+    pv = step.patch_preview or {}
+    if "diff" not in pv or "added" not in pv or "removed" not in pv:
+        return ""
+    verdict = ("re-parses cleanly ✓" if pv.get("reparses")
+               else "⚠️ re-parse check failed")
+    return (f"    proof: +{pv.get('added', 0)} −{pv.get('removed', 0)}, "
+            f"{verdict} — `apex brief {step.branch_path}` for the full diff")
+
+
 def render_action_markdown(plan: ActionPlan) -> str:
     """Render an action plan as reviewable markdown (supervised — not applied)."""
     lines = [f"# Action Plan for `{plan.project_root}`  _(mode: {plan.mode}, not applied)_", ""]
@@ -1181,10 +1320,17 @@ def render_action_markdown(plan: ActionPlan) -> str:
         )
         lines.append(f"    {marker}")
         if s.patch_preview:
+            proof = _proof_affordance(s)
+            if proof:
+                # A proof-carrying runnable step shows the EXACT change as a
+                # compact stat + verdict (the proof); the full diff stays
+                # available via the per-step brief, so the plan stays scannable.
+                lines.append(proof)
             files = ", ".join(s.patch_preview.get("files", []))
-            lines.append(
-                f"    ↳ draft `{s.patch_preview.get('transform_type')}` → {files} (preview, not applied)"
-            )
+            if files or "transform_type" in s.patch_preview:
+                lines.append(
+                    f"    ↳ draft `{s.patch_preview.get('transform_type')}` → {files} (preview, not applied)"
+                )
         elif not s.executable:
             # Design work isn't a dead end: the brief turns it into a work order.
             lines.append(f"    ↳ work order: `apex brief {s.branch_path}`")
