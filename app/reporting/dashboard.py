@@ -439,6 +439,38 @@ def _kind_badge(idea) -> str:
     return ""
 
 
+def _anchor_focus(idea) -> str:
+    """Render an idea's concrete loci (function + line + metric) defensively.
+
+    Returns "" when the idea carries no anchors, so ideas without function-grain
+    data render byte-identically to before this feature existed. Anchors are read
+    via getattr (older idea payloads / SimpleNamespace stand-ins may omit them)
+    and every codebase-sourced string is HTML-escaped.
+    """
+    anchors = getattr(idea, "anchors", None)
+    if not anchors:
+        return ""
+    parts = []
+    for a in anchors:
+        if not isinstance(a, dict):
+            continue
+        symbol = str(a.get("symbol", "")).strip()
+        if not symbol:
+            continue
+        module = str(a.get("module", "")).strip()
+        line = a.get("line")
+        metric = str(a.get("metric", "")).strip()
+        loc = _esc(module)
+        if line not in (None, ""):
+            loc = f"{loc}:{_esc(line)}" if loc else _esc(line)
+        detail = ", ".join(p for p in (loc, _esc(metric) if metric else "") if p)
+        suffix = f" <span class='muted'>({detail})</span>" if detail else ""
+        parts.append(f"<code>{_esc(symbol)}</code>{suffix}")
+    if not parts:
+        return ""
+    return f"<div class='focus muted' style='margin:2px 0 0'>focus: {' · '.join(parts)}</div>"
+
+
 def _ideas_section(report: IdeaTreeReport) -> str:
     by_parent: dict[str | None, list] = {}
     for idea in report.ideas:
@@ -458,6 +490,7 @@ def _ideas_section(report: IdeaTreeReport) -> str:
         head = (
             f"<span class='op'>{_esc(idea.operator)}</span> {_esc(idea.title)} "
             f"{_kind_badge(idea)}<span class='val'>{_esc(idea.value)}</span>{caveat}"
+            f"{_anchor_focus(idea)}"
         )
         if children:
             inner = "".join(f"<li>{walk(c)}</li>" for c in children)
