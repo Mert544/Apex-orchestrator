@@ -85,12 +85,54 @@ class IdeaSeeder:
                     "metric": "impure, untested",
                     "_complexity": 0,
                 })
+        # Well-tested-repo fallback: hotspot_functions only lists complex
+        # *untested* functions, so on a well-covered codebase it is empty even
+        # though a confluence/hub/simplify recommendation still has a concrete
+        # locus. Parse the module for its most complex functions directly, so
+        # the "focus" anchor fires by complexity regardless of test status.
+        if not candidates:
+            candidates.extend(self._complexity_anchors(module, seen))
         candidates.sort(key=lambda a: (-a["_complexity"], a["line"], a["symbol"]))
         return [
             {"module": a["module"], "symbol": a["symbol"],
              "line": a["line"], "metric": a["metric"]}
             for a in candidates[:3]
         ]
+
+    # Cyclomatic threshold for naming a function as the concrete locus when no
+    # untested hotspot exists — branchy enough to be worth pointing at.
+    _ANCHOR_MIN_COMPLEXITY = 6
+
+    def _complexity_anchors(self, module: str, seen: set[tuple[str, int]]) -> list[dict]:
+        """Top complex functions in ``module`` by cyclomatic complexity, parsed
+        directly — the test-status-independent anchor source. Deterministic;
+        returns [] when the module can't be read/parsed."""
+        from pathlib import Path
+
+        from app.tools.code_metrics import function_complexities
+
+        if not self.project_root:
+            return []
+        try:
+            source = (Path(self.project_root) / module).read_text(
+                encoding="utf-8", errors="ignore")
+        except OSError:
+            return []
+        out: list[dict] = []
+        for name, line, complexity in function_complexities(source):
+            if int(complexity) < self._ANCHOR_MIN_COMPLEXITY:
+                continue
+            simple = name.rsplit(".", 1)[-1]
+            if simple.startswith("__") and simple.endswith("__"):
+                continue
+            key = (name, int(line))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"module": module, "symbol": name, "line": int(line),
+                        "metric": f"cyclomatic {int(complexity)}",
+                        "_complexity": int(complexity)})
+        return out
 
     @staticmethod
     def _cochange_link_phrase(links: list[dict]) -> str:
