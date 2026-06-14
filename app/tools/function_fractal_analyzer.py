@@ -4,6 +4,8 @@ import ast
 from pathlib import Path
 from typing import Any
 
+from app.engine.skip_dirs import iter_source_files
+
 
 class FunctionFractalAnalyzer:
     """Analyze functions/classes within a file to produce mini-fractal claims.
@@ -171,8 +173,12 @@ class FunctionFractalAnalyzer:
         graph: dict[str, dict[str, Any]] = {}
         all_functions: dict[str, str] = {}  # full_name -> file_path
 
-        # Collect Python files once, skipping tests efficiently
-        py_files = [f for f in root.rglob("*.py") if not self._is_test_file(f)]
+        # Collect Python files once, skipping tests and never descending into
+        # excluded dirs. The skip matters doubly here: `.claude` worktrees are
+        # full repo copies and sort early, so without it a `max_files` cap could
+        # fill with worktree copies and graph them INSTEAD of the real code.
+        py_files = [f for f in iter_source_files(root)
+                    if not self._is_test_file(f)]
         if self.max_files > 0:
             py_files = py_files[:self.max_files]
 

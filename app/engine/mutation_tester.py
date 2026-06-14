@@ -36,16 +36,10 @@ import shutil
 import subprocess
 import tempfile
 
-# Directory names that are never project source — VCS, caches, virtualenvs,
-# build output, and Apex's own metadata/worktree areas. `.claude` holds agent
-# git worktrees (full repo copies); walking or copying into them double-counts
-# every module and collides test-file basenames (eight copies of
-# ``test_foo.py`` break pytest collection), so it must be skipped everywhere the
-# tree is scanned or copied.
-_SKIP_DIRS = frozenset({
-    ".git", "__pycache__", ".apex", ".epistemic", ".claude",
-    ".venv", "venv", "node_modules", "dist", "build",
-})
+# The canonical tree-walk exclusion (VCS, caches, venvs, build output, and
+# Apex's own metadata/`.claude` worktree copies) — shared so the walk below and
+# the mutant-sandbox copytree never drift from every other walker.
+from app.engine.skip_dirs import SKIPPED_DIRS as _SKIP_DIRS
 
 # Directories never worth copying into a mutant's throwaway sandbox.
 _COPY_EXCLUDE = shutil.ignore_patterns(*sorted(_SKIP_DIRS))
