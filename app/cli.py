@@ -214,6 +214,18 @@ def cmd_changed(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_idea_html(args: argparse.Namespace) -> int:
+    """Render the idea tree as a self-contained, shareable HTML report."""
+    from app.reporting.idea_html import idea_tree_html
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    html = idea_tree_html(str(target))
+    out_path = Path(args.out) if args.out else target / ".apex" / "apex-ideas.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html, encoding="utf-8")
+    print(f"[idea-html] Written to {out_path} ({len(html)} bytes)")
+    return 0
+
+
 def _register_local_parsers(subparsers) -> None:
     """Subcommands whose cmd_* still lives in this module: bench, run."""
     # bench — grade pinned external codebases (calibration, reproducible)
@@ -305,6 +317,16 @@ def _register_local_parsers(subparsers) -> None:
     )
     changed_parser.add_argument("--json", action="store_true", help="Emit JSON")
     changed_parser.set_defaults(func=cmd_changed)
+
+    # idea-html — render the idea tree as a self-contained HTML report
+    idea_html_parser = subparsers.add_parser(
+        "idea-html", help="Render the idea tree as a self-contained HTML report"
+    )
+    idea_html_parser.add_argument("--target", default="", help="Target project root")
+    idea_html_parser.add_argument(
+        "--out", default="", help="Output .html path (default <target>/.apex/apex-ideas.html)"
+    )
+    idea_html_parser.set_defaults(func=cmd_idea_html)
 
 
 def main() -> int:

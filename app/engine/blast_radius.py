@@ -24,6 +24,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.engine.skip_dirs import SKIPPED_DIRS as _SKIPPED_DIRS
 from app.tools.dependency_graph import DependencyGraphBuilder
 from app.tools.test_linker import TestLinker
 
@@ -37,15 +38,9 @@ __all__ = [
 ]
 
 
-# Directory names that are never part of the analyzable source tree. The one that
-# matters most here is ``.claude``: it holds agent git worktrees, which are FULL
-# repo copies — descending into them re-counts every module and collides test
-# basenames. (In the wider Apex tree this set lives in ``app.engine.skip_dirs``;
-# it is inlined here to keep this module self-contained.)
-_SKIPPED_DIRS = frozenset({
-    ".git", "__pycache__", ".apex", ".epistemic", ".claude",
-    ".venv", "venv", "node_modules", "dist", "build",
-})
+# Excluded directory names come from the one canonical source (``.claude`` agent
+# worktrees, caches, venvs, build output) so this analyzer never drifts from the
+# rest of the engine's tree-walks.
 
 # Score boundary between a "tight" (related) change and a "scattered" one. A
 # change scores 1.0 when every module shares one package subtree OR the changed
