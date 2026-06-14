@@ -651,11 +651,14 @@ class IdeaActionBridge:
         import ast
         import difflib
 
+        from app.engine.transform_impact import measure_impact, summarize
+
         requests = getattr(result, "patch_requests", None) or []
         if not requests:
             return None
         root = Path(project_root)
         diff_parts: list[str] = []
+        impact_parts: list[str] = []
         added = removed = 0
         reparses = True
         for pr in requests:
@@ -684,11 +687,18 @@ class IdeaActionBridge:
                     ast.parse(new)
                 except SyntaxError:
                     reparses = False
+                else:
+                    # Proof of VALUE: quantify the before→after improvement
+                    # (max nesting / complexity / cognitive). Empty when the
+                    # change doesn't move any metric.
+                    summary = summarize(measure_impact(old, new))
+                    if summary:
+                        impact_parts.append(summary)
         diff_text = "\n".join(diff_parts)
         if not diff_text.strip():
             return None
         return {"diff": diff_text, "added": added, "removed": removed,
-                "reparses": reparses}
+                "reparses": reparses, "impact": "; ".join(impact_parts)}
 
     def prove_step(self, step: ActionStep, project_root: str) -> dict | None:
         """The proof a runnable step carries: the EXACT draft diff it would make
@@ -1285,8 +1295,11 @@ def _proof_affordance(step: ActionStep) -> str:
         return ""
     verdict = ("re-parses cleanly ✓" if pv.get("reparses")
                else "⚠️ re-parse check failed")
+    # Proof of value, when the change measurably improves a metric.
+    impact = pv.get("impact") or ""
+    impact_clause = f", {impact}" if impact else ""
     return (f"    proof: +{pv.get('added', 0)} −{pv.get('removed', 0)}, "
-            f"{verdict} — `apex brief {step.branch_path}` for the full diff")
+            f"{verdict}{impact_clause} — `apex brief {step.branch_path}` for the full diff")
 
 
 def render_action_markdown(plan: ActionPlan) -> str:
