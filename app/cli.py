@@ -226,6 +226,25 @@ def cmd_idea_html(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_partition(args: argparse.Namespace) -> int:
+    """Compute provably-disjoint parallel work groups for a set of planned tasks.
+
+    Each ``--task name=fileA,fileB`` declares the files a task will touch; the
+    output groups tasks that can run in parallel safely and flags those that must
+    run serially (their files or blast-radii overlap)."""
+    from app.engine.work_partition import (
+        Task, partition_work, render_partition_markdown,
+    )
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    tasks: list[Task] = []
+    for spec in args.task or []:
+        name, _, files = spec.partition("=")
+        tasks.append(Task(name=name.strip(),
+                          files=[f.strip() for f in files.split(",") if f.strip()]))
+    print(render_partition_markdown(partition_work(str(target), tasks)))
+    return 0
+
+
 def _register_local_parsers(subparsers) -> None:
     """Subcommands whose cmd_* still lives in this module: bench, run."""
     # bench — grade pinned external codebases (calibration, reproducible)
@@ -327,6 +346,17 @@ def _register_local_parsers(subparsers) -> None:
         "--out", default="", help="Output .html path (default <target>/.apex/apex-ideas.html)"
     )
     idea_html_parser.set_defaults(func=cmd_idea_html)
+
+    # partition — compute disjoint parallel work groups for a planned wave
+    partition_parser = subparsers.add_parser(
+        "partition", help="Compute disjoint parallel work groups for planned tasks"
+    )
+    partition_parser.add_argument("--target", default="", help="Target project root")
+    partition_parser.add_argument(
+        "--task", action="append", metavar="NAME=FILES",
+        help="A task as name=file1,file2 (repeatable)"
+    )
+    partition_parser.set_defaults(func=cmd_partition)
 
 
 def main() -> int:
