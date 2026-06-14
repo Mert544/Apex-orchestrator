@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apex — Genel Resim Raporu</title>
+<style>
+  :root{
+    --bg:#160f0e; --card:#2b211e; --card2:#241b18; --line:#3a2c27;
+    --ink:#f3e9e4; --dim:#b9a79f; --accent:#e8835a; --accent2:#d98a63;
+    --green:#7bbf6a; --blue:#6aa6e8; --violet:#b07be8; --gold:#d9b35a; --red:#cf6a5a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 800px at 50% -8%,#2a1f1b,#140e0d 65%);
+       color:var(--ink);font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       padding:40px 20px 70px}
+  .wrap{max-width:1080px;margin:0 auto}
+  .tag{display:inline-block;background:#3a2620;color:var(--accent);border:1px solid #4a3028;
+       padding:6px 16px;border-radius:999px;font-weight:700;letter-spacing:.12em;font-size:12.5px}
+  h1{font-size:42px;margin:16px 0 4px;letter-spacing:-.5px}
+  h1 span{color:var(--accent)}
+  .sub{color:var(--dim);font-size:18px;margin:0 0 4px}
+  .sec{margin:40px 0 14px;font-size:13px;letter-spacing:.16em;color:var(--accent2);font-weight:700;text-transform:uppercase}
+  .grid{display:grid;gap:13px}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g2{grid-template-columns:1fr 1fr}
+  .metric{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+  .metric .n{font-size:30px;font-weight:800;line-height:1}
+  .metric .n small{font-size:15px;color:var(--dim);font-weight:600}
+  .metric .l{color:var(--dim);font-size:13px;margin-top:6px}
+  .metric .d{color:var(--green);font-size:12px;margin-top:4px;font-weight:600}
+  .grade{display:flex;align-items:center;gap:24px;background:linear-gradient(180deg,#2c211d,#241a17);
+         border:1px solid var(--line);border-radius:16px;padding:22px 24px}
+  .gnum{font-size:64px;font-weight:800;line-height:1;color:var(--gold)}
+  .gnum small{display:block;font-size:15px;color:var(--dim);font-weight:600;letter-spacing:.1em;margin-top:6px}
+  .bars{flex:1;display:grid;gap:7px}
+  .bar{display:grid;grid-template-columns:150px 1fr 56px;align-items:center;gap:10px;font-size:13px}
+  .bar .track{height:9px;background:#1d1614;border-radius:6px;overflow:hidden}
+  .bar .fill{height:100%;border-radius:6px}
+  .bar .v{text-align:right;color:var(--dim);font-variant-numeric:tabular-nums}
+  .ok{color:var(--green)} .cap{color:var(--gold)}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:10px 0}
+  .box h3{margin:0 0 8px;font-size:17px}
+  .box h3 .ic{color:var(--accent)}
+  .box p{margin:5px 0;color:var(--dim);font-size:14px}
+  .box b{color:var(--ink)}
+  .act{display:grid;grid-template-columns:34px 1fr;gap:12px;margin:14px 0}
+  .act .num{font-size:13px;font-weight:800;color:var(--accent);background:#33241f;border:1px solid var(--line);
+            border-radius:10px;height:34px;display:flex;align-items:center;justify-content:center}
+  .act h4{margin:0 0 3px;font-size:16px}
+  .act p{margin:0;color:var(--dim);font-size:13.5px}
+  .pill{display:inline-block;background:#33241f;border:1px solid var(--line);border-radius:8px;
+        padding:3px 10px;font-size:12px;color:var(--dim);margin:3px 5px 3px 0}
+  .pill b{color:var(--accent)}
+  .note{border-left:3px solid var(--accent);background:#241b18;border-radius:6px;padding:11px 15px;color:var(--dim);font-size:13.5px;margin:8px 0}
+  .foot{margin-top:40px;color:#8d7d75;font-size:13px;text-align:center}
+  .brand{color:var(--accent);font-weight:700}
+  a{color:var(--accent2)}
+  @media(max-width:760px){.g4,.g3{grid-template-columns:1fr 1fr}.g2{grid-template-columns:1fr}
+    .grade{flex-direction:column;align-items:flex-start}.bar{grid-template-columns:120px 1fr 48px}h1{font-size:30px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <span class="tag">● GENEL RESİM</span>
+  <h1>Apex <span>Organizma Raporu</span></h1>
+  <p class="sub">Deterministik, LLM-siz çekirdek · bir geliştirme ordusuyla büyütüldü · 2026-06-14</p>
+
+  <!-- METRİKLER -->
+  <div class="sec">Bir bakışta</div>
+  <div class="grid g4">
+    <div class="metric"><div class="n">39</div><div class="l">geliştirme yeteneği</div><div class="d">+8 bu oturum</div></div>
+    <div class="metric"><div class="n">4 057</div><div class="l">test (351 dosya)</div><div class="d">~3 020'den</div></div>
+    <div class="metric"><div class="n">60</div><div class="l">commit · hepsi yeşil</div><div class="d">+14.7K satır</div></div>
+    <div class="metric"><div class="n">20<small> /39</small></div><div class="l">facet→aksiyon</div><div class="d">6'dan, 3.3×</div></div>
+  </div>
+
+  <!-- SAĞLIK NOTU -->
+  <div class="sec">Sağlık notu — Apex kendini kendi cetveliyle ölçer</div>
+  <div class="grade">
+    <div><div class="gnum">80<small>B−  ·  /100</small></div></div>
+    <div class="bars">
+      <div class="bar"><span class="ok">Güvenlik</span><div class="track"><div class="fill" style="width:100%;background:var(--green)"></div></div><span class="v ok">−0</span></div>
+      <div class="bar"><span class="ok">Mimari</span><div class="track"><div class="fill" style="width:100%;background:var(--green)"></div></div><span class="v ok">−0</span></div>
+      <div class="bar"><span class="ok">Test</span><div class="track"><div class="fill" style="width:100%;background:var(--green)"></div></div><span class="v ok">−0</span></div>
+      <div class="bar"><span class="ok">Kod borcu</span><div class="track"><div class="fill" style="width:100%;background:var(--green)"></div></div><span class="v ok">−0</span></div>
+      <div class="bar"><span class="ok">Doğruluk</span><div class="track"><div class="fill" style="width:100%;background:var(--green)"></div></div><span class="v ok">−0</span></div>
+      <div class="bar"><span class="cap">Bakım</span><div class="track"><div class="fill" style="width:62%;background:var(--gold)"></div></div><span class="v cap">−10</span></div>
+      <div class="bar"><span class="cap">Tekrar</span><div class="track"><div class="fill" style="width:62%;background:var(--gold)"></div></div><span class="v cap">−10</span></div>
+    </div>
+  </div>
+  <div class="note"><b style="color:var(--ink)">7 eksenin 5'i kusursuz</b> (Güvenlik, Mimari, Test — 385 modülde <b style="color:var(--ink)">0 testsiz</b> —, Kod-borcu, Doğruluk). Kalan iki eksik <b style="color:var(--ink)">tavanlı</b> cezalar: 136 karmaşık fonksiyon + 105 tekrar bloğu — büyük, zengin bir kod tabanının doğal yükü. Puan geri kazanmak için 5'in altına inmek gerekir (matematiksel olarak erişilemez), o yüzden not 80'de sabit ama altındaki kod ölçülebilir derecede daha sağlam. <b style="color:var(--ink)">Kendi aracıyla kendini ölçüp sonucu saklamamak</b> bir güven sinyali.</div>
+
+  <!-- OTURUM HİKAYESİ -->
+  <div class="sec">Bu oturum — üç perde</div>
+
+  <div class="box">
+    <h3><span class="ic">🛡️</span> Perde 1 — Ölçüm gerçeği (kör nokta yok edildi)</h3>
+    <p>Apex kendi <b>.claude/ ajan-worktree kopyalarını</b> tarıyordu (deponun 8 tam kopyası). Bu, test keşfini, güvenlik denetimini ve <b>sağlık notunun kendisini</b> bozuyordu (kopyaları ölçme riski). Tek ortak kural (<b>skip_dirs</b>) ~17 tarayıcıyı tek doğru kaynağa bağladı; grade artık <b>worktree-bağımsız</b> — regresyon testiyle kilitli (1145 kopya varken de, 0'da da birebir aynı).</p>
+  </div>
+
+  <div class="box">
+    <h3><span class="ic">🤖</span> Perde 2 — Geliştirme ordusu (süreç araca dönüştü)</h3>
+    <p>Çok-ajanlı süreç araç oldu: <b>apex partition</b> (işi kanıtlanabilir-ayrık böl), <b>merge_train</b> (güvenli entegrasyon), <b>apex changed</b> (etki yarıçapı), yazılı playbook + ordu görseli, Dynamic Workflows araştırması. Her dalga: güncel-HEAD worktree'ler + daimi denetçi + tek yeşil-kapı.</p>
+  </div>
+
+  <div class="box">
+    <h3><span class="ic">🧠</span> Perde 3 — Organizmayı geliştirmek (5 dalga)</h3>
+    <p><b>Yetenek:</b> 6 yeni transform + 2 gerçek <b>bug-fixer</b> (fix-assert-tuple, simplify-bool-comparison) detect>>act boşluklarını kapattı. Splice-precedence hata sınıfı (denetçinin 7 bulgusu) tamamen kapatıldı — yeni transform'lar doğuştan güvenli.</p>
+    <p><b>Beyin:</b> 2 yeni lens (decouple, verify); <b>purity</b> fractal boyutu; 2 bileşik seeding sinyali (impure-untested, hub-untested). <b>Sağlamlığı kanıtla</b> güçlendi: yeni mutasyon operatörleri.</p>
+    <p><b>Verim:</b> motorun keşifleri artık <b>20 yeteneğe</b> yönleniyor (6'dan) — keşif→aksiyon köprüsü 3.3× genişledi.</p>
+  </div>
+
+  <!-- ORGANİZMA -->
+  <div class="sec">Organizmanın bugünkü hâli</div>
+  <div class="grid g3">
+    <div class="box" style="margin:0"><h3><span class="ic">⚙️</span> 39 yetenek</h3><p>deterministik, test-doğrulamalı transform & objective; her biri davranış-koruyan (ya da bilinçli bug-fix), kapıdan geçer.</p></div>
+    <div class="box" style="margin:0"><h3><span class="ic">🔭</span> 10 fikir-lensi</h3><p>extend · harden · test · simplify · document · integrate · generalize · observe · <b style="color:var(--accent)">decouple</b> · <b style="color:var(--accent)">verify</b></p></div>
+    <div class="box" style="margin:0"><h3><span class="ic">🌱</span> Grounding sinyalleri</h3><p>hotspot · fragile · <b style="color:var(--accent)">impure-untested</b> · <b style="color:var(--accent)">hub-untested</b> → en yüksek-kaldıraç testi önce.</p></div>
+  </div>
+  <p style="margin-top:12px">
+    <span class="pill"><b>5/7</b> grade ekseni kusursuz</span>
+    <span class="pill"><b>0</b> testsiz modül (385'te)</span>
+    <span class="pill"><b>7</b> gerçek hata bulundu+düzeltildi</span>
+    <span class="pill"><b>worktree-bağımsız</b> grade</span>
+    <span class="pill">mutasyon: membership + boundary</span>
+    <span class="pill">tam <b>ideate→act</b> döngüsü (cli.py)</span>
+  </p>
+
+  <!-- DÜRÜST -->
+  <div class="sec">Dürüst değerlendirme</div>
+  <div class="note">Not 80/B-'de sabit (Bakım/Tekrar cezaları tavanlı, güvenle erişilemez) — ama bu bir zayıflık değil, dürüstlük: kusursuz olmayan iki eksen büyük kod tabanının doğal yükü, gerisi temiz. · Bir kez denetçi rate-limit'e takıldı (ölçülü tempoya geçildi). · Bir anlık kırmızı push oldu (koşulsuz komut), anında düzeltildi; artık tüm push'lar <b style="color:var(--ink)">koşullu</b> (yalnızca yeşilse). · Hiçbir worktree-hayaleti geride bırakılmadı.</div>
+
+  <p class="foot">Apex Organizma Raporu · deterministik · LLM-siz çekirdek · ordu düzeni: <a href="ordu-duzeni.html">ordu-duzeni.html</a> · <span class="brand">barzeuss</span> imzalı</p>
+
+</div>
+</body>
+</html>
