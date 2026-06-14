@@ -31,6 +31,18 @@ class ProjectProfile:
     correctness_bug_modules: list[str] = field(default_factory=list)
     dependency_hubs: list[str] = field(default_factory=list)
     symbol_hubs: list[str] = field(default_factory=list)
+    # Quantified blast-radius / convergence data pulled from the SAME dependency
+    # graph the profiler already builds (no second graph). Both additive and
+    # default-empty, so existing profile/seeder tests are byte-identical:
+    #   - module_fanin: module path -> in_degree (how many modules import it — the
+    #     blast radius: a change here ripples to all of them);
+    #   - module_fanout: module path -> its heaviest dependency targets (the
+    #     modules IT imports), ranked by the target's own fan-in (the most-
+    #     depended-on dependency first — shedding it cuts the most convergence),
+    #     tie-broken by path, capped. Lets a hub/confluence root name the SPECIFIC
+    #     decoupling targets, not just "decouple something".
+    module_fanin: dict[str, int] = field(default_factory=dict)
+    module_fanout: dict[str, list[str]] = field(default_factory=dict)
     untested_modules: list[str] = field(default_factory=list)
     critical_untested_modules: list[str] = field(default_factory=list)
     module_to_tests: dict[str, list[str]] = field(default_factory=dict)
@@ -892,6 +904,24 @@ class ProjectProfiler:
         # nothing real), not by linked-test-file count: a single file with many
         # substantive tests fully covers a hub, so file-count is the wrong proxy.
         graph = graph_builder.build()
+        # Quantified fan-in / heaviest-fan-out, read straight off the graph just
+        # built (no second graph). Fan-in is the blast radius (in_degree); the
+        # heaviest fan-out targets are this module's own dependencies, ranked by
+        # how depended-on each is (the target's fan-in — shedding the most-central
+        # one cuts the most convergence), then by path for determinism.
+        profile.module_fanin = {
+            node.path: node.in_degree
+            for node in graph.values() if node.in_degree > 0
+        }
+        profile.module_fanout = {
+            node.path: [
+                target for target in sorted(
+                    node.imports,
+                    key=lambda t: (-(graph[t].in_degree if t in graph else 0), t),
+                )
+            ][:3]
+            for node in graph.values() if node.imports
+        }
         thin = set(profile.untested_modules)
         thin |= set(self._scan_shallow_tests(profile.module_to_tests, limit=None))
         fragile = sorted(

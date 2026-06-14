@@ -169,6 +169,83 @@ class IdeaSeeder:
         return 0
 
     @staticmethod
+    def _fanin_fanout_from_edges(
+        edges: list[tuple[str, str]], module: str
+    ) -> tuple[int, list[str]]:
+        """Fan-in count and heaviest fan-out targets for ``module`` from edges.
+
+        ``edges`` is ``ProjectProfile.dependency_edges`` (``[(source, target)]``)
+        — the SAME graph the profiler already built, counted here (no second
+        graph). Fan-in is the number of DISTINCT modules importing ``module``
+        (edges whose target is ``module``). Fan-out targets are ``module``'s own
+        DISTINCT dependencies (edges whose source is ``module``), ranked by each
+        target's own fan-in (the most-depended-on dependency first — shedding it
+        cuts the most convergence), tie-broken by path, capped at 3. Deterministic
+        for a given edge list.
+        """
+        importers: dict[str, set[str]] = {}
+        deps: set[str] = set()
+        for source, target in edges:
+            if source == target:
+                continue
+            importers.setdefault(target, set()).add(source)
+            if source == module:
+                deps.add(target)
+        fanin = len(importers.get(module, set()))
+        targets = sorted(deps, key=lambda t: (-len(importers.get(t, set())), t))[:3]
+        return fanin, targets
+
+    def _quantified_clause(self, profile: ProjectProfile, module: str,
+                           *, name_targets: bool) -> str:
+        """A grounded clause quantifying a module-level root's concrete payoff.
+
+        Pulls fan-in/fan-out from the SAME dependency data already on the profile:
+        the precomputed ``module_fanin`` / ``module_fanout`` (built off the one
+        graph the profiler builds), falling back to counting ``dependency_edges``
+        directly when those dicts aren't populated (a synthetic profile that wires
+        only edges still gets real numbers — no second graph either way). Two
+        parts, each emitted only when the data backs it, so the result degrades to
+        ``""`` (a byte-identical fallback) for any module the dependency scan
+        didn't reach:
+
+        - **fan-in** (always, when known): ``Imported by N modules — a change here
+          ripples to all of them``, the literal blast radius;
+        - **decoupling targets** (only when ``name_targets`` — hub/confluence
+          roots, where shedding a dependency is the move): names this module's
+          heaviest fan-out targets (its most-depended-on dependencies), e.g.
+          ``Its 3 heaviest dependencies are app/x.py, app/y.py, app/z.py —
+          decoupling one cuts the convergence``.
+
+        Numbers are real and the target list is deterministic (pre-sorted).
+        """
+        fanin = (getattr(profile, "module_fanin", {}) or {}).get(module)
+        targets = (getattr(profile, "module_fanout", {}) or {}).get(module)
+        # Fall back to the raw edge list when the precomputed dicts are absent.
+        if fanin is None or (name_targets and targets is None):
+            edges = getattr(profile, "dependency_edges", []) or []
+            edge_fanin, edge_targets = self._fanin_fanout_from_edges(edges, module)
+            if fanin is None:
+                fanin = edge_fanin
+            if targets is None:
+                targets = edge_targets
+        parts: list[str] = []
+        if fanin:
+            noun = "module" if fanin == 1 else "modules"
+            parts.append(
+                f"Imported by {fanin} {noun} — a change here ripples to all of them."
+            )
+        if name_targets and targets:
+            listed = ", ".join(targets)
+            n = len(targets)
+            noun = "dependency" if n == 1 else "dependencies"
+            verb = "is" if n == 1 else "are"
+            parts.append(
+                f"Its {n} heaviest {noun} {verb} {listed} "
+                f"— decoupling one cuts the convergence."
+            )
+        return " ".join(parts)
+
+    @staticmethod
     def _anchor_phrase(anchors: list[dict]) -> str:
         """A concise concrete sentence naming the anchored function(s)."""
         parts = []
@@ -189,6 +266,7 @@ class IdeaSeeder:
         fact_value: str,
         rationale: str | None = None,
         anchors: list[dict] | None = None,
+        quantified: str | None = None,
     ) -> None:
         """Append a traceable root idea unless its subject was already seeded."""
         if subject in seen_subjects:
@@ -209,6 +287,11 @@ class IdeaSeeder:
         # idea names a real function + line, while title/subject stay unchanged.
         if anchors:
             base_rationale = f"{base_rationale} {self._anchor_phrase(anchors)}"
+        # Quantified payoff (fan-in blast radius + named decoupling targets) rides
+        # AFTER the anchor phrase. Empty string when the dependency data isn't
+        # available for this module, so the rationale is byte-identical to before.
+        if quantified:
+            base_rationale = f"{base_rationale} {quantified}"
         idx = len(roots)
         roots.append(
             IdeaNode(
@@ -314,6 +397,7 @@ class IdeaSeeder:
                             + ("; untested" if untested else "")
                             + ")"),
                 anchors=self._module_anchors(profile, module),
+                quantified=self._quantified_clause(profile, module, name_targets=True),
             )
 
         # Fragility first (highest priority): heavily-depended-on but thinly
@@ -326,6 +410,7 @@ class IdeaSeeder:
                 fact_label="fragile",
                 fact_value=f"{module} (high in-degree, thin tests)",
                 anchors=self._module_anchors(profile, module),
+                quantified=self._quantified_clause(profile, module, name_targets=False),
             )
 
         for attr, limit, title_tmpl, fact_label in self._RULES:
@@ -344,6 +429,12 @@ class IdeaSeeder:
                     fact_value=subject,
                     anchors=(self._module_anchors(profile, subject)
                              if fact_label == "dependency-hub" else None),
+                    # The dependency-hub root is a true hub: quantify its blast
+                    # radius (fan-in) AND name the specific decoupling targets
+                    # (its heaviest dependencies). Other rules (sensitive paths,
+                    # config, entrypoints) are not hubs, so they carry no clause.
+                    quantified=(self._quantified_clause(profile, subject, name_targets=True)
+                                if fact_label == "dependency-hub" else None),
                 )
 
         # Coverage DEPTH is handled by the substance-based shallow-coverage signal
@@ -374,6 +465,7 @@ class IdeaSeeder:
                 fact_label="complexity-hotspot",
                 fact_value=f"{module} (high complexity x fan-in, thin tests)",
                 anchors=self._module_anchors(profile, module),
+                quantified=self._quantified_clause(profile, module, name_targets=False),
             )
 
         # Symbol granularity: the riskiest *functions* — heavy branching that no
