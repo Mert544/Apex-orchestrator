@@ -99,6 +99,32 @@ Three rules keep the organism honest as it scales:
 3. **Prune after every wave.** Integrate, then `git worktree remove` the stale
    copies so the next measurement is clean. Branches survive; no commit is lost.
 
+## Standard for every long run (learned from the 8-agent run)
+
+These four refinements turn "many agents" into actual throughput. They are the
+default, not the exception:
+
+1. **Every worktree starts at current HEAD.** The single biggest source of
+   integration friction was agents spawned on a stale base — they re-implemented
+   modules that already exist and collided on shared files. Each agent's FIRST
+   step is `git merge --ff-only origin/<branch>` so it builds against the live
+   tree. This alone made the later waves integrate cleanly.
+2. **Always run an auditor.** The read-only `apex-auditor` was the single
+   highest-value seat in every wave — it found real, executable-repro bugs the
+   feature agents couldn't see (a whole precedence-splice class, a helper
+   mis-insertion). A wave without an adversarial verifier is half-blind.
+3. **Every writing agent isolates.** Test-writers must use a worktree too —
+   writing straight to the main checkout races the orchestrator and pollutes the
+   tree with half-finished files.
+4. **Let Apex compute the partition.** `app/engine/work_partition.py` turns a set
+   of planned tasks into provably-disjoint parallel groups (via the dependency
+   graph + blast-radius), so "these N tasks don't touch each other" is a computed
+   fact, not a manual guess — the seed of the army planning its own parallelism.
+
+The remaining bottleneck is the orchestrator's serial integration. The relief is
+the same partition data: cherry-pick disjoint groups, gate once per merged batch,
+and keep the active headcount matched to what one integrator can gate cleanly.
+
 ## Why this beats a single agent
 
 A lone agent serializes everything and has no second pair of eyes. The team
