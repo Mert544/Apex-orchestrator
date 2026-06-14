@@ -245,6 +245,11 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         bridge = IdeaActionBridge()
         _plan_mode = getattr(args, "mode", None) or "supervised"
         _draft = getattr(args, "draft", False) or getattr(args, "apply", False)
+        # --prove (default off): attach the proof-carrying patch_preview (exact
+        # diff stat + re-parse verdict + before→after impact) to the top runnable
+        # steps so render_action_markdown emits a visible "proof:" line. Bounded
+        # top-K in the bridge; recommend-only (no writes, no test runs).
+        _prove = getattr(args, "prove", False)
         if getattr(args, "roadmap", False):
             # Roadmap-ordered plan: apply Stabilize→Secure→Evolve→Refine, with an
             # optional --phase filter to act on a single phase.
@@ -255,6 +260,7 @@ def cmd_ideate(args: argparse.Namespace) -> int:
                 top=args.top or None,
                 draft=_draft,
                 project_root=str(target),
+                proof=_prove,
             )
         else:
             action_plan = bridge.plan_tree(
@@ -263,6 +269,7 @@ def cmd_ideate(args: argparse.Namespace) -> int:
                 top=args.top or None,
                 draft=_draft,
                 project_root=str(target),
+                proof=_prove,
             )
         # Strictly opt-in apply: only when --apply is passed; gated by mode + safety.
         if getattr(args, "apply", False):
@@ -377,6 +384,12 @@ def register_parsers(subparsers) -> None:
         "--draft",
         action="store_true",
         help="Draft real patch previews for executable steps (never applied)",
+    )
+    ideate_parser.add_argument(
+        "--prove",
+        action="store_true",
+        help="With --actions: attach proof lines (exact diff stat + re-parse "
+        "verdict + impact) to the top runnable steps (recommend-only, never applied)",
     )
     ideate_parser.add_argument(
         "--apply",
