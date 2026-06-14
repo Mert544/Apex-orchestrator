@@ -56,6 +56,100 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
 }
 
 
+# Action types that are test gaps — for these, a function-grain anchor lets us
+# name the actual symbol(s)/line(s) instead of only the module. Anything else
+# (harden/imports/design) keeps its module-level phrasing.
+_TEST_ACTIONS = frozenset({"create_test_stub"})
+
+
+def _function_anchors(node) -> list[dict]:
+    """The idea's function-grain anchors, read DEFENSIVELY.
+
+    ``IdeaNode.anchors`` is an optional, parallel-agent field
+    (``[{"module","symbol","line","metric"}]``). Read it via ``getattr`` so this
+    code works whether or not it is present yet, and keep only anchors that name
+    a concrete symbol. Stable order: anchors are returned exactly as carried (no
+    sort, no time/random) so the same idea always yields the same description.
+    """
+    anchors = getattr(node, "anchors", []) or []
+    out: list[dict] = []
+    for a in anchors:
+        if isinstance(a, dict) and str(a.get("symbol") or "").strip():
+            out.append(a)
+    return out
+
+
+def _anchor_phrase(anchor: dict, module: str) -> str:
+    """`symbol` (module:line) — metric  for one anchor (line/metric optional)."""
+    symbol = str(anchor.get("symbol") or "").strip()
+    loc = str(anchor.get("module") or module or "").strip()
+    line = anchor.get("line")
+    if loc and line:
+        loc = f"{loc}:{line}"
+    elif not loc:
+        loc = str(line) if line else ""
+    head = f"`{symbol}` ({loc})" if loc else f"`{symbol}`"
+    metric = str(anchor.get("metric") or "").strip()
+    return f"{head} — {metric}" if metric else head
+
+
+def _concrete_test_description(node, fallback: str) -> str:
+    """A function-grain test description when anchors name real symbols.
+
+    e.g. "Add tests for `_scan_churn` (app/tools/project_profile.py:550) —
+    cyclomatic 18, no linked test." Falls back to the module-level ``fallback``
+    (the formatted operator/fact template) when no anchor carries a symbol.
+    """
+    module = str(getattr(node, "subject", "") or "").split("::", 1)[0]
+    anchors = _function_anchors(node)
+    if not anchors:
+        return fallback
+    phrases = [_anchor_phrase(a, module) for a in anchors]
+    return f"Add tests for {', '.join(phrases)}"
+
+
+def _test_stub_body(node, target: str) -> str:
+    """A deterministic pytest stub naming the REAL symbol(s) and import path.
+
+    When anchors carry symbols, emit one ``def test_<symbol>_...():`` skeleton
+    per anchor referencing the actual module import path; otherwise a single
+    module-level smoke stub. Pure text, recommend-only — never written here.
+    """
+    module = str(getattr(node, "subject", "") or "").split("::", 1)[0]
+    mod_path = (target or module).removesuffix(".py").replace("/", ".")
+    anchors = _function_anchors(node)
+    header = [
+        "# Apex-proposed test stub (recommend-only — not applied).",
+        f"# Subject: {target or module}",
+        f"import {mod_path}  # noqa: F401" if mod_path else "",
+        "",
+    ]
+    bodies: list[str] = []
+    if anchors:
+        for a in anchors:
+            symbol = str(a.get("symbol") or "").strip()
+            # Keep the symbol's own underscores (a leading "_" is meaningful:
+            # `_scan_churn` -> `test__scan_churn_behavior`); only non-identifier
+            # characters become "_". Trailing junk is trimmed, never the symbol.
+            slug = "".join(c if (c.isalnum() or c == "_") else "_"
+                           for c in symbol).rstrip("_").lower() or "symbol"
+            bodies.append(
+                f"def test_{slug}_behavior():\n"
+                f"    # TODO: exercise {symbol} in {mod_path or target}.\n"
+                f"    assert False, \"write a real assertion for {symbol}\"\n"
+            )
+    else:
+        stem = (target or module).rsplit("/", 1)[-1].removesuffix(".py") or "module"
+        slug = "".join(c if (c.isalnum() or c == "_") else "_"
+                       for c in stem).strip("_").lower() or "module"
+        bodies.append(
+            f"def test_{slug}_smoke():\n"
+            f"    # TODO: cover {target or module}.\n"
+            f"    assert False, \"write a real assertion\"\n"
+        )
+    return "\n".join([ln for ln in header if ln is not None]).rstrip() + "\n\n\n" + "\n\n".join(bodies)
+
+
 class IdeaActionBridge:
     """Turn development ideas into a concrete, supervised action plan.
 
@@ -80,6 +174,12 @@ class IdeaActionBridge:
             if reason:
                 executable = False
                 text += f" — {reason}"
+        # Test-gap sub-steps name the concrete function(s) when anchors exist,
+        # so a convergence mini-roadmap's Stabilize step is as specific as a
+        # standalone test idea; other actions keep their module phrasing.
+        description = f"{text} ({idea.subject})"
+        if action in _TEST_ACTIONS:
+            description = _concrete_test_description(idea, description)
         return ActionStep(
             branch_path=f"{idea.branch_path}.{n}",
             title=f"{step['phase']}: {text} in {idea.subject}",
@@ -87,7 +187,7 @@ class IdeaActionBridge:
             subject=idea.subject,
             action_type=action,
             target=target,
-            description=f"{text} ({idea.subject})",
+            description=description,
             executable=executable,
             value=idea.value,
             source_facts=idea.source_facts,
@@ -215,6 +315,18 @@ class IdeaActionBridge:
         # the function name stays in the title/description for the test author.
         file_part = idea.subject.split("::", 1)[0]
         target = file_part if "/" in file_part or file_part.endswith(".py") else ""
+        # Test-gap actions get CONCRETE phrasing: when the idea carries
+        # function-grain anchors, name the actual function(s) + line(s); else
+        # fall back to the module-level template so existing ideas don't shift.
+        description = desc_tmpl.format(s=idea.subject)
+        patch_preview: dict | None = None
+        if action_type in _TEST_ACTIONS:
+            description = _concrete_test_description(idea, description)
+            if _function_anchors(idea):
+                patch_preview = {
+                    "stub_body": _test_stub_body(idea, target),
+                    "applied": False,
+                }
         return ActionStep(
             branch_path=idea.branch_path,
             title=idea.title,
@@ -222,12 +334,13 @@ class IdeaActionBridge:
             subject=idea.subject,
             action_type=action_type,
             target=target,
-            description=desc_tmpl.format(s=idea.subject),
+            description=description,
             # No file target = nothing a transform can patch: the step stays a
             # work order instead of becoming a guaranteed nightly "blocked".
             executable=executable and bool(target),
             value=idea.value,
             source_facts=idea.source_facts,
+            patch_preview=patch_preview,
         )
 
     @staticmethod
