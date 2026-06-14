@@ -44,6 +44,12 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "dependency-hub": ("design_task", "Plan an evolution of central module {s}", False),
     "symbol-hub": ("design_task", "Generalize the symbol-rich module {s}", False),
     "missing-ci": ("add_ci", "Add a CI workflow that runs the test suite", False),
+    # Polyglot hotspot: a large, active NON-Python file. Apex has NO deterministic
+    # transform for non-Python source, so this is strictly recommend-only — it must
+    # NOT claim to be executable.
+    "polyglot-hotspot": ("design_task",
+                         "Review/cover {s} in your stack — it's outside Apex's "
+                         "Python analysis but it's a large, active file", False),
     "modernization": ("modernize_comparisons", "Modernize None comparisons in {s}", True),
     "mutable-default": ("fix_mutable_defaults", "Fix mutable default arguments in {s}", True),
     # The hands exist (apex signature drop/keywordify) but as supervised CLI

@@ -1005,6 +1005,7 @@ _FACT_HINTS: dict[str, str] = {
     "confluence": "decouple test boundary coupling blast radius safety net simplify check validation edge cases",
     "cochange-testgap": "joint integration test co-change coupling safety net cover both modules together regression check validation edge cases",
     "missing-ci": "ci workflow run tests automation",
+    "polyglot-hotspot": "review awareness out of scope non-python coverage attention largest active surface",
 }
 
 # Root fact labels where reliability/security lenses matter most.

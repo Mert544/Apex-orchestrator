@@ -142,6 +142,13 @@ class ProjectProfile:
     language_breakdown: dict[str, int] = field(default_factory=dict)
     analyzed_ratio: float = 1.0
     out_of_scope_ratio: float = 0.0
+    # Polyglot hotspots: the biggest / most-churned NON-Python source files —
+    # named (not deep-analysed) so the idea engine can recommend attention on the
+    # largest active surface outside Apex's Python analysis scope. Populated from
+    # ``scan_polyglot_facts`` (a single git pass; churn is git-only/empty in light
+    # mode); an all-Python repo yields []. Each entry:
+    # {"path","language","loc","churn"}.
+    polyglot_hotspots: list[dict] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -367,6 +374,11 @@ class ProjectProfiler:
         # walk's already-collected extension counts) so the grade can honestly
         # report how much of a polyglot repo its Python analysis covers.
         self._scan_analysis_scope(profile, ext_counter)
+        # Polyglot hotspots: name the biggest / most-churned NON-Python source
+        # files so the idea engine can recommend attention on them. A single
+        # bounded git pass (no second whole-repo walk beyond the scan's own);
+        # churn is git-only/empty in light mode, and an all-Python repo yields [].
+        self._scan_polyglot_hotspots(profile)
         if not light:
             # Scans the GRADE never reads — skipped in light mode. The four
             # git/doc subprocess scans (cheap on a shallow repo, ~200s on a deep
@@ -444,6 +456,55 @@ class ProjectProfiler:
         ratio = 1.0 if source_total == 0 else python_total / source_total
         profile.analyzed_ratio = ratio
         profile.out_of_scope_ratio = 1.0 - ratio
+
+    def _scan_polyglot_hotspots(self, profile: ProjectProfile) -> None:
+        """Name the biggest / most-churned NON-Python source files.
+
+        Apex deep-analyses only Python; on a polyglot repo the non-Python risk
+        concentrates in a handful of large, active files this scan NAMES (it does
+        not pretend to analyse them). Delegates to ``scan_polyglot_facts``, which
+        is a single bounded git pass ranked deterministically by
+        ``(-churn, -loc, path)``; churn is git-only (0/empty outside a git repo,
+        as in light mode) and an all-Python repo yields no facts, so this field
+        stays empty there and seeding is byte-identical.
+
+        Apex's OWN generated idea-report HTML (which a dashboard run may write
+        INTO the very tree being profiled) is not project source worth attention,
+        so it is filtered out by its stable ``<title>Apex Idea Tree</title>``
+        marker. That keeps the signal honest (it names files the developer wrote,
+        not Apex's artifacts) and keeps re-profiling the same tree deterministic.
+        A few extra candidates are requested so the filter still yields up to 3
+        real hotspots.
+        """
+        from app.tools.polyglot_facts import scan_polyglot_facts
+
+        facts = scan_polyglot_facts(str(self.root), limit=6)
+        hotspots: list[dict] = []
+        for f in facts:
+            if self._is_apex_report(f.path):
+                continue
+            hotspots.append(
+                {"path": f.path, "language": f.language, "loc": f.loc, "churn": f.churn}
+            )
+            if len(hotspots) >= 3:
+                break
+        profile.polyglot_hotspots = hotspots
+
+    # Stable marker the reporting layer writes into every generated idea-tree
+    # page (``<title>Apex Idea Tree</title>``). An HTML file carrying it is an
+    # Apex artifact, not project source.
+    _APEX_REPORT_MARKER = "<title>Apex Idea Tree</title>"
+
+    def _is_apex_report(self, rel_path: str) -> bool:
+        """True if ``rel_path`` is an Apex-generated idea-report HTML page."""
+        if not rel_path.lower().endswith((".html", ".htm")):
+            return False
+        try:
+            head = (self.root / rel_path).read_text(
+                encoding="utf-8", errors="ignore")[:2000]
+        except OSError:
+            return False
+        return self._APEX_REPORT_MARKER in head
 
     def _scan_extractable_blocks(self, profile: ProjectProfile) -> None:
         """Long functions with a clean seam to extract — turns the engine's

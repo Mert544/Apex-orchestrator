@@ -652,6 +652,31 @@ class IdeaSeeder:
                 fact_value=f"{spot['module']} ({spot['commits']} commits in recent history)",
             )
 
+        # Polyglot hotspots: the biggest / most-churned NON-Python source files.
+        # Apex deep-analyses only Python, so these are framed as honest AWARENESS,
+        # not an executable fix — the largest active surface outside analysis
+        # scope, where the non-Python risk concentrates. The subject is the file
+        # path (deduped through the same chokepoint). Git-only churn, so an
+        # all-Python repo yields nothing here and seeding stays byte-identical.
+        for hot in (getattr(profile, "polyglot_hotspots", []) or [])[:3]:
+            path = hot["path"]
+            loc = hot.get("loc", 0)
+            churn = hot.get("churn", 0)
+            language = hot.get("language", "")
+            commit_word = "commit" if churn == 1 else "commits"
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Review `{path}` — {loc} LOC, {churn} recent {commit_word}, "
+                       f"the largest active surface outside Python analysis scope "
+                       f"(Apex can't deep-analyse it, but it concentrates "
+                       f"non-Python risk)"),
+                subject=path,
+                fact_label="polyglot-hotspot",
+                fact_value=(f"{path} ({language}, {loc} LOC, {churn} recent "
+                            f"{commit_word} — biggest/most-active file outside "
+                            f"Apex's Python analysis scope)"),
+            )
+
         # Dream insights: discoveries the nightly dream CONFIRMED across multiple
         # dreams and graduated (high confidence + persistence). The organism
         # acting on what it learned while you were away — guarded so only a
