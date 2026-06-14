@@ -33,6 +33,10 @@ def run_audit(project_root: Path) -> dict:
         skip_dirs = (
             "tests/", "test_", ".venv", "venv", "__pycache__", ".apex",
             "examples/", "scripts/",
+            # `.claude/` holds agent git worktrees — full repo copies. Without
+            # this the audit re-scans every worktree's tree (8x+ the files),
+            # turning a seconds-long walk into a multi-minute near-hang.
+            ".claude/", ".epistemic/", "node_modules/", "dist/", "build/",
         )
         if any(skip in rel for skip in skip_dirs):
             continue
