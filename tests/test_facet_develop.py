@@ -78,6 +78,18 @@ def test_each_mapping(phrase: str, objective: str) -> None:
         ("round-trip stability", "cover-gaps"),
         ("ordering independence", "cover-gaps"),
         ("idempotence", "cover-gaps"),
+        # redundant control flow — the simplify lens's new "redundant control
+        # flow" L3 sub-aspects, each an equivalence-preserving tidy that a
+        # dedicated develop objective performs.
+        ("boolean return simplification", "simplify-bool-return"),
+        ("ternary that returns a boolean", "simplify-ternary-bool"),
+        ("redundant else after return", "remove-redundant-else"),
+        ("collapsible nested conditionals", "merge-nested-if"),
+        ("get-with-default lookup", "simplify-dict-get"),
+        ("manual index loop", "use-enumerate"),
+        ("redundant pass statement", "remove-pointless-pass"),
+        ("statements after an unconditional return",
+         "remove-unreachable-after-terminator"),
     ],
 )
 def test_each_new_mapping(phrase: str, objective: str) -> None:
@@ -131,12 +143,37 @@ def test_specific_keys_precede_broader_substrings_in_insertion_order() -> None:
 def test_coverage_is_substantially_higher() -> None:
     """The map now routes to far more of the 37 develop objectives than the
     original ~6 (dedup, shrink-functions, dead-params, modernize,
-    remove-dead-code, inline-helpers)."""
+    remove-dead-code, inline-helpers).
+
+    Before this wave the map reached 10 objectives; the redundant-control-flow
+    ladder adds 8 more, lifting reachability to 18."""
     reachable = {v for v in FACET_OBJECTIVE_MAP.values()}
-    assert len(reachable) == 10
+    assert len(reachable) == 18
     # The four objectives the original six did not reach.
     assert {"dedup-parameterized", "extract-guard-clause", "fix-not-in-is",
             "cover-gaps"} <= reachable
+    # The eight objectives this wave newly made reachable end-to-end.
+    assert {"simplify-bool-return", "simplify-ternary-bool",
+            "remove-redundant-else", "merge-nested-if", "simplify-dict-get",
+            "use-enumerate", "remove-pointless-pass",
+            "remove-unreachable-after-terminator"} <= reachable
+
+
+def test_reachable_objective_count_rose_by_eight() -> None:
+    """Before/after: the new redundant-control-flow phrases are exactly the
+    objectives that moved the reachable set from 10 to 18 — and not one of them
+    was already reachable (so the gain is real, not double-counted)."""
+    new_phrase_objectives = {
+        "simplify-bool-return", "simplify-ternary-bool", "remove-redundant-else",
+        "merge-nested-if", "simplify-dict-get", "use-enumerate",
+        "remove-pointless-pass", "remove-unreachable-after-terminator",
+    }
+    reachable = set(FACET_OBJECTIVE_MAP.values())
+    previously_reachable = reachable - new_phrase_objectives
+    assert len(previously_reachable) == 10
+    assert len(reachable) == 18
+    # None of the eight was already among the prior ten.
+    assert new_phrase_objectives.isdisjoint(previously_reachable)
 
 
 def test_matching_is_case_insensitive_and_substring() -> None:
@@ -209,3 +246,77 @@ def test_render_dedups_resolution_line() -> None:
     # Both rows shown, but the resolution line lists dedup once.
     assert md.count("| dedup ") == 0  # value is rendered as `dedup`, not bare
     assert "Resolves to: `dedup`." in md
+
+
+def test_end_to_end_new_objective_reachable_from_emitted_facet(tmp_path) -> None:
+    """Close the loop: run the idea engine on a synthetic simplify-heavy project,
+    collect the facet phrases its zoom machinery actually EMITS, and assert at
+    least one objective made reachable by this wave shows up — proving the new
+    vocabulary + map entries connect end-to-end, not just in isolation."""
+    from app.engine.idea_permutation import (
+        DEVELOPMENT_OPERATORS,
+        IdeaPermutationEngine,
+    )
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "core.py").write_text(
+        "def check(flag):\n"
+        "    if flag:\n"
+        "        return True\n"
+        "    else:\n"
+        "        return False\n"
+        "\n\n"
+        "def tally(a, b, c, d, e, f, g):\n"
+        "    total = 0\n"
+        "    if a > 0:\n"
+        "        if b > 0:\n"
+        "            if c > 0:\n"
+        "                total += 1\n"
+        "            else:\n"
+        "                total -= 1\n"
+        "        elif d > 0:\n"
+        "            total += 2\n"
+        "    if e > 0:\n"
+        "        for x in range(e):\n"
+        "            total += x\n"
+        "    if g > 0:\n"
+        "        total *= g\n"
+        "    else:\n"
+        "        total = 0\n"
+        "    return total\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_core.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+
+    cfg = {
+        "max_total_ideas": 2000, "max_idea_depth": 1, "breadth": 4,
+        "fractal_facets": True, "facet_depth": 3, "facets_per_idea": 8,
+        "security_aware": False,
+    }
+    engine = IdeaPermutationEngine(cfg, tmp_path)
+    # Confine the zoom to the simplify lens so the deep zoom lands on the new
+    # ladder rather than being out-ranked by higher-feasibility lenses.
+    engine.operators = [op for op in DEVELOPMENT_OPERATORS if op.name == "simplify"]
+    rep = engine.run()
+
+    emitted = {
+        fact.split("facet:", 1)[1].strip()
+        for idea in rep.ideas if idea.kind == "facet"
+        for fact in idea.source_facts if fact.startswith("facet:")
+    }
+
+    new_objectives = {
+        "simplify-bool-return", "simplify-ternary-bool", "remove-redundant-else",
+        "merge-nested-if", "simplify-dict-get", "use-enumerate",
+        "remove-pointless-pass", "remove-unreachable-after-terminator",
+    }
+    reachable_from_emitted = {
+        obj for phrase in emitted
+        if (obj := facet_to_objective(phrase)) is not None
+    }
+    # At least one — in practice all eight — of the wave's objectives is now
+    # reachable from a phrase the engine genuinely emitted.
+    assert new_objectives & reachable_from_emitted

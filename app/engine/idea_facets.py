@@ -11,7 +11,7 @@ _FACETS: dict[str, list[str]] = {
     "harden": ["input validation", "error handling", "resource limits", "secret handling"],
     "extend": ["new inputs", "new outputs", "configuration surface"],
     "test": ["edge cases", "failure modes", "property invariants"],
-    "simplify": ["dead code", "duplicated logic", "deep nesting"],
+    "simplify": ["dead code", "duplicated logic", "deep nesting", "redundant control flow"],
     "document": ["public API", "usage examples", "failure semantics"],
     "integrate": ["data contract", "error propagation", "version skew"],
     "generalize": ["parameters", "extension points", "sensible defaults"],
@@ -49,6 +49,14 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "dead code": ["unreferenced symbols", "unreachable branches", "redundant guards"],
     "duplicated logic": ["extract a shared helper", "parameterize the variants", "single source of truth"],
     "deep nesting": ["early returns", "guard clauses", "extract inner blocks"],
+    # The "redundant control flow" aspect splits the same way the other simplify
+    # aspects do — into its own concrete sub-concerns. Each L2 label below names a
+    # family of always-equivalent-but-noisier control flow; the L3 ladder under it
+    # names the specific tidy transform that collapses it. These phrasings are the
+    # ones FACET_OBJECTIVE_MAP keys on, so a zoom here reaches a real develop
+    # objective (simplify-bool-return, use-enumerate, remove-redundant-else, ...).
+    "redundant control flow": ["redundant conditionals", "collapsible structure",
+                               "unreachable or no-op statements"],
     # document
     "public API": ["signatures and types", "pre and postconditions", "worked examples"],
     "usage examples": ["happy path", "error handling", "edge usage"],
@@ -107,6 +115,16 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "single source of truth": ["which copy wins", "derivation direction", "drift detection"],
     "early returns": ["precondition exits", "error exits first", "happy path last"],
     "extract inner blocks": ["loop body extraction", "nested conditional extraction", "naming the step"],
+    # redundant-control-flow ladder: each L3 phrase names the exact tidy transform
+    # FACET_OBJECTIVE_MAP routes to, so the zoom lands on a real develop objective.
+    "redundant conditionals": ["boolean return simplification",
+                               "ternary that returns a boolean",
+                               "redundant else after return"],
+    "collapsible structure": ["collapsible nested conditionals",
+                              "get-with-default lookup",
+                              "manual index loop"],
+    "unreachable or no-op statements": ["redundant pass statement",
+                                        "statements after an unconditional return"],
     # document ladder
     "signatures and types": ["parameter meanings", "return type and None", "raised exceptions list"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
@@ -140,6 +158,15 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
 # vocabulary is covered with a handful of rules. Order matters: most specific
 # first. Empty match → fall back to the lens/operator caveat.
 _FACET_CAVEAT_RULES: list[tuple[tuple[str, ...], str]] = [
+    # Equivalence-preserving control-flow tidies (boolean returns, redundant else,
+    # collapsible ifs, manual index loops, no-op pass, dead tail statements). These
+    # multi-word keys match ONLY their own phrases, so they sit first — ahead of the
+    # broad "default"/"redundant"/"unreachable" rules whose single words they'd
+    # otherwise lose to.
+    (("boolean return", "ternary that returns", "redundant else", "collapsible nested",
+      "get-with-default", "manual index loop", "redundant pass", "redundant conditionals",
+      "collapsible structure", "no-op statements", "statements after an unconditional"),
+     "What behavior changes if this 'equivalent' rewrite is wrong about a side effect or falsy edge?"),
     (("null", "empty"), "What does this do with None, an empty value, or a missing key?"),
     (("timeout", "hang", "timeout bounds"), "What if it never returns — is there a bound, and what fires when it trips?"),
     (("concurren", "race"), "What if two callers reach this at the same moment?"),

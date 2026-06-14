@@ -112,6 +112,20 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     "round-trip stability": "cover-gaps",
     "ordering independence": "cover-gaps",
     "idempotence": "cover-gaps",
+
+    # Redundant control flow: equivalence-preserving tidies the ``simplify`` lens
+    # now zooms into (the "redundant control flow" aspect's L3 sub-aspects in
+    # idea_facets). Each phrase names one provably-equivalent-but-noisier shape and
+    # routes to the dedicated transform objective that collapses it. None of these
+    # phrasings is a substring of any other key here, so insertion order is free.
+    "boolean return simplification": "simplify-bool-return",
+    "ternary that returns a boolean": "simplify-ternary-bool",
+    "redundant else after return": "remove-redundant-else",
+    "collapsible nested conditionals": "merge-nested-if",
+    "get-with-default lookup": "simplify-dict-get",
+    "manual index loop": "use-enumerate",
+    "redundant pass statement": "remove-pointless-pass",
+    "statements after an unconditional return": "remove-unreachable-after-terminator",
 }
 
 
