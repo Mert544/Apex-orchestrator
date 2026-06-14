@@ -799,6 +799,10 @@ class IdeaActionBridge:
         }
         if applied.ok and applied.changed_files:
             out["diff"] = self._evidence_diff(snapshot, patch_requests, applied.changed_files)
+            impact = self._measure_applied_impact(snapshot, patch_requests,
+                                                  applied.changed_files)
+            if impact:
+                out["impact"] = impact
         if not (verify and applied.ok and applied.changed_files):
             return out
         return self._verify_or_rollback(project_root, out, snapshot,
@@ -902,6 +906,38 @@ class IdeaActionBridge:
             ))
             parts.append(diff or f"(new file) b/{rel}")
         return "\n".join(parts)
+
+    @staticmethod
+    def _measure_applied_impact(snapshot: dict[str, str | None],
+                                patch_requests: list[dict],
+                                changed_files: list[str]) -> str:
+        """Proof-of-VALUE: the measured before→after metric win of this apply.
+
+        With the pre-patch snapshot and the written content both in hand,
+        quantify the structural improvement (max nesting / cyclomatic /
+        cognitive / lines) for each changed ``.py`` file and render it as e.g.
+        ``"max nesting 3→1, cognitive 6→3"``. Empty string when no metric
+        moves or sources are unmeasurable — so callers add nothing in that
+        case (byte-identical evidence). Never raises: an impact-measurement
+        slip must not break the apply/record.
+        """
+        try:
+            from app.engine.transform_impact import measure_impact, summarize
+
+            new_by_path = {pr.get("path", ""): pr.get("new_content", "") or ""
+                           for pr in patch_requests}
+            clauses: list[str] = []
+            for rel in changed_files:
+                if not rel.endswith(".py"):
+                    continue
+                before = snapshot.get(rel) or ""
+                after = new_by_path.get(rel, "")
+                clause = summarize(measure_impact(before, after))
+                if clause:
+                    clauses.append(clause)
+            return "; ".join(clauses)
+        except Exception:
+            return ""
 
     def _step_preview(self, step: ActionStep, project_root: str) -> dict:
         """One step's dry-run row: a real unified diff, applied to nothing."""
@@ -1362,6 +1398,9 @@ def _applied_fix_line(r: dict) -> str:
             "none": " (tests pass — ⚠️ no test references this module)",
             "test-change": " (tests pass)",
         }.get(level, " (tests pass)")
+    if r.get("impact"):
+        # Proof-of-value: the measured before→after structural win.
+        extra += f" — {r['impact']}"
     if r.get("shield_test"):
         extra += f" 🛡️ shielded first by `{r['shield_test']}`"
     if r.get("committed"):

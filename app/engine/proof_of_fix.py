@@ -114,6 +114,11 @@ def _fix_record(r: dict) -> dict:
             "reason": r.get("reason", "") if r.get("rolled_back") else "",
         },
     }
+    if r.get("impact"):
+        # Proof-of-VALUE: the measured before→after metric win the apply path
+        # observed (e.g. "max nesting 3→1, cognitive 6→3"). Additive — absent
+        # when no metric moved, so a no-op fix's record is byte-identical.
+        record["impact"] = r["impact"]
     if r.get("commit_hash"):
         record["commit_hash"] = r["commit_hash"]
     if r.get("shield_test"):
