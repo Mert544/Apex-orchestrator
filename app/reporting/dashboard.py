@@ -459,6 +459,42 @@ def _coordinator_block(p: ProjectProfile) -> str:
     )
 
 
+def _deep_nesting_block(p: ProjectProfile) -> str:
+    """Render the deepest control-flow staircases — guard-clause / extract candidates.
+
+    Reads ``profile.deeply_nested_functions`` (a ``list[dict]`` with ``module``,
+    ``function`` and ``depth``): top-level functions whose block nesting reaches
+    the profiler's floor, so they read as a staircase and invite an
+    invert-the-guard / early-return / extract-the-inner-block refactor. This is a
+    maintainability read distinct from the fan-out (coordinator) and fan-in
+    (fragile) edges. Gated by construction: an all-flat repo yields [] so the page
+    stays byte-identical. Every codebase-sourced string is HTML-escaped.
+    """
+    deep = getattr(p, "deeply_nested_functions", []) or []
+    if not deep:
+        return ""
+    rows = ""
+    for d in deep[:5]:
+        if not isinstance(d, dict):
+            continue
+        module = d.get("module", "?")
+        function = d.get("function", "?")
+        depth = d.get("depth", 0)
+        rows += (
+            f"<li><code>{_esc(module)}</code> "
+            f"<span class='muted'>·</span> <code>{_esc(function)}</code> "
+            f"<span class='val'>depth {_esc(depth)}</span></li>"
+        )
+    if not rows:
+        return ""
+    return (
+        "<h4 style='margin:12px 0 4px'>🪜 Deeply nested functions</h4>"
+        "<p class='muted' style='margin:0 0 6px'>Functions whose control flow "
+        "nests deeply — guard-clause / extract refactor candidates.</p>"
+        f"<ul class='commits'>{rows}</ul>"
+    )
+
+
 def _scope_composition(p: ProjectProfile) -> str:
     """Stacked composition bar of analysed (Python) vs out-of-scope source.
 
@@ -495,8 +531,11 @@ def _architecture_section(p: ProjectProfile) -> str:
     cycles = getattr(p, "import_cycles", []) or []
     fragile = getattr(p, "fragile_modules", []) or []
     coordinators = getattr(p, "coordinator_modules", []) or []
+    deep_nesting = _deep_nesting_block(p)
     scope = _scope_composition(p)
     if not cycles and not fragile and not coordinators:
+        if deep_nesting:
+            return _card("architecture", "🏛️", "Architecture health", deep_nesting + scope)
         inner = "<p class='muted'>No import cycles or fragile hubs detected 🎉</p>"
         return _card("architecture", "🏛️", "Architecture health", inner + scope)
     chips = "".join(
@@ -519,6 +558,7 @@ def _architecture_section(p: ProjectProfile) -> str:
         )
         body += f"<h4 style='margin:12px 0 4px'>⚠️ Fragile modules</h4><ul class='commits'>{items}</ul>"
     body += _coordinator_block(p)
+    body += deep_nesting
     return _card(
         "architecture", "🏛️", "Architecture health",
         f"<div class='chips'>{chips}</div>{body}{scope}",
