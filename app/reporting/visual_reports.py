@@ -123,9 +123,12 @@ class VisualReportGenerator:
         report = self.generate_report(comparison_data)
 
         if not filename:
-            from datetime import datetime
+            from datetime import datetime, timezone
 
-            filename = f"report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+            # UTC, minute granularity — the canonical Apex report-stamp grain used
+            # everywhere else (dashboard, dream digest). Second-granularity local
+            # time made fallback filenames vary per-second and timezone-dependent.
+            filename = f"report-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.md"
 
         output_path = self.output_dir / filename
         output_path.write_text(report, encoding="utf-8")
