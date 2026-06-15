@@ -171,20 +171,17 @@ def test_full_dashboard_includes_trackrecord_when_present(tmp_path):
     assert "verified fixes landed" in html_doc
 
 
-def test_full_dashboard_no_trackrecord_is_byte_identical(tmp_path, monkeypatch):
-    # With no idea-memory and no proof-of-fix, the dashboard must be byte-for-byte
-    # identical to one rendered with the track-record section forcibly stubbed to
-    # "" — i.e. the gated section contributes nothing when there's no record.
-    from app.reporting import dashboard as mod
+def test_no_trackrecord_section_without_data(tmp_path):
+    # With no idea-memory and no proof-of-fix, the gated track-record section is
+    # empty and contributes no panel or nav anchor. Asserted directly rather than
+    # by double-building and byte-comparing the page — the page carries a
+    # minute-grained "generated HH:MM" stamp, so two builds straddling a minute
+    # boundary would differ spuriously (a timing flake, not a real difference).
     from app.reporting.dashboard import build_dashboard
 
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "svc.py").write_text("def run():\n    return 1\n")
 
-    with_section = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
-
-    monkeypatch.setattr(mod, "_trackrecord_section", lambda *a, **k: "")
-    without_section = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
-
-    assert with_section == without_section
-    assert "#trackrecord" not in with_section
+    html = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
+    assert "#trackrecord" not in html
+    assert "Track record" not in html

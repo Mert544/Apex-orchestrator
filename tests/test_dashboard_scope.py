@@ -161,20 +161,17 @@ def test_full_dashboard_includes_outscope_when_present(tmp_path):
     assert "web/app.js" in html_doc
 
 
-def test_full_dashboard_no_outscope_is_byte_identical(tmp_path, monkeypatch):
-    # With an all-Python repo, the dashboard must be byte-for-byte identical to
-    # one rendered with the out-of-scope section forcibly stubbed to "" — the
-    # gated section contributes nothing when there are no non-Python files.
-    from app.reporting import dashboard as mod
-    from app.reporting.dashboard import build_dashboard
+def test_no_outscope_section_when_all_python(tmp_path):
+    # An all-Python repo has no non-Python files, so the gated out-of-scope
+    # section is empty and contributes no panel or nav anchor. Asserted directly
+    # (the section is "" and "#outscope" is absent) rather than by double-building
+    # the page and byte-comparing — the page carries a minute-grained "generated
+    # HH:MM" stamp, so two builds that straddle a minute would differ spuriously.
+    from app.reporting.dashboard import _outscope_section, build_dashboard
 
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "svc.py").write_text("def run():\n    return 1\n")
 
-    with_section = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
-
-    monkeypatch.setattr(mod, "_outscope_section", lambda *a, **k: "")
-    without_section = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
-
-    assert with_section == without_section
-    assert "#outscope" not in with_section
+    assert _outscope_section(str(tmp_path)) == ""
+    html = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
+    assert "#outscope" not in html
