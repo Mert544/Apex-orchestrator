@@ -148,6 +148,42 @@ def _bare_object_names(trees: dict[str, ast.Module]) -> set[str]:
     return bare
 
 
+def _bare_and_call_index(
+        trees: dict[str, ast.Module]) -> tuple[set[str], dict[str, int]]:
+    """The bare-object set AND the bare-Name call-site counts in ONE walk/tree.
+
+    Returns ``(bare, counts)`` byte-for-byte equal to ``(_bare_object_names(
+    trees), _call_site_counts(trees))`` — identical membership, identical integer
+    counts — but folds their THREE whole-project ``ast.walk`` passes per tree
+    (two inside ``_bare_object_names`` for callee ids + the bare scan, one inside
+    ``_call_site_counts``) down to a SINGLE pass.
+
+    The collapse is sound because ``ast.walk`` is breadth-first over a deque: a
+    node is yielded *before* its own children are enqueued, so every ``Call`` is
+    seen strictly before its ``.func`` callee. Recording ``id(call.func)`` the
+    moment the Call is visited therefore guarantees the callee id is already in
+    ``call_funcs`` by the time that Name/Attribute is itself yielded — so the
+    very same callee-exclusion guard the two-walk form applies still holds with
+    one walk. The standalone helpers remain the characterized reference; this is
+    purely the suggester's hoisted, de-duplicated version of running both."""
+    bare: set[str] = set()
+    counts: dict[str, int] = {}
+    for tree in trees.values():
+        call_funcs: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                call_funcs.add(id(func))
+                if isinstance(func, ast.Name):
+                    counts[func.id] = counts.get(func.id, 0) + 1
+            elif isinstance(node, ast.Name) and id(node) not in call_funcs \
+                    and not isinstance(node.ctx, ast.Store):
+                bare.add(node.id)
+            elif isinstance(node, ast.Attribute) and id(node) not in call_funcs:
+                bare.add(node.attr)
+    return bare, counts
+
+
 def _bind_arguments(plan: RenamePlan, source: str, fn: ast.FunctionDef,
                     call: ast.Call, site: str) -> dict[str, str] | None:
     """Map each parameter name → its argument SOURCE TEXT for this call: by
@@ -446,12 +482,13 @@ def suggest_inlines(project_root: str | Path,
                 defs_by_name.setdefault(node.name, []).append((rel, node))
 
     # The bare-object guard and the call-site count are both whole-project and
-    # name-independent, so compute each ONCE (a single walk apiece) rather than
-    # re-walking every tree per candidate: `name in bare` is exactly
-    # `_has_object_ref(trees, name)`, and `call_counts.get(name, 0)` is exactly
-    # `len(_call_sites(trees, name))` — both just hoisted out of the loop.
-    bare = _bare_object_names(trees)
-    call_counts = _call_site_counts(trees)
+    # name-independent, so compute each ONCE rather than re-walking every tree
+    # per candidate: `name in bare` is exactly `_has_object_ref(trees, name)`,
+    # and `call_counts.get(name, 0)` is exactly `len(_call_sites(trees, name))`.
+    # `_bare_and_call_index` produces both in a single shared scan (two walks per
+    # tree instead of the three the two standalone helpers would do), so the
+    # result is identical while the hottest part of the scan runs once less.
+    bare, call_counts = _bare_and_call_index(trees)
 
     found: list[dict] = []
     for name in sorted(defs_by_name):

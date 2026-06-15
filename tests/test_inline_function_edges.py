@@ -7,8 +7,10 @@ from __future__ import annotations
 import ast
 
 from app.execution.inline_function import (
+    _bare_and_call_index,
     _bare_object_names,
     _call_site_counts,
+    _call_sites,
     _has_object_ref,
     _is_pure_simple,
     plan_inline,
@@ -207,3 +209,113 @@ def test_suggest_inlines_accepts_prebuilt_trees(tmp_path):
     trees = {"m.py": ast.parse(src)}
     out = suggest_inlines(str(tmp_path), trees)
     assert out == suggest_inlines(str(tmp_path))
+
+
+# ── characterization: the one-pass index hoist must not change output ──
+
+def _representative_project(tmp_path):
+    """A multi-module project exercising every suggestion branch: a clean
+    single-use helper, a clean two-call helper, a many-call (over-cap) helper, a
+    bare-referenced helper, a recursive helper, a decorated helper, a non-return
+    helper, an attribute call site, and a zero-call helper."""
+    _write(tmp_path, "app/pricing.py",
+           "RATE = 3\n"
+           "\n"
+           "\n"
+           "def fee(x):\n"
+           "    return x * RATE\n"
+           "\n"
+           "\n"
+           "def double(x):\n"
+           "    return x + x\n"
+           "\n"
+           "\n"
+           "def lonely(x):\n"
+           "    return x - 1\n"
+           "\n"
+           "\n"
+           "def quote(n):\n"
+           "    return fee(n)\n")
+    _write(tmp_path, "app/orders.py",
+           "from app.pricing import double, fee\n"
+           "import app.pricing as pricing\n"
+           "\n"
+           "\n"
+           "@staticmethod\n"
+           "def decorated(x):\n"
+           "    return x\n"
+           "\n"
+           "\n"
+           "def recur(x):\n"
+           "    return recur(x)\n"
+           "\n"
+           "\n"
+           "def noreturn(x):\n"
+           "    y = x + 1\n"
+           "    return y\n"
+           "\n"
+           "\n"
+           "def total(a, b):\n"
+           "    big = double(a) + double(b) + recur(a)\n"
+           "    return big + pricing.fee(a) + decorated(b) + noreturn(a)\n")
+
+
+# Pinned, byte-exact expected output of suggest_inlines on the representative
+# project — recomputing the indices in one walk must reproduce this exactly.
+_EXPECTED_SUGGESTIONS = [
+    {"module": "app/pricing.py", "function": "fee", "line": 4, "call_sites": 1},
+    {"module": "app/pricing.py", "function": "double", "line": 8, "call_sites": 2},
+]
+
+
+def test_suggest_inlines_characterization_pinned_output(tmp_path):
+    _representative_project(tmp_path)
+    out = suggest_inlines(str(tmp_path))
+    # Exact list, exact order, every field — the byte-identical contract.
+    assert out == _EXPECTED_SUGGESTIONS
+    # Determinism: a second scan is identical.
+    assert suggest_inlines(str(tmp_path)) == _EXPECTED_SUGGESTIONS
+
+
+def test_bare_and_call_index_equals_standalone_helpers(tmp_path):
+    # The one-walk combined index is byte-identical to running the two
+    # characterized standalone helpers (membership + integer counts).
+    _representative_project(tmp_path)
+    trees = {
+        "app/pricing.py": ast.parse((tmp_path / "app" / "pricing.py").read_text()),
+        "app/orders.py": ast.parse((tmp_path / "app" / "orders.py").read_text()),
+    }
+    bare, counts = _bare_and_call_index(trees)
+    assert bare == _bare_object_names(trees)
+    assert counts == _call_site_counts(trees)
+    for name in ("fee", "double", "lonely", "quote", "decorated", "recur",
+                 "noreturn", "total", "RATE", "pricing", "missing"):
+        assert (name in bare) == _has_object_ref(trees, name)
+        assert counts.get(name, 0) == len(_call_sites(trees, name))
+
+
+def test_bare_and_call_index_empty_trees():
+    # Empty project: both indices empty, no crash.
+    bare, counts = _bare_and_call_index({})
+    assert bare == set()
+    assert counts == {}
+
+
+def test_bare_and_call_index_callee_in_nested_and_attr_positions():
+    # A name that is BOTH a callee (count) and a bare object (set) elsewhere, plus
+    # an attribute call whose attr is bare elsewhere — the shared-walk callee
+    # guard must match the standalone helpers exactly on these tricky shapes.
+    tree = ast.parse(
+        "g = fee\n"
+        "fee(1)\n"
+        "fee(2)\n"
+        "obj.fee()\n"
+        "x = obj.bar\n"
+        "obj.bar()\n"
+        "outer(inner(z))\n")
+    trees = {"m.py": tree}
+    bare, counts = _bare_and_call_index(trees)
+    assert bare == _bare_object_names(trees)
+    assert counts == _call_site_counts(trees)
+    assert counts["fee"] == 2  # the two bare-Name calls only (obj.fee() is Attr)
+    assert "fee" in bare       # g = fee is a bare object ref
