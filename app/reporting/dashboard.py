@@ -459,16 +459,46 @@ def _coordinator_block(p: ProjectProfile) -> str:
     )
 
 
+def _scope_composition(p: ProjectProfile) -> str:
+    """Stacked composition bar of analysed (Python) vs out-of-scope source.
+
+    Apex deep-analyses Python only, so a polyglot repo has a genuine "how much
+    does our analysis actually cover?" composition read. We surface it as a
+    proportional ``stacked_bar`` of ``analyzed_ratio`` vs ``out_of_scope_ratio``.
+
+    Gated: only renders when an out-of-scope remainder genuinely exists
+    (``out_of_scope_ratio > 0``). An all-Python repo (ratio 0) is omitted, so
+    its page stays byte-identical to before this feature existed.
+    """
+    out_ratio = getattr(p, "out_of_scope_ratio", 0.0)
+    if not isinstance(out_ratio, (int, float)) or out_ratio <= 0.0:
+        return ""
+    analyzed = getattr(p, "analyzed_ratio", None)
+    if not isinstance(analyzed, (int, float)):
+        return ""
+
+    from app.reporting.dashboard_charts import stacked_bar
+
+    segments = [
+        ("Analysed (Python)", float(analyzed)),
+        ("Out of scope", float(out_ratio)),
+    ]
+    return (
+        "<div class='scopecomp'><h4 style='margin:12px 0 4px'>"
+        f"{_esc('🌐 Analysis scope composition')}</h4>"
+        f"{stacked_bar(segments)}</div>"
+    )
+
+
 def _architecture_section(p: ProjectProfile) -> str:
     """Surface architectural risks the engine sees: import cycles + fragility."""
     cycles = getattr(p, "import_cycles", []) or []
     fragile = getattr(p, "fragile_modules", []) or []
     coordinators = getattr(p, "coordinator_modules", []) or []
+    scope = _scope_composition(p)
     if not cycles and not fragile and not coordinators:
-        return _card(
-            "architecture", "🏛️", "Architecture health",
-            "<p class='muted'>No import cycles or fragile hubs detected 🎉</p>",
-        )
+        inner = "<p class='muted'>No import cycles or fragile hubs detected 🎉</p>"
+        return _card("architecture", "🏛️", "Architecture health", inner + scope)
     chips = "".join(
         [
             _chip("import cycles", len(cycles)),
@@ -489,7 +519,10 @@ def _architecture_section(p: ProjectProfile) -> str:
         )
         body += f"<h4 style='margin:12px 0 4px'>⚠️ Fragile modules</h4><ul class='commits'>{items}</ul>"
     body += _coordinator_block(p)
-    return _card("architecture", "🏛️", "Architecture health", f"<div class='chips'>{chips}</div>{body}")
+    return _card(
+        "architecture", "🏛️", "Architecture health",
+        f"<div class='chips'>{chips}</div>{body}{scope}",
+    )
 
 
 def _kind_badge_label(label: str) -> str:
