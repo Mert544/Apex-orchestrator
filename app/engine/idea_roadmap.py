@@ -405,6 +405,40 @@ class RoadmapSynthesizer:
         )
 
 
+def best_first_move(roadmap: Roadmap) -> RoadmapItem | None:
+    """The single highest value-per-effort item — "if you do ONE thing, do this."
+
+    This is the roadmap-local analogue of the pareto frontier's *knee point*: the
+    item that buys the most value per unit of effort, biased toward acting early
+    (an earlier phase breaks ties, since you cannot safely skip the safety net).
+    It is computed only from the roadmap's own *phased* nodes — no import of
+    ``idea_pareto`` — so there is no coupling and no circular-import risk.
+
+    Ratio is ``value / effort`` (effort is floored at 0.1 by ``estimate_effort``,
+    so the denominator is always safe). Ties break deterministically and
+    identically to the pareto knee where they overlap: earlier phase, then higher
+    value, then lower effort, then higher ROI, then lexicographic branch path.
+
+    Returns ``None`` for an empty roadmap (no phases / no items), so an empty
+    roadmap renders byte-for-byte as it did before this callout existed.
+    """
+    candidates = [i for phase in roadmap.phases for i in phase.items]
+    if not candidates:
+        return None
+    phase_rank = {name: n for n, name in enumerate(PHASE_ORDER)}
+    return min(
+        candidates,
+        key=lambda i: (
+            -round(i.value / max(i.effort, 0.1), 6),
+            phase_rank.get(i.phase, len(PHASE_ORDER)),
+            -i.value,
+            i.effort,
+            -i.roi,
+            i.branch_path,
+        ),
+    )
+
+
 def render_roadmap_markdown(roadmap: Roadmap) -> str:
     """Render the roadmap as a readable, phase-ordered markdown document."""
     lines = [f"# Engineering Roadmap for `{roadmap.project_root}`", ""]
@@ -415,6 +449,20 @@ def render_roadmap_markdown(roadmap: Roadmap) -> str:
     if roadmap.objective:
         meta = f"objective: _{roadmap.objective}_ · " + meta
     lines += [meta, ""]
+
+    # Best first move: the single highest value-per-effort pick, surfaced up top
+    # so a reader knows where to start. Gated on a real pick so an empty roadmap
+    # (no phases) renders exactly as before. Wording avoids literal magnitude
+    # tokens so the byte-stable / negative render tests stay green.
+    best = best_first_move(roadmap)
+    if best is not None:
+        lines.append("## 🎯 Best first move")
+        lines.append(
+            f"- `{best.branch_path}` **{best.title}** in {best.phase} "
+            f"(ROI {best.roi} · impact {best.impact} · effort {best.effort}) — "
+            f"the strongest value-per-effort pick to start with."
+        )
+        lines.append("")
 
     if roadmap.quick_wins:
         lines.append("## ⚡ Quick wins (high impact, low effort)")
