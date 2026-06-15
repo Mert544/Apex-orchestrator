@@ -74,7 +74,15 @@ class Issue:
 
 
 def detect(source: str) -> list[Issue]:
-    """All detectable issues in a source string (line-level)."""
+    """All detectable issues in a source string (line-level).
+
+    Thin dispatcher: a single :func:`ast.walk` routes each node to the cohesive
+    per-node-type handler below (``_detect_call``, ``_detect_except_handler``,
+    ...). Each handler emits the exact same findings, in the same order, as the
+    original monolithic loop did; only the grouping changed. The ``elif`` chain
+    here preserves the historical dispatch order, which the suppression filter
+    and the byte-for-byte finding contract both depend on.
+    """
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
@@ -89,161 +97,7 @@ def detect(source: str) -> list[Issue]:
         add(lineno, "bug", "medium", _UNREACHABLE_CODE_MSG, "")
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            if _is_network_call_without_timeout(node):
-                add(node.lineno, "bug", "medium",
-                    "network call without timeout= can hang forever — pass timeout=...", "net-timeout")
-            f = node.func
-            if isinstance(f, ast.Name) and f.id == "eval":
-                add(node.lineno, "security", "high", "eval() — code injection risk", "eval")
-            elif isinstance(f, ast.Name) and f.id == "exec":
-                add(node.lineno, "security", "high", "exec() — code injection risk", "")
-            elif isinstance(f, ast.Name) and f.id == "open" and _is_text_open_without_encoding(node):
-                add(node.lineno, "bug", "low",
-                    "open() without encoding= is locale-dependent — pass encoding=\"utf-8\"",
-                    "open-encoding")
-            elif (isinstance(f, ast.Name) and f.id in ("dict", "list", "tuple")
-                  and not node.args and not node.keywords):
-                lit = {"dict": "{}", "list": "[]", "tuple": "()"}[f.id]
-                add(node.lineno, "style", "low",
-                    f"use a literal `{lit}` instead of `{f.id}()`", "collection-literal")
-            elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
-                owner, attr = f.value.id, f.attr
-                if owner == "os" and attr == "system":
-                    add(node.lineno, "security", "high", "os.system() — prefer subprocess.run()", "os.system")
-                elif owner == "pickle" and attr == "loads":
-                    add(node.lineno, "security", "high", "pickle.loads() — unsafe deserialization", "pickle")
-                elif owner == "yaml" and attr == "load":
-                    add(node.lineno, "security", "medium", "yaml.load() — prefer yaml.safe_load()", "yaml")
-                elif owner == "tempfile" and attr == "mktemp":
-                    add(node.lineno, "security", "medium",
-                        "tempfile.mktemp() — TOCTOU race; use mkstemp()/NamedTemporaryFile", "tempfile")
-                elif owner == "hashlib" and attr in ("md5", "sha1") and not _has_usedforsecurity_false(node):
-                    add(node.lineno, "security", "medium",
-                        f"hashlib.{attr}() is weak for security — use sha256, or pass "
-                        "usedforsecurity=False if non-security", "weak-hash")
-                elif attr in ("execute", "executemany", "cursor") and any(
-                    isinstance(a, ast.JoinedStr) for a in node.args
-                ):
-                    add(node.lineno, "security", "high", "SQL built from an f-string — injection risk", "sql")
-                elif attr in ("run", "call", "Popen", "check_output", "check_call") and any(
-                    kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
-                    for kw in node.keywords
-                ):
-                    add(node.lineno, "security", "high", "subprocess with shell=True — command injection risk", "")
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            if _is_hardcoded_secret(node):
-                add(node.lineno, "security", "high", "possible hardcoded secret — load it from the environment", "")
-        elif isinstance(node, ast.ExceptHandler):
-            if node.type is None:
-                add(node.lineno, "security", "medium", "bare except — use except Exception:", "bare except")
-            elif "BaseException" in _exc_names(node.type) and not _reraises(node.body):
-                # B036: swallows KeyboardInterrupt/SystemExit. A handler that
-                # re-raises (bare `raise`) is the legitimate cleanup pattern.
-                add(node.lineno, "security", "medium",
-                    "except BaseException also catches KeyboardInterrupt/SystemExit — "
-                    "use except Exception: (or re-raise)", "base-exception")
-            if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
-                add(node.lineno, "bug", "medium",
-                    "exception silently swallowed (except: pass) — log or handle it", "")
-            # Broad + silent. A handler that swallows a BROAD type (typed
-            # Exception/BaseException, or a tuple containing one) with a body that
-            # does nothing — `pass`, `...`, or only a docstring/constant.
-            #
-            # Non-duplication rule: we deliberately do NOT fire on the bare
-            # `except:` case (node.type is None). Bare-except is already covered
-            # by the "bare except" security finding above plus the generic
-            # "silently swallowed" finding, so adding a third message there would
-            # be noisy/confusing. The generic "silently swallowed" finding still
-            # fires for a pass-only body of any type (review/maintain depend on
-            # its exact wording); this finding adds the distinct broad-scope
-            # warning and uniquely covers the `...`/docstring-only silent bodies
-            # that the pass-only check misses. Narrow silent passes
-            # (`except KeyError: pass`) are intentionally left alone — they are
-            # frequently a deliberate best-effort. fix_kind is "" because the
-            # correct fix (log / narrow the type / re-raise) is contextual; no
-            # single ruff code maps cleanly, so suppression relies on a bare noqa.
-            if node.type is not None and _is_broad_exc(node.type) and _is_silent_body(node.body):
-                add(node.lineno, "bug", "medium",
-                    _SILENT_BROAD_EXCEPT_MSG, "")
-            for lineno in _raise_without_from(node.body):
-                # Auto-fixable only when the handler binds the exception
-                # (`except E as err:`) — then `from err` is a pure, safe append.
-                add(lineno, "bug", "low",
-                    "raising a new exception in an except block without `from` loses the "
-                    "original cause — use `raise ... from err` (or `from None`)",
-                    "raise-from" if node.name else "")
-        elif isinstance(node, ast.Try):
-            for lineno in _escapes_finally(node.finalbody):
-                add(lineno, "bug", "high",
-                    "return/break/continue in a finally block swallows exceptions and "
-                    "overrides control flow", "")
-            for lineno in _unreachable_handlers(node.handlers):
-                add(lineno, "bug", "high",
-                    "unreachable except — a broader handler above already catches this", "")
-        elif isinstance(node, ast.Assert) and isinstance(node.test, ast.Tuple) and node.test.elts:
-            add(node.lineno, "bug", "high",
-                "assert on a tuple is always true — remove the parentheses", "")
-        elif (isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)
-              and isinstance(node.operand, ast.Compare) and len(node.operand.ops) == 1
-              and isinstance(node.operand.ops[0], (ast.In, ast.Is))):
-            kind = "not in" if isinstance(node.operand.ops[0], ast.In) else "is not"
-            add(node.lineno, "style", "low",
-                f"use `{kind}` instead of negating the comparison (`not ... "
-                f"{'in' if kind == 'not in' else 'is'}`)", "negated-comparison")
-        elif isinstance(node, ast.Compare):
-            operands = [node.left, *node.comparators]
-            has_eq = any(isinstance(o, (ast.Eq, ast.NotEq)) for o in node.ops)
-            if has_eq and any(isinstance(x, ast.Constant) and x.value is None for x in operands):
-                add(node.lineno, "style", "low", "compare to None with `is` / `is not`", "none-comparison")
-            if has_eq and any(isinstance(x, ast.Constant) and isinstance(x.value, bool) for x in operands):
-                add(node.lineno, "style", "low",
-                    "compare to True/False directly (drop `== True` / `== False`)", "")
-            if any(isinstance(x, ast.Call) and isinstance(x.func, ast.Name) and x.func.id == "type"
-                   for x in operands):
-                add(node.lineno, "style", "medium", "use isinstance() instead of comparing type()", "")
-            if any(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops) and \
-               any(_is_identity_literal(x) for x in node.comparators):
-                add(node.lineno, "bug", "medium",
-                    "identity check against a literal (`is`/`is not`) is a bug — use ==/!=",
-                    "identity-literal")
-            for i, op in enumerate(node.ops):
-                # Comparing a pure reference with itself is always constant — a
-                # likely typo (meant a different operand). `!=`/`==` are excluded:
-                # `x != x` / `x == x` are the idiomatic NaN checks.
-                if not isinstance(op, (ast.Eq, ast.NotEq)) and _same_ref(operands[i], operands[i + 1]):
-                    add(node.lineno, "bug", "medium",
-                        "comparison with itself is always constant — likely a typo", "")
-                    break
-        elif isinstance(node, ast.ClassDef):
-            if _is_frozen_dataclass(node):
-                for sub in ast.walk(node):
-                    targets: list[ast.expr] = []
-                    if isinstance(sub, ast.Assign):
-                        targets = list(sub.targets)
-                    elif isinstance(sub, (ast.AugAssign, ast.AnnAssign)):
-                        targets = [sub.target]
-                    if any(isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)
-                           and t.value.id == "self" for t in targets):
-                        add(sub.lineno, "bug", "high",
-                            "assignment to a frozen dataclass field raises FrozenInstanceError "
-                            "at runtime — use dataclasses.replace()", "")
-            for line, attr in _mutable_class_attribute_lines(node).items():
-                add(line, "bug", "medium",
-                    f"mutable class attribute `{attr}` is shared across all instances and "
-                    "mutated in place — move it into __init__ (or use default_factory)", "")
-        elif isinstance(node, ast.JoinedStr) and not any(
-                isinstance(v, ast.FormattedValue) for v in node.values):
-            # An f-string with no interpolation is just a string with a
-            # misleading prefix — safe to drop the `f` (un-doubling braces).
-            add(node.lineno, "style", "low",
-                "f-string without placeholders — drop the `f` prefix",
-                "fstring-no-placeholder")
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if _has_mutable_default(node):
-                add(node.lineno, "bug", "high", "mutable default argument — shared-state bug", "mutable-default")
-            if ast.get_docstring(node) is None and not node.name.startswith("_"):
-                add(node.lineno, "docs", "low", f"public function `{node.name}` lacks a docstring", "docstring")
+        _dispatch_node(node, add)
 
     # Drop findings the developer explicitly suppressed inline (noqa / nosec).
     lines = source.splitlines()
@@ -253,6 +107,243 @@ def detect(source: str) -> list[Issue]:
                 and _suppressed(lines[i.line - 1], i.category, i.fix_kind, i.message))
     ]
     return kept
+
+
+def _dispatch_node(node: ast.AST, add) -> None:
+    """Route one AST node to its per-node-type handler.
+
+    The ``elif`` chain preserves the historical dispatch order, which the
+    byte-for-byte finding contract depends on. ``add`` is the emit closure from
+    :func:`detect` (``add(line, cat, sev, msg, fix)``).
+    """
+    if isinstance(node, ast.Call):
+        _detect_call(node, add)
+    elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+        _detect_assignment(node, add)
+    elif isinstance(node, ast.ExceptHandler):
+        _detect_except_handler(node, add)
+    elif isinstance(node, ast.Try):
+        _detect_try(node, add)
+    elif isinstance(node, ast.Assert):
+        _detect_assert(node, add)
+    elif isinstance(node, ast.UnaryOp):
+        _detect_negated_comparison(node, add)
+    elif isinstance(node, ast.Compare):
+        _detect_compare(node, add)
+    elif isinstance(node, ast.ClassDef):
+        _detect_classdef(node, add)
+    elif isinstance(node, ast.JoinedStr):
+        _detect_fstring(node, add)
+    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        _detect_function(node, add)
+
+
+# Each ``_detect_*`` below owns one node-type branch lifted verbatim out of the
+# dispatcher above. ``add`` is the dispatcher's emit closure
+# (``add(line, cat, sev, msg, fix)``); handlers append findings in source order.
+
+
+def _detect_call(node: ast.Call, add) -> None:
+    """Findings for a call node: a network call missing ``timeout=``; the
+    ``eval``/``exec``/``open``/empty-collection builtins; and attribute-based
+    risks (``os.system``, ``pickle.loads``, ``yaml.load``, ``tempfile.mktemp``,
+    weak hashes, SQL f-strings, ``subprocess`` with ``shell=True``)."""
+    if _is_network_call_without_timeout(node):
+        add(node.lineno, "bug", "medium",
+            "network call without timeout= can hang forever — pass timeout=...", "net-timeout")
+    f = node.func
+    if isinstance(f, ast.Name) and f.id == "eval":
+        add(node.lineno, "security", "high", "eval() — code injection risk", "eval")
+    elif isinstance(f, ast.Name) and f.id == "exec":
+        add(node.lineno, "security", "high", "exec() — code injection risk", "")
+    elif isinstance(f, ast.Name) and f.id == "open" and _is_text_open_without_encoding(node):
+        add(node.lineno, "bug", "low",
+            "open() without encoding= is locale-dependent — pass encoding=\"utf-8\"",
+            "open-encoding")
+    elif (isinstance(f, ast.Name) and f.id in ("dict", "list", "tuple")
+          and not node.args and not node.keywords):
+        lit = {"dict": "{}", "list": "[]", "tuple": "()"}[f.id]
+        add(node.lineno, "style", "low",
+            f"use a literal `{lit}` instead of `{f.id}()`", "collection-literal")
+    elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+        owner, attr = f.value.id, f.attr
+        if owner == "os" and attr == "system":
+            add(node.lineno, "security", "high", "os.system() — prefer subprocess.run()", "os.system")
+        elif owner == "pickle" and attr == "loads":
+            add(node.lineno, "security", "high", "pickle.loads() — unsafe deserialization", "pickle")
+        elif owner == "yaml" and attr == "load":
+            add(node.lineno, "security", "medium", "yaml.load() — prefer yaml.safe_load()", "yaml")
+        elif owner == "tempfile" and attr == "mktemp":
+            add(node.lineno, "security", "medium",
+                "tempfile.mktemp() — TOCTOU race; use mkstemp()/NamedTemporaryFile", "tempfile")
+        elif owner == "hashlib" and attr in ("md5", "sha1") and not _has_usedforsecurity_false(node):
+            add(node.lineno, "security", "medium",
+                f"hashlib.{attr}() is weak for security — use sha256, or pass "
+                "usedforsecurity=False if non-security", "weak-hash")
+        elif attr in ("execute", "executemany", "cursor") and any(
+            isinstance(a, ast.JoinedStr) for a in node.args
+        ):
+            add(node.lineno, "security", "high", "SQL built from an f-string — injection risk", "sql")
+        elif attr in ("run", "call", "Popen", "check_output", "check_call") and any(
+            kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+            for kw in node.keywords
+        ):
+            add(node.lineno, "security", "high", "subprocess with shell=True — command injection risk", "")
+
+
+def _detect_assignment(node, add) -> None:
+    """Flag a non-trivial string literal assigned to a secret-looking name."""
+    if _is_hardcoded_secret(node):
+        add(node.lineno, "security", "high", "possible hardcoded secret — load it from the environment", "")
+
+
+def _detect_except_handler(node: ast.ExceptHandler, add) -> None:
+    """Findings for one ``except`` clause: bare-except, ``BaseException`` catches,
+    silently-swallowed exceptions (the ``pass``-only and broad-silent variants),
+    and a new exception raised without ``from``."""
+    if node.type is None:
+        add(node.lineno, "security", "medium", "bare except — use except Exception:", "bare except")
+    elif "BaseException" in _exc_names(node.type) and not _reraises(node.body):
+        # B036: swallows KeyboardInterrupt/SystemExit. A handler that
+        # re-raises (bare `raise`) is the legitimate cleanup pattern.
+        add(node.lineno, "security", "medium",
+            "except BaseException also catches KeyboardInterrupt/SystemExit — "
+            "use except Exception: (or re-raise)", "base-exception")
+    if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
+        add(node.lineno, "bug", "medium",
+            "exception silently swallowed (except: pass) — log or handle it", "")
+    # Broad + silent. A handler that swallows a BROAD type (typed
+    # Exception/BaseException, or a tuple containing one) with a body that
+    # does nothing — `pass`, `...`, or only a docstring/constant.
+    #
+    # Non-duplication rule: we deliberately do NOT fire on the bare
+    # `except:` case (node.type is None). Bare-except is already covered
+    # by the "bare except" security finding above plus the generic
+    # "silently swallowed" finding, so adding a third message there would
+    # be noisy/confusing. The generic "silently swallowed" finding still
+    # fires for a pass-only body of any type (review/maintain depend on
+    # its exact wording); this finding adds the distinct broad-scope
+    # warning and uniquely covers the `...`/docstring-only silent bodies
+    # that the pass-only check misses. Narrow silent passes
+    # (`except KeyError: pass`) are intentionally left alone — they are
+    # frequently a deliberate best-effort. fix_kind is "" because the
+    # correct fix (log / narrow the type / re-raise) is contextual; no
+    # single ruff code maps cleanly, so suppression relies on a bare noqa.
+    if node.type is not None and _is_broad_exc(node.type) and _is_silent_body(node.body):
+        add(node.lineno, "bug", "medium",
+            _SILENT_BROAD_EXCEPT_MSG, "")
+    for lineno in _raise_without_from(node.body):
+        # Auto-fixable only when the handler binds the exception
+        # (`except E as err:`) — then `from err` is a pure, safe append.
+        add(lineno, "bug", "low",
+            "raising a new exception in an except block without `from` loses the "
+            "original cause — use `raise ... from err` (or `from None`)",
+            "raise-from" if node.name else "")
+
+
+def _detect_try(node: ast.Try, add) -> None:
+    """Findings for a ``try`` node: control flow escaping ``finally`` and an
+    ``except`` clause shadowed by a broader handler above it."""
+    for lineno in _escapes_finally(node.finalbody):
+        add(lineno, "bug", "high",
+            "return/break/continue in a finally block swallows exceptions and "
+            "overrides control flow", "")
+    for lineno in _unreachable_handlers(node.handlers):
+        add(lineno, "bug", "high",
+            "unreachable except — a broader handler above already catches this", "")
+
+
+def _detect_assert(node: ast.Assert, add) -> None:
+    """Flag ``assert (a, b)`` — a non-empty tuple literal is always truthy, so the
+    parentheses turn the assertion into a no-op. Other asserts are left alone."""
+    if isinstance(node.test, ast.Tuple) and node.test.elts:
+        add(node.lineno, "bug", "high",
+            "assert on a tuple is always true — remove the parentheses", "")
+
+
+def _detect_negated_comparison(node: ast.UnaryOp, add) -> None:
+    """Suggest ``not in`` / ``is not`` over a negated membership/identity test.
+
+    Fires only for ``not`` applied to a single-operator ``In``/``Is`` comparison
+    (``not x in y`` / ``not x is y``); any other unary op is left alone.
+    """
+    if not (isinstance(node.op, ast.Not)
+            and isinstance(node.operand, ast.Compare) and len(node.operand.ops) == 1
+            and isinstance(node.operand.ops[0], (ast.In, ast.Is))):
+        return
+    kind = "not in" if isinstance(node.operand.ops[0], ast.In) else "is not"
+    add(node.lineno, "style", "low",
+        f"use `{kind}` instead of negating the comparison (`not ... "
+        f"{'in' if kind == 'not in' else 'is'}`)", "negated-comparison")
+
+
+def _detect_compare(node: ast.Compare, add) -> None:
+    """Findings for a comparison node: ``== None`` / ``== True`` style checks,
+    comparing ``type()`` instead of ``isinstance``, identity against a literal,
+    and a self-comparison that is always constant (likely a typo)."""
+    operands = [node.left, *node.comparators]
+    has_eq = any(isinstance(o, (ast.Eq, ast.NotEq)) for o in node.ops)
+    if has_eq and any(isinstance(x, ast.Constant) and x.value is None for x in operands):
+        add(node.lineno, "style", "low", "compare to None with `is` / `is not`", "none-comparison")
+    if has_eq and any(isinstance(x, ast.Constant) and isinstance(x.value, bool) for x in operands):
+        add(node.lineno, "style", "low",
+            "compare to True/False directly (drop `== True` / `== False`)", "")
+    if any(isinstance(x, ast.Call) and isinstance(x.func, ast.Name) and x.func.id == "type"
+           for x in operands):
+        add(node.lineno, "style", "medium", "use isinstance() instead of comparing type()", "")
+    if any(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops) and \
+       any(_is_identity_literal(x) for x in node.comparators):
+        add(node.lineno, "bug", "medium",
+            "identity check against a literal (`is`/`is not`) is a bug — use ==/!=",
+            "identity-literal")
+    for i, op in enumerate(node.ops):
+        # Comparing a pure reference with itself is always constant — a
+        # likely typo (meant a different operand). `!=`/`==` are excluded:
+        # `x != x` / `x == x` are the idiomatic NaN checks.
+        if not isinstance(op, (ast.Eq, ast.NotEq)) and _same_ref(operands[i], operands[i + 1]):
+            add(node.lineno, "bug", "medium",
+                "comparison with itself is always constant — likely a typo", "")
+            break
+
+
+def _detect_classdef(node: ast.ClassDef, add) -> None:
+    """Findings for a class body: a write to a frozen-dataclass field, and a
+    mutable class-level attribute mutated in place (shared across instances)."""
+    if _is_frozen_dataclass(node):
+        for sub in ast.walk(node):
+            targets: list[ast.expr] = []
+            if isinstance(sub, ast.Assign):
+                targets = list(sub.targets)
+            elif isinstance(sub, (ast.AugAssign, ast.AnnAssign)):
+                targets = [sub.target]
+            if any(isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)
+                   and t.value.id == "self" for t in targets):
+                add(sub.lineno, "bug", "high",
+                    "assignment to a frozen dataclass field raises FrozenInstanceError "
+                    "at runtime — use dataclasses.replace()", "")
+    for line, attr in _mutable_class_attribute_lines(node).items():
+        add(line, "bug", "medium",
+            f"mutable class attribute `{attr}` is shared across all instances and "
+            "mutated in place — move it into __init__ (or use default_factory)", "")
+
+
+def _detect_fstring(node: ast.JoinedStr, add) -> None:
+    """Flag an f-string with no interpolation — it is just a string with a
+    misleading prefix, so the ``f`` can be dropped (un-doubling braces). An
+    f-string that actually interpolates a value is left alone."""
+    if not any(isinstance(v, ast.FormattedValue) for v in node.values):
+        add(node.lineno, "style", "low",
+            "f-string without placeholders — drop the `f` prefix",
+            "fstring-no-placeholder")
+
+
+def _detect_function(node, add) -> None:
+    """Findings for a function def: a mutable default argument, and a public
+    function missing a docstring."""
+    if _has_mutable_default(node):
+        add(node.lineno, "bug", "high", "mutable default argument — shared-state bug", "mutable-default")
+    if ast.get_docstring(node) is None and not node.name.startswith("_"):
+        add(node.lineno, "docs", "low", f"public function `{node.name}` lacks a docstring", "docstring")
 
 
 _SECRET_NAMES = ("password", "passwd", "secret", "api_key", "apikey", "token",

@@ -801,3 +801,161 @@ def test_substantive_assertions_on_syntax_error_is_false():
     from app.engine.detectors import test_has_substantive_assertions as subst
 
     assert subst("def broken(:\n") is False
+
+
+# --- Characterization: a kitchen-sink source exercising many rules at once.
+# This pins the EXACT findings (line, category, severity, fix_kind, message) and
+# their order so the split of `detect` into per-node helpers is provably
+# behavior-preserving. A diff here means detection changed — do NOT edit the
+# expected list to make it pass.
+_KITCHEN_SINK_SRC = (
+    'import os, pickle, yaml, hashlib, subprocess, requests\n'
+    'from dataclasses import dataclass\n'
+    '\n'
+    '\n'
+    'def public_no_doc(c, opts=[]):\n'
+    '    if c == None:\n'
+    '        return None\n'
+    '    eval(c)\n'
+    '    exec(c)\n'
+    '    os.system(c)\n'
+    '    pickle.loads(c)\n'
+    '    yaml.load(c)\n'
+    '    hashlib.md5(c)\n'
+    '    requests.get(c)\n'
+    '    subprocess.run(c, shell=True)\n'
+    '    open("f.txt")\n'
+    '    x = dict()\n'
+    '    return c\n'
+    '\n'
+    '\n'
+    'def sql(cur, name):\n'
+    '    cur.execute(f"select {name}")\n'
+    '\n'
+    '\n'
+    'PASSWORD = "hunter2secret"\n'
+    '\n'
+    '\n'
+    'def cmp_bugs(x, y):\n'
+    '    if not x in y:\n'
+    '        pass\n'
+    '    if x is 5:\n'
+    '        pass\n'
+    '    if x < x:\n'
+    '        return 1\n'
+    '    if type(x) == int:\n'
+    '        pass\n'
+    '    if x == True:\n'
+    '        pass\n'
+    '    assert (x, y)\n'
+    '    z = f"plain"\n'
+    '    return z\n'
+    '\n'
+    '\n'
+    'def except_stuff():\n'
+    '    try:\n'
+    '        work()\n'
+    '    except:\n'
+    '        pass\n'
+    '    try:\n'
+    '        work()\n'
+    '    except BaseException:\n'
+    '        pass\n'
+    '    try:\n'
+    '        work()\n'
+    '    except Exception as e:\n'
+    '        raise ValueError("boom")\n'
+    '    try:\n'
+    '        work()\n'
+    '    finally:\n'
+    '        return 1\n'
+    '    try:\n'
+    '        work()\n'
+    '    except Exception:\n'
+    '        pass\n'
+    '    except ValueError:\n'
+    '        pass\n'
+    '\n'
+    '\n'
+    'def dead_code():\n'
+    '    return 1\n'
+    '    print("unreachable")\n'
+    '\n'
+    '\n'
+    '@dataclass(frozen=True)\n'
+    'class Frozen:\n'
+    '    a: int\n'
+    '\n'
+    '    def mutate(self):\n'
+    '        self.a = 5\n'
+    '\n'
+    '\n'
+    'class Shared:\n'
+    '    items = []\n'
+    '\n'
+    '    def add(self, v):\n'
+    '        self.items.append(v)\n'
+)
+
+_KITCHEN_SINK_FINDINGS = [
+        (71, 'bug', 'medium', '', 'unreachable code — this runs after an unconditional return/raise/break/continue'),
+        (5, 'bug', 'high', 'mutable-default', 'mutable default argument — shared-state bug'),
+        (5, 'docs', 'low', 'docstring', 'public function `public_no_doc` lacks a docstring'),
+        (21, 'docs', 'low', 'docstring', 'public function `sql` lacks a docstring'),
+        (25, 'security', 'high', '', 'possible hardcoded secret — load it from the environment'),
+        (28, 'docs', 'low', 'docstring', 'public function `cmp_bugs` lacks a docstring'),
+        (44, 'docs', 'low', 'docstring', 'public function `except_stuff` lacks a docstring'),
+        (69, 'docs', 'low', 'docstring', 'public function `dead_code` lacks a docstring'),
+        (79, 'bug', 'high', '', 'assignment to a frozen dataclass field raises FrozenInstanceError at runtime — use dataclasses.replace()'),
+        (83, 'bug', 'medium', '', 'mutable class attribute `items` is shared across all instances and mutated in place — move it into __init__ (or use default_factory)'),
+        (39, 'bug', 'high', '', 'assert on a tuple is always true — remove the parentheses'),
+        (60, 'bug', 'high', '', 'return/break/continue in a finally block swallows exceptions and overrides control flow'),
+        (65, 'bug', 'high', '', 'unreachable except — a broader handler above already catches this'),
+        (78, 'docs', 'low', 'docstring', 'public function `mutate` lacks a docstring'),
+        (85, 'docs', 'low', 'docstring', 'public function `add` lacks a docstring'),
+        (6, 'style', 'low', 'none-comparison', 'compare to None with `is` / `is not`'),
+        (8, 'security', 'high', 'eval', 'eval() — code injection risk'),
+        (9, 'security', 'high', '', 'exec() — code injection risk'),
+        (10, 'security', 'high', 'os.system', 'os.system() — prefer subprocess.run()'),
+        (11, 'security', 'high', 'pickle', 'pickle.loads() — unsafe deserialization'),
+        (12, 'security', 'medium', 'yaml', 'yaml.load() — prefer yaml.safe_load()'),
+        (13, 'security', 'medium', 'weak-hash', 'hashlib.md5() is weak for security — use sha256, or pass usedforsecurity=False if non-security'),
+        (14, 'bug', 'medium', 'net-timeout', 'network call without timeout= can hang forever — pass timeout=...'),
+        (15, 'security', 'high', '', 'subprocess with shell=True — command injection risk'),
+        (16, 'bug', 'low', 'open-encoding', 'open() without encoding= is locale-dependent — pass encoding="utf-8"'),
+        (17, 'style', 'low', 'collection-literal', 'use a literal `{}` instead of `dict()`'),
+        (22, 'security', 'high', 'sql', 'SQL built from an f-string — injection risk'),
+        (29, 'style', 'low', 'negated-comparison', 'use `not in` instead of negating the comparison (`not ... in`)'),
+        (31, 'bug', 'medium', 'identity-literal', 'identity check against a literal (`is`/`is not`) is a bug — use ==/!='),
+        (33, 'bug', 'medium', '', 'comparison with itself is always constant — likely a typo'),
+        (35, 'style', 'medium', '', 'use isinstance() instead of comparing type()'),
+        (37, 'style', 'low', '', 'compare to True/False directly (drop `== True` / `== False`)'),
+        (40, 'style', 'low', 'fstring-no-placeholder', 'f-string without placeholders — drop the `f` prefix'),
+        (47, 'security', 'medium', 'bare except', 'bare except — use except Exception:'),
+        (47, 'bug', 'medium', '', 'exception silently swallowed (except: pass) — log or handle it'),
+        (51, 'security', 'medium', 'base-exception', 'except BaseException also catches KeyboardInterrupt/SystemExit — use except Exception: (or re-raise)'),
+        (51, 'bug', 'medium', '', 'exception silently swallowed (except: pass) — log or handle it'),
+        (51, 'bug', 'medium', '', 'broad except silently swallows all errors — log it, narrow the type, or re-raise'),
+        (56, 'bug', 'low', 'raise-from', 'raising a new exception in an except block without `from` loses the original cause — use `raise ... from err` (or `from None`)'),
+        (63, 'bug', 'medium', '', 'exception silently swallowed (except: pass) — log or handle it'),
+        (63, 'bug', 'medium', '', 'broad except silently swallows all errors — log it, narrow the type, or re-raise'),
+        (65, 'bug', 'medium', '', 'exception silently swallowed (except: pass) — log or handle it'),
+]
+
+
+def test_detect_kitchen_sink_characterization():
+    out = detect(_KITCHEN_SINK_SRC)
+    actual = [(i.line, i.category, i.severity, i.fix_kind, i.message) for i in out]
+    assert actual == _KITCHEN_SINK_FINDINGS
+
+
+def test_detect_kitchen_sink_suppressions_filter():
+    # Appending an inline suppression to the eval line must drop exactly that
+    # finding and nothing else — locks the noqa/nosec filter end-to-end.
+    lines = _KITCHEN_SINK_SRC.splitlines()
+    lines[7] = lines[7] + "  # nosec"  # eval line (8)
+    src = "\n".join(lines) + "\n"
+    out = detect(src)
+    assert all(i.fix_kind != "eval" for i in out)
+    # Count drops by exactly the one suppressed eval finding.
+    assert len(out) == len(_KITCHEN_SINK_FINDINGS) - 1
