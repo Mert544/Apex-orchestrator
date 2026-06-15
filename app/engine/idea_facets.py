@@ -100,7 +100,20 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "error propagation": ["mapped error types", "retry vs fail-fast", "partial-failure surfacing",
                           # added: the error and timeout handling at the edge.
                           "the error handling at the edge", "the timeout and retry at the edge"],
-    "version skew": ["compatibility window", "feature detection", "graceful degradation"],
+    # version skew is the natural home for the constructive "sequencing / what
+    # lands first" lens. Across the WHOLE facet set, no lens named the DEPENDENCY
+    # ORDER between pieces of work: every other lens names WHAT to build or how to
+    # make it safe/observable, none named what must ship BEFORE a change and what
+    # shipping it UNBLOCKS downstream. version skew already coordinates two sides
+    # across time, so the L2 list is EXTENDED (originals stay FIRST, never
+    # displaced) with the two ordering moves: the prerequisite that must land
+    # first, and the downstream work this change unblocks. Appended, so the beam
+    # is undisturbed — no new L1 aspect competes and the pinned phrases keep
+    # emitting in their existing order.
+    "version skew": ["compatibility window", "feature detection", "graceful degradation",
+                     # added: the work-ordering moves a coordinated change needs.
+                     "the prerequisite change that must land first",
+                     "the downstream work this change unblocks"],
     # integrate L3 ladders — each appended edge move decomposes into concrete edits.
     "the boundary contract to define": ["the request and response types",
                                         "the required versus optional fields",
@@ -114,6 +127,17 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "the timeout and retry at the edge": ["the connect and read timeout",
                                           "the retry budget and backoff",
                                           "the idempotency the retry needs"],
+    # integrate sequencing L3 ladders — each ordering move decomposes once more
+    # into the concrete planning decisions an engineer makes, then bottoms out in
+    # the universal case split. The "prerequisite" move asks what blocks the change
+    # and how to land that first; the "unblocks" move asks what becomes possible
+    # once it ships and how to hand that off.
+    "the prerequisite change that must land first": ["the dependency that blocks this work today",
+                                                     "the smaller change to land ahead of it",
+                                                     "the check that the prerequisite is in place"],
+    "the downstream work this change unblocks": ["the follow-up this change makes possible",
+                                                 "the consumer ready to build on it once it ships",
+                                                 "the handoff note that names what is now unblocked"],
     # generalize — the constructive "lift the common shape" lens. Each existing
     # L2 list is EXTENDED (originals stay FIRST, never displaced) with the
     # concrete moves a generalization is actually made of: extract the shared
@@ -145,10 +169,29 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "the variation point to name": ["the hook signature",
                                     "the registration surface",
                                     "the no-op fallback"],
-    # observe
-    "key metrics": ["counters", "latency histograms", "error rates"],
-    "structured logs": ["correlation ids", "level discipline", "no secret leakage"],
-    "trace spans": ["span boundaries", "attributes", "error recording"],
+    # observe — the constructive "close the measurement loop" lens. Every existing
+    # observe sub-aspect names a signal to EMIT (a counter, a log field, a span),
+    # but across the WHOLE observe lens nothing named what the signal is actually
+    # FOR: instrumentation with no question to answer, no baseline to compare
+    # against, and no action when it trips is shelf-ware. So each observe L1 list is
+    # EXTENDED (originals stay FIRST, never displaced) with the three measurement
+    # moves that turn a raw signal into a decision: the question this should answer,
+    # the baseline or threshold that makes it actionable, and the action taken when
+    # it crosses that line. Appended, so the per-level beam is undisturbed — no new
+    # L1 aspect competes and the pinned emit-the-signal phrases keep their order.
+    "key metrics": ["counters", "latency histograms", "error rates",
+                    # added: the measurement-loop moves a metric needs to be useful.
+                    "the question this metric should answer",
+                    "the baseline or threshold that makes it actionable",
+                    "the action taken when it crosses the threshold"],
+    "structured logs": ["correlation ids", "level discipline", "no secret leakage",
+                        # added: what a log line is FOR once it is emitted.
+                        "the question a search of these logs should answer",
+                        "the action taken when the log pattern appears"],
+    "trace spans": ["span boundaries", "attributes", "error recording",
+                    # added: the latency question a span is meant to settle.
+                    "the latency question this span should answer",
+                    "the baseline or threshold that makes it actionable"],
     # ---- level-3 vocabulary: the level-2 sub-concerns decompose once more ----
     # Same lookup, one key deeper: the zoom stays content-aware for a third
     # level ("harden → resource limits → time and timeout bounds → deadline
@@ -263,6 +306,28 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "level discipline": ["error versus warning", "the noise budget", "debug gating"],
     "no secret leakage": ["redaction rules", "exception payloads", "URL and query params"],
     "span boundaries": ["the unit of work", "async continuation", "batch operations"],
+    # observe measurement-loop L3 ladders — each appended measurement move
+    # decomposes once more into the concrete decisions an engineer makes to close
+    # the loop, then bottoms out in the universal case split. Distinct phrasings so
+    # no ladder loops on a shared key, and none reuses a literal metric token.
+    "the question this metric should answer": ["the decision this number informs",
+                                               "the owner who reads it",
+                                               "the dashboard or query it lives on"],
+    "the baseline or threshold that makes it actionable": ["the normal range observed today",
+                                                           "the value that means trouble",
+                                                           "the window the threshold is measured over"],
+    "the action taken when it crosses the threshold": ["the page or ticket it raises",
+                                                       "the runbook step it points to",
+                                                       "the automatic response it can trigger"],
+    "the question a search of these logs should answer": ["the incident question to reconstruct",
+                                                          "the field to filter or group on",
+                                                          "the time range that bounds the search"],
+    "the action taken when the log pattern appears": ["the alert this pattern should raise",
+                                                      "the responder it routes to",
+                                                      "the follow-up it queues for review"],
+    "the latency question this span should answer": ["the slow path to attribute time to",
+                                                     "the percentile that matters here",
+                                                     "the comparison against the budget"],
     # decouple ladder: the "import direction" aspect zooms into the import block's
     # own hygiene — imports nothing references, and an unordered import block. Both
     # L3 phrases route (via FACET_OBJECTIVE_MAP) to the import-hygiene develop
@@ -456,6 +521,7 @@ _FACET_CAVEAT_RULES: list[tuple[tuple[str, ...], str]] = [
     (("ordering", "round-trip", "round trip", "invariant"), "What invariant silently breaks under reordering or a round trip?"),
     (("secret", "plaintext", "rotation", "credential", "leakage"), "What leaks if this is logged, committed, or read by the wrong caller?"),
     (("default",), "What goes wrong when the default is wrong for a particular caller?"),
+    (("prerequisite", "unblock", "downstream", "lands first", "land first", "handoff"), "What stays blocked, or ships out of order, if this lands before its prerequisite?"),
     (("version", "compat", "skew", "degradation"), "What happens when the two sides are on different versions?"),
     (("metric", "log", "trace", "span", "counter", "histogram", "correlation"), "What failure currently happens with no signal to catch it?"),
     (("schema", "contract", "field", "type and shape", "signatures and types"), "What consumer breaks when this contract shifts?"),
