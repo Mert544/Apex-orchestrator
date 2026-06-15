@@ -35,10 +35,6 @@ class TreeShape:
     mean_value: float
     value_range: float                # max value − min value
     distinct_values: int
-    # Grounding: how many ideas carry concrete source_facts (tied to a real code
-    # signal) vs. purely-permuted abstractions.
-    grounded_count: int = 0
-    grounding_ratio: float = 0.0      # fraction of ideas with non-empty source_facts
     # Measured code-size telemetry (from report.stats["metrics"]).
     heaviest_module: str = ""
     heaviest_loc: int = 0
