@@ -972,6 +972,20 @@ padding:5px 12px;border:1px solid var(--line2);border-radius:999px;background:rg
 background:linear-gradient(120deg,#fff,#cfe6ff 60%,#dccbff);-webkit-background-clip:text;background-clip:text;color:transparent}
 .hero p{margin:0;color:var(--ink2);font-size:14px;max-width:62ch}
 .hero .stamp{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.hero-vitals{display:flex;flex-wrap:wrap;align-items:center;gap:24px;margin:24px 0 4px}
+.vitals{display:flex;flex-wrap:wrap;gap:12px}
+.vital{display:flex;flex-direction:column;gap:4px;min-width:82px;padding:12px 16px;
+border:1px solid var(--line2);border-radius:14px;background:rgba(255,255,255,.035);
+box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
+.vital-num{font-size:24px;font-weight:770;line-height:1;font-variant-numeric:tabular-nums;
+background:linear-gradient(120deg,var(--accent),var(--accent2) 70%);
+-webkit-background-clip:text;background-clip:text;color:transparent}
+.vital-label{font-size:11px;color:var(--ink2);font-weight:500;letter-spacing:.02em}
+.hero-charts{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.hero-charts svg{background:rgba(245,248,252,.95);border-radius:12px;padding:7px;
+border:1px solid var(--line2);box-shadow:var(--shadow)}
+.vital-top-move{margin:14px 0 0;font-size:13.5px;color:var(--ink2)}
+.vital-top-move::before{content:"➜ next move: ";color:var(--accent);font-weight:650}
 main{max-width:1120px;margin:-52px auto 64px;padding:0 30px;display:flex;flex-direction:column;gap:22px}
 .overview .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px}
 .kpi{position:relative;background:linear-gradient(180deg,var(--card2),var(--card));
@@ -1184,6 +1198,55 @@ def _dream_section(project_root: str) -> str:
     return _card("dream", "💤", "Last dream — discovered while you were away", body)
 
 
+def _hero_vitals(project_root, profile, findings, idea_report, action_plan) -> str:
+    """Build the hero "vital signs" banner: stat tiles + grade gauge + scope bar.
+
+    Every input is data already computed for the page; the only extra work is one
+    deterministic health-grade pass (light profile, no clock, no network). Each
+    metric degrades gracefully to "omitted" when it is not available, so the banner
+    never crashes and stays byte-identical for identical inputs.
+    """
+    from app.reporting.dashboard_charts import grade_gauge, scope_bar
+    from app.reporting.dashboard_hero import render_vitals
+
+    sec = findings.get("security", {}) or {}
+    cov = findings.get("coverage", {}) or {}
+    cov_pct = int(cov.get("coverage_ratio", 0) * 100) if "coverage_ratio" in cov else -1
+    sec_n = sec.get("findings_count", 0) or 0
+    scope_pct = int(round(float(getattr(profile, "analyzed_ratio", 1.0) or 0.0) * 100))
+    idea_count = idea_report.stats.get("total_ideas", 0)
+    runnable = len(action_plan.executable_steps())
+    steps = getattr(action_plan, "steps", None) or []
+    top_move = steps[0].title if steps else ""
+
+    # The single source of the grade — same light profile + detector pass as
+    # `apex review`/`apex ascend`. Best-effort: a degraded grade just omits the tile.
+    grade_letter, grade_score = "", None
+    try:
+        from app.engine.health_score import grade as _grade
+
+        g = _grade(project_root)
+        grade_letter, grade_score = g.letter, g.score
+    except Exception:
+        grade_letter, grade_score = "", None
+
+    vitals = render_vitals(
+        grade_letter=grade_letter,
+        grade_score=grade_score,
+        coverage_pct=cov_pct,
+        security_findings=sec_n,
+        scope_pct=scope_pct,
+        idea_count=idea_count,
+        runnable_actions=runnable,
+        top_move="",  # rendered separately below so it sits on its own line
+    )
+    gauge = grade_gauge(grade_score, grade_letter) if isinstance(grade_score, int) and grade_score >= 0 else ""
+    scope_svg = scope_bar(scope_pct) if scope_pct >= 0 else ""
+    charts = f"<div class='hero-charts'>{gauge}{scope_svg}</div>" if (gauge or scope_svg) else ""
+    top_html = f"<p class='vital-top-move'>{_esc(top_move)}</p>" if top_move else ""
+    return f"<div class='hero-vitals'>{vitals}{charts}</div>{top_html}"
+
+
 def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning,
                  git=None, debug=None, roadmap=None, shape=None, autonomy=None,
                  pareto=None, trajectory=None, learned=None) -> str:
@@ -1219,6 +1282,7 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         nav_links.append(("repository", "Repo"))
     links = "".join(f"<a href='#{i}'>{_esc(t)}</a>" for i, t in nav_links)
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    hero_vitals = _hero_vitals(project_root, profile, findings, idea_report, action_plan)
 
     sections = "".join(
         [
@@ -1268,6 +1332,7 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         "<h1>Project Development Dashboard</h1>"
         "<p>A living read-out of the codebase organism — code intelligence, development ideas "
         "and supervised actions, computed offline with no model in the loop.</p>"
+        f"{hero_vitals}"
         f"<p class='stamp'>generated {generated}</p></header>"
         f"<main>{sections}</main>"
         "<footer>Generated by Apex Orchestrator — deterministic, offline, self-contained."

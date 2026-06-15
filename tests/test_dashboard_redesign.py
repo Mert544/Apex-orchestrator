@@ -22,10 +22,14 @@ def test_redesign_is_self_contained(tmp_path):
     html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3)
     assert html_doc.startswith("<!doctype html>")
     assert "</html>" in html_doc
-    # No external scripts/stylesheets or any remote URL — inline only.
+    # No external scripts/stylesheets or any remote URL — inline only. The inline
+    # SVG charts declare the SVG namespace (`xmlns="http://www.w3.org/2000/svg"`),
+    # which is a spec-mandated identifier the browser never fetches — strip those
+    # namespace declarations before asserting there is no real remote resource.
     assert "<script src=" not in html_doc
     assert 'rel="stylesheet"' not in html_doc
-    assert "http://" not in html_doc and "https://" not in html_doc
+    without_ns = html_doc.replace('xmlns="http://www.w3.org/2000/svg"', "")
+    assert "http://" not in without_ns and "https://" not in without_ns
     assert "//fonts." not in html_doc and "cdn" not in html_doc.lower()
     # Theme/markup is inline <style>/<svg> only.
     assert "<style>" in html_doc and "<svg" in html_doc
