@@ -77,6 +77,28 @@ class TreeShape:
     # to the deepest frontier).
     mean_depth: float = 0.0  # sum(depth) / total_ideas, ≥ 0
     depth_balance: float = 0.0  # mean_depth / max_depth, in [0,1]
+    # Subject concentration: a Herfindahl-style index over the WHOLE subject
+    # distribution — the sum of squared per-subject shares. Where
+    # top_subject_share reads only how big the single largest subject is, this
+    # reads how concentrated the entire tree is: two trees can share the same
+    # top_subject_share yet differ sharply in their tail (the rest on 2 subjects
+    # vs. spread over 20). 1.0 = every idea on one subject (maximal obsession);
+    # 1/distinct_subjects when evenly spread, →0 as ideas fan out across many
+    # subjects. Orthogonal to distinct_subjects (a raw count, blind to balance)
+    # and top_subject_share (single-bucket). Roots' subjects count like any other.
+    subject_concentration: float = 0.0  # sum of squared subject shares, in [0,1]
+    # Function-grain specificity: the share of ideas that name a concrete
+    # ``anchor`` (a specific risky function/line WITHIN a module, e.g.
+    # "cyclomatic 18 at foo:42") rather than staying at file/module granularity.
+    # Where grounding_ratio reads whether an idea ties to a code signal AT ALL
+    # (non-empty ``source_facts``), this reads how FAR DOWN the idea drills: a
+    # tree of "refactor module X" ideas with no function locus sits at 0.0, while
+    # a tree that points at the riskiest symbol in each module climbs toward 1.0.
+    # Orthogonal to grounding (signal presence) and subject concentration
+    # (which subject) — it reads grain, not coverage. Anchors are additive and
+    # default-empty, so legacy ideas with no anchor data simply read 0.0.
+    anchored_count: int = 0
+    anchor_coverage: float = 0.0  # anchored_count / total_ideas, in [0,1]
     observations: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -150,6 +172,16 @@ def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
     top_subject, top_count = subjects.most_common(1)[0] if subjects else ("", 0)
     top_subject_share = round(top_count / total, 4)
 
+    # Subject concentration: Herfindahl index over the whole subject
+    # distribution (sum of squared shares). Shares are taken over the ideas that
+    # carry a subject; an all-blank-subject tree concentrates on nothing (0.0).
+    labelled = sum(subjects.values())
+    subject_concentration = (
+        round(sum((c / labelled) ** 2 for c in subjects.values()), 4)
+        if labelled
+        else 0.0
+    )
+
     facet_penetration = round(by_kind.get("facet", 0) / total, 4)
 
     values = [i.value for i in ideas]
@@ -159,6 +191,11 @@ def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
 
     grounded_count = sum(1 for i in ideas if i.source_facts)
     grounding_ratio = round(grounded_count / total, 4)
+
+    # Function-grain specificity: ideas that carry at least one concrete anchor
+    # (a function/line locus within a module) vs. ideas that stay file-level.
+    anchored_count = sum(1 for i in ideas if i.anchors)
+    anchor_coverage = round(anchored_count / total, 4)
 
     # Lens diversity: distinct operators used + the dominant lens and its share.
     # Tie-break for the dominant lens is deterministic (count desc, name asc).
@@ -182,12 +219,15 @@ def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
         distinct_subjects=distinct_subjects,
         top_subject=top_subject,
         top_subject_share=top_subject_share,
+        subject_concentration=subject_concentration,
         facet_penetration=facet_penetration,
         mean_value=mean_value,
         value_range=value_range,
         distinct_values=distinct_values,
         grounded_count=grounded_count,
         grounding_ratio=grounding_ratio,
+        anchored_count=anchored_count,
+        anchor_coverage=anchor_coverage,
         distinct_operators=distinct_operators,
         dominant_operator=dominant_operator,
         dominant_operator_share=dominant_operator_share,
@@ -232,6 +272,15 @@ def _observe(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
         )
     elif s.distinct_subjects >= max(3, s.roots):
         obs.append(f"Ideas spread across {s.distinct_subjects} subjects — good breadth of coverage.")
+    if (
+        s.distinct_subjects >= 3
+        and s.top_subject_share <= 0.5
+        and s.subject_concentration >= 0.34
+    ):
+        obs.append(
+            "No single subject dominates, but ideas clump onto a handful of subjects "
+            "— concentration is high across the whole tree, not just the top one."
+        )
     if by_kind.get("synthesis", 0) + by_kind.get("pair", 0) == 0:
         obs.append("No synthesis/pair ideas — few cross-module couplings were found.")
     if s.facet_penetration == 0.0:
@@ -254,6 +303,16 @@ def _observe(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
         obs.append(
             f"Weakly grounded — only {int(s.grounding_ratio * 100)}% of ideas tie to "
             "concrete code facts; many are pure permutations."
+        )
+    if s.total_ideas > 0 and s.anchor_coverage == 0.0:
+        obs.append(
+            "No function-grain anchors — ideas stay at file/module granularity; "
+            "no idea names a specific risky symbol to act on first."
+        )
+    elif s.anchor_coverage >= 0.5:
+        obs.append(
+            f"Function-grain: {int(s.anchor_coverage * 100)}% of ideas name a concrete "
+            "symbol/line to act on first, not just a file."
         )
     if s.total_measured_loc > 0 and s.heaviest_loc > 0.4 * s.total_measured_loc:
         pct = round(100 * s.heaviest_loc / s.total_measured_loc)
@@ -280,12 +339,15 @@ def render_tree_shape_markdown(shape: TreeShape) -> str:
         f"- **Developmental center of mass:** mean depth {shape.mean_depth} "
         f"of {shape.max_depth} (balance {shape.depth_balance}) — roots vs. deep frontier",
         f"- **Subjects:** {shape.distinct_subjects} distinct · "
-        f"top `{shape.top_subject}` ({int(shape.top_subject_share * 100)}%)",
+        f"top `{shape.top_subject}` ({int(shape.top_subject_share * 100)}%) · "
+        f"concentration {shape.subject_concentration}",
         f"- **Fractal facets:** {int(shape.facet_penetration * 100)}% of ideas",
         f"- **Scoring:** mean {shape.mean_value} · range {shape.value_range} · "
         f"{shape.distinct_values} distinct values",
         f"- **Grounding:** {int(shape.grounding_ratio * 100)}% of ideas "
         f"({shape.grounded_count}/{shape.total_ideas}) tied to concrete code facts",
+        f"- **Function-grain:** {int(shape.anchor_coverage * 100)}% of ideas "
+        f"({shape.anchored_count}/{shape.total_ideas}) name a concrete symbol/line anchor",
         f"- **Lens diversity:** {shape.distinct_operators} distinct operators · "
         f"dominant `{shape.dominant_operator}` "
         f"({int(shape.dominant_operator_share * 100)}% of ideas)",
