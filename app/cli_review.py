@@ -15,10 +15,25 @@ from app.cli_common import _get_project_root
 
 def cmd_review(args: argparse.Namespace) -> int:
     """Review only the lines changed since a base ref — Apex as a PR reviewer."""
-    from app.engine.diff_review import render_review_markdown, review
+    from app.engine.diff_review import (
+        render_review_markdown,
+        render_review_summary,
+        review,
+    )
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
     result = review(str(target), base=getattr(args, "base", "HEAD") or "HEAD")
+
+    # --summary: print ONLY the concise PR-comment verdict (for CI to post as a
+    # sticky comment) and nothing else — no fixes, no SARIF note, no full report.
+    if getattr(args, "summary", False):
+        print(render_review_summary(result))
+        if getattr(args, "fail_on_high", False):
+            from app.engine.diff_review import blocking_high_findings
+
+            if blocking_high_findings(result):
+                return 1
+        return 0
 
     # --fix: apply the auto-fixable findings on the changed files, test-verified.
     fix_report = None
@@ -173,5 +188,8 @@ def register_parsers(subparsers) -> None:
     review_parser.add_argument("--max-findings", type=int, default=0, dest="max_findings",
                               help="Cap how many findings the comment lists (0 = all; "
                                    "use a bound in CI so the comment stays under the size limit)")
+    review_parser.add_argument("--summary", action="store_true",
+                               help="Print ONLY a concise PR-comment-ready verdict "
+                                    "(for CI to post as a sticky PR comment)")
     review_parser.add_argument("--json", action="store_true", help="Emit JSON")
     review_parser.set_defaults(func=cmd_review)

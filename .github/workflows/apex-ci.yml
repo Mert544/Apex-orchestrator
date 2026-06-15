@@ -16,6 +16,7 @@ on:
 permissions:
   contents: read           # checkout
   security-events: write   # upload SARIF to the Security tab
+  pull-requests: write     # post Apex's verdict as a sticky PR comment
 
 jobs:
   apex-ci:
@@ -58,3 +59,19 @@ jobs:
         with:
           sarif_file: apex.sarif
           category: apex
+
+      # Render Apex's concise, deterministic verdict for the PR itself. A busy
+      # maintainer reads one glance: 🟢 clean or 🔴 N high-severity issues, plus
+      # the top findings. Zero tokens, fully offline.
+      - name: Render Apex review summary
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        run: apex review --base "origin/${{ github.base_ref || 'main' }}" --summary > apex-review.md
+
+      # Post that verdict as a STICKY PR comment, updated in place on every push
+      # so the PR always shows Apex's current verdict (never a thread of stale ones).
+      - name: Post Apex verdict as a sticky PR comment
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: apex-review
+          path: apex-review.md

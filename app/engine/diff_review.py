@@ -458,3 +458,72 @@ def render_review_markdown(result: ReviewResult, limit: int = 0) -> str:
             )
         lines.append("")
     return "\n".join(lines)
+
+
+_SUMMARY_FOOTER = (
+    "_Deterministic review — same diff always yields this verdict. "
+    "Zero tokens, runs offline. Apex Orchestrator._"
+)
+
+
+def render_review_summary(result: ReviewResult, top: int = 8) -> str:
+    """A concise, PR-comment-ready verdict a maintainer reads in one glance.
+
+    Where :func:`render_review_markdown` is the full reviewer report, this is the
+    one-look headline + a few grounded bullets, sized for a sticky PR comment.
+    Deterministic by construction: it reads only the already-sorted, already-
+    grounded findings the review carries, so the same ``ReviewResult`` always
+    renders byte-identical bytes.
+
+    ``top`` caps how many high/medium findings are listed; the rest collapse to a
+    "+X more" note so the verdict stays scannable on a wide diff.
+    """
+    blocking = blocking_high_findings(result)
+    n_high = len(blocking)
+    total = len(result.findings)
+    files = len({f.file for f in result.findings})
+    fixable = result.auto_fixable_count
+
+    lines: list[str] = []
+    if n_high:
+        lines.append(
+            f"## 🔴 Apex review: {n_high} high-severity issue(s) in this diff "
+            "— review before merge"
+        )
+    else:
+        lines.append("## 🟢 Apex review: no high-severity issues in this diff")
+    lines.append("")
+
+    # No findings at all (clean or empty diff) → headline + a calm one-liner.
+    if total == 0:
+        lines.append("Nothing to flag in the changed lines.")
+        lines.append("")
+        lines.append(_SUMMARY_FOOTER)
+        return "\n".join(lines)
+
+    file_word = "file" if files == 1 else "files"
+    finding_word = "finding" if total == 1 else "findings"
+    lines.append(
+        f"{total} {finding_word} across {files} changed {file_word}; "
+        f"{fixable} auto-fixable with `apex review --fix`."
+    )
+    lines.append("")
+
+    # The most actionable findings first: high/medium, already sorted by the
+    # review (severity, then file, then line). Each bullet reuses the
+    # deterministic message the finding already carries.
+    notable = [f for f in result.findings if f.severity in ("high", "medium")]
+    shown = notable[:top] if top and top > 0 else notable
+    icon = {"high": "🔴", "medium": "🟠"}
+    for f in shown:
+        lines.append(
+            f"- {icon.get(f.severity, '⚪')} `{f.file}:{f.line}` — {f.message}"
+        )
+    hidden = len(notable) - len(shown)
+    if hidden > 0:
+        lines.append(f"- … +{hidden} more")
+    if shown:
+        lines.append("")
+
+    lines.append(_SUMMARY_FOOTER)
+    return "\n".join(lines)
