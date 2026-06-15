@@ -1,0 +1,60 @@
+name: Apex CI
+
+# Deterministic, zero-token quality gate + code-scanning source.
+#
+# Apex runs fully offline: no API keys, no network calls, no per-token cost.
+# On every pull request it (1) fails the build on a new finding or a regression
+# and (2) publishes its deterministic findings to the GitHub Security tab as
+# SARIF. Same diff in -> same verdict out, so the gate is reproducible in a way
+# an LLM-based reviewer can never be. Copy this file to .github/workflows/ in
+# any Python repo to adopt it.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read           # checkout
+  security-events: write   # upload SARIF to the Security tab
+
+jobs:
+  apex-ci:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history so --baseline can diff this change against the base ref.
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Installs the `apex` console script (and `python -m app.cli`).
+      - name: Install Apex
+        run: pip install .
+
+      # Zero-config quality gate. Exits non-zero when Apex's deterministic
+      # detectors find a security/correctness issue or the health grade fails,
+      # which fails the job. Add `--baseline` (after committing a baseline with
+      # `apex gate --save-baseline`) to fail only on a REGRESSION vs. that
+      # snapshot instead of an absolute bar.
+      - name: Apex quality gate
+        run: apex gate
+
+      # Export the deterministic review findings as a SARIF 2.1.0 document.
+      # Runs even if the gate above failed, so the Security tab is populated on
+      # exactly the PRs that need attention.
+      - name: Export findings as SARIF
+        if: ${{ always() }}
+        run: apex review --base "origin/${{ github.base_ref || 'main' }}" --sarif apex.sarif
+
+      # Land the findings on the PR's Security tab (inline, code-scanning alerts).
+      - name: Upload SARIF to the Security tab
+        if: ${{ always() }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: apex.sarif
+          category: apex
