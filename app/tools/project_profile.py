@@ -250,6 +250,26 @@ class ProjectProfiler:
     # actionable copy-paste ("extract one helper"). A wider span is an intentional
     # framework/template pattern, not duplication to DRY (dogfood finding).
     _GENERALIZE_MAX_MODULES = 4
+    # The ``app/execution/*`` transform family DELIBERATELY shares one isolated
+    # skeleton per transform (read -> ``ast.parse`` -> collect rewrites -> apply ->
+    # re-parse -> append a blocker -> return a ``RenamePlan``). That isolation is BY
+    # DESIGN — extracting the shared shell fights the surgical-per-transform
+    # architecture — so a near-duplicate group whose modules are ALL this scaffold
+    # is NOT actionable cross-module duplication. A module is recognised as scaffold
+    # by its directory prefix PLUS importing one of the scaffold markers below: the
+    # common ``_transform_base`` helpers and/or the ``RenamePlan`` plan type every
+    # transform returns (some transforms predate ``_transform_base`` and import the
+    # plan straight from ``cross_file_rename`` — both are the same skeleton). The
+    # ``_GENERALIZE_MAX_MODULES`` cap does NOT catch the 2-module scaffold pairs the
+    # scan also raises (e.g. ``bool_return.py`` + ``comprehension.py``). Scoped to
+    # the flat execution-scaffold template only — genuine app-code duplication
+    # elsewhere is untouched, and a mixed group (a scaffold module plus a real app
+    # module) is still flagged.
+    _EXECUTION_SCAFFOLD_DIR = "app/execution/"
+    _EXECUTION_SCAFFOLD_IMPORTS = (
+        "app.execution._transform_base",
+        "app.execution.cross_file_rename import RenamePlan",
+    )
     # Knowledge risk: a module needs this many touches before concentration
     # means anything, and the top author must own at least this share. The
     # signal is skipped entirely for single-author projects (solo dev — a
@@ -575,6 +595,35 @@ class ProjectProfiler:
 
         profile.incomplete_protocols = incomplete_protocols(str(self.root))[:5]
 
+    def _is_execution_scaffold_module(self, module: str) -> bool:
+        """True if ``module`` is one of the ``app/execution/*`` transform-scaffold
+        files — directly under ``app/execution/`` AND importing a scaffold marker
+        (the common ``_transform_base`` helpers and/or the ``RenamePlan`` plan type
+        every transform returns).
+
+        Every such module DELIBERATELY repeats the same isolated transform shell
+        (read -> ``ast.parse`` -> collect rewrites -> apply -> re-parse -> append a
+        blocker -> return a ``RenamePlan``); that per-transform isolation is the
+        architecture, not copy-paste to DRY. The directory check restricts to the
+        family's own top level (a nested ``app/execution/objectives/...`` module is
+        NOT scaffold), and the import marker confirms it actually shares the
+        transform skeleton — so genuine duplication elsewhere is never matched.
+        Conservative: a file we cannot read is treated as NOT scaffold, so real
+        duplication is never silently dropped on an I/O error.
+        """
+        norm = module.replace("\\", "/")
+        if not norm.startswith(self._EXECUTION_SCAFFOLD_DIR):
+            return False
+        # Only the family's own top level — not a nested subpackage like
+        # ``app/execution/objectives/...`` — counts as the flat transform scaffold.
+        if "/" in norm[len(self._EXECUTION_SCAFFOLD_DIR):]:
+            return False
+        try:
+            text = (self.root / norm).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return False
+        return any(marker in text for marker in self._EXECUTION_SCAFFOLD_IMPORTS)
+
     def _scan_generalizable_duplications(self, profile: ProjectProfile) -> None:
         """Name near-identical blocks that recur ACROSS modules — "extract one
         shared helper" (the DRY/generalize case).
@@ -613,6 +662,14 @@ class ProjectProfiler:
             # helper across 31 files" is noise. The actionable case is a SMALL
             # number of places that duplicated the same logic (dogfood finding).
             if not (2 <= len(modules) <= self._GENERALIZE_MAX_MODULES):
+                continue
+            # Down-weight/exclude the intentional ``app/execution/*`` transform
+            # scaffold: when EVERY module in the group is an execution-scaffold
+            # file sharing the ``_transform_base`` skeleton, the shared block is the
+            # BY-DESIGN per-transform shell, not copy-paste to generalize. A mixed
+            # group (one scaffold module + one genuine app module) is still kept —
+            # only an all-scaffold group is the false positive.
+            if all(self._is_execution_scaffold_module(m) for m in modules):
                 continue
             entries.append({
                 "modules": sorted(modules),
@@ -1228,9 +1285,16 @@ class ProjectProfiler:
         # no new scan. Deduped against the more-severe module-level signals
         # (fragile/hotspot), which frame such a module first.
         shallow = set(self._scan_shallow_tests(profile.module_to_tests, limit=None))
+        # Defined-symbol count per module (top-level functions/classes), read off
+        # the structure analysis already done above — no new scan. Lets the hub
+        # coverage scan drop an essentially-empty hub (a thin package
+        # ``__init__.py`` with no regression surface) so it never seeds a
+        # near-zero-value "cover the dependency hub" idea.
+        symbol_counts = {m.path: len(m.symbols) for m in modules}
         profile.hub_untested_modules = self._scan_hub_untested_modules(
             graph, profile.module_to_tests, shallow,
             claimed=set(profile.fragile_modules) | set(profile.hotspot_modules),
+            symbol_counts=symbol_counts,
         )
 
     @staticmethod
@@ -1419,6 +1483,16 @@ class ProjectProfiler:
     # widest blast radius. Kept strictly above the fragility floor so the two
     # signals describe different populations rather than restating each other.
     _HUB_FAN_IN_FLOOR = 3
+    # Minimum defined symbols (top-level functions/classes) a hub must have to be
+    # a worthwhile hub-COVERAGE target. A thin, essentially-empty package
+    # ``__init__.py`` (e.g. a 9-LOC ``app/__init__.py`` that only re-exports or is
+    # blank) can attract many importers and so clear ``_HUB_FAN_IN_FLOOR``, yet it
+    # has nothing to regress — "cover the dependency hub" there is busywork that
+    # seeds a near-zero-value idea. A floor of 1 keeps every hub that defines at
+    # least one symbol (the real regression surface) while dropping the empty-shell
+    # case. Scoped to the coverage-idea path only — the fan-in hub definition used
+    # elsewhere (``dependency_hubs``, ``module_fanin``) is unchanged.
+    _HUB_COVERAGE_MIN_SYMBOLS = 1
 
     # Fan-OUT bar for a *coordinator* (god-module): a module importing at least
     # this many internal modules is a coordination chokepoint — it knows about
@@ -1430,7 +1504,8 @@ class ProjectProfiler:
     _COORDINATOR_FAN_OUT_FLOOR = 12
 
     def _scan_hub_untested_modules(self, graph: dict, module_to_tests: dict,
-                                   shallow: set, claimed: set) -> list[dict]:
+                                   shallow: set, claimed: set,
+                                   symbol_counts: dict | None = None) -> list[dict]:
         """High-fan-in hub modules that are also untested or shallow-tested.
 
         A dependency HUB (``n.in_degree`` >= ``_HUB_FAN_IN_FLOOR`` — many modules
@@ -1445,7 +1520,16 @@ class ProjectProfiler:
         Modules already framed by a more-severe module-level signal (``claimed``
         = fragile + hotspot) are skipped so this never double-counts; mirrors how
         impure-untested dedups under the more-severe hotspot-function root.
+
+        ``symbol_counts`` (path -> number of top-level functions/classes, from the
+        already-built structure analysis) gates an essentially-EMPTY hub out of the
+        coverage target list: a thin re-export/blank package ``__init__.py`` can
+        clear the fan-in bar yet defines nothing to regress, so "cover this hub"
+        there is busywork. A module with fewer than ``_HUB_COVERAGE_MIN_SYMBOLS``
+        defined symbols is skipped. When ``symbol_counts`` is None (caller passed
+        no map) the floor is not applied, so existing behaviour is preserved.
         """
+        counts = symbol_counts or {}
         out: list[dict] = []
         for node in graph.values():
             path = node.path
@@ -1455,6 +1539,11 @@ class ProjectProfiler:
                 continue  # not a hub
             if self._is_test_path(path):
                 continue  # test files are not the subject of a regression net
+            if symbol_counts is not None and \
+                    counts.get(path, 0) < self._HUB_COVERAGE_MIN_SYMBOLS:
+                # An essentially-empty hub (e.g. a thin package __init__.py) has
+                # no regression surface — never a coverage target.
+                continue
             untested = not (module_to_tests.get(path) or [])
             if not (untested or path in shallow):
                 continue  # already has real coverage
