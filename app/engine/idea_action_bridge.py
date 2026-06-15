@@ -59,6 +59,16 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "incomplete-protocol": ("design_task",
                             "Complete the half-built protocol on {s} — Apex names "
                             "the gap; you decide the implementation", False),
+    # Generalizable duplication: near-identical blocks recurring across DISTINCT
+    # modules. Extracting one shared helper is a DESIGN decision (where should the
+    # abstraction live? what is the right parameterization?), so Apex RECOMMENDS
+    # the extraction and names the modules — it must NOT auto-write it. Strictly
+    # recommend-only (executable False); the ``A + B`` subject is a joined module
+    # pair, not a single editable target.
+    "generalizable-duplication": ("design_task",
+                                  "Generalize the cross-module duplication in {s} "
+                                  "— extract one shared helper; Apex names the "
+                                  "blocks, you design the abstraction", False),
     "modernization": ("modernize_comparisons", "Modernize None comparisons in {s}", True),
     "mutable-default": ("fix_mutable_defaults", "Fix mutable default arguments in {s}", True),
     # The hands exist (apex signature drop/keywordify) but as supervised CLI

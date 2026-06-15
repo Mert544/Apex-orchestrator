@@ -723,6 +723,39 @@ class IdeaSeeder:
                             f"{missing} — a half-built contract to finish)"),
             )
 
+        # Generalizable duplications (CONSTRUCTIVE — "these near-identical blocks
+        # in A, B, C should become one shared helper"): the cross-module DRY case
+        # that grounds the ``generalize`` development lens in REAL duplication. The
+        # near_dup engine reports structurally near-identical statement windows;
+        # the profile keeps only groups that span 2+ DISTINCT modules, so this is
+        # deliberately DISTINCT from the within-module extractable-block signal and
+        # never collides with a per-module subject (the subject JOINS the first two
+        # module paths, mirroring cochange-testgap's pair subject). Recommend-only:
+        # extracting a shared abstraction across modules is a DESIGN decision, so
+        # Apex points (names the modules and the block) but does NOT auto-write it.
+        # Pure AST, so an all-clean repo yields nothing here and seeding stays
+        # byte-identical. The fact value deliberately avoids the token "untested"
+        # and any leading "<int> <unit>" magnitude shape.
+        for dup in (getattr(profile, "generalizable_duplications", []) or [])[:3]:
+            modules = dup.get("modules") or []
+            if len(modules) < 2:
+                continue
+            occurrences = dup.get("occurrences", 0)
+            lines = dup.get("lines", 0)
+            mod_list = ", ".join(f"`{m}`" for m in modules)
+            subject = f"{modules[0]} + {modules[1]}"
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Generalize the duplicated logic across {mod_list} "
+                       f"({occurrences} near-identical {lines}-line blocks) — "
+                       f"extract one shared helper"),
+                subject=subject,
+                fact_label="generalizable-duplication",
+                fact_value=(f"near-identical {lines}-line blocks recur across "
+                            f"{mod_list} ({occurrences} occurrences — extract one "
+                            f"shared helper to DRY it up)"),
+            )
+
         # Dream insights: discoveries the nightly dream CONFIRMED across multiple
         # dreams and graduated (high confidence + persistence). The organism
         # acting on what it learned while you were away — guarded so only a

@@ -159,6 +159,21 @@ class ProjectProfile:
     # where to finish the protocol, it does not auto-write it. Each entry:
     # {"module","class","line","protocol","have","missing"}.
     incomplete_protocols: list[dict] = field(default_factory=list)
+    # Generalizable duplications (CONSTRUCTIVE DRY signal): near-identical
+    # statement blocks that recur across 2+ DISTINCT modules — the "these blocks
+    # in A, B, C should become one shared helper" case. Grounds the ``generalize``
+    # development lens in REAL cross-module duplication. DISTINCT from the
+    # within-module ``extractable-block``/``inlinable-helper`` signals: only groups
+    # whose occurrences span more than one module are kept here (single-module
+    # groups are NOT flagged — that is the extractable-block case), so we never
+    # double-flag. Delegates to ``app.engine.near_dup.find_near_duplicates`` (a
+    # whole-repo AST scan, so gated behind ``not light``); fixtures/tests/examples
+    # are excluded by the engine and re-filtered here. Recommend-only — extracting
+    # a shared abstraction across modules is a DESIGN decision, Apex points but does
+    # not auto-write. Deterministic, capped; an all-clean repo yields [] so seeding
+    # stays byte-identical. Each entry:
+    # {"modules": sorted distinct module paths, "occurrences": int, "lines": int}.
+    generalizable_duplications: list[dict] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -391,6 +406,13 @@ class ProjectProfiler:
             # once, so gate it out of the light/ascend path (the idea engine
             # profiles with light=False; an all-clean repo yields []).
             self._scan_incomplete_protocols(profile)
+            # Generalizable duplications: a CONSTRUCTIVE, whole-repo AST scan for
+            # near-identical blocks that recur across DISTINCT modules — the
+            # "extract one shared helper" (DRY/generalize) case. Same gating
+            # rationale as the protocol scan: a whole-tree AST pass the GRADE
+            # never reads, so it is kept out of the light/ascend path (the idea
+            # engine profiles with light=False; an all-clean repo yields []).
+            self._scan_generalizable_duplications(profile)
             # Polyglot hotspots: name the biggest / most-churned NON-Python
             # source files for the idea engine to recommend attention on. A
             # bounded git pass + walk that the GRADE never reads, so it is gated
@@ -522,6 +544,48 @@ class ProjectProfiler:
         from app.engine.completeness import incomplete_protocols
 
         profile.incomplete_protocols = incomplete_protocols(str(self.root))[:5]
+
+    def _scan_generalizable_duplications(self, profile: ProjectProfile) -> None:
+        """Name near-identical blocks that recur ACROSS modules — "extract one
+        shared helper" (the DRY/generalize case).
+
+        Delegates to the deterministic :func:`app.engine.near_dup.find_near_duplicates`,
+        which already enumerates structurally near-identical statement windows
+        across the project (its own min thresholds bound the scan) and excludes
+        test/example/fixture files via the source index. We keep ONLY groups whose
+        occurrences span 2+ DISTINCT modules — that is the cross-module
+        "generalize" case, deliberately DISTINCT from the within-module
+        ``extractable-block``/``inlinable-helper`` signals, so a single-module
+        group is never flagged here (no double-flagging). Each occurrence is a
+        ``"module:lineno"`` string; the module is the text before the LAST colon.
+        Sorted ``(-occurrences, -lines, modules)`` and capped so a single signal
+        never floods the idea set; an all-clean repo yields [] so seeding stays
+        byte-identical.
+        """
+        from app.engine.near_dup import find_near_duplicates
+
+        entries: list[dict] = []
+        for group in find_near_duplicates(str(self.root)):
+            modules = set()
+            for occ in group.occurrences:
+                # Occurrence is "module:lineno"; the lineno is the final field, so
+                # split on the LAST colon to recover the (possibly path-bearing)
+                # module string. Re-filter fixtures so the predicate is the single
+                # source of truth even if the engine let a path through.
+                module = occ.rsplit(":", 1)[0]
+                if module and not self._is_fixture_path(module):
+                    modules.add(module)
+            # Cross-module ONLY: a group confined to one module is the existing
+            # extractable-block case, not a generalize/DRY signal — skip it.
+            if len(modules) < 2:
+                continue
+            entries.append({
+                "modules": sorted(modules),
+                "occurrences": len(group.occurrences),
+                "lines": group.lines,
+            })
+        entries.sort(key=lambda e: (-e["occurrences"], -e["lines"], e["modules"]))
+        profile.generalizable_duplications = entries[:5]
 
     # Stable marker the reporting layer writes into every generated idea-tree
     # page (``<title>Apex Idea Tree</title>``). An HTML file carrying it is an
@@ -934,6 +998,19 @@ class ProjectProfiler:
                 p for p in profile.incomplete_protocols
                 if not self._is_fixture_path(str(p.get("module", "")))
             ]
+        if profile.generalizable_duplications:
+            # The near-dup engine already excludes test/example/fixture files, but
+            # re-filter here so the fixture predicate stays the single source of
+            # truth: drop any module that is a fixture path, then drop the whole
+            # group if fewer than 2 distinct non-fixture modules remain (it is no
+            # longer a cross-module generalize signal).
+            filtered: list[dict] = []
+            for dup in profile.generalizable_duplications:
+                mods = [m for m in dup.get("modules", [])
+                        if not self._is_fixture_path(str(m))]
+                if len(mods) >= 2:
+                    filtered.append({**dup, "modules": mods})
+            profile.generalizable_duplications = filtered
 
     def _count_debt_markers(self, path: Path) -> int:
         """Count ``# TODO/FIXME/XXX/HACK`` comment markers in a Python file.
