@@ -1006,6 +1006,7 @@ _FACT_HINTS: dict[str, str] = {
     "cochange-testgap": "joint integration test co-change coupling safety net cover both modules together regression check validation edge cases",
     "missing-ci": "ci workflow run tests automation",
     "polyglot-hotspot": "review awareness out of scope non-python coverage attention largest active surface",
+    "incomplete-protocol": "complete finish protocol contract pair half built equality hash context manager enter exit recommend design",
 }
 
 # Root fact labels where reliability/security lenses matter most.

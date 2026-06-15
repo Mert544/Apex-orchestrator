@@ -103,6 +103,16 @@ class IdeaSeeder:
     # untested hotspot exists — branchy enough to be worth pointing at.
     _ANCHOR_MIN_COMPLEXITY = 6
 
+    # The concrete, developer-facing consequence of each half-built protocol —
+    # appended to the incomplete-protocol idea title so it reads as a real
+    # development task, not a lint note. Deliberately free of the token
+    # "untested" (which would auto-promote the fact to an executable test).
+    _PROTOCOL_CONSEQUENCE = {
+        "equality/hash": "(instances can't be set/dict keys)",
+        "context-manager": "(it can't be used in a `with` block)",
+        "async-context-manager": "(it can't be used in an `async with` block)",
+    }
+
     def _complexity_anchors(self, module: str, seen: set[tuple[str, int]]) -> list[dict]:
         """Top complex functions in ``module`` by cyclomatic complexity, parsed
         directly — the test-status-independent anchor source. Deterministic;
@@ -682,6 +692,35 @@ class IdeaSeeder:
                 fact_value=(f"{path} ({language}, {loc} LOC, {churn} recent "
                             f"{commit_word}{fact_debt} — biggest/most-active file "
                             f"outside Apex's Python analysis scope)"),
+            )
+
+        # Incomplete protocols (CONSTRUCTIVE — "you started a protocol, finish
+        # it"): classes that began a Python contract pair without completing it.
+        # The essence of a DEVELOPMENT assistant — point at where the project is
+        # half-built, not just where it smells. Recommend-only: Apex names the
+        # gap and the exact class/line; it does NOT auto-write the missing method.
+        # The subject is ``module::Class`` so it never collides with a module-
+        # level subject. Pure AST, so an all-clean repo yields nothing here and
+        # seeding stays byte-identical. The fact value deliberately avoids the
+        # token "untested" (which would auto-promote it to an executable test).
+        for proto in (getattr(profile, "incomplete_protocols", []) or [])[:3]:
+            module = proto["module"]
+            cls = proto["class"]
+            line = proto.get("line", 0)
+            have = proto.get("have", "")
+            missing = proto.get("missing", "")
+            protocol = proto.get("protocol", "")
+            locus = f"{module}:{line}"
+            consequence = self._PROTOCOL_CONSEQUENCE.get(protocol, "")
+            tail = f" {consequence}" if consequence else ""
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Complete the {protocol} protocol on `{cls}` ({locus}) — "
+                       f"defines {have} but no {missing}{tail}"),
+                subject=f"{module}::{cls}",
+                fact_label="incomplete-protocol",
+                fact_value=(f"{cls} in {module} ({protocol}: has {have}, missing "
+                            f"{missing} — a half-built contract to finish)"),
             )
 
         # Dream insights: discoveries the nightly dream CONFIRMED across multiple

@@ -50,6 +50,15 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "polyglot-hotspot": ("design_task",
                          "Review/cover {s} in your stack — it's outside Apex's "
                          "Python analysis but it's a large, active file", False),
+    # Incomplete protocol: a half-built Python contract (eq/hash, context
+    # manager). Finishing it is a DESIGN decision (what should the hash key on?
+    # what does __exit__ release?), so Apex RECOMMENDS the completion and names
+    # the exact class/line — it must NOT auto-write the missing method. Strictly
+    # recommend-only (executable False) even though the ``module::Class`` subject
+    # carries a real file path.
+    "incomplete-protocol": ("design_task",
+                            "Complete the half-built protocol on {s} — Apex names "
+                            "the gap; you decide the implementation", False),
     "modernization": ("modernize_comparisons", "Modernize None comparisons in {s}", True),
     "mutable-default": ("fix_mutable_defaults", "Fix mutable default arguments in {s}", True),
     # The hands exist (apex signature drop/keywordify) but as supervised CLI

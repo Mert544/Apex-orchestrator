@@ -149,6 +149,16 @@ class ProjectProfile:
     # mode); an all-Python repo yields []. Each entry:
     # {"path","language","loc","churn"}.
     polyglot_hotspots: list[dict] = field(default_factory=list)
+    # Incomplete protocols (CONSTRUCTIVE half-built signal): top-level/nested
+    # classes that START a Python contract pair but don't finish it — ``__eq__``
+    # without ``__hash__`` (instances can't be set/dict keys), ``__enter__``
+    # without ``__exit__``, ``__aenter__`` without ``__aexit__``. Conservative by
+    # construction (see ``app.engine.completeness.incomplete_protocols``): only
+    # unambiguous, single-file-visible gaps are flagged, so an all-clean repo
+    # yields [] and seeding stays byte-identical. Recommend-only — Apex points at
+    # where to finish the protocol, it does not auto-write it. Each entry:
+    # {"module","class","line","protocol","have","missing"}.
+    incomplete_protocols: list[dict] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -374,6 +384,11 @@ class ProjectProfiler:
         # walk's already-collected extension counts) so the grade can honestly
         # report how much of a polyglot repo its Python analysis covers.
         self._scan_analysis_scope(profile, ext_counter)
+        # Incomplete protocols: a CONSTRUCTIVE, pure-AST scan (no git, no
+        # subprocess) over the same source tree — cheap enough to always run, in
+        # light and full alike, so the signal is available wherever the profile
+        # is. An all-clean repo yields [], keeping seeding byte-identical.
+        self._scan_incomplete_protocols(profile)
         if not light:
             # Polyglot hotspots: name the biggest / most-churned NON-Python
             # source files for the idea engine to recommend attention on. A
@@ -491,6 +506,21 @@ class ProjectProfiler:
             if len(hotspots) >= 3:
                 break
         profile.polyglot_hotspots = hotspots
+
+    def _scan_incomplete_protocols(self, profile: ProjectProfile) -> None:
+        """Name the half-built Python contract pairs — "finish what you started".
+
+        Delegates to the pure-AST :func:`app.engine.completeness.incomplete_protocols`,
+        which walks the same source tree through the canonical skip-dir exclusion,
+        excludes test/example/fixture files, and is conservative by construction
+        (only unambiguous gaps: ``__eq__`` without ``__hash__``, and the
+        sync/async context-manager pairs). Deterministic and capped so a single
+        signal never floods the idea set; an all-clean repo yields [] so seeding
+        stays byte-identical.
+        """
+        from app.engine.completeness import incomplete_protocols
+
+        profile.incomplete_protocols = incomplete_protocols(str(self.root))[:5]
 
     # Stable marker the reporting layer writes into every generated idea-tree
     # page (``<title>Apex Idea Tree</title>``). An HTML file carrying it is an
@@ -893,6 +923,15 @@ class ProjectProfiler:
             profile.churn_hotspots = [
                 c for c in profile.churn_hotspots
                 if not self._is_fixture_path(str(c.get("module", "")))
+            ]
+        if profile.incomplete_protocols:
+            # The completeness scan already drops test/example/fixture files, but
+            # filter here too so the fixture predicate is the single source of
+            # truth (a path the scan let through but this predicate flags is still
+            # dropped, keeping fixtures out of every idea).
+            profile.incomplete_protocols = [
+                p for p in profile.incomplete_protocols
+                if not self._is_fixture_path(str(p.get("module", "")))
             ]
 
     def _count_debt_markers(self, path: Path) -> int:
