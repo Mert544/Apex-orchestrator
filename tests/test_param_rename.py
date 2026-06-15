@@ -119,6 +119,83 @@ def test_apply_verifies_and_rolls_back(tmp_path):
     assert (tmp_path / "app" / "core.py").read_text() == before
 
 
+def _snapshot(plan):
+    """A stable, comparable view of a plan: edits + blockers + warnings."""
+    return {
+        "ok": plan.ok,
+        "defined_in": plan.defined_in,
+        "new_contents": dict(sorted(plan.new_contents.items())),
+        "edits_by_file": dict(sorted(plan.edits_by_file.items())),
+        "blockers": list(plan.blockers),
+        "warnings": list(plan.warnings),
+    }
+
+
+def test_characterization_rewrite_plan_is_pinned(tmp_path):
+    """Pin the full plan (edits + counts + warnings) for the canonical rewrite.
+
+    Guards the behaviour-preserving decomposition of ``plan_param_rename``: any
+    change to located spans, edit counts, ordering, or warnings trips this.
+    """
+    _project(tmp_path)
+    (tmp_path / "app" / "dyn.py").write_text(
+        "from app.core import scale\n"
+        "def d(v, opts):\n"
+        "    return scale(v, **opts)\n"
+    )
+    snap = _snapshot(plan_param_rename(tmp_path, "scale", "factor", "multiplier"))
+
+    assert snap["ok"] is True
+    assert snap["defined_in"] == "app/core.py"
+    assert snap["new_contents"] == {
+        "app/attr_user.py": (
+            "import app.core\n"
+            "\n"
+            "def h(v):\n"
+            "    return app.core.scale(v, multiplier=5)\n"
+        ),
+        "app/core.py": (
+            "def scale(value, multiplier=2):\n"
+            "    # factor controls the multiplier\n"
+            "    return value * multiplier\n"
+        ),
+        "app/kw_user.py": (
+            "from app.core import scale\n"
+            "\n"
+            "def f(v):\n"
+            "    return scale(v, multiplier=3)\n"
+        ),
+        "tests/test_core.py": (
+            "from app.core import scale\n"
+            "def test_scale():\n"
+            "    assert scale(2, multiplier=3) == 6\n"
+        ),
+    }
+    assert snap["edits_by_file"] == {
+        "app/attr_user.py": 1,
+        "app/core.py": 2,
+        "app/kw_user.py": 1,
+        "tests/test_core.py": 1,
+    }
+    assert snap["blockers"] == []
+    assert snap["warnings"] == [
+        "app/dyn.py:3: scale(**…) call — a dict may still carry 'factor'; check manually",
+    ]
+
+
+def test_characterization_refusal_plan_is_pinned(tmp_path):
+    """Pin a refusal: nothing rewritten, exactly one blocker, no warnings."""
+    _project(tmp_path)
+    snap = _snapshot(plan_param_rename(tmp_path, "scale", "factor", "value"))
+
+    assert snap["ok"] is False
+    assert snap["defined_in"] == "app/core.py"
+    assert snap["new_contents"] == {}
+    assert snap["edits_by_file"] == {}
+    assert snap["blockers"] == ["scale() already has a parameter 'value'"]
+    assert snap["warnings"] == []
+
+
 def test_cli_param_rename(tmp_path, capsys):
     from app.cli import cmd_rename
 
