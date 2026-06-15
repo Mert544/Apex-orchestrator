@@ -50,6 +50,28 @@ def cmd_review(args: argparse.Namespace) -> int:
         sarif_path.write_text(json.dumps(review_to_sarif(result), indent=2) + "\n",
                               encoding="utf-8")
 
+    # --format: emit findings in a CI-interop format (CodeClimate/GitLab Code
+    # Quality, JUnit, GitHub annotations, SonarQube, CSV, HTML) so Apex drops into
+    # an existing pipeline next to — or in place of — SonarQube/CodeClimate. Goes
+    # to --format-out (a file) or stdout, and is the sole output when set.
+    fmt = getattr(args, "format", "") or ""
+    if fmt:
+        text = _render_findings_format(fmt, result)
+        fmt_out = getattr(args, "format_out", "") or ""
+        if fmt_out:
+            p = Path(fmt_out)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+            print(f"[review] {fmt} written to {fmt_out}")
+        else:
+            print(text)
+        if getattr(args, "fail_on_high", False):
+            from app.engine.diff_review import blocking_high_findings
+
+            if blocking_high_findings(result):
+                return 1
+        return 0
+
     if args.json:
         payload = result.to_dict()
         if fix_report is not None:
@@ -69,6 +91,42 @@ def cmd_review(args: argparse.Namespace) -> int:
         if blocking_high_findings(result):
             return 1
     return 0
+
+
+def _render_findings_format(fmt: str, result) -> str:
+    """Render a review result in a CI-interop format. The exporters duck-type over
+    ``ReviewFinding``, so each receives ``result.findings`` (SARIF takes the whole
+    result). Deterministic, stdlib-only — these are pure serializers."""
+    findings = result.findings
+    if fmt == "sarif":
+        from app.engine.sarif_export import review_to_sarif
+
+        return json.dumps(review_to_sarif(result), indent=2)
+    if fmt == "codeclimate":
+        from app.reporting.codeclimate_export import to_codeclimate_json
+
+        return to_codeclimate_json(findings)
+    if fmt == "junit":
+        from app.reporting.junit_export import to_junit_xml
+
+        return to_junit_xml(findings)
+    if fmt == "github":
+        from app.reporting.gha_annotations import to_gha_annotations
+
+        return to_gha_annotations(findings)
+    if fmt == "sonar":
+        from app.reporting.sonar_generic_export import to_sonar_generic_json
+
+        return to_sonar_generic_json(findings)
+    if fmt == "csv":
+        from app.reporting.csv_export import to_csv
+
+        return to_csv(findings)
+    if fmt == "html":
+        from app.reporting.findings_html import findings_to_html
+
+        return findings_to_html(findings)
+    raise ValueError(f"unknown review format: {fmt!r}")
 
 
 def _apply_review_fixes(target: str, result) -> dict:
@@ -180,6 +238,14 @@ def register_parsers(subparsers) -> None:
     review_parser.add_argument("--base", default="HEAD", help="Git base ref to diff against")
     review_parser.add_argument("--fail-on-high", action="store_true", dest="fail_on_high",
                               help="Exit non-zero if a high-severity issue is in the diff (CI)")
+    review_parser.add_argument(
+        "--format", default="",
+        choices=["sarif", "codeclimate", "junit", "github", "sonar", "csv", "html"],
+        help="Emit findings in a CI-interop format to --format-out or stdout: "
+             "sarif, codeclimate (GitLab Code Quality / CodeClimate), junit, "
+             "github (Actions annotations), sonar (generic issues), csv, html")
+    review_parser.add_argument("--format-out", default="", dest="format_out",
+                               help="Write --format output to this path (default: stdout)")
     review_parser.add_argument("--sarif", default="",
                                help="Write findings as SARIF 2.1.0 to this path "
                                     "(GitHub code scanning compatible)")
