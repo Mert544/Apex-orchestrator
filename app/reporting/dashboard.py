@@ -425,11 +425,46 @@ def _findings_section(findings: dict[str, dict[str, Any]], project_root: str = "
     return _card("findings", "🔍", "Scan findings", inner)
 
 
+def _coordinator_block(p: ProjectProfile) -> str:
+    """Render high-fan-OUT "god-modules" — decoupling candidates.
+
+    Reads ``profile.coordinator_modules`` (a ``list[dict]`` with ``module``,
+    ``fan_out`` and the top internal ``imports``). This is the OPPOSITE edge
+    direction from the dependency-hub (fan-IN) read-out, so the two never restate
+    each other. Gated by construction: a repo with no god-module yields "" and the
+    page stays byte-identical. Every codebase-sourced string is HTML-escaped.
+    """
+    coordinators = getattr(p, "coordinator_modules", []) or []
+    if not coordinators:
+        return ""
+    rows = ""
+    for c in coordinators[:5]:
+        if not isinstance(c, dict):
+            continue
+        imports = c.get("imports", []) or []
+        wires = " · ".join(f"<code>{_esc(m)}</code>" for m in imports[:3])
+        wires_html = f"<span class='muted'>wires {wires}</span>" if wires else ""
+        rows += (
+            f"<li><code>{_esc(c.get('module', '?'))}</code> "
+            f"<span class='val'>fan-out {_esc(c.get('fan_out', 0))}</span> "
+            f"{wires_html}</li>"
+        )
+    if not rows:
+        return ""
+    return (
+        "<h4 style='margin:12px 0 4px'>🕸️ Coordinator modules (high fan-out)</h4>"
+        "<p class='muted' style='margin:0 0 6px'>Modules that import many "
+        "siblings — decoupling candidates (the opposite of dependency hubs).</p>"
+        f"<ul class='commits'>{rows}</ul>"
+    )
+
+
 def _architecture_section(p: ProjectProfile) -> str:
     """Surface architectural risks the engine sees: import cycles + fragility."""
     cycles = getattr(p, "import_cycles", []) or []
     fragile = getattr(p, "fragile_modules", []) or []
-    if not cycles and not fragile:
+    coordinators = getattr(p, "coordinator_modules", []) or []
+    if not cycles and not fragile and not coordinators:
         return _card(
             "architecture", "🏛️", "Architecture health",
             "<p class='muted'>No import cycles or fragile hubs detected 🎉</p>",
@@ -438,6 +473,7 @@ def _architecture_section(p: ProjectProfile) -> str:
         [
             _chip("import cycles", len(cycles)),
             _chip("fragile modules", len(fragile)),
+            _chip("coordinators", len(coordinators)),
             _chip("dependency edges", len(getattr(p, "dependency_edges", []) or [])),
         ]
     )
@@ -452,6 +488,7 @@ def _architecture_section(p: ProjectProfile) -> str:
             for m in fragile[:5]
         )
         body += f"<h4 style='margin:12px 0 4px'>⚠️ Fragile modules</h4><ul class='commits'>{items}</ul>"
+    body += _coordinator_block(p)
     return _card("architecture", "🏛️", "Architecture health", f"<div class='chips'>{chips}</div>{body}")
 
 
@@ -661,11 +698,24 @@ def _shape_section(shape) -> str:
         chip_specs.append(_chip("heaviest", f"{shape.heaviest_module} ({shape.heaviest_loc} LOC)"))
     chips = "".join(chip_specs)
     obs = "".join(f"<li>{_esc(o)}</li>" for o in shape.observations)
+    # Grounding read-out: how many ideas tie to concrete code facts. Read via
+    # getattr so a shape object from a worktree without these fields renders
+    # byte-identically (the line is simply omitted).
+    grounding_html = ""
+    grounding_ratio = getattr(shape, "grounding_ratio", None)
+    if isinstance(grounding_ratio, (int, float)) and grounding_ratio > 0:
+        grounded = getattr(shape, "grounded_count", 0)
+        grounding_html = (
+            f"<p class='muted'>grounding: <b>{int(grounding_ratio * 100)}%</b> of ideas "
+            f"tied to concrete code facts "
+            f"({_esc(grounded)}/{_esc(shape.total_ideas)})</p>"
+        )
     inner = (
         f"<div class='chips'>{chips}</div>"
         f"<p class='muted'>kinds: {_esc(kinds)} · depth: {_esc(depths)} · "
         f"top subject <code>{_esc(shape.top_subject)}</code> "
         f"({int(shape.top_subject_share * 100)}%)</p>"
+        f"{grounding_html}"
         f"<h4 style='margin:6px 0 4px'>Observations</h4><ul class='commits'>{obs}</ul>"
     )
     return _card("shape", "📐", "Idea-tree shape", inner)
