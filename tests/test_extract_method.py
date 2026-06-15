@@ -323,3 +323,130 @@ def test_suggest_is_deterministic():
     body = "\n".join(f"    x{i} = {i}" for i in range(45))
     src = f"def f(start):\n    t = start\n{body}\n    return t\n"
     assert suggest_extractions(src) == suggest_extractions(src)
+
+
+# ── Characterization: the per-statement memoization (the precomputed store/load
+# sets reused across overlapping windows) MUST be byte-identical to the original
+# per-window data-flow walk. These snapshots pin the exact list — order, fields,
+# every value — so any future refactor that drifts the output fails loudly. ──
+
+def _char_snippets():
+    """Representative sources spanning the live-in/live-out, blocker, comprehension
+    and method-seam paths exercised by ``suggest_extractions``."""
+    clean = "def big(a, b, c):\n" + "".join(
+        f"    x{i} = a + b + c + {i}\n" for i in range(50)
+    ) + "    return x0 + x49\n"
+
+    mixed_lines = []
+    for i in range(50):
+        if i % 7 == 0:
+            mixed_lines.append(f"    if a > {i}:\n        return a\n")
+        else:
+            mixed_lines.append(f"    y{i} = b + {i}\n")
+    mixed = ("def mixed(a, b):\n" + "".join(mixed_lines)
+             + "    z = sum([y1, y2])\n    return z\n")
+
+    method = ("class C:\n    def m(self, a, b):\n" + "".join(
+        f"        p{i} = a * b + {i}\n" for i in range(45)
+    ) + "        return p0\n")
+
+    # A comprehension whose target name shadows a real local — exercises the
+    # comp-target subtraction over the *whole* window, not per statement.
+    comp_lines = [f"    acc{i} = [w for w in range({i})]" for i in range(45)]
+    comp = ("def comps(seed):\n    w = seed\n" + "\n".join(comp_lines)
+            + "\n    return w\n")
+
+    return {
+        "empty": "",
+        "syntax_error": "def f(:\n  pass",
+        "short_fn": "def f():\n    return 1\n",
+        "clean": clean,
+        "mixed_returns": mixed,
+        "method": method,
+        "comprehension": comp,
+    }
+
+
+def test_suggest_characterization_snapshot():
+    from app.execution.extract_method import suggest_extractions
+
+    snips = _char_snippets()
+    expected = {
+        "empty": [],
+        "syntax_error": [],
+        "short_fn": [],
+        "clean": [
+            {"function": "big", "line": 1, "start": 3, "end": 42,
+             "name": "_big_part", "params": ["a", "b", "c"], "returns": [],
+             "lines_saved": 40},
+        ],
+        "mixed_returns": [
+            {"function": "mixed", "line": 1, "start": 12, "end": 17,
+             "name": "_mixed_part", "params": ["b"], "returns": [],
+             "lines_saved": 6},
+        ],
+        "method": [
+            {"function": "m", "line": 2, "start": 4, "end": 43,
+             "name": "_m_part", "params": ["a", "b"], "returns": [],
+             "lines_saved": 40},
+        ],
+        "comprehension": [
+            {"function": "comps", "line": 1, "start": 4, "end": 43,
+             "name": "_comps_part", "params": [], "returns": [],
+             "lines_saved": 40},
+        ],
+    }
+    for name, src in snips.items():
+        assert suggest_extractions(src) == expected[name], name
+
+
+def test_suggest_memoized_matches_naive_window_walk():
+    """Equivalence oracle: the optimized scan must agree, value for value, with a
+    naive implementation that re-walks every window (the original algorithm)."""
+    import ast
+
+    import app.execution.extract_method as em
+
+    def naive(source):
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return []
+        out = []
+        for fn, _c in em._iter_closure_free_functions(tree):
+            span = (fn.end_lineno or fn.lineno) - fn.lineno + 1
+            body = fn.body
+            if span < em._SUGGEST_FN_FLOOR or not (
+                    em._SUGGEST_MIN_STMTS <= len(body) <= em._SUGGEST_MAX_BODY):
+                continue
+            best = None
+            for i in range(len(body)):
+                for j in range(i + em._SUGGEST_MIN_STMTS, len(body) + 1):
+                    if j - i == len(body):
+                        continue
+                    stmts = body[i:j]
+                    if em._blocking_reason(stmts) is not None:
+                        continue
+                    saved = (max(getattr(s, "end_lineno", s.lineno) for s in stmts)
+                             - stmts[0].lineno + 1)
+                    if not (em._SUGGEST_MIN_LINES <= saved <= em._SUGGEST_MAX_LINES):
+                        continue
+                    li, lo = em._data_flow(fn, body[:i], stmts, body[j:])
+                    if len(lo) > em._SUGGEST_MAX_RETURNS or len(li) > em._SUGGEST_MAX_PARAMS:
+                        continue
+                    score = saved - 2 * (len(li) + len(lo))
+                    cand = {"function": fn.name, "line": fn.lineno,
+                            "start": stmts[0].lineno,
+                            "end": max(getattr(s, "end_lineno", s.lineno) for s in stmts),
+                            "name": f"_{fn.name}_part", "params": li, "returns": lo,
+                            "lines_saved": saved}
+                    key = (score, -cand["start"], -(cand["end"] - cand["start"]))
+                    if best is None or key > best[0]:
+                        best = (key, cand)
+            if best is not None:
+                out.append(best[1])
+        out.sort(key=lambda d: (-d["lines_saved"], d["function"]))
+        return out
+
+    for src in _char_snippets().values():
+        assert em.suggest_extractions(src) == naive(src)

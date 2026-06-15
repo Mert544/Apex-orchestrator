@@ -204,6 +204,61 @@ def _data_flow(fn, before: list, stmts: list, after: list) -> tuple[list[str], l
     return live_in, live_out
 
 
+class _StmtFacts:
+    """The data-flow primitives of a *single* statement, walked exactly once.
+
+    ``suggest_extractions`` enumerates O(n²) overlapping windows of a function
+    body, and every window's :func:`_blocking_reason` / :func:`_data_flow` re-walks
+    the same statements again and again. These per-statement sets let the scan
+    union precomputed facts instead — the byte-identical decomposition of the
+    list-level helpers above:
+
+    * ``_loads(window)``            == union of every ``loads`` in the window
+    * ``_augmented_targets(window)``== union of every ``aug`` in the window
+    * ``_stores(window)``           == ``union(raw_stores) - union(comp)`` over it
+      (the comp subtraction is done on the *whole* window, matching ``_stores``
+      which subtracts ``_comp_targets(nodes)`` from the union — a name that is a
+      store in one statement and a comp-target in another stays excluded)
+    * ``_blocking_reason(window) is not None`` == any statement's ``blocks`` flag
+      (the list-level reason walks each statement independently, so a window is
+      unsafe iff at least one of its statements is — the suggester only needs the
+      boolean, never the specific message string)
+    """
+
+    __slots__ = ("loads", "aug", "raw_stores", "comp", "blocks")
+
+    def __init__(self, stmt) -> None:
+        loads: set[str] = set()
+        aug: set[str] = set()
+        raw_stores: set[str] = set()
+        comp: set[str] = set()
+        blocks = False
+        for n in ast.walk(stmt):
+            if isinstance(n, ast.Name):
+                ctx = n.ctx
+                if isinstance(ctx, ast.Load):
+                    loads.add(n.id)
+                elif isinstance(ctx, ast.Store):
+                    raw_stores.add(n.id)
+            elif isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name):
+                aug.add(n.target.id)
+            elif isinstance(n, _COMP_NODES):
+                for gen in n.generators:
+                    for t in ast.walk(gen.target):
+                        if isinstance(t, ast.Name):
+                            comp.add(t.id)
+            if not blocks and isinstance(n, (*_NESTED_SCOPE_NODES, *_CONTROL_NODES)):
+                blocks = True
+        # An unenclosed break/continue blocks too — checked once per statement.
+        if not blocks and _has_unenclosed_jump(stmt):
+            blocks = True
+        self.loads = loads
+        self.aug = aug
+        self.raw_stores = raw_stores
+        self.comp = comp
+        self.blocks = blocks
+
+
 def _reindent(src_lines: list[str], base_indent: int) -> list[str]:
     """Dedent the range by its own indent, re-indent to 4 spaces under `def`."""
     out: list[str] = []
@@ -358,28 +413,78 @@ def suggest_extractions(source: str, tree: ast.Module | None = None) -> list[dic
         body = fn.body
         if span < _SUGGEST_FN_FLOOR or not (_SUGGEST_MIN_STMTS <= len(body) <= _SUGGEST_MAX_BODY):
             continue
+        n = len(body)
+        # Walk each statement once; the O(n²) window scan below reuses these
+        # per-statement sets instead of re-walking overlapping ranges (the
+        # documented byte-identical decomposition of the list-level helpers).
+        facts = [_StmtFacts(s) for s in body]
+        line_lo = [s.lineno for s in body]
+        line_hi = [getattr(s, "end_lineno", s.lineno) for s in body]
+
+        # prefix_stores[i] == _stores(body[:i]); suffix_loads[j] == _loads(body[j:]).
+        prefix_stores: list[set[str]] = [set()]
+        raw_acc: set[str] = set()
+        comp_acc: set[str] = set()
+        for f in facts:
+            raw_acc = raw_acc | f.raw_stores
+            comp_acc = comp_acc | f.comp
+            prefix_stores.append(raw_acc - comp_acc)
+        suffix_loads: list[set[str]] = [set()] * (n + 1)
+        loads_acc: set[str] = set()
+        for k in range(n - 1, -1, -1):
+            loads_acc = loads_acc | facts[k].loads
+            suffix_loads[k] = loads_acc
+
+        param_names = _function_param_names(fn)
+
         best: tuple[int, dict] | None = None
-        for i in range(len(body)):
-            for j in range(i + _SUGGEST_MIN_STMTS, len(body) + 1):
-                if j - i == len(body):
-                    continue  # extracting the WHOLE body is a rename, not a seam
-                stmts = body[i:j]
-                if _blocking_reason(stmts) is not None:
+        for i in range(n):
+            params_and_prior = param_names | prefix_stores[i]
+            start = line_lo[i]
+            # Grow the window [i, j) statement by statement, accumulating its
+            # data-flow sets in O(1) per step rather than re-walking each window.
+            win_loads: set[str] = set()
+            win_aug: set[str] = set()
+            win_raw: set[str] = set()
+            win_comp: set[str] = set()
+            win_end = 0
+            win_blocked = False
+            for j in range(i + 1, n + 1):
+                f = facts[j - 1]
+                win_loads |= f.loads
+                win_aug |= f.aug
+                win_raw |= f.raw_stores
+                win_comp |= f.comp
+                e = line_hi[j - 1]
+                if e > win_end:
+                    win_end = e
+                if f.blocks:
+                    win_blocked = True
+                if j - i < _SUGGEST_MIN_STMTS:
                     continue
-                lines_saved = (max(getattr(s, "end_lineno", s.lineno) for s in stmts)
-                               - stmts[0].lineno + 1)
+                if j - i == n:
+                    continue  # extracting the WHOLE body is a rename, not a seam
+                if win_blocked:
+                    continue
+                lines_saved = win_end - start + 1
                 if not (_SUGGEST_MIN_LINES <= lines_saved <= _SUGGEST_MAX_LINES):
                     continue
-                live_in, live_out = _data_flow(fn, body[:i], stmts, body[j:])
-                if len(live_out) > _SUGGEST_MAX_RETURNS or len(live_in) > _SUGGEST_MAX_PARAMS:
+                reads = win_loads | win_aug
+                live_in = sorted(nm for nm in reads if nm in params_and_prior)
+                if len(live_in) > _SUGGEST_MAX_PARAMS:
+                    continue
+                defined = (win_raw - win_comp) | win_aug
+                reads_after = suffix_loads[j]
+                live_out = sorted(nm for nm in defined if nm in reads_after)
+                if len(live_out) > _SUGGEST_MAX_RETURNS:
                     continue
                 # Favor a big body behind a small interface (few params/returns).
                 score = lines_saved - 2 * (len(live_in) + len(live_out))
                 cand = {
                     "function": fn.name,
                     "line": fn.lineno,
-                    "start": stmts[0].lineno,
-                    "end": max(getattr(s, "end_lineno", s.lineno) for s in stmts),
+                    "start": start,
+                    "end": win_end,
                     "name": f"_{fn.name}_part",
                     "params": live_in,
                     "returns": live_out,
