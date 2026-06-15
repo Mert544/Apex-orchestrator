@@ -384,12 +384,13 @@ class ProjectProfiler:
         # walk's already-collected extension counts) so the grade can honestly
         # report how much of a polyglot repo its Python analysis covers.
         self._scan_analysis_scope(profile, ext_counter)
-        # Incomplete protocols: a CONSTRUCTIVE, pure-AST scan (no git, no
-        # subprocess) over the same source tree — cheap enough to always run, in
-        # light and full alike, so the signal is available wherever the profile
-        # is. An all-clean repo yields [], keeping seeding byte-identical.
-        self._scan_incomplete_protocols(profile)
         if not light:
+            # Incomplete protocols: a CONSTRUCTIVE, pure-AST scan over the source
+            # tree for the idea engine to recommend "finish this protocol" on. The
+            # GRADE never reads it and the light path already parses every file
+            # once, so gate it out of the light/ascend path (the idea engine
+            # profiles with light=False; an all-clean repo yields []).
+            self._scan_incomplete_protocols(profile)
             # Polyglot hotspots: name the biggest / most-churned NON-Python
             # source files for the idea engine to recommend attention on. A
             # bounded git pass + walk that the GRADE never reads, so it is gated

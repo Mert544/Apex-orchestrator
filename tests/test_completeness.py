@@ -279,12 +279,17 @@ def test_profiler_populates_field(tmp_path: Path):
                for p in profile.incomplete_protocols)
 
 
-def test_profiler_light_mode_populates_field(tmp_path: Path):
-    # Pure-AST scan runs in light mode too (no git/subprocess dependency).
+def test_profiler_light_mode_skips_the_scan(tmp_path: Path):
+    # The constructive scan is gated out of the LIGHT path: the grade/ascend
+    # re-grade never reads incomplete_protocols, and the light path already
+    # parses every file once, so a second whole-repo AST walk there is wasted.
+    # The idea engine profiles with light=False, where the signal is populated.
     _write(tmp_path, "app/money.py",
            "class Money:\n    def __eq__(self, o):\n        return True\n")
-    profile = ProjectProfiler(str(tmp_path)).profile(light=True)
-    assert any(p["class"] == "Money" for p in profile.incomplete_protocols)
+    light = ProjectProfiler(str(tmp_path)).profile(light=True)
+    assert light.incomplete_protocols == []
+    full = ProjectProfiler(str(tmp_path)).profile()
+    assert any(p["class"] == "Money" for p in full.incomplete_protocols)
 
 
 def test_profiler_clean_repo_yields_empty_field(tmp_path: Path):
