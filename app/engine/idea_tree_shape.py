@@ -56,6 +56,27 @@ class TreeShape:
     distinct_operators: int = 0
     dominant_operator: str = ""
     dominant_operator_share: float = 0.0  # share of ideas using the top lens, [0,1]
+    # Depth balance: the fraction of ideas that are leaves (no child idea was
+    # derived from them). A tree of all shallow roots with no facet/permutation
+    # expansion sits near 1.0 (under-developed frontier); a tree expanded
+    # everywhere drops well below 1.0 (deep interior). Orthogonal to
+    # branching_factor (children per *internal* node, which ignores how much of
+    # the tree is terminal) and facet_penetration (kind-based), this reads how
+    # much of the tree is an unexplored frontier vs. an explored interior.
+    leaf_count: int = 0
+    leaf_ratio: float = 0.0  # leaf_count / total_ideas, in [0,1]
+    # Developmental center of mass: the mean depth across all ideas. Where
+    # leaf_ratio counts how much of the tree is *terminal* and branching_factor
+    # counts children per *internal* node, mean_depth reads how far from the
+    # roots the typical idea sits — two trees with identical leaf_ratio and
+    # branching_factor can still differ here (a wide bush of depth-1 children vs.
+    # a narrow deep spine). Roots-only trees sit at 0.0; deeply chained trees
+    # climb toward max_depth. depth_balance normalizes it into [0,1] by
+    # mean_depth / max_depth so it reads independently of how deep the run was
+    # allowed to go (0.0 = everything clustered at the roots, →1.0 = mass pushed
+    # to the deepest frontier).
+    mean_depth: float = 0.0  # sum(depth) / total_ideas, ≥ 0
+    depth_balance: float = 0.0  # mean_depth / max_depth, in [0,1]
     observations: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -114,6 +135,16 @@ def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
         round(sum(child_counts.values()) / len(child_counts), 4) if child_counts else 0.0
     )
 
+    # Depth balance: leaves are ideas that are no idea's parent. The set of
+    # parents is exactly the keys of child_counts; everything else is terminal.
+    parent_ids = set(child_counts)
+    leaf_count = sum(1 for i in ideas if i.id not in parent_ids)
+    leaf_ratio = round(leaf_count / total, 4)
+
+    # Developmental center of mass: mean idea depth, normalized by max_depth.
+    mean_depth = round(sum(i.depth for i in ideas) / total, 4)
+    depth_balance = round(mean_depth / max_depth, 4) if max_depth else 0.0
+
     subjects = Counter(i.subject for i in ideas if i.subject)
     distinct_subjects = len(subjects)
     top_subject, top_count = subjects.most_common(1)[0] if subjects else ("", 0)
@@ -160,6 +191,10 @@ def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
         distinct_operators=distinct_operators,
         dominant_operator=dominant_operator,
         dominant_operator_share=dominant_operator_share,
+        leaf_count=leaf_count,
+        leaf_ratio=leaf_ratio,
+        mean_depth=mean_depth,
+        depth_balance=depth_balance,
         heaviest_module=heaviest_module,
         heaviest_loc=heaviest_loc,
         total_measured_loc=total_measured_loc,
@@ -175,6 +210,21 @@ def _observe(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
         obs.append("Tree is shallow (depth ≤ 1) — raise --depth to permute further.")
     if s.branching_factor and s.branching_factor < 1.5:
         obs.append("Sparse branching — raise --breadth to apply more lenses per idea.")
+    if s.total_ideas > 1 and s.leaf_ratio >= 0.9:
+        obs.append(
+            "Almost every idea is a leaf — the tree is a flat frontier with little "
+            "expansion; raise --depth to develop directions further."
+        )
+    elif s.total_ideas > 1 and s.leaf_ratio <= 0.25:
+        obs.append(
+            "Few leaves remain — the tree is densely expanded and may be "
+            "over-elaborated; the frontier is small."
+        )
+    if s.max_depth >= 2 and s.depth_balance < 0.34:
+        obs.append(
+            "Most ideas cluster near the roots while only a few branches run deep "
+            "— the tree's development is top-heavy rather than evenly elaborated."
+        )
     if s.top_subject_share > 0.5:
         obs.append(
             f"One subject dominates ({int(s.top_subject_share * 100)}% of ideas: "
@@ -225,6 +275,10 @@ def render_tree_shape_markdown(shape: TreeShape) -> str:
         "- **Depth distribution:** "
         + ", ".join(f"d{d}={n}" for d, n in shape.depth_distribution.items()),
         f"- **Branching factor:** {shape.branching_factor}",
+        f"- **Depth balance:** {int(shape.leaf_ratio * 100)}% of ideas are leaves "
+        f"({shape.leaf_count}/{shape.total_ideas}) — terminal frontier vs. expanded interior",
+        f"- **Developmental center of mass:** mean depth {shape.mean_depth} "
+        f"of {shape.max_depth} (balance {shape.depth_balance}) — roots vs. deep frontier",
         f"- **Subjects:** {shape.distinct_subjects} distinct · "
         f"top `{shape.top_subject}` ({int(shape.top_subject_share * 100)}%)",
         f"- **Fractal facets:** {int(shape.facet_penetration * 100)}% of ideas",
