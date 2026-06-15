@@ -231,6 +231,10 @@ class ProjectProfiler:
     # vendoring) couple everything and mean nothing, so they're skipped.
     COCHANGE_THRESHOLD = 3
     MAX_COMMIT_FILES = 15
+    # generalizable-duplication: only a SMALL set of modules sharing a block is
+    # actionable copy-paste ("extract one helper"). A wider span is an intentional
+    # framework/template pattern, not duplication to DRY (dogfood finding).
+    _GENERALIZE_MAX_MODULES = 4
     # Knowledge risk: a module needs this many touches before concentration
     # means anything, and the top author must own at least this share. The
     # signal is skipped entirely for single-author projects (solo dev — a
@@ -575,9 +579,14 @@ class ProjectProfiler:
                 module = occ.rsplit(":", 1)[0]
                 if module and not self._is_fixture_path(module):
                     modules.add(module)
-            # Cross-module ONLY: a group confined to one module is the existing
-            # extractable-block case, not a generalize/DRY signal — skip it.
-            if len(modules) < 2:
+            # Cross-module ONLY (2..MAX), but NOT framework-wide: a group in one
+            # module is the existing extractable-block case; a group spanning
+            # MANY modules (e.g. every transform in a plugin family sharing the
+            # same boilerplate skeleton) is an intentional *template/pattern* whose
+            # shared abstraction already exists as the framework — "extract one
+            # helper across 31 files" is noise. The actionable case is a SMALL
+            # number of places that duplicated the same logic (dogfood finding).
+            if not (2 <= len(modules) <= self._GENERALIZE_MAX_MODULES):
                 continue
             entries.append({
                 "modules": sorted(modules),
