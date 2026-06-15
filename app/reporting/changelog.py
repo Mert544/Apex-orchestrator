@@ -113,11 +113,43 @@ def _health_section(root: Path) -> list[str]:
     return [f"## Health: **{h.letter} ({h.score}/100)**{note}", ""]
 
 
+def _coordinator_section(root: Path) -> list[str]:
+    """A structural watch-item: the project's heaviest coordinator module.
+
+    The profiler names high-fan-OUT "god-modules" (``coordinator_modules`` — each
+    a ``{module, fan_out, imports}`` dict, already sorted ``(-fan_out, module)``):
+    modules that import many internal siblings and so are decoupling candidates.
+    The changelog surfaces only the single widest-fan-out one as a forward-looking
+    watch-item, so the health read-out points at where to refactor next, not just
+    where the grade stands. Gated: a repo with no god-module yields [] and the
+    notes render byte-identically. Deterministic — the list is already ordered by
+    a stable key, so the top entry never wobbles for a given repo state.
+    """
+    try:
+        from app.tools.project_profile import ProjectProfiler
+
+        coordinators = (ProjectProfiler(str(root)).profile().coordinator_modules
+                        or [])
+    except Exception:
+        return []
+    top = next((c for c in coordinators
+                if isinstance(c, dict) and c.get("module")), None)
+    if top is None:
+        return []
+    imports = [m for m in (top.get("imports") or []) if isinstance(m, str)][:3]
+    wires = (f" — wires {', '.join(f'`{m}`' for m in imports)}"
+             if imports else "")
+    return [
+        "## Decoupling watch-item (heaviest coordinator module)", "",
+        f"- `{top['module']}` (fan-out {top.get('fan_out', 0)}){wires}", "",
+    ]
+
+
 def build_changelog(project_root: str | Path) -> str:
     root = Path(project_root)
     body: list[str] = []
     for section in (_commits_section, _fixes_section, _resolved_section,
-                    _health_section):
+                    _health_section, _coordinator_section):
         try:
             body += section(root)
         except Exception:
