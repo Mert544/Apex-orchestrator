@@ -273,7 +273,7 @@ def render_tree_shape_markdown(shape: TreeShape) -> str:
         f"- **Ideas:** {shape.total_ideas}  (roots {shape.roots}, max depth {shape.max_depth})",
         "- **By kind:** " + ", ".join(f"{k} {v}" for k, v in sorted(shape.by_kind.items())),
         "- **Depth distribution:** "
-        + ", ".join(f"d{d}={n}" for d, n in shape.depth_distribution.items()),
+        + ", ".join(f"d{d}={n}" for d, n in sorted(shape.depth_distribution.items())),
         f"- **Branching factor:** {shape.branching_factor}",
         f"- **Depth balance:** {int(shape.leaf_ratio * 100)}% of ideas are leaves "
         f"({shape.leaf_count}/{shape.total_ideas}) — terminal frontier vs. expanded interior",

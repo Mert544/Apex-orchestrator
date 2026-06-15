@@ -718,7 +718,7 @@ def _shape_section(shape) -> str:
     if shape is None or shape.total_ideas == 0:
         return ""
     kinds = " · ".join(f"{k} {v}" for k, v in sorted(shape.by_kind.items()))
-    depths = " ".join(f"d{d}:{n}" for d, n in shape.depth_distribution.items())
+    depths = " ".join(f"d{d}:{n}" for d, n in sorted(shape.depth_distribution.items()))
     chip_specs = [
         _chip("ideas", shape.total_ideas),
         _chip("max depth", shape.max_depth),
