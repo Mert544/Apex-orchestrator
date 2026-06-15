@@ -34,6 +34,24 @@ class TestCoverageResult:
     critical_untested_modules: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class _TestInfo:
+    """Per-test-file values that are identical for every module we link.
+
+    They depend only on the test file (its path and contents), never on the
+    module being matched, so they are computed ONCE in
+    :meth:`TestLinker._build_test_index` and reused across all modules. The
+    expensive parts — reading the file from disk and lower-casing it — used to
+    run once per (module, test) pair, an M×T re-read of the same files; the
+    index collapses that to one read + one lower-case per test file, leaving the
+    per-pair matching identical.
+    """
+
+    rel: str  # root-relative path, OS-native (the value emitted unchanged)
+    stem: str  # lower-cased file stem
+    text: str  # lower-cased file contents
+
+
 class TestLinker:
     __test__ = False
 
@@ -45,11 +63,16 @@ class TestLinker:
         tests = self._discover_test_files()
         modules = self._discover_module_files()
 
+        # Project-wide work hoisted out of the per-module loop: read + lower-case
+        # every test file exactly ONCE (was re-read M times, once per module).
+        # Each test contributes an immutable ``_TestInfo`` reused across modules.
+        test_index = self._build_test_index(tests)
+
         module_to_tests: dict[str, list[str]] = {}
         untested_modules: list[str] = []
 
         for module in modules:
-            linked_tests = self._find_linked_tests(module, tests)
+            linked_tests = self._find_linked_tests(module, test_index)
             module_to_tests[module] = linked_tests
             # `__init__.py` is packaging, not behavior — it must never surface
             # as "untested" (a stub for it would test nothing and its name
@@ -85,17 +108,34 @@ class TestLinker:
             modules.append(rel)
         return sorted(modules)
 
-    def _find_linked_tests(self, module: str, tests: list[Path]) -> list[str]:
+    def _build_test_index(self, tests: list[Path]) -> list[_TestInfo]:
+        """Read + lower-case every test file ONCE, preserving discovery order.
+
+        Order is kept identical to ``tests`` so that, after the per-module
+        ``sorted(dict.fromkeys(...))``, the linked list is byte-for-byte what the
+        old per-call scan produced. Each file is read a single time here instead
+        of once per module."""
+        return [
+            _TestInfo(
+                rel=str(test_path.relative_to(self.root)),
+                stem=test_path.stem.lower(),
+                text=self._safe_read(test_path).lower(),
+            )
+            for test_path in tests
+        ]
+
+    def _find_linked_tests(self, module: str, tests: list[_TestInfo]) -> list[str]:
         module_path = Path(module)
         module_stem = module_path.stem.lower()
         module_dotted = ".".join(module_path.with_suffix("").parts).lower()
         expected_test_name = f"test_{module_stem}"
+        parent_name = module_path.parent.name.lower()
 
         linked: list[str] = []
-        for test_path in tests:
-            rel = str(test_path.relative_to(self.root))
-            test_stem = test_path.stem.lower()
-            test_text = self._safe_read(test_path).lower()
+        for test in tests:
+            rel = test.rel
+            test_stem = test.stem
+            test_text = test.text
 
             if test_stem == expected_test_name or module_stem in test_stem:
                 linked.append(rel)
@@ -106,7 +146,6 @@ class TestLinker:
             if f"import {module_stem}" in test_text or f"from {module_stem} import" in test_text:
                 linked.append(rel)
                 continue
-            parent_name = module_path.parent.name.lower()
             if parent_name and parent_name in test_text and module_stem in test_text:
                 linked.append(rel)
                 continue
