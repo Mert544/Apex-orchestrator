@@ -38,10 +38,38 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "error handling": ["catch specificity", "cleanup on failure", "error propagation"],
     "resource limits": ["size caps", "time and timeout bounds", "concurrency limits"],
     "secret handling": ["no plaintext at rest", "load from env or secret store", "rotation and scope"],
-    # extend
-    "new inputs": ["accepted formats", "validation of the new input", "backward compatibility"],
-    "new outputs": ["output contract", "error and empty results", "consumer migration"],
-    "configuration surface": ["sane defaults", "environment override", "validation of config"],
+    # extend — the constructive "grow the contract" lens. Existing L2 lists are
+    # EXTENDED (originals FIRST) with the concrete extension moves: add the missing
+    # operation to the contract, support the next input shape, expose a
+    # configuration seam. Appended, so the beam is undisturbed.
+    "new inputs": ["accepted formats", "validation of the new input", "backward compatibility",
+                   # added: the next shape the input surface should accept.
+                   "the next input shape to support", "the optional argument to add"],
+    "new outputs": ["output contract", "error and empty results", "consumer migration",
+                    # added: the missing operation the contract should expose.
+                    "the missing operation on the contract", "the new return shape"],
+    "configuration surface": ["sane defaults", "environment override", "validation of config",
+                              # added: the configuration seam to expose.
+                              "the configuration seam to expose", "the feature flag to add"],
+    # extend L3 ladders — each appended L2 move decomposes into concrete edits.
+    "the next input shape to support": ["the new type or schema to accept",
+                                        "the normalization to a common shape",
+                                        "the rejection of the still-unsupported"],
+    "the optional argument to add": ["the backward-compatible default",
+                                     "the validation of the new argument",
+                                     "the documentation of the new option"],
+    "the missing operation on the contract": ["the operation signature",
+                                              "the default or stub implementation",
+                                              "the consumers to update"],
+    "the new return shape": ["the additive field or variant",
+                             "the empty and error result",
+                             "the consumer migration path"],
+    "the configuration seam to expose": ["the setting name and type",
+                                         "the precedence and override order",
+                                         "the safe default"],
+    "the feature flag to add": ["the on and off behaviour",
+                                "the default state",
+                                "the removal or cleanup plan"],
     # test
     "edge cases": ["empty input", "single element", "maximum size"],
     "failure modes": ["dependency unavailable", "partial or interrupted operation", "timeout"],
@@ -62,14 +90,61 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "public API": ["signatures and types", "pre and postconditions", "worked examples"],
     "usage examples": ["happy path", "error handling", "edge usage"],
     "failure semantics": ["raised exceptions", "partial-failure behavior", "retry guidance"],
-    # integrate
-    "data contract": ["schema and types", "required vs optional fields", "evolution rules"],
-    "error propagation": ["mapped error types", "retry vs fail-fast", "partial-failure surfacing"],
+    # integrate — the constructive "wire two sides together" lens. Existing L2
+    # lists are EXTENDED (originals FIRST) with the concrete edge moves: define the
+    # boundary contract, adapt the data shape at the seam, add the error/timeout
+    # handling at the edge. Appended, so the beam is undisturbed.
+    "data contract": ["schema and types", "required vs optional fields", "evolution rules",
+                      # added: the boundary contract to pin and the shape to adapt.
+                      "the boundary contract to define", "the data shape to adapt at the seam"],
+    "error propagation": ["mapped error types", "retry vs fail-fast", "partial-failure surfacing",
+                          # added: the error and timeout handling at the edge.
+                          "the error handling at the edge", "the timeout and retry at the edge"],
     "version skew": ["compatibility window", "feature detection", "graceful degradation"],
-    # generalize
-    "parameters": ["sensible defaults", "validation", "naming and types"],
-    "extension points": ["the hook interface", "registration", "a default no-op"],
+    # integrate L3 ladders — each appended edge move decomposes into concrete edits.
+    "the boundary contract to define": ["the request and response types",
+                                        "the required versus optional fields",
+                                        "the documented invariants of the seam"],
+    "the data shape to adapt at the seam": ["the field mapping and renames",
+                                            "the type and unit conversions",
+                                            "the missing-field defaults"],
+    "the error handling at the edge": ["the upstream-to-domain error mapping",
+                                       "the partial-failure surfacing",
+                                       "the fail-fast versus degrade choice"],
+    "the timeout and retry at the edge": ["the connect and read timeout",
+                                          "the retry budget and backoff",
+                                          "the idempotency the retry needs"],
+    # generalize — the constructive "lift the common shape" lens. Each existing
+    # L2 list is EXTENDED (originals stay FIRST, never displaced) with the
+    # concrete moves a generalization is actually made of: extract the shared
+    # interface, parameterize the varying part, introduce a strategy/hook for the
+    # difference, lift the common helper. Appending keeps the per-level beam
+    # undisturbed — no new L1 aspect competes — so existing phrases keep emitting.
+    "parameters": ["sensible defaults", "validation", "naming and types",
+                   # added: the generalize moves that turn a fixed value into a knob.
+                   "parameterize the varying part", "the shared interface to extract",
+                   "lift the common helper"],
+    "extension points": ["the hook interface", "registration", "a default no-op",
+                         # added: the seam that lets callers vary behaviour.
+                         "a strategy for the difference", "the variation point to name"],
     "sensible defaults": ["the safe default", "the override path", "documented rationale"],
+    # generalize L3 ladders — the appended L2 moves decompose once more into the
+    # concrete edits an engineer performs, then bottom out in the case split.
+    "parameterize the varying part": ["the constant to promote to an argument",
+                                      "the default that preserves today's behaviour",
+                                      "the call sites to thread it through"],
+    "the shared interface to extract": ["the common method signatures",
+                                        "the protocol or abstract base",
+                                        "the implementations to conform"],
+    "lift the common helper": ["the duplicated block to name",
+                               "where the helper should live",
+                               "the parameters that capture the variants"],
+    "a strategy for the difference": ["the strategy interface",
+                                      "the dispatch or selection point",
+                                      "the default strategy"],
+    "the variation point to name": ["the hook signature",
+                                    "the registration surface",
+                                    "the no-op fallback"],
     # observe
     "key metrics": ["counters", "latency histograms", "error rates"],
     "structured logs": ["correlation ids", "level discipline", "no secret leakage"],
@@ -194,6 +269,80 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     # objectives (remove-unused-imports, sort-imports), so a zoom here lands on a
     # real campaign rather than the generic case split.
     "import direction": ["an unused import", "an unsorted import block"],
+    # decouple — the constructive "break the knot" lens. Its two structural L1
+    # aspects ("dependency inversion", "seam interface") previously had NO L2
+    # vocabulary, so zooming "Decouple X → dependency inversion" fell straight to
+    # the generic common/boundary/failure case split — no concrete sub-direction.
+    # We give EACH of those two existing L1 facet nodes its own L2 ladder of the
+    # concrete moves a decoupling is actually made of: invert the dependency,
+    # introduce an interface at the seam, move the shared type to a neutral module.
+    # CRUCIAL for the beam: these are new keys for facet phrases that ALREADY emit
+    # at L1 — no new L1/L2 node is introduced, so nothing competes in any per-level
+    # beam and the existing decouple phrases keep emitting in their existing order.
+    # We only replace the generic case-split floor with content-aware sub-aspects.
+    "dependency inversion": ["invert the dependency",
+                             "introduce an interface at the seam",
+                             "move the shared type to a neutral module"],
+    "seam interface": ["introduce an interface at the seam",
+                       "move the shared type to a neutral module",
+                       "narrow the seam to a single contract"],
+    # decouple L3 ladders — each L2 move decomposes once more into the concrete
+    # edits an engineer performs, then bottoms out in the universal case split.
+    "invert the dependency": ["the abstraction both sides depend on",
+                              "the concrete wiring to push to the edge",
+                              "the construction or injection point"],
+    "introduce an interface at the seam": ["the methods the seam actually uses",
+                                           "the protocol or abstract base to name",
+                                           "the implementations to conform"],
+    "move the shared type to a neutral module": ["the type the two modules share",
+                                                 "the neutral home it should live in",
+                                                 "the imports to redirect"],
+    "narrow the seam to a single contract": ["the one responsibility to keep",
+                                             "the incidental coupling to remove",
+                                             "the callers to migrate"],
+    # ---- constructive-lens L3 deepening: existing L2 facets that previously fell
+    # to the generic case split now carry their own concrete sub-directions. Each
+    # key below is a facet phrase that ALREADY emits at L2 for its lens; adding an
+    # L3 entry only enriches what zooming INTO it offers next — it introduces no
+    # new L1/L2 node, so the per-level beam (and every pinned phrase's order) is
+    # untouched. The floor stays the case split for anything still without finer
+    # vocabulary; we are just lowering that floor for the constructive lenses.
+    # generalize: round out the "parameters" and "sensible defaults" sub-aspects.
+    "validation": ["the precondition the parameter must meet",
+                   "the rejection of the out-of-range value",
+                   "the error the caller sees on a bad argument"],
+    "naming and types": ["the intent-revealing parameter name",
+                         "the precise type or annotation",
+                         "the unit or invariant the type encodes"],
+    "the safe default": ["the value that preserves today's behaviour",
+                         "the least-surprising choice for a new caller",
+                         "the documented reason it is safe"],
+    "the override path": ["how a caller supplies a non-default",
+                          "the precedence when several sources set it",
+                          "the validation of the override"],
+    "documented rationale": ["why this default and not another",
+                             "the scenario where it is wrong",
+                             "the knob to reach for instead"],
+    # extend: round out the remaining "grow the contract" sub-aspects.
+    "validation of the new input": ["the accepted shape to assert",
+                                    "the malformed input to reject",
+                                    "the error the new path returns"],
+    "consumer migration": ["the deprecation window to announce",
+                           "the compatibility shim to keep old callers working",
+                           "the cut-over the consumers follow"],
+    "sane defaults": ["the value that needs no configuration",
+                      "the override the power user reaches for",
+                      "the documented rationale for the choice"],
+    # integrate: round out the remaining "wire the seam" sub-aspects.
+    "partial-failure surfacing": ["what completed versus what did not",
+                                  "how the caller detects the partial state",
+                                  "the compensating or cleanup action"],
+    "feature detection": ["the capability to probe before use",
+                          "the negotiation when both sides differ",
+                          "the fallback when the feature is absent"],
+    "graceful degradation": ["the reduced-capability path",
+                             "the signal that degradation kicked in",
+                             "the recovery when the far side returns"],
 }
 
 # A facet's caveat should interrogate *its* sub-concern, not recite the lens's
