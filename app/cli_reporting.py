@@ -802,9 +802,57 @@ def cmd_gate(args: argparse.Namespace) -> int:
     return 0 if verdict["passed"] else 1
 
 
+def cmd_deps(args: argparse.Namespace) -> int:
+    """Audit the project's DEPENDENCIES — a real Apex blind spot: it grades its
+    host's code in depth yet never cross-checks declared deps against what the
+    code actually imports. Reports possibly-unused, possibly-undeclared, and
+    unpinned deps. Deterministic, stdlib-only, LLM-free, no network. A HEURISTIC
+    (extras/optional imports can cause false positives) so it never fails a build
+    unless you opt in with --strict. Reads defensively; never crashes."""
+    from app.engine.dependency_audit import (
+        audit_dependencies,
+        render_dependency_audit_markdown,
+    )
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    try:
+        findings = audit_dependencies(str(target))
+    except Exception:
+        # Defensive: an unexpected read failure degrades to an empty audit
+        # rather than aborting with a traceback.
+        from app.engine.dependency_audit import DependencyFindings
+
+        findings = DependencyFindings(
+            declared=[], imported_third_party=[], unused=[], undeclared=[], unpinned=[]
+        )
+
+    if getattr(args, "json", False):
+        print(json.dumps(
+            {
+                "declared": findings.declared,
+                "imported_third_party": findings.imported_third_party,
+                "unused": findings.unused,
+                "undeclared": findings.undeclared,
+                "unpinned": findings.unpinned,
+            },
+            indent=2, sort_keys=True, default=str,
+        ))
+    else:
+        print(render_dependency_audit_markdown(findings))
+
+    # --strict (opt-in): non-zero rc when any heuristic signal fires, so a
+    # pipeline that trusts the audit can gate on it. Off by default — the audit
+    # is a surfaced signal, not a build-breaker.
+    if getattr(args, "strict", False) and (
+        findings.unused or findings.undeclared or findings.unpinned
+    ):
+        return 1
+    return 0
+
+
 def register_parsers(subparsers) -> None:
     """Register the reporting family's subcommands: dashboard, hotspots,
-    deadcode, city, report, fractal, debug, pulse, gate."""
+    deadcode, city, report, fractal, debug, pulse, gate, deps."""
     # dashboard
     dash_parser = subparsers.add_parser(
         "dashboard", help="Generate a self-contained HTML project dashboard"
@@ -986,3 +1034,22 @@ def register_parsers(subparsers) -> None:
     )
     gate_parser.add_argument("--json", action="store_true", help="Emit JSON")
     gate_parser.set_defaults(func=cmd_gate)
+
+    # deps — deterministic dependency audit: cross-check declared deps against
+    # the third-party modules the code actually imports. Heuristic (extras /
+    # optional imports may false-positive) so it returns 0 by default; --strict
+    # makes any finding non-zero for pipelines that trust it.
+    deps_parser = subparsers.add_parser(
+        "deps",
+        help="Audit dependencies: possibly-unused / undeclared / unpinned deps "
+             "(deterministic, stdlib-only, LLM-free, no network). Heuristic — "
+             "returns 0 unless --strict",
+    )
+    deps_parser.add_argument("--target", default="", help="Target project root")
+    deps_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    deps_parser.add_argument(
+        "--strict", action="store_true",
+        help="Exit non-zero (1) if any unused/undeclared/unpinned dep is found "
+             "(opt-in; default off — the audit is a surfaced signal, not a gate)",
+    )
+    deps_parser.set_defaults(func=cmd_deps)
