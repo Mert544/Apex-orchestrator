@@ -543,6 +543,37 @@ def _top_proof_lines(step, proof: dict | None) -> list[str]:
     return lines
 
 
+def _shield_stub_path(step) -> str:
+    """The deterministic, repo-relative path for a target's characterization-test
+    stub: ``tests/test_<module-stem>_characterization.py``. Pure function of the
+    step's target (no time/random), so the same uncovered step always names the
+    same file."""
+    file_part = (step.target or step.subject.split("::", 1)[0]).split("::", 1)[0]
+    stem = file_part.rsplit("/", 1)[-1].removesuffix(".py") or "module"
+    slug = "".join(c if (c.isalnum() or c == "_") else "_" for c in stem).strip("_") or "module"
+    return f"tests/test_{slug}_characterization.py"
+
+
+def _write_shield_stub(root: str, step) -> tuple[str, bool]:
+    """Write a deterministic characterization-test STUB for the step's uncovered
+    target, recommend-only. Reuses the bridge's own ``_test_stub_body`` generator
+    (does NOT reimplement it) so the stub names the real symbol(s) + import path.
+
+    Returns ``(repo_relative_path, written)``. Never clobbers an existing
+    characterization test for that module — ``written`` is False when the file is
+    already there (the caller reports it and skips)."""
+    from app.engine.idea_action_bridge import _test_stub_body
+
+    rel = _shield_stub_path(step)
+    dest = Path(root) / rel
+    if dest.exists():
+        return rel, False
+    body = _test_stub_body(step, step.target)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(body)
+    return rel, True
+
+
 def _develop_top(args, target) -> int:
     """`apex develop --top`: close the loop on the SINGLE highest-value proven,
     runnable recommendation through the guarded apply loop, COVERAGE-AWARE so a
@@ -561,6 +592,7 @@ def _develop_top(args, target) -> int:
     root = str(target)
     apply = getattr(args, "apply", False)
     force = getattr(args, "force", False)
+    shield = getattr(args, "shield", False)
     as_json = getattr(args, "json", False)
 
     engine = IdeaPermutationEngine(
@@ -601,6 +633,38 @@ def _develop_top(args, target) -> int:
     }
 
     proof_lines = _top_proof_lines(step, proof)
+
+    # CONSTRUCTIVE PATH (--shield): the suite doesn't exercise this target, so a
+    # green here would be a false green. Instead of (or before) blocking, write a
+    # deterministic characterization-test STUB for the target — recommend-only, a
+    # skeleton the user fills in — so the next run's green is REAL. We do NOT
+    # auto-apply the fix in the same run: the stub is failing by design (it names
+    # the symbols but has no assertion yet), the point is to make the user write
+    # the assertion first. Reuses the bridge's own stub-body generator.
+    if shield and not covered:
+        stub_path, stub_written = _write_shield_stub(root, step)
+        payload["shield"] = {"stub_path": stub_path, "written": stub_written}
+        if stub_written:
+            payload["reason"] = "shield-stub-written"
+            message = (
+                f"Wrote a characterization-test stub at {stub_path} — fill it in "
+                f"so the suite exercises `{step.target}`, then re-run "
+                "`apex develop --top --apply`."
+            )
+        else:
+            payload["reason"] = "shield-stub-exists"
+            message = (
+                f"A characterization test already exists at {stub_path} — fill it "
+                f"in so the suite exercises `{step.target}`, then re-run "
+                "`apex develop --top --apply`."
+            )
+        payload["message"] = message
+        if as_json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print("\n".join(proof_lines))
+            print(f"\n{message}")
+        return 0
 
     # THE BLIND-SPOT FIX: a fix on a module NO test references can't be vouched
     # for by a green suite — applying it would be a FALSE green. Refuse to
@@ -1030,6 +1094,11 @@ def register_parsers(subparsers) -> None:
         "--force", action="store_true",
         help="With --top --apply: apply even when no test exercises the target "
              "(labels the result weak verification — overrides the false-green guard)")
+    develop_parser.add_argument(
+        "--shield", action="store_true",
+        help="With --top: when no test exercises the target, write a "
+             "characterization-test stub for it (recommend-only) instead of just "
+             "blocking — fill it in so the suite exercises the target, then re-apply")
     develop_parser.add_argument("--apply", action="store_true",
                                 help="Apply the composed moves (default: dry run)")
     develop_parser.add_argument("--max-steps", type=int, default=25, dest="max_steps",
