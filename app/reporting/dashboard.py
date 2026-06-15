@@ -251,7 +251,41 @@ def _overview(profile, findings, idea_report, action_plan, git) -> str:
     ]
     if git:
         cards.append(_kpi("Uncommitted", git.get("dirty", 0), "a-amber", sub=f"on {git.get('branch', '?')}"))
-    return f"<section id='overview' class='overview'><div class='kpis'>{''.join(cards)}</div></section>"
+    return (
+        f"<section id='overview' class='overview'><div class='kpis'>{''.join(cards)}</div>"
+        f"{_health_bars(profile, findings)}</section>"
+    )
+
+
+def _health_bars(profile, findings) -> str:
+    """A compact normalized "health bars" read-out beneath the KPI grid.
+
+    Each row is a metric mapped to a 0..1 fraction (more filled = healthier):
+      - Coverage: the test-coverage ratio as-is.
+      - In scope (Python): ``profile.analyzed_ratio`` — how much of a polyglot repo
+        Apex's Python analysis actually covers.
+      - Security: ``1 / (1 + findings)`` so 0 findings = a full bar and each extra
+        finding shrinks it monotonically (1→0.5→0.33…), with no arbitrary cutoff.
+    Rows whose metric is unavailable are omitted; an empty set renders nothing.
+    """
+    from app.reporting.dashboard_charts import metric_bars
+
+    cov = findings.get("coverage", {}) or {}
+    sec = findings.get("security", {}) or {}
+    rows: list[tuple[str, float]] = []
+    if "coverage_ratio" in cov:
+        rows.append(("Test coverage", float(cov.get("coverage_ratio", 0) or 0)))
+    analyzed = getattr(profile, "analyzed_ratio", None)
+    if isinstance(analyzed, (int, float)):
+        rows.append(("In scope (Python)", float(analyzed)))
+    sec_n = sec.get("findings_count", 0) or 0
+    rows.append(("Security", 1.0 / (1.0 + float(sec_n))))
+    if not rows:
+        return ""
+    return (
+        "<div class='healthbars'><h4>Health bars</h4>"
+        f"{metric_bars(rows)}</div>"
+    )
 
 
 def _repo_section(git: dict[str, Any]) -> str:
@@ -697,6 +731,20 @@ def _trajectory_section(history: list[dict[str, Any]]) -> str:
     def _f(e: dict[str, Any], side: str, key: str) -> Any:
         return (e.get(side) or {}).get(key, "—")
 
+    # A tiny inline trend of the security-finding count after each recorded run —
+    # the shape of the project getting healthier (fewer findings) over time.
+    from app.reporting.dashboard_charts import sparkline
+
+    series: list[float] = []
+    for e in history:
+        v = (e.get("after") or {}).get("security_findings")
+        if isinstance(v, (int, float)):
+            series.append(float(v))
+    spark = (
+        f"<div class='trend'><span class='trend-label'>findings trend</span>{sparkline(series)}</div>"
+        if len(series) >= 2 else ""
+    )
+
     chips = "".join([
         _chip("runs", len(history)),
         _chip("findings", f"{_f(first, 'before', 'security_findings')} → {_f(last, 'after', 'security_findings')}"),
@@ -710,6 +758,7 @@ def _trajectory_section(history: list[dict[str, Any]]) -> str:
     )
     body = (
         f"<div class='chips'>{chips}</div>"
+        f"{spark}"
         "<table><thead><tr><th>When</th><th>Applied</th><th>Findings</th><th>Mode</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
@@ -986,6 +1035,13 @@ background:linear-gradient(120deg,var(--accent),var(--accent2) 70%);
 border:1px solid var(--line2);box-shadow:var(--shadow)}
 .vital-top-move{margin:14px 0 0;font-size:13.5px;color:var(--ink2)}
 .vital-top-move::before{content:"➜ next move: ";color:var(--accent);font-weight:650}
+.healthbars{margin:16px 0 2px}
+.healthbars h4{margin:0 0 8px;font-size:12.5px;font-weight:600;color:var(--ink2);letter-spacing:.02em}
+.healthbars svg{background:rgba(245,248,252,.95);border-radius:12px;padding:8px 10px;
+border:1px solid var(--line2);box-shadow:var(--shadow);max-width:100%}
+.trend{display:flex;align-items:center;gap:12px;margin:0 0 14px}
+.trend-label{font-size:11.5px;color:var(--muted);letter-spacing:.02em}
+.trend svg{background:rgba(245,248,252,.95);border-radius:10px;padding:5px 8px;border:1px solid var(--line2)}
 main{max-width:1120px;margin:-52px auto 64px;padding:0 30px;display:flex;flex-direction:column;gap:22px}
 .overview .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px}
 .kpi{position:relative;background:linear-gradient(180deg,var(--card2),var(--card));
