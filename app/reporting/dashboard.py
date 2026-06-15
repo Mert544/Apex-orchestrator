@@ -1386,13 +1386,30 @@ def _hero_vitals(project_root, profile, findings, idea_report, action_plan) -> s
     return f"<div class='hero-vitals'>{vitals}{charts}</div>{top_html}"
 
 
-def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning,
-                 git=None, debug=None, roadmap=None, shape=None, autonomy=None,
-                 pareto=None, trajectory=None, learned=None) -> str:
-    git = git or {}
-    debug = debug or {}
-    pareto = pareto or []
-    trajectory = trajectory or []
+# An inline SVG cell/organism glyph — the brand mark. Deterministic, no fetch.
+_BRAND_MARK = (
+    "<svg class='mark' viewBox='0 0 24 24' fill='none' aria-hidden='true'>"
+    "<circle cx='12' cy='12' r='10' stroke='url(#ag)' stroke-width='1.6'/>"
+    "<circle cx='12' cy='12' r='3.4' fill='url(#ag)'/>"
+    "<circle cx='12' cy='12' r='5.4' stroke='url(#ag)' stroke-width='1' opacity='.55'/>"
+    "<circle cx='17.4' cy='8.2' r='1.2' fill='#5b8cff'/>"
+    "<circle cx='6.8' cy='15.6' r='1' fill='#9b7bff'/>"
+    "<defs><linearGradient id='ag' x1='2' y1='2' x2='22' y2='22' "
+    "gradientUnits='userSpaceOnUse'><stop stop-color='#3de2c4'/>"
+    "<stop offset='.6' stop-color='#5b8cff'/><stop offset='1' stop-color='#9b7bff'/>"
+    "</linearGradient></defs></svg>"
+)
+
+
+def _nav_links(
+    project_root, git, debug, roadmap, shape, autonomy, pareto, trajectory,
+    learned, *, outscope_html: str, trackrecord_html: str,
+) -> str:
+    """Build the sticky-nav anchor list, gating optional sections in page order.
+
+    Mirrors the section assembly below: each conditional appends a link only when
+    the matching section will render, so the nav never points at an empty anchor.
+    """
     nav_links = [("overview", "Overview"), ("findings", "Findings"),
                  ("architecture", "Architecture"), ("ideas", "Ideas")]
     if shape is not None and getattr(shape, "total_ideas", 0):
@@ -1407,9 +1424,8 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         nav_links.append(("trajectory", "Trajectory"))
     if learned and (learned.get("most_reliable") or learned.get("least_reliable")):
         nav_links.append(("learned", "Learned"))
-    if _trackrecord_section(learned, project_root):
+    if trackrecord_html:
         nav_links.append(("trackrecord", "Track record"))
-    outscope_html = _outscope_section(project_root)
     if outscope_html:
         nav_links.append(("outscope", "Out of scope"))
     if (Path(project_root) / ".apex" / "dream-digest.md").exists():
@@ -1419,11 +1435,20 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         nav_links.append(("debug", "Debug"))
     if git:
         nav_links.append(("repository", "Repo"))
-    links = "".join(f"<a href='#{i}'>{_esc(t)}</a>" for i, t in nav_links)
-    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    hero_vitals = _hero_vitals(project_root, profile, findings, idea_report, action_plan)
+    return "".join(f"<a href='#{i}'>{_esc(t)}</a>" for i, t in nav_links)
 
-    sections = "".join(
+
+def _page_sections(
+    project_root, profile, findings, idea_report, action_plan, reasoning,
+    git, debug, roadmap, shape, autonomy, pareto, trajectory, learned,
+    *, outscope_html: str, trackrecord_html: str,
+) -> str:
+    """Concatenate every section renderer in page order.
+
+    ``outscope_html``/``trackrecord_html`` are passed in pre-rendered so the work
+    is done exactly once (it also drives nav gating) rather than recomputed here.
+    """
+    return "".join(
         [
             _overview(profile, findings, idea_report, action_plan, git),
             _findings_section(findings, project_root),
@@ -1438,7 +1463,7 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
             _autonomy_section(autonomy),
             _trajectory_section(trajectory),
             _learned_section(learned),
-            _trackrecord_section(learned, project_root),
+            trackrecord_html,
             outscope_html,
             _actions_section(action_plan),
             _reasoning_section(reasoning),
@@ -1447,19 +1472,30 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
             _repo_section(git),
         ]
     )
-    # An inline SVG cell/organism glyph — the brand mark. Deterministic, no fetch.
-    mark = (
-        "<svg class='mark' viewBox='0 0 24 24' fill='none' aria-hidden='true'>"
-        "<circle cx='12' cy='12' r='10' stroke='url(#ag)' stroke-width='1.6'/>"
-        "<circle cx='12' cy='12' r='3.4' fill='url(#ag)'/>"
-        "<circle cx='12' cy='12' r='5.4' stroke='url(#ag)' stroke-width='1' opacity='.55'/>"
-        "<circle cx='17.4' cy='8.2' r='1.2' fill='#5b8cff'/>"
-        "<circle cx='6.8' cy='15.6' r='1' fill='#9b7bff'/>"
-        "<defs><linearGradient id='ag' x1='2' y1='2' x2='22' y2='22' "
-        "gradientUnits='userSpaceOnUse'><stop stop-color='#3de2c4'/>"
-        "<stop offset='.6' stop-color='#5b8cff'/><stop offset='1' stop-color='#9b7bff'/>"
-        "</linearGradient></defs></svg>"
+
+
+def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning,
+                 git=None, debug=None, roadmap=None, shape=None, autonomy=None,
+                 pareto=None, trajectory=None, learned=None) -> str:
+    git = git or {}
+    debug = debug or {}
+    pareto = pareto or []
+    trajectory = trajectory or []
+    outscope_html = _outscope_section(project_root)
+    trackrecord_html = _trackrecord_section(learned, project_root)
+    links = _nav_links(
+        project_root, git, debug, roadmap, shape, autonomy, pareto, trajectory,
+        learned, outscope_html=outscope_html, trackrecord_html=trackrecord_html,
     )
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    hero_vitals = _hero_vitals(project_root, profile, findings, idea_report, action_plan)
+
+    sections = _page_sections(
+        project_root, profile, findings, idea_report, action_plan, reasoning,
+        git, debug, roadmap, shape, autonomy, pareto, trajectory, learned,
+        outscope_html=outscope_html, trackrecord_html=trackrecord_html,
+    )
+    mark = _BRAND_MARK
     return (
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
