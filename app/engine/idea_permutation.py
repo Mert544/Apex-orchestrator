@@ -161,6 +161,36 @@ class IdeaPermutationEngine:
         return min(0.30, 0.12 * max(1.0, max_level / 2))
 
     def run(self, objective: str | None = None) -> IdeaTreeReport:
+        # Orchestrator: seed → permute → facets → synthesize → measure. Each
+        # phase is a cohesive helper below; the order and budget hand-off here
+        # are the only behaviour this method itself owns.
+        profile, relevance, graph, stats = self._begin_run(objective)
+
+        emitted = self._seed_roots(profile, objective, relevance, graph)
+        perm_cap = self._reserve_perm_cap(len(emitted))
+        self._expand_permutations(emitted, relevance, graph, stats, perm_cap)
+
+        # Fractal facets: zoom the strongest leaves into self-similar sub-ideas
+        # before synthesis claims the remaining budget.
+        if self.fractal_facets:
+            self._expand_facets(emitted, relevance, graph, stats)
+
+        self._emit_synthesis(emitted, profile, relevance, graph, stats)
+        self._attach_stats(emitted, profile, stats)
+        return IdeaTreeReport(
+            objective=objective or "",
+            project_root=self.project_root,
+            ideas=emitted,
+            branch_map={i.branch_path: i.title for i in emitted},
+            stats=stats,
+        )
+
+    def _begin_run(
+        self, objective: str | None
+    ) -> tuple[ProjectProfile, RelevanceScorer, GraphStore, dict[str, Any]]:
+        """Set up the per-run scoring context (profile, trends, relevance, dedup
+        graph, novelty counters, security pressure, learning memory) and return
+        the handles the later phases share. No ideas are produced here."""
         profile = self.profiler.profile()
         self.last_profile = profile  # recorders (signal trends) read this
         # Temporal convergence: which modules got WORSE since the last
@@ -191,10 +221,18 @@ class IdeaPermutationEngine:
 
             self._memory = IdeaMemory.load(self.project_root)
         stats = {"considered": 0, "pruned_relevance": 0, "pruned_duplicate": 0}
+        return profile, relevance, graph, stats
 
+    def _seed_roots(
+        self,
+        profile: ProjectProfile,
+        objective: str | None,
+        relevance: RelevanceScorer,
+        graph: GraphStore,
+    ) -> list[IdeaNode]:
+        """Emit the seeder's root ideas (scored, deduped against the graph,
+        budgeted) and return them as the initial ``emitted`` list."""
         emitted: list[IdeaNode] = []
-        frontier: list[IdeaNode] = []
-
         for root in self.seeder.seed(profile, objective, accelerating=self._accelerating):
             if self.budget.exhausted:
                 break
@@ -202,25 +240,38 @@ class IdeaPermutationEngine:
             graph.register_claim(root.title)
             self.budget.consume_node()
             emitted.append(root)
-            frontier.append(root)
+        return emitted
 
-        # Reserve budget slices so mechanical permutation can't crowd out the
-        # genuinely-new ideas. Synthesis and (optionally) fractal facets each get
-        # their own slice carved off the top.
+    def _reserve_perm_cap(self, emitted_count: int) -> int:
+        """Carve the synthesis (and optional facet) budget slices off the top so
+        mechanical permutation can't crowd out the genuinely-new ideas, and
+        return the cap on how many ideas permutation expansion may leave behind."""
         self._synth_reserve = max(4, int(self.budget.max_total_nodes * 0.15))
         facet_reserve = (
             max(2, int(self.budget.max_total_nodes * self._facet_share()))
             if self.fractal_facets else 0
         )
-        perm_cap = max(
-            len(emitted),
+        return max(
+            emitted_count,
             self.budget.max_total_nodes - self._synth_reserve - facet_reserve,
         )
 
-        # Best-first expansion, but diversity-aware: a subject that has already
-        # produced many ideas is temporarily down-ranked so the tree spreads
-        # across modules instead of over-mining one hub. This shapes *selection
-        # order* only — node.value (the score) is untouched.
+    def _expand_permutations(
+        self,
+        emitted: list[IdeaNode],
+        relevance: RelevanceScorer,
+        graph: GraphStore,
+        stats: dict[str, Any],
+        perm_cap: int,
+    ) -> None:
+        """Best-first, diversity-aware permutation expansion. Appends children to
+        ``emitted`` in place until the budget or ``perm_cap`` is hit.
+
+        A subject that has already produced many ideas is temporarily
+        down-ranked so the tree spreads across modules instead of over-mining
+        one hub. This shapes *selection order* only — node.value is untouched.
+        """
+        frontier = list(emitted)
         emitted_by_subject: dict[str, int] = {}
         for n in emitted:
             emitted_by_subject[n.subject] = emitted_by_subject.get(n.subject, 0) + 1
@@ -250,13 +301,16 @@ class IdeaPermutationEngine:
                 emitted_by_subject[child.subject] = emitted_by_subject.get(child.subject, 0) + 1
                 frontier.append(child)
 
-        # Fractal facets: zoom the strongest leaves into self-similar sub-ideas
-        # before synthesis claims the remaining budget.
-        if self.fractal_facets:
-            self._expand_facets(emitted, relevance, graph, stats)
-
-        # Synthesis: genuinely new ideas beyond mechanical permutation, drawn
-        # from the budget slice reserved above.
+    def _emit_synthesis(
+        self,
+        emitted: list[IdeaNode],
+        profile: ProjectProfile,
+        relevance: RelevanceScorer,
+        graph: GraphStore,
+        stats: dict[str, Any],
+    ) -> None:
+        """Append the synthesized ideas (genuinely new beyond mechanical
+        permutation) from the reserved budget slice, recording the count."""
         synth = self._synthesize(emitted, profile, relevance, graph)
         added = 0
         for node in synth:
@@ -268,6 +322,14 @@ class IdeaPermutationEngine:
             added += 1
         stats["synthesized"] = added
 
+    def _attach_stats(
+        self,
+        emitted: list[IdeaNode],
+        profile: ProjectProfile,
+        stats: dict[str, Any],
+    ) -> None:
+        """Compute the measured grounding stats (totals, mean value, fan-in,
+        per-module metrics) that downstream consumers like the roadmap read."""
         stats["total_ideas"] = len(emitted)
         stats["mean_value"] = (
             round(sum(i.value for i in emitted) / len(emitted), 4) if emitted else 0.0
@@ -294,13 +356,6 @@ class IdeaPermutationEngine:
             # narrowly (don't mask programming errors inside CodeMetrics).
             stats["metrics"] = {}
             stats["metrics_error"] = str(exc)
-        return IdeaTreeReport(
-            objective=objective or "",
-            project_root=self.project_root,
-            ideas=emitted,
-            branch_map={i.branch_path: i.title for i in emitted},
-            stats=stats,
-        )
 
     # Risk dimensions a module can be flagged by. Each is an *independent*
     # concern, so a subject triggering two of them is genuinely higher-leverage
@@ -1114,79 +1169,112 @@ def _compose_title(subject: str, chain: list[str]) -> str:
     return f"{lenses}: {subject}"
 
 
-def render_markdown(report: IdeaTreeReport) -> str:
-    """Render an idea tree as a readable, hierarchical markdown document."""
-    lines = [f"# Development Ideas for `{report.project_root}`", ""]
+def _render_md_header(report: IdeaTreeReport) -> list[str]:
+    """The title + one-line summary (objective, idea count, mean value)."""
     meta = f"{report.stats.get('total_ideas', 0)} ideas · mean value {report.stats.get('mean_value', 0)}"
     if report.objective:
         meta = f"objective: _{report.objective}_ · " + meta
-    lines += [meta, ""]
+    return [f"# Development Ideas for `{report.project_root}`", "", meta, ""]
 
+
+def _partition_for_render(
+    report: IdeaTreeReport,
+) -> tuple[dict[str | None, list[IdeaNode]], list[IdeaNode], list[IdeaNode]]:
+    """Group ideas by parent and split the two flat top-level sections.
+
+    Synthesis/pair ideas are parentless-but-not-roots and render in their own
+    section. Facet ideas are parented under a permutation leaf, so they render
+    nested via the tree walk and are excluded from the flat synthesis section.
+    Returns ``(by_parent, synth, perm_roots)``.
+    """
     by_parent: dict[str | None, list[IdeaNode]] = {}
     for idea in report.ideas:
         by_parent.setdefault(idea.parent_id, []).append(idea)
-
-    # Synthesis/pair ideas are parentless-but-not-roots; render them separately.
-    # Facet ideas are parented under a permutation leaf, so they render nested
-    # via walk() (the fractal zoom) and are excluded from this flat section.
     synth = [i for i in report.ideas if i.kind != "permutation" and i.parent_id is None]
     synth_ids = {i.id for i in synth}
     perm_roots = [
         i for i in by_parent.get(None, []) if i.kind == "permutation" and i.id not in synth_ids
     ]
+    return by_parent, synth, perm_roots
 
-    def walk(idea: IdeaNode, depth: int) -> None:
-        indent = "  " * depth
-        if depth == 0:
-            lines.append(f"## {idea.branch_path} — {idea.title}  (value {idea.value})")
-            if idea.source_facts:
-                lines.append(f"{indent}- _facts: {', '.join(idea.source_facts)}_")
-            # Concrete loci: when the module-level idea names the riskiest
-            # function(s) within, render a focus line. Gated on non-empty so
-            # ideas with no anchors render BYTE-IDENTICALLY to before.
-            if idea.anchors:
-                foci = ", ".join(
-                    f"`{a['symbol'].rsplit('.', 1)[-1]}` ({a['metric']}, line {a['line']})"
-                    for a in idea.anchors
-                )
-                lines.append(f"{indent}  → focus: {foci}")
-        elif idea.kind == "facet":
-            # A facet is nested under the idea it refines, so the parent already
-            # gives the context — repeating the whole title at every zoom level
-            # buries the signal. Show only the *delta* (this level's sub-concern),
-            # marked as a zoom.
-            facet_facts = [f for f in idea.source_facts if f.startswith("facet:")]
-            phrase = (facet_facts[-1].split("facet:", 1)[-1].strip()
-                      if facet_facts else idea.title)
-            caveat = f"  ⚠ {idea.caveats[0]}" if idea.caveats else ""
-            lines.append(f"{indent}- 🔍 `{idea.branch_path}` {phrase}  (v {idea.value}){caveat}")
-            # Verified concerns show their proof; hypotheses don't pretend.
-            for ev in (f for f in idea.source_facts if f.startswith("evidence:")):
-                lines.append(f"{indent}  - 📌 {ev.split('evidence:', 1)[1].strip()}")
-        else:
-            caveat = f"  ⚠ {idea.caveats[0]}" if idea.caveats else ""
-            lines.append(
-                f"{indent}- `{idea.branch_path}` [{idea.operator}] {idea.title}  (v {idea.value}){caveat}"
+
+def _render_idea_line(idea: IdeaNode, depth: int, lines: list[str]) -> None:
+    """Append the markdown line(s) for a single idea at ``depth`` (the node body,
+    not its children). Roots get a heading + facts/focus; facets show only their
+    delta sub-concern + evidence; other nodes show the lens-tagged title."""
+    indent = "  " * depth
+    if depth == 0:
+        lines.append(f"## {idea.branch_path} — {idea.title}  (value {idea.value})")
+        if idea.source_facts:
+            lines.append(f"{indent}- _facts: {', '.join(idea.source_facts)}_")
+        # Concrete loci: when the module-level idea names the riskiest
+        # function(s) within, render a focus line. Gated on non-empty so
+        # ideas with no anchors render BYTE-IDENTICALLY to before.
+        if idea.anchors:
+            foci = ", ".join(
+                f"`{a['symbol'].rsplit('.', 1)[-1]}` ({a['metric']}, line {a['line']})"
+                for a in idea.anchors
             )
-        for child in by_parent.get(idea.id, []):
-            walk(child, depth + 1)
+            lines.append(f"{indent}  → focus: {foci}")
+    elif idea.kind == "facet":
+        # A facet is nested under the idea it refines, so the parent already
+        # gives the context — repeating the whole title at every zoom level
+        # buries the signal. Show only the *delta* (this level's sub-concern),
+        # marked as a zoom.
+        facet_facts = [f for f in idea.source_facts if f.startswith("facet:")]
+        phrase = (facet_facts[-1].split("facet:", 1)[-1].strip()
+                  if facet_facts else idea.title)
+        caveat = f"  ⚠ {idea.caveats[0]}" if idea.caveats else ""
+        lines.append(f"{indent}- 🔍 `{idea.branch_path}` {phrase}  (v {idea.value}){caveat}")
+        # Verified concerns show their proof; hypotheses don't pretend.
+        for ev in (f for f in idea.source_facts if f.startswith("evidence:")):
+            lines.append(f"{indent}  - 📌 {ev.split('evidence:', 1)[1].strip()}")
+    else:
+        caveat = f"  ⚠ {idea.caveats[0]}" if idea.caveats else ""
+        lines.append(
+            f"{indent}- `{idea.branch_path}` [{idea.operator}] {idea.title}  (v {idea.value}){caveat}"
+        )
+
+
+def _walk_idea_tree(
+    idea: IdeaNode,
+    depth: int,
+    by_parent: dict[str | None, list[IdeaNode]],
+    lines: list[str],
+) -> None:
+    """Render ``idea`` then recurse into its children (the fractal zoom)."""
+    _render_idea_line(idea, depth, lines)
+    for child in by_parent.get(idea.id, []):
+        _walk_idea_tree(child, depth + 1, by_parent, lines)
+
+
+def _render_synthesis_section(synth: list[IdeaNode], lines: list[str]) -> None:
+    """The flat 'Synthesized ideas' section, value-ordered, with each
+    convergence idea auto-expanded into its phased mini-roadmap."""
+    lines.append("## 🔗 Synthesized ideas (beyond single-lens permutation)")
+    for idea in sorted(synth, key=lambda n: n.value, reverse=True):
+        tag = "synthesis" if idea.kind == "synthesis" else "module-pair"
+        lines.append(f"- [{tag}] {idea.title}  (v {idea.value})")
+        # Convergence ideas auto-expand into a phased mini-roadmap so the
+        # "highest-leverage target" comes with an ordered plan, not just a label.
+        plan = convergence_plan(convergence_labels(idea))
+        for i, step in enumerate(plan, 1):
+            mark = "⚙️" if step["executable"] else "✋"
+            lines.append(f"    {i}. [{step['phase']}] {mark} {step['step']}")
+    lines.append("")
+
+
+def render_markdown(report: IdeaTreeReport) -> str:
+    """Render an idea tree as a readable, hierarchical markdown document."""
+    lines = _render_md_header(report)
+    by_parent, synth, perm_roots = _partition_for_render(report)
 
     for root in perm_roots:
-        walk(root, 0)
+        _walk_idea_tree(root, 0, by_parent, lines)
         lines.append("")
 
     if synth:
-        lines.append("## 🔗 Synthesized ideas (beyond single-lens permutation)")
-        for idea in sorted(synth, key=lambda n: n.value, reverse=True):
-            tag = "synthesis" if idea.kind == "synthesis" else "module-pair"
-            lines.append(f"- [{tag}] {idea.title}  (v {idea.value})")
-            # Convergence ideas auto-expand into a phased mini-roadmap so the
-            # "highest-leverage target" comes with an ordered plan, not just a label.
-            plan = convergence_plan(convergence_labels(idea))
-            for i, step in enumerate(plan, 1):
-                mark = "⚙️" if step["executable"] else "✋"
-                lines.append(f"    {i}. [{step['phase']}] {mark} {step['step']}")
-        lines.append("")
+        _render_synthesis_section(synth, lines)
     return "\n".join(lines)
 
 
