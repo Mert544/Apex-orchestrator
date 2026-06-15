@@ -756,6 +756,33 @@ class IdeaSeeder:
                             f"shared helper to DRY it up)"),
             )
 
+        # Coordinator modules: a god-module with high fan-OUT (it imports many
+        # internal modules) is a coordination chokepoint — it knows about too
+        # much of the system and is a candidate to split responsibilities apart.
+        # The OPPOSITE edge direction from the dependency-hub (fan-IN) signal, so
+        # the two never restate each other. Recommend-only: deciding HOW to
+        # decouple a god-module is a DESIGN call, Apex names it (and the heaviest
+        # internal modules it pulls) but does NOT auto-write. A repo with no
+        # god-module yields nothing here and seeding stays byte-identical. The
+        # fact value deliberately avoids the token "untested" and any leading
+        # "<int> <unit>" magnitude shape (no fan-out count word leads it).
+        for coord in (getattr(profile, "coordinator_modules", []) or [])[:3]:
+            module = coord.get("module")
+            if not module:
+                continue
+            imports = coord.get("imports") or []
+            mod_list = ", ".join(f"`{m}`" for m in imports)
+            pulls = f" — pulls {mod_list} among others" if mod_list else ""
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Decouple the coordinator module {module} — it imports "
+                       f"many internal modules; split its responsibilities apart"),
+                subject=module,
+                fact_label="coordinator",
+                fact_value=(f"{module} imports many internal modules"
+                            f"{pulls} — a decoupling candidate"),
+            )
+
         # Dream insights: discoveries the nightly dream CONFIRMED across multiple
         # dreams and graduated (high confidence + persistence). The organism
         # acting on what it learned while you were away — guarded so only a

@@ -1008,6 +1008,7 @@ _FACT_HINTS: dict[str, str] = {
     "polyglot-hotspot": "review awareness out of scope non-python coverage attention largest active surface",
     "incomplete-protocol": "complete finish protocol contract pair half built equality hash context manager enter exit recommend design",
     "generalizable-duplication": "generalize extract shared helper reuse dry duplicated across modules common abstraction recommend design",
+    "coordinator": "decouple split responsibilities god module high fan-out coordination chokepoint boundary seams recommend design",
 }
 
 # Root fact labels where reliability/security lenses matter most.

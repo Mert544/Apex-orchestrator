@@ -69,6 +69,15 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                                   "Generalize the cross-module duplication in {s} "
                                   "— extract one shared helper; Apex names the "
                                   "blocks, you design the abstraction", False),
+    # Coordinator (god-module): a module with high fan-OUT (it imports many
+    # internal modules) is a coordination chokepoint. HOW to decouple it — which
+    # responsibilities to split, where the seams are — is a DESIGN decision, so
+    # Apex RECOMMENDS the split and names the module; it must NOT auto-write it.
+    # Strictly recommend-only (executable False).
+    "coordinator": ("design_task",
+                    "Decouple the coordinator module {s} — it imports many "
+                    "internal modules; split its responsibilities (Apex names "
+                    "the god-module, you design the seams)", False),
     "modernization": ("modernize_comparisons", "Modernize None comparisons in {s}", True),
     "mutable-default": ("fix_mutable_defaults", "Fix mutable default arguments in {s}", True),
     # The hands exist (apex signature drop/keywordify) but as supervised CLI

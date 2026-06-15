@@ -174,6 +174,21 @@ class ProjectProfile:
     # stays byte-identical. Each entry:
     # {"modules": sorted distinct module paths, "occurrences": int, "lines": int}.
     generalizable_duplications: list[dict] = field(default_factory=list)
+    # Coordinator modules (CONSTRUCTIVE decouple signal): a module that IMPORTS
+    # many internal modules (high fan-OUT) is a coordination chokepoint / god-
+    # module — it knows about too much of the system and is a candidate to split
+    # responsibilities apart. This is the OPPOSITE edge direction from the
+    # ``dependency_hubs`` (fan-IN) signal: a hub is depended ON by many, a
+    # coordinator depends ON many. Read straight off the SAME import graph
+    # ``_populate_python_structure`` already builds (fan-out = ``len(node.imports)``
+    # = the in-scope internal modules IT pulls), so no second graph is built.
+    # Whole-repo structural read the GRADE never consumes, so gated behind
+    # ``not light``. Recommend-only — deciding HOW to decouple a god-module is a
+    # DESIGN call, Apex names it but does not auto-write. Deterministic, capped;
+    # a repo with no god-modules yields [] so seeding stays byte-identical. Each
+    # entry: {"module": str, "fan_out": int, "imports": [top few internal modules
+    # it pulls]}.
+    coordinator_modules: list[dict] = field(default_factory=list)
 
 
 class ProjectProfiler:
@@ -288,6 +303,10 @@ class ProjectProfiler:
     def __init__(self, root: str | Path, max_files: int = 2000) -> None:
         self.root = Path(root)
         self.max_files = max_files
+        # The import graph ``_populate_python_structure`` builds, stashed so the
+        # (non-light) coordinator scan reuses it rather than building a second.
+        # Empty until structure analysis runs (an unparsable/empty tree).
+        self._dependency_graph: dict = {}
 
     def profile(self, *, light: bool = False) -> ProjectProfile:
         """Build the full project profile.
@@ -417,6 +436,13 @@ class ProjectProfiler:
             # never reads, so it is kept out of the light/ascend path (the idea
             # engine profiles with light=False; an all-clean repo yields []).
             self._scan_generalizable_duplications(profile)
+            # Coordinator modules: god-modules with high fan-OUT (they import
+            # many internal modules) — a decoupling candidate. Reads fan-out off
+            # the import graph ``_populate_python_structure`` already built (no
+            # second graph). A whole-repo structural read the GRADE never
+            # consumes, so gated out of the light/ascend path (the idea engine
+            # profiles with light=False; a repo with no god-modules yields []).
+            self._scan_coordinator_modules(profile)
             # Polyglot hotspots: name the biggest / most-churned NON-Python
             # source files for the idea engine to recommend attention on. A
             # bounded git pass + walk that the GRADE never reads, so it is gated
@@ -595,6 +621,48 @@ class ProjectProfiler:
             })
         entries.sort(key=lambda e: (-e["occurrences"], -e["lines"], e["modules"]))
         profile.generalizable_duplications = entries[:5]
+
+    def _scan_coordinator_modules(self, profile: ProjectProfile) -> None:
+        """Name high-fan-OUT modules — god-modules that are decoupling candidates.
+
+        A module that IMPORTS many internal modules (fan-out =
+        ``len(node.imports)`` >= ``_COORDINATOR_FAN_OUT_FLOOR``) is a coordination
+        chokepoint: it knows about too much of the system, so a change anywhere it
+        wires together can ripple back through it. This is the OPPOSITE edge
+        direction from the ``dependency_hubs`` (fan-IN) signal — a hub is depended
+        ON by many, a coordinator depends ON many — so the two never restate each
+        other. Reads fan-out off the import graph ``_populate_python_structure``
+        already built (``self._dependency_graph``), so no second graph is built;
+        the node's ``imports`` are already resolved INTERNAL modules. Test/example/
+        fixture files are excluded (their wiring is throwaway). For each flagged
+        module the ``imports`` field names the top few internal modules it pulls,
+        ordered by how depended-on each is (the target's own fan-in, the most-
+        central first — the heaviest convergence to shed), then path for
+        determinism. Sorted ``(-fan_out, module)`` and capped to 5; a repo with no
+        god-module yields [] so seeding stays byte-identical.
+        """
+        graph = getattr(self, "_dependency_graph", None) or {}
+        entries: list[dict] = []
+        for node in graph.values():
+            path = node.path
+            if self._is_fixture_path(path):
+                continue  # fixture/test wiring is throwaway, never a real subject
+            fan_out = len(node.imports)
+            if fan_out < self._COORDINATOR_FAN_OUT_FLOOR:
+                continue  # not a god-module — ordinary import footprint
+            top_imports = sorted(
+                node.imports,
+                key=lambda t: (-(graph[t].in_degree if t in graph else 0), t),
+            )[:3]
+            entries.append({
+                "module": path,
+                "fan_out": fan_out,
+                "imports": top_imports,
+            })
+        # Widest fan-out first (the heaviest coordinator), then stable by module
+        # so the ordering is deterministic.
+        entries.sort(key=lambda e: (-e["fan_out"], e["module"]))
+        profile.coordinator_modules = entries[:5]
 
     # Stable marker the reporting layer writes into every generated idea-tree
     # page (``<title>Apex Idea Tree</title>``). An HTML file carrying it is an
@@ -1093,6 +1161,9 @@ class ProjectProfiler:
         # nothing real), not by linked-test-file count: a single file with many
         # substantive tests fully covers a hub, so file-count is the wrong proxy.
         graph = graph_builder.build()
+        # Stash the just-built import graph so the (non-light) coordinator scan
+        # can read fan-out off the SAME graph instead of building a second one.
+        self._dependency_graph = graph
         # Quantified fan-in / heaviest-fan-out, read straight off the graph just
         # built (no second graph). Fan-in is the blast radius (in_degree); the
         # heaviest fan-out targets are this module's own dependencies, ranked by
@@ -1347,6 +1418,15 @@ class ProjectProfiler:
     # widest blast radius. Kept strictly above the fragility floor so the two
     # signals describe different populations rather than restating each other.
     _HUB_FAN_IN_FLOOR = 3
+
+    # Fan-OUT bar for a *coordinator* (god-module): a module importing at least
+    # this many internal modules is a coordination chokepoint — it knows about
+    # too much of the system and is a decoupling candidate. The opposite edge
+    # direction from ``_HUB_FAN_IN_FLOOR`` (fan-in). Set high (12) so only
+    # genuine god-modules surface, not every file with a handful of imports:
+    # tuned against Apex itself, which has a small number of real coordinator
+    # modules (CLI/engine wirers) and many ordinary modules well below this bar.
+    _COORDINATOR_FAN_OUT_FLOOR = 12
 
     def _scan_hub_untested_modules(self, graph: dict, module_to_tests: dict,
                                    shallow: set, claimed: set) -> list[dict]:
