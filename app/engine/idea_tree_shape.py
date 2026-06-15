@@ -48,6 +48,14 @@ class TreeShape:
     # purely-permuted abstractions).
     grounded_count: int = 0
     grounding_ratio: float = 0.0      # grounded_count / total_ideas, in [0,1]
+    # Lens diversity: how many DISTINCT development operators (lenses) the tree
+    # actually applies. One lens everywhere is shallow reasoning; a balanced
+    # spread is richer. The available-operator set is not recorded in the report,
+    # so we expose the distinct count plus the single most-applied lens and its
+    # share — orthogonal to grounding and kind mix.
+    distinct_operators: int = 0
+    dominant_operator: str = ""
+    dominant_operator_share: float = 0.0  # share of ideas using the top lens, [0,1]
     observations: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -121,6 +129,18 @@ def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
     grounded_count = sum(1 for i in ideas if i.source_facts)
     grounding_ratio = round(grounded_count / total, 4)
 
+    # Lens diversity: distinct operators used + the dominant lens and its share.
+    # Tie-break for the dominant lens is deterministic (count desc, name asc).
+    operators = Counter(i.operator for i in ideas if i.operator)
+    distinct_operators = len(operators)
+    if operators:
+        dominant_operator, dominant_count = min(
+            operators.items(), key=lambda kv: (-kv[1], kv[0])
+        )
+        dominant_operator_share = round(dominant_count / total, 4)
+    else:
+        dominant_operator, dominant_operator_share = "", 0.0
+
     shape = TreeShape(
         total_ideas=total,
         roots=roots,
@@ -137,6 +157,9 @@ def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
         distinct_values=distinct_values,
         grounded_count=grounded_count,
         grounding_ratio=grounding_ratio,
+        distinct_operators=distinct_operators,
+        dominant_operator=dominant_operator,
+        dominant_operator_share=dominant_operator_share,
         heaviest_module=heaviest_module,
         heaviest_loc=heaviest_loc,
         total_measured_loc=total_measured_loc,
@@ -167,6 +190,16 @@ def _observe(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
         obs.append(f"Fractal facets are {int(s.facet_penetration * 100)}% of the tree.")
     if s.distinct_values < max(3, s.total_ideas // 3):
         obs.append("Scores are clustered — limited prioritization signal between ideas.")
+    if s.distinct_operators <= 1:
+        obs.append(
+            "A single lens shapes the whole tree — raise --breadth to apply more "
+            "development operators per idea."
+        )
+    elif s.dominant_operator_share > 0.5:
+        obs.append(
+            f"One lens (`{s.dominant_operator}`) drives most ideas — reasoning leans "
+            "on a single development operator."
+        )
     if s.grounding_ratio < 0.5:
         obs.append(
             f"Weakly grounded — only {int(s.grounding_ratio * 100)}% of ideas tie to "
@@ -199,6 +232,9 @@ def render_tree_shape_markdown(shape: TreeShape) -> str:
         f"{shape.distinct_values} distinct values",
         f"- **Grounding:** {int(shape.grounding_ratio * 100)}% of ideas "
         f"({shape.grounded_count}/{shape.total_ideas}) tied to concrete code facts",
+        f"- **Lens diversity:** {shape.distinct_operators} distinct operators · "
+        f"dominant `{shape.dominant_operator}` "
+        f"({int(shape.dominant_operator_share * 100)}% of ideas)",
     ]
     if shape.total_measured_loc > 0:
         lines.append(
