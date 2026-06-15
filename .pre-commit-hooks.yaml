@@ -1,0 +1,27 @@
+# Apex pre-commit hooks. Consuming repos add this to their .pre-commit-config.yaml:
+#
+#   repos:
+#     - repo: https://github.com/Mert544/Apex-orchestrator
+#       rev: v1            # pin a tag
+#       hooks:
+#         - id: apex-gate          # deterministic, offline health gate
+#         - id: apex-review        # review staged changes vs HEAD, fail on high severity
+#
+# Both run fully offline, no API key, no token cost — the air-gap/zero-token wedge
+# holds locally too. Apex takes a project root / git base, not a file list, so the
+# hooks set pass_filenames: false.
+
+- id: apex-gate
+  name: Apex health gate
+  description: "Deterministic, offline code-health gate — fails on a security/grade regression."
+  entry: apex gate
+  language: python
+  pass_filenames: false
+  always_run: true
+
+- id: apex-review
+  name: Apex diff review
+  description: "Review changes against HEAD for security/quality issues; fail on a high-severity finding."
+  entry: apex review --base HEAD --fail-on-high
+  language: python
+  pass_filenames: false

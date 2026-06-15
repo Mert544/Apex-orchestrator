@@ -26,6 +26,14 @@ inputs:
     description: "Python version to set up for running Apex."
     required: false
     default: "3.11"
+  upload-sarif:
+    description: "Upload diff-review findings to the GitHub Security tab as SARIF (needs a base and permissions: security-events: write)."
+    required: false
+    default: "true"
+  sarif-file:
+    description: "Path the diff review writes SARIF to (also the file uploaded to the Security tab)."
+    required: false
+    default: "apex-review.sarif"
 
 runs:
   using: "composite"
@@ -47,8 +55,21 @@ runs:
       if: ${{ inputs.base != '' }}
       shell: bash
       run: |
-        if [ "${{ inputs.fail-on-high }}" = "true" ]; then
-          apex review --target "${{ inputs.target }}" --base "${{ inputs.base }}" --fail-on-high
-        else
-          apex review --target "${{ inputs.target }}" --base "${{ inputs.base }}"
-        fi
+        FLAGS=()
+        [ "${{ inputs.fail-on-high }}" = "true" ] && FLAGS+=(--fail-on-high)
+        # --sarif writes the SARIF file AND still prints the human-readable review.
+        apex review \
+          --target "${{ inputs.target }}" \
+          --base "${{ inputs.base }}" \
+          --sarif "${{ inputs.sarif-file }}" \
+          "${FLAGS[@]}"
+
+    # Surface the findings inline on the PR diff + in the Security tab. Best-effort:
+    # if the repo hasn't granted `security-events: write`, this step is skipped
+    # rather than failing the gate (the review gate above already set the verdict).
+    - name: Upload review SARIF to the Security tab
+      if: ${{ inputs.base != '' && inputs.upload-sarif == 'true' && always() && hashFiles(inputs.sarif-file) != '' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+        category: apex-review
