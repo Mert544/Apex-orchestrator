@@ -35,10 +35,19 @@ class TreeShape:
     mean_value: float
     value_range: float                # max value − min value
     distinct_values: int
+    # Grounding: how many ideas carry concrete source_facts (tied to a real code
+    # signal) vs. purely-permuted abstractions.
+    grounded_count: int = 0
+    grounding_ratio: float = 0.0      # fraction of ideas with non-empty source_facts
     # Measured code-size telemetry (from report.stats["metrics"]).
     heaviest_module: str = ""
     heaviest_loc: int = 0
     total_measured_loc: int = 0
+    # How well the tree is grounded in concrete code facts: the fraction of
+    # ideas whose ``source_facts`` is non-empty (tied to a real code signal vs.
+    # purely-permuted abstractions).
+    grounded_count: int = 0
+    grounding_ratio: float = 0.0      # grounded_count / total_ideas, in [0,1]
     observations: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -109,6 +118,9 @@ def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
     value_range = round(max(values) - min(values), 4)
     distinct_values = len(set(values))
 
+    grounded_count = sum(1 for i in ideas if i.source_facts)
+    grounding_ratio = round(grounded_count / total, 4)
+
     shape = TreeShape(
         total_ideas=total,
         roots=roots,
@@ -123,6 +135,8 @@ def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
         mean_value=mean_value,
         value_range=value_range,
         distinct_values=distinct_values,
+        grounded_count=grounded_count,
+        grounding_ratio=grounding_ratio,
         heaviest_module=heaviest_module,
         heaviest_loc=heaviest_loc,
         total_measured_loc=total_measured_loc,
@@ -153,6 +167,11 @@ def _observe(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
         obs.append(f"Fractal facets are {int(s.facet_penetration * 100)}% of the tree.")
     if s.distinct_values < max(3, s.total_ideas // 3):
         obs.append("Scores are clustered — limited prioritization signal between ideas.")
+    if s.grounding_ratio < 0.5:
+        obs.append(
+            f"Weakly grounded — only {int(s.grounding_ratio * 100)}% of ideas tie to "
+            "concrete code facts; many are pure permutations."
+        )
     if s.total_measured_loc > 0 and s.heaviest_loc > 0.4 * s.total_measured_loc:
         pct = round(100 * s.heaviest_loc / s.total_measured_loc)
         obs.append(
@@ -178,6 +197,8 @@ def render_tree_shape_markdown(shape: TreeShape) -> str:
         f"- **Fractal facets:** {int(shape.facet_penetration * 100)}% of ideas",
         f"- **Scoring:** mean {shape.mean_value} · range {shape.value_range} · "
         f"{shape.distinct_values} distinct values",
+        f"- **Grounding:** {int(shape.grounding_ratio * 100)}% of ideas "
+        f"({shape.grounded_count}/{shape.total_ideas}) tied to concrete code facts",
     ]
     if shape.total_measured_loc > 0:
         lines.append(
