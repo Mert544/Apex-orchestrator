@@ -228,30 +228,75 @@ optionally let the BS-2 local-LLM layer *rephrase* ideas without inventing them.
 
 | Blind spot | Status |
 |---|---|
-| BS-1 Python-only | ⏳ open (language-plugin seam not started) |
-| BS-2 no LLM for ambiguous work | ⏳ open by design (verifier-gated local-LLM still optional/planned) |
-| BS-3 no external proof | ✅ honest docs + `apex bench` calibration on pinned OSS repos (`docs/bench/results.md`); ground-truth P/R remains impossible without labels — stated |
-| BS-4 fix scope limited | ✅ risk-tiered catalog (Tier 0/1/2; unknown ⇒ Tier 1; Tier 1 needs coverage or shield) |
-| BS-5 multi-file refactor weak | ✅ foundation: `apex rename`, `apex move`, `apex rename --param` (span-edit machinery; signature add/remove still open) |
-| BS-6 verification ≅ host tests | ✅ verification strength grading + test-first shield + failing-test names in evidence |
-| BS-7 no runtime understanding | ⏳ open (static-confidence labeling partial via bench caveats) |
-| BS-8 idea novelty ceiling | ✅ signal vocabulary widened: churn, change×complexity convergence, debt age, L3 facets, signal-narrated diffs |
+| BS-1 Python-only | ✅ **advanced**: multi-language *awareness* — `polyglot_facts` names the biggest / most-churned non-Python files with a convention-based test-presence flag and a debt-marker count; `cross_language_coupling` surfaces py↔non-py co-change ("keep in sync"); `apex scope` reports honest coverage ("analysing 93% of this repo"); seeded as recommend-only ideas. Deep AST analysis stays Python-only (stated), but Apex no longer abandons the non-Python part of the repo. |
+| BS-2 no LLM for ambiguous work | ⏳ open **by design** — Apex is the deterministic complement, not a replacement; positioned as "use it *alongside* an LLM", never instead. The differentiator is that Apex needs no LLM. |
+| BS-3 no external proof | ✅ honest docs + `apex bench` calibration on pinned OSS repos; **proof-carrying recommendations** (exact draft diff + re-parse verdict + before→after metric delta + whether the tests exercise the change) make the claim tangible per recommendation; `apex trackrecord` shows the landed-fix history. |
+| BS-4 fix scope limited | ✅ risk-tiered catalog (Tier 0/1/2; unknown ⇒ Tier 1; Tier 1 needs coverage or shield); 41 develop objectives. |
+| BS-5 multi-file refactor weak | ✅ foundation: `apex rename`, `apex move`, `apex rename --param` (span-edit machinery; signature add/remove still open). |
+| BS-6 verification ≅ host tests | ✅ verification strength grading + test-first shield + failing-test names in evidence; **false-green refusal** — `apex develop --top` will not auto-apply to a module the suite doesn't exercise (blocks unless `--force`, or `--shield` writes a characterization-test stub first). |
+| BS-7 no runtime understanding | ✅ **closed**: `apex deadcode --confirm` runs the project's own tests under stdlib `trace` and confirms / refutes / labels each static finding, keyed on the symbol's *use-only body lines* (a def line runs at import even for dead code, so it is not the honest signal). |
+| BS-8 idea novelty ceiling | ✅ signal vocabulary widened (churn, convergence/confluence, co-change test-gap, debt age, L3 facets); the roadmap **learns** from the repo's own outcome ledger (historically-landing fixes rank up). |
+| (new) dependency blind spot | ✅ `apex deps` — declared (`pyproject`/`requirements`) vs actually-imported third-party packages: possibly-unused / undeclared / unpinned, framed honestly as heuristic. |
 
-Standing institutions: proof-of-fix artifact on every apply; nightly **dogfood
-CI** (Apex maintains Apex, evidence published); three real bugs already found
-and fixed by self-application.
+Standing institutions: proof-of-fix artifact on every apply; the dev-army process
+(parallel worktree agents + a standing auditor per wave + one green gate); **five
+real bugs found and fixed by self-application** this campaign (a dependency-planner
+infinite-hang, an unreachable duplicate candidate, a dead symbol, a dead phase
+override, a null/missing-key counting asymmetry).
+
+## 4c. Why Apex — the company-facing promise (2026-06, "the cell")
+
+**Why a company chooses Apex (what an LLM assistant structurally cannot give):**
+
+1. **Zero-token, zero-cost, air-gappable.** Stdlib-only, no API keys, no code
+   leaves the machine. Finance / defense / healthcare / any IP-sensitive shop that
+   *cannot* send source to a cloud LLM can still run Apex on every commit. This is
+   not a price advantage — it is an *access* advantage: Apex works where LLMs are
+   banned.
+2. **Deterministic — CI can depend on it.** `apex gate` fails the build on a
+   regression (grade drop, new security finding, coverage loss) the same way every
+   time; `apex gate --baseline` answers "did this PR make it worse?". An LLM cannot
+   gate a build reproducibly; Apex is the prover CI was missing.
+3. **Proof-carrying & auditable.** Every recommendation shows the exact diff, a
+   re-parse safety verdict, the before→after complexity delta, and whether your
+   tests actually exercise the change. `proof-of-fix.json` is the audit artifact a
+   compliance officer can open. "Trust me" becomes "here is the evidence."
+4. **Honest about its limits — it never fakes a green.** `apex scope` says exactly
+   what fraction it analyses; `apex develop --top` refuses to claim "verified" on
+   code the tests don't cover. Trust is the product.
+5. **Safe autonomy.** Fixes apply only if the suite passes, with automatic
+   rollback. `apex maintain` / `apex develop --top` can run unsupervised without
+   ever leaving the project broken.
+
+**The promise, one line:** *LLMs write code fast and unpredictably. Apex is the
+deterministic, zero-token engineer that proves what is safe, gates your CI, and
+develops the project it sits in — offline, auditable, and replayable.*
+
+**Blind-spot defense (so a buyer can't land a punch):** "Only Python?" — Apex now
+*names and reasons about* the whole repo (scope, polyglot risk, cross-language
+coupling), with deep transforms on the Python core and honesty about the rest.
+"Can't do creative/ambiguous work?" — correct, by design: that is the LLM's job;
+Apex is the deterministic layer you run *with* it, the one your auditor and your CI
+can actually trust.
 
 ## 5. Recommended sequence
 
-| # | Item | Closes | Effort | Leverage |
-|---|---|---|---|---|
-| 1 | Proof-of-Fix artifact + SARIF export | trust crisis, BS-3 partially | S–M | **highest** — makes the core claim tangible |
-| 2 | Coverage-aware verification + test-first fixing | BS-6 | M | hardens the strongest claim |
-| 3 | `apex bench` + honest comparison rewrite | BS-3 | M | credibility, marketing-safe |
-| 4 | Risk-tiered transform catalog | BS-4 | M | growth path for autonomy |
-| 5 | Cross-file rename/move | BS-5 | M–L | "real engineer" depth |
-| 6 | JS/TS detectors behind plugin seam | BS-1 | L | market width |
-| 7 | Verifier-gated local-LLM adapter | BS-2, BS-8 | L | capability ceiling, keep off by default |
+Items 1–6 below have **shipped** this campaign (the "cell"); the live frontier is
+the commercial CI/enterprise on-ramp.
+
+| # | Item | Closes | Status |
+|---|---|---|---|
+| 1 | Proof-of-Fix artifact + proof-carrying recommendations + SARIF | trust crisis, BS-3 | ✅ shipped |
+| 2 | Coverage-aware verification + test-first shield + false-green refusal | BS-6 | ✅ shipped |
+| 3 | `apex bench` calibration + honest scope (`apex scope`) | BS-3 | ✅ shipped |
+| 4 | Risk-tiered transform catalog (41 objectives) | BS-4 | ✅ shipped |
+| 5 | Cross-file rename/move | BS-5 | ✅ shipped (signature add/remove open) |
+| 6 | Multi-language *awareness* (polyglot facts, scope, cross-language coupling) | BS-1 | ✅ shipped (deep JS/TS transforms still open) |
+| 7 | Runtime confirmation (`apex deadcode --confirm`) | BS-7 | ✅ shipped |
+| 8 | `apex gate` / `--baseline` (deterministic CI gate + regression) | trust/CI | ✅ shipped |
+| 9 | **Frictionless CI/enterprise on-ramp** — a ready GitHub Action + SARIF→Security tab + a one-page "drop into CI" guide | adoption | **next — highest commercial leverage** |
+| 10 | Deep JS/TS detectors/transforms behind a plugin seam | BS-1 (depth) | later (market width) |
+| 11 | Verifier-gated local-LLM adapter | BS-2, BS-8 | deferred by design (keep off by default) |
 
 The order is deliberate: items 1–3 make the *existing* product's claims provable
 before items 4–7 expand what it does. Trust positioning fails loudest when the
