@@ -113,7 +113,22 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "version skew": ["compatibility window", "feature detection", "graceful degradation",
                      # added: the work-ordering moves a coordinated change needs.
                      "the prerequisite change that must land first",
-                     "the downstream work this change unblocks"],
+                     "the downstream work this change unblocks",
+                     # added: the MIGRATION moves a coordinated change needs. The
+                     # whole facet set's only migration vocabulary lived under the
+                     # EXTEND lens (new inputs/outputs), i.e. how to grow ADDITIVE
+                     # surface — nothing named how the EXISTING callers cross a
+                     # version-skewed change safely. "version skew" is the natural
+                     # home: it is the one aspect whose job is two sides on different
+                     # versions. Distinct from the sequencing moves above (order
+                     # between pieces of work) — these name how a caller moves from
+                     # old to new without breaking: a deprecation shim, a
+                     # backward-compatible default, and a staged rollout across
+                     # cohorts. Appended (originals stay FIRST), so the per-level
+                     # beam is undisturbed.
+                     "the deprecation shim that keeps old callers working",
+                     "the backward-compatible default for existing callers",
+                     "the staged rollout across caller cohorts"],
     # integrate L3 ladders — each appended edge move decomposes into concrete edits.
     "the boundary contract to define": ["the request and response types",
                                         "the required versus optional fields",
@@ -138,6 +153,21 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "the downstream work this change unblocks": ["the follow-up this change makes possible",
                                                  "the consumer ready to build on it once it ships",
                                                  "the handoff note that names what is now unblocked"],
+    # integrate migration L3 ladders — each migration move decomposes once more
+    # into the concrete decisions an engineer makes to carry the existing callers
+    # across the change, then bottoms out in the universal case split. The "shim"
+    # move asks what old shape to keep alive and when to drop it; the "default"
+    # move asks how to preserve today's behaviour while offering the new path; the
+    # "rollout" move asks who gets it first, what is watched, and when to back out.
+    "the deprecation shim that keeps old callers working": ["the old signature the shim must preserve",
+                                                            "the warning that tells a caller to migrate",
+                                                            "the removal date the shim is retired on"],
+    "the backward-compatible default for existing callers": ["the default that reproduces the prior behaviour for a caller",
+                                                             "the opt-in switch a caller flips for the new behaviour",
+                                                             "the caller migration the default lets you defer"],
+    "the staged rollout across caller cohorts": ["the first caller cohort to receive it",
+                                                 "the metric watched as the rollout widens",
+                                                 "the rollback trigger if a cohort regresses"],
     # generalize — the constructive "lift the common shape" lens. Each existing
     # L2 list is EXTENDED (originals stay FIRST, never displaced) with the
     # concrete moves a generalization is actually made of: extract the shared
