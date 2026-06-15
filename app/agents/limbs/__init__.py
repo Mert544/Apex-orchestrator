@@ -65,23 +65,7 @@ class DebugLimb(Limb):
         project_path = Path(project_root)
 
         if error_trace:
-            result["analysis"].append(
-                f"Analyzed error trace ({len(error_trace)} chars)"
-            )
-
-            root_cause = self._analyze_traceback(error_trace, project_path)
-            if root_cause:
-                result["root_cause"] = root_cause
-                result["analysis"].append(
-                    f"Identified root cause: {root_cause['type']}"
-                )
-
-                fix = self._suggest_fix(root_cause, project_path)
-                if fix:
-                    result["fixes"].append(fix)
-                    result["suggestions"].append(fix["description"])
-            else:
-                result["suggestions"].append("Could not identify specific root cause")
+            self._analyze_error_trace(error_trace, project_path, result)
 
         if target_file and (project_path / target_file).exists():
             issues = self._scan_file_for_common_issues(project_path / target_file)
@@ -90,6 +74,28 @@ class DebugLimb(Limb):
         self.last_execution_result = result
         self.state = AgentState.COMPLETED
         return result
+
+    def _analyze_error_trace(
+        self, error_trace: str, project_path: Path, result: dict[str, Any]
+    ) -> None:
+        result["analysis"].append(
+            f"Analyzed error trace ({len(error_trace)} chars)"
+        )
+
+        root_cause = self._analyze_traceback(error_trace, project_path)
+        if not root_cause:
+            result["suggestions"].append("Could not identify specific root cause")
+            return
+
+        result["root_cause"] = root_cause
+        result["analysis"].append(
+            f"Identified root cause: {root_cause['type']}"
+        )
+
+        fix = self._suggest_fix(root_cause, project_path)
+        if fix:
+            result["fixes"].append(fix)
+            result["suggestions"].append(fix["description"])
 
     def _analyze_traceback(
         self, traceback: str, project_path: Path
@@ -243,23 +249,7 @@ class CoverageLimb(Limb):
             cov_report_path = project_path / "coverage.json"
             if cov_report_path.exists():
                 cov_data = json.loads(cov_report_path.read_text())
-                files = cov_data.get("files", {})
-                low_cov = []
-                uncovered = []
-
-                for filepath, data in files.items():
-                    coverage = data.get("summary", {}).get("percent_covered", 0)
-                    if coverage < 70:
-                        low_cov.append(filepath)
-                    for func_name, func_data in data.get("functions", {}).items():
-                        if func_data.get("count", 0) == 0:
-                            uncovered.append(f"{filepath}::{func_name}")
-
-                return {
-                    "total": cov_data.get("totals", {}).get("percent_covered", 0),
-                    "low_coverage_files": low_cov[:10],
-                    "uncovered_functions": uncovered[:20],
-                }
+                return self._parse_coverage_report(cov_data)
 
         except Exception:
             pass
@@ -268,6 +258,25 @@ class CoverageLimb(Limb):
             "total": 75.0,
             "low_coverage_files": ["app/utils.py", "tests/test_main.py"],
             "uncovered_functions": [],
+        }
+
+    def _parse_coverage_report(self, cov_data: dict[str, Any]) -> dict[str, Any]:
+        files = cov_data.get("files", {})
+        low_cov = []
+        uncovered = []
+
+        for filepath, data in files.items():
+            coverage = data.get("summary", {}).get("percent_covered", 0)
+            if coverage < 70:
+                low_cov.append(filepath)
+            for func_name, func_data in data.get("functions", {}).items():
+                if func_data.get("count", 0) == 0:
+                    uncovered.append(f"{filepath}::{func_name}")
+
+        return {
+            "total": cov_data.get("totals", {}).get("percent_covered", 0),
+            "low_coverage_files": low_cov[:10],
+            "uncovered_functions": uncovered[:20],
         }
 
 
@@ -301,23 +310,9 @@ class RefactorLimb(Limb):
         for py_file in py_files:
             if "test" in py_file.name.lower():
                 continue
-            try:
-                content = py_file.read_text(encoding="utf-8")
-                tree = ast.parse(content)
-
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.FunctionDef):
-                        if len(node.body) > 50:
-                            result["issues_found"].append(
-                                f"Long function '{node.name}' in {py_file.relative_to(project_path)}"
-                            )
-                        if not ast.get_docstring(node):
-                            result["issues_found"].append(
-                                f"Missing docstring in {py_file.relative_to(project_path)}::{node.name}"
-                            )
-
-            except Exception:
-                pass
+            result["issues_found"].extend(
+                self._scan_file_for_issues(py_file, project_path)
+            )
 
         if target_pattern:
             result["issues_found"] = [
@@ -332,6 +327,30 @@ class RefactorLimb(Limb):
         self.last_execution_result = result
         self.state = AgentState.COMPLETED
         return result
+
+    def _scan_file_for_issues(
+        self, py_file: Path, project_path: Path
+    ) -> list[str]:
+        issues: list[str] = []
+        try:
+            content = py_file.read_text(encoding="utf-8")
+            tree = ast.parse(content)
+        except Exception:
+            return issues
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if len(node.body) > 50:
+                issues.append(
+                    f"Long function '{node.name}' in {py_file.relative_to(project_path)}"
+                )
+            if not ast.get_docstring(node):
+                issues.append(
+                    f"Missing docstring in {py_file.relative_to(project_path)}::{node.name}"
+                )
+
+        return issues
 
 
 class DependencyLimb(Limb):
@@ -450,23 +469,12 @@ class DocLimb(Limb):
         for py_file in py_files:
             if "test" in py_file.name.lower():
                 continue
-            try:
-                content = py_file.read_text(encoding="utf-8")
-                tree = ast.parse(content)
-
-                has_module_doc = ast.get_docstring(tree)
-
-                for node in tree.body:
-                    if (isinstance(node, (ast.FunctionDef, ast.ClassDef))) and (not ast.get_docstring(node)):
-                        missing_count += 1
-
-                if not has_module_doc:
-                    result["missing_docs"].append(
-                        str(py_file.relative_to(project_path))
-                    )
-
-            except Exception:
-                pass
+            file_missing, missing_module_doc = self._scan_file_for_missing_docs(py_file)
+            missing_count += file_missing
+            if missing_module_doc:
+                result["missing_docs"].append(
+                    str(py_file.relative_to(project_path))
+                )
 
         if target in ("all", "api"):
             result["generated_docs"].append(f"API docs for {len(py_files)} files")
@@ -483,6 +491,22 @@ class DocLimb(Limb):
         self.last_execution_result = result
         self.state = AgentState.COMPLETED
         return result
+
+    def _scan_file_for_missing_docs(self, py_file: Path) -> tuple[int, bool]:
+        try:
+            content = py_file.read_text(encoding="utf-8")
+            tree = ast.parse(content)
+        except Exception:
+            return 0, False
+
+        missing_count = 0
+        for node in tree.body:
+            if (isinstance(node, (ast.FunctionDef, ast.ClassDef))) and (
+                not ast.get_docstring(node)
+            ):
+                missing_count += 1
+
+        return missing_count, not ast.get_docstring(tree)
 
 
 class CILimb(Limb):
