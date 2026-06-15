@@ -14,6 +14,22 @@ class ModuleStructure:
     symbols: list[str] = field(default_factory=list)
 
 
+# Process-level cache for the expensive per-file work (read + ``ast.parse`` +
+# tree walk). A single ideate/dashboard build constructs FIVE separate analyzers
+# (code_metrics, dependency_graph, project_profile, ...), each re-reading and
+# re-parsing the ENTIRE source tree — ~2,500 redundant parses, ~18s of pure
+# waste, since the files do not change within one build.
+#
+# Key: ``(absolute_resolved_path, st_mtime_ns)``. The absolute path keeps two
+# different roots that touch the same file from colliding; the mtime makes the
+# cache self-invalidating — a file rewritten between builds (tests rely on this)
+# gets a fresh key and is re-analyzed. We cache the parse result (imports +
+# symbols), NOT the ``ModuleStructure``, because only the latter's ``path`` is
+# root-relative: the same file under a different root reuses the cached parse but
+# still gets its own relative path, so output is byte-for-byte identical to today.
+_PARSE_CACHE: dict[tuple[str, int], tuple[list[str], list[str]] | None] = {}
+
+
 def _is_type_checking_test(test: ast.expr) -> bool:
     """True if an ``if`` test is ``TYPE_CHECKING`` (bare or ``typing.TYPE_CHECKING``).
 
@@ -53,40 +69,75 @@ class PythonStructureAnalyzer:
         return results
 
     def _analyze_file(self, path: Path) -> ModuleStructure | None:
-        try:
-            source = path.read_text(encoding="utf-8", errors="ignore")
-            tree = ast.parse(source)
-        except (SyntaxError, OSError, ValueError):
+        parsed = _parse_file(path)
+        if parsed is None:
             return None
-
-        imports: list[str] = []
-        symbols: list[str] = []
-
-        # Imports under `if TYPE_CHECKING:` are type-only — they never run, so they
-        # are NOT real import edges. Counting them lets a type-hint import that was
-        # added to BREAK a cycle get miscounted AS a cycle (a false positive that
-        # cost real grade points). Collect those nodes and skip them below. The
-        # `else` arm of such a block DOES run, so only its `body` is excluded.
-        type_only: set[int] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.If) and _is_type_checking_test(node.test):
-                for stmt in node.body:
-                    for inner in ast.walk(stmt):
-                        if isinstance(inner, (ast.Import, ast.ImportFrom)):
-                            type_only.add(id(inner))
-
-        for node in ast.walk(tree):
-            if id(node) in type_only:
-                continue
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    imports.append(alias.name)
-            elif isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                if module:
-                    imports.append(module)
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                symbols.append(node.name)
-
+        imports, symbols = parsed
         rel = str(path.relative_to(self.root))
-        return ModuleStructure(path=rel, imports=sorted(set(imports)), symbols=sorted(set(symbols)))
+        # Copy the cached lists so a caller mutating ModuleStructure.imports/symbols
+        # cannot corrupt a shared cache entry reused by the next analyzer.
+        return ModuleStructure(path=rel, imports=list(imports), symbols=list(symbols))
+
+
+def _parse_file(path: Path) -> tuple[list[str], list[str]] | None:
+    """Read + parse ``path`` into ``(sorted imports, sorted symbols)``, memoized.
+
+    Keyed by ``(absolute path, st_mtime_ns)`` so the same file is read + parsed +
+    walked AT MOST ONCE per build, yet a file that changes between builds (new
+    mtime) is re-analyzed. Returns ``None`` for unreadable / unparseable files
+    (and caches that ``None`` so a known-bad file isn't retried each scanner).
+    """
+    try:
+        stat = path.stat()
+    except (OSError, ValueError):
+        # No stat -> no stable key. Fall through to the uncached path so callers
+        # still see today's behavior (e.g. read_text raising on a bad argument).
+        return _parse_source(path)
+
+    key = (str(path.resolve()), stat.st_mtime_ns)
+    if key in _PARSE_CACHE:
+        return _PARSE_CACHE[key]
+
+    parsed = _parse_source(path)
+    _PARSE_CACHE[key] = parsed
+    return parsed
+
+
+def _parse_source(path: Path) -> tuple[list[str], list[str]] | None:
+    """Uncached read + parse + extract. Single source of the import/symbol graph."""
+    try:
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        tree = ast.parse(source)
+    except (SyntaxError, OSError, ValueError):
+        return None
+
+    imports: list[str] = []
+    symbols: list[str] = []
+
+    # Imports under `if TYPE_CHECKING:` are type-only — they never run, so they
+    # are NOT real import edges. Counting them lets a type-hint import that was
+    # added to BREAK a cycle get miscounted AS a cycle (a false positive that
+    # cost real grade points). Collect those nodes and skip them below. The
+    # `else` arm of such a block DOES run, so only its `body` is excluded.
+    type_only: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and _is_type_checking_test(node.test):
+            for stmt in node.body:
+                for inner in ast.walk(stmt):
+                    if isinstance(inner, (ast.Import, ast.ImportFrom)):
+                        type_only.add(id(inner))
+
+    for node in ast.walk(tree):
+        if id(node) in type_only:
+            continue
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.append(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module:
+                imports.append(module)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            symbols.append(node.name)
+
+    return sorted(set(imports)), sorted(set(symbols))
