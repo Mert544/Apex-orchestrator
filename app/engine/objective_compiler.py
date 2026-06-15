@@ -41,6 +41,7 @@ __all__ = [
     "compile_objective", "compile_all", "available_objectives",
     "ALL_OBJECTIVES", "dream_confluence_modules", "compile_from_dream",
     "render_compile_markdown", "render_from_dream_markdown", "render_all_markdown",
+    "resolve_objective", "objective_synonyms",
 ]
 
 
@@ -569,6 +570,134 @@ def available_objectives() -> list[str]:
     return list(_objectives_map())
 
 
+# --- Natural-language intent vocabulary --------------------------------------
+#
+# A deterministic, table-driven phrase→objective map so a human (or an upstream
+# idea) can name an objective the way they'd *say* it ("clean up the imports",
+# "speed up", "lock down auth") instead of memorizing the exact registry key.
+#
+# Pure stdlib, no fuzzy match, no model: a phrase resolves only if one of these
+# literal trigger substrings appears in the lowercased request. The map is
+# APPEND-ONLY and is consulted ONLY when the request isn't already a known
+# objective name (see ``resolve_objective``), so every objective that compiled a
+# specific way before still resolves to itself, byte-for-byte unchanged. Earlier
+# entries win ties, so a longer/more-specific phrase is listed before a shorter
+# one that it contains. Every target on the right is a real built-in objective.
+_OBJECTIVE_SYNONYMS: tuple[tuple[str, str], ...] = (
+    # remove-dead-code: strike unreachable statements
+    ("dead code", "remove-dead-code"),
+    ("unreachable", "remove-dead-code"),
+    ("remove dead", "remove-dead-code"),
+    ("strip dead", "remove-dead-code"),
+    # remove-unused-imports: drop dead top-level imports
+    ("unused import", "remove-unused-imports"),
+    ("dead import", "remove-unused-imports"),
+    ("prune import", "remove-unused-imports"),
+    ("drop import", "remove-unused-imports"),
+    # sort-imports: group + alphabetize the import block
+    ("sort import", "sort-imports"),
+    ("order import", "sort-imports"),
+    ("organize import", "sort-imports"),
+    ("organise import", "sort-imports"),
+    ("tidy import", "sort-imports"),
+    ("clean up import", "sort-imports"),
+    ("clean imports", "sort-imports"),
+    # dead-params: drop never-read parameters
+    ("dead param", "dead-params"),
+    ("unused param", "dead-params"),
+    ("unused argument", "dead-params"),
+    ("never-read param", "dead-params"),
+    ("drop param", "dead-params"),
+    # shrink-functions: extract helpers from long functions
+    ("shrink function", "shrink-functions"),
+    ("long function", "shrink-functions"),
+    ("split function", "shrink-functions"),
+    ("break up", "shrink-functions"),
+    ("extract method", "shrink-functions"),
+    ("decouple", "shrink-functions"),
+    ("untangle", "shrink-functions"),
+    # inline-helpers: fold single-use indirection away
+    ("inline", "inline-helpers"),
+    ("indirection", "inline-helpers"),
+    ("single-use helper", "inline-helpers"),
+    ("fold helper", "inline-helpers"),
+    # dedup: extract copy-pasted blocks to a shared helper
+    ("duplicat", "dedup"),  # duplicate / duplication / duplicated
+    ("copy-paste", "dedup"),
+    ("copy paste", "dedup"),
+    ("de-dup", "dedup"),
+    ("dedupe", "dedup"),
+    ("repeated block", "dedup"),
+    # extract-constant: name a repeated magic literal
+    ("magic constant", "extract-constant"),
+    ("magic literal", "extract-constant"),
+    ("magic number", "extract-constant"),
+    ("name constant", "extract-constant"),
+    ("extract constant", "extract-constant"),
+    # simplify-bool-return: if c: return True ... -> return c
+    ("boolean return", "simplify-bool-return"),
+    ("bool return", "simplify-bool-return"),
+    ("simplify return", "simplify-bool-return"),
+    # simplify-comprehension: accumulator loop -> comprehension
+    ("comprehension", "simplify-comprehension"),
+    ("accumulator loop", "simplify-comprehension"),
+    ("list build loop", "simplify-comprehension"),
+    # modernize: == None / dead f-string / dict() tidy debt + broad "tidy" verbs.
+    # Listed last so the specific phrases above win; these catch the generic
+    # "make it nicer" asks that map best onto the surface-tidy lens.
+    ("modernise", "modernize"),
+    ("tidy", "modernize"),
+    ("clean up", "modernize"),
+    ("cleanup", "modernize"),
+    ("clean code", "modernize"),
+    ("simplify", "modernize"),
+    ("refactor", "modernize"),
+    ("optimize", "modernize"),
+    ("optimise", "modernize"),
+    ("speed up", "modernize"),
+    ("faster", "modernize"),
+    ("harden", "modernize"),
+    ("fortify", "modernize"),
+    ("secure", "modernize"),
+    ("lock down", "modernize"),
+    ("sanitize", "modernize"),
+    ("sanitise", "modernize"),
+)
+
+
+def objective_synonyms() -> dict[str, list[str]]:
+    """The phrase→objective vocabulary, grouped as ``objective: [trigger, ...]``
+    for display/introspection. Deterministic; preserves declared order."""
+    out: dict[str, list[str]] = {}
+    for phrase, objective in _OBJECTIVE_SYNONYMS:
+        out.setdefault(objective, []).append(phrase)
+    return out
+
+
+def resolve_objective(request: str | None) -> str | None:
+    """Resolve a free-text objective request to a known objective NAME.
+
+    An exact (case-insensitive) objective name always wins and resolves to
+    itself — so the literal keys (``dead-params``, ``modernize``, …) never change
+    meaning. Otherwise the request's lowercased text is scanned against the
+    append-only synonym table and the FIRST matching trigger's objective is
+    returned (earlier, more-specific phrases listed first). Returns ``None`` when
+    nothing matches, so the caller can keep its existing "unknown objective"
+    handling. Deterministic, stdlib-only, no fuzzy/LLM matching."""
+    if not request:
+        return None
+    text = request.strip().lower()
+    if not text:
+        return None
+    known = {name.lower(): name for name in available_objectives()}
+    if text in known:
+        return known[text]
+    for phrase, objective in _OBJECTIVE_SYNONYMS:
+        if phrase in text:
+            return objective
+    return None
+
+
 def _move_module(move: "Move") -> str:
     """The module a move targets (the part before ':' in its target)."""
     return move.target.split(":", 1)[0]
@@ -594,9 +723,17 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
 
     objectives = _objectives_map()
     if objective not in objectives:
-        known = ", ".join(sorted(objectives))
-        return CompileResult(objective=objective, fitness_start=0.0, fitness_end=0.0,
-                             blocked=[f"unknown objective '{objective}' (known: {known})"])
+        # Not a literal objective name — try the natural-language vocabulary
+        # ("clean up imports", "lock down auth", …) before giving up. An exact
+        # name already matched above, so this can only RESOLVE an otherwise
+        # unknown request, never redirect a known one.
+        resolved = resolve_objective(objective)
+        if resolved is not None and resolved in objectives:
+            objective = resolved
+        else:
+            known = ", ".join(sorted(objectives))
+            return CompileResult(objective=objective, fitness_start=0.0, fitness_end=0.0,
+                                 blocked=[f"unknown objective '{objective}' (known: {known})"])
 
     fitness, generate = objectives[objective]
     root = str(project_root)
