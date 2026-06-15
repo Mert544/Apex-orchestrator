@@ -14,6 +14,19 @@ class ModuleStructure:
     symbols: list[str] = field(default_factory=list)
 
 
+def _is_type_checking_test(test: ast.expr) -> bool:
+    """True if an ``if`` test is ``TYPE_CHECKING`` (bare or ``typing.TYPE_CHECKING``).
+
+    Imports guarded by such a block never execute at runtime, so they are
+    type-only and must not be counted as real import edges.
+    """
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    if isinstance(test, ast.Attribute):
+        return test.attr == "TYPE_CHECKING"
+    return False
+
+
 class PythonStructureAnalyzer:
     def __init__(self, root: str | Path, max_files: int = 500) -> None:
         self.root = Path(root)
@@ -49,7 +62,22 @@ class PythonStructureAnalyzer:
         imports: list[str] = []
         symbols: list[str] = []
 
+        # Imports under `if TYPE_CHECKING:` are type-only — they never run, so they
+        # are NOT real import edges. Counting them lets a type-hint import that was
+        # added to BREAK a cycle get miscounted AS a cycle (a false positive that
+        # cost real grade points). Collect those nodes and skip them below. The
+        # `else` arm of such a block DOES run, so only its `body` is excluded.
+        type_only: set[int] = set()
         for node in ast.walk(tree):
+            if isinstance(node, ast.If) and _is_type_checking_test(node.test):
+                for stmt in node.body:
+                    for inner in ast.walk(stmt):
+                        if isinstance(inner, (ast.Import, ast.ImportFrom)):
+                            type_only.add(id(inner))
+
+        for node in ast.walk(tree):
+            if id(node) in type_only:
+                continue
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     imports.append(alias.name)

@@ -56,3 +56,45 @@ def test_narrowed_except_does_not_swallow_unrelated_error(tmp_path: Path):
 
     with pytest.raises(AttributeError):
         analyzer._analyze_file(object())  # type: ignore[arg-type]
+
+
+def test_type_checking_imports_are_not_counted(tmp_path: Path):
+    # Imports guarded by `if TYPE_CHECKING:` never run, so they must NOT appear as
+    # import edges — otherwise a type-hint import added to BREAK a cycle gets
+    # miscounted AS a cycle (a false positive that cost real grade points).
+    source = tmp_path / "mod.py"
+    source.write_text(
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING\n"
+        "import os\n"
+        "if TYPE_CHECKING:\n"
+        "    from app.tools.project_profile import ProjectProfile\n"
+        "    import json\n"
+        "def f(p: ProjectProfile) -> None:\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+    structure = PythonStructureAnalyzer(tmp_path)._analyze_file(source)
+    assert structure is not None
+    # The runtime import survives; the two TYPE_CHECKING-only imports are dropped.
+    assert "os" in structure.imports
+    assert "app.tools.project_profile" not in structure.imports
+    assert "json" not in structure.imports
+
+
+def test_type_checking_else_arm_is_still_counted(tmp_path: Path):
+    # The `else` of `if TYPE_CHECKING:` DOES execute at runtime, so its imports
+    # are real edges and must be kept.
+    source = tmp_path / "mod2.py"
+    source.write_text(
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from a import OnlyForTypes\n"
+        "else:\n"
+        "    from b import RealRuntimeDep\n",
+        encoding="utf-8",
+    )
+    structure = PythonStructureAnalyzer(tmp_path)._analyze_file(source)
+    assert structure is not None
+    assert "b" in structure.imports
+    assert "a" not in structure.imports
