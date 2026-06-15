@@ -185,168 +185,232 @@ def _op_span(line: str, start: int, token: str) -> tuple[int, int] | None:
     return idx, idx + len(token)
 
 
+def _node_line(source_lines: list[str], lineno: int) -> str:
+    """The 1-based source line ``lineno`` (``""`` if out of range) — the single
+    place the per-kind collectors reach back into the source for splice bounds."""
+    idx = lineno - 1
+    return source_lines[idx] if idx < len(source_lines) else ""
+
+
+def _is_single_line(node: ast.AST) -> bool:
+    """True iff ``node`` occupies exactly one source line. Only single-line
+    spans are mutated so the splice stays byte-exact (mirrors the original
+    ``node.lineno != node.end_lineno`` guards)."""
+    return node.lineno == node.end_lineno
+
+
+def _relational_flip_site(
+    node: ast.Compare, line: str, line_len: int, search_from: int,
+    comp_end: int, label: str, flip: tuple[str, str] | None,
+) -> _Site | None:
+    """Locate one relational-operator token and, if found within its gap, build
+    the mutation site for ``flip``. Shared by the comparison-negation and
+    boundary families (``label`` is ``"comparison"`` or ``"boundary"``); returns
+    ``None`` when this op has no flip of that family or the token isn't there."""
+    if flip is None:
+        return None
+    written, replacement = flip
+    span = _op_span(line, search_from, written)
+    if span is None or span[1] > comp_end or span[1] > line_len:
+        return None
+    return _Site(
+        line=node.lineno, col=span[0], end_col=span[1],
+        operator=f"{label}:{written}>{replacement}",
+        original=written, mutated=replacement,
+    )
+
+
+def _collect_compare_sites(node: ast.Compare, source_lines: list[str]) -> list[_Site]:
+    """Comparison + boundary flips — one site per operator in a (possibly
+    chained) ``Compare``. Operator tokens are located left-to-right across the
+    comparator spans so chained compares (``a < b < c``) work. For each op the
+    comparison (negation) flip is emitted before the boundary (off-by-one) flip
+    so they share the same span without colliding."""
+    if not _is_single_line(node):
+        return []
+    line = _node_line(source_lines, node.lineno)
+    line_len = len(line)
+    sites: list[_Site] = []
+    search_from = node.left.end_col_offset or 0
+    for op, comparator in zip(node.ops, node.comparators):
+        comp_end = comparator.col_offset
+        op_type = type(op)
+        for label, flip in (
+            ("comparison", _COMPARE_FLIPS.get(op_type)),
+            ("boundary", _COMPARE_BOUNDARY_FLIPS.get(op_type)),
+        ):
+            site = _relational_flip_site(
+                node, line, line_len, search_from, comp_end, label, flip,
+            )
+            if site is not None:
+                sites.append(site)
+        search_from = comparator.end_col_offset or comp_end
+    return sites
+
+
+def _collect_binop_sites(node: ast.BinOp, source_lines: list[str]) -> list[_Site]:
+    """Arithmetic-operator flip on a single-line ``BinOp`` (``a + b`` etc.)."""
+    flip = _BINOP_FLIPS.get(type(node.op))
+    if flip is None or not _is_single_line(node):
+        return []
+    line = _node_line(source_lines, node.lineno)
+    written, replacement = flip
+    left_end = node.left.end_col_offset or 0
+    right_start = node.right.col_offset
+    span = _op_span(line, left_end, written)
+    if span is None or span[1] > right_start or span[1] > len(line):
+        return []
+    return [_Site(
+        line=node.lineno, col=span[0], end_col=span[1],
+        operator=f"arithmetic:{written}>{replacement}",
+        original=written, mutated=replacement,
+    )]
+
+
+def _collect_boolop_sites(node: ast.BoolOp, source_lines: list[str]) -> list[_Site]:
+    """Boolean-connective flips on a single-line ``BoolOp`` — one mutant per
+    connective occurrence between successive values."""
+    flip = _BOOLOP_FLIPS.get(type(node.op))
+    if flip is None or not _is_single_line(node):
+        return []
+    line = _node_line(source_lines, node.lineno)
+    line_len = len(line)
+    written, replacement = flip
+    sites: list[_Site] = []
+    search_from = node.values[0].end_col_offset or 0
+    for value in node.values[1:]:
+        next_start = value.col_offset
+        span = _op_span(line, search_from, written)
+        if span is not None and span[1] <= next_start and span[1] <= line_len:
+            sites.append(_Site(
+                line=node.lineno, col=span[0], end_col=span[1],
+                operator=f"boolean:{written}>{replacement}",
+                original=written, mutated=replacement,
+            ))
+        search_from = value.end_col_offset or next_start
+    return sites
+
+
+def _collect_bool_const_sites(node: ast.Constant, source_lines: list[str]) -> list[_Site]:
+    """Boolean-constant flip (``True`` <-> ``False``) on a single-line span."""
+    if not _is_single_line(node):
+        return []
+    line = _node_line(source_lines, node.lineno)
+    written, replacement = _BOOL_CONST_FLIPS[node.value]
+    start = node.col_offset
+    end = node.end_col_offset or 0
+    if end > len(line) or line[start:end] != written:
+        return []
+    return [_Site(
+        line=node.lineno, col=start, end_col=end,
+        operator=f"constant:{written}>{replacement}",
+        original=written, mutated=replacement,
+    )]
+
+
+def _collect_number_sites(node: ast.Constant, source_lines: list[str]) -> list[_Site]:
+    """Number-constant flip ``n -> n + 1`` on a single-line span. The literal is
+    spliced verbatim, so we only mutate when the source text matches exactly."""
+    if not _is_single_line(node):
+        return []
+    line = _node_line(source_lines, node.lineno)
+    start = node.col_offset
+    end = node.end_col_offset or 0
+    if end > len(line):
+        return []
+    written = line[start:end]
+    # Only handle plain numeric literals (no sign/whitespace inside the span);
+    # a textual round-trip of ``n + 1`` keeps int/float type.
+    replacement = _mutate_number(node.value, written)
+    if replacement is None or replacement == written:
+        return []
+    return [_Site(
+        line=node.lineno, col=start, end_col=end,
+        operator=f"number:{written}>{replacement}",
+        original=written, mutated=replacement,
+    )]
+
+
+def _collect_return_sites(node: ast.Return, source_lines: list[str]) -> list[_Site]:
+    """Return-value flip ``return <expr>`` -> ``return None``. Only the value
+    span is spliced (the ``return`` keyword stays), so it stays single-line."""
+    value = node.value
+    if value is None or not _is_single_line(value):
+        return []
+    line = _node_line(source_lines, value.lineno)
+    start = value.col_offset
+    end = value.end_col_offset or 0
+    if end > len(line):
+        return []
+    written = line[start:end]
+    if not written or written == "None":
+        return []
+    return [_Site(
+        line=value.lineno, col=start, end_col=end,
+        operator="return:value>None",
+        original=written, mutated="None",
+    )]
+
+
+def _collect_augassign_sites(node: ast.AugAssign, source_lines: list[str]) -> list[_Site]:
+    """Augmented-assign operator flip (``x += 1`` -> ``x -= 1``) — just the
+    operator token before the ``=`` is spliced, leaving the ``=`` intact."""
+    flip = _AUGASSIGN_FLIPS.get(type(node.op))
+    if flip is None or not _is_single_line(node):
+        return []
+    line = _node_line(source_lines, node.lineno)
+    written, replacement = flip
+    # The ``<op>=`` token sits between the target and the value; search for
+    # ``<op>=`` from the end of the target so we don't catch any unrelated
+    # operator on the line.
+    target_end = node.target.end_col_offset or 0
+    value_start = node.value.col_offset
+    span = _op_span(line, target_end, written + "=")
+    if span is None or span[1] > value_start or span[1] > len(line):
+        return []
+    # Mutate only the operator char, keeping the ``=`` intact.
+    return [_Site(
+        line=node.lineno, col=span[0], end_col=span[0] + len(written),
+        operator=f"augassign:{written}=>{replacement}=",
+        original=written, mutated=replacement,
+    )]
+
+
+def _sites_for_node(node: ast.AST, source_lines: list[str]) -> list[_Site]:
+    """Dispatch one AST node to its per-kind site collector, returning every
+    mutation site it yields (``[]`` for an un-mutable node). Bool constants are
+    routed before numeric ones because ``bool`` is a subclass of ``int``."""
+    if isinstance(node, ast.Compare):
+        return _collect_compare_sites(node, source_lines)
+    if isinstance(node, ast.BinOp):
+        return _collect_binop_sites(node, source_lines)
+    if isinstance(node, ast.BoolOp):
+        return _collect_boolop_sites(node, source_lines)
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool):
+            return _collect_bool_const_sites(node, source_lines)
+        if isinstance(node.value, (int, float)):
+            return _collect_number_sites(node, source_lines)
+        return []
+    if isinstance(node, ast.Return):
+        return _collect_return_sites(node, source_lines)
+    if isinstance(node, ast.AugAssign):
+        return _collect_augassign_sites(node, source_lines)
+    return []
+
+
 def _collect_sites(tree: ast.Module, source_lines: list[str]) -> list[_Site]:
     """Enumerate every applicable mutation site in document order.
 
     Only single-line nodes/operators are mutated so the source-span splice
     stays exact (mirrors ``negated_comparison.py``). Each site flips exactly
-    one operator/constant token.
+    one operator/constant token. The per-kind logic lives in the
+    ``_collect_*_sites`` helpers; this function only walks the tree, dispatches
+    each node, and sorts the result into the deterministic document order.
     """
     sites: list[_Site] = []
-
     for node in ast.walk(tree):
-        # Comparison flips — one site per operator in a (possibly chained)
-        # Compare. We locate each operator token left-to-right across the
-        # comparator spans so chained compares (a < b < c) work.
-        if isinstance(node, ast.Compare):
-            if node.lineno != node.end_lineno:
-                continue
-            line = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
-            search_from = node.left.end_col_offset or 0
-            for op, comparator in zip(node.ops, node.comparators):
-                flip = _COMPARE_FLIPS.get(type(op))
-                comp_end = comparator.col_offset
-                if flip is not None:
-                    written, replacement = flip
-                    span = _op_span(line, search_from, written)
-                    if span is not None and span[1] <= comp_end and span[1] <= len(line):
-                        sites.append(_Site(
-                            line=node.lineno, col=span[0], end_col=span[1],
-                            operator=f"comparison:{written}>{replacement}",
-                            original=written, mutated=replacement,
-                        ))
-                # Boundary flip on the SAME operator token (relational ops only):
-                # ``<`` -> ``<=`` etc. A distinct fault class and a distinct
-                # label, so it coexists with the negation flip above for the
-                # same span without collision.
-                boundary = _COMPARE_BOUNDARY_FLIPS.get(type(op))
-                if boundary is not None:
-                    b_written, b_replacement = boundary
-                    b_span = _op_span(line, search_from, b_written)
-                    if b_span is not None and b_span[1] <= comp_end and b_span[1] <= len(line):
-                        sites.append(_Site(
-                            line=node.lineno, col=b_span[0], end_col=b_span[1],
-                            operator=f"boundary:{b_written}>{b_replacement}",
-                            original=b_written, mutated=b_replacement,
-                        ))
-                search_from = comparator.end_col_offset or comp_end
-
-        elif isinstance(node, ast.BinOp):
-            flip = _BINOP_FLIPS.get(type(node.op))
-            if flip is None or node.lineno != node.end_lineno:
-                continue
-            line = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
-            written, replacement = flip
-            left_end = node.left.end_col_offset or 0
-            right_start = node.right.col_offset
-            span = _op_span(line, left_end, written)
-            if span is not None and span[1] <= right_start and span[1] <= len(line):
-                sites.append(_Site(
-                    line=node.lineno, col=span[0], end_col=span[1],
-                    operator=f"arithmetic:{written}>{replacement}",
-                    original=written, mutated=replacement,
-                ))
-
-        elif isinstance(node, ast.BoolOp):
-            flip = _BOOLOP_FLIPS.get(type(node.op))
-            if flip is None or node.lineno != node.end_lineno:
-                continue
-            line = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
-            written, replacement = flip
-            # One mutant per connective occurrence between successive values.
-            search_from = node.values[0].end_col_offset or 0
-            for value in node.values[1:]:
-                next_start = value.col_offset
-                span = _op_span(line, search_from, written)
-                if span is not None and span[1] <= next_start and span[1] <= len(line):
-                    sites.append(_Site(
-                        line=node.lineno, col=span[0], end_col=span[1],
-                        operator=f"boolean:{written}>{replacement}",
-                        original=written, mutated=replacement,
-                    ))
-                search_from = value.end_col_offset or next_start
-
-        elif isinstance(node, ast.Constant) and isinstance(node.value, bool):
-            if node.lineno != node.end_lineno:
-                continue
-            line = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
-            written, replacement = _BOOL_CONST_FLIPS[node.value]
-            start = node.col_offset
-            end = node.end_col_offset or 0
-            if end <= len(line) and line[start:end] == written:
-                sites.append(_Site(
-                    line=node.lineno, col=start, end_col=end,
-                    operator=f"constant:{written}>{replacement}",
-                    original=written, mutated=replacement,
-                ))
-
-        elif isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-            # Number-constant flip (bools already handled above; exclude them).
-            # Deterministic rule: ``n -> n + 1``. The original literal must be
-            # spliced verbatim, so we only mutate when the source span matches
-            # the exact text we expect to replace.
-            if isinstance(node.value, bool) or node.lineno != node.end_lineno:
-                continue
-            line = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
-            start = node.col_offset
-            end = node.end_col_offset or 0
-            if end > len(line):
-                continue
-            written = line[start:end]
-            # Only handle plain numeric literals (no sign/whitespace inside the
-            # span); a textual round-trip of ``n + 1`` keeps int/float type.
-            replacement = _mutate_number(node.value, written)
-            if replacement is None or replacement == written:
-                continue
-            sites.append(_Site(
-                line=node.lineno, col=start, end_col=end,
-                operator=f"number:{written}>{replacement}",
-                original=written, mutated=replacement,
-            ))
-
-        elif isinstance(node, ast.Return) and node.value is not None:
-            # Return-value flip: ``return <expr>`` -> ``return None``. We splice
-            # just the value span (leaving the ``return`` keyword in place) so
-            # the replacement stays single-line and exact.
-            value = node.value
-            if value.lineno != value.end_lineno:
-                continue
-            line = source_lines[value.lineno - 1] if value.lineno - 1 < len(source_lines) else ""
-            start = value.col_offset
-            end = value.end_col_offset or 0
-            if end > len(line):
-                continue
-            written = line[start:end]
-            if not written or written == "None":
-                continue
-            sites.append(_Site(
-                line=value.lineno, col=start, end_col=end,
-                operator="return:value>None",
-                original=written, mutated="None",
-            ))
-
-        elif isinstance(node, ast.AugAssign):
-            # Augmented-assign operator flip (``x += 1`` -> ``x -= 1``). We
-            # splice just the operator token before the ``=``.
-            flip = _AUGASSIGN_FLIPS.get(type(node.op))
-            if flip is None or node.lineno != node.end_lineno:
-                continue
-            line = source_lines[node.lineno - 1] if node.lineno - 1 < len(source_lines) else ""
-            written, replacement = flip
-            # The ``<op>=`` token sits between the target and the value; search
-            # for ``<op>=`` from the end of the target so we don't catch any
-            # unrelated operator on the line.
-            target_end = node.target.end_col_offset or 0
-            value_start = node.value.col_offset
-            span = _op_span(line, target_end, written + "=")
-            if span is not None and span[1] <= value_start and span[1] <= len(line):
-                # Mutate only the operator char, keeping the ``=`` intact.
-                sites.append(_Site(
-                    line=node.lineno, col=span[0], end_col=span[0] + len(written),
-                    operator=f"augassign:{written}=>{replacement}=",
-                    original=written, mutated=replacement,
-                ))
-
+        sites.extend(_sites_for_node(node, source_lines))
     sites.sort(key=lambda s: (s.line, s.col, s.operator))
     return sites
 

@@ -224,6 +224,129 @@ def test_collect_sites_skips_multiline_compares():
     assert sites == []
 
 
+# A representative source exercising EVERY mutation family at once, plus the
+# overlap cases (boundary + negation on the same relational token, chained
+# compares, both membership directions, an ``in`` inside an identifier that must
+# NOT be mutated, int + float literals, augmented-assigns, bool constants, and a
+# return-value flip). Used as a CHARACTERIZATION pin: the exact ordered set of
+# collected sites is frozen here so the ``_collect_sites`` refactor (extraction
+# into per-kind helpers + guard clauses) is proven byte-identical.
+_CHARACTERIZATION_SRC = (
+    "def f(a, b, c, x, n, allowed, banned):\n"
+    "    total = 0\n"
+    "    total += 1\n"
+    "    total -= 2\n"
+    "    total *= 3\n"
+    "    flag = a == b and b != c or a < n\n"
+    "    chained = a < b < c\n"
+    "    rel = n >= 0 and n <= 10 and x > 5 and x < 7\n"
+    "    mem = x in allowed and x not in banned\n"
+    "    ident = x in points if False else True\n"
+    "    num = 41\n"
+    "    fl = 1.5\n"
+    "    big = a + b - c * x\n"
+    "    iden = a is b and a is not c\n"
+    "    return total + x\n"
+)
+
+# The frozen (line, col, end_col, operator, original, mutated) tuple for every
+# site, in the exact order ``_collect_sites`` returns them (document order:
+# line, col, operator). Any drift in kinds, locations, labels, or ordering trips
+# this immediately.
+_CHARACTERIZATION_SITES = [
+    (2, 12, 13, "number:0>1", "0", "1"),
+    (3, 10, 11, "augassign:+=>-=", "+", "-"),
+    (3, 13, 14, "number:1>2", "1", "2"),
+    (4, 10, 11, "augassign:-=>+=", "-", "+"),
+    (4, 13, 14, "number:2>3", "2", "3"),
+    (5, 10, 11, "augassign:*=>/=", "*", "/"),
+    (5, 13, 14, "number:3>4", "3", "4"),
+    (6, 13, 15, "comparison:==>!=", "==", "!="),
+    (6, 18, 21, "boolean:and>or", "and", "or"),
+    (6, 24, 26, "comparison:!=>==", "!=", "=="),
+    (6, 29, 31, "boolean:or>and", "or", "and"),
+    (6, 34, 35, "boundary:<><=", "<", "<="),
+    (6, 34, 35, "comparison:<>>=", "<", ">="),
+    (7, 16, 17, "boundary:<><=", "<", "<="),
+    (7, 16, 17, "comparison:<>>=", "<", ">="),
+    (7, 20, 21, "boundary:<><=", "<", "<="),
+    (7, 20, 21, "comparison:<>>=", "<", ">="),
+    (8, 12, 14, "boundary:>=>>", ">=", ">"),
+    (8, 12, 14, "comparison:>=><", ">=", "<"),
+    (8, 15, 16, "number:0>1", "0", "1"),
+    (8, 17, 20, "boolean:and>or", "and", "or"),
+    (8, 23, 25, "boundary:<=><", "<=", "<"),
+    (8, 23, 25, "comparison:<=>>", "<=", ">"),
+    (8, 26, 28, "number:10>11", "10", "11"),
+    (8, 29, 32, "boolean:and>or", "and", "or"),
+    (8, 35, 36, "boundary:>>>=", ">", ">="),
+    (8, 35, 36, "comparison:>><=", ">", "<="),
+    (8, 37, 38, "number:5>6", "5", "6"),
+    (8, 39, 42, "boolean:and>or", "and", "or"),
+    (8, 45, 46, "boundary:<><=", "<", "<="),
+    (8, 45, 46, "comparison:<>>=", "<", ">="),
+    (8, 47, 48, "number:7>8", "7", "8"),
+    (9, 12, 14, "comparison:in>not in", "in", "not in"),
+    (9, 23, 26, "boolean:and>or", "and", "or"),
+    (9, 29, 35, "comparison:not in>in", "not in", "in"),
+    (10, 14, 16, "comparison:in>not in", "in", "not in"),
+    (10, 27, 32, "constant:False>True", "False", "True"),
+    (10, 38, 42, "constant:True>False", "True", "False"),
+    (11, 10, 12, "number:41>42", "41", "42"),
+    (12, 9, 12, "number:1.5>2.5", "1.5", "2.5"),
+    (13, 12, 13, "arithmetic:+>-", "+", "-"),
+    (13, 16, 17, "arithmetic:->+", "-", "+"),
+    (13, 20, 21, "arithmetic:*>/", "*", "/"),
+    (14, 13, 15, "comparison:is>is not", "is", "is not"),
+    (14, 18, 21, "boolean:and>or", "and", "or"),
+    (14, 24, 30, "comparison:is not>is", "is not", "is"),
+    (15, 11, 20, "return:value>None", "total + x", "None"),
+    (15, 17, 18, "arithmetic:+>-", "+", "-"),
+]
+
+
+def test_collect_sites_characterization_pins_full_site_set():
+    # CHARACTERIZATION: the complete ordered tuple of collected sites is frozen
+    # so the helper-extraction refactor is provably output byte-identical (same
+    # kinds, locations, labels, order). This is the contract the refactor must
+    # not break.
+    lines = _CHARACTERIZATION_SRC.splitlines(keepends=True)
+    sites = _collect_sites(ast.parse(_CHARACTERIZATION_SRC), lines)
+    actual = [
+        (s.line, s.col, s.end_col, s.operator, s.original, s.mutated)
+        for s in sites
+    ]
+    assert actual == _CHARACTERIZATION_SITES
+
+
+def test_collect_sites_characterization_every_site_splices_exactly():
+    # Each pinned site must round-trip: the located span carries exactly its
+    # ``original`` text, so the splice is byte-exact. (``_splice`` returns None
+    # only on a malformed/non-reparseable result — every pinned site re-parses.)
+    from app.engine.mutation_tester import _splice
+    lines = _CHARACTERIZATION_SRC.splitlines(keepends=True)
+    sites = _collect_sites(ast.parse(_CHARACTERIZATION_SRC), lines)
+    for s in sites:
+        assert lines[s.line - 1][s.col:s.end_col] == s.original, s.operator
+        assert _splice(lines, s) is not None, s.operator
+
+
+def test_collect_sites_characterization_is_deterministic():
+    # Two independent walks of the same source yield byte-identical site tuples
+    # (no randomness, fixed operator + document order).
+    lines = _CHARACTERIZATION_SRC.splitlines(keepends=True)
+    a = _collect_sites(ast.parse(_CHARACTERIZATION_SRC), lines)
+    b = _collect_sites(ast.parse(_CHARACTERIZATION_SRC), lines)
+
+    def _to_tuples(ss):
+        return [
+            (s.line, s.col, s.end_col, s.operator, s.original, s.mutated)
+            for s in ss
+        ]
+
+    assert _to_tuples(a) == _to_tuples(b)
+
+
 # --- end-to-end scoring ---------------------------------------------------
 
 def test_strong_suite_kills_comparison_mutant(tmp_path):
