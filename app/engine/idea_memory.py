@@ -27,10 +27,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import math
 from pathlib import Path
 from typing import Any
 
 MEMORY_REL = ".apex/idea-memory.json"
+
+# z-score for the Wilson score interval used by the confidence-aware ranking.
+# 1.96 ≈ a 95% two-sided normal quantile — a fixed constant (no scipy/statistics
+# dependency), so the lower bound is fully deterministic. The lower bound of the
+# interval is what we rank by: it shrinks toward 0 as samples shrink, so a
+# 1-of-1 (rate 1.0, lb≈0.21) cannot outrank a 9-of-10 (rate 0.9, lb≈0.61).
+_WILSON_Z = 1.96
 
 # Bounded nudge: a perfect track record multiplies feasibility by at most this;
 # a poor one divides by it. Small on purpose — memory tilts, never dictates.
@@ -54,6 +62,26 @@ class _Stat:
     @property
     def success_rate(self) -> float:
         return self.applied / self.total if self.total else 0.0
+
+    @property
+    def confidence(self) -> float:
+        """Wilson score interval lower bound on the success rate — an
+        evidence-aware reliability read in [0, 1].
+
+        Unlike the raw ``success_rate``, this discounts small samples: a lucky
+        1-of-1 yields a low bound (≈0.21) while a well-attested 9-of-10 keeps a
+        high one (≈0.61). Pure-stdlib (``math`` only), deterministic, and safe
+        on zero samples (returns 0.0). More samples at the same rate strictly
+        raise the bound, so it never penalises accumulated evidence."""
+        n = self.total
+        if n == 0:
+            return 0.0
+        z = _WILSON_Z
+        phat = self.applied / n
+        denom = 1.0 + z * z / n
+        center = phat + z * z / (2.0 * n)
+        margin = z * math.sqrt((phat * (1.0 - phat) + z * z / (4.0 * n)) / n)
+        return (center - margin) / denom
 
     def to_dict(self) -> dict[str, int]:
         return {"applied": self.applied, "rolled_back": self.rolled_back, "blocked": self.blocked}
@@ -172,6 +200,31 @@ class IdeaMemory:
         mem.save(project_root, path)
         return mem
 
+    def confident_ranking(self, table: str = "operator", *, best: bool = True,
+                          limit: int = 5) -> list[dict[str, Any]]:
+        """Rank tracked keys by evidence-aware reliability (Wilson lower bound).
+
+        Unlike the raw-rate ordering in ``summary``'s ``most_reliable``, this
+        accounts for sample size: a 9-of-10 (90%, lb≈0.61) outranks a lucky
+        1-of-1 (100%, lb≈0.21). ``table`` is ``"operator"`` (default),
+        ``"label"``, or ``"sequence"``. ``best=False`` returns the least
+        reliable. Empty/zero-sample tables are safe (return ``[]``).
+
+        Deterministic ordering: by confidence, then sample count, then key as a
+        stable tiebreak. Stdlib-only math; no time/random."""
+        tables = {"operator": self.by_operator, "label": self.by_label,
+                  "sequence": self.by_sequence}
+        src = tables.get(table, self.by_operator)
+        seen = [(k, s) for k, s in src.items() if s.total >= _MIN_SAMPLES]
+        # Confidence and sample count descend for `best`; key always ascends as a
+        # stable final tiebreak so ordering is fully deterministic either way.
+        seen.sort(key=lambda kv: kv[0])
+        seen.sort(key=lambda kv: (kv[1].confidence, kv[1].total), reverse=best)
+        out = seen if limit is None or limit < 0 else seen[:limit]
+        return [{"key": k, "confidence": round(s.confidence, 4),
+                 "success_rate": round(s.success_rate, 3), "samples": s.total}
+                for k, s in out]
+
     def summary(self) -> dict[str, Any]:
         """A compact, human-facing view of what the engine has learned."""
         def _top(table: dict[str, _Stat], best: bool) -> list[dict[str, Any]]:
@@ -187,4 +240,8 @@ class IdeaMemory:
             "most_reliable": _top(self.by_operator, best=True),
             "least_reliable": _top(self.by_operator, best=False),
             "reliable_sequences": _top(self.by_sequence, best=True),
+            # Evidence-aware view (Wilson lower bound) — new, additive keys; the
+            # raw-rate keys above are unchanged so existing callers/tests hold.
+            "most_confident": self.confident_ranking("operator", best=True),
+            "least_confident": self.confident_ranking("operator", best=False),
         }
