@@ -14,33 +14,32 @@ from pathlib import Path
 
 from app.cli_common import _get_project_root
 
-def cmd_debug(args: argparse.Namespace) -> int:
-    """Trace a run or analyze a traceback using the debug subsystem."""
-    target = Path(args.target).resolve() if args.target else _get_project_root()
+def _debug_analyze(args: argparse.Namespace, target: Path) -> int:
+    """`apex debug analyze`: diagnose a traceback (from --trace file or stdin)."""
+    if args.trace and args.trace != "-":
+        trace_text = Path(args.trace).read_text(encoding="utf-8")
+    else:
+        trace_text = sys.stdin.read()
+    from app.agents.limbs import get_limb
 
-    if args.subcommand == "analyze":
-        if args.trace and args.trace != "-":
-            trace_text = Path(args.trace).read_text(encoding="utf-8")
-        else:
-            trace_text = sys.stdin.read()
-        from app.agents.limbs import get_limb
+    result = get_limb("debug").run(
+        project_root=str(target),
+        error_trace=trace_text,
+        target_file=getattr(args, "file", "") or "",
+    )
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        rc = result.get("root_cause")
+        print("=== APEX DEBUG ANALYZE ===")
+        print(f"Root cause: {rc['type'] if rc else 'unidentified'}")
+        for s in result.get("suggestions", []):
+            print(f"  - {s}")
+    return 0
 
-        result = get_limb("debug").run(
-            project_root=str(target),
-            error_trace=trace_text,
-            target_file=getattr(args, "file", "") or "",
-        )
-        if args.json:
-            print(json.dumps(result, indent=2, default=str))
-        else:
-            rc = result.get("root_cause")
-            print("=== APEX DEBUG ANALYZE ===")
-            print(f"Root cause: {rc['type'] if rc else 'unidentified'}")
-            for s in result.get("suggestions", []):
-                print(f"  - {s}")
-        return 0
 
-    # default subcommand == "trace"
+def _debug_trace(args: argparse.Namespace, target: Path) -> int:
+    """`apex debug trace`: run with debug tracing; write a .apex/debug report."""
     from app.engine.debug_engine import DebugEngine
     from app.tools.project_profile import ProjectProfiler
 
@@ -61,6 +60,17 @@ def cmd_debug(args: argparse.Namespace) -> int:
         if debug_files:
             print(f"Report: {debug_files[-1]}")
     return 0
+
+
+def cmd_debug(args: argparse.Namespace) -> int:
+    """Trace a run or analyze a traceback using the debug subsystem."""
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+
+    if args.subcommand == "analyze":
+        return _debug_analyze(args, target)
+
+    # default subcommand == "trace"
+    return _debug_trace(args, target)
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
@@ -612,6 +622,67 @@ def _gate_load_baseline(root: Path) -> dict | None:
         return None
 
 
+def _gate_classify(name: str, before, after, regressed: bool, improved: bool, detail: str) -> dict:
+    """Build one classified comparison row (REGRESSED / IMPROVED / SAME)."""
+    if regressed:
+        status = "REGRESSED"
+    elif improved:
+        status = "IMPROVED"
+    else:
+        status = "SAME"
+    return {
+        "name": name,
+        "status": status,
+        "before": before,
+        "after": after,
+        "regressed": regressed,
+        "detail": detail,
+    }
+
+
+def _gate_compare_score(baseline: dict, current: dict, tolerance: int) -> dict:
+    """Compare the health score: regress if it dropped by MORE than ``tolerance``.
+
+    None (grading failed) is treated as -1 so a vanished score reads as a
+    regression, not a tie.
+    """
+    b_score = baseline.get("score")
+    c_score = current.get("score")
+    b_num = -1 if b_score is None else int(b_score)
+    c_num = -1 if c_score is None else int(c_score)
+    suffix = f" (tolerance {tolerance})" if tolerance else ""
+    return _gate_classify(
+        "score",
+        "n/a" if b_score is None else b_score,
+        "n/a" if c_score is None else c_score,
+        (b_num - c_num) > tolerance, c_num > b_num,
+        f"health score {b_score if b_score is not None else 'n/a'} -> "
+        f"{c_score if c_score is not None else 'n/a'}{suffix}",
+    )
+
+
+def _gate_compare_count(name: str, baseline: dict, current: dict, key: str, noun: str) -> dict:
+    """Compare a module-count metric: regress if the count increased."""
+    before = int(baseline.get(key, 0) or 0)
+    after = int(current.get(key, 0) or 0)
+    return _gate_classify(
+        name, before, after, after > before, after < before,
+        f"{before} -> {after} {noun}",
+    )
+
+
+def _gate_compare_out_of_scope(baseline: dict, current: dict) -> dict:
+    """Compare out-of-scope%: regress if it rose by more than ``_GATE_OOS_EPSILON``."""
+    before = float(baseline.get("out_of_scope_pct", 0.0) or 0.0)
+    after = float(current.get("out_of_scope_pct", 0.0) or 0.0)
+    delta = after - before
+    return _gate_classify(
+        "out-of-scope", before, after,
+        delta > _GATE_OOS_EPSILON, delta < -_GATE_OOS_EPSILON,
+        f"{before}% -> {after}% out of scope",
+    )
+
+
 def _gate_compare_baseline(baseline: dict, current: dict, tolerance: int) -> dict:
     """Compare ``current`` metrics against ``baseline`` and return a verdict.
 
@@ -622,67 +693,18 @@ def _gate_compare_baseline(baseline: dict, current: dict, tolerance: int) -> dic
     noise never trips CI. Defensive: missing baseline keys read as neutral.
     """
     tolerance = max(0, int(tolerance))
-    comparisons: list[dict] = []
-
-    def _classify(name: str, before, after, regressed: bool, improved: bool, detail: str) -> None:
-        if regressed:
-            status = "REGRESSED"
-        elif improved:
-            status = "IMPROVED"
-        else:
-            status = "SAME"
-        comparisons.append({
-            "name": name,
-            "status": status,
-            "before": before,
-            "after": after,
-            "regressed": regressed,
-            "detail": detail,
-        })
-
-    # health score: regress if it dropped by MORE than tolerance. None (grading
-    # failed) is treated as 0 so a vanished score reads as a regression, not a tie.
-    b_score = baseline.get("score")
-    c_score = current.get("score")
-    b_num = -1 if b_score is None else int(b_score)
-    c_num = -1 if c_score is None else int(c_score)
-    drop = b_num - c_num
-    regressed = drop > tolerance
-    improved = c_num > b_num
-    suffix = f" (tolerance {tolerance})" if tolerance else ""
-    _classify(
-        "score",
-        "n/a" if b_score is None else b_score,
-        "n/a" if c_score is None else c_score,
-        regressed, improved,
-        f"health score {b_score if b_score is not None else 'n/a'} -> "
-        f"{c_score if c_score is not None else 'n/a'}{suffix}",
-    )
-
-    # security-finding modules: regress if the count increased.
-    b_sec = int(baseline.get("security_modules", 0) or 0)
-    c_sec = int(current.get("security_modules", 0) or 0)
-    _classify(
-        "security-modules", b_sec, c_sec, c_sec > b_sec, c_sec < b_sec,
-        f"{b_sec} -> {c_sec} security-finding module(s)",
-    )
-
-    # correctness-bug modules: regress if the count increased.
-    b_bug = int(baseline.get("bug_modules", 0) or 0)
-    c_bug = int(current.get("bug_modules", 0) or 0)
-    _classify(
-        "bug-modules", b_bug, c_bug, c_bug > b_bug, c_bug < b_bug,
-        f"{b_bug} -> {c_bug} correctness-bug module(s)",
-    )
-
-    # out-of-scope%: regress if it rose by more than epsilon.
-    b_oos = float(baseline.get("out_of_scope_pct", 0.0) or 0.0)
-    c_oos = float(current.get("out_of_scope_pct", 0.0) or 0.0)
-    delta = c_oos - b_oos
-    _classify(
-        "out-of-scope", b_oos, c_oos, delta > _GATE_OOS_EPSILON, delta < -_GATE_OOS_EPSILON,
-        f"{b_oos}% -> {c_oos}% out of scope",
-    )
+    comparisons = [
+        _gate_compare_score(baseline, current, tolerance),
+        _gate_compare_count(
+            "security-modules", baseline, current,
+            "security_modules", "security-finding module(s)",
+        ),
+        _gate_compare_count(
+            "bug-modules", baseline, current,
+            "bug_modules", "correctness-bug module(s)",
+        ),
+        _gate_compare_out_of_scope(baseline, current),
+    ]
 
     regressions = sum(1 for c in comparisons if c["regressed"])
     return {
@@ -746,6 +768,47 @@ def render_gate(verdict: dict) -> str:
     return "\n".join(lines)
 
 
+def _gate_run_save_baseline(args: argparse.Namespace, target: Path, metrics: dict) -> int:
+    """--save-baseline: snapshot current metrics and exit 0. Opt-in, side-effect
+    only — it does not evaluate any check."""
+    path = _gate_save_baseline(target, metrics)
+    if getattr(args, "json", False):
+        print(json.dumps(
+            {"saved": True, "path": str(path), "metrics": metrics},
+            indent=2, sort_keys=True, default=str,
+        ))
+    else:
+        print(f"Saved gate baseline to {path}")
+    return 0
+
+
+def _gate_apply_baseline(args: argparse.Namespace, target: Path, metrics: dict, verdict: dict) -> int | None:
+    """--baseline: compose a regression check over the absolute checks, mutating
+    ``verdict`` in place. A missing baseline is a misconfigured CI — we surface it
+    with a clear message and return rc 2 so it can't pass silently. Returns None
+    when the regression check was composed (caller renders the verdict normally).
+    """
+    baseline = _gate_load_baseline(target)
+    if baseline is None:
+        msg = (
+            "no baseline saved — run `apex gate --save-baseline` first"
+        )
+        if getattr(args, "json", False):
+            print(json.dumps(
+                {"error": msg, "baseline_missing": True},
+                indent=2, sort_keys=True, default=str,
+            ))
+        else:
+            print(msg)
+        return 2
+    tolerance = int(getattr(args, "tolerance", 0) or 0)
+    comparison = _gate_compare_baseline(baseline, metrics, tolerance)
+    verdict["baseline"] = comparison
+    # A run fails on EITHER an absolute threshold OR a regression.
+    verdict["passed"] = verdict["passed"] and not comparison["regressed"]
+    return None
+
+
 def cmd_gate(args: argparse.Namespace) -> int:
     """The zero-config, deterministic CI quality gate: it gates on Apex's OWN
     metrics (health grade + ProjectProfile) with sensible defaults, so a bare
@@ -757,43 +820,15 @@ def cmd_gate(args: argparse.Namespace) -> int:
     target = Path(args.target).resolve() if args.target else _get_project_root()
     metrics = _gate_metrics(target)
 
-    # --save-baseline: snapshot current metrics and exit 0. Opt-in, side-effect
-    # only — it does not evaluate any check.
     if getattr(args, "save_baseline", False):
-        path = _gate_save_baseline(target, metrics)
-        if getattr(args, "json", False):
-            print(json.dumps(
-                {"saved": True, "path": str(path), "metrics": metrics},
-                indent=2, sort_keys=True, default=str,
-            ))
-        else:
-            print(f"Saved gate baseline to {path}")
-        return 0
+        return _gate_run_save_baseline(args, target, metrics)
 
     verdict = _gate_evaluate(metrics, args)
 
-    # --baseline: compose a regression check over the absolute checks. A missing
-    # baseline is a misconfigured CI — we surface it with a clear message and a
-    # NON-zero rc so it can't pass silently.
     if getattr(args, "baseline", False):
-        baseline = _gate_load_baseline(target)
-        if baseline is None:
-            msg = (
-                "no baseline saved — run `apex gate --save-baseline` first"
-            )
-            if getattr(args, "json", False):
-                print(json.dumps(
-                    {"error": msg, "baseline_missing": True},
-                    indent=2, sort_keys=True, default=str,
-                ))
-            else:
-                print(msg)
-            return 2
-        tolerance = int(getattr(args, "tolerance", 0) or 0)
-        comparison = _gate_compare_baseline(baseline, metrics, tolerance)
-        verdict["baseline"] = comparison
-        # A run fails on EITHER an absolute threshold OR a regression.
-        verdict["passed"] = verdict["passed"] and not comparison["regressed"]
+        rc = _gate_apply_baseline(args, target, metrics, verdict)
+        if rc is not None:
+            return rc
 
     if getattr(args, "json", False):
         print(json.dumps(verdict, indent=2, default=str))
