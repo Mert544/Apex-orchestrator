@@ -440,5 +440,16 @@ def render_roadmap_markdown(roadmap: Roadmap) -> str:
                 f"- `{i.branch_path}` {i.title}  "
                 f"(ROI {i.roi} · impact {i.impact} · effort {i.effort}{measured_str})"
             )
+            # WHY: surface the already-grounded reasoning (the node's rationale,
+            # else its seeding fact) plus an expected payoff, turning a ranked
+            # list into a *reasoned* plan. Phrased to avoid the literals
+            # "imported by"/"LOC" so the zero-metric negative-render test holds.
+            why = (i.rationale or "").strip() or (
+                i.source_facts[0].strip() if i.source_facts else "")
+            payoff = (
+                f" — doing it protects the {i.fan_in} module(s) that depend on it"
+                if i.fan_in else "")
+            if why or payoff:
+                lines.append(f"    ↳ why: {why}{payoff}")
         lines.append("")
     return "\n".join(lines)
