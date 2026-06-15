@@ -58,14 +58,21 @@ def _review_outcome_memory(root: Path, report: DreamReport, curate: bool) -> Non
 
     mem = IdeaMemory.load(root)
     info = mem.summary()
-    for row in info.get("most_reliable", [])[:2]:
+    # Prefer the evidence-aware ranking (Wilson lower bound) over the raw rate
+    # when it's available: a lucky 1-of-1 (rate 100%) shouldn't headline over a
+    # well-attested 9-of-10. Falls back to the raw rate so an older memory store
+    # (no confidence keys) still reads — and the wording is identical, so a key
+    # that tops both rankings keeps a byte-stable digest.
+    reliable = info.get("most_confident") or info.get("most_reliable", [])
+    for row in reliable[:2]:
         # "Most reliable" is relative — with few lenses a 0% one can top the
         # list, and telling the reader to "keep leading" with it is a lie.
         if row["success_rate"] >= 0.5:
             report.patterns.append(
                 f"`{row['key']}` fixes land {int(row['success_rate'] * 100)}% of the time "
                 f"({row['samples']} samples) — keep leading with them.")
-    for row in info.get("least_reliable", [])[:2]:
+    unreliable = info.get("least_confident") or info.get("least_reliable", [])
+    for row in unreliable[:2]:
         if row["success_rate"] < 0.5:
             report.patterns.append(
                 f"`{row['key']}` lands only {int(row['success_rate'] * 100)}% "
@@ -196,6 +203,17 @@ def _review_pulse(root: Path, report: DreamReport) -> None:
         report.patterns.append(
             f"`{kr['module']}` is {kr['share']}% single-author across "
             f"{kr['commits']} commits — a bus-factor seam.")
+    # High-fan-OUT god-modules: coordination chokepoints worth decoupling.
+    # Gated on availability (older profiles / repos with no god-module yield
+    # []), so the digest stays byte-identical when the signal is absent. The
+    # profile already orders these (-fan_out, module); name the heaviest.
+    for coord in (profile.coordinator_modules or [])[:1]:
+        wires = ", ".join(f"`{m}`" for m in (coord.get("imports") or [])[:3])
+        tail = f" wiring together {wires}" if wires else ""
+        report.patterns.append(
+            f"`{coord['module']}` coordinates {coord['fan_out']} internal "
+            f"modules{tail} — a decoupling candidate: a change anywhere it "
+            "connects can ripple back through it.")
     if profile.doc_drift:
         report.patterns.append(
             f"{len(profile.doc_drift)} documentation promise(s) point at files "
