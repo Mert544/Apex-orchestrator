@@ -1009,6 +1009,7 @@ _FACT_HINTS: dict[str, str] = {
     "incomplete-protocol": "complete finish protocol contract pair half built equality hash context manager enter exit recommend design",
     "generalizable-duplication": "generalize extract shared helper reuse dry duplicated across modules common abstraction recommend design",
     "coordinator": "decouple split responsibilities god module high fan-out coordination chokepoint boundary seams recommend design",
+    "deep-nesting": "flatten guard clause early return extract inner block nested control flow staircase readability maintainability recommend design",
 }
 
 # Root fact labels where reliability/security lenses matter most.

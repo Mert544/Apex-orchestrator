@@ -79,7 +79,7 @@ _STABILIZE_LABELS = {"untested", "critical-untested", "partial-coverage", "shall
 _SECURE_LABELS = {"sensitive-path", "security-finding", "correctness-bug"}
 _EVOLVE_LABELS = {"dependency-hub", "symbol-hub", "entrypoint", "top-directory", "churn-hotspot", "dream-insight", "polyglot-hotspot", "incomplete-protocol", "generalizable-duplication", "coordinator"}
 _REFINE_OPS = {"document", "observe", "simplify"}
-_REFINE_LABELS = {"doc-drift", "dead-parameter", "extractable-block", "inlinable-helper"}
+_REFINE_LABELS = {"doc-drift", "dead-parameter", "extractable-block", "inlinable-helper", "deep-nesting"}
 _EVOLVE_OPS = {"extend", "generalize", "integrate"}
 
 

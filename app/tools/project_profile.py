@@ -190,6 +190,19 @@ class ProjectProfile:
     # entry: {"module": str, "fan_out": int, "imports": [top few internal modules
     # it pulls]}.
     coordinator_modules: list[dict] = field(default_factory=list)
+    # Deeply-nested functions (CONSTRUCTIVE maintainability signal): a top-level
+    # function whose MAXIMUM control-flow nesting depth (nested
+    # If/For/While/With/Try and their async variants) reaches a deep floor is a
+    # control-flow staircase that is hard to read and a prime guard-clause /
+    # extract refactor candidate — "invert the guard / early-return / extract the
+    # inner block". Computed by an AST walk of each in-scope, non-fixture module's
+    # top-level functions (nested def/class bodies start their own count), a
+    # whole-repo structural read the GRADE never consumes, so gated behind
+    # ``not light``. Recommend-only — HOW to flatten the staircase is a DESIGN
+    # call, Apex names the function but does not auto-write it. Deterministic,
+    # sorted (-depth, module, function) and capped; an all-flat repo yields [] so
+    # seeding stays byte-identical. Each entry: {"module","function","depth"}.
+    deeply_nested_functions: list[dict] = field(default_factory=list)
 
 
 class ProjectProfiler(_CodeQualityScansMixin):
@@ -440,6 +453,13 @@ class ProjectProfiler(_CodeQualityScansMixin):
             # consumes, so gated out of the light/ascend path (the idea engine
             # profiles with light=False; a repo with no god-modules yields []).
             self._scan_coordinator_modules(profile)
+            # Deeply-nested functions: top-level functions whose control flow
+            # nests too deeply — a guard-clause / extract refactor candidate (a
+            # maintainability signal). An AST walk over each in-scope module's
+            # top-level functions the GRADE never reads, so gated out of the
+            # light/ascend path (the idea engine profiles with light=False; an
+            # all-flat repo yields []).
+            self._scan_deeply_nested_functions(profile)
             # Polyglot hotspots: name the biggest / most-churned NON-Python
             # source files for the idea engine to recommend attention on. A
             # bounded git pass + walk that the GRADE never reads, so it is gated

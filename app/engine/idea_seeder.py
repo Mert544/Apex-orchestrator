@@ -783,6 +783,33 @@ class IdeaSeeder:
                             f"{pulls} — a decoupling candidate"),
             )
 
+        # Deeply-nested functions: a top-level function whose control flow nests
+        # too deeply (nested if/for/while/with/try) is a control-flow staircase
+        # that is hard to read — a prime guard-clause / extract refactor target
+        # ("invert the guard / early-return / extract the inner block"). The
+        # subject is ``module::function`` so it never collides with the module's
+        # own idea (mirroring incomplete-protocol's ``module::Class``).
+        # Recommend-only: HOW to flatten the staircase is a DESIGN call, Apex
+        # names the function but does NOT auto-write it. An all-flat repo yields
+        # nothing here and seeding stays byte-identical. The fact value
+        # deliberately avoids the token "untested" (which would auto-promote it to
+        # an executable test) and any leading "<int> <unit>" magnitude shape (no
+        # depth count word leads it — "several levels", not "5 levels").
+        for nest in (getattr(profile, "deeply_nested_functions", []) or [])[:3]:
+            module = nest.get("module")
+            function = nest.get("function")
+            if not module or not function:
+                continue
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Flatten the deeply-nested function `{function}` in {module} "
+                       f"— invert the guards / early-return / extract the inner block"),
+                subject=f"{module}::{function}",
+                fact_label="deep-nesting",
+                fact_value=(f"{module}::{function} nests control flow several "
+                            f"levels — a guard-clause candidate"),
+            )
+
         # Dream insights: discoveries the nightly dream CONFIRMED across multiple
         # dreams and graduated (high confidence + persistence). The organism
         # acting on what it learned while you were away — guarded so only a

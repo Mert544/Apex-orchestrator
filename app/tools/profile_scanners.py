@@ -78,6 +78,73 @@ class _CodeQualityScansMixin:
     # modules (CLI/engine wirers) and many ordinary modules well below this bar.
     _COORDINATOR_FAN_OUT_FLOOR = 12
 
+    # Maximum block-nesting depth at or above which a top-level function is a
+    # guard-clause / extract refactor candidate. Each nested compound statement
+    # (If/For/While/With/Try and their async variants) adds one level, so depth
+    # 5 means five compound statements deep — a control-flow staircase that is
+    # hard to read and a prime "invert the condition / early-return / extract the
+    # inner block" target. Set high enough (5) that ordinary two/three-level
+    # functions never surface; tuned against Apex itself so only the genuinely
+    # deep functions are flagged. Maintainability signal, recommend-only.
+    _DEEP_NESTING_FLOOR = 5
+
+    def _scan_deeply_nested_functions(self, profile: ProjectProfile) -> None:
+        """Name top-level functions whose control flow nests too deeply — a
+        guard-clause / extract refactor candidate (a maintainability signal).
+
+        Walks each in-scope, non-fixture module's TOP-LEVEL functions and
+        computes each function's MAXIMUM block-nesting depth: every nested
+        compound statement (``If``/``For``/``While``/``With``/``Try`` and the
+        ``AsyncFor``/``AsyncWith`` async variants) deepens the staircase by one.
+        Functions whose depth reaches ``_DEEP_NESTING_FLOOR`` are flagged — deep
+        nesting is hard to read and a prime "invert the guard / early-return /
+        extract the inner block" target. Nested ``def``/``class`` bodies start a
+        fresh depth count of their own (an inner function's nesting is its own
+        problem, not the enclosing one's). Recommend-only: HOW to flatten the
+        staircase is a DESIGN call, Apex names the function but does not
+        auto-write it. Sorted ``(-depth, module, function)`` and capped to 5; an
+        all-flat repo yields [] so seeding stays byte-identical. Each entry:
+        ``{"module", "function", "depth"}``.
+        """
+        _NESTERS = (ast.If, ast.For, ast.While, ast.With, ast.Try,
+                    ast.AsyncFor, ast.AsyncWith)
+
+        def _max_depth(node: ast.AST, depth: int) -> int:
+            """Deepest nesting reached within ``node``'s OWN body (a nested
+            function/class starts its own count, so we do not recurse into it)."""
+            best = depth
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                      ast.ClassDef)):
+                    continue  # inner scope owns its own nesting
+                step = 1 if isinstance(child, _NESTERS) else 0
+                best = max(best, _max_depth(child, depth + step))
+            return best
+
+        found: list[dict] = []
+        scanned = 0
+        for path in sorted(self.root.rglob("*.py")):
+            if scanned >= self.max_files:
+                break
+            rel = path.relative_to(self.root)
+            rel_str = rel.as_posix()
+            if is_skipped(rel) or self._is_fixture_path(rel_str):
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+            except (OSError, SyntaxError):
+                continue
+            scanned += 1
+            for fn in tree.body:
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                depth = _max_depth(fn, 0)
+                if depth >= self._DEEP_NESTING_FLOOR:
+                    found.append({"module": rel_str, "function": fn.name,
+                                  "depth": depth})
+        found.sort(key=lambda d: (-d["depth"], d["module"], d["function"]))
+        profile.deeply_nested_functions = found[:5]
+
     def _scan_incomplete_protocols(self, profile: ProjectProfile) -> None:
         """Name the half-built Python contract pairs — "finish what you started".
 

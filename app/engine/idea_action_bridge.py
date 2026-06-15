@@ -78,6 +78,10 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                     "Decouple the coordinator module {s} — it imports many "
                     "internal modules; split its responsibilities (Apex names "
                     "the god-module, you design the seams)", False),
+    "deep-nesting": ("design_task",
+                     "Flatten the deeply-nested function {s} — invert the guards "
+                     "/ early-return / extract the inner block (Apex names the "
+                     "staircase, you design the flattening)", False),
     "modernization": ("modernize_comparisons", "Modernize None comparisons in {s}", True),
     "mutable-default": ("fix_mutable_defaults", "Fix mutable default arguments in {s}", True),
     # The hands exist (apex signature drop/keywordify) but as supervised CLI
