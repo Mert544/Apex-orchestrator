@@ -669,6 +669,24 @@ def test_extractable_blocks_surfaces_concrete_extract_command(tmp_path: Path):
     assert all(not b["module"].startswith("tests/") for b in blocks)
 
 
+def test_extractable_blocks_ignore_claude_worktree_copies(tmp_path: Path):
+    # Apex's own transient agent worktrees live under .claude/worktrees/ and are
+    # FULL repo copies; a stale hand-rolled skip set used to descend into them and
+    # leak self-referential ideas about throwaway worktree modules. The canonical
+    # skip set excludes .claude, so a qualifying function there must NOT surface.
+    body = "\n".join(f"    acc = acc + {i}" for i in range(45))
+    long_fn = f"def compute(start):\n    acc = start\n{body}\n    return acc\n"
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "real.py").write_text(long_fn, encoding="utf-8")
+    copy = tmp_path / ".claude" / "worktrees" / "agent-x" / "app"
+    copy.mkdir(parents=True)
+    (copy / "real.py").write_text(long_fn, encoding="utf-8")
+
+    blocks = ProjectProfiler(str(tmp_path)).profile().extractable_blocks
+    assert any(b["module"] == "app/real.py" for b in blocks)
+    assert all(".claude" not in b["module"] for b in blocks), blocks
+
+
 def test_inlinable_helpers_surfaces_single_use_helper(tmp_path: Path):
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()

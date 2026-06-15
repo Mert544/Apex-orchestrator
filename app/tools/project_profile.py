@@ -687,8 +687,6 @@ class ProjectProfiler:
         project's own non-fixture modules; the single best seam per file."""
         from app.execution.extract_method import suggest_extractions
 
-        skipped = {".git", "__pycache__", ".apex", ".epistemic", "node_modules",
-                   ".venv", "venv", "dist", "build", ".turbo", ".next"}
         found: list[dict] = []
         scanned = 0
         for path in sorted(self.root.rglob("*.py")):
@@ -696,7 +694,10 @@ class ProjectProfiler:
                 break
             rel = path.relative_to(self.root)
             rel_str = rel.as_posix()
-            if any(part in skipped for part in rel.parts) or self._is_fixture_path(rel_str):
+            # Use the canonical skip set (it knows about ``.claude`` agent
+            # worktrees — FULL repo copies); a hand-rolled set used to omit it and
+            # leaked self-referential ideas about throwaway worktree modules.
+            if is_skipped(rel) or self._is_fixture_path(rel_str):
                 continue
             try:
                 source = path.read_text(encoding="utf-8", errors="ignore")

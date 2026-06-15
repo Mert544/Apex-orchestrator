@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +19,10 @@ class ReportComposer:
 
     def __init__(self, results: list[dict[str, Any]]) -> None:
         self.results = results
-        self.timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        # Canonical Apex report stamp: UTC, minute granularity (the same format
+        # every other report path uses). Second-granularity local time made the
+        # header differ on every run and was non-portable across timezones.
+        self.timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     def to_markdown(self, path: str | Path | None = None) -> str:
         lines = [

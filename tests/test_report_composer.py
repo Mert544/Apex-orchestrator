@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from app.reporting.composer import ReportComposer
 
 
@@ -19,6 +17,15 @@ class TestReportComposer:
         assert "eval() usage" in md
         assert "app/auth.py" in md
         assert (tmp_path / "report.md").exists()
+
+    def test_timestamp_is_canonical_utc_minute_format(self):
+        # The report stamp must match Apex's canonical "YYYY-MM-DD HH:MM UTC"
+        # format (UTC, minute granularity) — not local second-granularity time.
+        import re
+
+        composer = ReportComposer([])
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC", composer.timestamp)
+        assert "UTC" in composer.to_markdown()
 
     def test_to_html(self, tmp_path: Path):
         results = [
