@@ -15,8 +15,10 @@ without pretending to deep-analyse them. It is deliberately neutral and pure:
     set (no rolled-own exclusions), so it stays consistent with every other walk;
   - LOC is non-blank line count (read locally);
   - churn is git commit count, computed in a SINGLE ``git log`` pass (never one
-    subprocess per file), degrading to 0 on any error (non-git dir, timeout, …)
-    rather than raising;
+    subprocess per file) that is memoised per ``(repo, HEAD)`` for the process —
+    so the several entry points that scan one build's repo state pay the full
+    walk once, gated by a cheap ``git rev-parse HEAD`` — degrading to 0 on any
+    error (non-git dir, timeout, …) rather than raising;
   - ranking is deterministic: ``(-churn, -loc, path)`` — same input, same output,
     no time/random anywhere.
 """
@@ -216,31 +218,89 @@ def _loc_and_debt(path: Path) -> tuple[int, int]:
     return loc, debt
 
 
-def _git_churn(root: Path, candidates: set[str]) -> dict[str, int]:
-    """Commit count per ``root``-relative path, from a SINGLE ``git log`` pass.
+# Process-level memo of the FULL repo churn map, keyed by ``(resolved_root,
+# head_oid)``. A single ideate build calls ``scan_polyglot_facts`` from several
+# entry points (project_profile, dashboard, cli_*), each of which would otherwise
+# re-run the expensive full-history ``git log --name-only`` walk over the SAME
+# repo state. Keying on the HEAD object id makes the cache safe: the moment HEAD
+# moves (new commit), the key changes and the map is recomputed, so the churn /
+# hotspots output stays IDENTICAL to a non-cached run for any given repo state.
+# Purely a within-process speedup; no time/random, so determinism is unaffected.
+_CHURN_CACHE: dict[tuple[str, str], dict[str, int]] = {}
+
+
+def _git_head_oid(root: Path) -> str | None:
+    """The current HEAD object id via ONE cheap ``git rev-parse HEAD`` call.
+
+    ``git rev-parse`` resolves HEAD without walking history, so it is orders of
+    magnitude cheaper than the ``git log`` churn pass it gates. Returns ``None``
+    on any failure (non-git dir, missing git, timeout, empty repo with no
+    commits) — the caller then degrades to the same empty churn map as today.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root, capture_output=True, text=True, timeout=15,
+        )
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    oid = out.stdout.strip()
+    return oid or None
+
+
+def _compute_full_churn_map(root: Path) -> dict[str, int] | None:
+    """The commit count for EVERY repo path, from a SINGLE ``git log`` pass.
 
     One ``git log --name-only`` invocation lists every file touched per commit;
-    we tally how many commits touch each candidate path. Never one subprocess
-    per file. Any failure (non-git dir, missing git, timeout, non-zero exit)
-    degrades to an empty mapping — callers then read churn 0 — and never raises.
+    we tally how many commits touch each path. Never one subprocess per file.
+    Returns ``None`` on any failure (missing git, timeout, non-zero exit) so the
+    caller can distinguish "git failed" (degrade to empty, do NOT cache) from a
+    genuinely empty map — preserving today's graceful behaviour exactly.
     """
-    if not candidates:
-        return {}
     try:
         out = subprocess.run(
             ["git", "log", "--format=", "--name-only"],
             cwd=root, capture_output=True, text=True, timeout=15,
         )
     except Exception:
-        return {}
+        return None
     if out.returncode != 0:
-        return {}
+        return None
     counts: dict[str, int] = {}
     for raw in out.stdout.splitlines():
         rel = raw.strip()
-        if rel and rel in candidates:
+        if rel:
             counts[rel] = counts.get(rel, 0) + 1
     return counts
+
+
+def _git_churn(root: Path, candidates: set[str]) -> dict[str, int]:
+    """Commit count per ``root``-relative candidate path, churn-cached per HEAD.
+
+    The expensive full-history ``git log --name-only`` walk is run AT MOST ONCE
+    per ``(repo, HEAD)`` per process: a cheap ``git rev-parse HEAD`` yields the
+    cache key, and a hit reuses the already-parsed full churn map instead of
+    re-shelling-out. The returned mapping is then the full map filtered to the
+    requested ``candidates`` — byte-for-byte identical to tallying only the
+    candidates in a fresh pass. Any failure (non-git dir, missing git, timeout,
+    non-zero exit) degrades to an empty mapping — callers read churn 0 — and
+    never raises. No time/random anywhere, so the result is deterministic.
+    """
+    if not candidates:
+        return {}
+    head = _git_head_oid(root)
+    if head is None:
+        return {}
+    key = (str(root.resolve()), head)
+    full = _CHURN_CACHE.get(key)
+    if full is None:
+        full = _compute_full_churn_map(root)
+        if full is None:
+            return {}
+        _CHURN_CACHE[key] = full
+    return {rel: full[rel] for rel in candidates if rel in full}
 
 
 def scan_polyglot_facts(root: str, *, limit: int = 5) -> list[FileFact]:
