@@ -56,3 +56,80 @@ def test_module_map_ignores_worktree_copies(tmp_path):
     mapping = DependencyGraphBuilder(tmp_path)._module_map()
     assert "app.real" in mapping
     assert not any(".claude" in v for v in mapping.values())
+
+
+def _build_representative_project(root):
+    """A small but representative tree: a hub, a 3-node cycle, and a leaf."""
+    pkg = root / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "hub.py").write_text("import pkg.a\nimport pkg.b\nimport pkg.c\n")
+    (pkg / "a.py").write_text("import pkg.b\n")
+    (pkg / "b.py").write_text("import pkg.c\n")
+    (pkg / "c.py").write_text("import pkg.a\n")  # closes the a->b->c->a cycle
+    (pkg / "leaf.py").write_text("x = 1\n")
+
+
+def _snapshot(builder):
+    """Deterministic, hashable summary of the built graph + cycles.
+
+    Pins sorted edges (source -> sorted imports), sorted in/out degrees, the
+    node set, and the de-duplicated cycle list — exactly the fields that feed
+    hubs, the coordinator, cycle reporting, and the grade.
+    """
+    graph = builder.build()
+    nodes = sorted(graph)
+    edges = sorted(
+        (path, tuple(sorted(node.imports)), tuple(sorted(node.imported_by)))
+        for path, node in graph.items()
+    )
+    cycles = sorted(tuple(c) for c in builder.find_cycles(limit=10))
+    hubs = builder.top_central_modules(limit=5)
+    edge_list = sorted((e.source, e.target, e.import_name) for e in builder.edges())
+    return (tuple(nodes), tuple(edges), tuple(cycles), tuple(hubs), tuple(edge_list))
+
+
+def test_build_graph_is_byte_identical_across_repeated_calls(tmp_path):
+    # Characterization: every consumer of one builder (build / find_cycles /
+    # top_central_modules / edges) must see the SAME graph, and a fresh builder
+    # on the same tree must reproduce it bit-for-bit. This pins the memoization
+    # against any output drift.
+    _build_representative_project(tmp_path)
+
+    builder = DependencyGraphBuilder(tmp_path)
+    first = _snapshot(builder)
+    # Re-derive from the SAME (now-warm) builder: caches must not change output.
+    second = _snapshot(builder)
+    # Re-derive from a COLD builder: same tree -> identical result.
+    third = _snapshot(DependencyGraphBuilder(tmp_path))
+
+    assert first == second == third
+
+    # And the snapshot is the expected shape (a real cycle + a real hub exist).
+    nodes, edges, cycles, hubs, edge_list = first
+    assert "pkg/hub.py" in nodes
+    assert any(len(set(c)) == 3 for c in cycles)  # a->b->c->a
+    assert hubs and hubs[0] in nodes
+    assert edge_list  # edges were resolved
+
+
+def test_build_returns_same_cached_object_on_repeated_calls(tmp_path):
+    # The graph is memoized per instance: identical inputs -> the same object,
+    # so downstream readers (coordinator, blast radius) never rebuild it.
+    _build_representative_project(tmp_path)
+    builder = DependencyGraphBuilder(tmp_path)
+    assert builder.build() is builder.build()
+    # The module map and structures are memoized too.
+    assert builder._module_map() is builder._module_map()
+    assert builder._structures() is builder._structures()
+
+
+def test_memoized_helpers_handle_empty_project(tmp_path):
+    # Empty/missing-source tree: caches must still work and stay consistent.
+    builder = DependencyGraphBuilder(tmp_path)
+    assert builder.build() == {}
+    assert builder.build() is builder.build()
+    assert builder.find_cycles() == []
+    assert builder.edges() == []
+    assert builder.top_central_modules() == []
+    assert builder._module_map() == {}

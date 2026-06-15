@@ -36,11 +36,25 @@ class DependencyNode:
 class DependencyGraphBuilder:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
+        # Per-instance memoization of the three expensive, input-only derivations:
+        # the all-files module map, the analyzed structures, and the resolved
+        # graph. A single profiling pass calls ``top_central_modules`` +
+        # ``edges`` + ``find_cycles`` + ``build`` on ONE builder — that re-ran the
+        # full-tree walk and import resolution up to four times for byte-identical
+        # output. Caching is keyed only by ``self.root`` (immutable here), so a
+        # *new* builder (constructed fresh per dashboard/ideate build) still picks
+        # up file changes — the underlying parse cache is mtime-invalidated, and
+        # callers never share a builder across a file edit.
+        self._module_map_cache: dict[str, str] | None = None
+        self._structures_cache: list | None = None
+        self._graph_cache: dict[str, DependencyNode] | None = None
 
     def build(self) -> dict[str, DependencyNode]:
+        if self._graph_cache is not None:
+            return self._graph_cache
+
         module_map = self._module_map()
-        analyzer = PythonStructureAnalyzer(self.root)
-        structures = analyzer.analyze()
+        structures = self._structures()
 
         graph: dict[str, DependencyNode] = {
             structure.path: DependencyNode(path=structure.path) for structure in structures
@@ -60,6 +74,7 @@ class DependencyGraphBuilder:
                 graph[source].imports.add(target)
                 graph[target].imported_by.add(source)
 
+        self._graph_cache = graph
         return graph
 
     def top_central_modules(self, limit: int = 5) -> list[str]:
@@ -111,8 +126,7 @@ class DependencyGraphBuilder:
 
     def edges(self) -> list[DependencyEdge]:
         module_map = self._module_map()
-        analyzer = PythonStructureAnalyzer(self.root)
-        structures = analyzer.analyze()
+        structures = self._structures()
         edges: list[DependencyEdge] = []
 
         for structure in structures:
@@ -129,7 +143,22 @@ class DependencyGraphBuilder:
             dedup[(edge.source, edge.target, edge.import_name)] = edge
         return list(dedup.values())
 
+    def _structures(self) -> list:
+        """Analyze the source tree once, memoized per builder instance.
+
+        ``edges`` and ``build`` both consume the same ``ModuleStructure`` list.
+        The analyzer's process-level parse cache makes re-parsing cheap, but
+        re-walking + re-allocating the structure list is still pure waste within
+        one profiling pass — so the list is built at most once here.
+        """
+        if self._structures_cache is None:
+            analyzer = PythonStructureAnalyzer(self.root)
+            self._structures_cache = analyzer.analyze()
+        return self._structures_cache
+
     def _module_map(self) -> dict[str, str]:
+        if self._module_map_cache is not None:
+            return self._module_map_cache
         mapping: dict[str, str] = {}
         for path in iter_source_files(self.root):
             rel = path.relative_to(self.root)
@@ -141,6 +170,7 @@ class DependencyGraphBuilder:
                 module_name = ".".join(parts)
             if module_name:
                 mapping[module_name] = str(rel)
+        self._module_map_cache = mapping
         return mapping
 
     def _resolve_internal_import(self, import_name: str, module_map: dict[str, str]) -> str | None:
