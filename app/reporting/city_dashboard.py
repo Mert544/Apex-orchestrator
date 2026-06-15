@@ -24,11 +24,19 @@ def _module_set(profile: Any) -> list[str]:
     """Named modules to render, prioritising the structurally interesting ones."""
     coverage = getattr(profile, "module_to_tests", {}) or {}
     ordered = list(coverage.keys())
-    # Make sure hubs / fragile / untested are present even if coverage missed them.
+    # Coordinator (high-fan-out) modules are dicts {"module", "fan_out", ...}.
+    coord = [
+        c.get("module")
+        for c in (getattr(profile, "coordinator_modules", []) or [])
+        if isinstance(c, dict)
+    ]
+    # Make sure hubs / fragile / untested / coordinators are present even if
+    # coverage missed them.
     for extra in (
         list(getattr(profile, "dependency_hubs", []) or [])
         + list(getattr(profile, "fragile_modules", []) or [])
         + list(getattr(profile, "untested_modules", []) or [])
+        + coord
     ):
         if extra not in ordered:
             ordered.append(extra)
@@ -66,6 +74,21 @@ def build_city_model(project_root: str, max_buildings: int = 60) -> dict[str, An
     fragile = set(getattr(profile, "fragile_modules", []) or [])
     coverage = getattr(profile, "module_to_tests", {}) or {}
 
+    # Coordinator (high-fan-OUT) modules: god-modules that import many internal
+    # modules — the opposite edge direction from a dependency hub (high fan-IN).
+    # Surfaced as a distinct visual cue so a decoupling candidate is legible.
+    fan_out: dict[str, int] = {}
+    coord_imports: dict[str, list[str]] = {}
+    for c in getattr(profile, "coordinator_modules", []) or []:
+        if not isinstance(c, dict):
+            continue
+        mod = c.get("module")
+        if not isinstance(mod, str):
+            continue
+        fan_out[mod] = int(c.get("fan_out", 0) or 0)
+        coord_imports[mod] = [str(t) for t in (c.get("imports", []) or [])]
+    coordinators = set(fan_out)
+
     modules = _module_set(profile)
     metrics = CodeMetrics(project_root).for_modules(modules)
 
@@ -75,7 +98,9 @@ def build_city_model(project_root: str, max_buildings: int = 60) -> dict[str, An
             findings_by_file.get(m, 0),
             1 if m in fragile else 0,
             1 if m in hubs else 0,
+            1 if m in coordinators else 0,
             1 if m in untested else 0,
+            fan_out.get(m, 0),
             fan_in.get(m, 0),
             metrics[m].loc if m in metrics else 0,
         )
@@ -105,6 +130,9 @@ def build_city_model(project_root: str, max_buildings: int = 60) -> dict[str, An
             "loc": loc,
             "complexity": complexity,
             "fan_in": fan_in.get(m, 0),
+            "fan_out": fan_out.get(m, 0),
+            "coordinator": m in coordinators,
+            "coord_imports": coord_imports.get(m, []),
             "findings": nfind,
             "tests": len(coverage.get(m, []) or []),
             "health": health,
@@ -170,6 +198,7 @@ def build_city_model(project_root: str, max_buildings: int = 60) -> dict[str, An
             "buildings": len(buildings),
             "findings": sum(b["findings"] for b in buildings),
             "untested": sum(1 for b in buildings if b["health"] == "untested"),
+            "coordinators": sum(1 for b in buildings if b["coordinator"]),
             "workers": len(workers),
             "loc": sum(b["loc"] for b in buildings),
         },
@@ -261,6 +290,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="row"><span class="dot" style="background:#ffc23d"></span>untested</div>
   <div class="row"><span class="dot" style="background:#4d9bff"></span>dependency hub</div>
   <div class="row"><span class="dot" style="background:#36c98f"></span>healthy</div>
+  <div class="row"><span class="dot" style="background:#ffb030;border-radius:50%"></span>coordinator (high fan-out)</div>
   <div class="sec"><h3>Workers = Apex agents</h3>
   <div class="row"><span class="dot" style="background:#ff4d4d;border-radius:50%"></span>Security Auditor</div>
   <div class="row"><span class="dot" style="background:#1fc8a9;border-radius:50%"></span>Test Engineer</div>
@@ -529,6 +559,20 @@ const DATA = /*__DATA__*/;
         new THREE.MeshBasicMaterial({ color:0xff5a5a }));
       cap.position.set(p.x, 2.6, p.z-0.5); cap.userData.pulse = true; scene.add(cap);
     }
+    // coordinator (high-fan-out) cue: a tall amber spire + radiating ring that
+    // marks a module wiring much of the floor together (a decoupling candidate).
+    if (b.coordinator) {
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.07,3.2,8),
+        new THREE.MeshBasicMaterial({ color:0xffb030 }));
+      mast.position.set(p.x, 3.7, p.z); scene.add(mast);
+      const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.26,14,14),
+        new THREE.MeshBasicMaterial({ color:0xffd27a }));
+      beacon.position.set(p.x, 5.4, p.z); beacon.userData.pulse = true; scene.add(beacon);
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.06, 8, 24),
+        new THREE.MeshBasicMaterial({ color:0xffb030, transparent:true, opacity:0.7 }));
+      ring.rotation.x = Math.PI/2; ring.position.set(p.x, 5.4, p.z); scene.add(ring);
+      const cl = new THREE.PointLight(0xffb030, 0.6, 9); cl.position.set(p.x, 5.0, p.z); scene.add(cl);
+    }
   });
   function plotOf(i){ const m = meshes[i]; return m ? {x:m.userData.x, z:m.userData.z, h:m.userData.h} : {x:0,z:0,h:4}; }
 
@@ -630,7 +674,8 @@ const DATA = /*__DATA__*/;
   document.getElementById("score").textContent = DATA.grade.score + " / 100 · " + DATA.generated;
   const t = DATA.totals;
   document.getElementById("kpis").innerHTML =
-    kpi(t.buildings,"modules")+kpi(t.findings,"findings")+kpi(t.untested,"untested")+kpi(t.workers,"workers");
+    kpi(t.buildings,"modules")+kpi(t.findings,"findings")+kpi(t.untested,"untested")+
+    kpi(t.coordinators,"coordinators")+kpi(t.workers,"workers");
   function kpi(v,l){ return "<div class='kpi'><b>"+v+"</b><span>"+l+"</span></div>"; }
   const tickerEl = document.getElementById("ticker");
   function renderTicker(){
@@ -693,6 +738,7 @@ const DATA = /*__DATA__*/;
       tip.style.display="block"; tip.style.left=(e.clientX+14)+"px"; tip.style.top=(e.clientY+14)+"px";
       tip.innerHTML = "<b>"+b.name+"</b><br>"+b.loc+" LOC · cx "+b.complexity+" · fan-in "+b.fan_in+
         (b.findings?("<br><span style='color:#ff7a7a'>"+b.findings+" security finding(s)</span>"):"")+
+        (b.coordinator?("<br><span style='color:#ffc66a'>coordinator · fan-out "+b.fan_out+"</span>"):"")+
         "<br>tests: "+b.tests+" · <span class='hl'>"+b.health+"</span>";
     } else tip.style.display="none";
   }
@@ -727,8 +773,14 @@ const DATA = /*__DATA__*/;
       "Complexity: <span class='hl'>"+b.complexity+"</span><br>"+
       "Fan-in (importers): <span class='hl'>"+b.fan_in+"</span><br>"+
       "Linked tests: <span class='hl'>"+b.tests+"</span><br>"+
-      "Security findings: <span class='hl' style='color:"+(b.findings?'#ff7a7a':'#36c98f')+"'>"+b.findings+"</span><br><br>"+
-      "Visiting agents: <span class='hl'>"+(visitors.length?[...new Set(visitors)].join(", "):"none")+"</span>";
+      "Security findings: <span class='hl' style='color:"+(b.findings?'#ff7a7a':'#36c98f')+"'>"+b.findings+"</span><br>"+
+      (b.coordinator
+        ? "Coordinator fan-out: <span class='hl' style='color:#ffc66a'>"+b.fan_out+
+          "</span> (imports many internal modules"+
+          (b.coord_imports && b.coord_imports.length
+            ? ": <span class='hl'>"+b.coord_imports.join(", ")+"</span>" : "")+")<br>"
+        : "")+
+      "<br>Visiting agents: <span class='hl'>"+(visitors.length?[...new Set(visitors)].join(", "):"none")+"</span>";
   });
   document.getElementById("detailX").onclick = ()=> document.getElementById("detail").style.display="none";
 
