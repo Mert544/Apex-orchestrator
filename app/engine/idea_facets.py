@@ -300,6 +300,41 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "narrow the seam to a single contract": ["the one responsibility to keep",
                                              "the incidental coupling to remove",
                                              "the callers to migrate"],
+    # verify — the constructive "make it reversible" lens. The three verify L1
+    # aspects ("stated invariants", "boundary assertions", "proof obligations")
+    # previously had NO L2 vocabulary, so zooming "Verify X → proof obligations"
+    # fell straight to the generic common/boundary/failure case split — no concrete
+    # sub-direction. The angle the whole facet set was MISSING is rollback/safety:
+    # *before* a change ships, what is the undo path if it turns out wrong, and what
+    # signal confirms it is working? "proof obligations" is the natural home — the
+    # strongest obligation a change must meet is that it can be safely backed out.
+    # We give it (and the two sibling verify aspects) their own L2 ladders of the
+    # concrete moves that make a change reversible and observable: define the undo
+    # path, gate it behind a safe toggle, and name the signal that confirms it.
+    # CRUCIAL for the beam: these are new keys for verify phrases that ALREADY emit
+    # at L1 — no new L1/L2 node competes in any per-level beam, so the existing
+    # verify phrases keep emitting in their existing order; we only replace the
+    # generic case-split floor with content-aware sub-aspects.
+    "proof obligations": ["the undo path if this turns out wrong",
+                          "the safe toggle that gates the change",
+                          "the signal that confirms the change is working"],
+    "stated invariants": ["the invariant to write down as an assertion",
+                          "the precondition a caller must already meet",
+                          "the postcondition the change must preserve"],
+    "boundary assertions": ["the assertion at the entry of the change",
+                            "the assertion at the exit of the change",
+                            "the check that fails loudly when the boundary is crossed"],
+    # verify L3 ladders — each L2 move decomposes once more into the concrete edits
+    # an engineer performs, then bottoms out in the universal case split.
+    "the undo path if this turns out wrong": ["the inverse operation that backs it out",
+                                              "the saved prior state to restore from",
+                                              "the steps to reverse, in order"],
+    "the safe toggle that gates the change": ["the off state that keeps today's behaviour",
+                                              "the default the toggle ships in",
+                                              "the cleanup once the change is trusted"],
+    "the signal that confirms the change is working": ["the before-and-after to compare",
+                                                       "the threshold that means success",
+                                                       "the alert when it regresses"],
     # ---- constructive-lens L3 deepening: existing L2 facets that previously fell
     # to the generic case split now carry their own concrete sub-directions. Each
     # key below is a facet phrase that ALREADY emits at L2 for its lens; adding an
