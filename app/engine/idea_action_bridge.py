@@ -96,6 +96,45 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
 _TEST_ACTIONS = frozenset({"create_test_stub"})
 
 
+# When two candidate steps are within this much value of each other they are a
+# near-tie, and the headline tiebreaker (most converging confluence signals
+# first) applies. Kept small so only genuinely co-leading steps reorder; the
+# surrounding value ranking is otherwise untouched.
+_CONFLUENCE_TIE_EPSILON = 0.05
+
+
+def _confluence_weight(step: ActionStep) -> int:
+    """How many independent confluence signals back this step (its "family
+    count"). Higher = the dream/confluence lens converges harder on this subject.
+
+    Deterministic and side-effect-free. Reads the step's grounding facts only:
+
+    - a seeder ``confluence:`` root carries ``"… (N signal families converge: …)"``
+      — the parsed ``N`` is the family count;
+    - a synthesis ``convergence:`` fact carries ``"a+b+c+d"`` — the number of
+      ``+``-joined risk dimensions is the family count;
+    - any other step's weight is just the number of grounding ``source_facts``
+      (usually 1), so a plain idea never out-ranks a real confluence on the tie.
+    """
+    facts = step.source_facts or []
+    best = 0
+    for fact in facts:
+        label, _, rest = fact.partition(":")
+        label = label.strip()
+        if label == "confluence":
+            # "module (N signal families converge: a, b, c)" -> N
+            marker = "signal families converge"
+            head = rest.split(marker, 1)[0] if marker in rest else ""
+            digits = "".join(ch for ch in head if ch.isdigit())
+            best = max(best, int(digits) if digits else rest.count(",") + 1)
+        elif label == "convergence":
+            # "a+b+c+d" -> 4
+            dims = [p for p in rest.split("+") if p.strip()]
+            best = max(best, len(dims))
+    # No confluence/convergence fact: weight is the count of grounding facts.
+    return best if best else len(facts)
+
+
 def _function_anchors(node) -> list[dict]:
     """The idea's function-grain anchors, read DEFENSIVELY.
 
@@ -1077,6 +1116,38 @@ class IdeaActionBridge:
             "results": run.results,
         }
 
+    @staticmethod
+    def _confluence_headline(steps: list[ActionStep]) -> list[ActionStep]:
+        """Make the #1 step the most-converging confluence subject, when the
+        leaders are a near-tie.
+
+        Among the leading band — steps whose value is within
+        ``_CONFLUENCE_TIE_EPSILON`` of the current top step's value — promote the
+        one backed by the MOST converging confluence signals (its family count),
+        breaking any remaining tie by subject. Only this leading band is touched;
+        every later step keeps its exact value order. The reorder is stable and
+        deterministic (no time/random), and ``ActionStep.value`` is never mutated
+        — only the band's order changes, so the headline matches the dream's #1
+        while the rest of the plan is preserved.
+        """
+        if len(steps) < 2:
+            return steps
+        top_value = steps[0].value
+        band = 0
+        while (band < len(steps)
+               and top_value - steps[band].value <= _CONFLUENCE_TIE_EPSILON):
+            band += 1
+        if band < 2:
+            return steps
+        leaders = steps[:band]
+        # Stable: enumerate index ties subject ties to keep input order as the
+        # final, fully-deterministic fallback.
+        leaders = sorted(
+            enumerate(leaders),
+            key=lambda iv: (-_confluence_weight(iv[1]), iv[1].subject, iv[0]),
+        )
+        return [s for _, s in leaders] + steps[band:]
+
     def plan_tree(
         self,
         report: IdeaTreeReport,
@@ -1085,6 +1156,7 @@ class IdeaActionBridge:
         draft: bool = False,
         project_root: str | None = None,
         proof: bool = False,
+        confluence_first: bool = False,
     ) -> ActionPlan:
         ideas = sorted(report.ideas, key=lambda i: i.value, reverse=True)
         if top is not None:
@@ -1094,6 +1166,12 @@ class IdeaActionBridge:
         for i in ideas:
             steps.extend(self._expand_idea(i, project_root=root_for_checks))
         steps = self._dedupe_steps(steps)
+        # Opt-in (default off, so existing plans are byte-identical): when the
+        # top steps are a value near-tie, surface the subject with the most
+        # converging confluence signals as the #1 action — keeping the headline
+        # consistent with the dream/confluence lens's family count.
+        if confluence_first:
+            steps = self._confluence_headline(steps)
         if draft:
             self._draft_previews(steps, project_root or report.project_root or ".")
         plan = ActionPlan(
