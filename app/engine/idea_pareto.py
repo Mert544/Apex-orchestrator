@@ -90,6 +90,41 @@ def pareto_frontier(items: list[Any]) -> list[ParetoPoint]:
     return points
 
 
+def _bang_for_buck(p: ParetoPoint) -> float:
+    """Value bought per unit of effort. Effort is floored by a tiny epsilon so a
+    zero-effort point stays finite (and ranks highest) instead of dividing by
+    zero."""
+    return p.value / max(p.effort, 1e-9)
+
+
+def knee_point(points: list[Any]) -> ParetoPoint | None:
+    """The single best-bang-for-buck pick — "if you do ONE thing, do this."
+
+    Among the (already non-dominated) frontier ``points``, returns the idea with
+    the highest *value-per-effort* ratio: the knee where each additional unit of
+    effort still buys the most value. Accepts either a list of ``ParetoPoint`` or
+    raw items (it computes the frontier first), so a caller can pass whatever it
+    has. Empty-safe: no points → ``None``.
+
+    Ties on the ratio break deterministically: higher value, then lower effort,
+    then higher ROI, then ``branch_path`` (lexicographically smallest) — the same
+    stable ordering the frontier itself uses.
+    """
+    if not points:
+        return None
+    frontier = (
+        points if all(isinstance(p, ParetoPoint) for p in points)
+        else pareto_frontier(points)
+    )
+    if not frontier:
+        return None
+    # Sort best-first; ratio↓, value↓, effort↑, roi↓, path↑ are all deterministic.
+    return sorted(
+        frontier,
+        key=lambda p: (-_bang_for_buck(p), -p.value, p.effort, -p.roi, p.branch_path),
+    )[0]
+
+
 def frontier_from_roadmap(roadmap: Any) -> list[ParetoPoint]:
     """Convenience: compute the frontier over all of a roadmap's items."""
     items = [i for ph in roadmap.phases for i in ph.items]
