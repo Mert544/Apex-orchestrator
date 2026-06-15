@@ -133,110 +133,180 @@ def _apply_spans(source: str, spans: list[Span], old: str, new: str) -> str | No
     return "".join(lines)
 
 
-def plan_rename(project_root: str | Path, old: str, new: str) -> RenamePlan:
-    """Build the full multi-file rename plan, or its blockers."""
-    plan = RenamePlan(old=old, new=new)
+def _invalid_name_blocker(old: str, new: str) -> str | None:
+    """The first refusal reason among the up-front name checks, or None.
+    A bad identifier/keyword (either side) or a no-op rename refuses before any
+    file is touched — same ordering as inline checks (old, then new, then equality)."""
     for name in (old, new):
         if not name.isidentifier() or keyword.iskeyword(name):
-            plan.blockers.append(f"'{name}' is not a valid identifier")
-            return plan
+            return f"'{name}' is not a valid identifier"
     if old == new:
-        plan.blockers.append("old and new names are identical")
-        return plan
+        return "old and new names are identical"
+    return None
 
-    root = Path(project_root)
-    files = _py_files(root)
+
+def _parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
+    """Parse each readable source; files that don't parse are silently skipped
+    (a rename can't reason about a syntactically broken module)."""
     trees: dict[str, ast.Module] = {}
     for rel, text in files:
         try:
             trees[rel] = ast.parse(text)
         except SyntaxError:
             continue
+    return trees
 
-    # The symbol must be defined exactly once, at top level.
+
+def _find_unique_definition(
+    trees: dict[str, ast.Module], old: str,
+) -> tuple[tuple[str, ast.AST] | None, str | None]:
+    """Locate the single top-level def/class of ``old``.
+
+    Returns ``((rel, node), None)`` on success, or ``(None, blocker)`` when the
+    symbol is missing or ambiguously defined in more than one module."""
     definitions = [
         (rel, node) for rel, tree in trees.items() for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
         and node.name == old
     ]
     if not definitions:
-        plan.blockers.append(f"no top-level definition of '{old}' found")
-        return plan
+        return None, f"no top-level definition of '{old}' found"
     if len(definitions) > 1:
         where = ", ".join(rel for rel, _ in definitions)
-        plan.blockers.append(f"'{old}' is defined in {len(definitions)} modules ({where}) — ambiguous")
-        return plan
+        return None, f"'{old}' is defined in {len(definitions)} modules ({where}) — ambiguous"
+    return definitions[0], None
 
-    defmod, def_node = definitions[0]
-    plan.defined_in = defmod
-    dotted = defmod[:-3].replace("/", ".")
-    sources = dict(files)
 
-    for rel, tree in trees.items():
-        source = sources[rel]
-        lines = source.splitlines(keepends=True)
-        spans: list[Span] = []
-        bare_rewrite = False
-        module_aliases: set[str] = set()
+def _import_spans(tree: ast.Module, dotted: str, old: str) -> tuple[list[Span], bool, set[str]]:
+    """Spans for the import statements that bring ``old`` into a non-def file.
 
-        if rel == defmod:
-            bare_rewrite = True
-            header = _def_header_span(lines, def_node, old)
-            if header is None:
-                plan.blockers.append(f"{rel}: could not locate the definition header")
-                continue
-            spans.append(header)
-        else:
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and node.module == dotted:
-                    for alias in node.names:
-                        if alias.name == old:
-                            spans.append((alias.lineno, alias.col_offset,
-                                          alias.col_offset + len(old)))
-                            if alias.asname is None:
-                                bare_rewrite = True
-                elif isinstance(node, ast.Import):
-                    for alias in node.names:
-                        if alias.name == dotted:
-                            module_aliases.add(alias.asname or alias.name)
+    Returns ``(spans, bare_rewrite, module_aliases)``: ``from … import old`` adds
+    a span and (when unaliased) requests a bare-name rewrite of call sites;
+    ``import pkg.mod`` records the binding so ``pkg.mod.old`` attributes are caught."""
+    spans: list[Span] = []
+    bare_rewrite = False
+    module_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == dotted:
+            for alias in node.names:
+                if alias.name == old:
+                    spans.append((alias.lineno, alias.col_offset,
+                                  alias.col_offset + len(old)))
+                    if alias.asname is None:
+                        bare_rewrite = True
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == dotted:
+                    module_aliases.add(alias.asname or alias.name)
+    return spans, bare_rewrite, module_aliases
 
-        if bare_rewrite:
-            if _local_shadow(tree, old):
-                plan.blockers.append(
-                    f"{rel}: '{old}' is shadowed by a parameter/local — rename there first")
-                continue
-            if new in _top_level_bindings(tree):
-                plan.blockers.append(f"{rel}: '{new}' is already bound — collision")
-                continue
-            spans += [
-                (n.lineno, n.col_offset, n.col_offset + len(old))
-                for n in ast.walk(tree)
-                if isinstance(n, ast.Name) and n.id == old
-            ]
-        if module_aliases:
-            for n in ast.walk(tree):
-                if (isinstance(n, ast.Attribute) and n.attr == old
-                        and ast.unparse(n.value) in module_aliases):
-                    spans.append((n.end_lineno, n.end_col_offset - len(old), n.end_col_offset))
 
-        if not spans:
-            continue
-        rewritten = _apply_spans(source, spans, old, new)
-        if rewritten is None:
-            plan.blockers.append(f"{rel}: a located span no longer matches '{old}'")
-            continue
-        if rewritten != source:
-            plan.originals[rel] = source
-            plan.new_contents[rel] = rewritten
-            plan.edits_by_file[rel] = len(set(spans))
+def _collect_file_spans(
+    plan: RenamePlan, rel: str, tree: ast.Module, lines: list[str],
+    defmod: str, def_node: ast.AST, dotted: str, old: str, new: str,
+) -> list[Span] | None:
+    """Every rename span in one file, or None when the file is to be skipped.
 
-    # Dynamic references can't be rewritten safely — surface them for a human.
+    Mirrors the per-file branch logic exactly: the def file contributes its
+    header; other files contribute import spans. A bare-name rewrite adds the
+    call sites unless a local shadow or new-name collision blocks the file; a
+    module alias adds the matching attribute spans. Blockers/skips append to
+    ``plan`` and return None so the caller drops the file."""
+    spans: list[Span] = []
+    bare_rewrite = False
+    module_aliases: set[str] = set()
+
+    if rel == defmod:
+        bare_rewrite = True
+        header = _def_header_span(lines, def_node, old)
+        if header is None:
+            plan.blockers.append(f"{rel}: could not locate the definition header")
+            return None
+        spans.append(header)
+    else:
+        spans, bare_rewrite, module_aliases = _import_spans(tree, dotted, old)
+
+    if bare_rewrite:
+        if _local_shadow(tree, old):
+            plan.blockers.append(
+                f"{rel}: '{old}' is shadowed by a parameter/local — rename there first")
+            return None
+        if new in _top_level_bindings(tree):
+            plan.blockers.append(f"{rel}: '{new}' is already bound — collision")
+            return None
+        spans += [
+            (n.lineno, n.col_offset, n.col_offset + len(old))
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Name) and n.id == old
+        ]
+    if module_aliases:
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.Attribute) and n.attr == old
+                    and ast.unparse(n.value) in module_aliases):
+                spans.append((n.end_lineno, n.end_col_offset - len(old), n.end_col_offset))
+
+    return spans
+
+
+def _plan_file_rewrite(
+    plan: RenamePlan, rel: str, tree: ast.Module, source: str,
+    defmod: str, def_node: ast.AST, dotted: str, old: str, new: str,
+) -> None:
+    """Record one file's edit on ``plan`` (or its blocker), if it changes."""
+    lines = source.splitlines(keepends=True)
+    spans = _collect_file_spans(plan, rel, tree, lines, defmod, def_node, dotted, old, new)
+    if not spans:
+        return
+    rewritten = _apply_spans(source, spans, old, new)
+    if rewritten is None:
+        plan.blockers.append(f"{rel}: a located span no longer matches '{old}'")
+        return
+    if rewritten != source:
+        plan.originals[rel] = source
+        plan.new_contents[rel] = rewritten
+        plan.edits_by_file[rel] = len(set(spans))
+
+
+def _warn_dynamic_references(plan: RenamePlan, trees: dict[str, ast.Module], old: str) -> None:
+    """Surface string literals equal to ``old`` — dynamic references a span
+    rewrite can't safely touch, so a human checks them. Never blocks."""
     for rel, tree in trees.items():
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and node.value == old:
                 plan.warnings.append(
                     f"{rel}:{node.lineno}: string literal '{old}' — "
                     "dynamic reference? check manually")
+
+
+def plan_rename(project_root: str | Path, old: str, new: str) -> RenamePlan:
+    """Build the full multi-file rename plan, or its blockers."""
+    plan = RenamePlan(old=old, new=new)
+    name_blocker = _invalid_name_blocker(old, new)
+    if name_blocker is not None:
+        plan.blockers.append(name_blocker)
+        return plan
+
+    root = Path(project_root)
+    files = _py_files(root)
+    trees = _parse_trees(files)
+
+    # The symbol must be defined exactly once, at top level.
+    definition, def_blocker = _find_unique_definition(trees, old)
+    if definition is None:
+        plan.blockers.append(def_blocker)
+        return plan
+
+    defmod, def_node = definition
+    plan.defined_in = defmod
+    dotted = defmod[:-3].replace("/", ".")
+    sources = dict(files)
+
+    for rel, tree in trees.items():
+        _plan_file_rewrite(
+            plan, rel, tree, sources[rel], defmod, def_node, dotted, old, new)
+
+    # Dynamic references can't be rewritten safely — surface them for a human.
+    _warn_dynamic_references(plan, trees, old)
     return plan
 
 

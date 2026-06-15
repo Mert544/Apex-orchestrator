@@ -208,3 +208,83 @@ def test_cli_rename_blocked_exits_nonzero(tmp_path, capsys):
                             dry_run=False, no_verify=False, json=False)
     assert cmd_rename(ns) == 1
     assert "⛔" in capsys.readouterr().out
+
+
+# --- Characterization: pin the produced plan byte-for-byte ----------------
+# These tests freeze the exact RenamePlan (every edit, count, ordering, and
+# blocker) for representative inputs. They are a behaviour contract: any change
+# to plan_rename that is not byte-identical — including refactors — must break
+# them. Captured from the planner and asserted against literal expected values.
+
+def test_characterization_full_plan_is_pinned(tmp_path):
+    """The complete happy-path plan, frozen edit-for-edit."""
+    _project(tmp_path)
+    plan = plan_rename(tmp_path, "compute", "calculate")
+
+    assert plan.ok is True
+    assert plan.defined_in == "app/core.py"
+    assert plan.blockers == []
+    assert plan.warnings == []
+    # Files touched, and how many distinct spans each received.
+    assert dict(sorted(plan.edits_by_file.items())) == {
+        "app/core.py": 2,
+        "app/user_attr.py": 1,
+        "app/user_from.py": 2,
+        "tests/test_core.py": 2,
+    }
+    # Exact rewritten bytes — comments and formatting must survive verbatim.
+    assert plan.new_contents == {
+        "app/core.py": (
+            "# the central helper\n"
+            "def calculate(x):\n"
+            "    return x * 2\n"
+            "\n"
+            "def wrapper(x):\n"
+            "    return calculate(x) + 1  # uses it locally\n"
+        ),
+        "app/user_from.py": (
+            "from app.core import calculate\n"
+            "\n"
+            "def f(v):\n"
+            "    return calculate(v)\n"
+        ),
+        "app/user_attr.py": (
+            "import app.core\n"
+            "\n"
+            "def g(v):\n"
+            "    return app.core.calculate(v)\n"
+        ),
+        "tests/test_core.py": (
+            "from app.core import calculate\n"
+            "def test_compute():\n"
+            "    assert calculate(2) == 4\n"
+        ),
+    }
+    # The originals captured for rollback are the untouched inputs.
+    assert plan.originals.keys() == plan.new_contents.keys()
+    assert plan.originals["app/core.py"].startswith("# the central helper\ndef compute(x):")
+
+
+def test_characterization_blocker_plan_is_pinned(tmp_path):
+    """A refusal: an ambiguous definition yields exactly this blocker and no edits."""
+    _project(tmp_path)
+    (tmp_path / "app" / "other.py").write_text("def compute(y):\n    return y\n")
+    plan = plan_rename(tmp_path, "compute", "calculate")
+
+    assert plan.ok is False
+    assert plan.new_contents == {}
+    assert plan.edits_by_file == {}
+    assert plan.blockers == [
+        "'compute' is defined in 2 modules (app/core.py, app/other.py) — ambiguous"
+    ]
+
+
+def test_characterization_invalid_name_blocker_pinned(tmp_path):
+    """Up-front name refusals fire before any file is read, in old/new/equality order."""
+    _project(tmp_path)
+    assert plan_rename(tmp_path, "with", "calculate").blockers == [
+        "'with' is not a valid identifier"]
+    assert plan_rename(tmp_path, "compute", "for").blockers == [
+        "'for' is not a valid identifier"]
+    assert plan_rename(tmp_path, "compute", "compute").blockers == [
+        "old and new names are identical"]
