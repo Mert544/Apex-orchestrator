@@ -164,6 +164,71 @@ def metric_bars(rows: list[tuple[str, float]]) -> str:
     return "".join(parts)
 
 
+_SEGMENT_PALETTE = (_BLUE, _GREEN, _AMBER, _RED, _MUTED)
+
+
+def stacked_bar(segments: list[tuple[str, float]]) -> str:
+    """Horizontal stacked composition bar of proportional parts.
+
+    Each segment is ``(label, weight)``; weights are clamped to ``>= 0`` and
+    normalised against their total so the bar always fills its track exactly.
+    Segments are colored by cycling the shared palette, and a small legend of
+    escaped ``label pct%`` entries is drawn beneath. Empty input (or an all-zero
+    total) returns a minimal valid SVG.
+    """
+    segments = list(segments or [])
+    width = 320
+    bar_y = 6
+    bar_h = 18
+    bar_w = width - 4
+    x0 = 2
+
+    weights = [max(0.0, float(w)) for _, w in segments]
+    total = sum(weights)
+
+    if not segments or total <= 0.0:
+        height = bar_h + bar_y + 4
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+            f'viewBox="0 0 {width} {height}" role="img" aria-label="no composition data">'
+            f'<rect x="{x0}" y="{bar_y}" width="{_num(bar_w)}" height="{bar_h}" rx="4" '
+            f'fill="{_TRACK}"/>'
+            f'</svg>'
+        )
+
+    legend_h = 16 * len(segments)
+    height = bar_y + bar_h + 6 + legend_h
+    parts: list[str] = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="composition">',
+        f'<rect x="{x0}" y="{bar_y}" width="{_num(bar_w)}" height="{bar_h}" rx="4" '
+        f'fill="{_TRACK}"/>',
+    ]
+
+    cursor = float(x0)
+    legend_y = bar_y + bar_h + 6
+    for i, ((label, _weight), weight) in enumerate(zip(segments, weights)):
+        frac = weight / total
+        seg_w = bar_w * frac
+        color = _SEGMENT_PALETTE[i % len(_SEGMENT_PALETTE)]
+        safe_label = html.escape(str(label))
+        pct = int(round(frac * 100))
+        parts.append(
+            f'<rect x="{_num(cursor)}" y="{bar_y}" width="{_num(seg_w)}" '
+            f'height="{bar_h}" fill="{color}"/>'
+        )
+        ly = legend_y + i * 16
+        parts.append(
+            f'<rect x="{x0}" y="{_num(ly + 1)}" width="10" height="10" rx="2" '
+            f'fill="{color}"/>'
+            f'<text x="{x0 + 14}" y="{_num(ly + 10)}" font-family="sans-serif" '
+            f'font-size="11" fill="{_TEXT}">{safe_label} {pct}%</text>'
+        )
+        cursor += seg_w
+    parts.append('</svg>')
+    return "".join(parts)
+
+
 def sparkline(values: list[float]) -> str:
     """Tiny inline trend line for a sequence of values. Empty-safe."""
     values = [float(v) for v in (values or [])]
