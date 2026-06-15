@@ -378,6 +378,50 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "graceful degradation": ["the reduced-capability path",
                              "the signal that degradation kicked in",
                              "the recovery when the far side returns"],
+    # fortify — the constructive "cost / effort sequencing" lens. The whole facet
+    # set previously had NO angle on *how much* of a change to do now versus later:
+    # every other lens names WHAT to build, none names the cheapest order to build
+    # it in. The fortify lens — whose operator already asks for the SMALLEST guard
+    # that removes an edge-input failure — is the natural home for that angle. Its
+    # three L1 aspects ("null and empty inputs", "boundary and range limits",
+    # "the explicit error path") previously had NO L2 vocabulary, so zooming
+    # "Fortify X -> the explicit error path" fell straight to the generic
+    # common/boundary/failure case split — no concrete sub-direction. We give EACH
+    # of those existing L1 aspects its own L2 ladder of the cost/effort moves a
+    # sequenced hardening is actually made of: the cheapest first slice that earns
+    # its keep, what to defer to a later pass, and the smallest probe that would
+    # catch a regression before it ships.
+    # CRUCIAL for the beam: these are new keys for fortify phrases that ALREADY
+    # emit at L1 — no new L1/L2 node is introduced, so nothing competes in any
+    # per-level beam and the existing fortify phrases keep emitting in their
+    # existing order; we only replace the generic case-split floor with
+    # content-aware, cost-aware sub-aspects.
+    "null and empty inputs": ["the cheapest first slice that earns its keep",
+                              "the rarer shape to defer to a later pass",
+                              "the smallest probe that would catch a regression"],
+    "boundary and range limits": ["the cheapest first slice that earns its keep",
+                                  "the costlier guard to defer to a later pass",
+                                  "the smallest probe that would catch a regression"],
+    "the explicit error path": ["the cheapest first slice that earns its keep",
+                                "the harder failure to defer to a later pass",
+                                "the smallest probe that would catch a regression"],
+    # fortify L3 ladders — each cost/effort move decomposes once more into the
+    # concrete decisions an engineer makes, then bottoms out in the case split.
+    "the cheapest first slice that earns its keep": ["the one input that breaks most often today",
+                                                     "the guard that is a few lines, not a rewrite",
+                                                     "the slice to land before touching the rest"],
+    "the rarer shape to defer to a later pass": ["the shape that is real but seldom hit",
+                                                 "the follow-up to file once the first slice lands",
+                                                 "the marker left so the deferred work is not lost"],
+    "the costlier guard to defer to a later pass": ["the guard whose payoff does not justify it yet",
+                                                    "the follow-up to file once the first slice lands",
+                                                    "the marker left so the deferred work is not lost"],
+    "the harder failure to defer to a later pass": ["the failure that needs a broader change",
+                                                    "the follow-up to file once the first slice lands",
+                                                    "the marker left so the deferred work is not lost"],
+    "the smallest probe that would catch a regression": ["the one assertion that proves the slice holds",
+                                                         "the fast check to wire into the test path",
+                                                         "the cheapest watch on the way back in"],
 }
 
 # A facet's caveat should interrogate *its* sub-concern, not recite the lens's
