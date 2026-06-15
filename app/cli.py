@@ -59,6 +59,7 @@ from app.cli_reporting import (  # noqa: F401  (re-exports: import surface uncha
     cmd_dashboard,
     cmd_deadcode,
     cmd_debug,
+    cmd_deps,
     cmd_fractal,
     cmd_gate,
     cmd_hotspots,
