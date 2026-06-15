@@ -703,6 +703,131 @@ def _move_module(move: "Move") -> str:
     return move.target.split(":", 1)[0]
 
 
+def _resolve_compile_target(
+    objective: str,
+    objectives: dict[str, tuple[Callable[[str | Path], float],
+                                Callable[[str | Path], list[Move]]]],
+) -> tuple[str | None, CompileResult | None]:
+    """Resolve ``objective`` to a runnable objective name in ``objectives``.
+
+    A literal objective name resolves to itself. Otherwise the natural-language
+    vocabulary ("clean up imports", "lock down auth", …) is consulted — an exact
+    name already matched, so this can only RESOLVE an otherwise unknown request,
+    never redirect a known one. Returns ``(name, None)`` when runnable, or
+    ``(None, blocked_result)`` with the "unknown objective" CompileResult when
+    nothing resolves."""
+    if objective in objectives:
+        return objective, None
+    resolved = resolve_objective(objective)
+    if resolved is not None and resolved in objectives:
+        return resolved, None
+    known = ", ".join(sorted(objectives))
+    return None, CompileResult(
+        objective=objective, fitness_start=0.0, fitness_end=0.0,
+        blocked=[f"unknown objective '{objective}' (known: {known})"])
+
+
+def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
+                        scope_module: str | None, memory: Any,
+                        last_operator: str) -> list[Move]:
+    """The candidate moves for one scan, scoped and sequence-ordered.
+
+    Generates the objective's moves against the CURRENT tree, confines them to
+    ``scope_module`` when set, then — when a move has already landed — orders
+    them by the composition memory's learned sequence credit (a neutral 1.0 for
+    unknown pairs keeps the order stable, so a fresh project is unchanged)."""
+    moves = generate(root)
+    if scope_module is not None:
+        moves = [m for m in moves if _move_module(m) == scope_module]
+    if last_operator:
+        moves = sorted(
+            moves, key=lambda m: -memory.sequence_factor(last_operator, m.operator))
+    return moves
+
+
+def _fill_dry_run(result: CompileResult, moves: list[Move], start: float,
+                  max_steps: int) -> CompileResult:
+    """List the moves available now (no writes, no suite runs) onto ``result``.
+
+    Each move's plan is built once: a blocker is reported, a content-producing
+    plan becomes a projected (unverified) step toward fitness ``start - 1``."""
+    for mv in moves[:max_steps]:
+        plan = mv.build_plan()
+        if plan.blockers:
+            result.blocked.append(f"{mv.target}: {plan.blockers[0]}")
+        elif plan.new_contents:
+            result.steps.append(CompileStep(
+                operator=mv.operator, target=mv.target, description=mv.description,
+                fitness_before=start, fitness_after=max(0.0, start - 1), verified=False))
+    return result
+
+
+def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
+                    verify: bool, scope_verify: bool) -> tuple[bool, float]:
+    """Try to land one move against the CURRENT tree, recording its outcome.
+
+    Builds the move's plan fresh (line numbers stay exact even as earlier moves
+    in the pass edited the file). A blocked or empty plan, or a suite failure
+    (auto-rolled-back), records the reason onto ``result`` and counts as not
+    landed. A clean apply appends a CompileStep dropping fitness by one (these
+    objectives are monotone). Returns ``(landed, new_fitness)``."""
+    from app.execution.cross_file_rename import apply_rename
+
+    plan = mv.build_plan()
+    if plan.blockers or not plan.new_contents:
+        if plan.blockers:
+            result.blocked.append(f"{mv.target}: {plan.blockers[0]}")
+        return False, current
+    res = apply_rename(root, plan, verify=verify, impact_scope=scope_verify)
+    if not res.get("applied"):
+        # Suite failed (rolled back) or nothing applied — not a valid move.
+        if res.get("reason"):
+            result.blocked.append(f"{mv.target}: {res['reason']}")
+        return False, current
+    nxt = max(0.0, current - 1)
+    result.steps.append(CompileStep(
+        operator=mv.operator, target=mv.target, description=mv.description,
+        fitness_before=current, fitness_after=nxt,
+        verified=res.get("verified") is True))
+    return True, nxt
+
+
+def _run_pass(result: CompileResult, moves: list[Move], root: str, current: float,
+              max_steps: int, verify: bool, scope_verify: bool,
+              last_operator: str) -> tuple[bool, float, str]:
+    """Apply every move in one pass's scan that still lands, in order.
+
+    Each move's plan is re-derived against the CURRENT tree, so line numbers stay
+    exact even as earlier moves in the same pass edit the file; a move whose
+    precondition an earlier edit invalidated simply no-ops and is skipped. Stops
+    at ``max_steps``. Returns ``(progressed, fitness, last_operator)`` — the last
+    landed operator biases the next pass's move ordering."""
+    progressed = False
+    for mv in moves:
+        if len(result.steps) >= max_steps:
+            break
+        landed, current = _apply_one_move(
+            result, mv, root, current, verify, scope_verify)
+        if landed:
+            last_operator = mv.operator  # bias the next move's ordering
+            progressed = True
+    return progressed, current, last_operator
+
+
+def _archive_campaign(result: CompileResult, root: str, objective: str,
+                      start: float, end: float) -> None:
+    """Record the whole verified campaign as a candidate elite in the MAP-Elites
+    playbook (best composition per objective × operator-mix). Best-effort: never
+    fails a good compile on a playbook write."""
+    from app.engine.composition_archive import record_campaign
+    try:
+        record_campaign(
+            root, objective, [s.operator for s in result.steps],
+            start, end, len({_move_module_from_target(s.target) for s in result.steps}))
+    except OSError:
+        pass  # the playbook is best-effort; never fail a good compile on it
+
+
 def compile_objective(project_root: str | Path, objective: str = "dead-params",
                       max_steps: int = 25, verify: bool = True,
                       apply: bool = True, scope_module: str | None = None,
@@ -719,21 +844,11 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     say): only moves targeting that module are composed, and fitness becomes the
     count of those scoped moves remaining — so the organism can clean up the one
     risky file its nightly dream flagged, not the whole project at once."""
-    from app.execution.cross_file_rename import apply_rename
-
     objectives = _objectives_map()
-    if objective not in objectives:
-        # Not a literal objective name — try the natural-language vocabulary
-        # ("clean up imports", "lock down auth", …) before giving up. An exact
-        # name already matched above, so this can only RESOLVE an otherwise
-        # unknown request, never redirect a known one.
-        resolved = resolve_objective(objective)
-        if resolved is not None and resolved in objectives:
-            objective = resolved
-        else:
-            known = ", ".join(sorted(objectives))
-            return CompileResult(objective=objective, fitness_start=0.0, fitness_end=0.0,
-                                 blocked=[f"unknown objective '{objective}' (known: {known})"])
+    objective_name, blocked = _resolve_compile_target(objective, objectives)
+    if objective_name is None:
+        return blocked  # type: ignore[return-value]  # set whenever name is None
+    objective = objective_name
 
     fitness, generate = objectives[objective]
     root = str(project_root)
@@ -747,13 +862,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     last_operator = ""
 
     def candidates() -> list[Move]:
-        moves = generate(root)
-        if scope_module is not None:
-            moves = [m for m in moves if _move_module(m) == scope_module]
-        if last_operator:
-            moves = sorted(
-                moves, key=lambda m: -memory.sequence_factor(last_operator, m.operator))
-        return moves
+        return _ordered_candidates(generate, root, scope_module, memory, last_operator)
 
     def measure() -> float:
         # Scoped runs measure the local debt (remaining scoped moves); a global
@@ -766,15 +875,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
 
     if not apply:
         # Dry run: list the moves available now (no writes, no suite runs).
-        for mv in candidates()[:max_steps]:
-            plan = mv.build_plan()
-            if plan.blockers:
-                result.blocked.append(f"{mv.target}: {plan.blockers[0]}")
-            elif plan.new_contents:
-                result.steps.append(CompileStep(
-                    operator=mv.operator, target=mv.target, description=mv.description,
-                    fitness_before=start, fitness_after=max(0.0, start - 1), verified=False))
-        return result
+        return _fill_dry_run(result, candidates(), start, max_steps)
 
     # Greedy fixpoint, scanned PER PASS, not per move. A full project scan
     # (`candidates()`) is expensive on a large repo, so each pass scans once and
@@ -792,44 +893,16 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
         moves = candidates()  # one scan per pass
         if not moves:
             break
-        progressed = False
-        for mv in moves:
-            if len(result.steps) >= max_steps:
-                break
-            plan = mv.build_plan()
-            if plan.blockers or not plan.new_contents:
-                if plan.blockers:
-                    result.blocked.append(f"{mv.target}: {plan.blockers[0]}")
-                continue
-            res = apply_rename(root, plan, verify=verify, impact_scope=scope_verify)
-            if not res.get("applied"):
-                # Suite failed (rolled back) or nothing applied — not a valid move.
-                if res.get("reason"):
-                    result.blocked.append(f"{mv.target}: {res['reason']}")
-                continue
-            nxt = max(0.0, current - 1)
-            result.steps.append(CompileStep(
-                operator=mv.operator, target=mv.target, description=mv.description,
-                fitness_before=current, fitness_after=nxt,
-                verified=res.get("verified") is True))
-            current = nxt
-            last_operator = mv.operator  # bias the next move's ordering
-            progressed = True
+        progressed, current, last_operator = _run_pass(
+            result, moves, root, current, max_steps, verify, scope_verify,
+            last_operator)
         if not progressed:
             break
 
     result.fitness_end = current
     _record_composition(result, root)
     if apply and result.steps:
-        # Record the whole verified campaign as a candidate elite in the
-        # MAP-Elites playbook (best composition per objective × operator-mix).
-        from app.engine.composition_archive import record_campaign
-        try:
-            record_campaign(
-                root, objective, [s.operator for s in result.steps],
-                start, current, len({_move_module_from_target(s.target) for s in result.steps}))
-        except OSError:
-            pass  # the playbook is best-effort; never fail a good compile on it
+        _archive_campaign(result, root, objective, start, current)
     return result
 
 
