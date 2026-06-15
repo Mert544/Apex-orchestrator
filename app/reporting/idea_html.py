@@ -72,6 +72,15 @@ summary:hover, .leaf:hover { border-color: #c7c7d0; }
 }
 .grounding ul { margin: 0.15rem 0; padding-left: 1.1rem; }
 .empty { color: #666; font-style: italic; }
+.stats {
+  display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 1.5rem;
+  padding: 0; list-style: none; max-width: 60rem;
+}
+.stats li {
+  font-size: 0.82rem; color: #444; background: #ebedf2;
+  border: 1px solid #e3e3e8; border-radius: 999px; padding: 0.2rem 0.6rem;
+}
+.stats strong { color: #1b1b1f; }
 """
 
 
@@ -137,6 +146,39 @@ def _grounding_html(idea: IdeaNode, indent: str) -> str:
         f"{indent}    <ul>\n{items}{indent}    </ul>\n"
         f"{indent}  </div>\n"
     )
+
+
+def _stats_html(ideas: list[IdeaNode]) -> str:
+    """Render small header telemetry chips, computed purely from ``ideas``.
+
+    Two reader-facing signals, derived locally (no engine import, no remote
+    resource) so the renderer stays pure and self-contained:
+
+    * **grounding ratio** — the share of ideas tied to concrete code facts
+      (non-empty ``source_facts``), so a reader can gauge how much of the tree
+      is grounded versus synthetic.
+    * **lens diversity** — the number of distinct development lenses
+      (``operator``) applied across the tree.
+
+    Returns the empty string for an empty tree, so an empty page renders exactly
+    as before (the chips are gated on availability). Deterministic: integer
+    counts and a floor-rounded percentage, no time/random.
+    """
+    if not ideas:
+        return ""
+    total = len(ideas)
+    grounded = sum(1 for idea in ideas if idea.source_facts)
+    lenses = {idea.operator for idea in ideas if idea.operator}
+    pct = grounded * 100 // total  # floor; deterministic, no float formatting
+    grounded_chip = (
+        f"<li><strong>{pct}%</strong> of ideas tied to concrete code facts "
+        f"({grounded}/{total})</li>"
+    )
+    lens_chip = (
+        f"<li><strong>{len(lenses)}</strong> distinct "
+        f"{'lens' if len(lenses) == 1 else 'lenses'} applied</li>"
+    )
+    return f'  <ul class="stats">\n    {grounded_chip}\n    {lens_chip}\n  </ul>\n'
 
 
 def _label_html(idea: IdeaNode) -> str:
@@ -217,6 +259,8 @@ def html_from_ideas(
         else ""
     )
 
+    stats = _stats_html(ideas)
+
     if not ideas:
         body = '  <p class="empty">No ideas — the idea tree is empty.</p>\n'
     else:
@@ -247,6 +291,7 @@ def html_from_ideas(
         "<body>\n"
         f"  <h1>{safe_title}</h1>\n"
         f"{meta}"
+        f"{stats}"
         f"{body}"
         "</body>\n"
         "</html>\n"
