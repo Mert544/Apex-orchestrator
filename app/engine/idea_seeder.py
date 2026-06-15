@@ -810,6 +810,34 @@ class IdeaSeeder:
                             f"levels — a guard-clause candidate"),
             )
 
+        # God-classes: a top-level class declaring an unusually high number of
+        # methods is a Single-Responsibility violation — too many behaviours have
+        # accreted onto one type, so it is a decomposition candidate ("split into
+        # smaller, cohesive collaborators"). The subject is ``module::classname``
+        # so it never collides with the module's own idea (mirroring incomplete-
+        # protocol's ``module::Class`` and deep-nesting's ``module::function``).
+        # Recommend-only: HOW to decompose the class is a DESIGN call, Apex names
+        # it but does NOT auto-write the split. A repo with no god-class yields
+        # nothing here and seeding stays byte-identical. The fact value
+        # deliberately avoids the token "untested" (which would auto-promote it to
+        # an executable test) and any leading "<int> <unit>" magnitude shape (no
+        # method-count word leads it — the label "god-class" leads instead).
+        for gc in (getattr(profile, "god_classes", []) or [])[:3]:
+            module = gc.get("module")
+            classname = gc.get("classname")
+            if not module or not classname:
+                continue
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Decompose the god-class `{classname}` in {module} "
+                       f"— split its many responsibilities into smaller, "
+                       f"cohesive collaborators"),
+                subject=f"{module}::{classname}",
+                fact_label="god-class",
+                fact_value=(f"god-class: {module}::{classname} carries many "
+                            f"responsibilities — a decomposition candidate"),
+            )
+
         # Dream insights: discoveries the nightly dream CONFIRMED across multiple
         # dreams and graduated (high confidence + persistence). The organism
         # acting on what it learned while you were away — guarded so only a

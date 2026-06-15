@@ -203,6 +203,21 @@ class ProjectProfile:
     # sorted (-depth, module, function) and capped; an all-flat repo yields [] so
     # seeding stays byte-identical. Each entry: {"module","function","depth"}.
     deeply_nested_functions: list[dict] = field(default_factory=list)
+    # God-classes (CONSTRUCTIVE maintainability / structural signal): a top-level
+    # class declaring an unusually high number of methods is a Single-
+    # Responsibility violation — too many behaviours have accreted onto one type,
+    # so it is a decomposition candidate ("split into smaller, cohesive
+    # collaborators"). Computed by an AST walk of each in-scope, non-fixture
+    # module's top-level classes, counting methods (def/async-def members) and
+    # distinct ``self.X =`` attributes; a class whose method count reaches the
+    # floor is flagged (attributes ride along as a second SRP signal but do not
+    # lower the bar). A nested class starts its own tally. A whole-repo
+    # structural read the GRADE never consumes, so gated behind ``not light``.
+    # Recommend-only — HOW to decompose the class is a DESIGN call, Apex names it
+    # but does not auto-write the split. Deterministic, sorted (-methods, module,
+    # classname) and capped; a repo with no god-class yields [] so seeding stays
+    # byte-identical. Each entry: {"module","classname","methods","attributes"}.
+    god_classes: list[dict] = field(default_factory=list)
 
 
 class ProjectProfiler(_CodeQualityScansMixin):
@@ -460,6 +475,13 @@ class ProjectProfiler(_CodeQualityScansMixin):
             # light/ascend path (the idea engine profiles with light=False; an
             # all-flat repo yields []).
             self._scan_deeply_nested_functions(profile)
+            # God-classes: top-level classes with too many methods — a Single-
+            # Responsibility violation and a decomposition candidate (a
+            # structural signal). An AST walk over each in-scope module's
+            # top-level classes the GRADE never reads, so gated out of the
+            # light/ascend path (the idea engine profiles with light=False; a
+            # repo with no god-class yields []).
+            self._scan_god_classes(profile)
             # Polyglot hotspots: name the biggest / most-churned NON-Python
             # source files for the idea engine to recommend attention on. A
             # bounded git pass + walk that the GRADE never reads, so it is gated

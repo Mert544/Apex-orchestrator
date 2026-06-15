@@ -1065,6 +1065,7 @@ _FACT_HINTS: dict[str, str] = {
     "generalizable-duplication": "generalize extract shared helper reuse dry duplicated across modules common abstraction recommend design",
     "coordinator": "decouple split responsibilities god module high fan-out coordination chokepoint boundary seams recommend design",
     "deep-nesting": "flatten guard clause early return extract inner block nested control flow staircase readability maintainability recommend design",
+    "god-class": "decompose split responsibilities single responsibility cohesive collaborators smaller classes too many methods extract class boundary seams recommend design",
 }
 
 # Root fact labels where reliability/security lenses matter most.

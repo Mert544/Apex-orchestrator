@@ -38,6 +38,8 @@ class _CodeQualityScansMixin:
     - ``_scan_generalizable_duplications`` (+ ``_is_execution_scaffold_module``)
       — cross-module DRY/"generalize one shared helper" signal;
     - ``_scan_coordinator_modules`` — high-fan-OUT god-modules to decouple;
+    - ``_scan_god_classes`` — top-level classes with too many methods (a
+      Single-Responsibility violation / decompose candidate);
     - ``_scan_incomplete_protocols`` — half-built Python contract pairs.
 
     All other ``self.*`` attributes (``root``, ``max_files``, ``_is_fixture_path``,
@@ -87,6 +89,80 @@ class _CodeQualityScansMixin:
     # functions never surface; tuned against Apex itself so only the genuinely
     # deep functions are flagged. Maintainability signal, recommend-only.
     _DEEP_NESTING_FLOOR = 5
+
+    # Method-count bar at or above which a top-level class is a god-class — a
+    # Single-Responsibility violation and a decomposition candidate. A class
+    # body declaring this many methods (``def``/``async def`` direct children)
+    # is doing too much: too many behaviours have accreted onto one type, so it
+    # is a prime "split into smaller, cohesive collaborators" target. Set high
+    # enough (15) that ordinary classes never surface; tuned against Apex itself
+    # so only the genuinely over-loaded classes are flagged. The attribute count
+    # (distinct ``self.X =`` assignment targets) rides along as a second SRP
+    # signal but does NOT lower the bar — methods alone decide the flag.
+    # Maintainability / structural signal, recommend-only.
+    _GOD_CLASS_METHOD_FLOOR = 15
+
+    def _scan_god_classes(self, profile: ProjectProfile) -> None:
+        """Name top-level classes doing too much — a Single-Responsibility
+        violation and a decomposition candidate (a structural signal).
+
+        Walks each in-scope, non-fixture module's TOP-LEVEL classes and counts,
+        per class, its METHODS (``FunctionDef``/``AsyncFunctionDef`` direct
+        children of the class body) and its distinct ATTRIBUTES (the set of
+        ``self.X`` targets ever assigned anywhere in the class — ``self.x = ...``,
+        tuple/star targets, and augmented assignments all contribute). A class
+        whose method count reaches ``_GOD_CLASS_METHOD_FLOOR`` is flagged: too
+        many behaviours have accreted onto one type, so it is a prime "split into
+        smaller, cohesive collaborators" target. Only the class's OWN body counts
+        — a nested class starts its own tally (its members are its problem, not
+        the enclosing class's). Recommend-only: HOW to decompose the class is a
+        DESIGN call, Apex names it but does not auto-write the split. Sorted
+        ``(-methods, module, classname)`` and capped to 5; a repo with no
+        god-class yields [] so seeding stays byte-identical. Each entry:
+        ``{"module", "classname", "methods", "attributes"}``.
+        """
+
+        def _attr_targets(node: ast.AST, attrs: set[str]) -> None:
+            """Collect every ``self.X`` assignment target in ``node``'s body,
+            without descending into a nested class (its attributes are its own)."""
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, ast.ClassDef):
+                    continue  # a nested class owns its own attributes
+                if isinstance(child, ast.Attribute) and isinstance(
+                    child.ctx, ast.Store
+                ) and isinstance(child.value, ast.Name) and child.value.id == "self":
+                    attrs.add(child.attr)
+                _attr_targets(child, attrs)
+
+        found: list[dict] = []
+        scanned = 0
+        for path in sorted(self.root.rglob("*.py")):
+            if scanned >= self.max_files:
+                break
+            rel = path.relative_to(self.root)
+            rel_str = rel.as_posix()
+            if is_skipped(rel) or self._is_fixture_path(rel_str):
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+            except (OSError, SyntaxError):
+                continue
+            scanned += 1
+            for cls in tree.body:
+                if not isinstance(cls, ast.ClassDef):
+                    continue
+                methods = sum(
+                    1 for member in cls.body
+                    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                )
+                if methods < self._GOD_CLASS_METHOD_FLOOR:
+                    continue  # ordinary class — too few methods to be a god-class
+                attrs: set[str] = set()
+                _attr_targets(cls, attrs)
+                found.append({"module": rel_str, "classname": cls.name,
+                              "methods": methods, "attributes": len(attrs)})
+        found.sort(key=lambda d: (-d["methods"], d["module"], d["classname"]))
+        profile.god_classes = found[:5]
 
     def _scan_deeply_nested_functions(self, profile: ProjectProfile) -> None:
         """Name top-level functions whose control flow nests too deeply — a

@@ -82,6 +82,15 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                      "Flatten the deeply-nested function {s} — invert the guards "
                      "/ early-return / extract the inner block (Apex names the "
                      "staircase, you design the flattening)", False),
+    # God-class: a top-level class with too many methods is a Single-
+    # Responsibility violation. HOW to decompose it — which responsibilities to
+    # split into which collaborators, where the seams are — is a DESIGN decision,
+    # so Apex RECOMMENDS the split and names the class; it must NOT auto-write it.
+    # Strictly recommend-only (executable False).
+    "god-class": ("design_task",
+                  "Decompose the god-class {s} — split its many responsibilities "
+                  "into smaller, cohesive collaborators (Apex names the class, "
+                  "you design the decomposition)", False),
     "modernization": ("modernize_comparisons", "Modernize None comparisons in {s}", True),
     "mutable-default": ("fix_mutable_defaults", "Fix mutable default arguments in {s}", True),
     # The hands exist (apex signature drop/keywordify) but as supervised CLI
