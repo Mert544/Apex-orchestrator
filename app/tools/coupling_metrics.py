@@ -132,6 +132,47 @@ def _package_of(module: str) -> str:
     return head
 
 
+def _relative_base(level: int, module: str | None, self_module: str) -> str:
+    """Resolve a relative ``from`` import's base dotted name.
+
+    Climbs ``level`` packages up from ``self_module``'s own package, then joins
+    the explicit ``module`` (if any). Returns ``""`` when nothing resolves.
+    """
+    pkg_parts = self_module.split(".")[:-1] if self_module else []
+    climb = level - 1
+    if climb:
+        pkg_parts = pkg_parts[:-climb] if climb <= len(pkg_parts) else []
+    prefix = ".".join(pkg_parts)
+    return f"{prefix}.{module}" if module else prefix
+
+
+def _import_groups(node: ast.Import) -> list[list[str]]:
+    """Candidate lists for a plain ``import a.b.c`` statement."""
+    return [[alias.name] for alias in node.names if alias.name]
+
+
+def _from_groups(node: ast.ImportFrom, self_module: str) -> list[list[str]]:
+    """Candidate lists for a ``from base import name`` statement.
+
+    Prefers the ``base.name`` sub-module over the ``base`` package, so importing
+    a sub-module does not also inflate the package's afferent fan-in. Relative
+    imports are resolved against ``self_module``'s package first.
+    """
+    if node.level:
+        base = _relative_base(node.level, node.module, self_module)
+    else:
+        base = node.module or ""
+    if not base:
+        return []
+    groups: list[list[str]] = []
+    for alias in node.names:
+        if alias.name and alias.name != "*":
+            groups.append([f"{base}.{alias.name}", base])
+        else:
+            groups.append([base])
+    return groups
+
+
 def _candidate_groups(tree: ast.AST, self_module: str) -> list[list[str]]:
     """Per-import-statement prioritized candidate lists.
 
@@ -145,29 +186,9 @@ def _candidate_groups(tree: ast.AST, self_module: str) -> list[list[str]]:
     groups: list[list[str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name:
-                    groups.append([alias.name])
+            groups.extend(_import_groups(node))
         elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                # Relative: climb ``level`` packages up from this module's package.
-                pkg_parts = self_module.split(".")[:-1] if self_module else []
-                climb = node.level - 1
-                if climb:
-                    pkg_parts = pkg_parts[:-climb] if climb <= len(pkg_parts) else []
-                prefix = ".".join(pkg_parts)
-                base = f"{prefix}.{node.module}" if node.module else prefix
-            else:
-                base = node.module or ""
-            if not base:
-                continue
-            # ``from base import name`` -> prefer the ``base.name`` sub-module,
-            # else fall back to ``base`` itself.
-            for alias in node.names:
-                if alias.name and alias.name != "*":
-                    groups.append([f"{base}.{alias.name}", base])
-                else:
-                    groups.append([base])
+            groups.extend(_from_groups(node, self_module))
     return groups
 
 
