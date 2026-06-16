@@ -81,14 +81,10 @@ def _is_name_target(target: ast.AST) -> bool:
     return False
 
 
-def _subscript_kv(for_stmt: ast.For, name: str) -> tuple[ast.expr, ast.expr] | None:
-    """The (key, value) of a ``for`` whose body is exactly one
-    ``<name>[<key>] = <value>`` assignment, else None.
-
-    Rejects: a multi-statement body, an ``else`` clause, a non-assignment body,
-    a multi-target/chained assignment, a target that is not a ``Subscript`` on
-    the plain ``Name`` ``name``, and any other reference to ``<name>`` inside the
-    body (so the loop builds the dict and nothing else — e.g. ``out[k] = out``)."""
+def _loop_body_assign(for_stmt: ast.For) -> ast.Assign | None:
+    """The sole assignment statement of a ``for`` with no ``else``, a one-statement
+    body, a plain-Name loop target, and a single-target assignment body, else
+    None."""
     if for_stmt.orelse:
         return None
     if len(for_stmt.body) != 1:
@@ -98,23 +94,50 @@ def _subscript_kv(for_stmt: ast.For, name: str) -> tuple[ast.expr, ast.expr] | N
     stmt = for_stmt.body[0]
     if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
         return None
-    target = stmt.targets[0]
+    return stmt
+
+
+def _subscript_target(target: ast.expr, name: str) -> ast.Subscript | None:
+    """``target`` as a ``<name>[<key>]`` subscript on the plain ``Name`` ``name``
+    whose key is a real expression (not an ``a:b`` slice), else None."""
     if not isinstance(target, ast.Subscript):
         return None
     sub_value = target.value
     if not isinstance(sub_value, ast.Name) or sub_value.id != name:
         return None
-    key = target.slice
     # A slice expression (``out[a:b] = ...``) is not a dict key — skip it.
-    if isinstance(key, ast.Slice):
+    if isinstance(target.slice, ast.Slice):
         return None
-    value = stmt.value
-    # The body must touch ``name`` ONLY through this subscript receiver — any
-    # other reference (in the key or the value) keeps the loop non-trivial.
+    return target
+
+
+def _only_uses_name_as_receiver(stmt: ast.Assign, name: str,
+                                receiver: ast.Name) -> bool:
+    """``name`` appears in ``stmt`` ONLY as ``receiver`` — any other reference (in
+    the key or the value) keeps the loop non-trivial (e.g. ``out[k] = out``)."""
     for node in ast.walk(stmt):
-        if isinstance(node, ast.Name) and node.id == name and node is not sub_value:
-            return None
-    return key, value
+        if isinstance(node, ast.Name) and node.id == name and node is not receiver:
+            return False
+    return True
+
+
+def _subscript_kv(for_stmt: ast.For, name: str) -> tuple[ast.expr, ast.expr] | None:
+    """The (key, value) of a ``for`` whose body is exactly one
+    ``<name>[<key>] = <value>`` assignment, else None.
+
+    Rejects: a multi-statement body, an ``else`` clause, a non-assignment body,
+    a multi-target/chained assignment, a target that is not a ``Subscript`` on
+    the plain ``Name`` ``name``, and any other reference to ``<name>`` inside the
+    body (so the loop builds the dict and nothing else — e.g. ``out[k] = out``)."""
+    stmt = _loop_body_assign(for_stmt)
+    if stmt is None:
+        return None
+    target = _subscript_target(stmt.targets[0], name)
+    if target is None:
+        return None
+    if not _only_uses_name_as_receiver(stmt, name, target.value):
+        return None
+    return target.slice, stmt.value
 
 
 class _Rewrite:

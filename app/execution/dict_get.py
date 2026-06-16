@@ -80,39 +80,55 @@ def _is_pure_key(node: ast.AST) -> bool:
     return False
 
 
-def _try_ifexp(node: ast.IfExp, source: str) -> _Rewrite | None:
-    """If ``node`` is a ``x[k] if k in x else d`` ternary, return its rewrite,
-    else None."""
-    if node.lineno != node.end_lineno:
-        return None
-
-    body = node.body
+def _subscript_parts(body: ast.expr) -> tuple[ast.expr, ast.expr] | None:
+    """The ``(container, key)`` of a ``<x>[<k>]`` subscript whose key is a real
+    expression (not an ``a:b`` slice), else None."""
     if not isinstance(body, ast.Subscript):
         return None
-    container = body.value
     key = body.slice
     # In py3.9+ the slice is the expression directly; a real slice (a:b) is an
     # ast.Slice, which never equals a membership element, so it's filtered out
     # by the dump comparison below — but guard explicitly for clarity.
     if isinstance(key, ast.Slice):
         return None
+    return body.value, key
 
-    test = node.test
+
+def _membership_parts(test: ast.expr) -> tuple[ast.expr, ast.expr] | None:
+    """The ``(element, container)`` of a single-op ``<k> in <x>`` compare, else
+    None."""
     if not isinstance(test, ast.Compare):
         return None
     if len(test.ops) != 1 or not isinstance(test.ops[0], ast.In):
         return None
-    element = test.left
-    membership = test.comparators[0]
+    return test.left, test.comparators[0]
 
+
+def _matches_dict_get(container: ast.expr, key: ast.expr,
+                      element: ast.expr, membership: ast.expr) -> bool:
+    """The subscript ``<x>[<k>]`` and the test ``<k> in <x>`` name the same
+    side-effect-free container and key (compared by ``ast.dump``)."""
     if ast.dump(container) != ast.dump(membership):
-        return None
+        return False
     if ast.dump(key) != ast.dump(element):
+        return False
+    return _is_pure_container(container) and _is_pure_key(key)
+
+
+def _try_ifexp(node: ast.IfExp, source: str) -> _Rewrite | None:
+    """If ``node`` is a ``x[k] if k in x else d`` ternary, return its rewrite,
+    else None."""
+    if node.lineno != node.end_lineno:
         return None
 
-    if not _is_pure_container(container):
+    sub = _subscript_parts(node.body)
+    mem = _membership_parts(node.test)
+    if sub is None or mem is None:
         return None
-    if not _is_pure_key(key):
+    container, key = sub
+    element, membership = mem
+
+    if not _matches_dict_get(container, key, element, membership):
         return None
 
     x_src = ast.get_source_segment(source, container)
