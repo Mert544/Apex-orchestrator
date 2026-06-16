@@ -359,6 +359,35 @@ class ProjectProfiler(_CodeQualityScansMixin):
         if not self.root.exists():
             return profile
 
+        # 1. Base file walk + aggregation (always runs); yields the extension
+        #    counter the scope scan reuses (no second walk).
+        ext_counter = self._run_base_walk(profile)
+
+        self._populate_python_structure(profile)
+        # Analysis-scope accounting always runs (cheap; folded onto the file
+        # walk's already-collected extension counts) so the grade can honestly
+        # report how much of a polyglot repo its Python analysis covers.
+        self._scan_analysis_scope(profile, ext_counter)
+
+        # 2. Constructive + git/doc/AST scans the GRADE never reads — skipped
+        #    wholesale in light mode (same gating, same order as before).
+        if not light:
+            self._run_full_scans(profile)
+
+        # 3. Final fixture-filter + the two scans that read now-finalized fields
+        #    (always run; light-mode-safe by construction).
+        self._run_final_scans(profile)
+        return profile
+
+    def _run_base_walk(self, profile: ProjectProfile) -> Counter[str]:
+        """Walk the repo once, populating the base (always-on) profile fields.
+
+        This is the deterministic file-system pass every caller (light or not)
+        depends on: extension/dir tallies, entrypoint/test/CI/config/sensitive-
+        path classification, and the folded-in Python debt-marker / security-
+        finding / correctness-bug detection. Returns the extension ``Counter``
+        so ``_scan_analysis_scope`` can reuse it without re-walking the tree.
+        """
         ext_counter: Counter[str] = Counter()
         dir_counter: Counter[str] = Counter()
         debt_counts: Counter[str] = Counter()
@@ -441,65 +470,79 @@ class ProjectProfiler(_CodeQualityScansMixin):
         profile.debt_marker_modules = sorted(
             flagged, key=lambda m: (-debt_counts[m], m)
         )[:5]
+        return ext_counter
 
-        self._populate_python_structure(profile)
-        # Analysis-scope accounting always runs (cheap; folded onto the file
-        # walk's already-collected extension counts) so the grade can honestly
-        # report how much of a polyglot repo its Python analysis covers.
-        self._scan_analysis_scope(profile, ext_counter)
-        if not light:
-            # Incomplete protocols: a CONSTRUCTIVE, pure-AST scan over the source
-            # tree for the idea engine to recommend "finish this protocol" on. The
-            # GRADE never reads it and the light path already parses every file
-            # once, so gate it out of the light/ascend path (the idea engine
-            # profiles with light=False; an all-clean repo yields []).
-            self._scan_incomplete_protocols(profile)
-            # Generalizable duplications: a CONSTRUCTIVE, whole-repo AST scan for
-            # near-identical blocks that recur across DISTINCT modules — the
-            # "extract one shared helper" (DRY/generalize) case. Same gating
-            # rationale as the protocol scan: a whole-tree AST pass the GRADE
-            # never reads, so it is kept out of the light/ascend path (the idea
-            # engine profiles with light=False; an all-clean repo yields []).
-            self._scan_generalizable_duplications(profile)
-            # Coordinator modules: god-modules with high fan-OUT (they import
-            # many internal modules) — a decoupling candidate. Reads fan-out off
-            # the import graph ``_populate_python_structure`` already built (no
-            # second graph). A whole-repo structural read the GRADE never
-            # consumes, so gated out of the light/ascend path (the idea engine
-            # profiles with light=False; a repo with no god-modules yields []).
-            self._scan_coordinator_modules(profile)
-            # Deeply-nested functions: top-level functions whose control flow
-            # nests too deeply — a guard-clause / extract refactor candidate (a
-            # maintainability signal). An AST walk over each in-scope module's
-            # top-level functions the GRADE never reads, so gated out of the
-            # light/ascend path (the idea engine profiles with light=False; an
-            # all-flat repo yields []).
-            self._scan_deeply_nested_functions(profile)
-            # God-classes: top-level classes with too many methods — a Single-
-            # Responsibility violation and a decomposition candidate (a
-            # structural signal). An AST walk over each in-scope module's
-            # top-level classes the GRADE never reads, so gated out of the
-            # light/ascend path (the idea engine profiles with light=False; a
-            # repo with no god-class yields []).
-            self._scan_god_classes(profile)
-            # Polyglot hotspots: name the biggest / most-churned NON-Python
-            # source files for the idea engine to recommend attention on. A
-            # bounded git pass + walk that the GRADE never reads, so it is gated
-            # out of the light path (the idea engine profiles with light=False;
-            # an all-Python repo yields []).
-            self._scan_polyglot_hotspots(profile)
-            # Scans the GRADE never reads — skipped in light mode. The four
-            # git/doc subprocess scans (cheap on a shallow repo, ~200s on a deep
-            # one) and the three AST refactor scans (extractable/inlinable
-            # dominate on a large codebase). _populate_python_structure above
-            # already produced every field the grade consumes.
-            self._scan_churn(profile)
-            self._scan_debt_age(profile)
-            self._scan_security_exposure_age(profile)
-            self._scan_doc_drift(profile)
-            self._scan_dead_params(profile)
-            self._scan_extractable_blocks(profile)
-            self._scan_inlinable_helpers(profile)
+    def _run_full_scans(self, profile: ProjectProfile) -> None:
+        """The non-light scan group: constructive AST scans + git/doc/refactor
+        scans the GRADE never reads.
+
+        Called only when ``light=False`` and AFTER ``_populate_python_structure``
+        / ``_scan_analysis_scope`` (which the coordinator/scope scans depend on),
+        in the SAME order as before so the produced profile is byte-identical.
+        Each scan is individually empty-safe (an all-clean / non-git repo leaves
+        its field at its default), so this whole group is opt-out-by-light only.
+        """
+        # Incomplete protocols: a CONSTRUCTIVE, pure-AST scan over the source
+        # tree for the idea engine to recommend "finish this protocol" on. The
+        # GRADE never reads it and the light path already parses every file
+        # once, so gate it out of the light/ascend path (the idea engine
+        # profiles with light=False; an all-clean repo yields []).
+        self._scan_incomplete_protocols(profile)
+        # Generalizable duplications: a CONSTRUCTIVE, whole-repo AST scan for
+        # near-identical blocks that recur across DISTINCT modules — the
+        # "extract one shared helper" (DRY/generalize) case. Same gating
+        # rationale as the protocol scan: a whole-tree AST pass the GRADE
+        # never reads, so it is kept out of the light/ascend path (the idea
+        # engine profiles with light=False; an all-clean repo yields []).
+        self._scan_generalizable_duplications(profile)
+        # Coordinator modules: god-modules with high fan-OUT (they import
+        # many internal modules) — a decoupling candidate. Reads fan-out off
+        # the import graph ``_populate_python_structure`` already built (no
+        # second graph). A whole-repo structural read the GRADE never
+        # consumes, so gated out of the light/ascend path (the idea engine
+        # profiles with light=False; a repo with no god-modules yields []).
+        self._scan_coordinator_modules(profile)
+        # Deeply-nested functions: top-level functions whose control flow
+        # nests too deeply — a guard-clause / extract refactor candidate (a
+        # maintainability signal). An AST walk over each in-scope module's
+        # top-level functions the GRADE never reads, so gated out of the
+        # light/ascend path (the idea engine profiles with light=False; an
+        # all-flat repo yields []).
+        self._scan_deeply_nested_functions(profile)
+        # God-classes: top-level classes with too many methods — a Single-
+        # Responsibility violation and a decomposition candidate (a
+        # structural signal). An AST walk over each in-scope module's
+        # top-level classes the GRADE never reads, so gated out of the
+        # light/ascend path (the idea engine profiles with light=False; a
+        # repo with no god-class yields []).
+        self._scan_god_classes(profile)
+        # Polyglot hotspots: name the biggest / most-churned NON-Python
+        # source files for the idea engine to recommend attention on. A
+        # bounded git pass + walk that the GRADE never reads, so it is gated
+        # out of the light path (the idea engine profiles with light=False;
+        # an all-Python repo yields []).
+        self._scan_polyglot_hotspots(profile)
+        # Scans the GRADE never reads — skipped in light mode. The four
+        # git/doc subprocess scans (cheap on a shallow repo, ~200s on a deep
+        # one) and the three AST refactor scans (extractable/inlinable
+        # dominate on a large codebase). _populate_python_structure above
+        # already produced every field the grade consumes.
+        self._scan_churn(profile)
+        self._scan_debt_age(profile)
+        self._scan_security_exposure_age(profile)
+        self._scan_doc_drift(profile)
+        self._scan_dead_params(profile)
+        self._scan_extractable_blocks(profile)
+        self._scan_inlinable_helpers(profile)
+
+    def _run_final_scans(self, profile: ProjectProfile) -> None:
+        """Fixture-filter then the two scans that read now-finalized fields.
+
+        Always runs (light or not); each downstream scan reads only fields the
+        earlier groups have already finalized, so in light mode the git/co-change
+        families are simply absent and these yield nothing — light-mode-safe and
+        order-preserving.
+        """
         self._drop_fixture_signals(profile)
         # Co-change test-gap reads the now-finalized ``change_coupling`` (git-only,
         # EMPTY in light mode) and ``module_to_tests``; it adds no new scan and in
@@ -511,7 +554,6 @@ class ProjectProfiler(_CodeQualityScansMixin):
         # families actually populated this run are counted — the scan never
         # claims a family ran that didn't.
         self._scan_confluences(profile)
-        return profile
 
     def dead_params(self) -> list[dict]:
         """Just the never-read parameters — the dead-param scan IN ISOLATION.

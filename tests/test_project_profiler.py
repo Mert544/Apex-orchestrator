@@ -954,3 +954,101 @@ def test_low_fan_in_untested_module_is_not_a_hub(tmp_path: Path):
         "from app.leaf import f\n\ndef u():\n    return f(1)\n", encoding="utf-8")
     profile = ProjectProfiler(str(tmp_path)).profile()
     assert not any(h["module"] == "app/leaf.py" for h in profile.hub_untested_modules)
+
+
+# --- profile() decomposition: orchestration split into cohesive helpers -------
+
+def _build_representative_repo(base: Path) -> None:
+    """A small repo touching most always-on AND non-light scan branches."""
+    (base / "app").mkdir(parents=True)
+    (base / "tests").mkdir()
+    (base / ".github" / "workflows").mkdir(parents=True)
+    (base / "app" / "auth.py").write_text(
+        "import os\n"
+        "def login(user, password, unused):\n"
+        "    x = eval(password)\n"
+        "    os.system('echo hi')\n"
+        "    # TODO one\n"
+        "    # FIXME two\n"
+        "    # XXX three\n"
+        "    return x\n",
+        encoding="utf-8",
+    )
+    (base / "app" / "core.py").write_text(
+        "from app import auth\n"
+        "def a():\n    return auth.login(1, 2, 3)\n"
+        "def b(items=[]):\n    items.append(1)\n    return items\n"
+        "def c():\n    if a() == None:\n        return 1\n    return 2\n",
+        encoding="utf-8",
+    )
+    (base / "app" / "main.py").write_text("def main():\n    return 0\n", encoding="utf-8")
+    (base / "tests" / "test_core.py").write_text(
+        "from app import core\ndef test_a():\n    assert core.a is not None\n",
+        encoding="utf-8",
+    )
+    (base / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (base / "README.md").write_text("See `app/missing.py` for details.\n", encoding="utf-8")
+    (base / ".github" / "workflows" / "ci.yml").write_text("on: push\n", encoding="utf-8")
+
+
+def test_profile_has_low_orchestration_complexity():
+    # The whole point of the decomposition: profile() is a thin orchestrator.
+    from app.tools.complexity_profile import function_cyclomatic_complexities
+
+    src = (Path(__file__).resolve().parents[1]
+           / "app" / "tools" / "project_profile.py").read_text(encoding="utf-8")
+    by_name = {n: c for n, _line, c in function_cyclomatic_complexities(src)}
+    assert by_name["ProjectProfiler.profile"] <= 5
+    # The helpers exist as the extraction targets.
+    for helper in (
+        "ProjectProfiler._run_base_walk",
+        "ProjectProfiler._run_full_scans",
+        "ProjectProfiler._run_final_scans",
+    ):
+        assert helper in by_name
+
+
+def test_profile_helpers_exist_and_are_called(tmp_path: Path):
+    _build_representative_repo(tmp_path)
+    prof = ProjectProfiler(str(tmp_path))
+    for helper in ("_run_base_walk", "_run_full_scans", "_run_final_scans"):
+        assert callable(getattr(prof, helper))
+
+
+def test_full_scans_skipped_in_light_mode(tmp_path: Path):
+    # The non-light helper must NOT run under light=True: a tracking subclass
+    # records whether _run_full_scans was invoked for each mode.
+    _build_representative_repo(tmp_path)
+
+    class Tracking(ProjectProfiler):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.full_ran = False
+
+        def _run_full_scans(self, profile):
+            self.full_ran = True
+            return super()._run_full_scans(profile)
+
+    light = Tracking(str(tmp_path))
+    light.profile(light=True)
+    assert light.full_ran is False
+
+    full = Tracking(str(tmp_path))
+    full.profile(light=False)
+    assert full.full_ran is True
+
+
+def test_profile_deterministic_light_and_full(tmp_path: Path):
+    import dataclasses
+
+    _build_representative_repo(tmp_path)
+    light_a = dataclasses.asdict(ProjectProfiler(str(tmp_path)).profile(light=True))
+    light_b = dataclasses.asdict(ProjectProfiler(str(tmp_path)).profile(light=True))
+    full_a = dataclasses.asdict(ProjectProfiler(str(tmp_path)).profile(light=False))
+    full_b = dataclasses.asdict(ProjectProfiler(str(tmp_path)).profile(light=False))
+    assert light_a == light_b           # same input -> same output (light)
+    assert full_a == full_b             # same input -> same output (full)
+    # The non-light path produces a strict superset of populated signals:
+    # at least one gated field is populated under full that is empty under light.
+    gated = ("dead_params", "doc_drift", "extractable_blocks", "inlinable_helpers")
+    assert any(full_a[f] and not light_a[f] for f in gated)
