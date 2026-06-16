@@ -53,6 +53,10 @@ __all__ = [
     "parse_module_source",
     "record_module_rewrite",
     "finalize_module_rewrite",
+    "arg_source",
+    "collect_arg_sources",
+    "recover_fstring_template",
+    "pin_signature_lines",
 ]
 
 
@@ -470,3 +474,105 @@ def plan_single_module_column_rewrite(
     plan.new_contents[module_rel] = new_source
     plan.edits_by_file[module_rel] = len(rewrites)
     return plan
+
+
+def arg_source(arg: ast.expr, source: str) -> str | None:
+    """The recovered source of one ``arg``, or None if it can't be recovered or
+    contains a brace/backslash.
+
+    A simple arg's source never contains a brace; the guard holds anyway so the
+    built f-string can't grow an unexpected field. This is the identical helper
+    the f-string transforms (fstring-convert, percent-to-fstring) copied
+    verbatim (modulo a one-word docstring difference)."""
+    seg = ast.get_source_segment(source, arg)
+    if seg is None:
+        return None
+    if "{" in seg or "}" in seg or "\\" in seg:
+        return None
+    return seg
+
+
+def collect_arg_sources(args: list[ast.expr], source: str) -> list[str] | None:
+    """Recover every arg's source in order, or None to skip.
+
+    This is the identical helper the f-string transforms (fstring-convert,
+    percent-to-fstring) copied verbatim (modulo a one-word docstring
+    difference); it delegates each arg to :func:`arg_source`."""
+    arg_srcs: list[str] = []
+    for arg in args:
+        seg = arg_source(arg, source)
+        if seg is None:
+            return None
+        arg_srcs.append(seg)
+    return arg_srcs
+
+
+def recover_fstring_template(
+    template: ast.Constant,
+    source: str,
+    arg_count: int,
+    *,
+    split: Callable[[str], list[str] | None],
+) -> tuple[str, list[str], int] | None:
+    """Recover the literal, split it on placeholders, and check the count.
+
+    Returns ``(quote, segments, placeholder_count)`` when the literal recovers to
+    a plain string whose placeholder count (per ``split``) both equals
+    ``arg_count`` and is nonzero, else None (nothing to interpolate is left
+    alone). ``split`` is the transform's placeholder splitter — the ``{}`` form
+    (fstring-convert) or the ``%s`` form (percent-to-fstring) — the ONLY part
+    that differed between the two otherwise byte-identical ``_recover_template``
+    copies, so it is passed in and the recover/count tail lives here once."""
+    literal_src = ast.get_source_segment(source, template)
+    if literal_src is None:
+        return None
+    parsed = literal_inner(literal_src)
+    if parsed is None:
+        return None
+    quote, inner = parsed
+
+    segments = split(inner)
+    if segments is None:
+        return None
+    count = len(segments) - 1
+    if count != arg_count:
+        return None
+    if count == 0:
+        return None  # nothing to interpolate — leave it alone
+    return quote, segments, count
+
+
+def pin_signature_lines(
+    plan: object,
+    source: str,
+    defmod: str,
+    span: tuple[int, int, int, int] | None,
+) -> tuple[tuple[int, int, int, int], list[str]] | None:
+    """Validate a pinned signature span and return ``(span, src_lines)``.
+
+    Given the ``(...)`` header span already located by the caller (via
+    ``_signature_span``), this splits ``source`` into keep-ends lines, rebuilds
+    the exact signature text and refuses (returns ``None`` with a blocker) when
+    the span could not be pinned (``span is None``) or the header carries a
+    comment that rebuilding would silently drop.
+
+    This is the byte-identical core the signature family's ``_signature_lines``
+    (param-add) and ``_pin_signature`` (param-drop) each carried verbatim — they
+    only differed in whether they returned ``(span, src_lines)`` or just ``span``,
+    both of which the caller now derives from this single return. ``plan`` only
+    needs a ``blockers`` list, so this stays decoupled from any concrete plan
+    type and keeps ``_transform_base`` free of a back-import on the transforms."""
+    if span is None:
+        plan.blockers.append(f"{defmod}: could not pin the signature span")
+        return None
+    sl, sc, el, ec = span
+    src_lines = source.splitlines(keepends=True)
+    sig_text = (
+        src_lines[sl - 1][sc:ec] if sl == el
+        else src_lines[sl - 1][sc:] + "".join(src_lines[sl:el - 1]) + src_lines[el - 1][:ec])
+    if "#" in sig_text:
+        plan.blockers.append(
+            f"{defmod}: the signature block contains a comment — rebuilding "
+            "it would drop the comment, so this stays a human edit")
+        return None
+    return span, src_lines

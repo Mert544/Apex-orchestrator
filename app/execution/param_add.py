@@ -30,6 +30,7 @@ from pathlib import Path
 
 from app.execution._transform_base import (
     parse_trees as _parse_trees,
+    pin_signature_lines as _pin_signature_lines,
     resolve_sole_definition as _sole_definition,
 )
 from app.execution.cross_file_rename import RenamePlan, _py_files
@@ -120,21 +121,7 @@ def _signature_lines(plan: RenamePlan, source: str, defmod: str,
                      ) -> tuple[tuple[int, int, int, int], list[str]] | None:
     """The signature span plus the source lines — blocks (returns None) when
     the span cannot be pinned or the signature block carries a comment."""
-    span = _signature_span(source, fn)
-    if span is None:
-        plan.blockers.append(f"{defmod}: could not pin the signature span")
-        return None
-    sl, sc, el, ec = span
-    src_lines = source.splitlines(keepends=True)
-    sig_text = (
-        src_lines[sl - 1][sc:ec] if sl == el
-        else src_lines[sl - 1][sc:] + "".join(src_lines[sl:el - 1]) + src_lines[el - 1][:ec])
-    if "#" in sig_text:
-        plan.blockers.append(
-            f"{defmod}: the signature block contains a comment — rebuilding "
-            "it would drop the comment, so this stays a human edit")
-        return None
-    return span, src_lines
+    return _pin_signature_lines(plan, source, defmod, _signature_span(source, fn))
 
 
 def _from_import_names(node: ast.ImportFrom, dotted: str,

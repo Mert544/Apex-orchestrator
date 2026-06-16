@@ -8,7 +8,7 @@ from app.automation.models import AutomationContext, AutomationRunResult, Automa
 from app.automation.plans import DEFAULT_AUTOMATION_PLANS
 from app.automation.planner import DynamicPlan
 from app.automation.registry import SkillAutomationRegistry
-from app.automation.runner import SkillAutomationRunner
+from app.automation.runner import SkillAutomationRunner, _classify_error
 from app.plugins.registry import PluginRegistry
 
 
@@ -168,16 +168,3 @@ class AdaptiveRunner:
             new_steps.append(AutomationStep(name="adapted_coverage_scan", skill_name="coverage_scan"))
 
         return new_steps
-
-
-def _classify_error(exc: Exception) -> str:
-    name = type(exc).__name__
-    if name in ("ValueError", "TypeError", "AssertionError", "KeyError"):
-        return "validation"
-    if name in ("ConnectionError", "TimeoutError", "OSError"):
-        return "network"
-    if "patch" in name.lower() or " Patch" in str(exc):
-        return "patch"
-    if "timeout" in str(exc).lower():
-        return "timeout"
-    return "unknown"
