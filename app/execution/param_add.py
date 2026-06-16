@@ -137,41 +137,72 @@ def _signature_lines(plan: RenamePlan, source: str, defmod: str,
     return span, src_lines
 
 
+def _from_import_names(node: ast.ImportFrom, dotted: str,
+                       func_name: str) -> set[str]:
+    """The local names bound by ``from dotted import func_name [as …]``."""
+    if node.module != dotted:
+        return set()
+    return {alias.asname or func_name
+            for alias in node.names if alias.name == func_name}
+
+
+def _module_alias_names(node: ast.Import, dotted: str) -> set[str]:
+    """The local aliases bound by ``import dotted [as …]``."""
+    return {alias.asname or alias.name
+            for alias in node.names if alias.name == dotted}
+
+
+def _resolve_call_names(tree: ast.Module, dotted: str, func_name: str,
+                        is_defmod: bool) -> tuple[set[str], set[str]]:
+    """The bare names and module aliases under which ``func_name`` is reachable
+    in one module — ``from dotted import func_name`` names and ``import dotted``
+    aliases for ``alias.func_name(...)`` calls."""
+    from_names: set[str] = {func_name} if is_defmod else set()
+    module_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            from_names |= _from_import_names(node, dotted, func_name)
+        elif isinstance(node, ast.Import):
+            module_aliases |= _module_alias_names(node, dotted)
+    return from_names, module_aliases
+
+
+def _calls_func(call: ast.Call, func_name: str, from_names: set[str],
+                module_aliases: set[str]) -> bool:
+    """True iff this call targets ``func_name`` — a bare name imported via
+    ``from``, or ``alias.func_name`` on an imported-module alias."""
+    f = call.func
+    return (isinstance(f, ast.Name) and f.id in from_names) or (
+        isinstance(f, ast.Attribute) and f.attr == func_name
+        and ast.unparse(f.value) in module_aliases)
+
+
+def _inspect_call_keywords(plan: RenamePlan, rel: str, call: ast.Call,
+                           func_name: str, param: str) -> None:
+    """A call already passing ``param=`` blocks; an ``f(**…)`` site warns."""
+    for kw in call.keywords:
+        if kw.arg == param:
+            plan.blockers.append(
+                f"{rel}:{call.lineno}: a call already passes "
+                f"'{param}=' — adding the parameter would rewire it")
+        elif kw.arg is None:
+            plan.warnings.append(
+                f"{rel}:{call.lineno}: {func_name}(**…) may already "
+                f"carry '{param}' at runtime; check manually")
+
+
 def _scan_call_sites(plan: RenamePlan, trees: dict[str, ast.Module],
                      defmod: str, dotted: str, func_name: str,
                      param: str) -> None:
     """Walk every call of ``func_name``: a site already passing ``param=``
     blocks, an ``f(**…)`` site warns."""
     for rel, tree in trees.items():
-        from_names: set[str] = {func_name} if rel == defmod else set()
-        module_aliases: set[str] = set()
+        from_names, module_aliases = _resolve_call_names(
+            tree, dotted, func_name, rel == defmod)
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module == dotted:
-                for alias in node.names:
-                    if alias.name == func_name:
-                        from_names.add(alias.asname or func_name)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name == dotted:
-                        module_aliases.add(alias.asname or alias.name)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            f = node.func
-            is_ours = (isinstance(f, ast.Name) and f.id in from_names) or (
-                isinstance(f, ast.Attribute) and f.attr == func_name
-                and ast.unparse(f.value) in module_aliases)
-            if not is_ours:
-                continue
-            for kw in node.keywords:
-                if kw.arg == param:
-                    plan.blockers.append(
-                        f"{rel}:{node.lineno}: a call already passes "
-                        f"'{param}=' — adding the parameter would rewire it")
-                elif kw.arg is None:
-                    plan.warnings.append(
-                        f"{rel}:{node.lineno}: {func_name}(**…) may already "
-                        f"carry '{param}' at runtime; check manually")
+            if (isinstance(node, ast.Call)
+                    and _calls_func(node, func_name, from_names, module_aliases)):
+                _inspect_call_keywords(plan, rel, node, func_name, param)
 
 
 def plan_param_add(project_root: str | Path, func_name: str,

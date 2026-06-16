@@ -210,6 +210,73 @@ def estimate_effort(node: IdeaNode, loc: int = 0, complexity: int = 0) -> float:
     return round(max(0.1, min(1.0, effort)), 4)
 
 
+# Lens -> phase for a *theme* synthesis (coverage -> Stabilize, security ->
+# Secure, cleanup -> Refine); anything else falls through to Evolve.
+_THEME_LENS_PHASE: dict[str, str] = {"test": STABILIZE, "harden": SECURE}
+
+
+def _classify_theme_synthesis(node: IdeaNode) -> str:
+    """A theme synthesis routes by its most-recent lens; default Evolve."""
+    lens = node.operator_chain[-1] if node.operator_chain else ""
+    if lens in _THEME_LENS_PHASE:
+        return _THEME_LENS_PHASE[lens]
+    if lens in _REFINE_OPS:
+        return REFINE
+    return EVOLVE
+
+
+def _classify_synthesis(node: IdeaNode) -> str:
+    """Route a synthesis idea by its nature.
+
+    Convergence starts with the safety net (test-first) -> Stabilize; a theme
+    routes by its lens; everything else is a cross-lens security suite -> Secure.
+    """
+    if any(f.startswith("convergence:") for f in node.source_facts):
+        return STABILIZE
+    if any(f.startswith("theme:") for f in node.source_facts):
+        return _classify_theme_synthesis(node)
+    return SECURE
+
+
+def _classify_stabilize_action(op: str) -> str:
+    """A stabilize-routed node still honours an explicit refine/evolve lens.
+
+    A 'harden' lens on an untested/stabilize-labelled module still needs the
+    safety net (test) first, so it stays Stabilize. An explicit harden on a
+    sensitive path is classified Secure earlier — the secure and stabilize
+    label sets are disjoint, so it never reaches here.
+    """
+    if op in _REFINE_OPS:
+        return REFINE
+    if op in _EVOLVE_OPS:
+        return EVOLVE
+    return STABILIZE
+
+
+# Ordered phase rules for a permutation/root node, checked most-specific first.
+# Each rule is ``(triggering ops, triggering labels, phase)``; the first whose
+# op OR label matches wins. Stabilize is special-cased (see _classify_permutation)
+# because an explicit refine/evolve lens overrides it.
+_PERMUTATION_RULES: tuple[tuple[frozenset[str], frozenset[str], str], ...] = (
+    (frozenset({"harden"}), frozenset(_SECURE_LABELS), SECURE),
+    (frozenset(_EVOLVE_OPS), frozenset(_EVOLVE_LABELS), EVOLVE),
+    (frozenset(_REFINE_OPS), frozenset(_REFINE_LABELS), REFINE),
+)
+
+
+def _classify_permutation(node: IdeaNode) -> str:
+    """Classify a permutation/root node: lens first (most specific), then label."""
+    label = _first_label(node)
+    op = node.operator
+    if op == "test" or label in _STABILIZE_LABELS:
+        return _classify_stabilize_action(op)
+    for ops, labels, phase in _PERMUTATION_RULES:
+        if op in ops or label in labels:
+            return phase
+    # Roots with no decisive lens default to Evolve (a capability direction).
+    return EVOLVE
+
+
 def classify_phase(node: IdeaNode) -> str:
     """Route an idea into the earliest phase its intent belongs to.
 
@@ -217,52 +284,12 @@ def classify_phase(node: IdeaNode) -> str:
     with the root fact label as a tie-breaker; synthesis/pair ideas route by
     their architectural nature.
     """
-    label = _first_label(node)
-    op = node.operator
-
-    # Synthesis ideas route by their nature, not a blanket phase:
-    #  - convergence starts with the safety net (its mini-roadmap is test-first)
-    #    -> Stabilize;
-    #  - a theme routes by its lens (coverage -> Stabilize, security -> Secure,
-    #    cleanup -> Refine);
-    #  - a cross-lens security test suite -> Secure.
-    # Pair = interface / cycle work -> Evolve (architecture).
     if node.kind == "synthesis":
-        if any(f.startswith("convergence:") for f in node.source_facts):
-            return STABILIZE
-        if any(f.startswith("theme:") for f in node.source_facts):
-            lens = node.operator_chain[-1] if node.operator_chain else ""
-            if lens == "test":
-                return STABILIZE
-            if lens == "harden":
-                return SECURE
-            if lens in _REFINE_OPS:
-                return REFINE
-            return EVOLVE
-        return SECURE
+        return _classify_synthesis(node)
     if node.kind == "pair":
+        # Pair = interface / cycle work -> Evolve (architecture).
         return EVOLVE
-
-    # Permutation / root nodes: lens first (most specific action), then label.
-    if op == "test" or label in _STABILIZE_LABELS:
-        # A 'harden' lens on an untested/stabilize-labelled module still needs
-        # the safety net (test) first, so it stays Stabilize here. An explicit
-        # harden on a sensitive path is classified Secure by the rule below —
-        # the secure and stabilize label sets are disjoint, so it never enters
-        # this block.
-        if op in _REFINE_OPS:
-            return REFINE
-        if op in _EVOLVE_OPS:
-            return EVOLVE
-        return STABILIZE
-    if op == "harden" or label in _SECURE_LABELS:
-        return SECURE
-    if op in _EVOLVE_OPS or label in _EVOLVE_LABELS:
-        return EVOLVE
-    if op in _REFINE_OPS or label in _REFINE_LABELS:
-        return REFINE
-    # Roots with no decisive lens default to Evolve (a capability direction).
-    return EVOLVE
+    return _classify_permutation(node)
 
 
 # --- Learned re-ranking (historical landing rate) -----------------------------
