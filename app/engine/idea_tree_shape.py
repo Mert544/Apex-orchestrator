@@ -239,13 +239,19 @@ def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
     return shape
 
 
-def _observe(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
-    """Deterministic, threshold-based readings of the tree's shape."""
+def _observe_branching(s: TreeShape) -> list[str]:
+    """Readings of raw tree depth and branching density."""
     obs: list[str] = []
     if s.max_depth <= 1:
         obs.append("Tree is shallow (depth ≤ 1) — raise --depth to permute further.")
     if s.branching_factor and s.branching_factor < 1.5:
         obs.append("Sparse branching — raise --breadth to apply more lenses per idea.")
+    return obs
+
+
+def _observe_frontier(s: TreeShape) -> list[str]:
+    """Readings of how the tree's mass distributes (leaf frontier, depth balance)."""
+    obs: list[str] = []
     if s.total_ideas > 1 and s.leaf_ratio >= 0.9:
         obs.append(
             "Almost every idea is a leaf — the tree is a flat frontier with little "
@@ -261,6 +267,12 @@ def _observe(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
             "Most ideas cluster near the roots while only a few branches run deep "
             "— the tree's development is top-heavy rather than evenly elaborated."
         )
+    return obs
+
+
+def _observe_subjects(s: TreeShape) -> list[str]:
+    """Readings of subject breadth and concentration."""
+    obs: list[str] = []
     if s.top_subject_share > 0.5:
         obs.append(
             f"One subject dominates ({int(s.top_subject_share * 100)}% of ideas: "
@@ -277,6 +289,12 @@ def _observe(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
             "No single subject dominates, but ideas clump onto a handful of subjects "
             "— concentration is high across the whole tree, not just the top one."
         )
+    return obs
+
+
+def _observe_kinds(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
+    """Readings of the idea-kind mix (synthesis/pair couplings, facets) and scores."""
+    obs: list[str] = []
     if by_kind.get("synthesis", 0) + by_kind.get("pair", 0) == 0:
         obs.append("No synthesis/pair ideas — few cross-module couplings were found.")
     if s.facet_penetration == 0.0:
@@ -285,6 +303,12 @@ def _observe(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
         obs.append(f"Fractal facets are {int(s.facet_penetration * 100)}% of the tree.")
     if s.distinct_values < max(3, s.total_ideas // 3):
         obs.append("Scores are clustered — limited prioritization signal between ideas.")
+    return obs
+
+
+def _observe_lenses(s: TreeShape) -> list[str]:
+    """Readings of development-operator (lens) diversity."""
+    obs: list[str] = []
     if s.distinct_operators <= 1:
         obs.append(
             "A single lens shapes the whole tree — raise --breadth to apply more "
@@ -295,6 +319,12 @@ def _observe(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
             f"One lens (`{s.dominant_operator}`) drives most ideas — reasoning leans "
             "on a single development operator."
         )
+    return obs
+
+
+def _observe_grounding(s: TreeShape) -> list[str]:
+    """Readings of how grounded/anchored the ideas are in concrete code facts."""
+    obs: list[str] = []
     if s.grounding_ratio < 0.5:
         obs.append(
             f"Weakly grounded — only {int(s.grounding_ratio * 100)}% of ideas tie to "
@@ -310,12 +340,30 @@ def _observe(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
             f"Function-grain: {int(s.anchor_coverage * 100)}% of ideas name a concrete "
             "symbol/line to act on first, not just a file."
         )
+    return obs
+
+
+def _observe_loc(s: TreeShape) -> list[str]:
+    """Reading of measured code-size concentration across modules."""
     if s.total_measured_loc > 0 and s.heaviest_loc > 0.4 * s.total_measured_loc:
         pct = round(100 * s.heaviest_loc / s.total_measured_loc)
-        obs.append(
+        return [
             f"Most measured code sits in `{s.heaviest_module}` "
             f"({pct}% of {s.total_measured_loc} LOC) — a refactor/test focus."
-        )
+        ]
+    return []
+
+
+def _observe(s: TreeShape, by_kind: dict[str, int]) -> list[str]:
+    """Deterministic, threshold-based readings of the tree's shape."""
+    obs: list[str] = []
+    obs += _observe_branching(s)
+    obs += _observe_frontier(s)
+    obs += _observe_subjects(s)
+    obs += _observe_kinds(s, by_kind)
+    obs += _observe_lenses(s)
+    obs += _observe_grounding(s)
+    obs += _observe_loc(s)
     if not obs:
         obs.append("Well-shaped tree: balanced depth, breadth, and scoring spread.")
     return obs
