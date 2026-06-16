@@ -64,6 +64,36 @@ def _hole(nodes: list[ast.AST], sources: list[str], holes: _Holes) -> ast.expr:
     return ast.Name(id=f"{_MV_PREFIX}{holes.name_for(segs)}", ctx=ast.Load())
 
 
+def _generalize_list_field(values: list, sources: list[str], holes: _Holes) -> list:
+    """Generalize a list-valued field; raises ``_MustHole`` on a scalar mismatch."""
+    if any(not isinstance(v, list) or len(v) != len(values[0]) for v in values):
+        raise _MustHole
+    items = []
+    for group in zip(*values):
+        if isinstance(group[0], ast.AST):
+            items.append(_generalize(list(group), sources, holes))
+        elif any(g != group[0] for g in group):
+            raise _MustHole
+        else:
+            items.append(group[0])
+    return items
+
+
+def _generalize_field(fvalue, values: list, sources: list[str], holes: _Holes):
+    """Generalize one field across ``nodes``; raises ``_MustHole`` to force a hole."""
+    if isinstance(fvalue, list):
+        return _generalize_list_field(values, sources, holes)
+    if isinstance(fvalue, ast.AST):
+        if any(not isinstance(v, ast.AST) for v in values):
+            raise _MustHole
+        return _generalize(values, sources, holes)
+    if any(v != fvalue for v in values):
+        # A scalar mismatch (a Name's id, a Constant's value, an operator
+        # choice) can only generalize at expression level.
+        raise _MustHole
+    return fvalue
+
+
 def _generalize(nodes: list[ast.AST], sources: list[str], holes: _Holes) -> ast.AST:
     """The common skeleton of ``nodes`` with metavariable holes at mismatches."""
     first = nodes[0]
@@ -73,28 +103,7 @@ def _generalize(nodes: list[ast.AST], sources: list[str], holes: _Holes) -> ast.
         out = type(first)()
         for fname, fvalue in ast.iter_fields(first):
             values = [getattr(n, fname) for n in nodes]
-            if isinstance(fvalue, list):
-                if any(not isinstance(v, list) or len(v) != len(fvalue) for v in values):
-                    return _hole(nodes, sources, holes)
-                items = []
-                for group in zip(*values):
-                    if isinstance(group[0], ast.AST):
-                        items.append(_generalize(list(group), sources, holes))
-                    elif any(g != group[0] for g in group):
-                        raise _MustHole
-                    else:
-                        items.append(group[0])
-                setattr(out, fname, items)
-            elif isinstance(fvalue, ast.AST):
-                if any(not isinstance(v, ast.AST) for v in values):
-                    return _hole(nodes, sources, holes)
-                setattr(out, fname, _generalize(values, sources, holes))
-            elif any(v != fvalue for v in values):
-                # A scalar mismatch (a Name's id, a Constant's value, an
-                # operator choice) can only generalize at expression level.
-                return _hole(nodes, sources, holes)
-            else:
-                setattr(out, fname, fvalue)
+            setattr(out, fname, _generalize_field(fvalue, values, sources, holes))
         return out
     except _MustHole:
         return _hole(nodes, sources, holes)
