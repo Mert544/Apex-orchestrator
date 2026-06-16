@@ -24,6 +24,8 @@ from __future__ import annotations
 import ast
 
 from ..result import SemanticPatchResult
+from ._apply_helpers import parse_or_none as _parse_or_none
+from ._apply_helpers import run_rewrite_transformer as _run_rewrite_transformer
 
 # Operators that may legally chain together. The middle term is evaluated once
 # in the chain, so we only merge when both arms point the same way (or are both
@@ -155,33 +157,13 @@ class _ChainTransformer(ast.NodeTransformer):
 
 
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
+    tree = _parse_or_none(source)
+    if tree is None:
         return None
 
     transformer = _ChainTransformer()
-    new_tree = transformer.visit(tree)
-    if not transformer.changed:
-        return None
-
-    ast.fix_missing_locations(new_tree)
-    try:
-        new_source = ast.unparse(new_tree)
-    except Exception:
-        return None
-
-    # Re-parse the result; refuse on any syntax error.
-    try:
-        ast.parse(new_source)
-    except SyntaxError:
-        return None
-
-    if source.endswith("\n") and not new_source.endswith("\n"):
-        new_source += "\n"
-
-    # Refuse no-ops (e.g. unparse round-trip produced identical text).
-    if new_source == source:
+    new_source = _run_rewrite_transformer(tree, transformer, source)
+    if new_source is None:
         return None
 
     return SemanticPatchResult(

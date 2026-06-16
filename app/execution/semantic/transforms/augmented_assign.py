@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 
 from ..result import SemanticPatchResult
+from ._apply_helpers import parse_or_none as _parse_or_none
+from ._apply_helpers import run_rewrite_transformer as _run_rewrite_transformer
 
 # Binary operators that have a corresponding in-place (augmented) form.
 _AUG_OPS: tuple[type[ast.operator], ...] = (
@@ -68,32 +70,13 @@ class _AugAssignTransformer(ast.NodeTransformer):
 
 
 def apply(rel_path: str, source: str) -> SemanticPatchResult | None:
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
+    tree = _parse_or_none(source)
+    if tree is None:
         return None
 
     transformer = _AugAssignTransformer()
-    new_tree = transformer.visit(tree)
-    if not transformer.changed:
-        return None
-
-    ast.fix_missing_locations(new_tree)
-    try:
-        new_source = ast.unparse(new_tree)
-    except Exception:
-        return None
-
-    # Re-parse to guarantee the rewrite is syntactically valid before emitting.
-    try:
-        ast.parse(new_source)
-    except SyntaxError:
-        return None
-
-    if source.endswith("\n") and not new_source.endswith("\n"):
-        new_source += "\n"
-
-    if new_source == source:
+    new_source = _run_rewrite_transformer(tree, transformer, source)
+    if new_source is None:
         return None
 
     return SemanticPatchResult(

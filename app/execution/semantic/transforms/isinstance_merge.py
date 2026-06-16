@@ -30,6 +30,7 @@ from __future__ import annotations
 import ast
 
 from ..result import SemanticPatchResult
+from ._apply_helpers import parse_and_collect_lines as _parse_and_collect_lines
 
 
 def _is_pure_target(node: ast.expr) -> bool:
@@ -137,16 +138,10 @@ def _rewrite_boolop_line(node: ast.BoolOp, line: str) -> str | None:
 
 
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
+    prepared = _parse_and_collect_lines(source, _targets)
+    if prepared is None:
         return None
-
-    nodes = _targets(tree)
-    if not nodes:
-        return None
-
-    lines = source.splitlines(keepends=True)
+    nodes, lines = prepared
     changed = 0
     # Rightmost-first so splicing one node never shifts an earlier node's
     # columns on a shared line.
