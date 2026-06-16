@@ -145,50 +145,71 @@ class _Rewrite:
         self.text = text
 
 
+def _is_prunable_import(node: ast.AST) -> bool:
+    """A module-body import we may consider for pruning: a plain ``import`` or a
+    ``from x import ...`` that is neither ``from __future__`` nor a star import
+    (those are always left alone)."""
+    if isinstance(node, ast.ImportFrom):
+        return node.module != "__future__" and not any(
+            alias.name == "*" for alias in node.names)
+    return isinstance(node, ast.Import)
+
+
+def _survivors(node: ast.Import | ast.ImportFrom, used: set[str],
+               keep: set[str]) -> list[ast.alias]:
+    """The aliases on ``node`` whose bound name is used or kept (original order
+    preserved)."""
+    return [
+        alias for alias in node.names
+        if _bound_name(alias) in used or _bound_name(alias) in keep
+    ]
+
+
+def _alias_text(alias: ast.alias) -> str:
+    """Render one alias as it appears in an import list (``a`` or ``a as b``)."""
+    if alias.asname is None:
+        return alias.name
+    return f"{alias.name} as {alias.asname}"
+
+
+def _rewrite_text(node: ast.Import | ast.ImportFrom,
+                  survivors: list[ast.alias], newline: str) -> str:
+    """The replacement import statement keeping only ``survivors``."""
+    indent = " " * node.col_offset
+    parts = ", ".join(_alias_text(alias) for alias in survivors)
+    if isinstance(node, ast.Import):
+        return f"{indent}import {parts}{newline}"
+    prefix = "." * node.level + (node.module or "")
+    return f"{indent}from {prefix} import {parts}{newline}"
+
+
+def _rewrite_for(node: ast.Import | ast.ImportFrom, lines: list[str],
+                 used: set[str], keep: set[str]) -> _Rewrite | None:
+    """The single edit pruning unused names from ``node``, or ``None`` when the
+    statement is skipped (noqa-marked or nothing unused)."""
+    if _has_noqa(lines, node.lineno, node.end_lineno):
+        return None
+    survivors = _survivors(node, used, keep)
+    if len(survivors) == len(node.names):
+        return None  # nothing unused on this statement
+    if not survivors:
+        return _Rewrite(node.lineno, node.end_lineno, None)
+    newline = "\n" if lines[node.end_lineno - 1].endswith("\n") else ""
+    return _Rewrite(node.lineno, node.end_lineno,
+                    _rewrite_text(node, survivors, newline))
+
+
 def _collect_rewrites(tree: ast.Module, lines: list[str], used: set[str],
                       keep: set[str]) -> list[_Rewrite]:
     """Every unused-import removal in the module body. ``keep`` holds names that
     must never be pruned (``__all__`` exports)."""
     rewrites: list[_Rewrite] = []
     for node in tree.body:
-        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+        if not _is_prunable_import(node):
             continue
-        if isinstance(node, ast.ImportFrom):
-            if node.module == "__future__":
-                continue
-            if any(alias.name == "*" for alias in node.names):
-                continue
-        if _has_noqa(lines, node.lineno, node.end_lineno):
-            continue
-
-        survivors = [
-            alias for alias in node.names
-            if _bound_name(alias) in used or _bound_name(alias) in keep
-        ]
-        if len(survivors) == len(node.names):
-            continue  # nothing unused on this statement
-
-        indent = " " * node.col_offset
-        last = lines[node.end_lineno - 1]
-        newline = "\n" if last.endswith("\n") else ""
-
-        if not survivors:
-            rewrites.append(_Rewrite(node.lineno, node.end_lineno, None))
-            continue
-
-        parts = [
-            alias.name if alias.asname is None
-            else f"{alias.name} as {alias.asname}"
-            for alias in survivors
-        ]
-        if isinstance(node, ast.Import):
-            text = f"{indent}import {', '.join(parts)}{newline}"
-        else:
-            level = "." * node.level
-            module = node.module or ""
-            text = (f"{indent}from {level}{module} import "
-                    f"{', '.join(parts)}{newline}")
-        rewrites.append(_Rewrite(node.lineno, node.end_lineno, text))
+        rewrite = _rewrite_for(node, lines, used, keep)
+        if rewrite is not None:
+            rewrites.append(rewrite)
     return rewrites
 
 
