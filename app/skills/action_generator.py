@@ -17,6 +17,38 @@ class ActionGenerator:
 
     PATH_PATTERN = re.compile(r"[A-Za-z0-9_./-]+\.(?:py|yml|yaml|toml|json|ini|cfg|md|txt)")
 
+    # Keyword phrase (matched in the lowercased claim) -> action template.
+    # Only consulted when the claim references concrete paths. Order matters:
+    # the first matching keyword wins, mirroring the original if-ladder.
+    _KEYWORD_TEMPLATES = (
+        ("untested module claim", "Prioritize test coverage for the referenced modules: {paths}."),
+        ("dependency hub claim", "Review central modules and reduce architectural coupling around: {paths}."),
+        ("sensitive surface claim", "Perform a security-focused review for the referenced sensitive paths: {paths}."),
+        ("configuration claim", "Audit configuration handling and default safety for: {paths}."),
+        ("automation claim", "Tighten CI or workflow enforcement around: {paths}."),
+    )
+
+    # claim_type -> action template used when the claim references concrete paths.
+    _PATH_TYPE_TEMPLATES = {
+        ClaimType.SECURITY: "Review secrets, auth, and payment handling in: {paths}.",
+        ClaimType.VALIDATION: "Strengthen or add tests for: {paths}.",
+        ClaimType.AUTOMATION: "Expand automated checks for: {paths}.",
+        ClaimType.CONFIGURATION: "Harden configuration boundaries around: {paths}.",
+        ClaimType.ARCHITECTURE: "Refactor or split high-centrality modules such as: {paths}.",
+        ClaimType.OPERATIONS: "Improve observability and failure handling around: {paths}.",
+    }
+
+    # claim_type -> action template used as a text fallback when no paths are present.
+    _TEXT_TYPE_TEMPLATES = {
+        ClaimType.VALIDATION: "Add or strengthen tests for validation-critical behavior implied by: {claim}",
+        ClaimType.SECURITY: "Review security-sensitive behavior and harden controls for: {claim}",
+        ClaimType.AUTOMATION: "Tighten CI validation gates related to: {claim}",
+        ClaimType.CONFIGURATION: "Audit configuration defaults and environment coupling for: {claim}",
+        ClaimType.ARCHITECTURE: "Inspect architectural coupling and consider refactoring around: {claim}",
+        ClaimType.FEATURE_GAP: "Turn this gap into an engineering task with explicit acceptance criteria: {claim}",
+        ClaimType.OPERATIONS: "Evaluate runtime observability and operational safeguards for: {claim}",
+    }
+
     def generate(self, nodes, profile=None) -> list[str]:
         actions: list[str] = []
         seen: set[str] = set()
@@ -66,46 +98,22 @@ class ActionGenerator:
 
         paths = self._extract_paths(claim)
         claim_type = node.claim_type
-        lowered = claim.lower()
 
-        if "untested module claim" in lowered and paths:
-            return f"Prioritize test coverage for the referenced modules: {', '.join(paths[:5])}."
-        if "dependency hub claim" in lowered and paths:
-            return f"Review central modules and reduce architectural coupling around: {', '.join(paths[:5])}."
-        if "sensitive surface claim" in lowered and paths:
-            return f"Perform a security-focused review for the referenced sensitive paths: {', '.join(paths[:5])}."
-        if "configuration claim" in lowered and paths:
-            return f"Audit configuration handling and default safety for: {', '.join(paths[:5])}."
-        if "automation claim" in lowered and paths:
-            return f"Tighten CI or workflow enforcement around: {', '.join(paths[:5])}."
+        if paths:
+            joined = ", ".join(paths[:5])
+            template = self._keyword_template(claim.lower()) or self._PATH_TYPE_TEMPLATES.get(claim_type)
+            if template is not None:
+                return template.format(paths=joined)
 
-        if claim_type == ClaimType.SECURITY and paths:
-            return f"Review secrets, auth, and payment handling in: {', '.join(paths[:5])}."
-        if claim_type == ClaimType.VALIDATION and paths:
-            return f"Strengthen or add tests for: {', '.join(paths[:5])}."
-        if claim_type == ClaimType.AUTOMATION and paths:
-            return f"Expand automated checks for: {', '.join(paths[:5])}."
-        if claim_type == ClaimType.CONFIGURATION and paths:
-            return f"Harden configuration boundaries around: {', '.join(paths[:5])}."
-        if claim_type == ClaimType.ARCHITECTURE and paths:
-            return f"Refactor or split high-centrality modules such as: {', '.join(paths[:5])}."
-        if claim_type == ClaimType.OPERATIONS and paths:
-            return f"Improve observability and failure handling around: {', '.join(paths[:5])}."
+        text_template = self._TEXT_TYPE_TEMPLATES.get(claim_type)
+        if text_template is not None:
+            return text_template.format(claim=claim)
+        return None
 
-        if claim_type == ClaimType.VALIDATION:
-            return f"Add or strengthen tests for validation-critical behavior implied by: {claim}"
-        if claim_type == ClaimType.SECURITY:
-            return f"Review security-sensitive behavior and harden controls for: {claim}"
-        if claim_type == ClaimType.AUTOMATION:
-            return f"Tighten CI validation gates related to: {claim}"
-        if claim_type == ClaimType.CONFIGURATION:
-            return f"Audit configuration defaults and environment coupling for: {claim}"
-        if claim_type == ClaimType.ARCHITECTURE:
-            return f"Inspect architectural coupling and consider refactoring around: {claim}"
-        if claim_type == ClaimType.FEATURE_GAP:
-            return f"Turn this gap into an engineering task with explicit acceptance criteria: {claim}"
-        if claim_type == ClaimType.OPERATIONS:
-            return f"Evaluate runtime observability and operational safeguards for: {claim}"
+    def _keyword_template(self, lowered: str) -> str | None:
+        for keyword, template in self._KEYWORD_TEMPLATES:
+            if keyword in lowered:
+                return template
         return None
 
     def _extract_paths(self, text: str) -> list[str]:

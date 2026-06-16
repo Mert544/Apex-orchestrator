@@ -97,6 +97,39 @@ def test_generate_orders_by_priority_dedupes_and_caps_at_ten():
     assert len(gen.generate(many, profile=None)) == 10   # capped
 
 
+def test_keyword_claim_without_paths_falls_through_to_type_or_none():
+    from app.models.enums import ClaimType
+    gen = ActionGenerator()
+    # Keyword phrase present but no path -> keyword block is skipped.
+    # GENERAL has no text fallback -> None.
+    assert gen._action_for_node(_node("Untested module claim: nothing concrete here")) is None
+    # Keyword phrase present, no path, but a fallback-eligible type -> text fallback.
+    claim = "Configuration claim: defaults are unsafe everywhere"
+    action = gen._action_for_node(_node(claim, ClaimType.CONFIGURATION))
+    assert action and "configuration defaults" in action and claim in action
+
+
+def test_paths_present_but_type_has_no_path_template_uses_text_fallback():
+    from app.models.enums import ClaimType
+    gen = ActionGenerator()
+    # FEATURE_GAP has no path template and no keyword match -> text fallback even with a path.
+    claim = "There is no export feature in app/exporter.py yet"
+    action = gen._action_for_node(_node(claim, ClaimType.FEATURE_GAP))
+    assert action and "acceptance criteria" in action and claim in action
+    # GENERAL with a path and no keyword -> nothing at all.
+    assert gen._action_for_node(_node("Touches app/x.py somehow.", ClaimType.GENERAL)) is None
+
+
+def test_keyword_block_wins_over_claim_type_when_path_present():
+    from app.models.enums import ClaimType
+    gen = ActionGenerator()
+    # Keyword match takes precedence over the claim_type path template.
+    action = gen._action_for_node(
+        _node("Untested module claim: app/a.py lacks tests", ClaimType.SECURITY)
+    )
+    assert action and "test coverage" in action
+
+
 def test_extract_paths_normalizes_and_dedupes():
     gen = ActionGenerator()
     paths = gen._extract_paths("See app/x.py and app/x.py plus conf/dev.yaml and notes.md")
