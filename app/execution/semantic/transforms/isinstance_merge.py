@@ -114,6 +114,28 @@ def _targets(tree: ast.Module) -> list[ast.BoolOp]:
     return out
 
 
+def _splice_span(node: ast.BoolOp, line: str) -> tuple[int, int] | None:
+    """The ``(start, end)`` column span of ``node`` in ``line``, or ``None``."""
+    start, end = node.col_offset, node.end_col_offset or 0
+    if end <= start or end > len(line):
+        return None
+    return start, end
+
+
+def _rewrite_boolop_line(node: ast.BoolOp, line: str) -> str | None:
+    """Return ``line`` with the ored isinstance merged, or ``None`` to skip."""
+    if node.lineno != node.end_lineno:
+        return None  # multi-line — skip so the splice stays exact
+    merged = _merge_boolop(node)
+    if merged is None:
+        return None
+    span = _splice_span(node, line)
+    if span is None:
+        return None
+    start, end = span
+    return line[:start] + ast.unparse(merged) + line[end:]
+
+
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
@@ -129,19 +151,13 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     # Rightmost-first so splicing one node never shifts an earlier node's
     # columns on a shared line.
     for node in sorted(nodes, key=lambda n: (n.lineno, n.col_offset), reverse=True):
-        if node.lineno != node.end_lineno:
-            continue  # multi-line — skip so the splice stays exact
-        merged = _merge_boolop(node)
-        if merged is None:
-            continue
         li = node.lineno - 1
         if li >= len(lines):
             continue
-        line = lines[li]
-        start, end = node.col_offset, node.end_col_offset or 0
-        if end <= start or end > len(line):
+        rewritten = _rewrite_boolop_line(node, lines[li])
+        if rewritten is None:
             continue
-        lines[li] = line[:start] + ast.unparse(merged) + line[end:]
+        lines[li] = rewritten
         changed += 1
 
     if changed == 0:

@@ -65,6 +65,34 @@ def _open_calls(tree: ast.Module) -> list[ast.Call]:
     ]
 
 
+def _close_index(node: ast.Call, line: str) -> int | None:
+    """Index of the closing ``)`` in ``line``, or ``None`` if out of bounds."""
+    close = (node.end_col_offset or 0) - 1  # index of the closing ')'
+    if close <= node.col_offset or close > len(line):
+        return None
+    return close
+
+
+def _encoding_insert(line: str, col_offset: int, close: int) -> str:
+    """The text to splice before ``close`` (comma only if not already present)."""
+    # Insert a comma only if the args don't already end with one.
+    j = close - 1
+    while j > col_offset and line[j].isspace():
+        j -= 1
+    return ' encoding="utf-8"' if line[j] == "," else ', encoding="utf-8"'
+
+
+def _rewrite_open_line(node: ast.Call, line: str) -> str | None:
+    """Return ``line`` with an ``encoding="utf-8"`` arg added, or ``None`` to skip."""
+    if node.lineno != node.end_lineno:
+        return None  # multi-line call — skip to keep the edit line-exact
+    close = _close_index(node, line)
+    if close is None:
+        return None
+    insert = _encoding_insert(line, node.col_offset, close)
+    return line[:close] + insert + line[close:]
+
+
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
@@ -80,21 +108,13 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     # Rightmost first so inserting into one call never shifts an earlier call on
     # the same line.
     for node in sorted(calls, key=lambda c: (c.lineno, c.col_offset), reverse=True):
-        if node.lineno != node.end_lineno:
-            continue  # multi-line call — skip to keep the edit line-exact
         li = node.lineno - 1
         if li >= len(lines):
             continue
-        line = lines[li]
-        close = (node.end_col_offset or 0) - 1  # index of the closing ')'
-        if close <= node.col_offset or close > len(line):
+        rewritten = _rewrite_open_line(node, lines[li])
+        if rewritten is None:
             continue
-        # Insert a comma only if the args don't already end with one.
-        j = close - 1
-        while j > node.col_offset and line[j].isspace():
-            j -= 1
-        insert = ' encoding="utf-8"' if line[j] == "," else ', encoding="utf-8"'
-        lines[li] = line[:close] + insert + line[close:]
+        lines[li] = rewritten
         changed += 1
 
     if changed == 0:
