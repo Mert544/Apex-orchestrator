@@ -29,6 +29,19 @@ class ModuleStructure:
 # still gets its own relative path, so output is byte-for-byte identical to today.
 _PARSE_CACHE: dict[tuple[str, int], tuple[list[str], list[str]] | None] = {}
 
+# Process-level cache for the raw ``ast.Module`` parse, shared by the three
+# per-function complexity analyzers (code_metrics, cognitive_complexity,
+# complexity_profile). Each of those used to run its OWN ``ast.parse`` over the
+# whole tree — three full re-parses per build for one metric family. Routing
+# them through :func:`parse_cached` collapses that to a single parse per file.
+#
+# Key: ``(absolute_resolved_path, st_mtime_ns)`` — the SAME scheme as
+# ``_PARSE_CACHE`` but a DISTINCT dict, so the existing ``(imports, symbols)``
+# entries are never touched and the two caches invalidate independently. mtime
+# is a cache key ONLY; it never reaches any analyzer's output, so determinism
+# (same file content -> same tree -> same metric) is preserved.
+_TREE_CACHE: dict[tuple[str, int], ast.Module | None] = {}
+
 
 def _is_type_checking_test(test: ast.expr) -> bool:
     """True if an ``if`` test is ``TYPE_CHECKING`` (bare or ``typing.TYPE_CHECKING``).
@@ -77,6 +90,44 @@ class PythonStructureAnalyzer:
         # Copy the cached lists so a caller mutating ModuleStructure.imports/symbols
         # cannot corrupt a shared cache entry reused by the next analyzer.
         return ModuleStructure(path=rel, imports=list(imports), symbols=list(symbols))
+
+
+def parse_cached(path: str | Path) -> ast.Module | None:
+    """Read + ``ast.parse`` ``path`` into an ``ast.Module``, memoized per build.
+
+    Returns the SAME tree object an unguarded ``ast.parse(path.read_text(...))``
+    would produce, so any analyzer that walks it gets byte-identical results —
+    the only change is that the file is read + parsed AT MOST ONCE per process
+    (keyed by ``(absolute path, st_mtime_ns)``), instead of once per analyzer.
+
+    Returns ``None`` for unreadable / unparseable files (and caches that ``None``
+    so a known-bad file is not retried by the next analyzer). When the file has
+    no stable stat key, falls back to an uncached parse so behavior matches the
+    callers' original ``read_text`` + ``ast.parse`` exactly.
+    """
+    p = Path(path)
+    try:
+        stat = p.stat()
+    except (OSError, ValueError):
+        return _parse_tree(p)
+
+    key = (str(p.resolve()), stat.st_mtime_ns)
+    if key in _TREE_CACHE:
+        return _TREE_CACHE[key]
+
+    tree = _parse_tree(p)
+    _TREE_CACHE[key] = tree
+    return tree
+
+
+def _parse_tree(path: Path) -> ast.Module | None:
+    """Uncached read + ``ast.parse`` of one file; ``None`` if it can't be read
+    or doesn't parse. Mirrors the analyzers' original error handling exactly."""
+    try:
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        return ast.parse(source)
+    except (SyntaxError, OSError, ValueError):
+        return None
 
 
 def _parse_file(path: Path) -> tuple[list[str], list[str]] | None:

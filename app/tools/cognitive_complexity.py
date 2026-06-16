@@ -22,8 +22,13 @@ Deterministic; same source → same number.
 from __future__ import annotations
 
 import ast
+from pathlib import Path
 
-__all__ = ["cognitive_complexity", "function_cognitive_complexities"]
+__all__ = [
+    "cognitive_complexity",
+    "function_cognitive_complexities",
+    "function_cognitive_complexities_for_path",
+]
 
 
 def _bool_sequences(_node: ast.BoolOp) -> int:
@@ -132,6 +137,24 @@ def function_cognitive_complexities(source: str) -> list[tuple[str, int, int]]:
         tree = ast.parse(source)
     except SyntaxError:
         return []
+    return _function_cognitive_complexities_tree(tree)
+
+
+def function_cognitive_complexities_for_path(path: str | Path) -> list[tuple[str, int, int]]:
+    """Path-based :func:`function_cognitive_complexities`, routed through the
+    shared per-build parse cache so the file is read + parsed once across all
+    analyzers. Byte-identical to the source-based call on a parseable file;
+    unreadable/unparseable files yield ``[]``."""
+    from app.tools.python_structure import parse_cached
+
+    tree = parse_cached(path)
+    if tree is None:
+        return []
+    return _function_cognitive_complexities_tree(tree)
+
+
+def _function_cognitive_complexities_tree(tree: ast.Module) -> list[tuple[str, int, int]]:
+    """Core walk shared by the source- and path-based entry points."""
     out: list[tuple[str, int, int]] = []
 
     def walk(body: list[ast.stmt], prefix: str) -> None:

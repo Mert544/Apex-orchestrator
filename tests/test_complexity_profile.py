@@ -309,3 +309,31 @@ def test_to_dict_round_trips_fields(tmp_path):
     assert d["total"] == 1
     assert d["histogram"]["1-5"] == 1
     assert d["hotspots"] == [{"module": "m", "function": "f", "complexity": 2}]
+
+
+def test_analyze_complexity_unchanged_with_shared_parse_cache(tmp_path):
+    # analyze_complexity now routes its parse through python_structure.parse_cached.
+    # Output must be identical whether the cache is cold or warm, and files_scanned
+    # must still count READABLE-but-unparseable files (the SyntaxError -> [] branch).
+    from app.tools.complexity_profile import analyze_complexity
+    import app.tools.python_structure as ps
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "a.py").write_text(
+        "def f(x):\n    if x:\n        for i in x:\n            return i\n    return 0\n",
+        encoding="utf-8",
+    )
+    (pkg / "b.py").write_text(
+        "class C:\n    def m(self, y):\n        return y and y or 0\n",
+        encoding="utf-8",
+    )
+    # Readable but unparseable: must still be counted as scanned, contribute no funcs.
+    (pkg / "bad.py").write_text("def broken(:\n", encoding="utf-8")
+
+    ps._TREE_CACHE.clear()
+    cold = analyze_complexity(tmp_path).to_dict()
+    warm = analyze_complexity(tmp_path).to_dict()  # served from warm cache
+    assert cold == warm
+    assert cold["files_scanned"] == 3  # a.py, b.py, bad.py all readable
+    assert cold["total"] == 2          # f, C.m; bad.py contributes 0 functions

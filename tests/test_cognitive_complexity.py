@@ -93,3 +93,35 @@ def test_except_handlers_and_qualified_names():
 
 def test_unparsable_source_is_silent():
     assert function_cognitive_complexities("def broken(:\n") == []
+
+
+def test_function_cognitive_complexities_for_path_matches_source_variant(tmp_path):
+    from pathlib import Path
+    from app.tools.cognitive_complexity import (
+        function_cognitive_complexities,
+        function_cognitive_complexities_for_path,
+    )
+
+    src = (
+        "def f(x):\n"
+        "    if x:\n"
+        "        for i in x:\n"
+        "            if i:\n"
+        "                return i\n"
+        "    return x and x\n\n\n"
+        "class K:\n"
+        "    def m(self, y):\n"
+        "        return y if y else 0\n"
+    )
+    mod: Path = tmp_path / "cog.py"
+    mod.write_text(src, encoding="utf-8")
+    assert function_cognitive_complexities_for_path(mod) == function_cognitive_complexities(src)
+
+
+def test_function_cognitive_complexities_for_path_empty_paths(tmp_path):
+    from app.tools.cognitive_complexity import function_cognitive_complexities_for_path
+
+    assert function_cognitive_complexities_for_path(tmp_path / "missing.py") == []
+    bad = tmp_path / "bad.py"
+    bad.write_text("def broken(:\n", encoding="utf-8")
+    assert function_cognitive_complexities_for_path(bad) == []

@@ -1,7 +1,14 @@
+import ast
 import time
 from pathlib import Path
 
-from app.tools.python_structure import PythonStructureAnalyzer, _PARSE_CACHE, _parse_file
+from app.tools.python_structure import (
+    PythonStructureAnalyzer,
+    _PARSE_CACHE,
+    _TREE_CACHE,
+    _parse_file,
+    parse_cached,
+)
 
 
 def test_python_structure_analyzer_extracts_imports_and_symbols(tmp_path: Path):
@@ -208,3 +215,61 @@ def test_cache_makes_second_analyze_faster(tmp_path: Path):
     # Warm run is served entirely from cache; require a clear margin (not just any
     # improvement) to guard against the cache silently being bypassed.
     assert warm_dt < cold_dt
+
+
+def test_parse_cached_returns_module_equal_to_direct_parse(tmp_path: Path):
+    src = "import os\n\n\ndef f(x):\n    if x:\n        return os\n    return None\n"
+    mod = tmp_path / "m.py"
+    mod.write_text(src, encoding="utf-8")
+    tree = parse_cached(mod)
+    assert isinstance(tree, ast.Module)
+    # Same content -> structurally identical tree (byte-identical dumps).
+    assert ast.dump(tree) == ast.dump(ast.parse(src))
+
+
+def test_parse_cached_serves_hit_for_unchanged_file(tmp_path: Path):
+    mod = tmp_path / "hit.py"
+    mod.write_text("def g():\n    return 1\n", encoding="utf-8")
+    key = (str(mod.resolve()), mod.stat().st_mtime_ns)
+    _TREE_CACHE.pop(key, None)
+
+    first = parse_cached(mod)
+    assert key in _TREE_CACHE
+    # A second call returns the very same cached object (no re-parse).
+    second = parse_cached(mod)
+    assert first is second
+
+
+def test_parse_cached_respects_mtime_change(tmp_path: Path):
+    mod = tmp_path / "chg.py"
+    mod.write_text("def a():\n    return 1\n", encoding="utf-8")
+    before = parse_cached(mod)
+    old_key = (str(mod.resolve()), mod.stat().st_mtime_ns)
+
+    import os as _os
+    st = mod.stat()
+    _os.utime(mod, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    mod.write_text("def a():\n    return 2\n", encoding="utf-8")
+
+    after = parse_cached(mod)
+    assert after is not before
+    new_key = (str(mod.resolve()), mod.stat().st_mtime_ns)
+    assert old_key in _TREE_CACHE and new_key in _TREE_CACHE
+
+
+def test_parse_cached_none_for_unparseable_and_missing(tmp_path: Path):
+    bad = tmp_path / "bad.py"
+    bad.write_text("def broken(:\n", encoding="utf-8")
+    assert parse_cached(bad) is None
+    assert parse_cached(tmp_path / "nope.py") is None
+
+
+def test_tree_cache_is_independent_of_parse_cache(tmp_path: Path):
+    # The tree cache must not touch the existing (imports, symbols) cache.
+    mod = tmp_path / "indep.py"
+    mod.write_text("import os\n\n\ndef h():\n    return os\n", encoding="utf-8")
+    _PARSE_CACHE.clear()
+    parse_cached(mod)  # populates _TREE_CACHE only
+    assert _PARSE_CACHE == {}
+    _parse_file(mod)   # now populates _PARSE_CACHE
+    assert any(k[0] == str(mod.resolve()) for k in _PARSE_CACHE)

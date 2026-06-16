@@ -147,6 +147,11 @@ def function_cyclomatic_complexities(source: str) -> list[tuple[str, int, int]]:
         tree = ast.parse(source)
     except SyntaxError:
         return []
+    return _function_cyclomatic_complexities_tree(tree)
+
+
+def _function_cyclomatic_complexities_tree(tree: ast.Module) -> list[tuple[str, int, int]]:
+    """Core walk shared by the source- and tree-based entry points."""
     out: list[tuple[str, int, int]] = []
 
     def walk(body: list[ast.stmt], prefix: str) -> None:
@@ -263,13 +268,24 @@ def analyze_complexity(
     records: list[tuple[int, str, str]] = []  # (complexity, module, function)
     files_scanned = 0
 
+    from app.tools.python_structure import parse_cached
+
     for path in files:
         try:
-            source = path.read_text(encoding="utf-8", errors="ignore")
+            # Read solely to reproduce the original ``files_scanned`` semantics
+            # (a file counts as scanned iff it is READABLE, even if it later
+            # fails to parse or holds no functions). The expensive ``ast.parse``
+            # is served from the shared per-build cache below, not redone here.
+            path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        funcs = function_cyclomatic_complexities(source)
         files_scanned += 1
+        tree = parse_cached(path)
+        if tree is None:
+            # Unparseable (or, racing, now-unreadable): no functions, exactly the
+            # ``function_cyclomatic_complexities`` SyntaxError -> [] branch.
+            continue
+        funcs = _function_cyclomatic_complexities_tree(tree)
         if not funcs:
             continue
         module = _module_name(path, root)

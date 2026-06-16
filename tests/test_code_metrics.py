@@ -96,3 +96,35 @@ def test_function_complexities_nested_defs_and_bad_source():
     assert "outer.inner" in out and out["outer.inner"] == 1
     assert out["outer"] >= 2          # inner's branch counts toward outer too
     assert function_complexities("def broken(:\n") == []
+
+
+def test_function_complexities_for_path_matches_source_variant(tmp_path):
+    from app.tools.code_metrics import (
+        function_complexities,
+        function_complexities_for_path,
+    )
+
+    src = (
+        "import os\n\n\n"
+        "class C:\n"
+        "    def m(self, x):\n"
+        "        if x:\n"
+        "            for i in x:\n"
+        "                pass\n"
+        "        return os\n\n\n"
+        "def top(a, b):\n"
+        "    return a and b or [i for i in range(b) if i]\n"
+    )
+    mod = tmp_path / "mod.py"
+    mod.write_text(src, encoding="utf-8")
+    # Byte-identical to parsing the source string directly.
+    assert function_complexities_for_path(mod) == function_complexities(src)
+
+
+def test_function_complexities_for_path_empty_on_missing_and_unparseable(tmp_path):
+    from app.tools.code_metrics import function_complexities_for_path
+
+    assert function_complexities_for_path(tmp_path / "nope.py") == []
+    bad = tmp_path / "bad.py"
+    bad.write_text("def broken(:\n", encoding="utf-8")
+    assert function_complexities_for_path(bad) == []
