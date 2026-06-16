@@ -1798,6 +1798,34 @@ class ProjectProfiler(_CodeQualityScansMixin):
         scored.sort(key=lambda t: (-t[0], -t[1], t[2]))
         return [p for _risk, _cx, p in scored[:3]]
 
+    @staticmethod
+    def _is_mutable_default(d) -> bool:
+        """True if an AST default node is a mutable list/dict/set value."""
+        import ast
+
+        if isinstance(d, (ast.List, ast.Dict, ast.Set)):
+            return True
+        return (isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
+                and d.func.id in ("list", "dict", "set")
+                and not d.args and not d.keywords)
+
+    @classmethod
+    def _func_has_mutable_default(cls, node) -> bool:
+        """True if a function node has any mutable default argument."""
+        defaults = list(node.args.defaults) + [d for d in node.args.kw_defaults if d]
+        return any(cls._is_mutable_default(d) for d in defaults)
+
+    @classmethod
+    def _tree_has_mutable_default(cls, tree) -> bool:
+        """True if any function in the tree has a mutable default argument."""
+        import ast
+
+        return any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and cls._func_has_mutable_default(node)
+            for node in ast.walk(tree)
+        )
+
     def _scan_mutable_defaults(self, modules: list) -> list[str]:
         """Modules with a mutable default argument (list/dict/set literal)."""
         import ast
@@ -1808,20 +1836,7 @@ class ProjectProfiler(_CodeQualityScansMixin):
                 tree = ast.parse((self.root / m.path).read_text(encoding="utf-8", errors="ignore"))
             except (OSError, SyntaxError):
                 continue
-            found = False
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    defaults = list(node.args.defaults) + [d for d in node.args.kw_defaults if d]
-                    for d in defaults:
-                        if isinstance(d, (ast.List, ast.Dict, ast.Set)):
-                            found = True
-                        elif (isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
-                              and d.func.id in ("list", "dict", "set")
-                              and not d.args and not d.keywords):
-                            found = True
-                    if found:
-                        break
-            if found:
+            if self._tree_has_mutable_default(tree):
                 out.append(m.path)
         return sorted(out)
 
