@@ -108,6 +108,53 @@ def _iter_suites(tree: ast.Module):
                 yield suite
 
 
+def _terminator_index(suite: list[ast.stmt]) -> int | None:
+    """Index of the first unconditional terminator that has dead code after it.
+
+    None when no terminator exists, or it is already the suite's last statement.
+    """
+    for i, stmt in enumerate(suite):
+        if isinstance(stmt, _TERMINATORS):
+            return i if i != len(suite) - 1 else None
+    return None
+
+
+def _has_unsafe_stmt(dead: list[ast.stmt]) -> bool:
+    """True if any dead statement nests a def/class or a binding declaration.
+
+    Dropping these could lose something importable/patchable or with binding
+    side effects, so the caller must back off when this holds.
+    """
+    unsafe = (
+        ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Global, ast.Nonlocal
+    )
+    for stmt in dead:
+        for sub in ast.walk(stmt):
+            if isinstance(sub, unsafe):
+                return True
+    return False
+
+
+def _span_bounds(
+    terminator: ast.stmt, dead: list[ast.stmt]
+) -> tuple[int, int] | None:
+    """The (first, last) deletable line span, or None if it is empty.
+
+    Starts on the line AFTER the terminator's last line — sweeping up orphaned
+    blank lines and any comment sitting between the terminator and the dead code
+    — and runs through the last dead statement's last line.
+    """
+    first = (terminator.end_lineno or terminator.lineno) + 1
+    last = dead[-1].end_lineno or dead[-1].lineno
+    return (first, last) if first <= last else None
+
+
+def _span_has_comment(span: tuple[int, int], comment_lines: set[int]) -> bool:
+    """True if any comment begins inside the inclusive ``span``."""
+    first, last = span
+    return any(first <= ln <= last for ln in comment_lines)
+
+
 def _dead_span(
     suite: list[ast.stmt], comment_lines: set[int]
 ) -> tuple[int, int] | None:
@@ -116,39 +163,19 @@ def _dead_span(
     Returns None when the suite has no unconditional terminator before its end,
     or when any safety rule forbids the removal.
     """
-    term_idx = None
-    for i, stmt in enumerate(suite):
-        if isinstance(stmt, _TERMINATORS):
-            term_idx = i
-            break
-    if term_idx is None or term_idx == len(suite) - 1:
-        return None  # no terminator, or it is already the last statement
+    term_idx = _terminator_index(suite)
+    if term_idx is None:
+        return None
 
-    terminator = suite[term_idx]
     dead = suite[term_idx + 1:]
-
-    # Safety: never drop a nested def/class, or a binding declaration.
-    for stmt in dead:
-        for sub in ast.walk(stmt):
-            if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                return None
-            if isinstance(sub, (ast.Global, ast.Nonlocal)):
-                return None
-
-    # The span we would delete: from the line AFTER the terminator's last line
-    # through the last dead statement's last line. Starting right after the
-    # terminator also sweeps up any orphaned blank lines, and — crucially — lets
-    # us notice a comment sitting between the terminator and the first dead stmt.
-    first = (terminator.end_lineno or terminator.lineno) + 1
-    last = dead[-1].end_lineno or dead[-1].lineno
-    if first > last:
+    if _has_unsafe_stmt(dead):
         return None
 
-    # Safety: refuse if a comment lives anywhere in the deleted span.
-    if any(first <= ln <= last for ln in comment_lines):
+    span = _span_bounds(suite[term_idx], dead)
+    if span is None or _span_has_comment(span, comment_lines):
         return None
 
-    return (first, last)
+    return span
 
 
 def _drop_spans(source: str, spans: list[tuple[int, int]]) -> str | None:
