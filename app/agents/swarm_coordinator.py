@@ -294,6 +294,55 @@ class SwarmCoordinator:
             "pending_results": len(self._results),
         }
 
+    @staticmethod
+    def _select_scan_trigger(plan_agents: Any, goal_lower: str) -> str:
+        """Pick the scan trigger label from the plan and goal (pure)."""
+        if "security" in plan_agents or "security" in goal_lower:
+            return "security"
+        if "docstring" in plan_agents:
+            return "docstring"
+        if "test" in plan_agents:
+            return "test"
+        return "general"
+
+    def _all_agents_settled(self) -> bool:
+        """True when every registered agent has stopped running."""
+        return all(
+            a.state in (AgentState.IDLE, AgentState.COMPLETED, AgentState.FAILED)
+            for a in self.registry.agents.values()
+        )
+
+    def _await_pipeline(self, total_timeout: float) -> float:
+        """Wait for the pipeline to settle, time out, or be shut down.
+
+        Returns the total time waited (in 0.1s increments).
+        """
+        waited = 0.0
+        while self._running and waited < total_timeout:
+            if self._stability.shutdown_manager.is_shutdown_requested():
+                print(f"[swarm] Shutdown requested after {waited:.1f}s")
+                break
+
+            time.sleep(0.1)
+            waited += 0.1
+
+            # Check if all agents are idle
+            if self._all_agents_settled():
+                break
+        return waited
+
+    def _report_outcome(self, waited: float, total_timeout: float, elapsed: float) -> None:
+        """Print the terminal status line and shut down on timeout."""
+        if waited >= total_timeout:
+            print(f"[swarm] TIMEOUT after {elapsed:.1f}s")
+            self._shutdown()
+        elif self._stability.shutdown_manager.is_shutdown_requested():
+            print(f"[swarm] Graceful shutdown after {elapsed:.1f}s")
+        else:
+            print(
+                f"[swarm] Completed in {elapsed:.1f}s with {len(self._results)} result(s)"
+            )
+
     def run_autonomous(
         self,
         goal: str,
@@ -323,60 +372,19 @@ class SwarmCoordinator:
         start_time = time.time()
 
         # Kick off the first event based on intent
-        if "security" in plan.agents or "security" in intent.goal.lower():
-            self.bus.broadcast(
-                sender="swarm",
-                topic="scan.complete",
-                payload={"project_root": target, "trigger": "security"},
-            )
-        elif "docstring" in plan.agents:
-            self.bus.broadcast(
-                sender="swarm",
-                topic="scan.complete",
-                payload={"project_root": target, "trigger": "docstring"},
-            )
-        elif "test" in plan.agents:
-            self.bus.broadcast(
-                sender="swarm",
-                topic="scan.complete",
-                payload={"project_root": target, "trigger": "test"},
-            )
-        else:
-            # Generic scan trigger
-            self.bus.broadcast(
-                sender="swarm",
-                topic="scan.complete",
-                payload={"project_root": target, "trigger": "general"},
-            )
+        trigger = self._select_scan_trigger(plan.agents, intent.goal.lower())
+        self.bus.broadcast(
+            sender="swarm",
+            topic="scan.complete",
+            payload={"project_root": target, "trigger": trigger},
+        )
 
         # Wait for pipeline to complete with timeout and shutdown handling
-        waited = 0.0
-        while self._running and waited < total_timeout:
-            if self._stability.shutdown_manager.is_shutdown_requested():
-                print(f"[swarm] Shutdown requested after {waited:.1f}s")
-                break
-
-            time.sleep(0.1)
-            waited += 0.1
-
-            # Check if all agents are idle
-            if all(
-                a.state in (AgentState.IDLE, AgentState.COMPLETED, AgentState.FAILED)
-                for a in self.registry.agents.values()
-            ):
-                break
+        waited = self._await_pipeline(total_timeout)
 
         elapsed = time.time() - start_time
 
-        if waited >= total_timeout:
-            print(f"[swarm] TIMEOUT after {elapsed:.1f}s")
-            self._shutdown()
-        elif self._stability.shutdown_manager.is_shutdown_requested():
-            print(f"[swarm] Graceful shutdown after {elapsed:.1f}s")
-        else:
-            print(
-                f"[swarm] Completed in {elapsed:.1f}s with {len(self._results)} result(s)"
-            )
+        self._report_outcome(waited, total_timeout, elapsed)
 
         return self._results
 
