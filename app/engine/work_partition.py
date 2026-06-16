@@ -120,6 +120,61 @@ class _UnionFind:
         self._parent[hi] = lo
 
 
+def _conflicts(
+    edited_sets: list[set[str]], footprints: list[set[str]], i: int, j: int
+) -> bool:
+    """Whether tasks ``i`` and ``j`` overlap (shared file or blast-radius reach).
+
+    A footprint already includes that task's own edited files, so a plain shared
+    file is naturally covered by this single intersection check.
+    """
+    return bool(edited_sets[i] & footprints[j] or edited_sets[j] & footprints[i])
+
+
+def _build_unionfind(
+    edited: list[list[str]],
+    edited_sets: list[set[str]],
+    footprints: list[set[str]],
+) -> _UnionFind:
+    """Connect conflicting tasks into components via deterministic union-find.
+
+    An unresolved task (no usable files) could touch anything, so nothing is
+    provably parallel-safe alongside it: every task is unioned into one shared
+    serial group.
+    """
+    n = len(edited)
+    uf = _UnionFind(n)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _conflicts(edited_sets, footprints, i, j):
+                uf.union(i, j)
+    unresolved = [i for i in range(n) if not edited[i]]
+    if unresolved:
+        anchor = unresolved[0]
+        for i in range(n):
+            uf.union(anchor, i)
+    return uf
+
+
+def _group_indices(uf: _UnionFind, n: int) -> dict[int, list[int]]:
+    """Map each component root to its member indices (insertion order)."""
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(uf.find(i), []).append(i)
+    return groups
+
+
+def _make_partition(
+    members: list[int], ordered: list[Task], edited_sets: list[set[str]]
+) -> Partition:
+    """Build one partition: sorted task names and the sorted union of files."""
+    names = sorted(ordered[i].name for i in members)
+    files: set[str] = set()
+    for i in members:
+        files |= edited_sets[i]
+    return Partition(tasks=names, files=sorted(files))
+
+
 def partition_work(project_root: str | Path, tasks: list[Task]) -> list[Partition]:
     """Group ``tasks`` into provably-disjoint parallel partitions.
 
@@ -147,37 +202,13 @@ def partition_work(project_root: str | Path, tasks: list[Task]) -> list[Partitio
     edited = [_task_files(t) for t in ordered]
     edited_sets = [set(e) for e in edited]
     footprints = [_footprint(project_root, e) for e in edited]
-    # A task is "unresolved" when it names no usable files: we cannot prove it is
-    # disjoint from anything, so it must serialise with everyone.
-    unresolved = [i for i in range(n) if not edited[i]]
 
-    uf = _UnionFind(n)
-    for i in range(n):
-        for j in range(i + 1, n):
-            # Conflict iff either task's edited files touch the other's footprint
-            # (a footprint already includes that task's own edited files, so a
-            # plain shared file is naturally covered by this single check).
-            if edited_sets[i] & footprints[j] or edited_sets[j] & footprints[i]:
-                uf.union(i, j)
-    # An unresolved task could touch anything, so nothing is provably
-    # parallel-safe alongside it: union every task into one shared serial group.
-    if unresolved:
-        anchor = unresolved[0]
-        for i in range(n):
-            uf.union(anchor, i)
+    uf = _build_unionfind(edited, edited_sets, footprints)
+    groups = _group_indices(uf, n)
 
-    groups: dict[int, list[int]] = {}
-    for i in range(n):
-        groups.setdefault(uf.find(i), []).append(i)
-
-    partitions: list[Partition] = []
-    for members in groups.values():
-        names = sorted(ordered[i].name for i in members)
-        files: set[str] = set()
-        for i in members:
-            files |= edited_sets[i]
-        partitions.append(Partition(tasks=names, files=sorted(files)))
-
+    partitions = [
+        _make_partition(members, ordered, edited_sets) for members in groups.values()
+    ]
     # Order partitions by their first (lowest) task name for a stable plan.
     partitions.sort(key=lambda p: p.tasks[0])
     return partitions
