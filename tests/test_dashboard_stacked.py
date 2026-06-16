@@ -144,7 +144,7 @@ def _polyglot_fixture(tmp: Path) -> Path:
 
 def test_dashboard_surfaces_scope_composition_for_polyglot(tmp_path):
     _polyglot_fixture(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2, quality=False)
     # The composition bar lands inside the Architecture section's markup.
     assert "Analysis scope composition" in html_doc
     arch = html_doc.split("id='architecture'")[1].split("</section>")[0]
@@ -154,7 +154,7 @@ def test_dashboard_surfaces_scope_composition_for_polyglot(tmp_path):
 
 def test_dashboard_with_scope_bar_stays_self_contained(tmp_path):
     _polyglot_fixture(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2, quality=False)
     assert html_doc.startswith("<!doctype html>")
     assert "<script src=" not in html_doc
     assert 'rel="stylesheet"' not in html_doc
@@ -164,7 +164,7 @@ def test_dashboard_with_scope_bar_stays_self_contained(tmp_path):
 
 def test_dashboard_with_scope_bar_has_single_timestamp(tmp_path):
     _polyglot_fixture(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2, quality=False)
     stamps = re.findall(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC", html_doc)
     assert len(stamps) == 1
 
@@ -172,5 +172,5 @@ def test_dashboard_with_scope_bar_has_single_timestamp(tmp_path):
 def test_no_scope_bar_for_all_python_dashboard(tmp_path):
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "svc.py").write_text("def run():\n    return 1\n")
-    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2, quality=False)
     assert "Analysis scope composition" not in html_doc

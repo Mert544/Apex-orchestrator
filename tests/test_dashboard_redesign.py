@@ -19,7 +19,7 @@ def _project(tmp_path):
 
 def test_redesign_is_self_contained(tmp_path):
     _project(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3, quality=False)
     assert html_doc.startswith("<!doctype html>")
     assert "</html>" in html_doc
     # No external scripts/stylesheets or any remote URL — inline only. The inline
@@ -37,7 +37,7 @@ def test_redesign_is_self_contained(tmp_path):
 
 def test_redesign_theme_hooks_present(tmp_path):
     _project(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3, quality=False)
     # Dark-theme palette + new shell hooks introduced by the redesign.
     assert "--accent:#3de2c4" in html_doc
     assert "class='eyebrow'" in html_doc
@@ -50,7 +50,7 @@ def test_redesign_theme_hooks_present(tmp_path):
 
 def test_redesign_keeps_single_timestamp(tmp_path):
     _project(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3, quality=False)
     # Exactly one rendered "UTC" stamp, emitted in the hero.
     stamps = re.findall(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC", html_doc)
     assert len(stamps) == 1
@@ -59,14 +59,14 @@ def test_redesign_keeps_single_timestamp(tmp_path):
 
 def test_redesign_keeps_footer_signature(tmp_path):
     _project(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3, quality=False)
     assert "signed by" in html_doc
     assert "barzeuss" in html_doc
 
 
 def test_redesign_preserves_section_titles(tmp_path):
     _project(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=40, idea_depth=2, breadth=4)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=40, idea_depth=2, breadth=4, quality=False)
     # Stable titles that must survive any container restyle.
     for title in (
         "Scan findings",
@@ -84,7 +84,7 @@ def test_redesign_preserves_section_titles(tmp_path):
 
 def test_redesign_preserves_section_anchors(tmp_path):
     _project(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=40, idea_depth=2, breadth=4)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=40, idea_depth=2, breadth=4, quality=False)
     for anchor in ("overview", "findings", "architecture", "ideas", "roadmap",
                    "actions", "reasoning", "profile"):
         assert f"id='{anchor}'" in html_doc

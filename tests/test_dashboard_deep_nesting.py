@@ -158,7 +158,7 @@ def _deep_nesting_fixture(tmp: Path) -> Path:
 
 def test_dashboard_surfaces_deep_nesting_block(tmp_path):
     _deep_nesting_fixture(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3, quality=False)
     assert "Deeply nested functions" in html_doc
     assert "execute" in html_doc
     assert "depth" in html_doc
@@ -170,13 +170,13 @@ def test_dashboard_without_deep_nesting_omits_block(tmp_path):
     pkg.mkdir()
     (pkg / "__init__.py").write_text("")
     (pkg / "main.py").write_text("def main():\n    return 1\n")
-    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3, quality=False)
     assert "Deeply nested functions" not in html_doc
 
 
 def test_dashboard_with_deep_nesting_stays_self_contained(tmp_path):
     _deep_nesting_fixture(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3, quality=False)
     assert html_doc.startswith("<!doctype html>")
     assert "<script src=" not in html_doc
     assert 'rel="stylesheet"' not in html_doc
@@ -187,6 +187,6 @@ def test_dashboard_with_deep_nesting_stays_self_contained(tmp_path):
 
 def test_dashboard_with_deep_nesting_has_single_timestamp(tmp_path):
     _deep_nesting_fixture(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3, quality=False)
     stamps = re.findall(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC", html_doc)
     assert len(stamps) == 1

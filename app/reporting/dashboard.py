@@ -101,8 +101,17 @@ def build_dashboard(
     max_ideas: int = 24,
     idea_depth: int = 2,
     breadth: int = 3,
+    quality: bool = True,
 ) -> str:
-    """Aggregate profile + scans + ideas/actions + reasoning into one HTML page."""
+    """Aggregate profile + scans + ideas/actions + reasoning into one HTML page.
+
+    The code-quality card runs four independent analyzers (type-hint coverage,
+    docstring coverage, the complexity profile, and the TODO-debt census), each
+    of which re-walks and re-parses the whole tree — the heaviest part of a
+    dashboard build on a large repo. ``quality`` (default ``True``: the card is
+    rendered, byte-identical to before) lets callers/tests that don't need the
+    card opt out with ``quality=False`` and skip that work entirely.
+    """
     profile = ProjectProfiler(project_root).profile()
     findings = _run_scanners(project_root)
 
@@ -174,7 +183,7 @@ def build_dashboard(
     return _render_html(
         project_root, profile, findings, idea_report, action_plan, reasoning, git, debug,
         roadmap=roadmap, shape=shape, autonomy=autonomy,
-        pareto=pareto, trajectory=trajectory, learned=learned,
+        pareto=pareto, trajectory=trajectory, learned=learned, quality=quality,
     )
 
 
@@ -1652,14 +1661,16 @@ def _page_sections(
 
 def _render_html(project_root, profile, findings, idea_report, action_plan, reasoning,
                  git=None, debug=None, roadmap=None, shape=None, autonomy=None,
-                 pareto=None, trajectory=None, learned=None) -> str:
+                 pareto=None, trajectory=None, learned=None, quality=True) -> str:
     git = git or {}
     debug = debug or {}
     pareto = pareto or []
     trajectory = trajectory or []
     outscope_html = _outscope_section(project_root)
     trackrecord_html = _trackrecord_section(learned, project_root)
-    quality_html = _quality_section(project_root)
+    # The quality card is the heaviest part of a build (4 full-tree re-parses);
+    # ``quality=False`` skips it entirely. Default stays byte-identical.
+    quality_html = _quality_section(project_root) if quality else ""
     links = _nav_links(
         project_root, git, debug, roadmap, shape, autonomy, pareto, trajectory,
         learned, outscope_html=outscope_html, trackrecord_html=trackrecord_html,

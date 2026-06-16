@@ -12,7 +12,7 @@ def _project(tmp: Path) -> Path:
 
 def test_dashboard_is_self_contained_html(tmp_path):
     _project(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=12, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=12, idea_depth=2, breadth=3, quality=False)
     assert html_doc.startswith("<!doctype html>")
     assert "</html>" in html_doc
     # No external scripts/stylesheets — fully self-contained.
@@ -22,14 +22,14 @@ def test_dashboard_is_self_contained_html(tmp_path):
 
 def test_dashboard_has_all_sections(tmp_path):
     _project(tmp_path)
-    html_doc = build_dashboard(str(tmp_path))
+    html_doc = build_dashboard(str(tmp_path), quality=False)
     for heading in ("Project profile", "Scan findings", "Idea permutation tree", "Action plan", "Reasoning"):
         assert heading in html_doc
 
 
 def test_dashboard_includes_roadmap_and_shape(tmp_path):
     _project(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=30, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=30, idea_depth=2, breadth=3, quality=False)
     # Roadmap section: phases + quick wins + ROI bars.
     assert "Engineering roadmap" in html_doc
     assert "Phase 1" in html_doc
@@ -48,7 +48,7 @@ def test_dashboard_shows_autonomy_panel(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path)
     subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path)
     subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=20)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20, quality=False)
     assert "Autonomy" in html_doc
     assert "would apply autonomously" in html_doc or "would recommend only" in html_doc
     assert "#autonomy" in html_doc
@@ -56,7 +56,7 @@ def test_dashboard_shows_autonomy_panel(tmp_path):
 
 def test_dashboard_shows_frontier(tmp_path):
     _project(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=30, idea_depth=2, breadth=4)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=30, idea_depth=2, breadth=4, quality=False)
     assert "Efficient frontier" in html_doc
     assert "#frontier" in html_doc
 
@@ -78,7 +78,7 @@ def test_dashboard_shows_trajectory_and_learned_when_present(tmp_path):
         "by_operator": {"harden": {"applied": 5, "rolled_back": 1, "blocked": 0}},
         "by_label": {},
     }), encoding="utf-8")
-    html_doc = build_dashboard(str(tmp_path), max_ideas=20)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20, quality=False)
     assert "Self-improvement trajectory" in html_doc and "#trajectory" in html_doc
     assert "What Apex has learned" in html_doc and "#learned" in html_doc
     assert "harden" in html_doc
@@ -93,13 +93,13 @@ def test_dashboard_roadmap_shows_measured_signals(tmp_path):
     )
     (tmp_path / "app" / "a.py").write_text("import app.core\ndef a():\n    return app.core.core(1)\n")
     (tmp_path / "app" / "b.py").write_text("import app.core\ndef b():\n    return app.core.core(2)\n")
-    html_doc = build_dashboard(str(tmp_path), max_ideas=30, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=30, idea_depth=2, breadth=3, quality=False)
     assert "imported by" in html_doc or "LOC" in html_doc
 
 
 def test_dashboard_surfaces_security_finding(tmp_path):
     _project(tmp_path)
-    html_doc = build_dashboard(str(tmp_path))
+    html_doc = build_dashboard(str(tmp_path), quality=False)
     # The eval() in svc.py should appear as a finding.
     assert "svc.py" in html_doc
     assert "security findings" in html_doc
@@ -107,7 +107,7 @@ def test_dashboard_surfaces_security_finding(tmp_path):
 
 def test_dashboard_renders_idea_tree(tmp_path):
     _project(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=12)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=12, quality=False)
     assert "class='op'" in html_doc  # idea operator chips rendered
     assert "Action plan" in html_doc
 
@@ -118,14 +118,14 @@ def test_dashboard_includes_git_repo_section_when_in_repo(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path)
     subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path)
     subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path)
-    html_doc = build_dashboard(str(tmp_path))
+    html_doc = build_dashboard(str(tmp_path), quality=False)
     assert "Repository" in html_doc
     assert "uncommitted files" in html_doc
 
 
 def test_dashboard_skips_repo_section_outside_git(tmp_path):
     _project(tmp_path)  # not a git repo
-    html_doc = build_dashboard(str(tmp_path))
+    html_doc = build_dashboard(str(tmp_path), quality=False)
     # Other sections still render; the repo section is simply omitted.
     assert "Project profile" in html_doc
     assert "<h2>Repository</h2>" not in html_doc
@@ -133,7 +133,7 @@ def test_dashboard_skips_repo_section_outside_git(tmp_path):
 
 def test_dashboard_includes_debug_section(tmp_path):
     _project(tmp_path)
-    html_doc = build_dashboard(str(tmp_path))
+    html_doc = build_dashboard(str(tmp_path), quality=False)
     assert "<h2><span class='ico'>🐞</span>Debug</h2>" in html_doc or "Debug" in html_doc
     # Debug chips present (traces / anomalies).
     assert "anomalies" in html_doc
@@ -144,7 +144,7 @@ def test_dashboard_badges_synthesis_and_fragility(tmp_path):
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "a.py").write_text("import os\ndef a(c):\n    return eval(c)\n")
     (tmp_path / "app" / "b.py").write_text("import app.a\ndef b():\n    return app.a.a('1')\n")
-    html_doc = build_dashboard(str(tmp_path), max_ideas=60, idea_depth=2, breadth=6)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=60, idea_depth=2, breadth=6, quality=False)
     # Synthesized/module-pair appendix and badges render.
     assert "Synthesized" in html_doc
     assert "ibadge" in html_doc
@@ -156,7 +156,7 @@ def test_dashboard_architecture_section(tmp_path):
     (tmp_path / "app" / "a.py").write_text("import app.b\ndef a():\n    return app.b.b()\n")
     (tmp_path / "app" / "b.py").write_text("import app.c\ndef b():\n    return app.c.c()\n")
     (tmp_path / "app" / "c.py").write_text("import app.a\ndef c():\n    return 1\n")
-    html_doc = build_dashboard(str(tmp_path))
+    html_doc = build_dashboard(str(tmp_path), quality=False)
     assert "Architecture health" in html_doc
     assert "Import cycles" in html_doc
     assert "Import cycles" in html_doc  # KPI + section

@@ -420,7 +420,7 @@ def test_full_dashboard_includes_dream_nav_when_digest_present(tmp_path):
     apex.mkdir()
     (apex / "dream-digest.md").write_text(
         "# Dream\n\n- 🌱 a discovery while you were away\n", encoding="utf-8")
-    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2, quality=False)
     assert "#dream" in html_doc
     assert "a discovery while you were away" in html_doc
 
@@ -461,7 +461,7 @@ def test_build_dashboard_survives_optional_subsystem_failures(tmp_path, monkeypa
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _fake_import)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2, quality=False)
     # The page still renders end-to-end despite every optional subsystem failing.
     assert html_doc.startswith("<!doctype html>")
     assert "Project profile" in html_doc

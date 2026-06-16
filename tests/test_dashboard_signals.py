@@ -169,7 +169,7 @@ def _coordinator_fixture(tmp: Path) -> Path:
 
 def test_dashboard_surfaces_coordinator_block(tmp_path):
     _coordinator_fixture(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3, quality=False)
     assert "Coordinator modules" in html_doc
     assert "hub.py" in html_doc
     assert "fan-out" in html_doc
@@ -177,7 +177,7 @@ def test_dashboard_surfaces_coordinator_block(tmp_path):
 
 def test_dashboard_with_coordinator_stays_self_contained(tmp_path):
     _coordinator_fixture(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3, quality=False)
     assert html_doc.startswith("<!doctype html>")
     assert "<script src=" not in html_doc
     assert 'rel="stylesheet"' not in html_doc
@@ -188,6 +188,6 @@ def test_dashboard_with_coordinator_stays_self_contained(tmp_path):
 
 def test_dashboard_with_coordinator_has_single_timestamp(tmp_path):
     _coordinator_fixture(tmp_path)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=20, idea_depth=2, breadth=3, quality=False)
     stamps = re.findall(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC", html_doc)
     assert len(stamps) == 1

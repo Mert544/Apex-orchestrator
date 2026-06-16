@@ -165,7 +165,7 @@ def test_full_dashboard_includes_trackrecord_when_present(tmp_path):
     (tmp_path / "app" / "svc.py").write_text("def run():\n    return 1\n")
     _write_memory(tmp_path, {"harden": {"applied": 5, "rolled_back": 1, "blocked": 0}})
     _write_proof(tmp_path, 5)
-    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2, quality=False)
     assert "#trackrecord" in html_doc
     assert "Track record" in html_doc
     assert "verified fixes landed" in html_doc
@@ -182,6 +182,6 @@ def test_no_trackrecord_section_without_data(tmp_path):
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "svc.py").write_text("def run():\n    return 1\n")
 
-    html = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
+    html = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2, quality=False)
     assert "#trackrecord" not in html
     assert "Track record" not in html

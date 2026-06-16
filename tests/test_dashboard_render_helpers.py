@@ -21,7 +21,7 @@ def _project(tmp):
 
 def test_brand_mark_is_inlined_once(tmp_path):
     _project(tmp_path)
-    html_doc = d.build_dashboard(str(tmp_path), max_ideas=12)
+    html_doc = d.build_dashboard(str(tmp_path), max_ideas=12, quality=False)
     # The extracted module-level constant is the exact glyph embedded in the page.
     assert d._BRAND_MARK in html_doc
     assert html_doc.count("<svg class='mark'") == 1
@@ -29,7 +29,7 @@ def test_brand_mark_is_inlined_once(tmp_path):
 
 def test_single_timestamp_stamp(tmp_path):
     _project(tmp_path)
-    html_doc = d.build_dashboard(str(tmp_path), max_ideas=12)
+    html_doc = d.build_dashboard(str(tmp_path), max_ideas=12, quality=False)
     # Exactly one generated-at stamp; nothing else clocks the page.
     assert html_doc.count("class='stamp'>generated ") == 1
 
@@ -84,7 +84,7 @@ def test_nav_links_gate_with_sections():
 def test_page_sections_concatenates_in_order(tmp_path):
     """`_page_sections` is a faithful concatenation appearing inside <main>."""
     _project(tmp_path)
-    html_doc = d.build_dashboard(str(tmp_path), max_ideas=12)
+    html_doc = d.build_dashboard(str(tmp_path), max_ideas=12, quality=False)
     main = html_doc.split("<main>", 1)[1].split("</main>", 1)[0]
     # Section ids appear in the documented page order.
     order = ["overview", "findings", "architecture", "ideas",

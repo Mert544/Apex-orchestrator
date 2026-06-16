@@ -155,7 +155,7 @@ def test_full_dashboard_includes_outscope_when_present(tmp_path):
     (tmp_path / "web" / "app.js").write_text("const a = 1;\nconst b = 2;\n")
     _git_repo(tmp_path)
 
-    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
+    html_doc = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2, quality=False)
     assert "#outscope" in html_doc
     assert "Outside analysis scope" in html_doc
     assert "web/app.js" in html_doc
@@ -173,5 +173,5 @@ def test_no_outscope_section_when_all_python(tmp_path):
     (tmp_path / "app" / "svc.py").write_text("def run():\n    return 1\n")
 
     assert _outscope_section(str(tmp_path)) == ""
-    html = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2)
+    html = build_dashboard(str(tmp_path), max_ideas=8, idea_depth=1, breadth=2, quality=False)
     assert "#outscope" not in html
