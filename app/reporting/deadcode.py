@@ -137,6 +137,76 @@ def _candidates(tree: ast.Module) -> list[tuple[str, str, int, frozenset[int]]]:
     return out
 
 
+def _parse_project(root: Path) -> tuple[dict[str, ast.Module], set[str], set[str]]:
+    """Parse every project ``.py`` file once: returns (rel-path → tree, all
+    referenced names, all ``__all__`` exports) gathered across ALL files
+    (tests included, since a test-only reference still keeps a symbol live)."""
+    parsed: dict[str, ast.Module] = {}
+    referenced: set[str] = set()
+    exported: set[str] = set()
+    for f in _iter_py(root):
+        try:
+            tree = ast.parse(f.read_text(encoding="utf-8", errors="ignore"))
+        except (OSError, SyntaxError):
+            continue
+        parsed[f.relative_to(root).as_posix()] = tree
+        refs, exports = _collect_references(tree)
+        referenced |= refs
+        exported |= exports
+    return parsed, referenced, exported
+
+
+def _confidence(name: str) -> str:
+    """A private (underscore-prefixed) symbol nothing references is internal-by-
+    convention dead code — high confidence to remove. A public one might still be
+    intended API (imported by a downstream consumer this scan can't see), so flag
+    it for review instead."""
+    return "high" if name.startswith("_") else "review"
+
+
+def _gather_dead(
+    parsed: dict[str, ast.Module], referenced: set[str], exported: set[str],
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str, int], frozenset[int]]]:
+    """Walk candidate (non-test) modules, collecting unreferenced symbols as
+    findings plus a (module, symbol, line) → use-only-body-lines side map."""
+    dead: list[dict[str, Any]] = []
+    body_by_key: dict[tuple[str, str, int], frozenset[int]] = {}
+    for rel, tree in parsed.items():
+        if _is_excluded_candidate(rel):
+            continue
+        for name, kind, lineno, body_lines in _candidates(tree):
+            if name in referenced or name in exported:
+                continue
+            dead.append({"module": rel, "symbol": name, "kind": kind,
+                         "line": lineno, "confidence": _confidence(name)})
+            body_by_key[(rel, name, lineno)] = body_lines
+    return dead, body_by_key
+
+
+def _annotate_runtime(
+    dead: list[dict[str, Any]],
+    body_by_key: dict[tuple[str, str, int], frozenset[int]],
+    root: Path,
+    evidence: RuntimeEvidence,
+) -> None:
+    """Confirm/refute each finding against what the tests actually executed,
+    adding a ``runtime`` key in place. Findings carry a project-relative
+    ``module``; resolve to an absolute path so it lines up with the traced
+    (absolute) filenames."""
+    findings = [
+        StaticFinding(path=str(root / d["module"]),
+                      lineno=d["line"], symbol=d["symbol"],
+                      body_lines=body_by_key[(d["module"], d["symbol"], d["line"])])
+        for d in dead
+    ]
+    by_key = {
+        (c.path, c.lineno, c.symbol): c.confidence
+        for c in confirm_findings(findings, evidence)
+    }
+    for d in dead:
+        d["runtime"] = by_key[(str(root / d["module"]), d["line"], d["symbol"])]
+
+
 def find_dead_code(
     project_root: str,
     limit: int = 40,
@@ -152,56 +222,13 @@ def find_dead_code(
     output is byte-identical to before: no ``runtime`` key is added.
     """
     root = Path(project_root)
-    files = _iter_py(root)
-    referenced: set[str] = set()
-    exported: set[str] = set()
-    parsed: dict[str, ast.Module] = {}
-    for f in files:
-        try:
-            tree = ast.parse(f.read_text(encoding="utf-8", errors="ignore"))
-        except (OSError, SyntaxError):
-            continue
-        rel = f.relative_to(root).as_posix()
-        parsed[rel] = tree
-        refs, exports = _collect_references(tree)  # references from ALL files, incl. tests
-        referenced |= refs
-        exported |= exports
-
-    dead: list[dict[str, Any]] = []
-    body_by_key: dict[tuple[str, str, int], frozenset[int]] = {}
-    for rel, tree in parsed.items():
-        if _is_excluded_candidate(rel):
-            continue
-        for name, kind, lineno, body_lines in _candidates(tree):
-            if name in referenced or name in exported:
-                continue
-            # A private (underscore-prefixed) symbol that nothing references is
-            # internal-by-convention dead code — high confidence to remove. A
-            # public one might still be intended API (imported by a downstream
-            # consumer this scan can't see), so flag it for review instead.
-            confidence = "high" if name.startswith("_") else "review"
-            dead.append({"module": rel, "symbol": name, "kind": kind,
-                         "line": lineno, "confidence": confidence})
-            body_by_key[(rel, name, lineno)] = body_lines
+    parsed, referenced, exported = _parse_project(root)
+    dead, body_by_key = _gather_dead(parsed, referenced, exported)
     # High-confidence (private) findings first — they're the safe, actionable ones.
     dead.sort(key=lambda d: (0 if d["confidence"] == "high" else 1, d["module"], d["line"]))
     dead = dead[:limit]
     if evidence is not None:
-        # Confirm/refute each finding against what the tests actually executed.
-        # Findings carry a project-relative ``module``; resolve to an absolute
-        # path so it lines up with the traced (absolute) filenames.
-        findings = [
-            StaticFinding(path=str(root / d["module"]),
-                          lineno=d["line"], symbol=d["symbol"],
-                          body_lines=body_by_key[(d["module"], d["symbol"], d["line"])])
-            for d in dead
-        ]
-        by_key = {
-            (c.path, c.lineno, c.symbol): c.confidence
-            for c in confirm_findings(findings, evidence)
-        }
-        for d in dead:
-            d["runtime"] = by_key[(str(root / d["module"]), d["line"], d["symbol"])]
+        _annotate_runtime(dead, body_by_key, root, evidence)
     return dead
 
 
