@@ -231,6 +231,73 @@ def _bind_arguments(plan: RenamePlan, source: str, fn: ast.FunctionDef,
     return bound
 
 
+def _param_uses(expr: ast.expr, params: set[str]) -> dict[str, list[ast.Name]]:
+    """Each parameter name → the list of Load-context Name nodes in EXPR that
+    reference it. The empty list for a parameter that never appears."""
+    uses: dict[str, list[ast.Name]] = {p: [] for p in params}
+    for n in ast.walk(expr):
+        if isinstance(n, ast.Name) and n.id in params and isinstance(n.ctx, ast.Load):
+            uses[n.id].append(n)
+    return uses
+
+
+def _side_effect_blocker(uses: dict[str, list[ast.Name]],
+                         arg_nodes: dict[str, ast.expr]) -> str | None:
+    """The side-effect-duplication blocker text for the first parameter used more
+    than once whose argument isn't a pure simple expression, else None."""
+    for name, nodes in uses.items():
+        if len(nodes) > 1 and name in arg_nodes and not _is_pure_simple(arg_nodes[name]):
+            return (f"parameter '{name}' is used {len(nodes)} times and its "
+                    "argument isn't a pure simple expression — inlining would "
+                    "duplicate a side-effecting evaluation")
+    return None
+
+
+def _line_starts(expr_text: str) -> list[int]:
+    """Cumulative character offset of the start of each line in ``expr_text``
+    (``line_starts[i]`` is where line ``i`` begins, with a trailing total)."""
+    line_starts = [0]
+    for ln in expr_text.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(ln))
+    return line_starts
+
+
+def _rebase_offset(line: int, col: int, base_line: int, base_col: int,
+                   line_starts: list[int]) -> int:
+    """Rebase a file-absolute ``(line, col)`` onto an offset within EXPR's own
+    text, whose first character is at ``(base_line, base_col)``."""
+    rel_line = line - base_line
+    if rel_line == 0:
+        return col - base_col
+    return line_starts[rel_line] + col
+
+
+def _name_spans(uses: dict[str, list[ast.Name]], expr: ast.expr,
+                expr_text: str, bound: dict[str, str]
+                ) -> list[tuple[int, int, str]]:
+    """``(start, end, replacement)`` for every parameter-Name use, with offsets
+    rebased into ``expr_text`` and the replacement the parenthesised argument."""
+    base_line = expr.lineno
+    base_col = expr.col_offset
+    line_starts = _line_starts(expr_text)
+    spans: list[tuple[int, int, str]] = []
+    for nodes in uses.values():
+        for n in nodes:
+            start = _rebase_offset(n.lineno, n.col_offset, base_line, base_col, line_starts)
+            end = _rebase_offset(n.end_lineno, n.end_col_offset, base_line, base_col, line_starts)
+            spans.append((start, end, f"({bound[n.id]})"))
+    return spans
+
+
+def _splice_spans(expr_text: str, spans: list[tuple[int, int, str]]) -> str:
+    """Apply every ``(start, end, replacement)`` span to ``expr_text``,
+    right-to-left so earlier offsets stay valid as later ones are replaced."""
+    out = expr_text
+    for start, end, repl in sorted(spans, reverse=True):
+        out = out[:start] + repl + out[end:]
+    return out
+
+
 def _substitute(expr_text: str, expr: ast.expr, params: set[str],
                 bound: dict[str, str], arg_nodes: dict[str, ast.expr],
                 plan: RenamePlan, site: str) -> str | None:
@@ -238,44 +305,13 @@ def _substitute(expr_text: str, expr: ast.expr, params: set[str],
     Spans are processed right-to-left so earlier offsets stay valid. Returns the
     rewritten EXPR text, or None after recording a side-effect blocker naming
     ``site``."""
-    # Count parameter uses to gate the side-effect-duplication rule.
-    uses: dict[str, list[ast.Name]] = {p: [] for p in params}
-    for n in ast.walk(expr):
-        if isinstance(n, ast.Name) and n.id in params and isinstance(n.ctx, ast.Load):
-            uses[n.id].append(n)
-    for name, nodes in uses.items():
-        if len(nodes) > 1 and name in arg_nodes and not _is_pure_simple(arg_nodes[name]):
-            plan.blockers.append(
-                f"{site}: parameter '{name}' is used {len(nodes)} times and its "
-                "argument isn't a pure simple expression — inlining would "
-                "duplicate a side-effecting evaluation")
-            return None
-
-    base_line = expr.lineno
-    base_col = expr.col_offset
-    lines = expr_text.splitlines(keepends=True)
-    line_starts = [0]
-    for ln in lines:
-        line_starts.append(line_starts[-1] + len(ln))
-
-    def to_offset(line: int, col: int) -> int:
-        # node positions are file-absolute; rebase onto EXPR's own text.
-        rel_line = line - base_line
-        if rel_line == 0:
-            return col - base_col
-        return line_starts[rel_line] + col
-
-    spans: list[tuple[int, int, str]] = []  # (start, end, replacement)
-    for nodes in uses.values():
-        for n in nodes:
-            start = to_offset(n.lineno, n.col_offset)
-            end = to_offset(n.end_lineno, n.end_col_offset)
-            spans.append((start, end, f"({bound[n.id]})"))
-
-    out = expr_text
-    for start, end, repl in sorted(spans, reverse=True):
-        out = out[:start] + repl + out[end:]
-    return out
+    uses = _param_uses(expr, params)
+    blocker = _side_effect_blocker(uses, arg_nodes)
+    if blocker is not None:
+        plan.blockers.append(f"{site}: {blocker}")
+        return None
+    spans = _name_spans(uses, expr, expr_text, bound)
+    return _splice_spans(expr_text, spans)
 
 
 def _delete_def_lines(lines: list[str], fn: ast.FunctionDef) -> list[str]:
