@@ -41,9 +41,14 @@ import ast
 from pathlib import Path
 
 from app.execution._transform_base import (
-    apply_line_rewrites,
+    AccumulatorRewrite as _Rewrite,
+    accumulator_seed as _accumulator_seed,
+    apply_comprehension_rewrites as _apply_comprehension_rewrites,
     is_fixture_path,
+    is_name_target as _is_name_target,
     iter_statement_blocks,
+    single_line_segment as _single_line_segment,
+    single_name_assign_rhs as _single_name_assign_rhs,
 )
 from app.execution._transform_base import (
     finalize_module_rewrite as _finalize_module_rewrite,
@@ -60,27 +65,13 @@ _is_fixture_path = is_fixture_path
 def _assign_name(stmt: ast.AST) -> str | None:
     """The bound name of ``<name> = []`` (a single Name target, empty-list RHS),
     else None. ``x = [0]``, ``a, b = []``, ``x: list = []`` all yield None."""
-    if not isinstance(stmt, ast.Assign):
+    bound = _single_name_assign_rhs(stmt)
+    if bound is None:
         return None
-    if len(stmt.targets) != 1:
-        return None
-    target = stmt.targets[0]
-    if not isinstance(target, ast.Name):
-        return None
-    rhs = stmt.value
+    name, rhs = bound
     if not isinstance(rhs, ast.List) or rhs.elts:
         return None
-    return target.id
-
-
-def _is_name_target(target: ast.AST) -> bool:
-    """A plain ``Name`` or a ``Tuple``/``List`` of plain Names (recursively) —
-    no attribute/subscript/starred targets."""
-    if isinstance(target, ast.Name):
-        return True
-    if isinstance(target, (ast.Tuple, ast.List)):
-        return bool(target.elts) and all(_is_name_target(e) for e in target.elts)
-    return False
+    return name
 
 
 def _loop_body_call(for_stmt: ast.For) -> ast.Call | None:
@@ -149,40 +140,17 @@ def _append_arg(for_stmt: ast.For, name: str) -> ast.expr | None:
     return arg
 
 
-class _Rewrite:
-    """One located rewrite: replace lines [lo, hi] (1-based, inclusive) with a
-    single comprehension line at ``indent`` spaces."""
-
-    __slots__ = ("lo", "hi", "indent", "text")
-
-    def __init__(self, lo: int, hi: int, indent: int, text: str) -> None:
-        self.lo = lo
-        self.hi = hi
-        self.indent = indent
-        self.text = text
-
-
-def _single_line_segment(source: str, node: ast.AST) -> str | None:
-    """``ast.get_source_segment`` for ``node``, but only when ``node`` lives on a
-    single line — multi-line segments are rejected so the rewrite stays trivial."""
-    if getattr(node, "lineno", None) != getattr(node, "end_lineno", None):
-        return None
-    return ast.get_source_segment(source, node)
-
-
 def _try_accumulator(block: list[ast.stmt], idx: int, source: str,
                      out: list[_Rewrite]) -> int:
     """If ``block[idx]`` is ``<name> = []`` followed by a matching accumulator
     ``for``, append the comprehension rewrite and return 2 (statements consumed);
     otherwise return 1. An unrecoverable / multi-line segment skips just this
     occurrence (return 1), never blocks the module."""
+    seed = _accumulator_seed(block, idx, _assign_name)
+    if seed is None:
+        return 1
+    name, nxt = seed
     stmt = block[idx]
-    name = _assign_name(stmt)
-    if name is None:
-        return 1
-    nxt = block[idx + 1] if idx + 1 < len(block) else None
-    if not isinstance(nxt, ast.For):
-        return 1
     arg = _append_arg(nxt, name)
     if arg is None:
         return 1
@@ -215,16 +183,7 @@ def _collect_rewrites(tree: ast.Module, source: str) -> list[_Rewrite]:
 def _apply(source: str, rewrites: list[_Rewrite]) -> str:
     """Apply all rewrites bottom-up so earlier line numbers stay valid,
     preserving the original last line's trailing-newline behaviour."""
-    lines = source.splitlines(keepends=True)
-
-    def _line(rw: _Rewrite) -> str:
-        newline = "\n" if lines[rw.hi - 1].endswith("\n") else ""
-        return " " * rw.indent + rw.text + newline
-
-    return apply_line_rewrites(
-        source,
-        [(rw.lo, rw.hi, [_line(rw)]) for rw in rewrites],
-    )
+    return _apply_comprehension_rewrites(source, rewrites)
 
 
 def plan_simplify_comprehension(project_root: str | Path,

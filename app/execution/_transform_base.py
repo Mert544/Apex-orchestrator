@@ -57,6 +57,12 @@ __all__ = [
     "collect_arg_sources",
     "recover_fstring_template",
     "pin_signature_lines",
+    "AccumulatorRewrite",
+    "is_name_target",
+    "single_line_segment",
+    "apply_comprehension_rewrites",
+    "single_name_assign_rhs",
+    "accumulator_seed",
 ]
 
 
@@ -576,3 +582,108 @@ def pin_signature_lines(
             "it would drop the comment, so this stays a human edit")
         return None
     return span, src_lines
+
+
+class AccumulatorRewrite:
+    """One located rewrite: replace lines [lo, hi] (1-based, inclusive) with a
+    single comprehension line at ``indent`` spaces.
+
+    This is the identical ``_Rewrite`` value the accumulator-loop comprehension
+    transforms (list comprehension, dict comprehension) each carried privately."""
+
+    __slots__ = ("lo", "hi", "indent", "text")
+
+    def __init__(self, lo: int, hi: int, indent: int, text: str) -> None:
+        self.lo = lo
+        self.hi = hi
+        self.indent = indent
+        self.text = text
+
+
+def is_name_target(target: ast.AST) -> bool:
+    """A plain ``Name`` or a ``Tuple``/``List`` of plain Names (recursively) —
+    no attribute/subscript/starred targets.
+
+    This is the identical loop-target predicate the accumulator-loop comprehension
+    transforms (list comprehension, dict comprehension) each carried verbatim."""
+    if isinstance(target, ast.Name):
+        return True
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return bool(target.elts) and all(is_name_target(e) for e in target.elts)
+    return False
+
+
+def single_line_segment(source: str, node: ast.AST) -> str | None:
+    """``ast.get_source_segment`` for ``node``, but only when ``node`` lives on a
+    single line — multi-line segments are rejected so the rewrite stays trivial.
+
+    This is the identical helper the accumulator-loop comprehension transforms
+    (list comprehension, dict comprehension) each carried verbatim."""
+    if getattr(node, "lineno", None) != getattr(node, "end_lineno", None):
+        return None
+    return ast.get_source_segment(source, node)
+
+
+def apply_comprehension_rewrites(
+    source: str, rewrites: list[AccumulatorRewrite],
+) -> str:
+    """Apply all comprehension rewrites bottom-up so earlier line numbers stay
+    valid, preserving the original last line's trailing-newline behaviour.
+
+    This is the identical ``_apply`` body the accumulator-loop comprehension
+    transforms (list comprehension, dict comprehension) each carried verbatim; it
+    delegates the bottom-up line splice to :func:`apply_line_rewrites`."""
+    lines = source.splitlines(keepends=True)
+
+    def _line(rw: AccumulatorRewrite) -> str:
+        newline = "\n" if lines[rw.hi - 1].endswith("\n") else ""
+        return " " * rw.indent + rw.text + newline
+
+    return apply_line_rewrites(
+        source,
+        [(rw.lo, rw.hi, [_line(rw)]) for rw in rewrites],
+    )
+
+
+def single_name_assign_rhs(stmt: ast.AST) -> tuple[str, ast.expr] | None:
+    """For ``<name> = <rhs>`` with a single plain-``Name`` target, return
+    ``(name, rhs)``; else None.
+
+    Rejects a non-``Assign`` statement, a multi-target / chained assignment, and
+    any non-``Name`` target (``a, b = ...``, ``x: T = ...``, ``obj.x = ...``). The
+    caller checks ``rhs`` against its own empty-literal predicate (``[]`` vs
+    ``{}``). This is the byte-identical head the accumulator-loop comprehension
+    transforms' ``_assign_name`` helpers each carried verbatim — they only
+    differed in the trailing RHS-literal check, which stays in each caller."""
+    if not isinstance(stmt, ast.Assign):
+        return None
+    if len(stmt.targets) != 1:
+        return None
+    target = stmt.targets[0]
+    if not isinstance(target, ast.Name):
+        return None
+    return target.id, stmt.value
+
+
+def accumulator_seed(
+    block: list[ast.stmt], idx: int,
+    assign_name: Callable[[ast.AST], str | None],
+) -> tuple[str, ast.For] | None:
+    """For an accumulator at ``block[idx]``, return ``(name, for_stmt)``; else None.
+
+    ``assign_name(block[idx])`` is the transform's empty-literal assignment matcher
+    (``<name> = []`` for lists, ``<name> = {}`` for dicts). Returns None when the
+    statement is not such an assignment, when there is no next sibling, or when the
+    next sibling is not a ``for`` — exactly the cases each transform's
+    ``_try_accumulator`` head treated as "skip this occurrence" (return 1). This is
+    the byte-identical preamble those heads each carried verbatim; the caller maps a
+    None result to ``return 1`` and otherwise proceeds with the recovered
+    ``(name, for_stmt)``."""
+    stmt = block[idx]
+    name = assign_name(stmt)
+    if name is None:
+        return None
+    nxt = block[idx + 1] if idx + 1 < len(block) else None
+    if not isinstance(nxt, ast.For):
+        return None
+    return name, nxt
