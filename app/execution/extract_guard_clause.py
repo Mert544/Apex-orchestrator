@@ -133,13 +133,15 @@ def _negated_test(test: ast.expr, source: str, test_src: str) -> str:
     return f"not ({test_src})"
 
 
-def _try_func(func: ast.FunctionDef | ast.AsyncFunctionDef, source: str,
-              lines: list[str]) -> _Rewrite | None:
-    """If ``func``'s whole body is a single else-less ``if`` with an unambiguous
-    guard rewrite, return its rewrite, else None (the occurrence is skipped)."""
-    node = _sole_if(func)
-    if node is None:
-        return None
+def _rewrite_for_if(node: ast.If, source: str,
+                    lines: list[str]) -> _Rewrite | None:
+    """The guard rewrite for an already-selected trailing ``if`` ``node``, or None
+    when the occurrence is too ambiguous to rewrite safely.
+
+    Shared by :func:`_try_func` here and its sibling in
+    :mod:`app.execution.guard_clause`: both objectives produce the IDENTICAL guard
+    once the ``if`` to flatten is chosen — they differ ONLY in HOW that ``if`` is
+    located (whole body vs trailing-after-setup), so the common tail lives here."""
     if node.orelse:
         return None  # else / elif — which branch returns None differs, skip
     if not node.body:
@@ -174,6 +176,16 @@ def _try_func(func: ast.FunctionDef | ast.AsyncFunctionDef, source: str,
     header = f"{indent}if {_negated_test(node.test, source, test_src)}:" + newline
     ret = indent + " " * unit + "return" + (newline or "\n")
     return _Rewrite(node.lineno, body_hi, header, ret, body_lo, body_hi, unit)
+
+
+def _try_func(func: ast.FunctionDef | ast.AsyncFunctionDef, source: str,
+              lines: list[str]) -> _Rewrite | None:
+    """If ``func``'s whole body is a single else-less ``if`` with an unambiguous
+    guard rewrite, return its rewrite, else None (the occurrence is skipped)."""
+    node = _sole_if(func)
+    if node is None:
+        return None
+    return _rewrite_for_if(node, source, lines)
 
 
 def _collect_rewrites(tree: ast.Module, source: str,

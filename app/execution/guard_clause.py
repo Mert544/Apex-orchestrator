@@ -72,9 +72,8 @@ from app.execution.extract_guard_clause import (
     _FUNCTIONS,
     _Rewrite,
     _apply,
-    _body_end,
     _is_docstring,
-    _negated_test,
+    _rewrite_for_if,
 )
 
 __all__ = ["plan_guard_clause"]
@@ -109,40 +108,7 @@ def _try_func(func: ast.FunctionDef | ast.AsyncFunctionDef, source: str,
     node = _trailing_if_with_setup(func)
     if node is None:
         return None
-    if node.orelse:
-        return None  # else / elif — which branch returns None differs, skip
-    if not node.body:
-        return None  # empty if-body — nothing to dedent (defensive)
-
-    # Single-line test so its original source splices cleanly into the guard.
-    if node.test.lineno != node.test.end_lineno:
-        return None
-    test_src = ast.get_source_segment(source, node.test)
-    if test_src is None:
-        return None
-
-    # Dedent the if-body by exactly the ``if``'s own indentation step, so the
-    # body lands at the function-body indent (where the ``if`` header sat).
-    unit = node.body[0].col_offset - node.col_offset
-    if unit <= 0:
-        return None
-
-    body_lo = node.body[0].lineno
-    body_hi = _body_end(node.body)
-    # Every non-blank if-body line must carry at least ``unit`` leading spaces,
-    # or the dedent would be ambiguous (a continuation indented less than the
-    # block). Skip to stay safe.
-    pad = " " * unit
-    for n in range(body_lo, body_hi + 1):
-        line = lines[n - 1]
-        if line.strip() and not line.startswith(pad):
-            return None
-
-    newline = "\n" if lines[node.lineno - 1].endswith("\n") else ""
-    indent = " " * node.col_offset
-    header = f"{indent}if {_negated_test(node.test, source, test_src)}:" + newline
-    ret = indent + " " * unit + "return" + (newline or "\n")
-    return _Rewrite(node.lineno, body_hi, header, ret, body_lo, body_hi, unit)
+    return _rewrite_for_if(node, source, lines)
 
 
 def _collect_rewrites(tree: ast.Module, source: str,
