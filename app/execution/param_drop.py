@@ -23,8 +23,12 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from app.execution._transform_base import (
+    parse_trees as _parse_trees,
+    resolve_sole_definition as _resolve_definition,
+)
 from app.execution.cross_file_rename import RenamePlan, _py_files
-from app.execution.param_rename import _all_params, _function_defs
+from app.execution.param_rename import _all_params
 
 __all__ = ["plan_param_drop"]
 
@@ -108,32 +112,6 @@ def _positional_index(fn: ast.FunctionDef | ast.AsyncFunctionDef,
         if arg.arg == name:
             return i
     return None
-
-
-def _parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
-    """Parse every source; unparseable files are silently skipped."""
-    trees: dict[str, ast.Module] = {}
-    for rel, text in files:
-        try:
-            trees[rel] = ast.parse(text)
-        except SyntaxError:
-            continue
-    return trees
-
-
-def _resolve_definition(
-        trees: dict[str, ast.Module], func_name: str, plan: RenamePlan
-) -> tuple[str, ast.FunctionDef | ast.AsyncFunctionDef] | None:
-    """The lone top-level definition of ``func_name``; appends a blocker and
-    returns None unless there is exactly one."""
-    definitions = [(rel, fn) for rel, tree in trees.items()
-                   for fn in _function_defs(tree, func_name)]
-    if len(definitions) != 1:
-        plan.blockers.append(
-            f"'{func_name}' must be defined exactly once at top level "
-            f"(found {len(definitions)})")
-        return None
-    return definitions[0]
 
 
 def _validate_droppable(fn: ast.FunctionDef | ast.AsyncFunctionDef,
@@ -315,7 +293,7 @@ def plan_param_drop(project_root: str | Path, func_name: str,
     sources = dict(files)
     trees = _parse_trees(files)
 
-    definition = _resolve_definition(trees, func_name, plan)
+    definition = _resolve_definition(plan, trees, func_name)
     if definition is None:
         return plan
     defmod, fn = definition

@@ -46,7 +46,54 @@ __all__ = [
     "literal_inner",
     "ColumnRewrite",
     "plan_single_module_column_rewrite",
+    "parse_trees",
+    "resolve_sole_definition",
 ]
+
+
+def parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
+    """Parse every ``(rel, text)`` source into its module tree, silently
+    skipping the ones that don't parse.
+
+    A syntactically-broken module is invisible to the AST-located transforms —
+    they can't reason about it — so it is dropped rather than raised on. This is
+    the identical ``_parse_trees`` body the project-wide signature transforms
+    (param-rename, param-drop, param-reorder, keywordify, move-module,
+    cross-file-rename) each carried privately, hoisted here verbatim."""
+    trees: dict[str, ast.Module] = {}
+    for rel, text in files:
+        try:
+            trees[rel] = ast.parse(text)
+        except SyntaxError:
+            continue
+    return trees
+
+
+def resolve_sole_definition(
+    plan: object, trees: dict[str, ast.Module], func_name: str,
+) -> tuple[str, ast.FunctionDef | ast.AsyncFunctionDef] | None:
+    """The single top-level definition of ``func_name`` across ``trees``, or
+    ``None`` (after appending a blocker to ``plan.blockers``) unless it is
+    defined exactly once at top level.
+
+    A definition is a top-level ``def`` or ``async def`` whose name matches.
+    This is the identical body the signature family's ``_resolve_definition`` /
+    ``_sole_definition`` / ``_locate_definition`` helpers (param-drop, param-add,
+    param-reorder) each carried — same blocker message, same exactly-one gate —
+    hoisted here once. ``plan`` only needs a ``blockers`` list, so this stays
+    decoupled from any concrete plan type and keeps ``_transform_base`` free of
+    a back-import on the transforms."""
+    definitions = [
+        (rel, fn) for rel, tree in trees.items() for fn in tree.body
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and fn.name == func_name
+    ]
+    if len(definitions) != 1:
+        plan.blockers.append(
+            f"'{func_name}' must be defined exactly once at top level "
+            f"(found {len(definitions)})")
+        return None
+    return definitions[0]
 
 
 def is_fixture_path(path: str) -> bool:

@@ -1,18 +1,22 @@
 """Tests for the shared transform primitives in ``_transform_base``.
 
-These cover the four helpers the single-module transforms extracted: the
-fixture-path exclusion, the column-span splice, the line-span replace, and the
-statement-block walker — including their edge and empty paths."""
+These cover the helpers the single-module transforms extracted: the
+fixture-path exclusion, the column-span splice, the line-span replace, the
+statement-block walker, the project-wide tree parser, and the sole-definition
+resolver — including their edge and empty paths."""
 
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass, field
 
 from app.execution._transform_base import (
     apply_column_rewrites,
     apply_line_rewrites,
     is_fixture_path,
     iter_statement_blocks,
+    parse_trees,
+    resolve_sole_definition,
 )
 
 
@@ -132,3 +136,82 @@ def test_iter_statement_blocks_yields_every_block():
 
 def test_iter_statement_blocks_empty_module():
     assert list(iter_statement_blocks(ast.parse(""))) == []
+
+
+# ── parse_trees ─────────────────────────────────────────────────────────────
+
+def test_parse_trees_parses_every_good_file():
+    files = [("a.py", "x = 1\n"), ("b.py", "def f():\n    return 2\n")]
+    trees = parse_trees(files)
+    assert set(trees) == {"a.py", "b.py"}
+    assert all(isinstance(t, ast.Module) for t in trees.values())
+
+
+def test_parse_trees_skips_unparseable_silently():
+    files = [("ok.py", "y = 1\n"), ("bad.py", "def (:\n")]
+    trees = parse_trees(files)
+    # The broken file is dropped, the good one survives — no exception raised.
+    assert set(trees) == {"ok.py"}
+
+
+def test_parse_trees_empty_input():
+    assert parse_trees([]) == {}
+
+
+# ── resolve_sole_definition ─────────────────────────────────────────────────
+
+@dataclass
+class _Plan:
+    """Minimal stand-in: the resolver only touches ``blockers``."""
+    blockers: list[str] = field(default_factory=list)
+
+
+def test_resolve_sole_definition_finds_the_one_def():
+    trees = {
+        "m.py": ast.parse("def f(a):\n    return a\n"),
+        "n.py": ast.parse("g = 1\n"),
+    }
+    plan = _Plan()
+    result = resolve_sole_definition(plan, trees, "f")
+    assert result is not None
+    rel, fn = result
+    assert rel == "m.py"
+    assert isinstance(fn, ast.FunctionDef) and fn.name == "f"
+    assert plan.blockers == []
+
+
+def test_resolve_sole_definition_matches_async_def():
+    trees = {"m.py": ast.parse("async def f():\n    return 1\n")}
+    plan = _Plan()
+    result = resolve_sole_definition(plan, trees, "f")
+    assert result is not None
+    _, fn = result
+    assert isinstance(fn, ast.AsyncFunctionDef)
+
+
+def test_resolve_sole_definition_blocks_on_zero():
+    trees = {"m.py": ast.parse("x = 1\n")}
+    plan = _Plan()
+    assert resolve_sole_definition(plan, trees, "f") is None
+    assert plan.blockers == [
+        "'f' must be defined exactly once at top level (found 0)"]
+
+
+def test_resolve_sole_definition_blocks_on_multiple():
+    trees = {
+        "m.py": ast.parse("def f():\n    return 1\n"),
+        "n.py": ast.parse("def f():\n    return 2\n"),
+    }
+    plan = _Plan()
+    assert resolve_sole_definition(plan, trees, "f") is None
+    assert plan.blockers == [
+        "'f' must be defined exactly once at top level (found 2)"]
+
+
+def test_resolve_sole_definition_ignores_nested_defs():
+    # A def nested inside another function is not a top-level definition.
+    trees = {"m.py": ast.parse("def outer():\n    def f():\n        return 1\n")}
+    plan = _Plan()
+    assert resolve_sole_definition(plan, trees, "f") is None
+    assert plan.blockers == [
+        "'f' must be defined exactly once at top level (found 0)"]

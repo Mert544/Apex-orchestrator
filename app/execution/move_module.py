@@ -27,6 +27,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.execution._transform_base import parse_trees as _parse_trees
 from app.execution.cross_file_rename import (
     Span,
     _apply_spans,
@@ -140,17 +141,6 @@ def _validate_move_paths(plan: MovePlan, root: Path, src_rel: str, dst_rel: str)
         if not part.isidentifier() or keyword.iskeyword(part):
             plan.blockers.append(f"destination path component '{part}' is not importable")
     return not plan.blockers
-
-
-def _parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
-    """Parse each (rel, text) pair, skipping files that don't parse."""
-    trees: dict[str, ast.Module] = {}
-    for rel, text in files:
-        try:
-            trees[rel] = ast.parse(text)
-        except SyntaxError:
-            continue
-    return trees
 
 
 def _moved_file_blocks_on_dir_change(src_rel: str, dst_rel: str, tree: ast.Module) -> bool:

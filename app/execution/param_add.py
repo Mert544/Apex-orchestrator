@@ -28,9 +28,13 @@ import ast
 import keyword as _kw
 from pathlib import Path
 
+from app.execution._transform_base import (
+    parse_trees as _parse_trees,
+    resolve_sole_definition as _sole_definition,
+)
 from app.execution.cross_file_rename import RenamePlan, _py_files
 from app.execution.param_drop import _segment, _signature_span
-from app.execution.param_rename import _all_params, _function_defs
+from app.execution.param_rename import _all_params
 
 __all__ = ["plan_param_add"]
 
@@ -91,28 +95,8 @@ def _parse_project(root: Path) -> tuple[dict[str, str], dict[str, ast.Module]]:
     """Read every ``.py`` file once: its text and (when parseable) its tree."""
     files = _py_files(root)
     sources = dict(files)
-    trees: dict[str, ast.Module] = {}
-    for rel, text in files:
-        try:
-            trees[rel] = ast.parse(text)
-        except SyntaxError:
-            continue
+    trees = _parse_trees(files)
     return sources, trees
-
-
-def _sole_definition(plan: RenamePlan, trees: dict[str, ast.Module],
-                     func_name: str) -> tuple[str, ast.FunctionDef
-                                              | ast.AsyncFunctionDef] | None:
-    """The single top-level def of ``func_name`` — blocks (and returns None)
-    unless it is defined exactly once across the project."""
-    definitions = [(rel, fn) for rel, tree in trees.items()
-                   for fn in _function_defs(tree, func_name)]
-    if len(definitions) != 1:
-        plan.blockers.append(
-            f"'{func_name}' must be defined exactly once at top level "
-            f"(found {len(definitions)})")
-        return None
-    return definitions[0]
 
 
 def _check_name_clash(plan: RenamePlan, fn: ast.FunctionDef

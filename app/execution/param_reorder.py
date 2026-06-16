@@ -25,9 +25,12 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from app.execution._transform_base import (
+    parse_trees as _parse_trees,
+    resolve_sole_definition as _locate_definition,
+)
 from app.execution.cross_file_rename import RenamePlan, _py_files
 from app.execution.param_drop import _segment, _signature_span
-from app.execution.param_rename import _function_defs
 
 __all__ = ["plan_param_reorder"]
 
@@ -78,31 +81,6 @@ def _rebuild_reordered(source: str, fn: ast.FunctionDef | ast.AsyncFunctionDef,
     if a.kwarg:
         parts.append(f"**{_segment(source, a.kwarg)}")
     return ", ".join(parts)
-
-
-def _parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
-    """Parse every source, skipping files that don't compile."""
-    trees: dict[str, ast.Module] = {}
-    for rel, text in files:
-        try:
-            trees[rel] = ast.parse(text)
-        except SyntaxError:
-            continue
-    return trees
-
-
-def _locate_definition(
-    plan: RenamePlan, trees: dict[str, ast.Module], func_name: str,
-) -> tuple[str, ast.FunctionDef | ast.AsyncFunctionDef] | None:
-    """The single top-level def of ``func_name`` — or None with a blocker set."""
-    definitions = [(rel, fn) for rel, tree in trees.items()
-                   for fn in _function_defs(tree, func_name)]
-    if len(definitions) != 1:
-        plan.blockers.append(
-            f"'{func_name}' must be defined exactly once at top level "
-            f"(found {len(definitions)})")
-        return None
-    return definitions[0]
 
 
 def _validate_permutation(

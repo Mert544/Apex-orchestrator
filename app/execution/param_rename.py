@@ -25,6 +25,7 @@ import ast
 import keyword as _kw
 from pathlib import Path
 
+from app.execution._transform_base import parse_trees as _parse_trees
 from app.execution.cross_file_rename import (
     RenamePlan,
     Span,
@@ -105,17 +106,6 @@ def _name_blocker(old: str, new: str) -> str | None:
     if old == new:
         return "old and new names are identical"
     return None
-
-
-def _parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
-    """Parse every readable file; skip the ones that don't parse."""
-    trees: dict[str, ast.Module] = {}
-    for rel, text in files:
-        try:
-            trees[rel] = ast.parse(text)
-        except SyntaxError:
-            continue
-    return trees
 
 
 def _resolve_definition(

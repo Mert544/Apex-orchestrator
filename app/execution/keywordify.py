@@ -30,8 +30,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from app.execution._transform_base import (
+    parse_trees as _parse_trees,
+    resolve_sole_definition,
+)
 from app.execution.cross_file_rename import RenamePlan, _py_files
-from app.execution.param_rename import _function_defs
 
 __all__ = ["plan_keywordify"]
 
@@ -47,17 +50,6 @@ def _span_clean(lines: list[str], start: tuple[int, int], end: tuple[int, int],
             else lines[sl - 1][sc:] + "".join(lines[sl:el - 1]) + lines[el - 1][:ec])
     stripped = text.strip()
     return stripped == ("," if expect_comma else "")
-
-
-def _parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
-    """Parse every file that parses; silently skip the ones that don't."""
-    trees: dict[str, ast.Module] = {}
-    for rel, text in files:
-        try:
-            trees[rel] = ast.parse(text)
-        except SyntaxError:
-            continue
-    return trees
 
 
 def _resolve_names(tree: ast.Module, func_name: str, dotted: str,
@@ -172,14 +164,10 @@ def plan_keywordify(project_root: str | Path, func_name: str) -> RenamePlan:
     sources = dict(files)
     trees = _parse_trees(files)
 
-    definitions = [(rel, fn) for rel, tree in trees.items()
-                   for fn in _function_defs(tree, func_name)]
-    if len(definitions) != 1:
-        plan.blockers.append(
-            f"'{func_name}' must be defined exactly once at top level "
-            f"(found {len(definitions)})")
+    definition = resolve_sole_definition(plan, trees, func_name)
+    if definition is None:
         return plan
-    defmod, fn = definitions[0]
+    defmod, fn = definition
     plan.defined_in = defmod
     dotted = defmod[:-3].replace("/", ".")
     n_posonly = len(fn.args.posonlyargs)
