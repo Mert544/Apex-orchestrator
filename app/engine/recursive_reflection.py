@@ -48,69 +48,95 @@ class RecursiveReflectionEngine:
         result.reflection_depth = self.max_depth
 
         # Layer 1: Evidence sufficiency
-        ev_score = len(evidence)
-        if ev_score >= 3 and confidence >= 0.7:
-            result.reflections.append("Layer 1 — Evidence appears sufficient for the claim.")
-        elif ev_score >= 1 and confidence >= 0.5:
-            result.reflections.append("Layer 1 — Evidence is present but may be incomplete.")
-            result.needs_more_evidence = True
-        else:
-            result.reflections.append("Layer 1 — Evidence is weak or missing. Claim is under-supported.")
-            result.needs_more_evidence = True
+        ev_reflection, result.needs_more_evidence = self._reflect_evidence(evidence, confidence)
+        result.reflections.append(ev_reflection)
 
         # Layer 2: Boundary check
-        absolute_words = ["all", "every", "always", "never", "no ", "none"]
-        has_absolute = any(aw in text.lower() for aw in absolute_words)
-        if has_absolute:
-            result.reflections.append(
-                f"Layer 2 — Claim uses absolute language ('{text}'). "
-                "Absolute claims are rarely true in software systems."
-            )
-        else:
-            result.reflections.append("Layer 2 — Claim language is bounded. Good.")
+        has_absolute = self._has_absolute_language(text)
+        result.reflections.append(self._reflect_boundary(text, has_absolute))
 
         # Layer 3: Counter-example generation
         counter_examples = self._generate_counterexamples(text, evidence)
         result.counter_examples = counter_examples
-        if counter_examples:
-            result.reflections.append(
-                f"Layer 3 — Generated {len(counter_examples)} counter-example scenario(s). "
-                "Claim must survive these to be considered robust."
-            )
-        else:
-            result.reflections.append("Layer 3 — Could not generate obvious counter-examples. This may mean the claim is too vague.")
+        result.reflections.append(self._reflect_counterexamples(counter_examples))
 
         # Layer 4: Meta-check (vagueness, circularity)
         word_count = len(text.split())
-        if word_count < 5:
-            result.reflections.append("Layer 4 — Claim is very short. May be too vague to evaluate meaningfully.")
-        elif word_count > 30:
-            result.reflections.append("Layer 4 — Claim is very long. May contain multiple sub-claims that should be split.")
-        else:
-            result.reflections.append("Layer 4 — Claim length is appropriate for evaluation.")
+        result.reflections.append(self._reflect_meta(word_count))
 
         # Final verdict
-        penalty = 0
-        if result.needs_more_evidence:
-            penalty += 0.3
-        if has_absolute:
-            penalty += 0.2
-        if len(counter_examples) >= 3:
-            penalty += 0.1
-        if word_count < 5:
-            penalty += 0.1
-
+        penalty = self._compute_penalty(
+            result.needs_more_evidence, has_absolute, len(counter_examples), word_count
+        )
         adjusted_confidence = max(0.0, confidence - penalty)
         result.is_valid = adjusted_confidence >= 0.5
 
-        if result.is_valid:
-            result.rationale = f"Claim survived {self.max_depth} reflection layers with adjusted confidence {adjusted_confidence:.2f}."
-            result.insight = self._generate_insight(text, evidence, "valid")
-        else:
-            result.rationale = f"Claim failed reflection scrutiny (adjusted confidence {adjusted_confidence:.2f}). Needs more evidence or narrower scope."
-            result.insight = self._generate_insight(text, evidence, "invalid")
+        result.rationale = self._verdict_rationale(result.is_valid, adjusted_confidence)
+        result.insight = self._generate_insight(
+            text, evidence, "valid" if result.is_valid else "invalid"
+        )
 
         return result
+
+    @staticmethod
+    def _reflect_evidence(evidence: list[str], confidence: float) -> tuple[str, bool]:
+        ev_score = len(evidence)
+        if ev_score >= 3 and confidence >= 0.7:
+            return "Layer 1 — Evidence appears sufficient for the claim.", False
+        if ev_score >= 1 and confidence >= 0.5:
+            return "Layer 1 — Evidence is present but may be incomplete.", True
+        return "Layer 1 — Evidence is weak or missing. Claim is under-supported.", True
+
+    @staticmethod
+    def _has_absolute_language(text: str) -> bool:
+        absolute_words = ["all", "every", "always", "never", "no ", "none"]
+        return any(aw in text.lower() for aw in absolute_words)
+
+    @staticmethod
+    def _reflect_boundary(text: str, has_absolute: bool) -> str:
+        if has_absolute:
+            return (
+                f"Layer 2 — Claim uses absolute language ('{text}'). "
+                "Absolute claims are rarely true in software systems."
+            )
+        return "Layer 2 — Claim language is bounded. Good."
+
+    @staticmethod
+    def _reflect_counterexamples(counter_examples: list[str]) -> str:
+        if counter_examples:
+            return (
+                f"Layer 3 — Generated {len(counter_examples)} counter-example scenario(s). "
+                "Claim must survive these to be considered robust."
+            )
+        return "Layer 3 — Could not generate obvious counter-examples. This may mean the claim is too vague."
+
+    @staticmethod
+    def _reflect_meta(word_count: int) -> str:
+        if word_count < 5:
+            return "Layer 4 — Claim is very short. May be too vague to evaluate meaningfully."
+        if word_count > 30:
+            return "Layer 4 — Claim is very long. May contain multiple sub-claims that should be split."
+        return "Layer 4 — Claim length is appropriate for evaluation."
+
+    @staticmethod
+    def _compute_penalty(
+        needs_more_evidence: bool, has_absolute: bool, counter_count: int, word_count: int
+    ) -> float:
+        penalty = 0
+        if needs_more_evidence:
+            penalty += 0.3
+        if has_absolute:
+            penalty += 0.2
+        if counter_count >= 3:
+            penalty += 0.1
+        if word_count < 5:
+            penalty += 0.1
+        return penalty
+
+    def _verdict_rationale(self, is_valid: bool, adjusted_confidence: float) -> str:
+        if is_valid:
+            return f"Claim survived {self.max_depth} reflection layers with adjusted confidence {adjusted_confidence:.2f}."
+        return f"Claim failed reflection scrutiny (adjusted confidence {adjusted_confidence:.2f}). Needs more evidence or narrower scope."
 
     @staticmethod
     def _generate_counterexamples(text: str, evidence: list[str]) -> list[str]:
