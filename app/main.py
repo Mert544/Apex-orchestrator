@@ -42,6 +42,51 @@ from app.utils.json_utils import pretty_json
 from app.utils.yaml_utils import load_yaml
 
 
+def _is_broad_plan(plan_name: str) -> bool:
+    """True for read-only sweeps that should run every scanner."""
+    return "project_scan" in plan_name or "full" in plan_name or "self" in plan_name
+
+
+def _wants_security(plan_name: str, broad: bool) -> bool:
+    """True when the security scanner applies to this plan."""
+    return "security" in plan_name or broad
+
+
+def _wants_docstring(plan_name: str, broad: bool) -> bool:
+    """True when the docstring scanner applies to this plan."""
+    return "docstring" in plan_name or "semantic" in plan_name or broad
+
+
+def _wants_test(plan_name: str, broad: bool) -> bool:
+    """True when the test-stub scanner applies to this plan."""
+    return (
+        "test" in plan_name
+        or "coverage" in plan_name
+        or "semantic" in plan_name
+        or broad
+    )
+
+
+def _wants_dependency(plan_name: str, broad: bool) -> bool:
+    """True when the dependency scanner applies to this plan."""
+    return "dependency" in plan_name or broad
+
+
+def _select_agents(plan_name: str, use_fractal: bool) -> list:
+    """Build the ordered agent list for a plan (pure, no side effects)."""
+    broad = _is_broad_plan(plan_name)
+    agents = []
+    if _wants_security(plan_name, broad):
+        agents.append(FractalSecurityAgent() if use_fractal else SecurityAgent())
+    if _wants_docstring(plan_name, broad):
+        agents.append(FractalDocstringAgent() if use_fractal else DocstringAgent())
+    if _wants_test(plan_name, broad):
+        agents.append(FractalTestStubAgent() if use_fractal else TestStubAgent())
+    if _wants_dependency(plan_name, broad):
+        agents.append(DependencyAgent())
+    return agents
+
+
 def _build_swarm_for_plan(
     plan_name: str, use_fractal: bool = False
 ) -> SwarmCoordinator:
@@ -52,26 +97,7 @@ def _build_swarm_for_plan(
     the plain variants so every finding gets 5-Whys deep analysis.
     """
     coord = SwarmCoordinator()
-
-    # project_scan is a broad read-only sweep: run every scanner.
-    broad = "project_scan" in plan_name or "full" in plan_name or "self" in plan_name
-
-    agents = []
-    if "security" in plan_name or broad:
-        agents.append(FractalSecurityAgent() if use_fractal else SecurityAgent())
-    if "docstring" in plan_name or "semantic" in plan_name or broad:
-        agents.append(FractalDocstringAgent() if use_fractal else DocstringAgent())
-    if (
-        "test" in plan_name
-        or "coverage" in plan_name
-        or "semantic" in plan_name
-        or broad
-    ):
-        agents.append(FractalTestStubAgent() if use_fractal else TestStubAgent())
-    if "dependency" in plan_name or broad:
-        agents.append(DependencyAgent())
-
-    coord.register_agents(agents)
+    coord.register_agents(_select_agents(plan_name, use_fractal))
     return coord
 
 
