@@ -1,3 +1,30 @@
+"""OPTIONAL, OFF-BY-DEFAULT, NETWORK-USING research helper.
+
+WARNING: This module is NOT part of Apex's offline deterministic core and is
+NOT imported by any core path. Apex's wedge is DETERMINISTIC, LLM-free,
+ZERO-TOKEN, and OFFLINE by default. Using anything in this module performs
+live HTTP requests and therefore BREAKS the air-gap / zero-token guarantee.
+
+It exists purely as an explicitly opt-in capability for callers who knowingly
+accept network egress. The off-by-default contract is enforced as follows
+(mirroring ``app/llm/router.py``'s ``NoOpProvider`` default-off convention):
+
+  * Importing this module performs NO network or I/O.
+  * Constructing a provider performs NO network or I/O.
+  * Network requests happen ONLY when ``search()`` is explicitly called.
+  * Each provider is DISABLED (a no-op returning ``[]``) unless explicitly
+    activated:
+      - ``TavilySearchProvider`` requires an explicit ``api_key`` argument or
+        the ``TAVILY_API_KEY`` env var; absent that it is disabled.
+      - ``WikipediaSearchProvider`` requires the opt-in env flag
+        ``EPISTEMIC_ENABLE_LIVE_SEARCH=1``; absent that it is disabled.
+  * ``CompositeSearchTool`` skips any provider whose ``enabled`` is falsy, so a
+    default-constructed tool makes no network calls.
+
+Do NOT wire this into a core reasoning/scoring path. Keeping it loud and
+opt-in preserves Apex's offline determinism.
+"""
+
 from __future__ import annotations
 
 import json

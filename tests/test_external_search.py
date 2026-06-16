@@ -1,3 +1,4 @@
+import importlib
 import json
 from unittest.mock import patch
 
@@ -26,6 +27,46 @@ class _FakeProvider:
 
 def _r(title):
     return SearchResult(title=title, snippet="s", source="fake")
+
+
+# --- Opt-in / off-by-default quarantine guarantees --------------------------
+
+def _boom(*args, **kwargs):
+    raise AssertionError("network call attempted (urlopen) — must not happen")
+
+
+def test_import_and_construction_do_no_network(monkeypatch):
+    """Importing the module and building default providers makes no network call.
+
+    Any ``urlopen`` invocation during import/construction is a hard failure,
+    protecting Apex's offline / zero-token wedge.
+    """
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("EPISTEMIC_ENABLE_LIVE_SEARCH", raising=False)
+    with patch("urllib.request.urlopen", _boom):
+        module = importlib.import_module("app.tools.external_search")
+        importlib.reload(module)
+        # Default construction must not reach out either.
+        module.TavilySearchProvider()
+        module.WikipediaSearchProvider()
+        module.CompositeSearchTool()
+
+
+def test_providers_default_disabled_without_explicit_key(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("EPISTEMIC_ENABLE_LIVE_SEARCH", raising=False)
+    assert TavilySearchProvider().enabled is False
+    assert WikipediaSearchProvider().enabled is False
+
+
+def test_default_composite_makes_no_network_call(monkeypatch):
+    """A default-constructed CompositeSearchTool stays a no-op (offline)."""
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("EPISTEMIC_ENABLE_LIVE_SEARCH", raising=False)
+    with patch("urllib.request.urlopen", _boom):
+        tool = CompositeSearchTool()
+        assert tool.search("anything") == []
+        assert tool.last_provider is None
 
 
 # --- CompositeSearchTool (the engine improvement) ---------------------------
