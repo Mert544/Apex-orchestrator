@@ -47,13 +47,15 @@ def test_nav_links_gate_with_sections():
         trajectory=[],
         learned=None,
     )
-    minimal = d._nav_links(**base, outscope_html="", trackrecord_html="")
+    minimal = d._nav_links(
+        **base, outscope_html="", trackrecord_html="", quality_html="",
+    )
     # The always-present spine is there...
     for anchor in ("#overview", "#findings", "#architecture", "#ideas",
                    "#actions", "#reasoning", "#profile"):
         assert f"href='{anchor}'" in minimal
     # ...and gated ones are absent when their data is missing.
-    for anchor in ("#shape", "#roadmap", "#frontier", "#autonomy",
+    for anchor in ("#quality", "#shape", "#roadmap", "#frontier", "#autonomy",
                    "#trajectory", "#learned", "#trackrecord", "#outscope",
                    "#debug", "#repository"):
         assert f"href='{anchor}'" not in minimal
@@ -71,8 +73,9 @@ def test_nav_links_gate_with_sections():
         learned={"most_reliable": [{"key": "k"}]},
         outscope_html="<section id='outscope'></section>",
         trackrecord_html="<section id='trackrecord'></section>",
+        quality_html="<section id='quality'></section>",
     )
-    for anchor in ("#shape", "#roadmap", "#frontier", "#autonomy",
+    for anchor in ("#quality", "#shape", "#roadmap", "#frontier", "#autonomy",
                    "#trajectory", "#learned", "#trackrecord", "#outscope",
                    "#debug", "#repository"):
         assert f"href='{anchor}'" in rich

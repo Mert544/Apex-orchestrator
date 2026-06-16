@@ -1075,6 +1075,138 @@ def _outscope_section(project_root: str) -> str:
     return _card("outscope", "🌐", "Outside analysis scope", f"{caption}{table}")
 
 
+def _quality_pct_bar(label: str, ratio: float, detail: str = "") -> str:
+    """A labelled 0..100% progress bar reusing the dark-theme ``.bar`` styling.
+
+    ``ratio`` is clamped to [0,1] and tone-bucketed (good >=70% / warn >=30% /
+    bad). ``detail`` is an optional escaped suffix (e.g. ``"482/600 functions"``).
+    """
+    pct = max(0, min(100, int(round(float(ratio) * 100))))
+    tone = "bar-good" if pct >= 70 else "bar-warn" if pct >= 30 else "bar-bad"
+    detail_html = f" <span class='muted'>{_esc(detail)}</span>" if detail else ""
+    return (
+        f"<div class='bar-wrap'><div class='bar-label'>{_esc(label)} "
+        f"<b>{pct}%</b>{detail_html}</div><div class='bar'><div class='bar-fill {tone}' "
+        f"style='width:{pct}%'></div></div></div>"
+    )
+
+
+def _quality_section(project_root: str) -> str:
+    """Surface the deterministic code-quality analyzers as one dashboard card.
+
+    Runs four pure analyzers from ``app.tools`` over ``project_root`` — type-hint
+    coverage, public docstring coverage, the cyclomatic-complexity profile, and
+    the inline TODO/FIXME debt census — and renders whichever produced data as
+    chips + bars + a hotspots list. Each analyzer is wrapped independently so a
+    single failure (or an absent module) degrades to "omitted" rather than
+    breaking the card; the whole section returns "" when none yields data, so the
+    page stays byte-identical for repos where nothing is measurable. Every
+    codebase-sourced string is HTML-escaped; deterministic, no timestamp.
+    """
+    chips: list[str] = []
+    blocks: list[str] = []
+
+    try:
+        from app.tools.type_hint_coverage import analyze_type_hint_coverage
+
+        th = analyze_type_hint_coverage(project_root)
+    except Exception:
+        th = None
+    if th is not None and th.total_functions > 0:
+        chips.append(_chip("type hints", f"{int(round(th.overall_ratio * 100))}%"))
+        blocks.append(_quality_pct_bar(
+            "Type-hint coverage", th.overall_ratio,
+            f"{th.annotated_functions}/{th.total_functions} functions fully annotated",
+        ))
+        worst = [m for m in th.worst_modules if m.get("ratio", 1.0) < 1.0][:5]
+        if worst:
+            lis = "".join(
+                f"<li><code>{_esc(m.get('module', '?'))}</code> "
+                f"<span class='val'>{int(round(float(m.get('ratio', 0)) * 100))}%</span> "
+                f"<span class='muted'>({_esc(m.get('annotated', 0))}/"
+                f"{_esc(m.get('total', 0))})</span></li>"
+                for m in worst
+            )
+            blocks.append(
+                "<h4 style='margin:8px 0 4px'>Thinnest-typed modules</h4>"
+                f"<ul class='commits'>{lis}</ul>"
+            )
+
+    try:
+        from app.tools.docstring_coverage import analyze_docstring_coverage
+
+        dc = analyze_docstring_coverage(project_root)
+    except Exception:
+        dc = None
+    if dc is not None and dc.total_public > 0:
+        chips.append(_chip("public docs", f"{int(round(dc.overall_public_ratio * 100))}%"))
+        blocks.append(_quality_pct_bar(
+            "Public docstring coverage", dc.overall_public_ratio,
+            f"{dc.documented_public}/{dc.total_public} public symbols documented",
+        ))
+
+    try:
+        from app.tools.complexity_profile import analyze_complexity
+
+        cx = analyze_complexity(project_root)
+    except Exception:
+        cx = None
+    if cx is not None and cx.total > 0:
+        chips.append(_chip(f"complexity > {cx.threshold}", cx.over_threshold))
+        chips.append(_chip("max complexity", cx.max))
+        blocks.append(
+            "<p class='muted' style='margin:6px 0 4px'>"
+            f"{_esc(cx.over_threshold)} of {_esc(cx.total)} functions exceed "
+            f"complexity {_esc(cx.threshold)} "
+            f"(mean {_esc(cx.mean)} · median {_esc(cx.median)} · max {_esc(cx.max)}).</p>"
+        )
+        hot = cx.hotspots[:5]
+        if hot:
+            lis = "".join(
+                f"<li><code>{_esc(h.get('module', '?'))}</code>"
+                f"<span class='muted'>·</span><code>{_esc(h.get('function', '?'))}</code> "
+                f"<span class='val'>{_esc(h.get('complexity', 0))}</span></li>"
+                for h in hot
+            )
+            blocks.append(
+                "<h4 style='margin:8px 0 4px'>Complexity hotspots</h4>"
+                f"<ul class='commits'>{lis}</ul>"
+            )
+
+    try:
+        from app.tools.todo_debt import analyze_todo_debt
+
+        td = analyze_todo_debt(project_root)
+    except Exception:
+        td = None
+    if td is not None and td.total > 0:
+        chips.append(_chip("debt markers", td.total))
+        by = " · ".join(
+            f"{_esc(k)} {_esc(v)}" for k, v in td.by_marker.items() if v
+        )
+        blocks.append(
+            f"<p class='muted' style='margin:6px 0 4px'>{_esc(td.total)} inline "
+            f"debt markers — {by}</p>"
+        )
+        items = td.items[:5]
+        if items:
+            lis = "".join(
+                f"<li><code>{_esc(i.get('module', '?'))}:{_esc(i.get('line', '?'))}</code> "
+                f"<span class='op'>{_esc(i.get('marker', ''))}</span> "
+                f"<span class='muted'>{_esc(i.get('text', ''))}</span></li>"
+                for i in items
+            )
+            blocks.append(
+                "<h4 style='margin:8px 0 4px'>Recent markers</h4>"
+                f"<ul class='commits'>{lis}</ul>"
+            )
+
+    if not chips and not blocks:
+        return ""
+    inner = f"<div class='chips'>{''.join(chips)}</div>{''.join(blocks)}"
+    return _card("quality", "📊", "Code quality metrics", inner)
+
+
 def _reasoning_section(r: dict[str, Any]) -> str:
     if "error" in r:
         return _card("reasoning", "🧠", "Reasoning &amp; telemetry",
@@ -1443,7 +1575,7 @@ _BRAND_MARK = (
 
 def _nav_links(
     project_root, git, debug, roadmap, shape, autonomy, pareto, trajectory,
-    learned, *, outscope_html: str, trackrecord_html: str,
+    learned, *, outscope_html: str, trackrecord_html: str, quality_html: str,
 ) -> str:
     """Build the sticky-nav anchor list, gating optional sections in page order.
 
@@ -1452,6 +1584,8 @@ def _nav_links(
     """
     nav_links = [("overview", "Overview"), ("findings", "Findings"),
                  ("architecture", "Architecture"), ("ideas", "Ideas")]
+    if quality_html:
+        nav_links.append(("quality", "Quality"))
     if shape is not None and getattr(shape, "total_ideas", 0):
         nav_links.append(("shape", "Shape"))
     if roadmap is not None and getattr(roadmap, "phases", None):
@@ -1481,12 +1615,13 @@ def _nav_links(
 def _page_sections(
     project_root, profile, findings, idea_report, action_plan, reasoning,
     git, debug, roadmap, shape, autonomy, pareto, trajectory, learned,
-    *, outscope_html: str, trackrecord_html: str,
+    *, outscope_html: str, trackrecord_html: str, quality_html: str,
 ) -> str:
     """Concatenate every section renderer in page order.
 
-    ``outscope_html``/``trackrecord_html`` are passed in pre-rendered so the work
-    is done exactly once (it also drives nav gating) rather than recomputed here.
+    ``outscope_html``/``trackrecord_html``/``quality_html`` are passed in
+    pre-rendered so the work is done exactly once (it also drives nav gating)
+    rather than recomputed here.
     """
     return "".join(
         [
@@ -1494,6 +1629,7 @@ def _page_sections(
             _findings_section(findings, project_root),
             _architecture_section(profile),
             _ideas_section(idea_report),
+            quality_html,
             _shape_section(shape),
             _roadmap_section(roadmap),
             _roadmap_changes_section(project_root, roadmap),
@@ -1523,9 +1659,11 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
     trajectory = trajectory or []
     outscope_html = _outscope_section(project_root)
     trackrecord_html = _trackrecord_section(learned, project_root)
+    quality_html = _quality_section(project_root)
     links = _nav_links(
         project_root, git, debug, roadmap, shape, autonomy, pareto, trajectory,
         learned, outscope_html=outscope_html, trackrecord_html=trackrecord_html,
+        quality_html=quality_html,
     )
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     hero_vitals = _hero_vitals(project_root, profile, findings, idea_report, action_plan)
@@ -1534,6 +1672,7 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         project_root, profile, findings, idea_report, action_plan, reasoning,
         git, debug, roadmap, shape, autonomy, pareto, trajectory, learned,
         outscope_html=outscope_html, trackrecord_html=trackrecord_html,
+        quality_html=quality_html,
     )
     mark = _BRAND_MARK
     return (
