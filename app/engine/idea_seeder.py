@@ -36,6 +36,30 @@ class IdeaSeeder:
         ("config_files", 1, "Make configuration {s} environment-aware", "config"),
     ]
 
+    def _functions_by_module(
+        self, profile: ProjectProfile, attr: str
+    ) -> dict[str, list[dict]]:
+        """``module -> [fn, ...]`` index over a profile's function list, built once.
+
+        ``_module_anchors`` is called once per module across several signal
+        families (confluence/fragile/dependency-hub/complexity-hotspot/
+        hub-untested). The naive version re-scans the WHOLE ``hotspot_functions``
+        (and ``impure_untested_functions``) list on every call — O(modules x
+        functions). This memoizes a per-module grouping for the lifetime of one
+        ``seed`` pass (cache keyed by ``id(profile)`` so a fresh profile rebuilds),
+        preserving list order within each module so the downstream dedup+sort is
+        byte-identical.
+        """
+        cache = self.__dict__.setdefault("_fn_index_cache", {})
+        ckey = (id(profile), attr)
+        index = cache.get(ckey)
+        if index is None:
+            index = {}
+            for fn in (getattr(profile, attr, []) or []):
+                index.setdefault(fn.get("module"), []).append(fn)
+            cache[ckey] = index
+        return index
+
     def _module_anchors(self, profile: ProjectProfile, module: str) -> list[dict]:
         """The riskiest function(s) WITHIN ``module``, as concrete anchors.
 
@@ -48,9 +72,9 @@ class IdeaSeeder:
         """
         candidates: list[dict] = []
         seen: set[tuple[str, int]] = set()
-        for fn in (getattr(profile, "hotspot_functions", []) or []):
-            if fn.get("module") != module:
-                continue
+        hotspots = self._functions_by_module(profile, "hotspot_functions")
+        for fn in hotspots.get(module, ()):
+            # Module already matches by construction of the index.
             symbol = fn.get("function", "")
             line = int(fn.get("line", 0) or 0)
             complexity = int(fn.get("complexity", 0) or 0)
@@ -69,9 +93,8 @@ class IdeaSeeder:
         # in when the module has no complexity hotspot (they still ground the
         # idea on a real, named function + line).
         if not candidates:
-            for fn in (getattr(profile, "impure_untested_functions", []) or []):
-                if fn.get("module") != module:
-                    continue
+            impure = self._functions_by_module(profile, "impure_untested_functions")
+            for fn in impure.get(module, ()):
                 symbol = fn.get("function", "")
                 line = int(fn.get("line", 0) or 0)
                 key = (symbol, line)
@@ -221,8 +244,28 @@ class IdeaSeeder:
         return 0
 
     @staticmethod
+    def _build_importers(
+        edges: list[tuple[str, str]],
+    ) -> dict[str, set[str]]:
+        """``target -> {sources importing it}`` from the edge list, built once.
+
+        The whole-graph scan that ``_fanin_fanout_from_edges`` needs. Extracted so
+        a single ``seed`` pass that falls back to raw edges for several modules
+        rebuilds this once (memoized in ``_quantified_clause``) instead of
+        re-scanning every edge per module. Self-edges are dropped, matching the
+        original per-call construction.
+        """
+        importers: dict[str, set[str]] = {}
+        for source, target in edges:
+            if source == target:
+                continue
+            importers.setdefault(target, set()).add(source)
+        return importers
+
+    @classmethod
     def _fanin_fanout_from_edges(
-        edges: list[tuple[str, str]], module: str
+        cls, edges: list[tuple[str, str]], module: str,
+        importers: dict[str, set[str]] | None = None,
     ) -> tuple[int, list[str]]:
         """Fan-in count and heaviest fan-out targets for ``module`` from edges.
 
@@ -234,13 +277,17 @@ class IdeaSeeder:
         target's own fan-in (the most-depended-on dependency first — shedding it
         cuts the most convergence), tie-broken by path, capped at 3. Deterministic
         for a given edge list.
+
+        ``importers`` (``target -> {sources}``) may be supplied pre-built to avoid
+        re-scanning the whole edge list per module; when omitted it is built here,
+        so the standalone behaviour is unchanged.
         """
-        importers: dict[str, set[str]] = {}
+        if importers is None:
+            importers = cls._build_importers(edges)
         deps: set[str] = set()
         for source, target in edges:
             if source == target:
                 continue
-            importers.setdefault(target, set()).add(source)
             if source == module:
                 deps.add(target)
         fanin = len(importers.get(module, set()))
@@ -275,7 +322,17 @@ class IdeaSeeder:
         # Fall back to the raw edge list when the precomputed dicts are absent.
         if fanin is None or (name_targets and targets is None):
             edges = getattr(profile, "dependency_edges", []) or []
-            edge_fanin, edge_targets = self._fanin_fanout_from_edges(edges, module)
+            # The importers graph is invariant across modules in one seed pass —
+            # build it once and reuse it instead of re-scanning every edge per
+            # module that falls back to the raw edge list.
+            cache = self.__dict__.setdefault("_importers_cache", {})
+            ckey = id(profile)
+            importers = cache.get(ckey)
+            if importers is None:
+                importers = self._build_importers(edges)
+                cache[ckey] = importers
+            edge_fanin, edge_targets = self._fanin_fanout_from_edges(
+                edges, module, importers)
             if fanin is None:
                 fanin = edge_fanin
             if targets is None:
@@ -390,6 +447,11 @@ class IdeaSeeder:
         roots: list[IdeaNode] = []
         seen_subjects: set[str] = set()
         self._accel = accelerating or {}
+        # Per-pass derived-data caches (module->functions index, importers graph)
+        # are memoized by ``id(profile)``; reset them so a recycled id from a prior
+        # pass can never serve stale data for a different profile.
+        self._fn_index_cache = {}
+        self._importers_cache = {}
 
         # High-severity content signals claim their subject first: a guaranteed
         # crash or a real vulnerability is more urgent than "this file is a hub"

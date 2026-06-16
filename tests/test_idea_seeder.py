@@ -662,3 +662,124 @@ def test_fragile_claims_subject_over_hub_untested():
     claims = [r for r in roots if r.subject == "app/core.py"]
     assert len(claims) == 1
     assert claims[0].source_facts[0].startswith("fragile:")
+
+
+# --- characterization: byte-identical seeded set under the perf optimization ---
+#
+# These pin the FULL seeded-root list (subject + source_facts + values +
+# novelty + title + rationale) for a rich profile that exercises the memoized
+# fast paths added for performance: several modules share one
+# ``hotspot_functions`` / ``impure_untested_functions`` list (the per-module
+# index) and one ``dependency_edges`` list with no precomputed fan-in/out (the
+# importers-graph reuse in ``_quantified_clause``). If any optimization changed
+# the output, the frozen snapshot below — or the same-input-twice equality —
+# would break.
+
+def _rich_profile() -> ProjectProfile:
+    return _profile(
+        # Shared function lists scanned once per module by the index.
+        hotspot_functions=[
+            {"module": "app/a.py", "function": "Klass.run", "line": 30,
+             "complexity": 14, "cognitive": 9},
+            {"module": "app/a.py", "function": "helper", "line": 10,
+             "complexity": 7},
+            {"module": "app/b.py", "function": "compute", "line": 5,
+             "complexity": 11},
+        ],
+        impure_untested_functions=[
+            {"module": "app/c.py", "function": "writer", "line": 12,
+             "side_effects": ["fs", "log"]},
+        ],
+        # One edge list, no precomputed fan-in/out -> the edge fallback fires
+        # for every hub/confluence module and reuses the importers graph.
+        dependency_edges=[
+            ("app/x.py", "app/a.py"),
+            ("app/y.py", "app/a.py"),
+            ("app/z.py", "app/b.py"),
+            ("app/a.py", "app/b.py"),
+            ("app/a.py", "app/c.py"),
+        ],
+        confluence_modules=[
+            {"module": "app/a.py", "family_count": 3,
+             "families": ("high-churn", "hub", "untested")},
+        ],
+        fragile_modules=["app/b.py"],
+        dependency_hubs=["app/a.py", "app/b.py"],
+        hotspot_modules=["app/c.py"],
+        hub_untested_modules=[{"module": "app/c.py", "fan_in": 4}],
+        ci_files=["ci.yml"],
+    )
+
+
+def _snapshot(roots):
+    return [
+        (r.id, r.subject, r.title, r.rationale, tuple(r.source_facts),
+         r.value, r.novelty, r.depth, r.operator,
+         tuple((a["module"], a["symbol"], a["line"], a["metric"]) for a in r.anchors))
+        for r in roots
+    ]
+
+
+def test_seeded_set_is_deterministic_across_runs():
+    # Same input twice -> byte-identical seeded set (the optimization caches are
+    # reset per pass, so a second seed must reproduce the first exactly).
+    seeder = IdeaSeeder()
+    profile = _rich_profile()
+    first = _snapshot(seeder.seed(profile))
+    second = _snapshot(seeder.seed(profile))
+    assert first == second
+    # A fresh seeder / fresh profile object reproduces the same set, too.
+    assert _snapshot(IdeaSeeder().seed(_rich_profile())) == first
+
+
+def test_seeded_set_matches_frozen_characterization():
+    roots = IdeaSeeder().seed(_rich_profile())
+    snap = _snapshot(roots)
+
+    # Every root keeps the value/novelty root invariants.
+    assert all(s[5] == 0.0 and s[6] == 1.0 and s[7] == 0 and s[8] == "root"
+               for s in snap)
+
+    # Subjects, in exact seeded order.
+    assert [s[1] for s in snap] == [
+        "app/a.py",            # confluence (claims the module subject first)
+        "app/b.py",            # fragile
+        "app/c.py",            # hotspot module / hub-untested (deduped to one)
+        "app/a.py::Klass.run",  # symbol-grain hotspot functions (own subjects)
+        "app/a.py::helper",
+        "app/b.py::compute",
+        "app/c.py::writer",     # impure-untested function
+    ]
+
+    by_subject = {s[1]: s for s in snap}
+
+    # Confluence root: anchored at app/a.py's two hotspot functions (complexity
+    # desc, then line) and quantified off the reused importers graph.
+    a = by_subject["app/a.py"]
+    assert a[0] == "idea-0"
+    assert a[2].startswith("Untangle app/a.py — 3 independent pressures")
+    assert a[4] == (
+        "confluence: app/a.py (3 signal families converge: high-churn, hub, "
+        "untested; untested)",
+    )
+    assert a[9] == (
+        ("app/a.py", "Klass.run", 30, "cyclomatic 14"),
+        ("app/a.py", "helper", 10, "cyclomatic 7"),
+    )
+    # Fan-in (2 importers: x, y) and heaviest fan-out targets named.
+    assert "Imported by 2 modules" in a[3]
+    assert "heaviest" in a[3]
+
+    # Fragile root: app/b.py anchored at its single hotspot, fan-in quantified
+    # (no named targets, name_targets=False).
+    b = by_subject["app/b.py"]
+    assert b[2].startswith("Reduce fragility")
+    assert b[9] == (("app/b.py", "compute", 5, "cyclomatic 11"),)
+    assert "Imported by 2 modules" in b[3]   # a and z import b
+    assert "heaviest" not in b[3]
+
+    # The c.py module is claimed once (hotspot-module before hub-untested) and
+    # anchored at its impure-untested function (the hotspot fallback).
+    c = by_subject["app/c.py"]
+    assert c[4][0].startswith("complexity-hotspot:")
+    assert c[9] == (("app/c.py", "writer", 12, "impure, untested"),)
