@@ -788,6 +788,45 @@ def _proof_applied_count(project_root: str) -> int:
         return 0
 
 
+def _trackrecord_rates(learned: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """De-dup the learned per-fix-type rows by key and sort by rate desc, then key.
+
+    Pure: most/least reliable operators carry ``{"key","success_rate","samples"}``
+    and an operator can appear in both lists when only one is tracked, so the first
+    occurrence per key wins (the most/least order is preserved by the caller).
+    """
+    learned = learned or {}
+    by_key: dict[str, dict[str, Any]] = {}
+    for row in (learned.get("most_reliable") or []) + (learned.get("least_reliable") or []):
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key", "")).strip()
+        if not key or key in by_key:
+            continue
+        by_key[key] = row
+    return sorted(
+        by_key.values(),
+        key=lambda r: (-float(r.get("success_rate", 0.0) or 0.0), str(r.get("key", ""))),
+    )
+
+
+def _trackrecord_table(rates: list[dict[str, Any]]) -> str:
+    """Render the landing-rate table, or "" when no rates are tracked. Pure."""
+    rows = "".join(
+        f"<tr><td><code>{_esc(r.get('key', ''))}</code></td>"
+        f"<td class='num'>{int(float(r.get('success_rate', 0.0) or 0.0) * 100)}%</td>"
+        f"<td class='num'>{_esc(r.get('samples', 0))}</td></tr>"
+        for r in rates
+    )
+    if not rows:
+        return ""
+    return (
+        "<table><thead><tr><th>Fix type</th><th>Landing rate</th>"
+        "<th>Samples</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
 def _trackrecord_section(learned: dict[str, Any] | None, project_root: str) -> str:
     """Apex's PROVEN track record on *this* project — the evidence-backed
     "proven over time" story an LLM cannot offer.
@@ -799,22 +838,7 @@ def _trackrecord_section(learned: dict[str, Any] | None, project_root: str) -> s
     no landed fixes the section returns "" (byte-identical to before this panel
     existed). Every codebase-sourced string is HTML-escaped; no timestamp.
     """
-    learned = learned or {}
-    # Landing rates per fix type: most/least reliable operators carry
-    # {"key","success_rate","samples"}. De-dup by key (an operator can appear in
-    # both lists when only one is tracked) and sort by rate desc, then key.
-    by_key: dict[str, dict[str, Any]] = {}
-    for row in (learned.get("most_reliable") or []) + (learned.get("least_reliable") or []):
-        if not isinstance(row, dict):
-            continue
-        key = str(row.get("key", "")).strip()
-        if not key or key in by_key:
-            continue
-        by_key[key] = row
-    rates = sorted(
-        by_key.values(),
-        key=lambda r: (-float(r.get("success_rate", 0.0) or 0.0), str(r.get("key", ""))),
-    )
+    rates = _trackrecord_rates(learned)
     landed = _proof_applied_count(project_root)
     if not rates and not landed:
         return ""
@@ -827,19 +851,7 @@ def _trackrecord_section(learned: dict[str, Any] | None, project_root: str) -> s
         "<p class='muted'>Every landed fix was test-verified with automatic "
         "rollback on failure — an evidence record, not a promise.</p>"
     )
-    rows = "".join(
-        f"<tr><td><code>{_esc(r.get('key', ''))}</code></td>"
-        f"<td class='num'>{int(float(r.get('success_rate', 0.0) or 0.0) * 100)}%</td>"
-        f"<td class='num'>{_esc(r.get('samples', 0))}</td></tr>"
-        for r in rates
-    )
-    table = ""
-    if rows:
-        table = (
-            "<table><thead><tr><th>Fix type</th><th>Landing rate</th>"
-            "<th>Samples</th></tr></thead>"
-            f"<tbody>{rows}</tbody></table>"
-        )
+    table = _trackrecord_table(rates)
     return _card("trackrecord", "🏆", "Track record",
                  f"<div class='chips'>{chips}</div>{intro}{table}")
 
@@ -1164,39 +1176,45 @@ def _proof_section(project_root: str) -> str:
                  f"<div class='chips'>{chips}</div>{table}{sub}")
 
 
-def _roadmap_changes_section(project_root: str, roadmap) -> str:
-    """Cross-run roadmap story: which signals produced the new work, which
-    stopped firing — when a saved snapshot exists to compare against."""
+def _roadmap_changes_diff(project_root: str, roadmap):
+    """Load the saved roadmap snapshot and diff ``roadmap`` against it.
+
+    Returns the ``RoadmapDiff`` (best-effort), or ``None`` when there is no
+    roadmap/phases, no snapshot to compare against, or any load/diff step raises —
+    so the caller gates to "" in every absent case, byte-identical to before.
+    """
     if roadmap is None or not getattr(roadmap, "phases", None):
-        return ""
+        return None
     try:
         from pathlib import Path as _Path
 
-        from app.engine.roadmap_history import (
-            _count_signals,
-            _signal_phrase,
-            diff_roadmaps,
-            load_snapshot,
-        )
+        from app.engine.roadmap_history import diff_roadmaps, load_snapshot
 
         snapshot = load_snapshot(_Path(project_root) / ".apex" / "roadmap-snapshot.json")
         if not snapshot:
-            return ""
-        diff = diff_roadmaps(snapshot, roadmap)
+            return None
+        return diff_roadmaps(snapshot, roadmap)
     except Exception:
-        return ""
-    if not (diff.new or diff.dropped):
-        return ""
-    parts = [f"<div class='chips'>{_chip('new', len(diff.new))}"
-             f"{_chip('no longer surfaced', len(diff.dropped))}"
-             f"{_chip('stable', diff.stable_count)}</div>"]
+        return None
+
+
+def _roadmap_changes_signals(diff) -> list[str]:
+    """The two optional signal-narration paragraphs (new work / stopped firing). Pure."""
+    from app.engine.roadmap_history import _count_signals, _signal_phrase
+
+    parts: list[str] = []
     new_signals = _count_signals(diff.new)
     gone_signals = _count_signals(diff.dropped)
     if new_signals:
         parts.append(f"<p><b>Where the new work comes from:</b> {_esc(_signal_phrase(new_signals))}</p>")
     if gone_signals:
         parts.append(f"<p><b>Signals that stopped firing:</b> {_esc(_signal_phrase(gone_signals))}</p>")
-    items = "".join(
+    return parts
+
+
+def _roadmap_changes_items(diff) -> str:
+    """Render the new (🆕) then dropped (✅) change ``<li>`` items (capped at 6 each). Pure."""
+    return "".join(
         f"<li>🆕 [{_esc(c.curr_phase)}] {_esc(c.title)}"
         + (f" — <code>{_esc(c.grounded_in)}</code>" if c.grounded_in else "") + "</li>"
         for c in diff.new[:6]
@@ -1206,6 +1224,19 @@ def _roadmap_changes_section(project_root: str, roadmap) -> str:
         + "</li>"
         for c in diff.dropped[:6]
     )
+
+
+def _roadmap_changes_section(project_root: str, roadmap) -> str:
+    """Cross-run roadmap story: which signals produced the new work, which
+    stopped firing — when a saved snapshot exists to compare against."""
+    diff = _roadmap_changes_diff(project_root, roadmap)
+    if diff is None or not (diff.new or diff.dropped):
+        return ""
+    parts = [f"<div class='chips'>{_chip('new', len(diff.new))}"
+             f"{_chip('no longer surfaced', len(diff.dropped))}"
+             f"{_chip('stable', diff.stable_count)}</div>"]
+    parts.extend(_roadmap_changes_signals(diff))
+    items = _roadmap_changes_items(diff)
     if items:
         parts.append(f"<ul>{items}</ul>")
     return _card("changes", "📈", "Roadmap changes since last snapshot", "".join(parts))
