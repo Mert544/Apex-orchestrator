@@ -94,19 +94,17 @@ def _module_tags(profile: Any) -> dict[str, set[str]]:
     return tags
 
 
-def discover_structured(profile: Any) -> list[Discovery]:
-    """Scored, stably-keyed discoveries — the form the dream ranks and promotes."""
-    tags = _module_tags(profile)
-    if len(tags) < 2:
-        return []
-    out: list[Discovery] = []
-
+def _tag_counts(tags: dict[str, set[str]]) -> dict[str, int]:
+    """How many modules carry each tag — the base rate every confidence divides by."""
     counts: dict[str, int] = {}
     for tagset in tags.values():
         for t in tagset:
             counts[t] = counts.get(t, 0) + 1
+    return counts
 
-    # --- pairwise associations ---------------------------------------------
+
+def _associations(tags: dict[str, set[str]], counts: dict[str, int]) -> list[Discovery]:
+    """Pairwise rules: of modules carrying A, what fraction also carry B?"""
     pair_co: dict[tuple[str, str], int] = {}
     for tagset in tags.values():
         for a, b in combinations(sorted(tagset), 2):
@@ -126,24 +124,36 @@ def discover_structured(profile: Any) -> list[Discovery]:
                       f"also `{dst}` ({n} module(s)) — a discovered association, "
                       "not a coded rule.")))
     assoc.sort(key=lambda d: (-d.confidence, -d.support, d.key))
-    out += assoc[:4]
+    return assoc[:4]
 
-    # --- triple rules: A ∧ B ⇒ C -------------------------------------------
-    triples: list[Discovery] = []
+
+def _pair_modules(tags: dict[str, set[str]]) -> dict[tuple[str, str], set[str]]:
+    """Which modules carry each ordered tag-pair — the support set for triples."""
     pair_modules: dict[tuple[str, str], set[str]] = {}
     for module, tagset in tags.items():
         for a, b in combinations(sorted(tagset), 2):
             pair_modules.setdefault((a, b), set()).add(module)
-    for (a, b), mods in pair_modules.items():
+    return pair_modules
+
+
+def _third_counts(tags: dict[str, set[str]], mods: set[str],
+                  a: str, b: str) -> dict[str, int]:
+    """Candidate C tags on the A∧B modules, excluding A and B themselves."""
+    third_counts: dict[str, int] = {}
+    for m in mods:
+        for t in tags[m]:
+            if t not in (a, b):
+                third_counts[t] = third_counts.get(t, 0) + 1
+    return third_counts
+
+
+def _triples(tags: dict[str, set[str]]) -> list[Discovery]:
+    """Higher-order rules: A ∧ B ⇒ C the pairwise view can't see."""
+    triples: list[Discovery] = []
+    for (a, b), mods in _pair_modules(tags).items():
         if len(mods) < TRIPLE_MIN_SUPPORT:
             continue
-        # candidate C: a tag on all/most of these modules, distinct from a,b.
-        third_counts: dict[str, int] = {}
-        for m in mods:
-            for t in tags[m]:
-                if t not in (a, b):
-                    third_counts[t] = third_counts.get(t, 0) + 1
-        for c, n in third_counts.items():
+        for c, n in _third_counts(tags, mods, a, b).items():
             conf = n / len(mods)
             if n >= TRIPLE_MIN_SUPPORT and conf >= TRIPLE_MIN_CONFIDENCE:
                 key = f"triple:{'&'.join(sorted((a, b)))}>{c}"
@@ -153,15 +163,18 @@ def discover_structured(profile: Any) -> list[Discovery]:
                           f"`{b}` are {int(conf * 100)}% also `{c}` "
                           f"({n} module(s)).")))
     triples.sort(key=lambda d: (-d.confidence, -d.support, d.key))
-    out += triples[:2]
+    return triples[:2]
 
-    # --- confluence: unusually broad fingerprint ----------------------------
+
+def _confluences(tags: dict[str, set[str]]) -> list[Discovery]:
+    """Modules whose signal fingerprint is unusually broad — named by breadth."""
     breadth = {m: len(ts) for m, ts in tags.items()}
     typical = sorted(breadth.values())[len(breadth) // 2]
-    confluences = sorted(
+    ranked = sorted(
         ((m, n) for m, n in breadth.items() if n >= CONFLUENCE_FLOOR and n > typical),
         key=lambda kv: (-kv[1], kv[0]))
-    for module, n in confluences[:2]:
+    out: list[Discovery] = []
+    for module, n in ranked[:2]:
         signals = ", ".join(sorted(tags[module]))
         # Confidence scales with how far above the typical breadth it sits.
         conf = min(1.0, n / (typical + n))
@@ -170,6 +183,15 @@ def discover_structured(profile: Any) -> list[Discovery]:
             text=(f"`{module}` is a confluence — {n} distinct signals at once "
                   f"({signals}); no single lens names it.")))
     return out
+
+
+def discover_structured(profile: Any) -> list[Discovery]:
+    """Scored, stably-keyed discoveries — the form the dream ranks and promotes."""
+    tags = _module_tags(profile)
+    if len(tags) < 2:
+        return []
+    counts = _tag_counts(tags)
+    return _associations(tags, counts) + _triples(tags) + _confluences(tags)
 
 
 def discover(profile: Any) -> list[str]:
