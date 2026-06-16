@@ -204,6 +204,40 @@ def _data_flow(fn, before: list, stmts: list, after: list) -> tuple[list[str], l
     return live_in, live_out
 
 
+def _names_with_ctx(nodes: list, ctx_type: type) -> set[str]:
+    """Names in ``nodes`` whose context is ``ctx_type`` (Load → reads, Store →
+    assignments) — the per-statement form of :func:`_loads` / raw stores."""
+    return {n.id for n in nodes
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ctx_type)}
+
+
+def _augassign_targets(nodes: list) -> set[str]:
+    """AugAssign name targets (``x += 1``) found in ``nodes``."""
+    return {n.target.id for n in nodes
+            if isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name)}
+
+
+def _comprehension_targets(nodes: list) -> set[str]:
+    """Comprehension iteration variables among ``nodes`` — scoped to their comp,
+    so they're not function locals (the per-statement form of comp-target walk)."""
+    out: set[str] = set()
+    for n in nodes:
+        if isinstance(n, _COMP_NODES):
+            for gen in n.generators:
+                for t in ast.walk(gen.target):
+                    if isinstance(t, ast.Name):
+                        out.add(t.id)
+    return out
+
+
+def _statement_blocks(stmt, nodes: list) -> bool:
+    """True if ``stmt`` is relocate-unsafe: a nested scope / control node in its
+    subtree, or a ``break``/``continue`` whose loop lies outside it."""
+    if any(isinstance(n, (*_NESTED_SCOPE_NODES, *_CONTROL_NODES)) for n in nodes):
+        return True
+    return _has_unenclosed_jump(stmt)
+
+
 class _StmtFacts:
     """The data-flow primitives of a *single* statement, walked exactly once.
 
@@ -228,35 +262,14 @@ class _StmtFacts:
     __slots__ = ("loads", "aug", "raw_stores", "comp", "blocks")
 
     def __init__(self, stmt) -> None:
-        loads: set[str] = set()
-        aug: set[str] = set()
-        raw_stores: set[str] = set()
-        comp: set[str] = set()
-        blocks = False
-        for n in ast.walk(stmt):
-            if isinstance(n, ast.Name):
-                ctx = n.ctx
-                if isinstance(ctx, ast.Load):
-                    loads.add(n.id)
-                elif isinstance(ctx, ast.Store):
-                    raw_stores.add(n.id)
-            elif isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name):
-                aug.add(n.target.id)
-            elif isinstance(n, _COMP_NODES):
-                for gen in n.generators:
-                    for t in ast.walk(gen.target):
-                        if isinstance(t, ast.Name):
-                            comp.add(t.id)
-            if not blocks and isinstance(n, (*_NESTED_SCOPE_NODES, *_CONTROL_NODES)):
-                blocks = True
-        # An unenclosed break/continue blocks too — checked once per statement.
-        if not blocks and _has_unenclosed_jump(stmt):
-            blocks = True
-        self.loads = loads
-        self.aug = aug
-        self.raw_stores = raw_stores
-        self.comp = comp
-        self.blocks = blocks
+        # Walk the statement exactly once, then classify the flat node list with
+        # pure helpers — same sets, same single traversal as the inlined loop.
+        nodes = list(ast.walk(stmt))
+        self.loads = _names_with_ctx(nodes, ast.Load)
+        self.raw_stores = _names_with_ctx(nodes, ast.Store)
+        self.aug = _augassign_targets(nodes)
+        self.comp = _comprehension_targets(nodes)
+        self.blocks = _statement_blocks(stmt, nodes)
 
 
 def _reindent(src_lines: list[str], base_indent: int) -> list[str]:
