@@ -75,7 +75,8 @@ def run_ruff() -> int:
                           cwd=str(ROOT)).returncode
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    """The argument parser — kept apart so ``main`` reads as pure control flow."""
     parser = argparse.ArgumentParser(description="Apex chunked verification gate")
     parser.add_argument("--chunks", type=int, default=DEFAULT_CHUNKS,
                         help=f"number of test chunks (default {DEFAULT_CHUNKS})")
@@ -85,22 +86,56 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lint-only", action="store_true", help="run ruff only")
     parser.add_argument("pytest_args", nargs="*",
                         help="extra args passed through to pytest (after --)")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def select_chunks(all_chunks: list[list[Path]], chunk: int) -> list[list[Path]]:
+    """The chunks to run: just chunk ``K`` (1-based) if requested and in range,
+    else every chunk. Pure — the in-range check is shared with ``chunk_in_range``."""
+    if chunk and chunk_in_range(chunk, len(all_chunks)):
+        return [all_chunks[chunk - 1]]
+    return all_chunks
+
+
+def chunk_in_range(chunk: int, total: int) -> bool:
+    """Whether a 1-based ``--chunk`` selector names an existing chunk."""
+    return 1 <= chunk <= total
+
+
+def chunk_label(i: int, chunk: int, total: int, selected: int) -> str:
+    """Header label for the i-th selected chunk: pinned to the requested chunk's
+    position when ``--chunk`` was given, else its index within the run."""
+    return f"chunk {chunk}/{total}" if chunk else f"chunk {i}/{selected}"
+
+
+def render_summary(results: list[tuple[str, int]], elapsed: float) -> tuple[list[str], int]:
+    """Render the final summary block as lines plus the process exit code (1 if
+    any step failed, else 0). Pure: no printing, no clock — caller supplies both."""
+    failed = [name for name, code in results if code != 0]
+    lines = ["\n" + "=" * 48]
+    lines += [f"  {'PASS' if code == 0 else 'FAIL'}  {name}" for name, code in results]
+    lines.append(f"  {'─' * 44}")
+    if failed:
+        lines.append(f"  ❌ {len(failed)} step(s) failed: {', '.join(failed)}  ({elapsed:.0f}s)")
+        return lines, 1
+    lines.append(f"  ✅ all green ({len(results)} step(s), {elapsed:.0f}s)")
+    return lines, 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
 
     start = time.time()
     results: list[tuple[str, int]] = []
 
     if not args.lint_only:
         all_chunks = chunk_files(discover_tests(), args.chunks)
-        selected = ([all_chunks[args.chunk - 1]]
-                    if args.chunk and 1 <= args.chunk <= len(all_chunks)
-                    else all_chunks)
-        if args.chunk and not (1 <= args.chunk <= len(all_chunks)):
+        if args.chunk and not chunk_in_range(args.chunk, len(all_chunks)):
             print(f"⛔ --chunk {args.chunk} out of range (1..{len(all_chunks)})")
             return 2
+        selected = select_chunks(all_chunks, args.chunk)
         for i, chunk in enumerate(selected, 1):
-            label = (f"chunk {args.chunk}/{len(all_chunks)}"
-                     if args.chunk else f"chunk {i}/{len(selected)}")
+            label = chunk_label(i, args.chunk, len(all_chunks), len(selected))
             print(f"\n===== {label} — {len(chunk)} file(s) =====", flush=True)
             results.append((label, run_chunk(chunk, args.pytest_args)))
 
@@ -108,17 +143,10 @@ def main(argv: list[str] | None = None) -> int:
         print("\n===== ruff check app/ =====", flush=True)
         results.append(("ruff", run_ruff()))
 
-    elapsed = time.time() - start
-    print("\n" + "=" * 48)
-    failed = [name for name, code in results if code != 0]
-    for name, code in results:
-        print(f"  {'PASS' if code == 0 else 'FAIL'}  {name}")
-    print(f"  {'─' * 44}")
-    if failed:
-        print(f"  ❌ {len(failed)} step(s) failed: {', '.join(failed)}  ({elapsed:.0f}s)")
-        return 1
-    print(f"  ✅ all green ({len(results)} step(s), {elapsed:.0f}s)")
-    return 0
+    lines, code = render_summary(results, time.time() - start)
+    for line in lines:
+        print(line)
+    return code
 
 
 if __name__ == "__main__":
