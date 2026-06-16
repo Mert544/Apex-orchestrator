@@ -102,6 +102,52 @@ def _targets(tree: ast.Module, source: str) -> list[tuple[ast.BinOp, str, str]]:
     return out
 
 
+def _verified_literal(node: ast.BinOp, quote: str, folded_inner: str) -> str | None:
+    """Return the spliced literal only if it round-trips to the same value."""
+    new_literal = f"{quote}{folded_inner}{quote}"
+    # Value-equivalence: the new literal must evaluate to the concatenation
+    # of the two originals. If not, refuse this splice entirely.
+    try:
+        new_value = ast.literal_eval(new_literal)
+    except (ValueError, SyntaxError):
+        return None
+    assert isinstance(node.left, ast.Constant)
+    assert isinstance(node.right, ast.Constant)
+    if new_value != node.left.value + node.right.value:
+        return None
+    return new_literal
+
+
+def _splice_line(line: str, node: ast.BinOp, quote: str, folded_inner: str) -> str | None:
+    """Return ``line`` with ``node``'s span replaced, or ``None`` to skip it."""
+    start = node.col_offset
+    end = node.end_col_offset or 0
+    if end <= start or end > len(line):
+        return None
+    new_literal = _verified_literal(node, quote, folded_inner)
+    if new_literal is None:
+        return None
+    return line[:start] + new_literal + line[end:]
+
+
+def _splice_all(lines: list[str], nodes: list[tuple[ast.BinOp, str, str]]) -> int:
+    """Apply every foldable splice in place; return the count applied."""
+    changed = 0
+    # Rightmost-first so splicing one node never shifts an earlier node's columns.
+    for node, quote, folded_inner in sorted(
+        nodes, key=lambda t: (t[0].lineno, t[0].col_offset), reverse=True
+    ):
+        li = node.lineno - 1
+        if li >= len(lines):
+            continue
+        spliced = _splice_line(lines[li], node, quote, folded_inner)
+        if spliced is None:
+            continue
+        lines[li] = spliced
+        changed += 1
+    return changed
+
+
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
@@ -112,33 +158,7 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
         return None
 
     lines = source.splitlines(keepends=True)
-    changed = 0
-    # Rightmost-first so splicing one node never shifts an earlier node's columns.
-    for node, quote, folded_inner in sorted(
-        nodes, key=lambda t: (t[0].lineno, t[0].col_offset), reverse=True
-    ):
-        li = node.lineno - 1
-        if li >= len(lines):
-            continue
-        line = lines[li]
-        start = node.col_offset
-        end = node.end_col_offset or 0
-        if end <= start or end > len(line):
-            continue
-        new_literal = f"{quote}{folded_inner}{quote}"
-        # Value-equivalence: the new literal must evaluate to the concatenation
-        # of the two originals. If not, refuse this splice entirely.
-        try:
-            new_value = ast.literal_eval(new_literal)
-        except (ValueError, SyntaxError):
-            continue
-        assert isinstance(node.left, ast.Constant)
-        assert isinstance(node.right, ast.Constant)
-        if new_value != node.left.value + node.right.value:
-            continue
-        lines[li] = line[:start] + new_literal + line[end:]
-        changed += 1
-
+    changed = _splice_all(lines, nodes)
     if changed == 0:
         return None
 
