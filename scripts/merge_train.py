@@ -146,65 +146,67 @@ def discover_auto_refs(base: str) -> list[str]:
     return sorted(set(refs))
 
 
-def plan_refs(base: str, refs: list[str]) -> list[RefPlan]:
-    """Compute the deterministic integration plan for ``refs`` against ``base``.
+def _add_candidates(
+    refs: list[str], files_by_ref: dict[str, list[str]], tracked: set[str]
+) -> dict[str, set[str]]:
+    """Refs whose every changed file is brand-new versus ``tracked`` (as file sets).
 
-    Add-only refs (every changed file is brand-new versus the base tree AND no two
-    add-only refs introduce the same new path) are ordered first. The remaining
-    refs are partitioned with :func:`partition_work`: a ref alone in its partition
-    is ``"parallel"`` (disjoint from all others), a ref sharing a partition is
-    ``"serial"`` (overlapping — ordered/manual merge), and its ``peers`` are the
-    other refs in that partition. The returned list is the final integration order:
-    add-only refs (by name), then the rest (by name).
+    A ref qualifies only if it changes at least one file and none of its changed
+    files already exist in the base tree — the precondition for being add-only.
     """
-    # Import here so the module imports cleanly even outside the app context
-    # (e.g. ``--help``); the partitioner is only needed for real planning.
-    from app.engine.work_partition import Task, partition_work
-
-    refs = sorted(set(refs))
-    tracked = tracked_files(base)
-
-    files_by_ref: dict[str, list[str]] = {r: changed_files(base, r) for r in refs}
-
-    # A ref is a candidate for "add-only" when every file it changes is new
-    # relative to the base tree. It only STAYS add-only if no other add-only
-    # candidate introduces an overlapping new path (two branches creating the same
-    # file would still collide), so such refs are demoted to the partitioned set.
-    add_candidates = {
+    return {
         r: set(files_by_ref[r])
         for r in refs
         if files_by_ref[r] and all(f not in tracked for f in files_by_ref[r])
     }
-    add_only: set[str] = set()
-    for r, fs in add_candidates.items():
-        clashes = any(
-            other != r and fs & add_candidates[other] for other in add_candidates
-        )
-        if not clashes:
-            add_only.add(r)
 
-    rest = [r for r in refs if r not in add_only]
 
-    # Partition the non-additive refs by change blast-radius overlap.
-    serial_peers: dict[str, list[str]] = {}
-    if rest:
-        tasks = [Task(name=r, files=files_by_ref[r]) for r in rest]
-        for part in partition_work(ROOT, tasks):
-            if len(part.tasks) > 1:
-                for t in part.tasks:
-                    serial_peers[t] = sorted(x for x in part.tasks if x != t)
+def _add_only_refs(candidates: dict[str, set[str]]) -> set[str]:
+    """Add-only candidates that introduce no path another candidate also creates.
 
-    plans: list[RefPlan] = []
-    for r in sorted(add_only):
-        plans.append(
-            RefPlan(
-                ref=r,
-                changed=files_by_ref[r],
-                adds_only=True,
-                group="add",
-                peers=[],
-            )
-        )
+    Two add-only branches creating the same new file would still collide, so a
+    candidate sharing a new path with any other candidate is demoted (dropped here)
+    into the partitioned set.
+    """
+    return {
+        r
+        for r, fs in candidates.items()
+        if not any(o != r and fs & candidates[o] for o in candidates)
+    }
+
+
+def _serial_peers(
+    rest: list[str], files_by_ref: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    """Map each overlapping ref to its sorted serial peers via :func:`partition_work`.
+
+    Refs alone in their partition are omitted (they are parallel-safe); only refs
+    sharing a partition appear, each mapped to the other refs in that partition.
+    """
+    from app.engine.work_partition import Task, partition_work
+
+    peers: dict[str, list[str]] = {}
+    if not rest:
+        return peers
+    tasks = [Task(name=r, files=files_by_ref[r]) for r in rest]
+    for part in partition_work(ROOT, tasks):
+        if len(part.tasks) > 1:
+            for t in part.tasks:
+                peers[t] = sorted(x for x in part.tasks if x != t)
+    return peers
+
+
+def _build_plans(
+    add_only: set[str],
+    rest: list[str],
+    files_by_ref: dict[str, list[str]],
+    serial_peers: dict[str, list[str]],
+) -> list[RefPlan]:
+    """Assemble the ordered plan list: add-only refs first, then the rest (by name)."""
+    plans: list[RefPlan] = [
+        RefPlan(ref=r, changed=files_by_ref[r], adds_only=True, group="add", peers=[])
+        for r in sorted(add_only)
+    ]
     for r in sorted(rest):
         peers = serial_peers.get(r, [])
         plans.append(
@@ -217,6 +219,29 @@ def plan_refs(base: str, refs: list[str]) -> list[RefPlan]:
             )
         )
     return plans
+
+
+def plan_refs(base: str, refs: list[str]) -> list[RefPlan]:
+    """Compute the deterministic integration plan for ``refs`` against ``base``.
+
+    Add-only refs (every changed file is brand-new versus the base tree AND no two
+    add-only refs introduce the same new path) are ordered first. The remaining
+    refs are partitioned with :func:`partition_work`: a ref alone in its partition
+    is ``"parallel"`` (disjoint from all others), a ref sharing a partition is
+    ``"serial"`` (overlapping — ordered/manual merge), and its ``peers`` are the
+    other refs in that partition. The returned list is the final integration order:
+    add-only refs (by name), then the rest (by name).
+    """
+    refs = sorted(set(refs))
+    tracked = tracked_files(base)
+    files_by_ref: dict[str, list[str]] = {r: changed_files(base, r) for r in refs}
+
+    candidates = _add_candidates(refs, files_by_ref, tracked)
+    add_only = _add_only_refs(candidates)
+    rest = [r for r in refs if r not in add_only]
+    serial_peers = _serial_peers(rest, files_by_ref)
+
+    return _build_plans(add_only, rest, files_by_ref, serial_peers)
 
 
 def _overlapping_files(plan: RefPlan, plans: list[RefPlan]) -> list[str]:
