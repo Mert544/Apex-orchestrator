@@ -781,17 +781,7 @@ class IdeaPermutationEngine:
         nested in the tree and never violate the operator-permutation invariant
         (which applies only to ``kind="permutation"`` ideas).
         """
-        # A leaf is a permutation idea that produced no permutation children.
-        perm_parents = {
-            n.parent_id for n in emitted if n.kind == "permutation" and n.parent_id
-        }
-        leaves = [
-            n for n in emitted
-            if n.kind == "permutation"
-            and n.operator != "root"
-            and n.operator in _FACETS
-            and n.id not in perm_parents
-        ]
+        leaves = self._facet_leaves(emitted)
 
         # Adaptive zoom: high-value branches grow past the base facet_depth by a
         # bounded bonus, so the fractal *sharpens where it pays off* instead of
@@ -826,32 +816,74 @@ class IdeaPermutationEngine:
         for level in range(1, max_level + 1):
             if _stop():
                 break
-            sources.sort(key=lambda n: (n.value, n.branch_path), reverse=True)
-            # Base levels: facet the top `per_level`. Adaptive extra levels: keep
-            # only the single strongest branch (and only while it stays valuable).
-            if level <= self.facet_depth:
-                sources = sources[:per_level]
-            else:
-                sources = [s for s in sources[:1] if s.value >= self.adaptive_depth_threshold]
-            next_sources: list[IdeaNode] = []
-            for src in sources:
-                if _stop():
-                    break
-                for child in self._facet_children(src, level):
-                    if _stop():
-                        break
-                    if graph.has_similar_claim(child.title):
-                        continue
-                    self._score(child, relevance)
-                    # _score recomputes feasibility only for roots, so the
-                    # inherited feasibility on the facet is preserved.
-                    graph.register_claim(child.title)
-                    self.budget.consume_node()
-                    emitted.append(child)
-                    counter["added"] += 1
-                    next_sources.append(child)
-            sources = next_sources
+            sources = self._select_level_sources(sources, level, per_level)
+            sources = self._emit_facet_level(
+                sources, level, emitted, relevance, graph, counter, _stop
+            )
         stats["faceted"] = counter["added"]
+
+    @staticmethod
+    def _facet_leaves(emitted: list[IdeaNode]) -> list[IdeaNode]:
+        """The permutation leaves eligible to open into facets.
+
+        A leaf is a non-root permutation idea with a known facet vocabulary that
+        itself produced no permutation children.
+        """
+        perm_parents = {
+            n.parent_id for n in emitted if n.kind == "permutation" and n.parent_id
+        }
+        return [
+            n for n in emitted
+            if n.kind == "permutation"
+            and n.operator != "root"
+            and n.operator in _FACETS
+            and n.id not in perm_parents
+        ]
+
+    def _select_level_sources(
+        self, sources: list[IdeaNode], level: int, per_level: int
+    ) -> list[IdeaNode]:
+        """Best-first selection of the sources to facet at this zoom level.
+
+        Base levels facet the top ``per_level``; adaptive extra levels keep only
+        the single strongest branch (and only while it stays valuable).
+        """
+        sources = sorted(
+            sources, key=lambda n: (n.value, n.branch_path), reverse=True
+        )
+        if level <= self.facet_depth:
+            return sources[:per_level]
+        return [s for s in sources[:1] if s.value >= self.adaptive_depth_threshold]
+
+    def _emit_facet_level(
+        self,
+        sources: list[IdeaNode],
+        level: int,
+        emitted: list[IdeaNode],
+        relevance: RelevanceScorer,
+        graph: GraphStore,
+        counter: dict[str, int],
+        stop: Any,
+    ) -> list[IdeaNode]:
+        """Score and emit one BFS level of facets; return the next level's sources."""
+        next_sources: list[IdeaNode] = []
+        for src in sources:
+            if stop():
+                break
+            for child in self._facet_children(src, level):
+                if stop():
+                    break
+                if graph.has_similar_claim(child.title):
+                    continue
+                self._score(child, relevance)
+                # _score recomputes feasibility only for roots, so the
+                # inherited feasibility on the facet is preserved.
+                graph.register_claim(child.title)
+                self.budget.consume_node()
+                emitted.append(child)
+                counter["added"] += 1
+                next_sources.append(child)
+        return next_sources
 
     @staticmethod
     def _facet_caveat(phrase: str) -> str:
