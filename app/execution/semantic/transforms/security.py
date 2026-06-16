@@ -6,32 +6,28 @@ from ..result import SemanticPatchResult
 from .base import _get_indent, import_insert_index
 
 
+def _select_patcher(issue: str):
+    """Return the patch function whose keyword matches ``issue``, else None.
+
+    Order matters and mirrors the original if-chain exactly: the first keyword
+    group that matches wins.
+    """
+    for keywords, patcher in _DISPATCH:
+        if any(keyword in issue for keyword in keywords):
+            return patcher
+    return None
+
+
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return None
 
-    issue = title.lower()
-    if "eval" in issue:
-        return _patch_eval(rel_path, source, tree)
-    if "os.system" in issue:
-        return _patch_os_system(rel_path, source, tree)
-    if "bare except" in issue or "bareexcept" in issue:
-        return _patch_bare_except(rel_path, source, tree)
-    if "base-exception" in issue or "baseexception" in issue:
-        return _patch_base_exception(rel_path, source, tree)
-    if "pickle" in issue:
-        return _patch_pickle(rel_path, source, tree)
-    if "sql" in issue or "injection" in issue:
-        return _patch_sql_injection(rel_path, source, tree)
-    if "yaml" in issue:
-        return _patch_yaml_load(rel_path, source, tree)
-    if "tempfile" in issue or "mktemp" in issue:
-        return _patch_mktemp(rel_path, source, tree)
-    if "weak-hash" in issue or "hashlib" in issue:
-        return _patch_weak_hash(rel_path, source, tree)
-    return None
+    patcher = _select_patcher(title.lower())
+    if patcher is None:
+        return None
+    return patcher(rel_path, source, tree)
 
 
 def _patch_weak_hash(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
@@ -467,3 +463,19 @@ def _get_arg_source(arg_node: ast.expr, source: str) -> str:
         if isinstance(arg_node, ast.Constant) and isinstance(arg_node.value, str):
             return repr(arg_node.value)
     return ""
+
+
+# Issue-keyword -> patcher dispatch, in the SAME precedence order as the
+# original if-chain in ``apply``. The first group whose keyword appears in the
+# lowercased title wins.
+_DISPATCH = (
+    (("eval",), _patch_eval),
+    (("os.system",), _patch_os_system),
+    (("bare except", "bareexcept"), _patch_bare_except),
+    (("base-exception", "baseexception"), _patch_base_exception),
+    (("pickle",), _patch_pickle),
+    (("sql", "injection"), _patch_sql_injection),
+    (("yaml",), _patch_yaml_load),
+    (("tempfile", "mktemp"), _patch_mktemp),
+    (("weak-hash", "hashlib"), _patch_weak_hash),
+)

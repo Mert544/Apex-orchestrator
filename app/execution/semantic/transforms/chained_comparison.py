@@ -76,43 +76,61 @@ def _has_side_effect(node: ast.expr) -> bool:
     return any(isinstance(sub, unsafe) for sub in ast.walk(node))
 
 
-def _merge_boolop(node: ast.BoolOp) -> ast.Compare | None:
-    """Return the merged chained ``Compare`` for a mergeable BoolOp, else None."""
+def _both_single_compares(node: ast.BoolOp):
+    """Return ``(left, right)`` if the BoolOp is two single ``and``-joined compares.
+
+    A single compare has exactly one operator and one comparator. Returns None
+    unless every structural precondition holds.
+    """
     if not isinstance(node.op, ast.And):
         return None
     if len(node.values) != 2:
         return None
-
     left, right = node.values
     if not isinstance(left, ast.Compare) or not isinstance(right, ast.Compare):
         return None
-
-    # Each arm must be a single comparison: one operator, hence one comparator.
     if len(left.ops) != 1 or len(left.comparators) != 1:
         return None
     if len(right.ops) != 1 or len(right.comparators) != 1:
         return None
+    return left, right
+
+
+def _compatible_directions(left_op: ast.cmpop, right_op: ast.cmpop) -> bool:
+    """True if both operators are chainable and point the same way (or both ==)."""
+    if type(left_op) not in _DIRECTION or type(right_op) not in _DIRECTION:
+        return False
+    return _DIRECTION[type(left_op)] == _DIRECTION[type(right_op)]
+
+
+def _safe_shared_middle(middle_a: ast.expr, middle_b: ast.expr) -> bool:
+    """True if the two middle terms match and the middle is re-evaluation-safe."""
+    if not _structurally_equal(middle_a, middle_b):
+        return False
+    return _is_side_effect_free(middle_a)
+
+
+def _merge_boolop(node: ast.BoolOp) -> ast.Compare | None:
+    """Return the merged chained ``Compare`` for a mergeable BoolOp, else None."""
+    arms = _both_single_compares(node)
+    if arms is None:
+        return None
+    left, right = arms
 
     left_op = left.ops[0]
     right_op = right.ops[0]
-    if type(left_op) not in _DIRECTION or type(right_op) not in _DIRECTION:
-        return None
-    if _DIRECTION[type(left_op)] != _DIRECTION[type(right_op)]:
+    if not _compatible_directions(left_op, right_op):
         return None
 
     # Shared middle term: right operand of first compare == left operand of second.
     middle_a = left.comparators[0]
-    middle_b = right.left
-    if not _structurally_equal(middle_a, middle_b):
-        return None
-    if not _is_side_effect_free(middle_a):
+    if not _safe_shared_middle(middle_a, right.left):
         return None
 
     # No participating operand may carry a side effect: the merge folds all four
     # operand slots into one expression, so we refuse if anything is unsafe.
-    for operand in (left.left, middle_a, right.comparators[0]):
-        if _has_side_effect(operand):
-            return None
+    if any(_has_side_effect(op) for op in (left.left, middle_a, right.comparators[0])):
+        return None
 
     chained = ast.Compare(
         left=left.left,
