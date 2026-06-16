@@ -43,7 +43,10 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from app.execution._dedup_helpers import stamp_multi_module_plan
+from app.execution._dedup_helpers import (
+    resolve_occurrence_prefix,
+    stamp_multi_module_plan,
+)
 from app.execution.cross_file_rename import RenamePlan
 from app.execution.dedup_extract import (
     _Occurrence,
@@ -57,7 +60,6 @@ from app.execution.dedup_extract import (
 from app.execution.extract_method import (
     _NESTED_SCOPE_NODES,
     _data_flow,
-    _enclosing_function,
     _has_unenclosed_jump,
     _reindent,
 )
@@ -151,25 +153,11 @@ def _resolve_total_return(rel: str, start_line: int, n_statements: int,
     unsafe / ambiguous case. Same resolution shape as dedup_extract's
     ``_resolve_occurrence`` (reused helpers), differing only in the control-flow
     admissibility check (``_total_return_reason``)."""
-    if rel not in trees:
-        plan.blockers.append(f"{rel}: not a readable project module")
+    prefix = resolve_occurrence_prefix(plan, rel, start_line, n_statements,
+                                       sources, trees, _locate_run)
+    if prefix is None:
         return None
-    tree = trees[rel]
-    source = sources[rel]
-
-    fn, container = _enclosing_function(tree, start_line, start_line)
-    if fn is None:
-        plan.blockers.append(
-            f"{rel}:{start_line}: occurrence isn't inside one top-level "
-            "function/method body (closures aren't supported)")
-        return None
-
-    run = _locate_run(fn, start_line, n_statements)
-    if not run:
-        plan.blockers.append(
-            f"{rel}:{start_line}: couldn't snap the block to a contiguous run "
-            f"of {n_statements} complete statements")
-        return None
+    source, fn, container, run = prefix
 
     reason = _total_return_reason(run)
     if reason:

@@ -15,7 +15,9 @@ with them. Deterministic and stdlib-only — no time, no randomness.
 
 from __future__ import annotations
 
-__all__ = ["stamp_multi_module_plan"]
+from app.execution.extract_method import _enclosing_function
+
+__all__ = ["stamp_multi_module_plan", "resolve_occurrence_prefix"]
 
 
 def stamp_multi_module_plan(
@@ -44,3 +46,44 @@ def stamp_multi_module_plan(
     plan.new_contents = new_contents
     plan.edits_by_file = edits
     return plan
+
+
+def resolve_occurrence_prefix(plan, rel, start_line, n_statements, sources,
+                              trees, locate_run):
+    """The byte-identical occurrence-resolution PREFIX shared by the dedup-extract
+    and dedup-total-return resolve helpers, lifted here once.
+
+    Given a ``module:lineno`` occurrence, this performs the three admissibility
+    steps both transforms do verbatim BEFORE their control-flow checks diverge:
+      1. require the module to be a readable project module (``rel in trees``);
+      2. locate the single enclosing top-level function/method body;
+      3. snap the block to a contiguous run of ``n_statements`` complete
+         statements (via the caller-supplied ``locate_run``).
+
+    On success returns ``(source, fn, container, run)`` — the common intermediate
+    values each caller's divergent tail continues with. On any unsafe / ambiguous
+    case it appends the SAME blocker string the inlined copies emitted and returns
+    ``None``. ``locate_run`` is passed in (rather than imported) so this library
+    never imports a transform module — no import cycle. Deterministic, stdlib-only.
+    """
+    if rel not in trees:
+        plan.blockers.append(f"{rel}: not a readable project module")
+        return None
+    tree = trees[rel]
+    source = sources[rel]
+
+    fn, container = _enclosing_function(tree, start_line, start_line)
+    if fn is None:
+        plan.blockers.append(
+            f"{rel}:{start_line}: occurrence isn't inside one top-level "
+            "function/method body (closures aren't supported)")
+        return None
+
+    run = locate_run(fn, start_line, n_statements)
+    if not run:
+        plan.blockers.append(
+            f"{rel}:{start_line}: couldn't snap the block to a contiguous run "
+            f"of {n_statements} complete statements")
+        return None
+
+    return source, fn, container, run
