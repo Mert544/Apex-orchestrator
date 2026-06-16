@@ -101,22 +101,13 @@ class AdvancedRefactoringEngine:
         except SyntaxError as e:
             return AdvancedRefactorResult(False, f"Parse error: {e}")
 
-        target_func = None
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == function_name:
-                target_func = node
-                break
+        target_func = AdvancedRefactoringEngine._find_function(tree, function_name)
         if not target_func:
             return AdvancedRefactorResult(False, f"Function {function_name} not found")
 
-        args = target_func.args.args
-        # Skip 'self' / 'cls'
-        start = 1 if args and args[0].arg in ("self", "cls") else 0
-        params = args[start:]
-
-        if not param_indices:
-            param_indices = list(range(len(params)))
-        selected = [params[i] for i in param_indices if 0 <= i < len(params)]
+        params, param_indices, selected, start = (
+            AdvancedRefactoringEngine._resolve_params(target_func, param_indices)
+        )
         if len(selected) < 2:
             return AdvancedRefactorResult(
                 False, f"Need at least 2 parameters to bundle, got {len(selected)}"
@@ -125,27 +116,12 @@ class AdvancedRefactoringEngine:
         if not object_name:
             object_name = f"{function_name.title().replace('_', '')}Params"
 
-        # Build dataclass
-        fields: list[str] = []
-        for arg in selected:
-            annotation = ""
-            if arg.annotation:
-                annotation = f": {ast.unparse(arg.annotation)}"
-            fields.append(f"    {arg.arg}{annotation}")
-        dataclass_code = f"@dataclass\nclass {object_name}:\n" + "\n".join(fields)
-
-        # Build new function signature
-        kept = [p for i, p in enumerate(params) if i not in param_indices]
-        new_sig_params = ["self"] if start == 1 else []
-        new_sig_params.append(f"params: {object_name}")
-        for k in kept:
-            annotation = ""
-            if k.annotation:
-                annotation = f": {ast.unparse(k.annotation)}"
-            default = ""
-            new_sig_params.append(f"{k.arg}{annotation}{default}")
-
-        new_sig = f"def {function_name}(" + ", ".join(new_sig_params) + ") -> ..."
+        dataclass_code = AdvancedRefactoringEngine._build_param_dataclass(
+            object_name, selected
+        )
+        new_sig = AdvancedRefactoringEngine._build_param_object_signature(
+            function_name, object_name, params, param_indices, start
+        )
         return AdvancedRefactorResult(
             success=True,
             description=f"Introduced {object_name} for {function_name}",
@@ -153,6 +129,56 @@ class AdvancedRefactoringEngine:
             old_content=ast.unparse(target_func),
             diff=f"Introduced {object_name} dataclass",
         )
+
+    @staticmethod
+    def _find_function(tree: ast.AST, function_name: str) -> ast.FunctionDef | None:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == function_name:
+                return node
+        return None
+
+    @staticmethod
+    def _resolve_params(
+        target_func: ast.FunctionDef,
+        param_indices: list[int] | None,
+    ) -> tuple[list[ast.arg], list[int], list[ast.arg], int]:
+        args = target_func.args.args
+        # Skip 'self' / 'cls'
+        start = 1 if args and args[0].arg in ("self", "cls") else 0
+        params = args[start:]
+        if not param_indices:
+            param_indices = list(range(len(params)))
+        selected = [params[i] for i in param_indices if 0 <= i < len(params)]
+        return params, param_indices, selected, start
+
+    @staticmethod
+    def _annotated_arg(arg: ast.arg) -> str:
+        annotation = ""
+        if arg.annotation:
+            annotation = f": {ast.unparse(arg.annotation)}"
+        return f"{arg.arg}{annotation}"
+
+    @staticmethod
+    def _build_param_dataclass(object_name: str, selected: list[ast.arg]) -> str:
+        fields = [
+            f"    {AdvancedRefactoringEngine._annotated_arg(arg)}" for arg in selected
+        ]
+        return f"@dataclass\nclass {object_name}:\n" + "\n".join(fields)
+
+    @staticmethod
+    def _build_param_object_signature(
+        function_name: str,
+        object_name: str,
+        params: list[ast.arg],
+        param_indices: list[int],
+        start: int,
+    ) -> str:
+        kept = [p for i, p in enumerate(params) if i not in param_indices]
+        new_sig_params = ["self"] if start == 1 else []
+        new_sig_params.append(f"params: {object_name}")
+        for k in kept:
+            new_sig_params.append(AdvancedRefactoringEngine._annotated_arg(k))
+        return f"def {function_name}(" + ", ".join(new_sig_params) + ") -> ..."
 
     @staticmethod
     def _method_signature(func: ast.FunctionDef) -> str:
