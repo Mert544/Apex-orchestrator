@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 
 from ..result import SemanticPatchResult
+from ._apply_helpers import node_offset as _node_offset
 
 
 def _is_builtin_set_call(node: ast.Call) -> bool:
@@ -99,18 +100,3 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
         transform_type="set_literal",
         rationale=[f"Rewrote set([...]) to a set literal in {rel_path}."],
     )
-
-
-def _node_offset(source: str, node: ast.AST) -> int | None:
-    lineno = getattr(node, "lineno", None)
-    col = getattr(node, "col_offset", None)
-    if lineno is None or col is None:
-        return None
-    lines = source.splitlines(keepends=True)
-    if lineno - 1 >= len(lines):
-        return None
-    offset = sum(len(lines[i]) for i in range(lineno - 1))
-    # col_offset is a byte offset; for ASCII/most source it equals char offset.
-    line = lines[lineno - 1]
-    prefix = line.encode("utf-8")[:col].decode("utf-8", errors="ignore")
-    return offset + len(prefix)

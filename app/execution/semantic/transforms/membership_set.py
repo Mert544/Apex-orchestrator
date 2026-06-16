@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 
 from ..result import SemanticPatchResult
+from ._apply_helpers import node_offset as _node_offset
 
 # Constant value types that are hashable AND safe to place in a set display.
 # bool is a subclass of int, so it is covered by ``int`` below, but it is listed
@@ -59,22 +60,6 @@ def _find_compare(tree: ast.AST) -> ast.Compare | None:
         if _rewritable_comparator(node.comparators[0]):
             return node
     return None
-
-
-def _node_offset(source: str, node: ast.AST) -> int | None:
-    lineno = getattr(node, "lineno", None)
-    col = getattr(node, "col_offset", None)
-    if lineno is None or col is None:
-        return None
-    lines = source.splitlines(keepends=True)
-    if lineno - 1 >= len(lines):
-        return None
-    offset = sum(len(lines[i]) for i in range(lineno - 1))
-    # col_offset is a byte offset; decode the byte prefix to a char offset so the
-    # splice lands correctly even with non-ASCII text earlier on the line.
-    line = lines[lineno - 1]
-    prefix = line.encode("utf-8")[:col].decode("utf-8", errors="ignore")
-    return offset + len(prefix)
 
 
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
