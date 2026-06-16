@@ -110,14 +110,18 @@ def infer_dependencies(ideas: list[IdeaNode]) -> dict[str, set[str]]:
     return deps
 
 
-def execution_order(ideas: list[IdeaNode]) -> list[ExecStep]:
-    """Topologically order ideas so every prerequisite precedes its dependent."""
-    if not ideas:
-        return []
-    deps = infer_dependencies(ideas)
-    by_id = {i.id: i for i in ideas}
+def _known_prereqs(iid: str, deps: dict[str, set[str]], by_id: dict[str, IdeaNode]) -> list[str]:
+    """Prerequisite ids of ``iid`` that are present in this idea set."""
+    return [d for d in deps.get(iid, set()) if d in by_id]
 
-    # Longest-path layering (a node's layer = 1 + max layer of its prerequisites).
+
+def _compute_levels(
+    ideas: list[IdeaNode], deps: dict[str, set[str]], by_id: dict[str, IdeaNode]
+) -> dict[str, int]:
+    """Longest-path layering: a node's layer = 1 + max layer of its prerequisites.
+
+    Cycle-guarded — a node re-entered while still resolving is treated as a root.
+    """
     level: dict[str, int] = {}
 
     def _level(iid: str, visiting: set[str]) -> int:
@@ -126,7 +130,7 @@ def execution_order(ideas: list[IdeaNode]) -> list[ExecStep]:
         if iid in visiting:  # defensive cycle guard — treat as a root
             return 0
         visiting.add(iid)
-        prereqs = [d for d in deps.get(iid, set()) if d in by_id]
+        prereqs = _known_prereqs(iid, deps, by_id)
         lv = 0 if not prereqs else 1 + max(_level(d, visiting) for d in prereqs)
         visiting.discard(iid)
         level[iid] = lv
@@ -134,30 +138,59 @@ def execution_order(ideas: list[IdeaNode]) -> list[ExecStep]:
 
     for i in ideas:
         _level(i.id, set())
+    return level
 
-    # Critical path: walk back from a deepest node, always to a deepest prereq.
-    # ``crit`` doubles as the visited set: on a mutual dependency cycle the walk
-    # would otherwise oscillate between two nodes forever (``_level`` above is
-    # cycle-guarded, but this walk was not). Re-reaching a visited node ends it.
+
+def _critical_path(
+    ideas: list[IdeaNode],
+    deps: dict[str, set[str]],
+    by_id: dict[str, IdeaNode],
+    level: dict[str, int],
+) -> set[str]:
+    """Walk back from a deepest node, always to a deepest prereq.
+
+    ``crit`` doubles as the visited set: on a mutual dependency cycle the walk
+    would otherwise oscillate between two nodes forever (``_compute_levels`` is
+    cycle-guarded, but this walk was not). Re-reaching a visited node ends it.
+    """
     crit: set[str] = set()
-    if level:
-        cur = max(ideas, key=lambda i: (level[i.id], i.value)).id
-        while cur not in crit:
-            crit.add(cur)
-            prereqs = [d for d in deps.get(cur, set()) if d in by_id]
-            if not prereqs:
-                break
-            cur = max(prereqs, key=lambda d: (level[d], by_id[d].value))
+    if not level:
+        return crit
+    cur = max(ideas, key=lambda i: (level[i.id], i.value)).id
+    while cur not in crit:
+        crit.add(cur)
+        prereqs = _known_prereqs(cur, deps, by_id)
+        if not prereqs:
+            break
+        cur = max(prereqs, key=lambda d: (level[d], by_id[d].value))
+    return crit
 
-    steps = [
-        ExecStep(
-            branch_path=i.branch_path, title=i.title, subject=i.subject,
-            operator=i.operator, value=i.value, order=level[i.id],
-            depends_on=sorted(by_id[d].branch_path for d in deps.get(i.id, set()) if d in by_id),
-            on_critical_path=i.id in crit,
-        )
-        for i in ideas
-    ]
+
+def _build_step(
+    idea: IdeaNode,
+    deps: dict[str, set[str]],
+    by_id: dict[str, IdeaNode],
+    level: dict[str, int],
+    crit: set[str],
+) -> ExecStep:
+    """Materialize one ordered step (prerequisite branch paths sorted)."""
+    return ExecStep(
+        branch_path=idea.branch_path, title=idea.title, subject=idea.subject,
+        operator=idea.operator, value=idea.value, order=level[idea.id],
+        depends_on=sorted(by_id[d].branch_path for d in _known_prereqs(idea.id, deps, by_id)),
+        on_critical_path=idea.id in crit,
+    )
+
+
+def execution_order(ideas: list[IdeaNode]) -> list[ExecStep]:
+    """Topologically order ideas so every prerequisite precedes its dependent."""
+    if not ideas:
+        return []
+    deps = infer_dependencies(ideas)
+    by_id = {i.id: i for i in ideas}
+    level = _compute_levels(ideas, deps, by_id)
+    crit = _critical_path(ideas, deps, by_id, level)
+    steps = [_build_step(i, deps, by_id, level, crit) for i in ideas]
     # Execute lower layers first; within a layer, highest value first.
     steps.sort(key=lambda s: (s.order, -s.value, s.branch_path))
     return steps
