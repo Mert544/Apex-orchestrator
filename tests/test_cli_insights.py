@@ -33,6 +33,30 @@ ANALYZER_KEYS = [
     "api_ergonomics",
     "naming_audit",
     "literal_density",
+    "coupling_metrics",
+    "cohesion_metrics",
+    "exception_hygiene",
+    "async_safety",
+    "return_consistency",
+    "global_state",
+    "logging_hygiene",
+    "comment_quality",
+    "inheritance_depth",
+    "config_surface",
+]
+
+# The 10 analyzers wired in by this change — asserted to appear everywhere.
+NEW_ANALYZER_KEYS = [
+    "coupling_metrics",
+    "cohesion_metrics",
+    "exception_hygiene",
+    "async_safety",
+    "return_consistency",
+    "global_state",
+    "logging_hygiene",
+    "comment_quality",
+    "inheritance_depth",
+    "config_surface",
 ]
 
 SECTION_TITLES = [
@@ -46,6 +70,16 @@ SECTION_TITLES = [
     "API ergonomics",
     "Naming audit",
     "Literal density",
+    "Coupling metrics",
+    "Cohesion metrics",
+    "Exception hygiene",
+    "Async safety",
+    "Return consistency",
+    "Global state",
+    "Logging hygiene",
+    "Comment quality",
+    "Inheritance depth",
+    "Config surface",
 ]
 
 
@@ -71,6 +105,36 @@ def _build_project(root: Path) -> None:
         "def big_function():\n"
         f"{long_body}\n"
         "    return x0\n",
+        encoding="utf-8",
+    )
+    # A second module rigged to trip the newly-wired analyzers: a deep
+    # inheritance chain (depth >= 4), a mutable module-level global, a class
+    # with two disjoint methods (zero cohesion), a swallowed exception, an
+    # async function making a blocking call, an inconsistent-return function,
+    # and a block of commented-out code.
+    (pkg / "smells.py").write_text(
+        '"""Smelly module for the extended analyzer sweep."""\n'
+        "import time\n\n"
+        "shared_cache = {}\n\n"
+        "class A:\n    pass\n\n"
+        "class B(A):\n    pass\n\n"
+        "class C(B):\n    pass\n\n"
+        "class D(C):\n    pass\n\n"
+        "class E(D):\n    pass\n\n"
+        "class Disjoint:\n"
+        "    def first(self):\n        return self.x\n"
+        "    def second(self):\n        return self.y\n\n"
+        "def swallow():\n"
+        "    try:\n        risky()\n    except Exception:\n        pass\n\n"
+        "async def blocking():\n"
+        "    time.sleep(1)\n\n"
+        "def inconsistent(flag):\n"
+        "    if flag:\n        return 1\n    return\n\n"
+        "def risky():\n"
+        "    # x = 1 + 2\n"
+        "    # y = x * 3\n"
+        "    # return y\n"
+        "    return 0\n",
         encoding="utf-8",
     )
     tests_dir = root / "tests"
@@ -192,6 +256,118 @@ def test_failing_analyzer_is_skipped(tmp_path, monkeypatch):
     rc_j, out_j = _capture(_ns(str(tmp_path), as_json=True))
     assert rc_j == 0
     assert "error" in json.loads(out_j)["analyzers"]["naming_audit"]
+
+
+# === Newly-wired analyzers ==============================================
+
+def test_markdown_has_new_sections(tmp_path):
+    _build_project(tmp_path)
+    _, out = _capture(_ns(str(tmp_path)))
+    for key in NEW_ANALYZER_KEYS:
+        title = {
+            "coupling_metrics": "Coupling metrics",
+            "cohesion_metrics": "Cohesion metrics",
+            "exception_hygiene": "Exception hygiene",
+            "async_safety": "Async safety",
+            "return_consistency": "Return consistency",
+            "global_state": "Global state",
+            "logging_hygiene": "Logging hygiene",
+            "comment_quality": "Comment quality",
+            "inheritance_depth": "Inheritance depth",
+            "config_surface": "Config surface",
+        }[key]
+        assert f"## {title}" in out, f"missing section: {title}"
+
+
+def test_json_has_new_analyzer_keys(tmp_path):
+    _build_project(tmp_path)
+    _, out = _capture(_ns(str(tmp_path), as_json=True))
+    analyzers = json.loads(out)["analyzers"]
+    for key in NEW_ANALYZER_KEYS:
+        assert key in analyzers, f"missing key: {key}"
+        assert "error" not in analyzers[key], f"{key} failed: {analyzers[key]}"
+
+
+def test_new_analyzers_surface_real_offenders(tmp_path):
+    """The rigged fixture must trip the offender lists of several new
+    analyzers (proving the EXACT offenders keys are wired correctly)."""
+    _build_project(tmp_path)
+    _, out = _capture(_ns(str(tmp_path), as_json=True))
+    analyzers = json.loads(out)["analyzers"]
+    # Disjoint-method class -> cohesion offender.
+    assert len(analyzers["cohesion_metrics"]["low_cohesion"]) >= 1
+    # Mutable module-level dict -> global-state offender.
+    assert len(analyzers["global_state"]["mutable_globals"]) >= 1
+    # A<B<C<D<E chain -> deep inheritance offender.
+    assert len(analyzers["inheritance_depth"]["deep_classes"]) >= 1
+    # Swallowed exception -> exception-hygiene offender.
+    assert len(analyzers["exception_hygiene"]["offenders"]) >= 1
+    # time.sleep in an async def -> blocking call.
+    assert len(analyzers["async_safety"]["blocking_calls"]) >= 1
+    # Mixed bare/value return -> return-consistency offender.
+    assert len(analyzers["return_consistency"]["offenders"]) >= 1
+    # Commented-out code block -> comment-quality offender.
+    assert len(analyzers["comment_quality"]["commented_out"]) >= 1
+
+
+def test_generic_offender_render_is_surfaced(tmp_path):
+    """A generic offender bullet renders the identifier and salient k=v."""
+    _build_project(tmp_path)
+    _, out = _capture(_ns(str(tmp_path)))
+    # The disjoint class name appears as a generic offender bullet under
+    # Cohesion metrics.
+    assert "classname=Disjoint" in out
+
+
+def test_offender_generic_renders_module_and_pairs():
+    bullet = cli_insights._offender_generic(
+        {"module": "m.py", "function": "f", "line": 9, "reason": "x", "depth": 4}
+    )
+    assert bullet.startswith("`m.py`")
+    # At most three salient pairs, in fixed priority order (function before
+    # reason before depth; line is lowest priority and gets dropped here).
+    assert bullet == "`m.py` — function=f, reason=x, depth=4"
+
+
+def test_offender_generic_falls_back_to_key_then_qmark():
+    assert cli_insights._offender_generic({"key": "CFG"}) == "`CFG`"
+    assert cli_insights._offender_generic({}) == "`?`"
+
+
+def test_headline_list_counts_and_handles_empty():
+    headline = cli_insights._headline_list("xs", "things")
+    assert headline({"xs": [1, 2, 3]}) == "3 things"
+    assert headline({}) == "0 things"
+    assert headline({"xs": None}) == "0 things"
+
+
+def test_new_analyzers_are_deterministic(tmp_path):
+    _build_project(tmp_path)
+    _, first = _capture(_ns(str(tmp_path), as_json=True))
+    _, second = _capture(_ns(str(tmp_path), as_json=True))
+    assert first == second
+
+
+def test_new_failing_analyzer_is_isolated(tmp_path, monkeypatch):
+    _build_project(tmp_path)
+
+    def boom(*a, **k):
+        raise RuntimeError("synthetic cohesion failure")
+
+    monkeypatch.setattr("app.tools.cohesion_metrics.analyze_cohesion", boom)
+    rc, out = _capture(_ns(str(tmp_path)))
+    assert rc == 0
+    assert "## Cohesion metrics" in out
+    assert "skipped" in out
+    # The other new analyzers still render.
+    assert "## Coupling metrics" in out
+    assert "## Config surface" in out
+
+    rc_j, out_j = _capture(_ns(str(tmp_path), as_json=True))
+    assert rc_j == 0
+    analyzers = json.loads(out_j)["analyzers"]
+    assert "error" in analyzers["cohesion_metrics"]
+    assert "error" not in analyzers["inheritance_depth"]
 
 
 # === Parser registration ================================================

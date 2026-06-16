@@ -172,18 +172,59 @@ def _headline_literal(d: dict) -> str:
             f"{d.get('files_analyzed', 0)} file(s)")
 
 
+# Generic headline/offender helpers for analyzers that don't need a bespoke
+# summary. ``_headline_list`` reports the size of one offender list; the
+# returned closure is deterministic (pure function of the result dict).
+def _headline_list(list_key: str, noun: str) -> Callable[[dict], str]:
+    def _headline(d: dict) -> str:
+        return f"{len(d.get(list_key, []) or [])} {noun}"
+    return _headline
+
+
+# Keys worth surfacing for a generic offender, in display priority order.
+_GENERIC_OFFENDER_KEYS = (
+    "function", "classname", "name", "symbol", "kind", "call", "reason",
+    "depth", "instability", "cohesion", "count", "line",
+)
+
+
+def _offender_generic(o: dict) -> str:
+    """Render an arbitrary offender dict: a backticked identifier plus up to
+    three salient ``k=v`` pairs drawn from a fixed key list (so the rendering is
+    deterministic and independent of dict insertion order)."""
+    ident = o.get("module") or o.get("key") or "?"
+    parts: list[str] = []
+    for k in _GENERIC_OFFENDER_KEYS:
+        if k in o and o.get(k) is not None:
+            parts.append(f"{k}={o.get(k)}")
+        if len(parts) == 3:
+            break
+    suffix = f" — {', '.join(parts)}" if parts else ""
+    return f"`{ident}`{suffix}"
+
+
 def _analyzers() -> list[tuple[str, str, Callable[[str], Any], Callable[[dict], str],
                                str, Callable[[Any], str]]]:
     """The fixed analyzer registry: (key, title, runner, headline, offenders_key,
     offender_renderer). Imports are local so a single broken analyzer module
     never breaks the whole CLI surface."""
     from app.tools.api_ergonomics import analyze_api_ergonomics
+    from app.tools.async_safety import analyze_async_safety
+    from app.tools.cohesion_metrics import analyze_cohesion
+    from app.tools.comment_quality import analyze_comment_quality
     from app.tools.complexity_profile import analyze_complexity
+    from app.tools.config_surface import analyze_config_surface
+    from app.tools.coupling_metrics import analyze_coupling
     from app.tools.dead_code_scan import analyze_dead_code
     from app.tools.docstring_coverage import analyze_docstring_coverage
+    from app.tools.exception_hygiene import analyze_exception_hygiene
     from app.tools.function_length import analyze_function_length
+    from app.tools.global_state import analyze_global_state
+    from app.tools.inheritance_depth import analyze_inheritance_depth
     from app.tools.literal_density import analyze_literal_density
+    from app.tools.logging_hygiene import analyze_logging_hygiene
     from app.tools.naming_audit import analyze_naming
+    from app.tools.return_consistency import analyze_return_consistency
     from app.tools.test_balance import analyze_test_balance
     from app.tools.todo_debt import analyze_todo_debt
     from app.tools.type_hint_coverage import analyze_type_hint_coverage
@@ -209,6 +250,36 @@ def _analyzers() -> list[tuple[str, str, Callable[[str], Any], Callable[[dict], 
          _headline_naming, "violations", _offender_naming),
         ("literal_density", "Literal density", analyze_literal_density,
          _headline_literal, "repeated", _offender_literal),
+        ("coupling_metrics", "Coupling metrics", analyze_coupling,
+         _headline_list("most_unstable", "unstable modules"),
+         "most_unstable", _offender_generic),
+        ("cohesion_metrics", "Cohesion metrics", analyze_cohesion,
+         _headline_list("low_cohesion", "low-cohesion classes"),
+         "low_cohesion", _offender_generic),
+        ("exception_hygiene", "Exception hygiene", analyze_exception_hygiene,
+         _headline_list("offenders", "exception smells"),
+         "offenders", _offender_generic),
+        ("async_safety", "Async safety", analyze_async_safety,
+         _headline_list("blocking_calls", "blocking calls in async"),
+         "blocking_calls", _offender_generic),
+        ("return_consistency", "Return consistency", analyze_return_consistency,
+         _headline_list("offenders", "inconsistent returns"),
+         "offenders", _offender_generic),
+        ("global_state", "Global state", analyze_global_state,
+         _headline_list("mutable_globals", "mutable globals"),
+         "mutable_globals", _offender_generic),
+        ("logging_hygiene", "Logging hygiene", analyze_logging_hygiene,
+         _headline_list("offenders", "logging smells"),
+         "offenders", _offender_generic),
+        ("comment_quality", "Comment quality", analyze_comment_quality,
+         _headline_list("commented_out", "commented-out blocks"),
+         "commented_out", _offender_generic),
+        ("inheritance_depth", "Inheritance depth", analyze_inheritance_depth,
+         _headline_list("deep_classes", "deep inheritance chains"),
+         "deep_classes", _offender_generic),
+        ("config_surface", "Config surface", analyze_config_surface,
+         _headline_list("keys", "config keys read"),
+         "keys", _offender_generic),
     ]
 
 
