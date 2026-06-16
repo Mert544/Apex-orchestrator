@@ -32,6 +32,10 @@ import hashlib
 import json
 from typing import Any
 
+from app.reporting._finding_export_common import field as _field
+from app.reporting._finding_export_common import path_of as _path_of
+from app.reporting._finding_export_common import relative_path as _relative_path
+
 # --- severity mapping --------------------------------------------------------
 #
 # Apex grades a finding on a 3-level scale (high | medium | low). CodeClimate /
@@ -58,30 +62,6 @@ _DEFAULT_SEVERITY = "minor"
 # The CodeClimate severities, in ascending order — surfaced so callers/tests can
 # assert the mapping lands inside the spec'd vocabulary.
 CODECLIMATE_SEVERITIES = ("info", "minor", "major", "critical", "blocker")
-
-
-def _field(finding: Any, name: str, default: Any) -> Any:
-    """Read ``name`` from a finding that may be a dataclass/object or a dict.
-
-    Apex's own findings (``ReviewFinding`` / ``Issue``) expose fields as
-    attributes; a caller may equally hand us plain dicts. Read either, and fall
-    back to ``default`` when the field is absent so a partial finding still
-    exports.
-    """
-    if isinstance(finding, dict):
-        value = finding.get(name, default)
-    else:
-        value = getattr(finding, name, default)
-    return default if value is None else value
-
-
-def _path_of(finding: Any) -> str:
-    """The finding's source path. Apex review findings use ``file``; ``path`` is
-    accepted as a synonym for raw detector/dict findings."""
-    path = _field(finding, "file", None)
-    if path is None:
-        path = _field(finding, "path", "")
-    return str(path)
 
 
 def _check_name(finding: Any) -> str:
@@ -111,21 +91,6 @@ def _fingerprint(path: str, check_name: str, line: int, message: str) -> str:
     """
     payload = "\x00".join((path, check_name, str(line), message))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _relative_path(path: str, project_root: str) -> str:
-    """Strip ``project_root`` prefix so paths are repo-relative (what GitLab wants).
-
-    A no-op when ``project_root`` is empty (the default) or the path isn't under
-    it. String-level so it stays deterministic and never touches the filesystem.
-    """
-    if not project_root:
-        return path
-    root = project_root.rstrip("/\\") + "/"
-    norm = path.replace("\\", "/")
-    if norm.startswith(root.replace("\\", "/")):
-        return norm[len(root):]
-    return path
 
 
 def _to_issue(finding: Any, project_root: str) -> dict[str, Any]:
