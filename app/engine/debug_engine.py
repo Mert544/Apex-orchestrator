@@ -279,29 +279,65 @@ class DebugEngine:
         file_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
         return report
 
+    @staticmethod
+    def _diagnose_memory(memory: dict[str, Any] | None) -> list[str]:
+        if memory and len(memory) > 1000:
+            return ["Memory store oversized — potential leak or missing eviction"]
+        return []
+
+    @staticmethod
+    def _diagnose_open_claims(claims: list[dict[str, Any]]) -> list[str]:
+        open_count = sum(1 for c in claims if c.get("status") == "open")
+        if open_count > 50:
+            return [f"Too many open claims ({open_count}) — possible infinite expansion"]
+        return []
+
+    @staticmethod
+    def _diagnose_evidence(claims: list[dict[str, Any]]) -> list[str]:
+        no_evidence = [c for c in claims if not c.get("evidence")]
+        if len(no_evidence) > len(claims) * 0.5:
+            return [f"{len(no_evidence)} claims without evidence — quality degradation"]
+        return []
+
+    @staticmethod
+    def _diagnose_stale_claims(claims: list[dict[str, Any]]) -> list[str]:
+        stale = [c for c in claims if c.get("status") == "open" and c.get("depth", 0) > 5]
+        if stale:
+            return [f"{len(stale)} deep open claims (>5 depth) — possible branch runaway"]
+        return []
+
+    @staticmethod
+    def _diagnose_claims(claims: list[dict[str, Any]] | None) -> list[str]:
+        if not claims:
+            return []
+        issues: list[str] = []
+        issues.extend(DebugEngine._diagnose_open_claims(claims))
+        issues.extend(DebugEngine._diagnose_evidence(claims))
+        issues.extend(DebugEngine._diagnose_stale_claims(claims))
+        return issues
+
+    @staticmethod
+    def _diagnose_last_trace(traces: list[ExecutionTrace]) -> list[str]:
+        if not traces:
+            return []
+        last_trace = traces[-1]
+        if last_trace.phase == "error" or "exception" in last_trace.detail.lower():
+            return [f"Last trace ended in error: {last_trace.detail}"]
+        return []
+
+    @staticmethod
+    def _diagnose_performance(performance: dict[str, PerformanceRecord]) -> list[str]:
+        slow_fns = [p for p in performance.values() if p.avg_time_ms() > 1000]
+        if slow_fns:
+            return [f"{len(slow_fns)} functions slower than 1s avg"]
+        return []
+
     def diagnose(self, memory: dict[str, Any] | None = None, claims: list[dict[str, Any]] | None = None) -> list[str]:
         issues: list[str] = []
-        if memory and len(memory) > 1000:
-            issues.append("Memory store oversized — potential leak or missing eviction")
-        if claims:
-            open_count = sum(1 for c in claims if c.get("status") == "open")
-            if open_count > 50:
-                issues.append(f"Too many open claims ({open_count}) — possible infinite expansion")
-            no_evidence = [c for c in claims if not c.get("evidence")]
-            if len(no_evidence) > len(claims) * 0.5:
-                issues.append(f"{len(no_evidence)} claims without evidence — quality degradation")
-            # Check for stale claims
-            stale = [c for c in claims if c.get("status") == "open" and c.get("depth", 0) > 5]
-            if stale:
-                issues.append(f"{len(stale)} deep open claims (>5 depth) — possible branch runaway")
-        if self._traces:
-            last_trace = self._traces[-1]
-            if last_trace.phase == "error" or "exception" in last_trace.detail.lower():
-                issues.append(f"Last trace ended in error: {last_trace.detail}")
-        # Check performance
-        slow_fns = [p for p in self._performance.values() if p.avg_time_ms() > 1000]
-        if slow_fns:
-            issues.append(f"{len(slow_fns)} functions slower than 1s avg")
+        issues.extend(self._diagnose_memory(memory))
+        issues.extend(self._diagnose_claims(claims))
+        issues.extend(self._diagnose_last_trace(self._traces))
+        issues.extend(self._diagnose_performance(self._performance))
         return issues
 
     def compare_with_previous(self) -> dict[str, Any]:
