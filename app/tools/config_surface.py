@@ -41,7 +41,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.engine.skip_dirs import is_skipped, iter_source_files
+from app.engine.skip_dirs import (
+    is_test_or_fixture_path as _is_test_or_fixture,
+)
+from app.engine.skip_dirs import iter_source_files
 
 __all__ = ["ConfigSurface", "analyze_config_surface"]
 
@@ -185,17 +188,6 @@ def _iter_reads(source: str):
         key = _read_key(node, getenv_names, environ_names)
         if key is not None:
             yield key
-
-
-def _is_test_or_fixture(rel: Path) -> bool:
-    """True for the project's own tests/fixtures, excluded from the config surface."""
-    if is_skipped(rel):
-        return True
-    parts = rel.parts
-    if any(p in ("tests", "test", "fixtures", "fixture", "testdata") for p in parts):
-        return True
-    name = rel.name
-    return name.startswith("test_") or name.endswith("_test.py") or name == "conftest.py"
 
 
 def analyze_config_surface(root: str | Path, max_files: int = 500) -> ConfigSurface:

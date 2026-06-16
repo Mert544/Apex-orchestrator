@@ -75,6 +75,7 @@ from pathlib import Path
 from typing import Any
 
 from app.engine.skip_dirs import iter_source_files
+from app.engine.skip_dirs import module_dotted_name as _module_name
 
 __all__ = [
     "ExceptionHygiene",
@@ -110,19 +111,6 @@ def _is_test_or_fixture_path(rel: str) -> bool:
         or name.startswith("test_")
         or name == "conftest.py"
     )
-
-
-def _module_name(path: Path, root: Path) -> str:
-    """Stable dotted module name from a root-relative path (``app/x.py`` ->
-    ``app.x``). Falls back to the bare path if ``path`` is outside ``root``."""
-    try:
-        rel = path.relative_to(root)
-    except ValueError:
-        rel = path
-    posix = rel.as_posix()
-    if posix.endswith(".py"):
-        posix = posix[:-3]
-    return posix.replace("/", ".")
 
 
 def _is_bare_except(handler: ast.ExceptHandler) -> bool:

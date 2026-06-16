@@ -33,7 +33,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.engine.skip_dirs import is_skipped, iter_source_files
+from app.engine.skip_dirs import (
+    is_test_or_fixture_path as _is_test_or_fixture,
+)
+from app.engine.skip_dirs import iter_source_files
 
 __all__ = ["MARKERS", "TodoDebt", "analyze_todo_debt"]
 
@@ -178,18 +181,3 @@ def analyze_todo_debt(
         items.append(item)
 
     return TodoDebt(total=total, by_marker=by_marker, items=items)
-
-
-def _is_test_or_fixture(rel: Path) -> bool:
-    """True for the project's own tests/fixtures, which carry intentional markers.
-
-    Operates on the canonical skip-set in addition to test/fixture conventions, so a
-    relative path that somehow crosses a skipped directory is excluded here too.
-    """
-    if is_skipped(rel):
-        return True
-    parts = rel.parts
-    if any(p in ("tests", "test", "fixtures", "fixture", "testdata") for p in parts):
-        return True
-    name = rel.name
-    return name.startswith("test_") or name.endswith("_test.py") or name == "conftest.py"

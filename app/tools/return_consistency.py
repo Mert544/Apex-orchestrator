@@ -50,6 +50,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app.engine.skip_dirs import (
+    is_test_or_fixture_name as _is_test_or_fixture,
+)
 from app.engine.skip_dirs import iter_source_files
 
 __all__ = ["ReturnConsistency", "analyze_return_consistency"]
@@ -74,20 +77,6 @@ class ReturnConsistency:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-def _is_test_or_fixture(rel: Path) -> bool:
-    """True if a project-relative path is test/fixture code (not shipped surface).
-
-    Pure name/component check, so it is deterministic. Covers ``tests`` /
-    ``fixtures`` directories anywhere in the path, plus ``test_*.py`` /
-    ``*_test.py`` / ``conftest.py`` filenames."""
-    parts_lower = {part.lower() for part in rel.parts[:-1]}
-    if "tests" in parts_lower or "fixtures" in parts_lower:
-        return True
-    stem = rel.stem.lower()
-    name = rel.name.lower()
-    return name == "conftest.py" or stem.startswith("test_") or stem.endswith("_test")
 
 
 def _is_dunder(name: str) -> bool:
