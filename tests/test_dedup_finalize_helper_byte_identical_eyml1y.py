@@ -36,13 +36,17 @@ _REPO = Path(__file__).resolve().parents[1]
 
 
 def _load_head(rel: str, modname: str, fn_name: str):
-    """Import the pre-refactor module at ``HEAD:rel`` as a standalone in-process
-    module and return its ``fn_name`` callable. The HEAD source predates the
-    finalise-helper consolidation, so it carries the inlined finalise tail."""
+    """Import the PRE-refactor module as a standalone in-process module and return
+    its ``fn_name`` callable. The pre-refactor source carries the inlined finalise
+    tail; once the consolidation is committed it lives at ``HEAD`` so we fall back
+    to ``HEAD~1`` to recover the original (mirroring the sibling characterizations)."""
     src = subprocess.check_output(
         ["git", "show", f"HEAD:{rel}"], cwd=_REPO, text=True)
+    if "stamp_multi_module_plan" in src:
+        src = subprocess.check_output(
+            ["git", "show", f"HEAD~1:{rel}"], cwd=_REPO, text=True)
     assert "stamp_multi_module_plan" not in src, (
-        f"HEAD:{rel} already contains the consolidation — "
+        f"could not recover a pre-consolidation {rel} from HEAD/HEAD~1 — "
         "characterization would compare a refactor against itself")
     spec = importlib.util.spec_from_loader(modname, loader=None)
     mod = importlib.util.module_from_spec(spec)
