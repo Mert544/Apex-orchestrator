@@ -34,12 +34,12 @@ def test_range_derived_fields_match_point_in_time_truncation():
     are byte-identical to the full-series result. Before the fix the full-series
     target/rr leaked future highs/lows and would differ.
 
-    Note: a *minority* of full-series setups do not re-form under truncation at
-    all -- not because of the dealing range, but because ``_has_aligned_fvg``
-    scans a symmetric +/-10 bar window, so an FVG up to 10 bars in the future can
-    confirm alignment. That residual forward-window is a SEPARATE, pre-existing
-    SMC-logic concern outside this fix's scope; here we only pin the dealing-range
-    causality, so we compare the setups that survive truncation.
+    BUG 2 anti-look-ahead (FVG alignment): with the FVG window now causal
+    (past-only), every full-series setup re-forms point-in-time too, EXCEPT
+    setups whose index sits below the 10-candle minimum that ``generate_setups``
+    needs to run at all (``candles[:i+1]`` then has fewer than 10 candles -- an
+    inherent boundary, not a look-ahead). Those are skipped here and pinned
+    separately by the dedicated causal-count test below.
     """
     seeds_checked = 0
     compared = 0
@@ -51,12 +51,16 @@ def test_range_derived_fields_match_point_in_time_truncation():
             continue
         seeds_checked += 1
         for s in full:
+            # Cannot reconstruct a setup whose own bar leaves < 10 candles.
+            if s.index + 1 < 10:
+                continue
             compared += 1
             # min_rr=0 on the truncation so the RR filter never hides the row.
             causal = generate_setups(candles[: s.index + 1], min_rr=0.0)
             match = next((c for c in causal if c.index == s.index), None)
-            if match is None:
-                continue  # vanished via the FVG forward-window, not the range
+            # With BUG 2 fixed there is no future-FVG escape hatch: the setup MUST
+            # re-form causally.
+            assert match is not None, (seed, s.index)
             survivors += 1
             assert match.target == s.target, (seed, s.index, match.target, s.target)
             assert match.stop == s.stop
@@ -64,10 +68,44 @@ def test_range_derived_fields_match_point_in_time_truncation():
             assert match.direction == s.direction
             assert match.entry == s.entry
     assert seeds_checked > 0 and survivors > 0
-    # The bulk of setups must survive and match; this guards against a regression
-    # that would make the range non-causal again (which manifests as mismatches,
-    # asserted above) or that would make alignment wildly truncation-sensitive.
-    assert survivors >= compared * 0.6
+    # Every comparable setup survives and matches now (no future-FVG artifacts).
+    assert survivors == compared
+
+
+def test_fvg_alignment_has_no_look_ahead_full_equals_causal():
+    """BUG 2 regression: the FVG-alignment decision must be identical whether
+    computed over the full series or point-in-time (``candles[:ev.index+1]``).
+
+    Before the fix, ``_has_aligned_fvg`` scanned a symmetric +/-10 window, so a
+    setup at ``ev.index`` could be confirmed by an FVG up to 10 bars in the
+    FUTURE; ~28 of the 159 full-series setups (seeds 1..24, n=240) existed ONLY
+    because of those future FVGs and vanished under truncation. With the causal
+    past-only window, the full-series setup count equals the causal-reconstruction
+    count (no future-FVG artifacts), and every setup's alignment is stable.
+
+    The only legitimate exception is the 10-candle minimum that ``generate_setups``
+    itself requires: a setup at index i with ``i + 1 < 10`` cannot be rebuilt from
+    its own truncated history, so it is excluded from the per-setup comparison.
+    """
+    total_full = 0
+    total_recovered = 0
+    comparable = 0
+    for seed in range(1, 25):
+        candles = synthetic_candles(seed=seed, n=240)
+        full = generate_setups(candles, min_rr=1.5)
+        total_full += len(full)
+        for s in full:
+            if s.index + 1 < 10:
+                continue
+            comparable += 1
+            causal = generate_setups(candles[: s.index + 1], min_rr=0.0)
+            assert any(c.index == s.index for c in causal), (seed, s.index)
+            total_recovered += 1
+    # Sanity: this corpus really does produce a non-trivial number of setups.
+    assert total_full >= 100
+    # Every comparable full-series setup is reproducible point-in-time: the FVG
+    # alignment never depends on a future bar.
+    assert total_recovered == comparable
 
 
 def test_target_uses_only_past_extremes_not_future():
@@ -137,23 +175,41 @@ def test_recent_sweep_window_is_exactly_ten_bars_and_causal():
 # --------------------------------------------------------------------------- #
 
 def test_has_aligned_fvg_requires_matching_direction_and_proximity():
+    """BUG 2 (FVG-alignment look-ahead) fix: the window is now CAUSAL, a past-only
+    ``1 <= ev.index - f.index <= 10`` lookback. Previously a symmetric
+    ``abs(f.index - ev.index) <= 10`` let an FVG up to 10 bars in the FUTURE (and
+    even at ``ev.index`` itself, which ``find_fvgs`` cannot confirm until candle
+    ``ev.index + 1`` closes) confirm alignment -- a look-ahead leak. These
+    expectations are updated from the old buggy behaviour to the corrected one.
+    """
     ev = _ev(20, "bullish")
     same_dir = FairValueGap(index=15, direction="bullish", low=1.0, high=2.0)
     opp_dir = FairValueGap(index=15, direction="bearish", low=1.0, high=2.0)
-    too_far = FairValueGap(index=9, direction="bullish", low=1.0, high=2.0)   # 11 bars
-    far_future = FairValueGap(index=31, direction="bullish", low=1.0, high=2.0)  # 11 bars
+    too_far = FairValueGap(index=9, direction="bullish", low=1.0, high=2.0)   # 11 bars back
+    far_future = FairValueGap(index=31, direction="bullish", low=1.0, high=2.0)  # future
 
     assert _has_aligned_fvg([same_dir], ev) is True
     assert _has_aligned_fvg([opp_dir], ev) is False     # kills "==" -> "!=" on direction
     assert _has_aligned_fvg([too_far], ev) is False     # delta 11 out -> kills "10"->"11"
-    assert _has_aligned_fvg([far_future], ev) is False  # symmetric abs(): delta 11 future out
-    # exactly 10 bars away (either side) is still aligned
+    assert _has_aligned_fvg([far_future], ev) is False  # future FVG excluded (causal)
+    # exactly 10 bars in the PAST is still aligned (lower window boundary)
     assert _has_aligned_fvg(
         [FairValueGap(index=10, direction="bullish", low=1.0, high=2.0)], ev
     ) is True
+    # delta 0 (FVG at the event bar) is now EXCLUDED: find_fvgs needs candle
+    # ev.index+1 to confirm it, so it is not known point-in-time.
+    assert _has_aligned_fvg(
+        [FairValueGap(index=20, direction="bullish", low=1.0, high=2.0)], ev
+    ) is False
+    # delta 1 (one bar before the event) is the upper, most-recent allowed edge.
+    assert _has_aligned_fvg(
+        [FairValueGap(index=19, direction="bullish", low=1.0, high=2.0)], ev
+    ) is True
+    # a FUTURE FVG (10 bars ahead) used to be accepted by the symmetric window;
+    # it must now be rejected (the core look-ahead fix).
     assert _has_aligned_fvg(
         [FairValueGap(index=30, direction="bullish", low=1.0, high=2.0)], ev
-    ) is True
+    ) is False
 
 
 # --------------------------------------------------------------------------- #

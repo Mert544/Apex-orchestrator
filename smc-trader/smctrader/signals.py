@@ -39,9 +39,19 @@ def _aligned_ob(obs: list[OrderBlock], ev: StructureEvent) -> OrderBlock | None:
 
 
 def _has_aligned_fvg(fvgs: list[FairValueGap], ev: StructureEvent) -> bool:
-    """True if an FVG within 10 bars shares the event direction."""
+    """True if an already-formed FVG within the 10-bar lookback shares direction.
+
+    Causal (point-in-time) window: only FVGs whose displacement candle precedes
+    the event bar count. ``find_fvgs`` indexes a gap at its *middle* candle but
+    needs candle ``f.index + 1`` to confirm it, so an FVG is only "known" once
+    candle ``f.index + 1`` has closed -- i.e. once ``f.index + 1 <= ev.index``,
+    equivalently ``ev.index - f.index >= 1``. A symmetric ``abs(...) <= 10``
+    window let a setup at ``ev.index`` confirm alignment using FVGs up to 10 bars
+    in the FUTURE (and even at ``ev.index`` itself, which needs the next candle),
+    a look-ahead leak. We keep the same 10-bar lookback distance, backward-only.
+    """
     return any(
-        abs(f.index - ev.index) <= 10 and f.direction == ev.direction for f in fvgs
+        1 <= ev.index - f.index <= 10 and f.direction == ev.direction for f in fvgs
     )
 
 
