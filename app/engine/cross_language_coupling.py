@@ -86,6 +86,114 @@ def _classify(rel: str) -> tuple[bool, str | None]:
     return False, _LANGUAGE_BY_EXT.get(ext)
 
 
+def _read_git_log(root_path: Path) -> str | None:
+    """Run the single ``git log --name-only`` pass, returning stdout or ``None``.
+
+    Total: any git failure (missing git, timeout, non-zero exit) returns ``None``
+    rather than raising. Pure aside from the one bounded subprocess.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "log", "--format=@commit@%H", "--name-only",
+             "-n", str(_COMMIT_WINDOW)],
+            cwd=root_path, capture_output=True, text=True, timeout=15,
+        )
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout
+
+
+def _parse_commits(stdout: str) -> list[list[str]]:
+    """Group ``git log`` output into one list of changed paths per commit.
+
+    A "@commit@<sha>" marker line opens each commit (the marker prefix needs a
+    ``%H`` so git accepts the format string); subsequent non-empty lines are its
+    changed paths. Pure.
+    """
+    commits: list[list[str]] = []
+    current: list[str] = []
+    started = False
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if line.startswith("@commit@"):
+            if started:
+                commits.append(current)
+            current, started = [], True
+        elif line:
+            current.append(line)
+    if started:
+        commits.append(current)
+    return commits
+
+
+def _split_sides(files: list[str]) -> tuple[set[str], dict[str, str]]:
+    """Split a commit's changed paths into Python files and non-Python source.
+
+    Returns ``(pys, others)`` where ``others`` maps each recognised non-Python
+    source path to its language. Skipped paths and unknown extensions are dropped.
+    Pure: name checks only, no I/O.
+    """
+    pys: set[str] = set()
+    others: dict[str, str] = {}  # other_path -> language
+    for rel in files:
+        if is_skipped(rel):
+            continue
+        is_py, lang = _classify(rel)
+        if is_py:
+            pys.add(rel)
+        elif lang is not None:
+            others[rel] = lang
+    return pys, others
+
+
+def _count_pairs(
+    commits: list[list[str]],
+) -> tuple[dict[tuple[str, str], int], dict[tuple[str, str], str]]:
+    """Count cross-boundary co-changes across all commits.
+
+    Returns ``(pair_counts, pair_lang)`` keyed by ``(py, other)``. Only commits
+    with 2..``_MAX_COMMIT_FILES`` files contribute; within each, every
+    (python_file, non_python_file) pair is counted so py<->py and js<->js are
+    structurally excluded. Pure.
+    """
+    pair_counts: dict[tuple[str, str], int] = {}
+    pair_lang: dict[tuple[str, str], str] = {}
+    for files in commits:
+        if not 2 <= len(files) <= _MAX_COMMIT_FILES:
+            continue
+        pys, others = _split_sides(files)
+        if not pys or not others:
+            continue
+        for py, other in product(sorted(pys), sorted(others)):
+            key = (py, other)
+            pair_counts[key] = pair_counts.get(key, 0) + 1
+            pair_lang[key] = others[other]
+    return pair_counts, pair_lang
+
+
+def _rank_links(
+    pair_counts: dict[tuple[str, str], int],
+    pair_lang: dict[tuple[str, str], str],
+    min_cochanges: int,
+    limit: int,
+) -> list[CrossLink]:
+    """Build, filter and deterministically rank the cross-boundary links.
+
+    Keeps pairs with ``cochanges >= min_cochanges``, ranks by
+    ``(-cochanges, py, other)`` and returns the strongest ``limit``. Pure.
+    """
+    links = [
+        CrossLink(py=py, other=other, other_language=pair_lang[(py, other)],
+                  cochanges=n)
+        for (py, other), n in pair_counts.items()
+        if n >= min_cochanges
+    ]
+    links.sort(key=lambda link: (-link.cochanges, link.py, link.other))
+    return links[:limit]
+
+
 def cross_language_coupling(
     root: str, *, min_cochanges: int = 3, limit: int = 5
 ) -> list[CrossLink]:
@@ -110,65 +218,12 @@ def cross_language_coupling(
     root_path = Path(root)
     if not root_path.exists():
         return []
-    try:
-        out = subprocess.run(
-            ["git", "log", "--format=@commit@%H", "--name-only",
-             "-n", str(_COMMIT_WINDOW)],
-            cwd=root_path, capture_output=True, text=True, timeout=15,
-        )
-    except Exception:
+    stdout = _read_git_log(root_path)
+    if stdout is None:
         return []
-    if out.returncode != 0:
-        return []
-
-    # Group changed files per commit. A "@commit@<sha>" marker line opens each
-    # commit (the marker prefix needs a ``%H`` so git accepts the format string);
-    # subsequent non-empty lines are its changed paths.
-    commits: list[list[str]] = []
-    current: list[str] = []
-    started = False
-    for raw in out.stdout.splitlines():
-        line = raw.strip()
-        if line.startswith("@commit@"):
-            if started:
-                commits.append(current)
-            current, started = [], True
-        elif line:
-            current.append(line)
-    if started:
-        commits.append(current)
-
-    # (py, other) -> cochanges; (py, other) -> language (stable, from path).
-    pair_counts: dict[tuple[str, str], int] = {}
-    pair_lang: dict[tuple[str, str], str] = {}
-    for files in commits:
-        if not 2 <= len(files) <= _MAX_COMMIT_FILES:
-            continue
-        pys: set[str] = set()
-        others: dict[str, str] = {}  # other_path -> language
-        for rel in files:
-            if is_skipped(rel):
-                continue
-            is_py, lang = _classify(rel)
-            if is_py:
-                pys.add(rel)
-            elif lang is not None:
-                others[rel] = lang
-        if not pys or not others:
-            continue
-        for py, other in product(sorted(pys), sorted(others)):
-            key = (py, other)
-            pair_counts[key] = pair_counts.get(key, 0) + 1
-            pair_lang[key] = others[other]
-
-    links = [
-        CrossLink(py=py, other=other, other_language=pair_lang[(py, other)],
-                  cochanges=n)
-        for (py, other), n in pair_counts.items()
-        if n >= min_cochanges
-    ]
-    links.sort(key=lambda link: (-link.cochanges, link.py, link.other))
-    return links[:limit]
+    commits = _parse_commits(stdout)
+    pair_counts, pair_lang = _count_pairs(commits)
+    return _rank_links(pair_counts, pair_lang, min_cochanges, limit)
 
 
 def render_cross_language_markdown(links: list[CrossLink]) -> str:
