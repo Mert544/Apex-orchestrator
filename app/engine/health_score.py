@@ -158,23 +158,40 @@ def _letter(score: int) -> str:
     return "F"
 
 
-def grade(project_root: str | Path) -> HealthScore:
-    """Compute the project's health grade from its real structure."""
-    from app.tools.project_profile import ProjectProfiler
+# A scored bucket: the Component to record plus the fix to surface when it costs
+# points (None = no fix). Each per-bucket scorer is a pure function of already-
+# extracted metrics, so the penalty math lives in one named place per area.
+_Bucket = tuple[Component, str | None]
 
-    # Light profile: skips the four slow git/doc subprocess scans (churn, debt
-    # age, security-exposure age, doc drift) the grade never reads — so grading
-    # (and `apex ascend`, which re-grades before+after every round) is ~200x
-    # faster on a large repo with a byte-identical grade. See ProjectProfiler.profile.
-    profile = ProjectProfiler(str(project_root)).profile(light=True)
 
-    cycles = len(getattr(profile, "import_cycles", []) or [])
-    fragile = len(getattr(profile, "fragile_modules", []) or [])
-    untested = len(getattr(profile, "untested_modules", []) or [])
-    shallow = len(getattr(profile, "shallow_tested_modules", []) or [])
-    total_modules = max(1, len(getattr(profile, "module_to_tests", {}) or {}))
-    # Code-debt counts the project's *own* code, not test/fixture files. A mutable
-    # default inside tests/ shouldn't drag down a project's production grade.
+@dataclass
+class _GradeMetrics:
+    """All the raw signals the per-bucket scorers read, extracted once.
+
+    A pure projection of the (light) ProjectProfile plus the single detect() pass
+    and the duplication scan — so the scorers never touch the profile or the disk.
+    """
+    cycles: int
+    fragile: int
+    untested: int
+    shallow: int
+    total_modules: int
+    arch_top: list[str]
+    untested_list: list[str]
+    debt_modules: set[str]
+    correctness_bugs: int
+    findings: int
+    weighted_findings: int
+    top_sec_files: list[str]
+    top_bug_files: list[str]
+    over_complex: int
+    maint_top: list[str]
+    dup_block_count: int
+    dup_top: list[str]
+
+
+def _collect_metrics(project_root: str | Path, profile: Any) -> _GradeMetrics:
+    """Project the profile + detect/dedup scans into the scorers' input metrics."""
     debt_modules = {
         str(m) for m in (
             (getattr(profile, "modernizable_modules", []) or [])
@@ -190,97 +207,182 @@ def grade(project_root: str | Path) -> HealthScore:
     (reliability_modules, correctness_bugs, findings,
      weighted_findings, top_sec_files, top_bug_files) = _scan_own_modules(project_root, profile)
     debt_modules |= reliability_modules
-    debt = len(debt_modules)
-
-    components: list[Component] = []
-    fixes: list[str] = []
-
-    def penalize(name: str, lost: int, detail: str, fix: str | None = None,
-                 top_files: list[str] | None = None) -> None:
-        components.append(Component(name, lost, detail, top_files or []))
-        if lost > 0 and fix:
-            fixes.append(fix)
-
-    sec_lost = min(30, weighted_findings)
-    penalize("Security", sec_lost, f"{findings} finding(s)",
-             "run `apex maintain` to auto-fix eval/os.system/yaml/bare-except" if sec_lost else None,
-             top_files=top_sec_files)
 
     # Top architecture offenders: cycle members + fragile modules.
     cycle_mods = sorted({m for cyc in (getattr(profile, "import_cycles", []) or [])
                          for m in cyc})[:3]
     arch_top = cycle_mods or sorted(getattr(profile, "fragile_modules", []) or [])[:3]
-    arch_lost = min(20, cycles * 5 + fragile * 4)
-    penalize("Architecture", arch_lost, f"{cycles} import cycle(s), {fragile} fragile module(s)",
-             "break import cycles and add tests to fragile hubs" if arch_lost else None,
-             top_files=[str(m) for m in arch_top])
 
-    # Shallow-tested modules (covered only by import-smoke / type stubs) get
-    # HALF credit, not full — linkage is not correctness, so a project can't
-    # claim a clean Testing score on shape-only tests.
-    effective_untested = untested + 0.5 * shallow
-    test_lost = min(25, round(effective_untested / total_modules * 25))
-    untested_list = sorted(getattr(profile, "untested_modules", []) or [])[:3]
-    if shallow:
-        detail = f"{untested} untested + {shallow} shallow-tested module(s) of ~{total_modules}"
-        fix = "add tests to the untested modules and deepen the shallow (type-only) ones"
-    else:
-        detail = f"{untested} untested module(s) of ~{total_modules}"
-        fix = "add a first test layer to the untested modules"
-    penalize("Testing", test_lost, detail, fix if test_lost else None,
-             top_files=[str(m) for m in untested_list])
-
-    debt_top = sorted(debt_modules)[:3]
-    debt_lost = min(15, debt * 3)
-    penalize("Code debt", debt_lost, f"{debt} module(s) with modernization / mutable-default / reliability debt",
-             "run `apex maintain` to modernize, fix mutable defaults, and add encodings/timeouts" if debt_lost else None,
-             top_files=list(debt_top))
-
-    # Correctness: high-severity logic bugs (likely/guaranteed crashes or dead
-    # code) the detector finds but that no other component reflected — so a real
-    # bug now visibly costs the grade, not just a review note.
-    corr_lost = min(20, correctness_bugs * 5)
-    penalize("Correctness", corr_lost, f"{correctness_bugs} likely-crash / dead-code bug(s)",
-             "fix the logic bugs flagged by `apex review` (frozen-dataclass mutation, "
-             "return-in-finally, unreachable except, ...)" if corr_lost else None,
-             top_files=top_bug_files)
-
-    # Maintainability: the project's most complex / branch-heavy functions cost a
-    # small, capped amount — a clean codebase loses nothing, a sprawling one can't
-    # dominate the grade. Each over-ceiling function is 2 points up to _MAINT_CAP.
     over_complex, maint_top = _scan_maintainability(project_root, profile)
-    maint_lost = min(_MAINT_CAP, over_complex * 2)
-    penalize("Maintainability",
-             maint_lost,
-             f"{over_complex} function(s) over complexity {_COMPLEXITY_CEILING}",
-             "extract helpers from the most complex functions — "
-             "see `apex develop --objective shrink-functions`" if maint_lost else None,
-             top_files=maint_top)
+    dup_block_count, dup_top = _scan_duplication(project_root)
 
-    # Duplication: copy-pasted blocks are a top maintainability hazard (a bug
-    # fixed in one copy is silently left in the rest). The detector walks the whole
-    # project, so call it ONCE here; it already excludes fixtures/tests. Each block
-    # costs one point up to a small cap — a clean codebase loses nothing.
+    return _GradeMetrics(
+        cycles=len(getattr(profile, "import_cycles", []) or []),
+        fragile=len(getattr(profile, "fragile_modules", []) or []),
+        untested=len(getattr(profile, "untested_modules", []) or []),
+        shallow=len(getattr(profile, "shallow_tested_modules", []) or []),
+        total_modules=max(1, len(getattr(profile, "module_to_tests", {}) or {})),
+        arch_top=[str(m) for m in arch_top],
+        untested_list=[str(m) for m in
+                       sorted(getattr(profile, "untested_modules", []) or [])[:3]],
+        debt_modules=debt_modules,
+        correctness_bugs=correctness_bugs,
+        findings=findings,
+        weighted_findings=weighted_findings,
+        top_sec_files=top_sec_files,
+        top_bug_files=top_bug_files,
+        over_complex=over_complex,
+        maint_top=maint_top,
+        dup_block_count=dup_block_count,
+        dup_top=dup_top,
+    )
+
+
+def _scan_duplication(project_root: str | Path) -> tuple[int, list[str]]:
+    """Count duplicated blocks and the up-to-3 modules with the most copies.
+
+    Copy-pasted blocks are a top maintainability hazard (a bug fixed in one copy
+    is silently left in the rest). The detector walks the whole project — so it's
+    called ONCE here; it already excludes fixtures/tests.
+    """
     from app.engine.dedup import find_duplicates
 
     dup_blocks = find_duplicates(project_root)
-    dup_lost = min(_DUP_CAP, len(dup_blocks))
     dup_by_file: dict[str, int] = {}
     for block in dup_blocks:
         for occ in block.occurrences:
             module = occ.rsplit(":", 1)[0]  # occurrences are "module:lineno"
             dup_by_file[module] = dup_by_file.get(module, 0) + 1
     dup_top = [f for f, _ in sorted(dup_by_file.items(), key=lambda kv: (-kv[1], kv[0]))[:3]]
-    penalize("Duplication", dup_lost, f"{len(dup_blocks)} duplicated block(s)",
-             "extract the duplicated blocks into shared helpers" if dup_lost else None,
-             top_files=dup_top)
+    return len(dup_blocks), dup_top
 
-    score = max(0, 100 - (sec_lost + arch_lost + test_lost + debt_lost
-                          + corr_lost + maint_lost + dup_lost))
+
+def _score_security(m: _GradeMetrics) -> _Bucket:
+    lost = min(30, m.weighted_findings)
+    return (
+        Component("Security", lost, f"{m.findings} finding(s)", list(m.top_sec_files)),
+        "run `apex maintain` to auto-fix eval/os.system/yaml/bare-except" if lost else None,
+    )
+
+
+def _score_architecture(m: _GradeMetrics) -> _Bucket:
+    lost = min(20, m.cycles * 5 + m.fragile * 4)
+    return (
+        Component("Architecture", lost,
+                  f"{m.cycles} import cycle(s), {m.fragile} fragile module(s)",
+                  list(m.arch_top)),
+        "break import cycles and add tests to fragile hubs" if lost else None,
+    )
+
+
+def _score_testing(m: _GradeMetrics) -> _Bucket:
+    # Shallow-tested modules (covered only by import-smoke / type stubs) get HALF
+    # credit, not full — linkage is not correctness, so a project can't claim a
+    # clean Testing score on shape-only tests.
+    effective_untested = m.untested + 0.5 * m.shallow
+    lost = min(25, round(effective_untested / m.total_modules * 25))
+    if m.shallow:
+        detail = (f"{m.untested} untested + {m.shallow} shallow-tested "
+                  f"module(s) of ~{m.total_modules}")
+        fix = "add tests to the untested modules and deepen the shallow (type-only) ones"
+    else:
+        detail = f"{m.untested} untested module(s) of ~{m.total_modules}"
+        fix = "add a first test layer to the untested modules"
+    return (
+        Component("Testing", lost, detail, list(m.untested_list)),
+        fix if lost else None,
+    )
+
+
+def _score_code_debt(m: _GradeMetrics) -> _Bucket:
+    debt = len(m.debt_modules)
+    lost = min(15, debt * 3)
+    return (
+        Component(
+            "Code debt", lost,
+            f"{debt} module(s) with modernization / mutable-default / reliability debt",
+            sorted(m.debt_modules)[:3],
+        ),
+        "run `apex maintain` to modernize, fix mutable defaults, and add encodings/timeouts"
+        if lost else None,
+    )
+
+
+def _score_correctness(m: _GradeMetrics) -> _Bucket:
+    # High-severity logic bugs (likely/guaranteed crashes or dead code) the
+    # detector finds but that no other component reflected — so a real bug now
+    # visibly costs the grade, not just a review note.
+    lost = min(20, m.correctness_bugs * 5)
+    return (
+        Component("Correctness", lost,
+                  f"{m.correctness_bugs} likely-crash / dead-code bug(s)",
+                  list(m.top_bug_files)),
+        ("fix the logic bugs flagged by `apex review` (frozen-dataclass mutation, "
+         "return-in-finally, unreachable except, ...)") if lost else None,
+    )
+
+
+def _score_maintainability(m: _GradeMetrics) -> _Bucket:
+    # The project's most complex / branch-heavy functions cost a small, capped
+    # amount — a clean codebase loses nothing, a sprawling one can't dominate the
+    # grade. Each over-ceiling function is 2 points up to _MAINT_CAP.
+    lost = min(_MAINT_CAP, m.over_complex * 2)
+    return (
+        Component("Maintainability", lost,
+                  f"{m.over_complex} function(s) over complexity {_COMPLEXITY_CEILING}",
+                  list(m.maint_top)),
+        ("extract helpers from the most complex functions — "
+         "see `apex develop --objective shrink-functions`") if lost else None,
+    )
+
+
+def _score_duplication(m: _GradeMetrics) -> _Bucket:
+    # Each duplicated block costs one point up to a small cap — a clean codebase
+    # loses nothing.
+    lost = min(_DUP_CAP, m.dup_block_count)
+    return (
+        Component("Duplication", lost, f"{m.dup_block_count} duplicated block(s)",
+                  list(m.dup_top)),
+        "extract the duplicated blocks into shared helpers" if lost else None,
+    )
+
+
+# The grade's buckets, in their fixed display/score order. Adding or reordering a
+# bucket happens HERE; the scoring loop below is generic.
+_SCORERS = (
+    _score_security, _score_architecture, _score_testing, _score_code_debt,
+    _score_correctness, _score_maintainability, _score_duplication,
+)
+
+
+def _assemble(metrics: _GradeMetrics) -> tuple[int, list[Component], list[str]]:
+    """Run every bucket scorer and fold the results into score/components/fixes."""
+    components: list[Component] = []
+    fixes: list[str] = []
+    penalty = 0
+    for scorer in _SCORERS:
+        component, fix = scorer(metrics)
+        components.append(component)
+        penalty += component.points_lost
+        if component.points_lost > 0 and fix:
+            fixes.append(fix)
+    return max(0, 100 - penalty), components, fixes
+
+
+def grade(project_root: str | Path) -> HealthScore:
+    """Compute the project's health grade from its real structure."""
+    from app.tools.project_profile import ProjectProfiler, render_analysis_scope_line
+
+    # Light profile: skips the four slow git/doc subprocess scans (churn, debt
+    # age, security-exposure age, doc drift) the grade never reads — so grading
+    # (and `apex ascend`, which re-grades before+after every round) is ~200x
+    # faster on a large repo with a byte-identical grade. See ProjectProfiler.profile.
+    profile = ProjectProfiler(str(project_root)).profile(light=True)
+
+    metrics = _collect_metrics(project_root, profile)
+    score, components, fixes = _assemble(metrics)
     # Honest scope line — only non-empty on a polyglot repo with out-of-scope
     # content, so an all-Python project's grade output is unchanged.
-    from app.tools.project_profile import render_analysis_scope_line
-
     scope_line = render_analysis_scope_line(profile)
     return HealthScore(score=score, letter=_letter(score), components=components,
                        fixes=fixes, scope_line=scope_line)
