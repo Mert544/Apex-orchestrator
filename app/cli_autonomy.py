@@ -631,6 +631,164 @@ def _write_shield_stub(root: str, step) -> tuple[str, bool]:
     return rel, True
 
 
+def _top_no_runnable_step(as_json: bool) -> int:
+    """Emit the 'nothing executable' result (advisory-only plan) and return 0."""
+    if as_json:
+        print(json.dumps({"top": None, "applied": False,
+                          "reason": "no-runnable-step"}, indent=2))
+    else:
+        print("No runnable recommendation right now (the top ideas are advisory).")
+    return 0
+
+
+def _top_emit_shield(payload: dict, proof_lines: list[str], root: str, step,
+                     as_json: bool) -> int:
+    """CONSTRUCTIVE PATH (--shield): the suite doesn't exercise this target, so a
+    green here would be a false green. Instead of (or before) blocking, write a
+    deterministic characterization-test STUB for the target — recommend-only, a
+    skeleton the user fills in — so the next run's green is REAL. We do NOT
+    auto-apply the fix in the same run: the stub is failing by design (it names
+    the symbols but has no assertion yet), the point is to make the user write
+    the assertion first. Reuses the bridge's own stub-body generator."""
+    stub_path, stub_written = _write_shield_stub(root, step)
+    payload["shield"] = {"stub_path": stub_path, "written": stub_written}
+    if stub_written:
+        payload["reason"] = "shield-stub-written"
+        message = (
+            f"Wrote a characterization-test stub at {stub_path} — fill it in "
+            f"so the suite exercises `{step.target}`, then re-run "
+            "`apex develop --top --apply`."
+        )
+    else:
+        payload["reason"] = "shield-stub-exists"
+        message = (
+            f"A characterization test already exists at {stub_path} — fill it "
+            f"in so the suite exercises `{step.target}`, then re-run "
+            "`apex develop --top --apply`."
+        )
+    payload["message"] = message
+    if as_json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print("\n".join(proof_lines))
+        print(f"\n{message}")
+    return 0
+
+
+def _top_emit_false_green(payload: dict, proof_lines: list[str], step,
+                          as_json: bool) -> int:
+    """THE BLIND-SPOT FIX: a fix on a module NO test references can't be vouched
+    for by a green suite — applying it would be a FALSE green. Refuse to
+    auto-apply (rc != 0 so automation notices) unless --force overrides."""
+    warning = (
+        f"⚠️ Your tests don't exercise `{step.target}`. Applying this and "
+        "getting a green suite would be a FALSE green — the suite can't see "
+        "the change. Add a test first, or re-run with --force to apply anyway."
+    )
+    payload["reason"] = "false-green-guard"
+    payload["warning"] = warning
+    if as_json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print("\n".join(proof_lines))
+        print(f"\n{warning}")
+    return 2
+
+
+def _top_emit_dry_run(payload: dict, proof_lines: list[str], covered: bool,
+                      as_json: bool) -> int:
+    """Dry run (default): show the proof, change nothing."""
+    if as_json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print("\n".join(proof_lines))
+        if not covered:
+            print("\n⚠️ Heads up: no test exercises this module — a green "
+                  "suite here would be a false green. Add a test first, or "
+                  "use --force when applying.")
+        print("\nre-run with --apply to land it.")
+    return 0
+
+
+def _top_apply_verdict(result: dict, applied: bool, rolled_back: bool,
+                       verified, covered: bool, force: bool) -> str:
+    """Honest verdict. A --force apply on an unreferenced module is "weak
+    verification" — the suite passed but never looked at the change, so it is
+    NOT a plain "verified"."""
+    if rolled_back:
+        return "↩️ rolled back — tests failed after the patch; tree restored."
+    if not applied:
+        return f"⛔ not applied — {result.get('reason', 'no applicable patch')}."
+    if not covered:
+        return ("✅ applied (weak verification — tests don't exercise it; a "
+                "green suite here does not prove this change)."
+                if force else "✅ applied.")
+    if verified:
+        return "✅ applied and verified (your tests exercise this module)."
+    return "✅ applied (no test command detected — nothing to verify against)."
+
+
+def _top_emit_apply(args, bridge, plan, step, root: str, payload: dict,
+                    proof_lines: list[str], covered: bool, force: bool,
+                    as_json: bool) -> int:
+    """Apply EXACTLY this one step through the existing guarded loop (single-step,
+    verified, auto-rollback). Reuse apply_plan with max_apply=1 over a plan
+    holding only the chosen step — no reimplementation of the guarded loop."""
+    from app.models.idea import ActionPlan
+
+    one = ActionPlan(objective=plan.objective, project_root=plan.project_root,
+                     mode="supervised", steps=[step],
+                     stats={"total_steps": 1, "executable_steps": 1})
+    summary = bridge.apply_plan(one, root, mode="supervised",
+                                verify=not getattr(args, "no_verify", False),
+                                max_apply=1)
+    result = (summary.get("results") or [{}])[0]
+    applied = bool(result.get("applied"))
+    rolled_back = bool(result.get("rolled_back"))
+    verified = result.get("verified")
+    payload.update({"applied": applied, "rolled_back": rolled_back,
+                    "verified": verified, "apply_summary": summary})
+
+    verdict = _top_apply_verdict(result, applied, rolled_back, verified,
+                                 covered, force)
+    payload["verdict"] = verdict
+
+    if as_json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print("\n".join(proof_lines))
+        print(f"\n{verdict}")
+        if applied and not rolled_back:
+            print("_Applied to your working tree, not committed — "
+                  "review with `git diff`._")
+    # Non-zero when the one step we set out to land did not actually land.
+    return 0 if (applied and not rolled_back) else 1
+
+
+def _top_prove_step(bridge, step, root: str) -> dict | None:
+    """The proof the step carries (attach_proofs loaded it onto patch_preview);
+    fall back to a fresh draft so a step beyond the proof budget still proves."""
+    proof = step.patch_preview if (step.patch_preview and "diff" in step.patch_preview) else None
+    if proof is None:
+        proof = bridge.prove_step(step, root)
+    return proof
+
+
+def _top_payload(step, covered: bool, proof: dict | None) -> dict:
+    """The base JSON payload for the chosen step (mutated as branches resolve)."""
+    return {
+        "top": {
+            "branch": step.branch_path, "title": step.title,
+            "action": step.action_type, "target": step.target,
+            "value": step.value, "description": step.description,
+        },
+        "covered": covered,
+        "proof": proof,
+        "applied": False,
+        "verified": None,
+    }
+
+
 def _develop_top(args, target) -> int:
     """`apex develop --top`: close the loop on the SINGLE highest-value proven,
     runnable recommendation through the guarded apply loop, COVERAGE-AWARE so a
@@ -662,143 +820,31 @@ def _develop_top(args, target) -> int:
 
     step = _top_runnable_step(plan)
     if step is None:
-        msg = "No runnable recommendation right now (the top ideas are advisory)."
-        if as_json:
-            print(json.dumps({"top": None, "applied": False,
-                              "reason": "no-runnable-step"}, indent=2))
-        else:
-            print(msg)
-        return 0
+        return _top_no_runnable_step(as_json)
 
-    # The proof the step carries (attach_proofs loaded it onto patch_preview);
-    # fall back to a fresh draft so a step beyond the proof budget still proves.
-    proof = step.patch_preview if (step.patch_preview and "diff" in step.patch_preview) else None
-    if proof is None:
-        proof = bridge.prove_step(step, root)
+    proof = _top_prove_step(bridge, step, root)
     covered = module_referenced_by_suite(root, step.target)
-
-    payload: dict = {
-        "top": {
-            "branch": step.branch_path, "title": step.title,
-            "action": step.action_type, "target": step.target,
-            "value": step.value, "description": step.description,
-        },
-        "covered": covered,
-        "proof": proof,
-        "applied": False,
-        "verified": None,
-    }
-
+    payload = _top_payload(step, covered, proof)
     proof_lines = _top_proof_lines(step, proof)
+    return _top_dispatch(args, bridge, plan, step, root, payload, proof_lines,
+                         covered, apply, force, shield, as_json)
 
-    # CONSTRUCTIVE PATH (--shield): the suite doesn't exercise this target, so a
-    # green here would be a false green. Instead of (or before) blocking, write a
-    # deterministic characterization-test STUB for the target — recommend-only, a
-    # skeleton the user fills in — so the next run's green is REAL. We do NOT
-    # auto-apply the fix in the same run: the stub is failing by design (it names
-    # the symbols but has no assertion yet), the point is to make the user write
-    # the assertion first. Reuses the bridge's own stub-body generator.
+
+def _top_dispatch(args, bridge, plan, step, root: str, payload: dict,
+                  proof_lines: list[str], covered: bool, apply: bool,
+                  force: bool, shield: bool, as_json: bool) -> int:
+    """Route the chosen step to exactly one emit path: shield-stub, false-green
+    guard, dry-run preview, or the guarded single-step apply. Coverage and the
+    three flags (apply/force/shield) select the path; each emitter owns its
+    payload mutation, output, and exit code."""
     if shield and not covered:
-        stub_path, stub_written = _write_shield_stub(root, step)
-        payload["shield"] = {"stub_path": stub_path, "written": stub_written}
-        if stub_written:
-            payload["reason"] = "shield-stub-written"
-            message = (
-                f"Wrote a characterization-test stub at {stub_path} — fill it in "
-                f"so the suite exercises `{step.target}`, then re-run "
-                "`apex develop --top --apply`."
-            )
-        else:
-            payload["reason"] = "shield-stub-exists"
-            message = (
-                f"A characterization test already exists at {stub_path} — fill it "
-                f"in so the suite exercises `{step.target}`, then re-run "
-                "`apex develop --top --apply`."
-            )
-        payload["message"] = message
-        if as_json:
-            print(json.dumps(payload, indent=2))
-        else:
-            print("\n".join(proof_lines))
-            print(f"\n{message}")
-        return 0
-
-    # THE BLIND-SPOT FIX: a fix on a module NO test references can't be vouched
-    # for by a green suite — applying it would be a FALSE green. Refuse to
-    # auto-apply (rc != 0 so automation notices) unless --force overrides.
+        return _top_emit_shield(payload, proof_lines, root, step, as_json)
     if apply and not covered and not force:
-        warning = (
-            f"⚠️ Your tests don't exercise `{step.target}`. Applying this and "
-            "getting a green suite would be a FALSE green — the suite can't see "
-            "the change. Add a test first, or re-run with --force to apply anyway."
-        )
-        payload["reason"] = "false-green-guard"
-        payload["warning"] = warning
-        if as_json:
-            print(json.dumps(payload, indent=2))
-        else:
-            print("\n".join(proof_lines))
-            print(f"\n{warning}")
-        return 2
-
-    # Dry run (default): show the proof, change nothing.
+        return _top_emit_false_green(payload, proof_lines, step, as_json)
     if not apply:
-        if as_json:
-            print(json.dumps(payload, indent=2))
-        else:
-            print("\n".join(proof_lines))
-            if not covered:
-                print("\n⚠️ Heads up: no test exercises this module — a green "
-                      "suite here would be a false green. Add a test first, or "
-                      "use --force when applying.")
-            print("\nre-run with --apply to land it.")
-        return 0
-
-    # Apply EXACTLY this one step through the existing guarded loop (single-step,
-    # verified, auto-rollback). Reuse apply_plan with max_apply=1 over a plan
-    # holding only the chosen step — no reimplementation of the guarded loop.
-    from app.models.idea import ActionPlan
-
-    one = ActionPlan(objective=plan.objective, project_root=plan.project_root,
-                     mode="supervised", steps=[step],
-                     stats={"total_steps": 1, "executable_steps": 1})
-    summary = bridge.apply_plan(one, root, mode="supervised",
-                                verify=not getattr(args, "no_verify", False),
-                                max_apply=1)
-    result = (summary.get("results") or [{}])[0]
-    applied = bool(result.get("applied"))
-    rolled_back = bool(result.get("rolled_back"))
-    verified = result.get("verified")
-    payload.update({"applied": applied, "rolled_back": rolled_back,
-                    "verified": verified, "apply_summary": summary})
-
-    # Honest verdict. A --force apply on an unreferenced module is "weak
-    # verification" — the suite passed but never looked at the change, so it is
-    # NOT a plain "verified".
-    if rolled_back:
-        verdict = "↩️ rolled back — tests failed after the patch; tree restored."
-    elif not applied:
-        verdict = f"⛔ not applied — {result.get('reason', 'no applicable patch')}."
-    elif not covered:
-        verdict = ("✅ applied (weak verification — tests don't exercise it; a "
-                   "green suite here does not prove this change)."
-                   if force else "✅ applied.")
-    elif verified:
-        verdict = "✅ applied and verified (your tests exercise this module)."
-    else:
-        verdict = "✅ applied (no test command detected — nothing to verify against)."
-    payload["verdict"] = verdict
-
-    if as_json:
-        print(json.dumps(payload, indent=2))
-    else:
-        print("\n".join(proof_lines))
-        print(f"\n{verdict}")
-        if applied and not rolled_back:
-            print("_Applied to your working tree, not committed — "
-                  "review with `git diff`._")
-    # Non-zero when the one step we set out to land did not actually land.
-    return 0 if (applied and not rolled_back) else 1
+        return _top_emit_dry_run(payload, proof_lines, covered, as_json)
+    return _top_emit_apply(args, bridge, plan, step, root, payload, proof_lines,
+                           covered, force, as_json)
 
 
 def _grade_score(target: str) -> int:
