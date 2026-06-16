@@ -138,27 +138,30 @@ class RecursiveReflectionEngine:
             return f"Claim survived {self.max_depth} reflection layers with adjusted confidence {adjusted_confidence:.2f}."
         return f"Claim failed reflection scrutiny (adjusted confidence {adjusted_confidence:.2f}). Needs more evidence or narrower scope."
 
+    _COUNTEREXAMPLE_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+        (("secure", "safe"), "What if an attacker provides crafted input that bypasses the validation?"),
+        (("all", "every"), "What if there is an edge case file or function not covered by the evidence?"),
+        (("test", "coverage"), "What if the tests exist but do not actually assert meaningful behavior?"),
+        (("fast", "performance"), "What if the performance is acceptable for small inputs but degrades at scale?"),
+        (("no ", "never"), "What if the issue exists in a dependency or transitive module not scanned?"),
+        (("thread", "concurrent"), "What if a race condition occurs under high load that is not visible in static analysis?"),
+    )
+
+    _COUNTEREXAMPLE_FALLBACK: tuple[str, ...] = (
+        "What if the evidence is outdated and the code has changed since?",
+        "What if the claim holds in the current context but fails in a different environment?",
+    )
+
+    @staticmethod
+    def _matched_counterexamples(lower: str) -> list[str]:
+        rules = RecursiveReflectionEngine._COUNTEREXAMPLE_RULES
+        return [message for keywords, message in rules if any(kw in lower for kw in keywords)]
+
     @staticmethod
     def _generate_counterexamples(text: str, evidence: list[str]) -> list[str]:
-        counters = []
-        lower = text.lower()
-
-        if "secure" in lower or "safe" in lower:
-            counters.append("What if an attacker provides crafted input that bypasses the validation?")
-        if "all" in lower or "every" in lower:
-            counters.append("What if there is an edge case file or function not covered by the evidence?")
-        if "test" in lower or "coverage" in lower:
-            counters.append("What if the tests exist but do not actually assert meaningful behavior?")
-        if "fast" in lower or "performance" in lower:
-            counters.append("What if the performance is acceptable for small inputs but degrades at scale?")
-        if "no " in lower or "never" in lower:
-            counters.append("What if the issue exists in a dependency or transitive module not scanned?")
-        if "thread" in lower or "concurrent" in lower:
-            counters.append("What if a race condition occurs under high load that is not visible in static analysis?")
+        counters = RecursiveReflectionEngine._matched_counterexamples(text.lower())
         if not counters:
-            counters.append("What if the evidence is outdated and the code has changed since?")
-            counters.append("What if the claim holds in the current context but fails in a different environment?")
-
+            counters = list(RecursiveReflectionEngine._COUNTEREXAMPLE_FALLBACK)
         return counters[:3]
 
     @staticmethod
