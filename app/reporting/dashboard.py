@@ -93,6 +93,84 @@ def _git_info(project_root: str) -> dict[str, Any]:
     }
 
 
+def _plugin_operators() -> list[Any]:
+    """Plugin-contributed operators that widen the idea alphabet (best-effort)."""
+    try:
+        from app.plugins.registry import PluginRegistry
+
+        registry = PluginRegistry()
+        registry.load_all()
+        return registry.idea_operators()
+    except Exception:
+        return []
+
+
+def _build_roadmap(idea_report):
+    """Sequenced-plan roadmap over the idea tree; ``None`` if unavailable."""
+    try:
+        from app.engine.idea_roadmap import RoadmapSynthesizer
+
+        return RoadmapSynthesizer().build(idea_report)
+    except Exception:
+        return None
+
+
+def _build_shape(idea_report):
+    """Tree-shape telemetry over the idea tree; ``None`` if unavailable."""
+    try:
+        from app.engine.idea_tree_shape import analyze_tree_shape
+
+        return analyze_tree_shape(idea_report)
+    except Exception:
+        return None
+
+
+def _build_pareto(roadmap) -> list[Any]:
+    """Efficient frontier derived from the roadmap; ``[]`` if unavailable."""
+    try:
+        from app.engine.idea_pareto import frontier_from_roadmap
+
+        return frontier_from_roadmap(roadmap) if roadmap is not None else []
+    except Exception:
+        return []
+
+
+def _build_trajectory(project_root: str) -> list[Any]:
+    """Self-improvement trajectory history; ``[]`` if unavailable."""
+    try:
+        from app.engine.evolution import load_history
+
+        return load_history(project_root)
+    except Exception:
+        return []
+
+
+def _build_learned(project_root: str):
+    """Learned-memory summary for the project; ``None`` if unavailable."""
+    try:
+        from app.engine.idea_memory import IdeaMemory
+
+        return IdeaMemory.load(project_root).summary()
+    except Exception:
+        return None
+
+
+def _build_autonomy(action_plan, git) -> dict[str, Any] | None:
+    """What ``apex auto`` would decide for this project right now; ``None`` on error."""
+    try:
+        from app.policies.autonomy_policy import AutonomyPolicy
+
+        tree_clean = bool(git) and int(git.get("dirty", 0) or 0) == 0
+        autonomy = AutonomyPolicy().decide(
+            executable_steps=action_plan.stats.get("executable_steps", 0),
+            working_tree_clean=tree_clean,
+        ).to_dict()
+        autonomy["executable"] = action_plan.stats.get("executable_steps", 0)
+        return autonomy
+    except Exception:
+        return None
+
+
 def build_dashboard(
     project_root: str,
     objective: str | None = None,
@@ -113,70 +191,22 @@ def build_dashboard(
     profile = ProjectProfiler(project_root).profile()
     findings = _run_scanners(project_root)
 
-    # Plugin-contributed operators widen the idea alphabet (best-effort).
-    try:
-        from app.plugins.registry import PluginRegistry
-
-        registry = PluginRegistry()
-        registry.load_all()
-        extra_ops = registry.idea_operators()
-    except Exception:
-        extra_ops = []
-
     idea_report = IdeaPermutationEngine(
         {"max_total_ideas": max_ideas, "max_idea_depth": idea_depth, "breadth": breadth},
         project_root,
-        extra_operators=extra_ops,
+        extra_operators=_plugin_operators(),
     ).run(objective=objective or None)
     action_plan = IdeaActionBridge().plan_tree(idea_report, top=15)
-    # Roadmap (sequenced plan) + tree-shape telemetry over the same idea tree.
-    try:
-        from app.engine.idea_roadmap import RoadmapSynthesizer
 
-        roadmap = RoadmapSynthesizer().build(idea_report)
-    except Exception:
-        roadmap = None
-    try:
-        from app.engine.idea_tree_shape import analyze_tree_shape
-
-        shape = analyze_tree_shape(idea_report)
-    except Exception:
-        shape = None
-    # Efficient frontier, self-improvement trajectory, and learned memory.
-    try:
-        from app.engine.idea_pareto import frontier_from_roadmap
-
-        pareto = frontier_from_roadmap(roadmap) if roadmap is not None else []
-    except Exception:
-        pareto = []
-    try:
-        from app.engine.evolution import load_history
-
-        trajectory = load_history(project_root)
-    except Exception:
-        trajectory = []
-    try:
-        from app.engine.idea_memory import IdeaMemory
-
-        learned = IdeaMemory.load(project_root).summary()
-    except Exception:
-        learned = None
+    roadmap = _build_roadmap(idea_report)
+    shape = _build_shape(idea_report)
+    pareto = _build_pareto(roadmap)
+    trajectory = _build_trajectory(project_root)
+    learned = _build_learned(project_root)
     reasoning = _run_reasoning(project_root, objective)
     git = _git_info(project_root)
     debug = _run_debug(project_root, profile)
-
-    # What `apex auto` would decide for this project, right now.
-    try:
-        from app.policies.autonomy_policy import AutonomyPolicy
-
-        tree_clean = bool(git) and int(git.get("dirty", 0) or 0) == 0
-        autonomy = AutonomyPolicy().decide(
-            executable_steps=action_plan.stats.get("executable_steps", 0),
-            working_tree_clean=tree_clean,
-        ).to_dict()
-        autonomy["executable"] = action_plan.stats.get("executable_steps", 0)
-    except Exception:
-        autonomy = None
+    autonomy = _build_autonomy(action_plan, git)
 
     return _render_html(
         project_root, profile, findings, idea_report, action_plan, reasoning, git, debug,
