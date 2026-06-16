@@ -43,6 +43,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from app.execution._dedup_helpers import stamp_multi_module_plan
 from app.execution.cross_file_rename import RenamePlan
 from app.execution.dedup_extract import (
     _Occurrence,
@@ -442,11 +443,8 @@ def plan_dedup_total_return(project_root: str | Path, block) -> RenamePlan:
         return plan
     new_contents, edits = emitted
 
-    plan.new = helper_name
-    plan.defined_in = first.rel
-    plan.originals = {rel: sources[rel] for rel in new_contents}
-    plan.new_contents = new_contents
-    plan.edits_by_file = edits
+    stamp_multi_module_plan(plan, helper_name, first.rel, sources,
+                            new_contents, edits)
     if not live_in and not live_out:
         plan.warnings.append(
             "the helper takes no parameters and returns nothing directly "

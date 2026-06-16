@@ -54,6 +54,7 @@ from pathlib import Path
 import keyword
 
 from app.engine.near_dup import _is_value_leaf
+from app.execution._dedup_helpers import stamp_multi_module_plan
 from app.execution.cross_file_rename import RenamePlan
 from app.execution.dedup_extract import (
     _Occurrence,
@@ -591,11 +592,8 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
         return plan
     new_contents, edits = emitted
 
-    plan.new = helper_name
-    plan.defined_in = first.rel
-    plan.originals = {rel: sources[rel] for rel in new_contents}
-    plan.new_contents = new_contents
-    plan.edits_by_file = edits
+    stamp_multi_module_plan(plan, helper_name, first.rel, sources,
+                            new_contents, edits)
     return plan
 
 

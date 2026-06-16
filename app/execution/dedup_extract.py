@@ -36,6 +36,7 @@ import ast
 import keyword
 from pathlib import Path
 
+from app.execution._dedup_helpers import stamp_multi_module_plan
 from app.execution.cross_file_rename import RenamePlan, _top_level_bindings
 from app.execution.extract_method import (
     _NESTED_SCOPE_NODES,
@@ -519,11 +520,8 @@ def _finalize_plan(plan: RenamePlan, helper_name: str, defined_in: str,
     """Stamp the successful extraction onto ``plan`` (name, defining module,
     originals/new-contents/edit counts) and warn when the helper is a no-arg,
     no-return self-contained block worth a human glance."""
-    plan.new = helper_name
-    plan.defined_in = defined_in
-    plan.originals = {rel: sources[rel] for rel in new_contents}
-    plan.new_contents = new_contents
-    plan.edits_by_file = edits
+    stamp_multi_module_plan(plan, helper_name, defined_in, sources,
+                            new_contents, edits)
     if not live_in and not live_out:
         plan.warnings.append(
             "the helper takes no parameters and returns nothing — confirm the "
