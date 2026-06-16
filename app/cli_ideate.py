@@ -138,6 +138,86 @@ def _ideate_roadmap_view(args, report, target, memory) -> int:
     return 0
 
 
+def _ideate_invest_view(args, report, target, memory) -> None:
+    """--invest: the impact-vs-effort investment curve + diminishing-returns knee."""
+    from app.engine.idea_investment import (
+        investment_curve,
+        render_investment_markdown,
+    )
+
+    points = investment_curve(report)
+    if args.json:
+        print(json.dumps([p.to_dict() for p in points], indent=2))
+    else:
+        print(render_investment_markdown(points))
+
+
+def _ideate_budget_view(args, report, target, memory) -> None:
+    """--budget: optimal portfolio of ideas for an effort budget (knapsack)."""
+    from app.engine.idea_portfolio import (
+        optimize_portfolio,
+        render_portfolio_markdown,
+    )
+
+    portfolio = optimize_portfolio(report, float(args.budget))
+    if args.json:
+        print(json.dumps(portfolio.to_dict(), indent=2))
+    else:
+        print(render_portfolio_markdown(portfolio))
+
+
+def _ideate_sequence_view(args, report, target, memory) -> None:
+    """--sequence: dependency-ordered execution plan (prerequisites first)."""
+    from app.engine.idea_dependencies import (
+        execution_order,
+        render_execution_markdown,
+    )
+
+    steps = execution_order(report.ideas)
+    if args.json:
+        print(json.dumps([s.to_dict() for s in steps], indent=2))
+    else:
+        print(render_execution_markdown(steps))
+
+
+def _ideate_pareto_view(args, report, target, memory) -> None:
+    """--pareto: the efficient frontier of ideas across impact/effort/value."""
+    from app.engine.idea_pareto import frontier_from_roadmap, render_pareto_markdown
+    from app.engine.idea_roadmap import RoadmapSynthesizer
+
+    roadmap = RoadmapSynthesizer().build(report, memory=memory)
+    points = frontier_from_roadmap(roadmap)
+    if args.json:
+        print(json.dumps([p.to_dict() for p in points], indent=2))
+    else:
+        print(render_pareto_markdown(points, total_ideas=len(report.ideas)))
+
+
+def _ideate_shape_view(args, report, target, memory) -> None:
+    """--shape: report on the shape/health of the tree the engine just produced."""
+    from app.engine.idea_tree_shape import (
+        analyze_tree_shape,
+        render_tree_shape_markdown,
+    )
+
+    shape = analyze_tree_shape(report)
+    if args.json:
+        print(json.dumps(shape.to_dict(), indent=2))
+    else:
+        print(render_tree_shape_markdown(shape))
+
+
+# (flag attr, default, renderer) in original priority order. A falsy attr value
+# (missing flag, 0.0 budget) skips the view; the first truthy flag wins.
+_IDEATE_ANALYSIS_VIEWS = (
+    ("invest", False, _ideate_invest_view),
+    ("budget", 0.0, _ideate_budget_view),
+    ("sequence", False, _ideate_sequence_view),
+    ("pareto", False, _ideate_pareto_view),
+    ("shape", False, _ideate_shape_view),
+)
+
+
 def _ideate_analysis_view(args, report, target, memory) -> bool:
     """Handle the single-output analysis flags, printing if one is selected.
 
@@ -146,75 +226,10 @@ def _ideate_analysis_view(args, report, target, memory) -> bool:
     output was printed (caller then returns 0), else ``False``. Each branch is
     a verbatim move; ordering is preserved.
     """
-    # --invest: the impact-vs-effort investment curve + diminishing-returns knee.
-    if getattr(args, "invest", False):
-        from app.engine.idea_investment import (
-            investment_curve,
-            render_investment_markdown,
-        )
-
-        points = investment_curve(report)
-        if args.json:
-            print(json.dumps([p.to_dict() for p in points], indent=2))
-        else:
-            print(render_investment_markdown(points))
-        return True
-
-    # --budget: optimal portfolio of ideas for an effort budget (knapsack).
-    if getattr(args, "budget", 0.0):
-        from app.engine.idea_portfolio import (
-            optimize_portfolio,
-            render_portfolio_markdown,
-        )
-
-        portfolio = optimize_portfolio(report, float(args.budget))
-        if args.json:
-            print(json.dumps(portfolio.to_dict(), indent=2))
-        else:
-            print(render_portfolio_markdown(portfolio))
-        return True
-
-    # --sequence: dependency-ordered execution plan (prerequisites first).
-    if getattr(args, "sequence", False):
-        from app.engine.idea_dependencies import (
-            execution_order,
-            render_execution_markdown,
-        )
-
-        steps = execution_order(report.ideas)
-        if args.json:
-            print(json.dumps([s.to_dict() for s in steps], indent=2))
-        else:
-            print(render_execution_markdown(steps))
-        return True
-
-    # --pareto: the efficient frontier of ideas across impact/effort/value.
-    if getattr(args, "pareto", False):
-        from app.engine.idea_pareto import frontier_from_roadmap, render_pareto_markdown
-        from app.engine.idea_roadmap import RoadmapSynthesizer
-
-        roadmap = RoadmapSynthesizer().build(report, memory=memory)
-        points = frontier_from_roadmap(roadmap)
-        if args.json:
-            print(json.dumps([p.to_dict() for p in points], indent=2))
-        else:
-            print(render_pareto_markdown(points, total_ideas=len(report.ideas)))
-        return True
-
-    # --shape: report on the shape/health of the tree the engine just produced.
-    if getattr(args, "shape", False):
-        from app.engine.idea_tree_shape import (
-            analyze_tree_shape,
-            render_tree_shape_markdown,
-        )
-
-        shape = analyze_tree_shape(report)
-        if args.json:
-            print(json.dumps(shape.to_dict(), indent=2))
-        else:
-            print(render_tree_shape_markdown(shape))
-        return True
-
+    for attr, default, render in _IDEATE_ANALYSIS_VIEWS:
+        if getattr(args, attr, default):
+            render(args, report, target, memory)
+            return True
     return False
 
 

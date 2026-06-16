@@ -511,6 +511,70 @@ def cmd_trackrecord(args: argparse.Namespace) -> int:
     return 0
 
 
+_SCOPE_EMPTY_REPORT = {
+    "source_file_count": 0,
+    "python_file_count": 0,
+    "analyzed_pct": 100,
+    "out_of_scope_pct": 0,
+    "all_python": True,
+    "language_breakdown": [],
+    "files": [],
+}
+
+
+def _scope_profile(root: Path):
+    """Profile ``root`` (light), collapsing any failure to ``None``."""
+    from app.tools.project_profile import ProjectProfiler
+
+    try:
+        return ProjectProfiler(str(root)).profile(light=True)
+    except Exception:
+        return None
+
+
+def _scope_file_entry(fact, test_stems: set) -> dict:
+    """One out-of-scope file's dict, flagged ``has_test`` and (only if >0) debt.
+
+    A non-Python file is "tested" when some test file's stem names it — Apex's
+    test files are linked by name, so an out-of-scope file with no such mention
+    is honestly flagged "no test found". The TODO/FIXME marker count is read
+    defensively and ONLY added when > 0, so a no-debt file's dict (and the
+    --json shape) stays byte-identical to before this signal existed.
+    """
+    stem = Path(fact.path).stem
+    has_test = stem in test_stems or any(stem in t for t in test_stems)
+    entry = {
+        "path": fact.path,
+        "language": fact.language,
+        "loc": fact.loc,
+        "churn": fact.churn,
+        "has_test": has_test,
+    }
+    debt = int(getattr(fact, "debt_markers", 0) or 0)
+    if debt > 0:
+        entry["debt_markers"] = debt
+    return entry
+
+
+def _scope_files(root: Path, profile) -> list[dict]:
+    """The largest / most-active out-of-scope file dicts (ranked by the scanner)."""
+    from app.tools.polyglot_facts import scan_polyglot_facts
+
+    test_stems = {Path(t).stem for t in getattr(profile, "test_files", []) or []}
+    return [_scope_file_entry(f, test_stems) for f in scan_polyglot_facts(str(root))]
+
+
+def _scope_cross_links(root: Path) -> list[dict]:
+    """Cross-language coupling pairs git shows co-changing across the Python
+    boundary. Defensive: [] on any git error (all-Python / shallow history)."""
+    from app.engine.cross_language_coupling import cross_language_coupling
+    return [
+        {"py": c.py, "other": c.other, "language": c.other_language,
+         "cochanges": c.cochanges}
+        for c in cross_language_coupling(str(root))
+    ]
+
+
 def _scope_report(root: Path) -> dict:
     """Assemble Apex's honest analysis-scope report for this repo.
 
@@ -527,81 +591,26 @@ def _scope_report(root: Path) -> dict:
     ``test_files`` (a non-Python file is "tested" only if a sibling/test path
     names its stem), so the untested flag tracks the repo, never a guess.
     """
-    from app.tools.polyglot_facts import scan_polyglot_facts
-    from app.tools.project_profile import ProjectProfiler
-
-    try:
-        profile = ProjectProfiler(str(root)).profile(light=True)
-    except Exception:
-        profile = None
-
+    profile = _scope_profile(root)
     if profile is None or profile.source_file_count <= 0:
         # Empty repo (no source-bearing files at all): nothing to disclose, but
         # the honest answer is still "all of what little there is".
-        return {
-            "source_file_count": 0,
-            "python_file_count": 0,
-            "analyzed_pct": 100,
-            "out_of_scope_pct": 0,
-            "all_python": True,
-            "language_breakdown": [],
-            "files": [],
-        }
+        return dict(_SCOPE_EMPTY_REPORT)
 
-    analysed_pct = round(profile.analyzed_ratio * 100)
-    out_pct = round(profile.out_of_scope_ratio * 100)
     all_python = not (profile.out_of_scope_ratio > 0 and profile.language_breakdown)
-
     breakdown = [
         {"language": lang, "files": count}
         for lang, count in profile.language_breakdown.items()
     ]
-
-    # A non-Python file is "tested" when some test file's stem names it — Apex's
-    # test files are linked by name, so an out-of-scope file with no such mention
-    # is honestly flagged "no test found".
-    test_stems = {
-        Path(t).stem for t in getattr(profile, "test_files", []) or []
-    }
-    files: list[dict] = []
-    for fact in scan_polyglot_facts(str(root)):
-        stem = Path(fact.path).stem
-        has_test = stem in test_stems or any(stem in t for t in test_stems)
-        entry = {
-            "path": fact.path,
-            "language": fact.language,
-            "loc": fact.loc,
-            "churn": fact.churn,
-            "has_test": has_test,
-        }
-        # Count of TODO/FIXME/HACK/XXX in the file, read defensively. Only
-        # ADDED to the entry when > 0, so a no-debt file's dict (and the
-        # --json shape) stays byte-identical to before this signal existed.
-        debt = int(getattr(fact, "debt_markers", 0) or 0)
-        if debt > 0:
-            entry["debt_markers"] = debt
-        files.append(entry)
-
-    # Cross-language coupling: file pairs git shows moving together across the
-    # Python/non-Python boundary — a "keep these in sync" signal Apex can surface
-    # even though it can't deep-analyse the non-Python side. Defensive: [] on any
-    # git error, so an all-Python / shallow-history repo adds nothing.
-    from app.engine.cross_language_coupling import cross_language_coupling
-    cross_links = [
-        {"py": c.py, "other": c.other, "language": c.other_language,
-         "cochanges": c.cochanges}
-        for c in cross_language_coupling(str(root))
-    ]
-
     return {
         "source_file_count": profile.source_file_count,
         "python_file_count": profile.python_file_count,
-        "analyzed_pct": analysed_pct,
-        "out_of_scope_pct": out_pct,
+        "analyzed_pct": round(profile.analyzed_ratio * 100),
+        "out_of_scope_pct": round(profile.out_of_scope_ratio * 100),
         "all_python": all_python,
         "language_breakdown": breakdown,
-        "files": files,
-        "cross_links": cross_links,
+        "files": _scope_files(root, profile),
+        "cross_links": _scope_cross_links(root),
     }
 
 
