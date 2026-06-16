@@ -126,12 +126,6 @@ def _resolve_group(group: list[str], module_map: dict[str, Path]) -> str | None:
     return None
 
 
-def _package_of(module: str) -> str:
-    """The package containing ``module`` (its dotted name minus the last part)."""
-    head, _, _ = module.rpartition(".")
-    return head
-
-
 def _relative_base(level: int, module: str | None, self_module: str) -> str:
     """Resolve a relative ``from`` import's base dotted name.
 
