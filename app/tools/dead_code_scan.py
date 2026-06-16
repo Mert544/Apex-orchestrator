@@ -123,6 +123,85 @@ class _ModuleFacts:
     definitions: tuple[tuple[str, str, int], ...]
 
 
+def _uses_from_node(node: ast.AST) -> tuple[str, ...]:
+    """Names a single node contributes to the project *use* set (rules 1, 7).
+
+    A ``Name``-load yields its ``id``; an ``Attribute`` its ``.attr``; an
+    ``import``/``from import`` its bound aliases. Any other node yields nothing.
+    """
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+        return (node.id,)
+    if isinstance(node, ast.Attribute):
+        return (node.attr,)
+    if isinstance(node, ast.ImportFrom):
+        return tuple(a.asname or a.name for a in node.names)
+    if isinstance(node, ast.Import):
+        return tuple((a.asname or a.name).split(".")[0] for a in node.names)
+    return ()
+
+
+def _star_target_of(node: ast.AST) -> str | None:
+    """The dotted module of a ``from X import *`` node, else ``None`` (rule 7)."""
+    if isinstance(node, ast.ImportFrom) and node.module:
+        if any(a.name == "*" for a in node.names):
+            return node.module
+    return None
+
+
+def _string_constant_of(node: ast.AST) -> str | None:
+    """The value of a string ``Constant`` node, else ``None`` (rule 6)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _is_dynamic_access_call(node: ast.AST) -> bool:
+    """True for a ``getattr``/``setattr``/... call — dynamic resolution (rule 7)."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in _DYNAMIC_BUILTINS
+    )
+
+
+def _exports_from_node(node: ast.AST) -> tuple[str, ...]:
+    """Names declared by an ``__all__ = [...]``/``(...)`` assignment (rule 3)."""
+    if not isinstance(node, ast.Assign):
+        return ()
+    if not isinstance(node.value, (ast.List, ast.Tuple)):
+        return ()
+    if not any(
+        isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
+    ):
+        return ()
+    return tuple(
+        e.value
+        for e in node.value.elts
+        if isinstance(e, ast.Constant) and isinstance(e.value, str)
+    )
+
+
+def _is_dead_candidate_def(node: ast.AST) -> bool:
+    """True for a top-level def that survives the per-def exclusions (rules 2,4,5,8)."""
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return False
+    if node.decorator_list:  # rule 8: decorator may register the symbol externally
+        return False
+    name = node.name
+    return not (_is_dunder(name) or _is_entrypoint(name) or _is_test_name(name))
+
+
+def _collect_definitions(tree: ast.Module) -> tuple[tuple[str, str, int], ...]:
+    """``(name, kind, lineno)`` for each top-level def that *could* be dead."""
+    definitions: list[tuple[str, str, int]] = []
+    for node in tree.body:  # top-level definitions only
+        if not _is_dead_candidate_def(node):
+            continue
+        kind = "class" if isinstance(node, ast.ClassDef) else "function"
+        definitions.append((node.name, kind, node.lineno))
+    return tuple(definitions)
+
+
 def _collect_module_facts(rel: str, tree: ast.Module) -> _ModuleFacts:
     """One pass over a module's AST producing every fact the scan needs."""
     uses: set[str] = set()
@@ -132,50 +211,16 @@ def _collect_module_facts(rel: str, tree: ast.Module) -> _ModuleFacts:
     has_dynamic_access = False
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            uses.add(node.id)
-        elif isinstance(node, ast.Attribute):
-            uses.add(node.attr)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module and any(a.name == "*" for a in node.names):
-                star_targets.add(node.module)  # `from X import *` re-exports X
-            for a in node.names:
-                uses.add(a.asname or a.name)
-        elif isinstance(node, ast.Import):
-            for a in node.names:
-                uses.add((a.asname or a.name).split(".")[0])
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            string_constants.add(node.value)
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id in _DYNAMIC_BUILTINS
-        ):
+        uses.update(_uses_from_node(node))
+        exports.update(_exports_from_node(node))
+        star = _star_target_of(node)
+        if star is not None:
+            star_targets.add(star)
+        text = _string_constant_of(node)
+        if text is not None:
+            string_constants.add(text)
+        if _is_dynamic_access_call(node):
             has_dynamic_access = True
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if (
-                    isinstance(target, ast.Name)
-                    and target.id == "__all__"
-                    and isinstance(node.value, (ast.List, ast.Tuple))
-                ):
-                    exports.update(
-                        e.value
-                        for e in node.value.elts
-                        if isinstance(e, ast.Constant) and isinstance(e.value, str)
-                    )
-
-    definitions: list[tuple[str, str, int]] = []
-    for node in tree.body:  # top-level definitions only
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            continue
-        if node.decorator_list:  # rule 8: decorator may register the symbol externally
-            continue
-        name = node.name
-        if _is_dunder(name) or _is_entrypoint(name) or _is_test_name(name):
-            continue  # rules 2, 4, 5
-        kind = "class" if isinstance(node, ast.ClassDef) else "function"
-        definitions.append((name, kind, node.lineno))
 
     return _ModuleFacts(
         rel=rel,
@@ -184,7 +229,7 @@ def _collect_module_facts(rel: str, tree: ast.Module) -> _ModuleFacts:
         exports=frozenset(exports),
         has_dynamic_access=has_dynamic_access,
         star_targets=frozenset(star_targets),
-        definitions=tuple(definitions),
+        definitions=_collect_definitions(tree),
     )
 
 

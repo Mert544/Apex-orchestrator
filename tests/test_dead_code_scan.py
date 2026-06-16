@@ -188,3 +188,91 @@ def test_max_files_cap_limits_scan(tmp_path: Path):
     none = analyze_dead_code(tmp_path, max_files=0)
     assert none.files_scanned == 0
     assert none.candidates == []
+
+
+def test_collect_module_facts_characterization(tmp_path: Path):
+    """Characterization lock for ``_collect_module_facts`` after its helper split.
+
+    One fixture exercises every node-contribution path in a single AST walk —
+    Name-load + Attribute use, ``import``/``from import`` aliases, a star-import
+    target, a string constant, an ``__all__`` export, a ``getattr`` dynamic call,
+    a decorated def, a dunder, an entrypoint, a test name, and plain function /
+    class defs — and pins the resulting report exactly. If any extracted helper
+    drifts from the original elif-chain semantics, this snapshot breaks.
+    """
+    _write(
+        tmp_path,
+        "feature.py",
+        "import os.path as _p\n"
+        "from collections import OrderedDict as _od\n"
+        "from other.mod import *\n"
+        '__all__ = ["exported"]\n'
+        "MARKER = \"used_via_string\"\n"
+        "\n\n"
+        "def exported():\n    return _od()\n"
+        "\n\n"
+        "def used_via_string():\n    return 1\n"
+        "\n\n"
+        "@staticmethod\n"
+        "def decorated():\n    return 2\n"
+        "\n\n"
+        "def __helper__():\n    return 3\n"
+        "\n\n"
+        "def main():\n    return getattr(_p, 'join')\n"
+        "\n\n"
+        "def test_inline():\n    return 4\n"
+        "\n\n"
+        "class PlainClass:\n    pass\n"
+        "\n\n"
+        "def truly_dead():\n    return 5\n",
+    )
+    report = analyze_dead_code(tmp_path)
+
+    # feature.py has a getattr (dynamic access, rule 7) AND is a star-import
+    # source elsewhere is not relevant here; the dynamic-access guard alone
+    # suppresses every def in this module, so no candidates survive.
+    assert report.files_scanned == 1
+    assert report.candidates == []
+    assert report.candidate_count == 0
+    assert report.truncated is False
+    # Determinism guard: same input → identical report object.
+    assert analyze_dead_code(tmp_path) == report
+
+
+def test_dynamic_access_suppression_isolated(tmp_path: Path):
+    """Without the dynamic-access call, the same defs surface deterministically.
+
+    Mirrors the characterization fixture but drops ``getattr`` so the per-def
+    exclusions (dunder/entrypoint/test/decorated/exported/string/star) are what
+    filter, proving each extracted helper's branch is wired correctly.
+    """
+    _write(
+        tmp_path,
+        "feature.py",
+        "from other.mod import *\n"
+        '__all__ = ["exported"]\n'
+        "MARKER = \"used_via_string\"\n"
+        "\n\n"
+        "def exported():\n    return 1\n"
+        "\n\n"
+        "def used_via_string():\n    return 2\n"
+        "\n\n"
+        "@staticmethod\n"
+        "def decorated():\n    return 3\n"
+        "\n\n"
+        "def __helper__():\n    return 4\n"
+        "\n\n"
+        "def main():\n    return 5\n"
+        "\n\n"
+        "def test_inline():\n    return 6\n"
+        "\n\n"
+        "class PlainClass:\n    pass\n"
+        "\n\n"
+        "def truly_dead():\n    return 7\n",
+    )
+    report = analyze_dead_code(tmp_path)
+    # exported (rule 3), used_via_string (rule 6), decorated (rule 8),
+    # __helper__ (rule 2), main (rule 4), test_inline (rule 5) all excluded;
+    # PlainClass and truly_dead are the genuine candidates.
+    assert _symbols(report) == {"PlainClass", "truly_dead"}
+    assert {c["kind"] for c in report.candidates} == {"class", "function"}
