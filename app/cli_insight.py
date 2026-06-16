@@ -46,65 +46,60 @@ def cmd_explain(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_brief(args: argparse.Namespace) -> int:
-    """A design-level idea rendered as an actionable engineering brief.
+def _brief_check(args: argparse.Namespace, target: Path, branch: str) -> int:
+    """The ``--check`` sub-path: re-measure a saved brief's evidence burndown."""
+    from app.engine.idea_brief import check_brief, render_check_markdown
 
-    ``--save`` snapshots the brief's evidence baseline; ``--check`` re-measures
-    a saved brief against the CURRENT code — evidenced items whose evidence
-    vanished are resolved by the scan, not by a checkbox (the burndown).
-    """
-    from app.engine.idea_brief import (
-        build_brief,
-        check_brief,
-        render_brief_markdown,
-        render_check_markdown,
-        save_brief,
+    if not branch:
+        print("⛔ --check needs the BRANCH of a previously saved brief "
+              "(apex brief x.o --save)")
+        return 1
+    result = check_brief(str(target), branch)
+    if result is None:
+        print(f"⛔ no saved brief for `{branch}` — save one first: "
+              f"apex brief {branch} --save")
+        return 1
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(render_check_markdown(result))
+    return 0
+
+
+def _brief_develop(args: argparse.Namespace, target: Path, branch: str) -> int:
+    """The ``--develop`` sub-path: run evidenced concerns as develop campaigns."""
+    from app.engine.brief_develop import (
+        develop_brief,
+        render_brief_develop_markdown,
     )
 
-    target = Path(args.target).resolve() if args.target else _get_project_root()
-    branch = getattr(args, "branch", "") or ""
+    result = develop_brief(
+        str(target), branch_path=branch,
+        subject=getattr(args, "subject", "") or "",
+        max_steps=getattr(args, "max_steps", 25),
+        verify=not getattr(args, "no_verify", False),
+        apply=getattr(args, "apply", False),
+        depth=args.depth, breadth=args.breadth, max_ideas=args.max_ideas,
+        objective_focus=args.objective or "")
+    if result is None:
+        print("No design-level idea to develop (every idea is directly executable).")
+        return 1
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        print(render_brief_develop_markdown(result))
+        if not getattr(args, "apply", False):
+            print("[brief] Dry run — re-run with --develop --apply to land the moves.")
+    return 0
 
-    if getattr(args, "check", False):
-        if not branch:
-            print("⛔ --check needs the BRANCH of a previously saved brief "
-                  "(apex brief x.o --save)")
-            return 1
-        result = check_brief(str(target), branch)
-        if result is None:
-            print(f"⛔ no saved brief for `{branch}` — save one first: "
-                  f"apex brief {branch} --save")
-            return 1
-        if args.json:
-            print(json.dumps(result, indent=2))
-        else:
-            print(render_check_markdown(result))
-        return 0
 
-    if getattr(args, "develop", False):
-        from app.engine.brief_develop import (
-            develop_brief,
-            render_brief_develop_markdown,
-        )
-
-        result = develop_brief(
-            str(target), branch_path=branch,
-            subject=getattr(args, "subject", "") or "",
-            max_steps=getattr(args, "max_steps", 25),
-            verify=not getattr(args, "no_verify", False),
-            apply=getattr(args, "apply", False),
-            depth=args.depth, breadth=args.breadth, max_ideas=args.max_ideas,
-            objective_focus=args.objective or "")
-        if result is None:
-            print("No design-level idea to develop (every idea is directly executable).")
-            return 1
-        if args.json:
-            print(json.dumps(result.to_dict(), indent=2))
-        else:
-            print(render_brief_develop_markdown(result))
-            if not getattr(args, "apply", False):
-                print("[brief] Dry run — re-run with --develop --apply to land the moves.")
-        return 0
-
+def _brief_build(args: argparse.Namespace, target: Path, branch: str) -> int:
+    """The default sub-path: build (and optionally --save) a fresh brief."""
+    from app.engine.idea_brief import (
+        build_brief,
+        render_brief_markdown,
+        save_brief,
+    )
     from app.engine.idea_permutation import IdeaPermutationEngine
 
     report = IdeaPermutationEngine(
@@ -126,6 +121,23 @@ def cmd_brief(args: argparse.Namespace) -> int:
         print(f"\n[brief] Evidence baseline saved to {path} — "
               f"measure progress later with: apex brief {brief.branch_path} --check")
     return 0
+
+
+def cmd_brief(args: argparse.Namespace) -> int:
+    """A design-level idea rendered as an actionable engineering brief.
+
+    ``--save`` snapshots the brief's evidence baseline; ``--check`` re-measures
+    a saved brief against the CURRENT code — evidenced items whose evidence
+    vanished are resolved by the scan, not by a checkbox (the burndown).
+    """
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    branch = getattr(args, "branch", "") or ""
+
+    if getattr(args, "check", False):
+        return _brief_check(args, target, branch)
+    if getattr(args, "develop", False):
+        return _brief_develop(args, target, branch)
+    return _brief_build(args, target, branch)
 
 
 def cmd_dream(args: argparse.Namespace) -> int:
@@ -354,6 +366,55 @@ def _read_proof_of_fix(root: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _coerce_count(value: object, fallback: int) -> int:
+    """Coerce a recorded total to int, falling back when not recorded.
+
+    A MISSING key and an explicit null both fall back (they mean "not
+    recorded"); a real recorded value wins, defensively coerced.
+    """
+    if value is None:
+        return fallback
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _count_outcome(fixes: list, outcome: str) -> int:
+    """How many recorded fixes (dicts only) carry the given ``outcome``."""
+    return sum(
+        1 for f in fixes
+        if isinstance(f, dict) and f.get("outcome") == outcome
+    )
+
+
+def _proof_tally(proof: dict) -> tuple[int, int]:
+    """(landed, reverted) from the proof trail: recorded totals win, else count."""
+    totals = proof.get("totals") or {}
+    fixes = proof.get("fixes") or []
+    verified = _count_outcome(fixes, "applied")
+    rolled_back = _count_outcome(fixes, "rolled_back")
+    landed = _coerce_count(totals.get("applied"), verified) if totals else verified
+    reverted = _coerce_count(totals.get("rolled_back"), rolled_back) if totals else rolled_back
+    return landed, reverted
+
+
+def _reliability_table(mem: dict) -> list[dict]:
+    """Merge IdeaMemory's reliability views into one deterministically ordered
+    table: every tracked fix-type once, best landing rate first, then key."""
+    rows = [*(mem.get("most_reliable") or []), *(mem.get("least_reliable") or [])]
+    by_key: dict[str, dict] = {}
+    for row in rows:
+        key = row.get("key", "")
+        if key and key not in by_key:
+            by_key[key] = {
+                "key": key,
+                "success_rate": float(row.get("success_rate", 0.0)),
+                "samples": int(row.get("samples", 0)),
+            }
+    return sorted(by_key.values(), key=lambda r: (-r["success_rate"], r["key"]))
+
+
 def _trackrecord(root: Path) -> dict:
     """Assemble Apex's PROVEN track record on this repo from the two artifacts it
     already keeps: the proof-of-fix evidence trail (what landed, test-verified,
@@ -366,49 +427,10 @@ def _trackrecord(root: Path) -> dict:
     from app.engine.idea_memory import IdeaMemory
 
     proof = _read_proof_of_fix(root)
-    totals = proof.get("totals") or {}
-    fixes = proof.get("fixes") or []
-    verified = sum(
-        1 for f in fixes
-        if isinstance(f, dict) and f.get("outcome") == "applied"
-    )
-    rolled_back = sum(
-        1 for f in fixes
-        if isinstance(f, dict) and f.get("outcome") == "rolled_back"
-    )
-    # Prefer the recorded totals when present; fall back to counting fixes.
-    # A MISSING key and an explicit null both fall back (they mean "not
-    # recorded"); a real recorded value wins, defensively coerced.
-    def _count(value: object, fallback: int) -> int:
-        if value is None:
-            return fallback
-        try:
-            return int(value)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return fallback
-
-    landed = _count(totals.get("applied"), verified) if totals else verified
-    reverted = _count(totals.get("rolled_back"), rolled_back) if totals else rolled_back
+    landed, reverted = _proof_tally(proof)
 
     mem = IdeaMemory.load(root).summary()
-    reliable = mem.get("most_reliable") or []
-    risky = mem.get("least_reliable") or []
-
-    # Merge the two reliability views into one deterministically ordered table:
-    # every tracked fix-type once, best landing rate first, then key.
-    by_key: dict[str, dict] = {}
-    for row in [*reliable, *risky]:
-        key = row.get("key", "")
-        if key and key not in by_key:
-            by_key[key] = {
-                "key": key,
-                "success_rate": float(row.get("success_rate", 0.0)),
-                "samples": int(row.get("samples", 0)),
-            }
-    by_type = sorted(
-        by_key.values(),
-        key=lambda r: (-r["success_rate"], r["key"]),
-    )
+    by_type = _reliability_table(mem)
 
     has_record = landed > 0 or bool(by_type)
     return {
