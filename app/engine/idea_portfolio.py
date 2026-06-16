@@ -16,6 +16,7 @@ Pure and deterministic. No LLM.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -54,6 +55,46 @@ class Portfolio:
         return d
 
 
+def _dependency_closure(
+    idea_id: str, chosen: set[str], deps: dict[str, set[str]], path_by_id: dict[str, str]
+) -> set[str]:
+    """The idea plus all transitive prerequisites not already chosen."""
+    out: set[str] = set()
+    stack = [idea_id]
+    while stack:
+        cur = stack.pop()
+        if cur in chosen or cur in out:
+            continue
+        out.add(cur)
+        stack.extend(d for d in deps.get(cur, set()) if d in path_by_id)
+    return out
+
+
+def _greedy_select(
+    candidates: list,
+    budget: float,
+    deps: dict[str, set[str]],
+    path_by_id: dict[str, str],
+    eff: Callable[[str], float],
+) -> tuple[set[str], set[str], float]:
+    """Take ideas best-first, pricing in each one's prerequisite closure; return
+    (chosen ids, prereq-only ids, total effort)."""
+    chosen: set[str] = set()
+    prereq_only: set[str] = set()
+    total_effort = 0.0
+    for idea in candidates:
+        if idea.id in chosen:
+            continue
+        bundle = _dependency_closure(idea.id, chosen, deps, path_by_id)
+        bundle_effort = round(sum(eff(b) for b in bundle), 4)
+        if total_effort + bundle_effort <= budget + 1e-9:
+            chosen |= bundle
+            total_effort = round(total_effort + bundle_effort, 4)
+            # Anything in the bundle other than the idea itself came along as a prereq.
+            prereq_only |= (bundle - {idea.id})
+    return chosen, prereq_only, total_effort
+
+
 def optimize_portfolio(report: IdeaTreeReport, budget: float, roadmap=None) -> Portfolio:
     """Select the highest-impact set of ideas whose total effort fits ``budget``,
     respecting dependency prerequisites (a dependent drags in its prereqs)."""
@@ -66,29 +107,20 @@ def optimize_portfolio(report: IdeaTreeReport, budget: float, roadmap=None) -> P
     path_by_id = {i.id: i.branch_path for i in report.ideas}
     deps = infer_dependencies(report.ideas)  # id -> set(prereq ids)
 
+    def _item(idea_id: str):
+        return item_by_path.get(path_by_id.get(idea_id, ""))
+
     def _eff(idea_id: str) -> float:
-        it = item_by_path.get(path_by_id.get(idea_id, ""))
+        it = _item(idea_id)
         return it.effort if it else 1.0
 
     def _imp(idea_id: str) -> float:
-        it = item_by_path.get(path_by_id.get(idea_id, ""))
+        it = _item(idea_id)
         return it.impact if it else 0.0
 
     def _roi(idea_id: str) -> float:
-        it = item_by_path.get(path_by_id.get(idea_id, ""))
+        it = _item(idea_id)
         return it.roi if it else 0.0
-
-    def _closure(idea_id: str, chosen: set[str]) -> set[str]:
-        """The idea plus all transitive prerequisites not already chosen."""
-        out: set[str] = set()
-        stack = [idea_id]
-        while stack:
-            cur = stack.pop()
-            if cur in chosen or cur in out:
-                continue
-            out.add(cur)
-            stack.extend(d for d in deps.get(cur, set()) if d in path_by_id)
-        return out
 
     # Best ROI first; deterministic tie-break on (impact, branch_path).
     candidates = sorted(
@@ -97,19 +129,9 @@ def optimize_portfolio(report: IdeaTreeReport, budget: float, roadmap=None) -> P
         reverse=True,
     )
 
-    chosen: set[str] = set()
-    prereq_only: set[str] = set()
-    total_effort = 0.0
-    for idea in candidates:
-        if idea.id in chosen:
-            continue
-        bundle = _closure(idea.id, chosen)
-        bundle_effort = round(sum(_eff(b) for b in bundle), 4)
-        if total_effort + bundle_effort <= budget + 1e-9:
-            chosen |= bundle
-            total_effort = round(total_effort + bundle_effort, 4)
-            # Anything in the bundle other than the idea itself came along as a prereq.
-            prereq_only |= (bundle - {idea.id})
+    chosen, prereq_only, total_effort = _greedy_select(
+        candidates, budget, deps, path_by_id, _eff
+    )
 
     selected = [
         PortfolioItem(
