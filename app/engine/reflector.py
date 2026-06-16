@@ -51,59 +51,79 @@ class Reflector:
         """Analyze feedback history and produce reflection report."""
         entries = self.feedback.entries
         if not entries:
-            return ReflectionReport(
-                total_runs=0,
-                total_actions=0,
-                success_rate=0.0,
-                false_positive_rate=0.0,
-                recommendations=["No feedback history yet. Start executing actions to build data."],
-            )
+            return _empty_report()
 
-        # Group by node_key
-        by_node: dict[str, list[Any]] = defaultdict(list)
-        for e in entries:
-            by_node[e.node_key].append(e)
-
+        by_node = _group_by_node(entries)
         total = len(entries)
-        successes = sum(1 for e in entries if e.feedback_score > 0)
-        failures = sum(1 for e in entries if e.feedback_score < 0)
-        success_rate = successes / total if total else 0.0
-        fp_rate = failures / total if total else 0.0
-
-        # Find top false positives
-        node_scores: dict[str, float] = {}
-        for key, history in by_node.items():
-            avg = sum(e.feedback_score for e in history) / len(history)
-            node_scores[key] = avg
-
-        # Sort by worst average
-        worst = sorted(node_scores.items(), key=lambda x: x[1])[:5]
-        top_fp = []
-        for key, avg in worst:
-            if avg < 0:
-                top_fp.append({
-                    "node_key": key,
-                    "average_feedback": round(avg, 2),
-                    "occurrences": len(by_node[key]),
-                    "recommendation": "Consider skipping or escalating this pattern.",
-                })
-
-        recommendations = []
-        if fp_rate > 0.3:
-            recommendations.append(f"High false positive rate ({fp_rate:.0%}). Consider tightening detection patterns.")
-        if success_rate < 0.5:
-            recommendations.append(f"Low success rate ({success_rate:.0%}). Review patch quality or test coverage.")
-        if not top_fp:
-            recommendations.append("All patterns performing well. Maintain current strategy.")
-
-        # Unique runs estimated from timestamp changes (simplistic)
-        unique_days = len(set(e.timestamp[:10] for e in entries))
+        success_rate, fp_rate = _compute_rates(entries, total)
+        top_fp = _top_false_positives(by_node)
+        recommendations = _build_recommendations(fp_rate, success_rate, top_fp)
 
         return ReflectionReport(
-            total_runs=max(unique_days, 1),
+            total_runs=max(_unique_days(entries), 1),
             total_actions=total,
             success_rate=success_rate,
             false_positive_rate=fp_rate,
             top_false_positives=top_fp,
             recommendations=recommendations,
         )
+
+
+def _empty_report() -> ReflectionReport:
+    return ReflectionReport(
+        total_runs=0,
+        total_actions=0,
+        success_rate=0.0,
+        false_positive_rate=0.0,
+        recommendations=["No feedback history yet. Start executing actions to build data."],
+    )
+
+
+def _group_by_node(entries: list[Any]) -> dict[str, list[Any]]:
+    by_node: dict[str, list[Any]] = defaultdict(list)
+    for e in entries:
+        by_node[e.node_key].append(e)
+    return by_node
+
+
+def _compute_rates(entries: list[Any], total: int) -> tuple[float, float]:
+    successes = sum(1 for e in entries if e.feedback_score > 0)
+    failures = sum(1 for e in entries if e.feedback_score < 0)
+    success_rate = successes / total if total else 0.0
+    fp_rate = failures / total if total else 0.0
+    return success_rate, fp_rate
+
+
+def _top_false_positives(by_node: dict[str, list[Any]]) -> list[dict[str, Any]]:
+    node_scores: dict[str, float] = {}
+    for key, history in by_node.items():
+        node_scores[key] = sum(e.feedback_score for e in history) / len(history)
+
+    worst = sorted(node_scores.items(), key=lambda x: x[1])[:5]
+    top_fp = []
+    for key, avg in worst:
+        if avg < 0:
+            top_fp.append({
+                "node_key": key,
+                "average_feedback": round(avg, 2),
+                "occurrences": len(by_node[key]),
+                "recommendation": "Consider skipping or escalating this pattern.",
+            })
+    return top_fp
+
+
+def _build_recommendations(
+    fp_rate: float, success_rate: float, top_fp: list[dict[str, Any]]
+) -> list[str]:
+    recommendations = []
+    if fp_rate > 0.3:
+        recommendations.append(f"High false positive rate ({fp_rate:.0%}). Consider tightening detection patterns.")
+    if success_rate < 0.5:
+        recommendations.append(f"Low success rate ({success_rate:.0%}). Review patch quality or test coverage.")
+    if not top_fp:
+        recommendations.append("All patterns performing well. Maintain current strategy.")
+    return recommendations
+
+
+def _unique_days(entries: list[Any]) -> int:
+    return len(set(e.timestamp[:10] for e in entries))
