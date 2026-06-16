@@ -319,3 +319,74 @@ def test_bare_and_call_index_callee_in_nested_and_attr_positions():
     assert counts == _call_site_counts(trees)
     assert counts["fee"] == 2  # the two bare-Name calls only (obj.fee() is Attr)
     assert "fee" in bare       # g = fee is a bare object ref
+
+
+# ── Characterization: pin the exact plan after the plan_inline decomposition ──
+
+def _pin(tmp_path, files, func):
+    for rel, src in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(src, encoding="utf-8")
+    plan = plan_inline(str(tmp_path), func)
+    return (plan.defined_in, sorted(plan.blockers),
+            dict(sorted(plan.new_contents.items())),
+            dict(sorted(plan.edits_by_file.items())))
+
+
+def test_plan_inline_characterization_multi_site_multi_file(tmp_path):
+    """A cross-file, multi-site, def-and-call-in-same-file plan, pinned exactly.
+    Guards the mechanical decomposition: the produced plan stays byte-identical."""
+    defined_in, blockers, new_contents, edits = _pin(
+        tmp_path,
+        {
+            "a.py": (
+                "RATE = 2\n"
+                "\n"
+                "def fee(x, rate=RATE):\n"
+                "    return x * rate\n"
+                "\n"
+                "\n"
+                "def total(price):\n"
+                "    return fee(price) + fee(price, 3)\n"
+            ),
+            "b.py": (
+                "from a import fee\n"
+                "\n"
+                "y = fee(7, rate=4)\n"
+            ),
+        },
+        "fee",
+    )
+    assert blockers == []
+    assert defined_in == "a.py"
+    assert new_contents["a.py"] == (
+        "RATE = 2\n"
+        "\n"
+        "\n"
+        "def total(price):\n"
+        "    return ((price) * (RATE)) + ((price) * (3))\n"
+    )
+    assert new_contents["b.py"] == (
+        "from a import fee\n"
+        "\n"
+        "y = ((7) * (4))\n"
+    )
+    assert edits == {"a.py": 3, "b.py": 1}
+
+
+def test_plan_inline_characterization_blocked_plan(tmp_path):
+    """A blocked plan (side-effect duplication) leaves new_contents empty and
+    pins the exact blocker text — the early-return decomposition is verbatim."""
+    defined_in, blockers, new_contents, edits = _pin(
+        tmp_path,
+        {"m.py": "def twice(x):\n    return x + x\n\nz = twice(make())\n"},
+        "twice",
+    )
+    assert defined_in == "m.py"
+    assert new_contents == {}
+    assert edits == {}
+    assert blockers == [
+        "m.py:4: parameter 'x' is used 2 times and its argument isn't a pure "
+        "simple expression — inlining would duplicate a side-effecting evaluation"
+    ]

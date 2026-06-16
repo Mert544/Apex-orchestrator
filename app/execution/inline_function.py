@@ -288,11 +288,12 @@ def _delete_def_lines(lines: list[str], fn: ast.FunctionDef) -> list[str]:
     return lines[:lo] + lines[hi:]
 
 
-def plan_inline(project_root: str | Path, function_name: str) -> RenamePlan:
-    """Build the single-call-site inline plan for ``function_name``, or block."""
-    plan = RenamePlan(old=function_name, new="")
-    root = Path(project_root)
-    files = _py_files(root)
+def _parse_project(
+        project_root: str | Path) -> tuple[dict[str, str], dict[str, ast.Module]]:
+    """Read every ``*.py`` file under ``project_root`` and return ``(sources,
+    trees)``: the raw text per rel-path and the parse for each file that parses
+    (unparseable files are dropped from ``trees`` but kept in ``sources``)."""
+    files = _py_files(Path(project_root))
     sources = dict(files)
     trees: dict[str, ast.Module] = {}
     for rel, text in files:
@@ -300,7 +301,15 @@ def plan_inline(project_root: str | Path, function_name: str) -> RenamePlan:
             trees[rel] = ast.parse(text)
         except SyntaxError:
             continue
+    return sources, trees
 
+
+def _resolve_definition(
+        plan: RenamePlan, trees: dict[str, ast.Module],
+        function_name: str) -> ast.FunctionDef | None:
+    """Find the single top-level ``def function_name`` across ``trees``, setting
+    ``plan.defined_in``. Records a blocker and returns None when it isn't defined
+    exactly once at top level."""
     definitions = [
         (rel, node) for rel, tree in trees.items() for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == function_name]
@@ -308,90 +317,122 @@ def plan_inline(project_root: str | Path, function_name: str) -> RenamePlan:
         plan.blockers.append(
             f"'{function_name}' must be defined exactly once at top level "
             f"(found {len(definitions)})")
-        return plan
+        return None
     defmod, fn = definitions[0]
     plan.defined_in = defmod
-    def_source = sources[defmod]
+    return fn
 
+
+def _qualify_definition(
+        plan: RenamePlan, trees: dict[str, ast.Module], fn: ast.FunctionDef,
+        function_name: str) -> ast.expr | None:
+    """Run the helper-level qualification rules (no decorators, simple params,
+    single ``return EXPR`` body, non-recursive, never a bare object) and return
+    the return EXPR when all pass. Records the matching blocker and returns None
+    on the first failure."""
     if fn.decorator_list:
         plan.blockers.append(f"'{function_name}' has decorators — not inlinable")
-        return plan
+        return None
     if not _simple_params(fn):
         plan.blockers.append(
             f"'{function_name}' uses *args/**kwargs/positional-only/keyword-only "
             "parameters — not supported in v1")
-        return plan
+        return None
     expr = _return_expr(fn)
     if expr is None:
         plan.blockers.append(
             f"'{function_name}' body is not a single `return EXPR` "
             "(only a return — optionally after a docstring — can be inlined)")
-        return plan
+        return None
     if any(isinstance(n, ast.Name) and n.id == function_name for n in ast.walk(expr)):
         plan.blockers.append(f"'{function_name}' is recursive — not inlinable")
-        return plan
+        return None
     if _has_object_ref(trees, function_name):
         plan.blockers.append(
             f"'{function_name}' is referenced as a bare object somewhere "
             "(not only called) — its identity is used, so it can't be inlined")
-        return plan
+        return None
+    return expr
 
-    sites = _call_sites(trees, function_name)
-    if not sites:
-        plan.blockers.append(f"no call site for '{function_name}' — nothing to inline")
-        return plan
 
-    params = {p.arg for p in fn.args.args}
-    expr_text = _segment(def_source, expr)
+def _arg_nodes_for_call(fn: ast.FunctionDef, call: ast.Call) -> dict[str, ast.expr]:
+    """Map each parameter name → its argument EXPR node for this call (positional
+    first, then keyword) — the side-effect-duplication gate reads these nodes."""
+    arg_nodes: dict[str, ast.expr] = {}
+    for p, arg in zip(fn.args.args, call.args):
+        arg_nodes[p.arg] = arg
+    kw_by_name = {kw.arg: kw for kw in call.keywords}
+    for p in fn.args.args:
+        if p.arg not in arg_nodes and p.arg in kw_by_name:
+            arg_nodes[p.arg] = kw_by_name[p.arg].value
+    return arg_nodes
 
-    # Resolve EVERY call site independently into an intra-line splice edit. The
-    # operation is all-or-nothing: any unsafe/unresolvable site blocks the whole
-    # plan, so existing call sites are never left half-folded.
-    # call_edits[rel] -> list of (call_lineno, col_offset, end_col_offset, text)
+
+def _resolve_call_site(
+        plan: RenamePlan, sources: dict[str, str], fn: ast.FunctionDef,
+        expr: ast.expr, expr_text: str, params: set[str], call_rel: str,
+        call: ast.Call) -> tuple[int, int, int, str] | None:
+    """Resolve ONE call site into an intra-line splice tuple ``(lineno, col,
+    end_col, text)``, or None after recording the first blocker (unpacking,
+    binding failure, side-effect duplication, or a multi-line call span)."""
+    site = f"{call_rel}:{call.lineno}"
+    call_source = sources[call_rel]
+
+    if any(isinstance(a, ast.Starred) for a in call.args) \
+            or any(kw.arg is None for kw in call.keywords):
+        plan.blockers.append(
+            f"{site}: the call site uses * or ** unpacking — only plain "
+            "positional/keyword arguments can be inlined")
+        return None
+
+    bound = _bind_arguments(plan, call_source, fn, call, site)
+    if bound is None:
+        return None
+
+    arg_nodes = _arg_nodes_for_call(fn, call)
+    substituted = _substitute(expr_text, expr, params, bound, arg_nodes,
+                              plan, site)
+    if substituted is None:
+        return None
+    inlined = f"({substituted})"
+
+    # The call span must be a single-line intra-line edit (like pattern_rewrite).
+    if call.lineno != call.end_lineno:
+        plan.blockers.append(
+            f"{site}: the call spans multiple lines — "
+            "collapse it onto one line first")
+        return None
+
+    return (call.lineno, call.col_offset, call.end_col_offset, inlined)
+
+
+def _resolve_all_sites(
+        plan: RenamePlan, sources: dict[str, str], fn: ast.FunctionDef,
+        expr: ast.expr, params: set[str], expr_text: str,
+        sites: list[tuple[str, ast.Call]]
+) -> dict[str, list[tuple[int, int, int, str]]] | None:
+    """Resolve EVERY call site independently into intra-line splice edits. The
+    operation is all-or-nothing: any unsafe/unresolvable site blocks the whole
+    plan (returns None), so existing call sites are never left half-folded.
+    ``call_edits[rel]`` is a list of ``(call_lineno, col, end_col, text)``."""
     call_edits: dict[str, list[tuple[int, int, int, str]]] = {}
     for call_rel, call in sites:
-        site = f"{call_rel}:{call.lineno}"
-        call_source = sources[call_rel]
+        edit = _resolve_call_site(plan, sources, fn, expr, expr_text, params,
+                                  call_rel, call)
+        if edit is None:
+            return None
+        call_edits.setdefault(call_rel, []).append(edit)
+    return call_edits
 
-        if any(isinstance(a, ast.Starred) for a in call.args) \
-                or any(kw.arg is None for kw in call.keywords):
-            plan.blockers.append(
-                f"{site}: the call site uses * or ** unpacking — only plain "
-                "positional/keyword arguments can be inlined")
-            return plan
 
-        bound = _bind_arguments(plan, call_source, fn, call, site)
-        if bound is None:
-            return plan
-
-        arg_nodes: dict[str, ast.expr] = {}
-        for p, arg in zip(fn.args.args, call.args):
-            arg_nodes[p.arg] = arg
-        kw_by_name = {kw.arg: kw for kw in call.keywords}
-        for p in fn.args.args:
-            if p.arg not in arg_nodes and p.arg in kw_by_name:
-                arg_nodes[p.arg] = kw_by_name[p.arg].value
-
-        substituted = _substitute(expr_text, expr, params, bound, arg_nodes,
-                                  plan, site)
-        if substituted is None:
-            return plan
-        inlined = f"({substituted})"
-
-        # The call span must be a single-line intra-line edit (like pattern_rewrite).
-        if call.lineno != call.end_lineno:
-            plan.blockers.append(
-                f"{site}: the call spans multiple lines — "
-                "collapse it onto one line first")
-            return plan
-
-        call_edits.setdefault(call_rel, []).append(
-            (call.lineno, call.col_offset, call.end_col_offset, inlined))
-
-    # Apply edits file by file. Call-site splices and the (single) def deletion
-    # may share a file; everything within a file is applied bottom-up (highest
-    # line first) so earlier line/column indices stay valid. Edits across files
-    # ride independent ``new_contents`` entries.
+def _apply_file_edits(
+        plan: RenamePlan, sources: dict[str, str], fn: ast.FunctionDef,
+        defmod: str,
+        call_edits: dict[str, list[tuple[int, int, int, str]]]) -> None:
+    """Apply call-site splices and the (single) def deletion file by file, writing
+    each touched file's result onto ``plan``. Within a file everything is applied
+    bottom-up (highest line first) so earlier line/column indices stay valid;
+    edits across files ride independent ``new_contents`` entries."""
     files_touched = set(call_edits) | {defmod}
     for rel in files_touched:
         source = sources[rel]
@@ -420,6 +461,10 @@ def plan_inline(project_root: str | Path, function_name: str) -> RenamePlan:
         plan.new_contents[rel] = "".join(lines)
         plan.edits_by_file[rel] = n_edits
 
+
+def _verify_parses(plan: RenamePlan) -> None:
+    """Re-parse every file the plan would write; on the first SyntaxError record a
+    blocker and clear the plan's pending writes so nothing broken is emitted."""
     for rel, content in plan.new_contents.items():
         try:
             ast.parse(content)
@@ -429,7 +474,35 @@ def plan_inline(project_root: str | Path, function_name: str) -> RenamePlan:
             plan.new_contents.clear()
             plan.originals.clear()
             plan.edits_by_file.clear()
-            return plan
+            return
+
+
+def plan_inline(project_root: str | Path, function_name: str) -> RenamePlan:
+    """Build the single-call-site inline plan for ``function_name``, or block."""
+    plan = RenamePlan(old=function_name, new="")
+    sources, trees = _parse_project(project_root)
+
+    fn = _resolve_definition(plan, trees, function_name)
+    if fn is None:
+        return plan
+    expr = _qualify_definition(plan, trees, fn, function_name)
+    if expr is None:
+        return plan
+
+    sites = _call_sites(trees, function_name)
+    if not sites:
+        plan.blockers.append(f"no call site for '{function_name}' — nothing to inline")
+        return plan
+
+    params = {p.arg for p in fn.args.args}
+    expr_text = _segment(sources[plan.defined_in], expr)
+
+    call_edits = _resolve_all_sites(plan, sources, fn, expr, params, expr_text, sites)
+    if call_edits is None:
+        return plan
+
+    _apply_file_edits(plan, sources, fn, plan.defined_in, call_edits)
+    _verify_parses(plan)
     return plan
 
 
