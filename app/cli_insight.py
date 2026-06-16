@@ -605,72 +605,95 @@ def _scope_report(root: Path) -> dict:
     }
 
 
+def _scope_all_python_lines() -> list[str]:
+    """The all-Python reassurance block (header + the two reassurance lines)."""
+    return [
+        "# Apex analysis scope", "",
+        "Apex analyses 100% of this repo (all Python).", "",
+        "_Every source-bearing file here is Python — the subset Apex deep-"
+        "analyses — so its grade speaks for the whole repo._",
+    ]
+
+
+def _scope_headline_lines(rep: dict) -> list[str]:
+    """The polyglot header + analysed/out-of-scope ratio sentence."""
+    return [
+        "# Apex analysis scope", "",
+        f"Apex analyses {rep['analyzed_pct']}% of this repo (Python). "
+        f"{rep['out_of_scope_pct']}% is outside its analysis scope.", "",
+    ]
+
+
+def _scope_breakdown_lines(breakdown: list) -> list[str]:
+    """The out-of-scope language breakdown section ([] when no breakdown)."""
+    if not breakdown:
+        return []
+    lines = ["## Outside analysis scope", "",
+             "The non-Python remainder, by language:", ""]
+    for row in breakdown:
+        n = row["files"]
+        f_word = "file" if n == 1 else "files"
+        lines.append(f"- {row['language']} — {n} {f_word}")
+    lines.append("")
+    return lines
+
+
+def _scope_file_line(f: dict) -> str:
+    """One out-of-scope file bullet, with untested flag and optional debt clause."""
+    commit_word = "commit" if f["churn"] == 1 else "commits"
+    flag = "" if f["has_test"] else " — no test found"
+    # Debt clause: additive, ONLY when the file carries >0 TODO/FIXME
+    # markers, so a no-debt line stays byte-identical to before.
+    debt = f.get("debt_markers", 0) or 0
+    debt_clause = f" — {debt} TODO/FIXME" if debt > 0 else ""
+    return (
+        f"- `{f['path']}` ({f['language']}, {f['loc']} LOC, "
+        f"{f['churn']} {commit_word}){flag}{debt_clause}"
+    )
+
+
+def _scope_files_lines(files: list) -> list[str]:
+    """The largest / most-active out-of-scope files section ([] when none)."""
+    if not files:
+        return []
+    lines = ["## Largest / most-active out-of-scope files", "",
+             "Where the non-Python risk concentrates — Apex can name these "
+             "but can't deep-analyse them yet:", ""]
+    lines += [_scope_file_line(f) for f in files]
+    lines.append("")
+    return lines
+
+
+def _scope_cross_lines(cross: list) -> list[str]:
+    """The cross-language coupling section ([] when no cross-links)."""
+    if not cross:
+        return []
+    lines = ["## Cross-language coupling (keep in sync)", "",
+             "Files git shows changing together across the Python boundary — "
+             "Apex can't deep-analyse the non-Python side, but they move as a "
+             "unit, so a change to one likely needs the other:", ""]
+    for c in cross:
+        cw = "co-change" if c["cochanges"] == 1 else "co-changes"
+        lines.append(
+            f"- `{c['py']}` ↔ `{c['other']}` ({c['language']}, "
+            f"{c['cochanges']} {cw})"
+        )
+    lines.append("")
+    return lines
+
+
 def render_scope_markdown(rep: dict) -> str:
     """The calm, honest analysis-scope report: what Apex covers and what it
     doesn't. All-Python repo → the "100% (all Python)" reassurance; a polyglot
     repo → the headline ratio, the out-of-scope language breakdown, and the
     biggest / most-active out-of-scope files (untested ones flagged)."""
-    lines = ["# Apex analysis scope", ""]
-
     if rep["all_python"]:
-        lines.append("Apex analyses 100% of this repo (all Python).")
-        lines.append("")
-        lines.append(
-            "_Every source-bearing file here is Python — the subset Apex deep-"
-            "analyses — so its grade speaks for the whole repo._"
-        )
-        return "\n".join(lines)
+        return "\n".join(_scope_all_python_lines())
 
-    analysed = rep["analyzed_pct"]
-    out_pct = rep["out_of_scope_pct"]
-    lines.append(
-        f"Apex analyses {analysed}% of this repo (Python). "
-        f"{out_pct}% is outside its analysis scope."
-    )
-    lines.append("")
-
-    breakdown = rep["language_breakdown"]
-    if breakdown:
-        lines += ["## Outside analysis scope", "",
-                  "The non-Python remainder, by language:", ""]
-        for row in breakdown:
-            n = row["files"]
-            f_word = "file" if n == 1 else "files"
-            lines.append(f"- {row['language']} — {n} {f_word}")
-        lines.append("")
-
-    files = rep["files"]
-    if files:
-        lines += ["## Largest / most-active out-of-scope files", "",
-                  "Where the non-Python risk concentrates — Apex can name these "
-                  "but can't deep-analyse them yet:", ""]
-        for f in files:
-            commit_word = "commit" if f["churn"] == 1 else "commits"
-            flag = "" if f["has_test"] else " — no test found"
-            # Debt clause: additive, ONLY when the file carries >0 TODO/FIXME
-            # markers, so a no-debt line stays byte-identical to before.
-            debt = f.get("debt_markers", 0) or 0
-            debt_clause = f" — {debt} TODO/FIXME" if debt > 0 else ""
-            lines.append(
-                f"- `{f['path']}` ({f['language']}, {f['loc']} LOC, "
-                f"{f['churn']} {commit_word}){flag}{debt_clause}"
-            )
-        lines.append("")
-
-    cross = rep.get("cross_links") or []
-    if cross:
-        lines += ["## Cross-language coupling (keep in sync)", "",
-                  "Files git shows changing together across the Python boundary — "
-                  "Apex can't deep-analyse the non-Python side, but they move as a "
-                  "unit, so a change to one likely needs the other:", ""]
-        for c in cross:
-            cw = "co-change" if c["cochanges"] == 1 else "co-changes"
-            lines.append(
-                f"- `{c['py']}` ↔ `{c['other']}` ({c['language']}, "
-                f"{c['cochanges']} {cw})"
-            )
-        lines.append("")
-
+    lines = _scope_headline_lines(rep)
+    lines += _scope_breakdown_lines(rep["language_breakdown"])
+    lines += _scope_files_lines(rep["files"])
+    lines += _scope_cross_lines(rep.get("cross_links") or [])
     lines.append(
         "_Apex names its own limits: it grades only Python, and says so. Every "
         "number here is read from its own deterministic profile of this repo — "
