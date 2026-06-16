@@ -93,6 +93,23 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                   "you design the decomposition)", False),
     "modernization": ("modernize_comparisons", "Modernize None comparisons in {s}", True),
     "mutable-default": ("fix_mutable_defaults", "Fix mutable default arguments in {s}", True),
+    # Behaviour-preserving readability simplifications (pure AST, each re-parses
+    # its own output, refuses via None when it can't act safely). They share the
+    # idea budget, so they are opt-in seeding signals — but once a seeder emits
+    # them, the resulting action is executable: the same guarded, test-verified,
+    # auto-rollback apply path as every other transform.
+    "merge-nested-if": ("merge_nested_if",
+                        "Collapse a redundant nested `if` into one `and` guard in {s}", True),
+    "redundant-else": ("redundant_else",
+                       "Remove a redundant `else` after a terminating branch in {s}", True),
+    "dict-get-default": ("dict_get_default",
+                         "Replace `if k in d: ... else:` with `d.get(k, default)` in {s}", True),
+    "isinstance-merge": ("isinstance_merge",
+                         "Merge consecutive `isinstance` checks into one call in {s}", True),
+    "none-compare": ("simplify_none_compare",
+                     "Rewrite `== None` / `!= None` to `is` / `is not` in {s}", True),
+    "unreachable-code": ("unreachable_cleanup",
+                         "Drop statically-unreachable code after return/raise/break in {s}", True),
     # The hands exist (apex signature drop/keywordify) but as supervised CLI
     # muscles, not unattended transforms — the work order carries the command.
     "dead-parameter": ("design_task",
@@ -454,7 +471,42 @@ class IdeaActionBridge:
         "create_test_stub": ["test coverage"],
         "modernize_comparisons": ["modernize none-comparison"],
         "fix_mutable_defaults": ["mutable default argument"],
+        "merge_nested_if": ["merge nested if flatten guard"],
+        "redundant_else": ["remove redundant else"],
+        "dict_get_default": ["dict get default"],
+        "isinstance_merge": ["merge isinstance"],
+        "simplify_none_compare": ["simplify none-compare"],
+        "unreachable_cleanup": ["remove unreachable code"],
     }
+
+    # Behaviour-preserving readability simplifications dispatched STRAIGHT to
+    # their AST transform module: action_type -> transform.apply.
+    #
+    # Each transform is a pure ``apply(rel_path, source, title)`` that re-parses
+    # its own output and returns ``None`` when it cannot act safely — exactly the
+    # refuse-on-unsafe contract the existing transforms use. They run through the
+    # SAME ``apply_step`` gate (mode policy, SafetyGates, snapshot + verify +
+    # auto-rollback) as every other transform; the bridge only chooses *which*
+    # transform to invoke, it never bypasses the safety path. These are
+    # registered as executable because every one is a behaviour-preserving,
+    # self-verifying simplification.
+    @classmethod
+    def _simplify_dispatch(cls):
+        from app.execution.semantic.transforms import dict_get_default
+        from app.execution.semantic.transforms import isinstance_merge
+        from app.execution.semantic.transforms import merge_nested_if
+        from app.execution.semantic.transforms import redundant_else
+        from app.execution.semantic.transforms import simplify_comparison
+        from app.execution.semantic.transforms import unreachable_cleanup
+
+        return {
+            "merge_nested_if": merge_nested_if.apply,
+            "redundant_else": redundant_else.apply,
+            "dict_get_default": dict_get_default.apply,
+            "isinstance_merge": isinstance_merge.apply,
+            "simplify_none_compare": simplify_comparison.apply,
+            "unreachable_cleanup": unreachable_cleanup.apply,
+        }
 
     @staticmethod
     def _read(project_root: str, rel_path: str) -> str | None:
@@ -679,6 +731,13 @@ class IdeaActionBridge:
         if target_files is None:
             return None
 
+        # Behaviour-preserving simplifications dispatch straight to their AST
+        # transform (the generator's EditStrategy doesn't route them), then
+        # return into the IDENTICAL apply_step gate as any other transform.
+        simplify = self._simplify_dispatch().get(step.action_type)
+        if simplify is not None:
+            return self._simplify_generate(simplify, target_files[0], project_root)
+
         chosen = self._change_strategy_for(step, project_root)
         if chosen is None:
             return None  # no real, auto-fixable issue — don't invent one
@@ -695,6 +754,24 @@ class IdeaActionBridge:
         }
         try:
             result = SemanticPatchGenerator().generate(project_root, patch_plan)
+        except Exception:
+            return None
+        return self._vet_result(result)
+
+    def _simplify_generate(self, apply, rel_path: str, project_root: str):
+        """Run a behaviour-preserving simplification transform on ``rel_path``.
+
+        Reads the current file, calls the transform's ``apply(rel_path, source,
+        title)`` (which re-parses its own output and returns ``None`` when it
+        cannot act safely), and vets the result through the same gate every
+        generated patch passes. Returns a ``SemanticPatchResult`` or ``None`` —
+        never raises, never writes (the caller's ``apply_step`` does the guarded
+        write + verify + rollback)."""
+        source = self._read(project_root, rel_path)
+        if source is None:
+            return None
+        try:
+            result = apply(rel_path, source, f"Simplify {rel_path}")
         except Exception:
             return None
         return self._vet_result(result)
