@@ -487,6 +487,7 @@ class IdeaSeeder:
         self._seed_extractable_blocks(roots, seen_subjects, profile)
         self._seed_inlinable_helpers(roots, seen_subjects, profile)
         self._seed_modernization(roots, seen_subjects, profile)
+        self._seed_simplifications(roots, seen_subjects, profile)
         self._seed_top_directories(roots, seen_subjects, profile)
         self._seed_missing_ci(roots, seen_subjects, profile)
         return roots
@@ -1144,6 +1145,36 @@ class IdeaSeeder:
                 subject=module,
                 fact_label="modernization",
                 fact_value=f"{module} (== None / != None)",
+            )
+
+    def _seed_simplifications(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
+        # Safe behaviour-preserving simplifications discovered by the dedicated
+        # scanner (app/tools/simplification_scan.py). Each opportunity names the
+        # exact module + transform whose ``apply`` already returned a patch in a
+        # dry run, so the emitted fact_label is the EXECUTABLE key the bridge's
+        # ``_FACT_ACTIONS`` routes to the real, test-verified, auto-rollback
+        # transform — not a recommend-only stub.
+        #
+        # The field defaults to empty (``getattr(..., [])``), so until the
+        # profiler populates ``profile.simplification_opportunities`` the seeded
+        # set is byte-identical to today. Populating that field in
+        # project_profile.py is a follow-up owned elsewhere; this helper only
+        # reads it. Opportunities are pre-sorted/capped by the scanner, so the
+        # seeding order here stays deterministic.
+        for opp in (getattr(profile, "simplification_opportunities", []) or []):
+            module = opp.get("module", "")
+            fact_label = opp.get("fact_label", "")
+            transform = opp.get("transform", "")
+            if not (module and fact_label):
+                continue
+            self._append_root(
+                roots, seen_subjects,
+                title=f"Apply {transform} to simplify {module}",
+                subject=module,
+                fact_label=fact_label,
+                fact_value=f"{module} (safe behaviour-preserving simplification: {transform})",
             )
 
     def _seed_top_directories(
