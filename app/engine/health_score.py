@@ -105,6 +105,40 @@ def _scan_maintainability(
     return over, top
 
 
+def _own_modules(project_root: str | Path, profile: Any):
+    """Yield ``(module, source_text)`` for each readable own .py module.
+
+    Same selection/suppression rule as the other components: strings only,
+    ``.py`` only, fixtures/tests excluded, unreadable files skipped.
+    """
+    root = Path(project_root)
+    for m in (getattr(profile, "module_to_tests", {}) or {}):
+        if not isinstance(m, str) or not m.endswith(".py") or _is_fixture_path(m):
+            continue
+        try:
+            yield m, (root / m).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+
+
+def _is_reliability_debt(issues: list[Any]) -> bool:
+    """True when a module carries reliability debt (missing encoding/timeout)."""
+    return any(i.fix_kind in ("open-encoding", "net-timeout") for i in issues)
+
+
+def _count_correctness_bugs(issues: list[Any]) -> int:
+    """High-severity logic bugs the detector flags with no auto-fix."""
+    return sum(1 for i in issues
+               if i.category == "bug" and i.severity == "high" and not i.fix_kind)
+
+
+def _security_weight(issues: list[Any]) -> tuple[int, int]:
+    """``(finding_count, severity_weight)`` for a module's security findings."""
+    security = [i for i in issues if i.category == "security"]
+    w = sum(_SEVERITY_WEIGHT.get(i.severity, 1) for i in security)
+    return len(security), w
+
+
 def _scan_own_modules(
     project_root: str | Path, profile: Any,
 ) -> tuple[set[str], int, int, int, list[str], list[str]]:
@@ -117,33 +151,24 @@ def _scan_own_modules(
     """
     from app.engine.detectors import detect
 
-    root = Path(project_root)
     reliability: set[str] = set()
     bugs = 0
     sec_count = 0
     sec_weight = 0
     sec_by_file: dict[str, int] = {}
     bug_files: list[str] = []
-    for m in (getattr(profile, "module_to_tests", {}) or {}):
-        if not isinstance(m, str) or not m.endswith(".py") or _is_fixture_path(m):
-            continue
-        try:
-            text = (root / m).read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
+    for m, text in _own_modules(project_root, profile):
         issues = detect(text)
-        if any(i.fix_kind in ("open-encoding", "net-timeout") for i in issues):
+        if _is_reliability_debt(issues):
             reliability.add(m)
-        file_bugs = sum(1 for i in issues
-                        if i.category == "bug" and i.severity == "high" and not i.fix_kind)
+        file_bugs = _count_correctness_bugs(issues)
         if file_bugs:
             bug_files.append(m)
         bugs += file_bugs
-        security = [i for i in issues if i.category == "security"]
-        w = sum(_SEVERITY_WEIGHT.get(i.severity, 1) for i in security)
+        count, w = _security_weight(issues)
         if w:
             sec_by_file[m] = sec_by_file.get(m, 0) + w
-        sec_count += len(security)
+        sec_count += count
         sec_weight += w
     top_sec = [f for f, _ in sorted(sec_by_file.items(), key=lambda kv: -kv[1])[:3]]
     return reliability, bugs, sec_count, sec_weight, top_sec, bug_files[:3]
@@ -190,15 +215,28 @@ class _GradeMetrics:
     dup_top: list[str]
 
 
-def _collect_metrics(project_root: str | Path, profile: Any) -> _GradeMetrics:
-    """Project the profile + detect/dedup scans into the scorers' input metrics."""
-    debt_modules = {
+def _modernization_debt_modules(profile: Any) -> set[str]:
+    """Non-fixture modules carrying modernization or mutable-default debt."""
+    return {
         str(m) for m in (
             (getattr(profile, "modernizable_modules", []) or [])
             + (getattr(profile, "mutable_default_modules", []) or [])
         )
         if not _is_fixture_path(str(m))
     }
+
+
+def _arch_top_offenders(profile: Any) -> list[str]:
+    """Top architecture offenders: cycle members, else fragile modules (cap 3)."""
+    cycle_mods = sorted({m for cyc in (getattr(profile, "import_cycles", []) or [])
+                         for m in cyc})[:3]
+    arch_top = cycle_mods or sorted(getattr(profile, "fragile_modules", []) or [])[:3]
+    return [str(m) for m in arch_top]
+
+
+def _collect_metrics(project_root: str | Path, profile: Any) -> _GradeMetrics:
+    """Project the profile + detect/dedup scans into the scorers' input metrics."""
+    debt_modules = _modernization_debt_modules(profile)
     # ONE detect() pass over the project's own code is the single source for the
     # grade (same detector + suppression rules as `apex review`): it yields the
     # severity-weighted Security count, the reliability debt (folded into
@@ -207,11 +245,6 @@ def _collect_metrics(project_root: str | Path, profile: Any) -> _GradeMetrics:
     (reliability_modules, correctness_bugs, findings,
      weighted_findings, top_sec_files, top_bug_files) = _scan_own_modules(project_root, profile)
     debt_modules |= reliability_modules
-
-    # Top architecture offenders: cycle members + fragile modules.
-    cycle_mods = sorted({m for cyc in (getattr(profile, "import_cycles", []) or [])
-                         for m in cyc})[:3]
-    arch_top = cycle_mods or sorted(getattr(profile, "fragile_modules", []) or [])[:3]
 
     over_complex, maint_top = _scan_maintainability(project_root, profile)
     dup_block_count, dup_top = _scan_duplication(project_root)
@@ -222,7 +255,7 @@ def _collect_metrics(project_root: str | Path, profile: Any) -> _GradeMetrics:
         untested=len(getattr(profile, "untested_modules", []) or []),
         shallow=len(getattr(profile, "shallow_tested_modules", []) or []),
         total_modules=max(1, len(getattr(profile, "module_to_tests", {}) or {})),
-        arch_top=[str(m) for m in arch_top],
+        arch_top=_arch_top_offenders(profile),
         untested_list=[str(m) for m in
                        sorted(getattr(profile, "untested_modules", []) or [])[:3]],
         debt_modules=debt_modules,
