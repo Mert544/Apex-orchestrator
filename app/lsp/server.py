@@ -120,70 +120,66 @@ class LSPServer:
         symbols = self._extract_symbols(text)
         self._send_response(id, symbols)
 
+    @staticmethod
+    def _diagnostic(line: int, start_char: int, end_char: int, severity: int, message: str) -> dict[str, Any]:
+        """Build a single LSP diagnostic spanning one line."""
+        return {
+            "range": {
+                "start": {"line": line, "character": start_char},
+                "end": {"line": line, "character": end_char},
+            },
+            "severity": severity,
+            "message": message,
+            "source": "apex-lsp",
+        }
+
+    @classmethod
+    def _syntax_diagnostic(cls, exc: SyntaxError) -> dict[str, Any]:
+        """Build the diagnostic for an unparseable source."""
+        line = exc.lineno - 1 if exc.lineno else 0
+        char = exc.offset or 0
+        return cls._diagnostic(line, char, char, 1, f"SyntaxError: {exc.msg}")
+
+    @classmethod
+    def _call_diagnostics(cls, node: Any) -> list[dict[str, Any]]:
+        """Diagnostics for a Call node (eval and os.system)."""
+        import ast
+
+        diags: list[dict[str, Any]] = []
+        func = node.func
+        line = node.lineno - 1
+        if isinstance(func, ast.Name) and func.id == "eval":
+            diags.append(cls._diagnostic(line, node.col_offset, node.col_offset + 4, 1, "Apex: eval() detected — potential security risk"))
+        if (isinstance(func, ast.Attribute)) and (func.attr == "system" and isinstance(func.value, ast.Name) and func.value.id == "os"):
+            diags.append(cls._diagnostic(line, node.col_offset, node.col_offset + 10, 2, "Apex: os.system() detected — consider subprocess.run()"))
+        return diags
+
+    @classmethod
+    def _node_diagnostics(cls, node: Any) -> list[dict[str, Any]]:
+        """Collect all diagnostics emitted for a single AST node."""
+        import ast
+
+        diags: list[dict[str, Any]] = []
+        if isinstance(node, ast.Call):
+            diags.extend(cls._call_diagnostics(node))
+        elif isinstance(node, ast.ExceptHandler) and node.type is None:
+            diags.append(cls._diagnostic(node.lineno - 1, 0, 12, 2, "Apex: bare except — use except Exception:"))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and ast.get_docstring(node) is None:
+            diags.append(cls._diagnostic(node.lineno - 1, 0, len(node.name), 3, f"Apex: missing docstring for {node.name}"))
+        return diags
+
     def _analyze(self, uri: str, text: str) -> list[dict[str, Any]]:
         """Run Apex diagnostics on Python source."""
         import ast
 
-        diagnostics: list[dict[str, Any]] = []
         try:
             tree = ast.parse(text)
         except SyntaxError as exc:
-            diagnostics.append({
-                "range": {
-                    "start": {"line": exc.lineno - 1 if exc.lineno else 0, "character": exc.offset or 0},
-                    "end": {"line": exc.lineno - 1 if exc.lineno else 0, "character": exc.offset or 0},
-                },
-                "severity": 1,  # Error
-                "message": f"SyntaxError: {exc.msg}",
-                "source": "apex-lsp",
-            })
-            return diagnostics
+            return [self._syntax_diagnostic(exc)]
 
+        diagnostics: list[dict[str, Any]] = []
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                func = node.func
-                if isinstance(func, ast.Name) and func.id == "eval":
-                    diagnostics.append({
-                        "range": {
-                            "start": {"line": node.lineno - 1, "character": node.col_offset},
-                            "end": {"line": node.lineno - 1, "character": node.col_offset + 4},
-                        },
-                        "severity": 1,  # Error
-                        "message": "Apex: eval() detected — potential security risk",
-                        "source": "apex-lsp",
-                    })
-                if (isinstance(func, ast.Attribute)) and (func.attr == "system" and isinstance(func.value, ast.Name) and func.value.id == "os"):
-                    diagnostics.append({
-                        "range": {
-                            "start": {"line": node.lineno - 1, "character": node.col_offset},
-                            "end": {"line": node.lineno - 1, "character": node.col_offset + 10},
-                        },
-                        "severity": 2,  # Warning
-                        "message": "Apex: os.system() detected — consider subprocess.run()",
-                        "source": "apex-lsp",
-                    })
-            elif isinstance(node, ast.ExceptHandler):
-                if node.type is None:
-                    diagnostics.append({
-                        "range": {
-                            "start": {"line": node.lineno - 1, "character": 0},
-                            "end": {"line": node.lineno - 1, "character": 12},
-                        },
-                        "severity": 2,  # Warning
-                        "message": "Apex: bare except — use except Exception:",
-                        "source": "apex-lsp",
-                    })
-            if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))) and (ast.get_docstring(node) is None):
-                diagnostics.append({
-                    "range": {
-                        "start": {"line": node.lineno - 1, "character": 0},
-                        "end": {"line": node.lineno - 1, "character": len(node.name)},
-                    },
-                    "severity": 3,  # Information
-                    "message": f"Apex: missing docstring for {node.name}",
-                    "source": "apex-lsp",
-                })
-
+            diagnostics.extend(self._node_diagnostics(node))
         return diagnostics
 
     def _extract_word(self, line: str, char: int) -> str:
