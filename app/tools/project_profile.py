@@ -871,41 +871,61 @@ class ProjectProfiler(_CodeQualityScansMixin):
         """
         if not profile.debt_marker_modules:
             return
-        import subprocess
-
-        def _git(*args: str):
-            return subprocess.run(["git", *args], cwd=self.root,
-                                  capture_output=True, text=True, timeout=15)
-
-        try:
-            head = _git("log", "-1", "--format=%ct")
-        except Exception:
+        now = self._git_head_time()
+        if now is None:
             return
-        if head.returncode != 0 or not head.stdout.strip():
-            return
-        now = int(head.stdout.strip())
 
         ages: dict[str, int] = {}
         for module in profile.debt_marker_modules:
-            try:
-                blame = _git("blame", "--line-porcelain", "--", module)
-            except Exception:
+            blame = self._git_blame_porcelain(module)
+            if blame is None:
                 continue
-            if blame.returncode != 0:
-                continue
-            oldest: int | None = None
-            ctime: int | None = None
-            for line in blame.stdout.splitlines():
-                if line.startswith("committer-time "):
-                    try:
-                        ctime = int(line.split()[1])
-                    except (IndexError, ValueError):
-                        ctime = None
-                if (line.startswith("\t") and ctime is not None) and (self.DEBT_MARKER_RE.search(line)):
-                    oldest = ctime if oldest is None else min(oldest, ctime)
+            oldest = self._oldest_debt_ctime(blame, self.DEBT_MARKER_RE)
             if oldest is not None:
                 ages[module] = max(0, (now - oldest) // 86400)
         profile.debt_marker_ages = ages
+
+    def _git_debt(self, *args: str):
+        """Run a bounded ``git`` invocation in the repo root for debt scans."""
+        import subprocess
+
+        return subprocess.run(["git", *args], cwd=self.root,
+                              capture_output=True, text=True, timeout=15)
+
+    def _git_head_time(self) -> int | None:
+        """HEAD commit time as a Unix timestamp; ``None`` outside git / on error."""
+        try:
+            head = self._git_debt("log", "-1", "--format=%ct")
+        except Exception:
+            return None
+        if head.returncode != 0 or not head.stdout.strip():
+            return None
+        return int(head.stdout.strip())
+
+    def _git_blame_porcelain(self, module: str) -> str | None:
+        """``git blame --line-porcelain`` output for one module; ``None`` on error."""
+        try:
+            blame = self._git_debt("blame", "--line-porcelain", "--", module)
+        except Exception:
+            return None
+        if blame.returncode != 0:
+            return None
+        return blame.stdout
+
+    @staticmethod
+    def _oldest_debt_ctime(blame_stdout: str, debt_re) -> int | None:
+        """Oldest committer-time of any debt-marker line in porcelain blame output."""
+        oldest: int | None = None
+        ctime: int | None = None
+        for line in blame_stdout.splitlines():
+            if line.startswith("committer-time "):
+                try:
+                    ctime = int(line.split()[1])
+                except (IndexError, ValueError):
+                    ctime = None
+            if (line.startswith("\t") and ctime is not None) and debt_re.search(line):
+                oldest = ctime if oldest is None else min(oldest, ctime)
+        return oldest
 
     def _scan_churn(self, profile: ProjectProfile) -> None:
         """One pass over recent git history yields TWO temporal signals:
@@ -1287,30 +1307,10 @@ class ProjectProfiler(_CodeQualityScansMixin):
         linker doesn't track fall back to the whole-suite corpus before being
         accused of being untested.
         """
-        import ast
-
-        if module in module_to_tests:
-            test_text = ""
-            for rel in module_to_tests.get(module, []) or []:
-                try:
-                    test_text += (self.root / rel).read_text(encoding="utf-8", errors="ignore")
-                except OSError:
-                    continue
-        else:
-            test_text = whole_suite_text()
-
+        test_text = self._coverage_test_text(module, module_to_tests, whole_suite_text)
         # Map each function in the module to the simple names it references,
         # so a private helper inherits coverage from a test-named wrapper.
-        refs_by_func: dict[str, set[str]] = {}
-        try:
-            tree = ast.parse(source)
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
-                    names |= {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
-                    refs_by_func[node.name] = names
-        except SyntaxError:
-            refs_by_func = {}
+        refs_by_func = self._function_reference_names(source)
 
         def _named(token: str) -> bool:
             # Whole-word match, not substring: 'run' must not be "covered"
@@ -1333,6 +1333,45 @@ class ProjectProfiler(_CodeQualityScansMixin):
             return False
 
         return _exercised
+
+    def _coverage_test_text(self, module: str, module_to_tests: dict,
+                            whole_suite_text) -> str:
+        """Concatenated test source for ``module``; whole-suite corpus as fallback.
+
+        Modules the linker tracks read only their linked tests; untracked
+        modules fall back to the whole-suite corpus before being accused of
+        being untested.
+        """
+        if module not in module_to_tests:
+            return whole_suite_text()
+        test_text = ""
+        for rel in module_to_tests.get(module, []) or []:
+            try:
+                test_text += (self.root / rel).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+        return test_text
+
+    @staticmethod
+    def _function_reference_names(source: str) -> dict[str, set[str]]:
+        """Map each function to the simple names (Name ids + Attribute attrs) it uses.
+
+        Lets a private helper inherit coverage from a test-named wrapper that
+        references it. Unparseable source yields an empty map.
+        """
+        import ast
+
+        refs_by_func: dict[str, set[str]] = {}
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+                names |= {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+                refs_by_func[node.name] = names
+        return refs_by_func
 
     def _scan_hotspot_functions(self, candidates: list[str], module_to_tests: dict) -> list[dict]:
         """Complex functions inside risky modules that no linked test exercises.
