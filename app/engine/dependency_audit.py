@@ -117,33 +117,44 @@ def _strip_requirement(spec: str) -> tuple[str, bool]:
     return name, pinned
 
 
+def _load_pyproject_data(path: Path) -> dict | None:
+    """Parse ``pyproject.toml`` to a dict, or ``None`` when it cannot be read.
+
+    Defensive: a missing file, unreadable bytes, absent ``tomllib``, or a
+    top-level value that is not a table all yield ``None``."""
+    if tomllib is None or not path.is_file():
+        return None
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _requirements_from_string_list(value: object) -> list[tuple[str, bool]]:
+    """Parse every ``str`` item of ``value`` (when it is a list) into a
+    ``(name, pinned)`` tuple; non-list values and non-str items are ignored."""
+    if not isinstance(value, list):
+        return []
+    return [_strip_requirement(item) for item in value if isinstance(item, str)]
+
+
 def _parse_pyproject(root: Path) -> list[tuple[str, bool]]:
     """Return ``(name, pinned)`` for every dep in ``pyproject.toml``'s
     ``[project.dependencies]`` and ``[project.optional-dependencies]``. Defensive:
     a missing file, unreadable bytes, or absent ``tomllib`` yields ``[]``."""
-    path = root / "pyproject.toml"
-    if tomllib is None or not path.is_file():
-        return []
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    data = _load_pyproject_data(root / "pyproject.toml")
+    if data is None:
         return []
     project = data.get("project")
     if not isinstance(project, dict):
         return []
     out: list[tuple[str, bool]] = []
-    deps = project.get("dependencies")
-    if isinstance(deps, list):
-        for item in deps:
-            if isinstance(item, str):
-                out.append(_strip_requirement(item))
+    out.extend(_requirements_from_string_list(project.get("dependencies")))
     optional = project.get("optional-dependencies")
     if isinstance(optional, dict):
         for group in optional.values():
-            if isinstance(group, list):
-                for item in group:
-                    if isinstance(item, str):
-                        out.append(_strip_requirement(item))
+            out.extend(_requirements_from_string_list(group))
     return out
 
 
