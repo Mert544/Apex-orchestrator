@@ -129,54 +129,45 @@ def _render_findings_format(fmt: str, result) -> str:
     raise ValueError(f"unknown review format: {fmt!r}")
 
 
-def _apply_review_fixes(target: str, result) -> dict:
-    """Apply the auto-fixable review findings through the SAME guarded pass
-    `apex maintain` uses — risk tiers, test-first shield, convergence ladder,
-    verification strength — so review fixes carry identical trust guarantees
-    (a tier-1 fix on an uncovered file is shielded or blocked, never gambled).
+def _rule_fix_names(result) -> list[str]:
+    """Sorted set of saved-rule names referenced by auto-fixable findings."""
+    return sorted({f.fix_kind[5:] for f in result.findings
+                   if f.fix_kind.startswith("rule:") and f.auto_fixable})
 
-    Rule-book violations (fix_kind="rule:NAME") are applied directly via the
-    saved pattern rewrite rather than through the harden ladder — the rule IS
-    the fix, suite-verified with rollback exactly like every other Apex change.
-    """
-    from app.engine.idea_action_bridge import IdeaActionBridge
+
+def _detector_fix_files(result) -> list[str]:
+    """Sorted set of .py files with auto-fixable, non-rule detector findings."""
+    return sorted({f.file for f in result.findings
+                   if f.auto_fixable and f.file.endswith(".py")
+                   and not f.fix_kind.startswith("rule:")})
+
+
+def _apply_rule_fix(target: str, name: str, rule: dict) -> dict:
+    """Plan + apply one saved rule directly (not via harden). Returns an outcome
+    dict: applied entries, blocked entries, and the edit count it contributed."""
     from app.execution.cross_file_rename import apply_rename
     from app.execution.pattern_rewrite import plan_pattern_rewrite
-    from app.execution.rewrite_rules import load_rules
-    from app.models.idea import ActionPlan, ActionStep
 
-    applied: list[dict] = []
-    blocked: list[dict] = []
-    fixes_total = 0
+    plan = plan_pattern_rewrite(target, rule["pattern"], rule["replacement"])
+    if plan.blockers:
+        return {"applied": [], "blocked": [
+            {"file": "(all)", "reason": f"rule:{name}: {plan.blockers[0]}"}], "edits": 0}
+    if not plan.new_contents:
+        return {"applied": [], "blocked": [], "edits": 0}
+    res = apply_rename(target, plan, verify=True)
+    if res.get("applied"):
+        return {"applied": [{"file": f, "transform": f"rule:{name}"}
+                            for f in res.get("changed_files", [])],
+                "blocked": [], "edits": res.get("edits", 1)}
+    return {"applied": [], "blocked": [
+        {"file": "(all)",
+         "reason": f"rule:{name}: {res.get('reason', 'rolled back')}"}], "edits": 0}
 
-    # ── Rule-book violations: run the saved rule directly (not via harden) ──
-    rule_names = sorted({f.fix_kind[5:] for f in result.findings
-                         if f.fix_kind.startswith("rule:") and f.auto_fixable})
-    if rule_names:
-        all_rules = {r["name"]: r for r in load_rules(target)}
-        for name in rule_names:
-            r = all_rules.get(name)
-            if not r:
-                continue
-            plan = plan_pattern_rewrite(target, r["pattern"], r["replacement"])
-            if plan.blockers:
-                blocked.append({"file": "(all)", "reason": f"rule:{name}: {plan.blockers[0]}"})
-                continue
-            if not plan.new_contents:
-                continue
-            res = apply_rename(target, plan, verify=True)
-            if res.get("applied"):
-                fixes_total += res.get("edits", 1)
-                for f in res.get("changed_files", []):
-                    applied.append({"file": f, "transform": f"rule:{name}"})
-            else:
-                blocked.append({"file": "(all)",
-                                 "reason": f"rule:{name}: {res.get('reason', 'rolled back')}"})
 
-    # ── Detector findings: harden ladder + docstring (skip rule-only files) ──
-    files = sorted({f.file for f in result.findings
-                    if f.auto_fixable and f.file.endswith(".py")
-                    and not f.fix_kind.startswith("rule:")})
+def _build_detector_steps(files: list[str]):
+    """Build the harden + docstring action steps for the detector-fix files."""
+    from app.models.idea import ActionStep
+
     steps: list[ActionStep] = []
     for rel in files:
         # harden_security runs the detection ladder (security → mutable-default
@@ -189,21 +180,83 @@ def _apply_review_fixes(target: str, result) -> dict:
                                 operator="document", subject=rel, action_type="add_docstring",
                                 target=rel, executable=True,
                                 source_facts=[f"review-finding: {rel}"]))
-    if steps:
-        summary = IdeaActionBridge().apply_plan(
-            ActionPlan(objective="apply review findings", steps=steps),
-            target, mode="supervised", verify=True)
-        for r in summary.get("results", []):
-            if r.get("applied"):
-                entry = {"file": r["target"], "transform": r.get("transform_type")}
-                fixes_total += 1 + int(r.get("converged_fixes", 0) or 0)
-                if r.get("converged_fixes"):
-                    entry["converged_fixes"] = r["converged_fixes"]
-                if r.get("shield_test"):
-                    entry["shield_test"] = r["shield_test"]
-                applied.append(entry)
-            elif "tier-1" in (r.get("reason") or ""):
-                blocked.append({"file": r.get("target", ""), "reason": r["reason"]})
+    return steps
+
+
+def _detector_result_outcome(r: dict) -> dict:
+    """Classify one bridge result into applied entries, blocked entries, and the
+    edit count it contributed (1 + converged on apply; tier-1 reasons block)."""
+    if r.get("applied"):
+        entry = {"file": r["target"], "transform": r.get("transform_type")}
+        if r.get("converged_fixes"):
+            entry["converged_fixes"] = r["converged_fixes"]
+        if r.get("shield_test"):
+            entry["shield_test"] = r["shield_test"]
+        return {"applied": [entry], "blocked": [],
+                "edits": 1 + int(r.get("converged_fixes", 0) or 0)}
+    if "tier-1" in (r.get("reason") or ""):
+        return {"applied": [], "blocked": [
+            {"file": r.get("target", ""), "reason": r["reason"]}], "edits": 0}
+    return {"applied": [], "blocked": [], "edits": 0}
+
+
+def _apply_detector_fixes(target: str, files: list[str]) -> dict:
+    """Run the harden ladder + docstring pass over the detector-fix files via the
+    same guarded bridge `apex maintain` uses. Returns the merged outcome dict."""
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.models.idea import ActionPlan
+
+    steps = _build_detector_steps(files)
+    if not steps:
+        return {"applied": [], "blocked": [], "edits": 0}
+    summary = IdeaActionBridge().apply_plan(
+        ActionPlan(objective="apply review findings", steps=steps),
+        target, mode="supervised", verify=True)
+    applied: list[dict] = []
+    blocked: list[dict] = []
+    edits = 0
+    for r in summary.get("results", []):
+        out = _detector_result_outcome(r)
+        applied.extend(out["applied"])
+        blocked.extend(out["blocked"])
+        edits += out["edits"]
+    return {"applied": applied, "blocked": blocked, "edits": edits}
+
+
+def _apply_review_fixes(target: str, result) -> dict:
+    """Apply the auto-fixable review findings through the SAME guarded pass
+    `apex maintain` uses — risk tiers, test-first shield, convergence ladder,
+    verification strength — so review fixes carry identical trust guarantees
+    (a tier-1 fix on an uncovered file is shielded or blocked, never gambled).
+
+    Rule-book violations (fix_kind="rule:NAME") are applied directly via the
+    saved pattern rewrite rather than through the harden ladder — the rule IS
+    the fix, suite-verified with rollback exactly like every other Apex change.
+    """
+    from app.execution.rewrite_rules import load_rules
+
+    applied: list[dict] = []
+    blocked: list[dict] = []
+    fixes_total = 0
+
+    # ── Rule-book violations: run the saved rule directly (not via harden) ──
+    rule_names = _rule_fix_names(result)
+    if rule_names:
+        all_rules = {r["name"]: r for r in load_rules(target)}
+        for name in rule_names:
+            rule = all_rules.get(name)
+            if not rule:
+                continue
+            out = _apply_rule_fix(target, name, rule)
+            applied.extend(out["applied"])
+            blocked.extend(out["blocked"])
+            fixes_total += out["edits"]
+
+    # ── Detector findings: harden ladder + docstring (skip rule-only files) ──
+    out = _apply_detector_fixes(target, _detector_fix_files(result))
+    applied.extend(out["applied"])
+    blocked.extend(out["blocked"])
+    fixes_total += out["edits"]
 
     return {"applied": applied, "applied_count": fixes_total,
             "files_touched": sorted({a["file"] for a in applied}),
