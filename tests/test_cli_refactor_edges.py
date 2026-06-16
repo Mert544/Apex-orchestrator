@@ -753,3 +753,154 @@ def test_teach_from_git_with_pairs(tmp_path, capsys, monkeypatch):
     assert rc == 0
     assert "Mined" in out
     assert "Learned rule" in out
+
+
+# --------------------------------------------------------------------------- #
+# cmd_rewrite — characterization of the post-extraction dispatch.             #
+#                                                                             #
+# Pins which branch (list-rules / run-all / resolve / apply) cmd_rewrite      #
+# dispatches into for each flag combo, and its return code, with heavy        #
+# collaborators stubbed so the test is deterministic and isolates dispatch.   #
+# --------------------------------------------------------------------------- #
+class _FakePlan:
+    """Minimal stand-in for a pattern-rewrite plan."""
+
+    def __init__(self, *, blockers=(), new_contents=None, warnings=(),
+                 edits_by_file=None, diff="DIFF"):
+        self.blockers = list(blockers)
+        self.new_contents = dict(new_contents or {})
+        self.warnings = list(warnings)
+        self.edits_by_file = dict(edits_by_file or {})
+        self._diff = diff
+
+    def render_diff(self):
+        return self._diff
+
+
+def _stub_plan(monkeypatch, plan):
+    monkeypatch.setattr(
+        "app.execution.pattern_rewrite.plan_pattern_rewrite",
+        lambda root, pat, repl: plan,
+    )
+
+
+def _stub_apply(monkeypatch, result):
+    monkeypatch.setattr(
+        "app.execution.cross_file_rename.apply_rename",
+        lambda root, plan, verify=True: result,
+    )
+
+
+def test_rewrite_dispatch_rules_branch(tmp_path, capsys, monkeypatch):
+    """--rules routes to the rule-book listing regardless of other flags."""
+    _app(tmp_path)
+    seen = {}
+
+    def _load(root):
+        seen["called"] = True
+        return [{"name": "r", "pattern": "p", "replacement": "q"}]
+
+    monkeypatch.setattr("app.execution.rewrite_rules.load_rules", _load)
+    rc = cmd_rewrite(_rw_ns(tmp_path, rules=True, all=True, pattern="x", replacement="y"))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert seen.get("called") is True
+    assert "rule book — 1 rule(s)" in out
+    assert "**r**" in out
+
+
+def test_rewrite_dispatch_all_branch_failure_rc(tmp_path, capsys, monkeypatch):
+    """--all routes to run-all; a blocked rule yields rc=1 (drift failure)."""
+    _app(tmp_path)
+    monkeypatch.setattr(
+        "app.execution.rewrite_rules.load_rules",
+        lambda root: [{"name": "r", "pattern": "p", "replacement": "q"}],
+    )
+    _stub_plan(monkeypatch, _FakePlan(blockers=["nope"]))
+    rc = cmd_rewrite(_rw_ns(tmp_path, all=True))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "⛔ r: nope" in out
+
+
+def test_rewrite_dispatch_resolve_error_short_circuits(tmp_path, capsys, monkeypatch):
+    """Missing pattern/replacement short-circuits before any plan is built."""
+    _app(tmp_path)
+    monkeypatch.setattr(
+        "app.execution.pattern_rewrite.plan_pattern_rewrite",
+        lambda root, pat, repl: (_ for _ in ()).throw(
+            AssertionError("plan must not be built on resolve error")),
+    )
+    rc = cmd_rewrite(_rw_ns(tmp_path, pattern="", replacement=None))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "needs PATTERN" in out
+
+
+def test_rewrite_dispatch_resolve_rule_lookup(tmp_path, capsys, monkeypatch):
+    """--rule resolves (pattern, replacement) from the book, then applies."""
+    _app(tmp_path)
+    monkeypatch.setattr(
+        "app.execution.rewrite_rules.load_rules",
+        lambda root: [{"name": "saved", "pattern": "P", "replacement": "R"}],
+    )
+    captured = {}
+
+    def _plan(root, pat, repl):
+        captured["pat"], captured["repl"] = pat, repl
+        return _FakePlan()  # no new_contents -> "no match" branch, rc 0
+
+    monkeypatch.setattr("app.execution.pattern_rewrite.plan_pattern_rewrite", _plan)
+    rc = cmd_rewrite(_rw_ns(tmp_path, rule="saved"))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert captured == {"pat": "P", "repl": "R"}
+    assert "`P` → `R` — no match" in out
+
+
+def test_rewrite_dispatch_apply_blocked(tmp_path, capsys, monkeypatch):
+    """A plan with blockers routes to the blocked branch (rc 1)."""
+    _app(tmp_path)
+    _stub_plan(monkeypatch, _FakePlan(blockers=["bad pattern"]))
+    rc = cmd_rewrite(_rw_ns(tmp_path, pattern="p", replacement="q"))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "Rewrite blocked" in out and "bad pattern" in out
+
+
+def test_rewrite_dispatch_apply_dry_run(tmp_path, capsys, monkeypatch):
+    """A plan with edits + --dry-run routes to the diff-preview branch (rc 0)."""
+    _app(tmp_path)
+    _stub_plan(monkeypatch, _FakePlan(
+        new_contents={"app/m.py": "x"}, edits_by_file={"app/m.py": 2}, diff="THE-DIFF"))
+    rc = cmd_rewrite(_rw_ns(tmp_path, pattern="p", replacement="q", dry_run=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "dry run" in out and "2 match(es)" in out and "THE-DIFF" in out
+
+
+def test_rewrite_dispatch_apply_json_failure(tmp_path, capsys, monkeypatch):
+    """A real apply that fails, in --json mode, yields rc=1 and the payload."""
+    _app(tmp_path)
+    _stub_plan(monkeypatch, _FakePlan(
+        new_contents={"app/m.py": "x"}, edits_by_file={"app/m.py": 1}))
+    _stub_apply(monkeypatch, {"applied": False, "reason": "verify failed"})
+    rc = cmd_rewrite(_rw_ns(tmp_path, pattern="p", replacement="q", json=True))
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert payload["applied"] is False
+
+
+def test_rewrite_dispatch_apply_success(tmp_path, capsys, monkeypatch):
+    """A real apply that succeeds routes to the success branch (rc 0)."""
+    _app(tmp_path)
+    _stub_plan(monkeypatch, _FakePlan(
+        new_contents={"app/m.py": "x"}, edits_by_file={"app/m.py": 1}))
+    _stub_apply(monkeypatch, {
+        "applied": True, "edits": 1, "changed_files": ["app/m.py"],
+        "verified": True, "warnings": ["w"],
+    })
+    rc = cmd_rewrite(_rw_ns(tmp_path, pattern="p", replacement="q", no_verify=False))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Rewrote" in out and "verified" in out and "- ⚠️ w" in out

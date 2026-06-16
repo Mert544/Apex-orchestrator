@@ -263,70 +263,72 @@ def cmd_move(args: argparse.Namespace) -> int:
 
 
 
-def cmd_rewrite(args: argparse.Namespace) -> int:
-    """User-defined structural rewrite: `apex rewrite 'len($x) == 0' 'not $x'`.
+def _rewrite_list_rules(target: str) -> int:
+    """`--rules`: print the project rule book and exit."""
+    from app.execution.rewrite_rules import load_rules
 
-    $name metavariables match any expression (the same name must capture the
-    same text); applies project-wide, suite-verified with rollback.
-    """
+    rules = load_rules(target)
+    print(f"# Rewrite rule book — {len(rules)} rule(s)")
+    for r in rules:
+        print(f"- **{r['name']}**: `{r['pattern']}` → `{r['replacement']}`")
+    return 0
+
+
+def _rewrite_run_all(args: argparse.Namespace, target: str) -> int:
+    """`--all`: re-apply every saved rule (each verified) — drift enforcement."""
     from app.execution.cross_file_rename import apply_rename
     from app.execution.pattern_rewrite import plan_pattern_rewrite
-    from app.execution.rewrite_rules import load_rules, save_rule
+    from app.execution.rewrite_rules import load_rules
 
-    target = Path(args.target).resolve() if args.target else _get_project_root()
-
-    if getattr(args, "rules", False):
-        rules = load_rules(str(target))
-        print(f"# Rewrite rule book — {len(rules)} rule(s)")
-        for r in rules:
-            print(f"- **{r['name']}**: `{r['pattern']}` → `{r['replacement']}`")
+    rules = load_rules(target)
+    if not rules:
+        print("# Rewrite rule book is empty — save one with --save NAME")
         return 0
+    failures = 0
+    for r in rules:
+        plan = plan_pattern_rewrite(target, r["pattern"], r["replacement"])
+        if plan.blockers:
+            failures += 1
+            print(f"⛔ {r['name']}: {plan.blockers[0]}")
+            continue
+        if not plan.new_contents:
+            print(f"✓ {r['name']}: holds (no drift)")
+            continue
+        res = apply_rename(target, plan, verify=not getattr(args, "no_verify", False))
+        if res.get("applied"):
+            print(f"✅ {r['name']}: re-applied — {res['edits']} match(es) in "
+                  f"{len(res['changed_files'])} file(s)"
+                  + (" (tests pass)" if res.get("verified") else ""))
+        else:
+            failures += 1
+            print(f"↩️ {r['name']}: {res.get('reason', 'not applied')}")
+    return 1 if failures else 0
 
-    if getattr(args, "all", False):
-        rules = load_rules(str(target))
-        if not rules:
-            print("# Rewrite rule book is empty — save one with --save NAME")
-            return 0
-        failures = 0
-        for r in rules:
-            plan = plan_pattern_rewrite(str(target), r["pattern"], r["replacement"])
-            if plan.blockers:
-                failures += 1
-                print(f"⛔ {r['name']}: {plan.blockers[0]}")
-                continue
-            if not plan.new_contents:
-                print(f"✓ {r['name']}: holds (no drift)")
-                continue
-            res = apply_rename(str(target), plan,
-                               verify=not getattr(args, "no_verify", False))
-            if res.get("applied"):
-                print(f"✅ {r['name']}: re-applied — {res['edits']} match(es) in "
-                      f"{len(res['changed_files'])} file(s)"
-                      + (" (tests pass)" if res.get("verified") else ""))
-            else:
-                failures += 1
-                print(f"↩️ {r['name']}: {res.get('reason', 'not applied')}")
-        return 1 if failures else 0
+
+def _rewrite_resolve_pattern(args: argparse.Namespace, target: str):
+    """Resolve (pattern, replacement) from args/`--rule`.
+
+    Returns ``(pattern, replacement, None)`` on success, or
+    ``(None, None, rc)`` when the caller should print-and-exit with ``rc``.
+    """
+    from app.execution.rewrite_rules import load_rules
 
     pattern, replacement = args.pattern, args.replacement
     if getattr(args, "rule", ""):
-        match = next((r for r in load_rules(str(target)) if r["name"] == args.rule), None)
+        match = next((r for r in load_rules(target) if r["name"] == args.rule), None)
         if match is None:
             print(f"⛔ no saved rule named '{args.rule}' — see `apex rewrite --rules`")
-            return 1
+            return None, None, 1
         pattern, replacement = match["pattern"], match["replacement"]
     if not pattern or replacement is None:
         print("⛔ rewrite needs PATTERN and REPLACEMENT (or --rule NAME / --rules / --all)")
-        return 1
+        return None, None, 1
+    return pattern, replacement, None
 
-    plan = plan_pattern_rewrite(str(target), pattern, replacement)
-    label = f"`{pattern}` → `{replacement}`"
 
-    if getattr(args, "save", "") and not plan.blockers:
-        err = save_rule(str(target), args.save, pattern, replacement)
-        print(f"⛔ {err}" if err else f"💾 rule '{args.save}' saved to the book")
-        if err:
-            return 1
+def _rewrite_apply_plan(args: argparse.Namespace, target: str, plan, label: str) -> int:
+    """Render a resolved plan: blocked / no-match / dry-run / apply / json."""
+    from app.execution.cross_file_rename import apply_rename
 
     if plan.blockers:
         print(f"# Rewrite blocked: {label}\n")
@@ -348,7 +350,7 @@ def cmd_rewrite(args: argparse.Namespace) -> int:
             print(f"- ⚠️ {w}")
         return 0
 
-    res = apply_rename(str(target), plan, verify=not getattr(args, "no_verify", False))
+    res = apply_rename(target, plan, verify=not getattr(args, "no_verify", False))
     if args.json:
         print(json.dumps(res, indent=2))
         return 0 if res.get("applied") else 1
@@ -362,6 +364,38 @@ def cmd_rewrite(args: argparse.Namespace) -> int:
         return 0
     print(f"↩️ {res.get('reason', 'rewrite not applied')}")
     return 1
+
+
+def cmd_rewrite(args: argparse.Namespace) -> int:
+    """User-defined structural rewrite: `apex rewrite 'len($x) == 0' 'not $x'`.
+
+    $name metavariables match any expression (the same name must capture the
+    same text); applies project-wide, suite-verified with rollback.
+    """
+    from app.execution.pattern_rewrite import plan_pattern_rewrite
+    from app.execution.rewrite_rules import save_rule
+
+    target = str(Path(args.target).resolve() if args.target else _get_project_root())
+
+    if getattr(args, "rules", False):
+        return _rewrite_list_rules(target)
+    if getattr(args, "all", False):
+        return _rewrite_run_all(args, target)
+
+    pattern, replacement, rc = _rewrite_resolve_pattern(args, target)
+    if rc is not None:
+        return rc
+
+    plan = plan_pattern_rewrite(target, pattern, replacement)
+    label = f"`{pattern}` → `{replacement}`"
+
+    if getattr(args, "save", "") and not plan.blockers:
+        err = save_rule(target, args.save, pattern, replacement)
+        print(f"⛔ {err}" if err else f"💾 rule '{args.save}' saved to the book")
+        if err:
+            return 1
+
+    return _rewrite_apply_plan(args, target, plan, label)
 
 
 def cmd_teach(args: argparse.Namespace) -> int:
