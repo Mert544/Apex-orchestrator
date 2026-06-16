@@ -169,6 +169,51 @@ _CASES = {
         "def f(xs):\n    if len(xs) > 0:\n        return 1\n    return 0\n",
         "def f():\n    return 1\n",
     ),
+    # Wired this wave: seven more on-disk plan_* transforms routed through the
+    # plan_to_apply adapter, same refuse-on-unsafe / guarded-gate contract.
+    # transform_type is the plan's ``new`` label (hyphenated).
+    "simplify_bool_return": (
+        "simplify-bool-return",
+        "simplify-bool-return",
+        "def f(c):\n    if c:\n        return True\n    else:\n        return False\n",
+        "def f():\n    return 1\n",
+    ),
+    "simplify_ternary_bool": (
+        "ternary-bool",
+        "simplify-ternary-bool",
+        "def f(c):\n    return True if c else False\n",
+        "def f():\n    return 1\n",
+    ),
+    "simplify_dict_get": (
+        "dict-get-ternary",
+        "simplify-dict-get",
+        "def f(x, k):\n    return x[k] if k in x else 0\n",
+        "def f():\n    return 1\n",
+    ),
+    "dict_comprehension": (
+        "dict-comprehension",
+        "dict-comprehension",
+        "def f(xs):\n    out = {}\n    for x in xs:\n        out[x] = x + 1\n    return out\n",
+        "def f():\n    return 1\n",
+    ),
+    "simplify_negated_comparison": (
+        "ordering-negation",
+        "simplify-negated-comparison",
+        "def f(a, b):\n    return not a < b\n",
+        "def f():\n    return 1\n",
+    ),
+    "remove_pointless_pass": (
+        "pointless-pass",
+        "remove-pointless-pass",
+        "def f():\n    x = 1\n    pass\n    return x\n",
+        "def f():\n    return 1\n",
+    ),
+    "fix_assert_tuple": (
+        "assert-tuple",
+        "fix-assert-tuple",
+        'def f(c):\n    assert (c, "msg")\n',
+        "def f():\n    return 1\n",
+    ),
 }
 
 
@@ -299,6 +344,10 @@ _NEW = {
     "augmented_assign", "collection_literal", "fstring_no_placeholder",
     "combine_nested_with", "simplify_comprehension", "use_enumerate",
     "simplify_len_comparison",
+    # Seven on-disk plan_* transforms wired this wave.
+    "simplify_bool_return", "simplify_ternary_bool", "simplify_dict_get",
+    "dict_comprehension", "simplify_negated_comparison",
+    "remove_pointless_pass", "fix_assert_tuple",
 }
 
 

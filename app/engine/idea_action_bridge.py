@@ -180,6 +180,33 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "len-comparison": ("simplify_len_comparison",
                        "Rewrite a boolean-context `len(x) == 0` / `> 0` to "
                        "`not x` / `bool(x)` in {s}", True),
+    # Seven more on-disk ``plan_<name>(root, rel) -> RenamePlan`` rewrites under
+    # ``app/execution/``, adapted by the same ``plan_to_apply`` in
+    # ``_simplify_dispatch`` and routed through the IDENTICAL guarded apply path
+    # (snapshot → write → verify → auto-rollback). Each is strictly guarded,
+    # behaviour-preserving (assert-tuple is a correctness fix), and distinct from
+    # every transform above and from the audit's DO-NOT-WIRE duplicates.
+    "simplify-bool-return": ("simplify_bool_return",
+                             "Collapse `if c: return True / else: return False` "
+                             "into `return bool(c)` in {s}", True),
+    "ternary-bool": ("simplify_ternary_bool",
+                     "Rewrite a `True if c else False` ternary into `bool(c)` "
+                     "in {s}", True),
+    "dict-get-ternary": ("simplify_dict_get",
+                         "Rewrite `x[k] if k in x else d` into `x.get(k, d)` "
+                         "in {s}", True),
+    "dict-comprehension": ("dict_comprehension",
+                           "Fold an `out = {{}}` + `for ...: out[k] = v` "
+                           "accumulator loop into a dict comprehension in {s}",
+                           True),
+    "ordering-negation": ("simplify_negated_comparison",
+                          "Rewrite a negated ordering comparison `not a < b` "
+                          "into `a >= b` in {s}", True),
+    "pointless-pass": ("remove_pointless_pass",
+                       "Delete a redundant `pass` statement in {s}", True),
+    "assert-tuple": ("fix_assert_tuple",
+                     "Fix the always-true `assert (cond, \"msg\")` tuple into "
+                     "`assert cond, \"msg\"` in {s}", True),
     # The hands exist (apex signature drop/keywordify) but as supervised CLI
     # muscles, not unattended transforms — the work order carries the command.
     "dead-parameter": ("design_task",
@@ -596,6 +623,17 @@ class IdeaActionBridge:
         "simplify_comprehension": ["accumulator loop to comprehension"],
         "use_enumerate": ["range len index to enumerate"],
         "simplify_len_comparison": ["len comparison to truthiness"],
+        # Seven more on-disk ``plan_*`` simplifications, adapted to the in-memory
+        # dispatch by ``plan_to_apply``. Listed here (like the transforms above)
+        # only so ``_step_targets`` recognises the action as a real transform
+        # objective; the actual rewrite is chosen in ``_simplify_dispatch``.
+        "simplify_bool_return": ["bool return simplification"],
+        "simplify_ternary_bool": ["ternary bool to bool call"],
+        "simplify_dict_get": ["dict get ternary"],
+        "dict_comprehension": ["accumulator loop to dict comprehension"],
+        "simplify_negated_comparison": ["negated ordering comparison"],
+        "remove_pointless_pass": ["remove redundant pass"],
+        "fix_assert_tuple": ["fix always-true assert tuple"],
     }
 
     # Behaviour-preserving readability simplifications dispatched STRAIGHT to
@@ -611,9 +649,18 @@ class IdeaActionBridge:
     # self-verifying simplification.
     @classmethod
     def _simplify_dispatch(cls):
+        from app.execution.bool_return import plan_simplify_bool_return
         from app.execution.comprehension import plan_simplify_comprehension
+        from app.execution.dict_comprehension import plan_dict_comprehension
+        from app.execution.dict_get import plan_simplify_dict_get
+        from app.execution.fix_assert_tuple import plan_fix_assert_tuple
         from app.execution.nested_with import plan_combine_nested_with
+        from app.execution.remove_pointless_pass import plan_remove_pointless_pass
         from app.execution.simplify_len_comparison import plan_simplify_len_comparison
+        from app.execution.simplify_negated_comparison import (
+            plan_simplify_negated_comparison,
+        )
+        from app.execution.simplify_ternary_bool import plan_simplify_ternary_bool
         from app.execution.use_enumerate import plan_use_enumerate
         from app.tools.simplification_scan import plan_to_apply
         # One namespace import of the transforms package replaces the former
@@ -675,6 +722,26 @@ class IdeaActionBridge:
             "simplify_comprehension": plan_to_apply(plan_simplify_comprehension),
             "use_enumerate": plan_to_apply(plan_use_enumerate),
             "simplify_len_comparison": plan_to_apply(plan_simplify_len_comparison),
+            # Seven more on-disk ``plan_<name>(root, rel) -> RenamePlan``
+            # rewrites under ``app/execution/``, each adapted by the SAME
+            # ``plan_to_apply`` (materialise source → run real plan → translate
+            # the RenamePlan; a no-op/blocked plan → None) and flowed through the
+            # IDENTICAL guarded apply_step gate. Each is strictly guarded and
+            # distinct: bool-return / ternary-bool collapse boolean if/ternary
+            # forms to ``bool(c)``; dict-get-ternary → ``x.get(k, d)``;
+            # dict-comprehension folds a dict accumulator; negated-comparison
+            # inverts ORDERING ops only (not equality/membership/identity, so it
+            # is not a duplicate of double_not / fix_not_in_is);
+            # remove_pointless_pass deletes a redundant ``pass``; fix_assert_tuple
+            # is a correctness fix for the always-true ``assert (cond, "msg")``.
+            "simplify_bool_return": plan_to_apply(plan_simplify_bool_return),
+            "simplify_ternary_bool": plan_to_apply(plan_simplify_ternary_bool),
+            "simplify_dict_get": plan_to_apply(plan_simplify_dict_get),
+            "dict_comprehension": plan_to_apply(plan_dict_comprehension),
+            "simplify_negated_comparison":
+                plan_to_apply(plan_simplify_negated_comparison),
+            "remove_pointless_pass": plan_to_apply(plan_remove_pointless_pass),
+            "fix_assert_tuple": plan_to_apply(plan_fix_assert_tuple),
         }
 
     @staticmethod

@@ -1198,11 +1198,11 @@ class IdeaSeeder:
         # ``_FACT_ACTIONS`` routes to the real, test-verified, auto-rollback
         # transform — not a recommend-only stub.
         #
-        # The field defaults to empty (``getattr(..., [])``), so until the
-        # profiler populates ``profile.simplification_opportunities`` the seeded
-        # set is byte-identical to today. Populating that field in
-        # project_profile.py is a follow-up owned elsewhere; this helper only
-        # reads it. Opportunities are pre-sorted/capped by the scanner, so the
+        # The field defaults to empty (``getattr(..., [])``), so a profile
+        # without opportunities seeds nothing here. ``project_profile.py``
+        # populates ``profile.simplification_opportunities`` by calling
+        # ``scan_simplifications`` during profiling; this helper reads that live
+        # field. Opportunities are pre-sorted/capped by the scanner, so the
         # seeding order here stays deterministic.
         for opp in (getattr(profile, "simplification_opportunities", []) or []):
             module = opp.get("module", "")

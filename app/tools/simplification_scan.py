@@ -25,8 +25,11 @@ Properties:
   - Capped + sorted: results are sorted by ``(module, fact_label)`` and capped,
     so the downstream idea budget sees a stable, reproducible slice.
 
-The profiler hook that stores this list on ``ProjectProfile`` is a separate
-owner's follow-up; this module is the pure producer.
+The profiler hook that stores this list on ``ProjectProfile`` is live:
+``project_profile.py`` calls :func:`scan_simplifications` and populates
+``ProjectProfile.simplification_opportunities``, which ``IdeaSeeder`` reads to
+emit one executable root per opportunity. This module is the pure producer at
+the head of that chain.
 """
 
 from __future__ import annotations
@@ -126,9 +129,18 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
     executable action — emitting any other spelling would route the seeded idea
     to the generic recommend-only fallback instead of the real transform.
     """
+    from app.execution.bool_return import plan_simplify_bool_return
     from app.execution.comprehension import plan_simplify_comprehension
+    from app.execution.dict_comprehension import plan_dict_comprehension
+    from app.execution.dict_get import plan_simplify_dict_get
+    from app.execution.fix_assert_tuple import plan_fix_assert_tuple
     from app.execution.nested_with import plan_combine_nested_with
+    from app.execution.remove_pointless_pass import plan_remove_pointless_pass
     from app.execution.simplify_len_comparison import plan_simplify_len_comparison
+    from app.execution.simplify_negated_comparison import (
+        plan_simplify_negated_comparison,
+    )
+    from app.execution.simplify_ternary_bool import plan_simplify_ternary_bool
     from app.execution.use_enumerate import plan_use_enumerate
     # One namespace import of the transforms package replaces the former
     # per-transform import list (consolidated here and in the bridge's
@@ -196,6 +208,33 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
         ("comprehension", plan_to_apply(plan_simplify_comprehension)),
         ("use-enumerate", plan_to_apply(plan_use_enumerate)),
         ("len-comparison", plan_to_apply(plan_simplify_len_comparison)),
+        # Seven more on-disk ``plan_<name>(root, rel) -> RenamePlan`` rewrites
+        # under ``app/execution/``, each adapted by ``plan_to_apply`` to the same
+        # uniform 3-arg dry-run shape as the four above, so they dry-run and
+        # apply through the IDENTICAL refuse-on-unsafe, re-parsing, auto-rollback
+        # path. Each is strictly guarded, distinct from every transform above,
+        # and NOT one of the audit's DO-NOT-WIRE duplicates:
+        #   - bool-return collapses ``if c: return True / else: return False``
+        #     into ``return bool(c)``;
+        #   - ternary-bool rewrites ``True if c else False`` -> ``bool(c)``;
+        #   - dict-get-ternary rewrites ``x[k] if k in x else d`` ->
+        #     ``x.get(k, d)`` (pure container + key only);
+        #   - dict-comprehension folds an ``out = {}`` + ``for ...: out[k] = v``
+        #     accumulator into a dict comprehension;
+        #   - ordering-negation rewrites ``not a < b`` -> ``a >= b`` for ORDERING
+        #     ops only (Eq/membership/identity are left to their owning
+        #     transforms, so it does not duplicate double_not / fix_not_in_is);
+        #   - pointless-pass deletes a redundant ``pass`` that is not the lone
+        #     statement of its block;
+        #   - assert-tuple is a CORRECTNESS fix: ``assert (cond, "msg")`` (an
+        #     always-true tuple) -> ``assert cond, "msg"``.
+        ("simplify-bool-return", plan_to_apply(plan_simplify_bool_return)),
+        ("ternary-bool", plan_to_apply(plan_simplify_ternary_bool)),
+        ("dict-get-ternary", plan_to_apply(plan_simplify_dict_get)),
+        ("dict-comprehension", plan_to_apply(plan_dict_comprehension)),
+        ("ordering-negation", plan_to_apply(plan_simplify_negated_comparison)),
+        ("pointless-pass", plan_to_apply(plan_remove_pointless_pass)),
+        ("assert-tuple", plan_to_apply(plan_fix_assert_tuple)),
     ]
 
 
