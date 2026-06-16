@@ -394,6 +394,83 @@ def _change_impacts(project_root: str, changes: dict[str, set[int]],
     return impacts
 
 
+_SEVERITY_ICON = {"high": "🔴", "medium": "🟠", "low": "🔵"}
+
+
+def _fix_note(f: ReviewFinding) -> str:
+    """The trailing ` · _…_` hint a finding earns, by how it can be fixed.
+
+    Pure: derived only from the finding's own ``suggestion`` / ``fix_kind`` /
+    ``auto_fixable`` flags, so the same finding always renders the same note."""
+    if f.suggestion:
+        return " · _suggested fix below_"
+    if f.fix_kind.startswith("rule:"):
+        return f" · _fix: `apex rewrite --rule {f.fix_kind[5:]}`_"
+    if f.fix_kind == "extract":
+        return " · _refactor: run the command above_"
+    if f.fix_kind == "inline":
+        return " · _refactor: run the command above_"
+    if f.fix_kind == "duplication":
+        return " · _refactor: extract a shared helper_"
+    if f.auto_fixable:
+        return " · _Apex can auto-fix_"
+    return " · _needs a human_"
+
+
+def _finding_lines(f: ReviewFinding) -> list[str]:
+    """One finding's bullet, plus the inline before/after diff block when it
+    carries a single-line suggestion — a reviewer that *proposes the patch*,
+    not just flags the issue."""
+    out = [
+        f"- {_SEVERITY_ICON.get(f.severity, '⚪')} `{f.file}:{f.line}` "
+        f"**[{f.category}]** {f.message}{_fix_note(f)}"
+    ]
+    if f.suggestion:
+        old, new = f.suggestion
+        out += ["", "  ```diff", f"  - {old}", f"  + {new}", "  ```", ""]
+    return out
+
+
+def _findings_section(result: ReviewResult, limit: int) -> list[str]:
+    """The header + findings body, honouring the ``limit`` cap and its
+    hidden-count footer. Clean diffs collapse to the celebratory one-liner."""
+    if not result.findings:
+        return [f"Reviewed {result.files_reviewed} changed file(s). "
+                "**No issues found in the changed lines** 🎉", ""]
+    shown = result.findings[:limit] if limit and limit > 0 else result.findings
+    hidden = len(result.findings) - len(shown)
+    out = [
+        f"Reviewed {result.files_reviewed} changed file(s) · "
+        f"**{len(result.findings)} issue(s)** "
+        f"({result.auto_fixable_count} auto-fixable by `apex maintain`).",
+        "",
+    ]
+    for f in shown:
+        out += _finding_lines(f)
+    if hidden > 0:
+        out.append(f"- … and **{hidden} more** finding(s) — run "
+                   "`apex review` locally, or see the full SARIF artifact.")
+    out.append("")
+    return out
+
+
+def _impacts_section(result: ReviewResult) -> list[str]:
+    """The change-impact section (call sites to review too), or nothing when the
+    review surfaced no impacts."""
+    if not result.impacts:
+        return []
+    out = ["## 🔗 Change impact (review the call sites too)"]
+    for im in result.impacts:
+        shown = ", ".join(f"`{c}`" for c in im.callers)
+        more = f" (+{im.caller_count - len(im.callers)} more)" if im.caller_count > len(im.callers) else ""
+        out.append(
+            f"- `{im.file}:{im.lineno}` **{im.function}()** is called by "
+            f"**{im.caller_count}** function(s): {shown}{more}"
+        )
+    out.append("")
+    return out
+
+
 def render_review_markdown(result: ReviewResult, limit: int = 0) -> str:
     """Render the diff review as a PR-style comment.
 
@@ -406,57 +483,8 @@ def render_review_markdown(result: ReviewResult, limit: int = 0) -> str:
     if result.files_reviewed == 0:
         lines += ["_No changed Python files to review._", ""]
         return "\n".join(lines)
-    if not result.findings:
-        lines += [f"Reviewed {result.files_reviewed} changed file(s). "
-                  "**No issues found in the changed lines** 🎉", ""]
-    else:
-        shown = result.findings[:limit] if limit and limit > 0 else result.findings
-        hidden = len(result.findings) - len(shown)
-        lines.append(
-            f"Reviewed {result.files_reviewed} changed file(s) · "
-            f"**{len(result.findings)} issue(s)** "
-            f"({result.auto_fixable_count} auto-fixable by `apex maintain`)."
-        )
-        lines.append("")
-        icon = {"high": "🔴", "medium": "🟠", "low": "🔵"}
-        for f in shown:
-            if f.suggestion:
-                fix = " · _suggested fix below_"
-            elif f.fix_kind.startswith("rule:"):
-                fix = f" · _fix: `apex rewrite --rule {f.fix_kind[5:]}`_"
-            elif f.fix_kind == "extract":
-                fix = " · _refactor: run the command above_"
-            elif f.fix_kind == "inline":
-                fix = " · _refactor: run the command above_"
-            elif f.fix_kind == "duplication":
-                fix = " · _refactor: extract a shared helper_"
-            elif f.auto_fixable:
-                fix = " · _Apex can auto-fix_"
-            else:
-                fix = " · _needs a human_"
-            lines.append(
-                f"- {icon.get(f.severity, '⚪')} `{f.file}:{f.line}` "
-                f"**[{f.category}]** {f.message}{fix}"
-            )
-            if f.suggestion:
-                old, new = f.suggestion
-                # A reviewer that *proposes the patch*, not just flags the issue.
-                lines += ["", "  ```diff", f"  - {old}", f"  + {new}", "  ```", ""]
-        if hidden > 0:
-            lines.append(f"- … and **{hidden} more** finding(s) — run "
-                         "`apex review` locally, or see the full SARIF artifact.")
-        lines.append("")
-
-    if result.impacts:
-        lines.append("## 🔗 Change impact (review the call sites too)")
-        for im in result.impacts:
-            shown = ", ".join(f"`{c}`" for c in im.callers)
-            more = f" (+{im.caller_count - len(im.callers)} more)" if im.caller_count > len(im.callers) else ""
-            lines.append(
-                f"- `{im.file}:{im.lineno}` **{im.function}()** is called by "
-                f"**{im.caller_count}** function(s): {shown}{more}"
-            )
-        lines.append("")
+    lines += _findings_section(result, limit)
+    lines += _impacts_section(result)
     return "\n".join(lines)
 
 
