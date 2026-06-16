@@ -57,14 +57,9 @@ from pathlib import Path
 
 from app.execution._transform_base import (
     apply_column_rewrites,
-    is_fixture_path,
     splice_operand,
 )
-from app.execution._transform_base import (
-    parse_module_source as _parse_module_source,
-    read_module_source as _read_module_source,
-    finalize_module_rewrite as _finalize_module_rewrite,
-)
+from app.execution._transform_base import plan_single_module_rewrite
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_remove_double_negation"]
@@ -81,9 +76,6 @@ _INVERTED: dict[type[ast.cmpop], str] = {
     ast.In: " not in ",
     ast.NotIn: " in ",
 }
-
-# The example/test/fixture exclusion, shared across the transforms.
-_is_fixture_path = is_fixture_path
 
 
 class _Rewrite:
@@ -188,21 +180,9 @@ def plan_remove_double_negation(
     call (``not not x`` -> ``bool(x)``) whose shape matches exactly (single
     operator, single line, recoverable operands). An empty plan (no
     new_contents, no blockers) means nothing matched — a no-op, not a failure."""
-    plan = RenamePlan(old=module_rel, new="remove-double-negation")
-    if _is_fixture_path(module_rel):
-        return plan
-    source = _read_module_source(plan, project_root, module_rel)
-    if source is None:
-        return plan
-    tree = _parse_module_source(plan, module_rel, source)
-    if tree is None:
-        return plan
-
-    rewrites = _collect_rewrites(tree, source)
-    if not rewrites:
-        return plan  # nothing to do — empty plan (ok is False, no blockers)
-
-    new_source = _apply(source, rewrites)
-    return _finalize_module_rewrite(
-        plan, module_rel, source, new_source, len(rewrites),
+    return plan_single_module_rewrite(
+        project_root, module_rel,
+        plan_label="remove-double-negation",
+        collect=_collect_rewrites,
+        apply=_apply,
         reparse_phrase="rewrite")

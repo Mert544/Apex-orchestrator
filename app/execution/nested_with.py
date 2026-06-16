@@ -45,25 +45,9 @@ import ast
 from pathlib import Path
 
 from app.execution.cross_file_rename import RenamePlan
-from app.execution._transform_base import (
-    parse_module_source as _parse_module_source,
-    read_module_source as _read_module_source,
-    finalize_module_rewrite as _finalize_module_rewrite,
-)
+from app.execution._transform_base import plan_single_module_rewrite
 
 __all__ = ["plan_combine_nested_with"]
-
-
-def _is_fixture_path(path: str) -> bool:
-    """Example/fixture/test code is excluded (its repetition is often deliberate
-    boilerplate). A local copy — importing this from health_score created a
-    health_score <-> dedup import cycle, and the grade now reads dedup."""
-    p = path.replace("\\", "/").lower()
-    return (
-        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
-        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
-        or Path(p).name.startswith("test_")
-    )
 
 
 class _Rewrite:
@@ -246,24 +230,10 @@ def plan_combine_nested_with(project_root: str | Path,
     ``with A:\\n    with B:`` (singly-nested plain ``with``) into one
     ``with A, B:`` header, merging a maximal chain in a single pass. An empty
     plan means nothing matched (a no-op, not a failure)."""
-    plan = RenamePlan(old=module_rel, new="combine-nested-with")
-    if _is_fixture_path(module_rel):
-        return plan
-
-    source = _read_module_source(plan, project_root, module_rel)
-    if source is None:
-        return plan
-
-    tree = _parse_module_source(plan, module_rel, source)
-    if tree is None:
-        return plan
-
-    source_lines = source.splitlines(keepends=True)
-    rewrites = _collect_rewrites(tree, source, source_lines)
-    if not rewrites:
-        return plan  # nothing to do — empty plan (ok is False, no blockers)
-
-    new_source = _apply(source, rewrites)
-    return _finalize_module_rewrite(
-        plan, module_rel, source, new_source, len(rewrites),
+    return plan_single_module_rewrite(
+        project_root, module_rel,
+        plan_label="combine-nested-with",
+        collect=lambda tree, source: _collect_rewrites(
+            tree, source, source.splitlines(keepends=True)),
+        apply=_apply,
         reparse_phrase="merge")

@@ -55,11 +55,7 @@ from app.execution._transform_base import (
     is_fixture_path,
     splice_operand,
 )
-from app.execution._transform_base import (
-    parse_module_source as _parse_module_source,
-    read_module_source as _read_module_source,
-    finalize_module_rewrite as _finalize_module_rewrite,
-)
+from app.execution._transform_base import plan_single_module_rewrite
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_extract_guard_clause"]
@@ -220,24 +216,10 @@ def plan_extract_guard_clause(project_root: str | Path,
     whose whole body is a single else-less ``if`` (single-line test, an
     unambiguous dedent) into an early-return guard plus the dedented body. An
     empty plan means nothing matched — a no-op, not a failure."""
-    plan = RenamePlan(old=module_rel, new="extract-guard-clause")
-    if _is_fixture_path(module_rel):
-        return plan
-
-    source = _read_module_source(plan, project_root, module_rel)
-    if source is None:
-        return plan
-
-    tree = _parse_module_source(plan, module_rel, source)
-    if tree is None:
-        return plan
-
-    lines = source.splitlines(keepends=True)
-    rewrites = _collect_rewrites(tree, source, lines)
-    if not rewrites:
-        return plan  # nothing to do — empty plan (ok is False, no blockers)
-
-    new_source = _apply(source, rewrites)
-    return _finalize_module_rewrite(
-        plan, module_rel, source, new_source, len(rewrites),
+    return plan_single_module_rewrite(
+        project_root, module_rel,
+        plan_label="extract-guard-clause",
+        collect=lambda tree, source: _collect_rewrites(
+            tree, source, source.splitlines(keepends=True)),
+        apply=_apply,
         reparse_phrase="guard extraction")

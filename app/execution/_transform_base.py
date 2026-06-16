@@ -46,6 +46,7 @@ __all__ = [
     "literal_inner",
     "ColumnRewrite",
     "plan_single_module_column_rewrite",
+    "plan_single_module_rewrite",
     "parse_trees",
     "resolve_sole_definition",
     "read_module_source",
@@ -139,6 +140,52 @@ def finalize_module_rewrite(
     if new_source == source:
         return plan
     return record_module_rewrite(plan, module_rel, source, new_source, edits)
+
+
+def plan_single_module_rewrite(
+    project_root: str | Path,
+    module_rel: str,
+    *,
+    plan_label: str,
+    collect: Callable[[ast.Module, str], list],
+    apply: Callable[[str, list], str],
+    reparse_phrase: str,
+) -> RenamePlan:
+    """The read -> parse -> collect -> apply -> re-parse -> build-plan scaffold the
+    single-module source transforms (chain-comparison, dict-get, merge-isinstance,
+    set-literal, redundant-else, ...) each carried verbatim in their ``plan_*``
+    bodies.
+
+    ``plan_label`` is the :class:`RenamePlan` ``new`` tag (e.g. ``"chain-comparison"``).
+    ``collect(tree, source)`` returns the transform's list of located rewrites;
+    ``apply(source, rewrites)`` splices them into the new source. A fixture subject
+    or an empty rewrite set yields an empty plan (a no-op, not a failure); an
+    unreadable file, a parse failure, or a result that won't re-parse records a
+    blocker via the same helpers (:func:`read_module_source`,
+    :func:`parse_module_source`, :func:`finalize_module_rewrite`) — so
+    ``reparse_phrase`` keeps the blocker text identical to the inlined version.
+    Behaviour-identical to the per-module ``plan_*`` bodies it replaces, since it
+    just sequences the existing primitives."""
+    plan = RenamePlan(old=module_rel, new=plan_label)
+    if is_fixture_path(module_rel):
+        return plan
+
+    source = read_module_source(plan, project_root, module_rel)
+    if source is None:
+        return plan
+
+    tree = parse_module_source(plan, module_rel, source)
+    if tree is None:
+        return plan
+
+    rewrites = collect(tree, source)
+    if not rewrites:
+        return plan  # nothing to do — empty plan (ok is False, no blockers)
+
+    new_source = apply(source, rewrites)
+    return finalize_module_rewrite(
+        plan, module_rel, source, new_source, len(rewrites),
+        reparse_phrase=reparse_phrase)
 
 
 def parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
