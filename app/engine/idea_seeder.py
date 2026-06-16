@@ -453,6 +453,47 @@ class IdeaSeeder:
         self._fn_index_cache = {}
         self._importers_cache = {}
 
+        # Thin orchestrator: each family-emission block is a private helper taking
+        # the shared accumulators (``roots``, ``seen_subjects``, ``profile``) and
+        # appending via ``_append_root``. They run in PRIORITY ORDER — the same
+        # order they were inlined here — so the seeded set stays byte-identical.
+        # ``seen_subjects`` carries the dedup-by-subject across helpers (a
+        # higher-priority family claims a module before a lower one can).
+        self._seed_correctness_bugs(roots, seen_subjects, profile)
+        self._seed_security_findings(roots, seen_subjects, profile)
+        self._seed_confluences(roots, seen_subjects, profile)
+        self._seed_fragile_modules(roots, seen_subjects, profile)
+        self._seed_rule_families(roots, seen_subjects, profile)
+        self._seed_shallow_coverage(roots, seen_subjects, profile)
+        self._seed_complexity_hotspots(roots, seen_subjects, profile)
+        self._seed_hotspot_functions(roots, seen_subjects, profile)
+        self._seed_impure_untested(roots, seen_subjects, profile)
+        self._seed_hub_untested(roots, seen_subjects, profile)
+        self._seed_cochange_test_gaps(roots, seen_subjects, profile)
+        self._seed_debt_markers(roots, seen_subjects, profile)
+        self._seed_churn_hotspots(roots, seen_subjects, profile)
+        self._seed_polyglot_hotspots(roots, seen_subjects, profile)
+        self._seed_incomplete_protocols(roots, seen_subjects, profile)
+        self._seed_generalizable_duplications(roots, seen_subjects, profile)
+        self._seed_coordinators(roots, seen_subjects, profile)
+        self._seed_deep_nesting(roots, seen_subjects, profile)
+        self._seed_god_classes(roots, seen_subjects, profile)
+        self._seed_dream_insights(roots, seen_subjects, profile)
+        self._seed_knowledge_risks(roots, seen_subjects, profile)
+        self._seed_doc_drift(roots, seen_subjects, profile)
+        self._seed_python_tooling(roots, seen_subjects, profile)
+        self._seed_mutable_defaults(roots, seen_subjects, profile)
+        self._seed_dead_params(roots, seen_subjects, profile)
+        self._seed_extractable_blocks(roots, seen_subjects, profile)
+        self._seed_inlinable_helpers(roots, seen_subjects, profile)
+        self._seed_modernization(roots, seen_subjects, profile)
+        self._seed_top_directories(roots, seen_subjects, profile)
+        self._seed_missing_ci(roots, seen_subjects, profile)
+        return roots
+
+    def _seed_correctness_bugs(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # High-severity content signals claim their subject first: a guaranteed
         # crash or a real vulnerability is more urgent than "this file is a hub"
         # or "untested", so they are framed by the bug/finding, not the generic
@@ -465,6 +506,10 @@ class IdeaSeeder:
                 fact_label="correctness-bug",
                 fact_value=f"{module} (high-severity logic bug detected)",
             )
+
+    def _seed_security_findings(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Content-based security findings: the file actually contains eval/
         # os.system/pickle/... — point harden straight at it, regardless of
         # whether its *name* matched a sensitive hint. When git blame shows
@@ -487,6 +532,9 @@ class IdeaSeeder:
                 fact_value=fact_value,
             )
 
+    def _seed_confluences(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Confluences (signal convergence): modules named by >= 3 DISTINCT signal
         # families at once — no single lens names them, yet a module under
         # several independent pressures is the highest-leverage development
@@ -514,6 +562,9 @@ class IdeaSeeder:
                 quantified=self._quantified_clause(profile, module, name_targets=True),
             )
 
+    def _seed_fragile_modules(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Fragility first (highest priority): heavily-depended-on but thinly
         # tested modules — the biggest blast-radius risk.
         for module in (getattr(profile, "fragile_modules", []) or [])[:3]:
@@ -527,6 +578,9 @@ class IdeaSeeder:
                 quantified=self._quantified_clause(profile, module, name_targets=False),
             )
 
+    def _seed_rule_families(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         for attr, limit, title_tmpl, fact_label in self._RULES:
             values = getattr(profile, attr, []) or []
             for subject in values[:limit]:
@@ -551,6 +605,9 @@ class IdeaSeeder:
                                 if fact_label == "dependency-hub" else None),
                 )
 
+    def _seed_shallow_coverage(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Coverage DEPTH is handled by the substance-based shallow-coverage signal
         # below (tests that assert no behaviour), not by counting test files: a
         # module with a single *substantive* test is adequately covered, so the
@@ -568,6 +625,9 @@ class IdeaSeeder:
                 fact_value=f"{module} (only smoke/type assertions)",
             )
 
+    def _seed_complexity_hotspots(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Complexity hotspots: modules combining high cyclomatic complexity with
         # blast radius and thin tests — the riskiest places to change, so derisk
         # them with tests/simplification before they cause incidents.
@@ -582,6 +642,9 @@ class IdeaSeeder:
                 quantified=self._quantified_clause(profile, module, name_targets=False),
             )
 
+    def _seed_hotspot_functions(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Symbol granularity: the riskiest *functions* — heavy branching that no
         # linked test ever names. A subject like ``mod.py::func`` keeps the idea
         # distinct from its module's, so both levels can coexist in the tree.
@@ -599,6 +662,9 @@ class IdeaSeeder:
                             + f", line {fn['line']}, no direct tests)"),
             )
 
+    def _seed_impure_untested(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Purity violation: functions that mix observable side effects (I/O,
         # global state, os/subprocess/logging calls) with logic AND that no test
         # exercises. The development move is to isolate the effect so the core
@@ -623,6 +689,9 @@ class IdeaSeeder:
                             + f", line {fn['line']}, no direct tests)"),
             )
 
+    def _seed_hub_untested(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Dependency hubs (high fan-in: many modules import them) that are also
         # untested or shallow-tested — the highest-leverage place to add a
         # regression net, because a break in a hub propagates to every dependent.
@@ -646,6 +715,9 @@ class IdeaSeeder:
                 anchors=self._module_anchors(profile, module),
             )
 
+    def _seed_cochange_test_gaps(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Co-change test-gap: module PAIRS that frequently change together (from
         # git co-change) yet NO single test exercises BOTH — a change to one can
         # silently break the other with nothing to catch it. The development move
@@ -689,6 +761,9 @@ class IdeaSeeder:
                                 f"the other)"),
                 )
 
+    def _seed_debt_markers(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Technical-debt markers: modules carrying a cluster of TODO/FIXME/XXX/
         # HACK comments are concrete, traceable pockets of deferred work. When
         # git blame shows the oldest marker has waited months, the idea says so
@@ -710,6 +785,9 @@ class IdeaSeeder:
                 fact_value=fact_value,
             )
 
+    def _seed_churn_hotspots(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Change-frequency hotspots (git churn): the modules recent commits
         # touch most. Where change concentrates is where the project is alive —
         # evolve its change path (interfaces, coupling, simplification) instead
@@ -724,6 +802,9 @@ class IdeaSeeder:
                 fact_value=f"{spot['module']} ({spot['commits']} commits in recent history)",
             )
 
+    def _seed_polyglot_hotspots(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Polyglot hotspots: the biggest / most-churned NON-Python source files.
         # Apex deep-analyses only Python, so these are framed as honest AWARENESS,
         # not an executable fix — the largest active surface outside analysis
@@ -756,6 +837,9 @@ class IdeaSeeder:
                             f"outside Apex's Python analysis scope)"),
             )
 
+    def _seed_incomplete_protocols(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Incomplete protocols (CONSTRUCTIVE — "you started a protocol, finish
         # it"): classes that began a Python contract pair without completing it.
         # The essence of a DEVELOPMENT assistant — point at where the project is
@@ -785,6 +869,9 @@ class IdeaSeeder:
                             f"{missing} — a half-built contract to finish)"),
             )
 
+    def _seed_generalizable_duplications(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Generalizable duplications (CONSTRUCTIVE — "these near-identical blocks
         # in A, B, C should become one shared helper"): the cross-module DRY case
         # that grounds the ``generalize`` development lens in REAL duplication. The
@@ -818,6 +905,9 @@ class IdeaSeeder:
                             f"shared helper to DRY it up)"),
             )
 
+    def _seed_coordinators(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Coordinator modules: a god-module with high fan-OUT (it imports many
         # internal modules) is a coordination chokepoint — it knows about too
         # much of the system and is a candidate to split responsibilities apart.
@@ -845,6 +935,9 @@ class IdeaSeeder:
                             f"{pulls} — a decoupling candidate"),
             )
 
+    def _seed_deep_nesting(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Deeply-nested functions: a top-level function whose control flow nests
         # too deeply (nested if/for/while/with/try) is a control-flow staircase
         # that is hard to read — a prime guard-clause / extract refactor target
@@ -872,6 +965,9 @@ class IdeaSeeder:
                             f"levels — a guard-clause candidate"),
             )
 
+    def _seed_god_classes(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # God-classes: a top-level class declaring an unusually high number of
         # methods is a Single-Responsibility violation — too many behaviours have
         # accreted onto one type, so it is a decomposition candidate ("split into
@@ -900,6 +996,9 @@ class IdeaSeeder:
                             f"responsibilities — a decomposition candidate"),
             )
 
+    def _seed_dream_insights(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Dream insights: discoveries the nightly dream CONFIRMED across multiple
         # dreams and graduated (high confidence + persistence). The organism
         # acting on what it learned while you were away — guarded so only a
@@ -915,6 +1014,9 @@ class IdeaSeeder:
                             f"confidence, confirmed {insight.get('streak', 0)} dreams)"),
             )
 
+    def _seed_knowledge_risks(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Knowledge concentration (bus-factor): a module whose recent changes
         # come overwhelmingly from one author is a stability risk the moment
         # that author is unavailable — spread it via docs, tests and pairing.
@@ -929,6 +1031,9 @@ class IdeaSeeder:
                             f"across {kr['commits']} commits)"),
             )
 
+    def _seed_doc_drift(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Documentation drift: the README/docs promise files that don't exist.
         # One root per doc file — you fix the doc (or build the promise), not
         # chase scattered references.
@@ -945,6 +1050,9 @@ class IdeaSeeder:
                 fact_value=f"{doc} -> {', '.join(refs[:3])} (missing)",
             )
 
+    def _seed_python_tooling(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Dominant language → tooling idea (type hints / lint config).
         exts = getattr(profile, "extension_counts", {}) or {}
         if exts.get(".py", 0) >= 1:
@@ -956,6 +1064,9 @@ class IdeaSeeder:
                 fact_value=f".py x{exts['.py']}",
             )
 
+    def _seed_mutable_defaults(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Mutable default arguments → a real bug class with a safe verified fix.
         for module in (getattr(profile, "mutable_default_modules", []) or [])[:2]:
             self._append_root(
@@ -966,6 +1077,9 @@ class IdeaSeeder:
                 fact_value=f"{module} (def f(x=[]))",
             )
 
+    def _seed_dead_params(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Dead parameters: a knob every caller must know about that does
         # nothing. The hands for this already exist — the fact carries the
         # exact `apex signature drop` command, verified with rollback.
@@ -980,6 +1094,9 @@ class IdeaSeeder:
                             f"never read — `apex signature drop {dp['function']} {dp['param']}`"),
             )
 
+    def _seed_extractable_blocks(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Extractable seam: a long function with a clean block to lift into a
         # helper. The "extract a shared helper" recommendation, now carrying the
         # exact `apex extract` command (computed params/returns), verified.
@@ -998,6 +1115,9 @@ class IdeaSeeder:
                             f"{eb['end']} {eb['name']}`"),
             )
 
+    def _seed_inlinable_helpers(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Inlinable helper: a tiny single-use helper that's a hop the reader has
         # to follow, not a clean abstraction. The "fold it back into its call
         # site" recommendation, now carrying the exact `apex inline` command,
@@ -1013,6 +1133,9 @@ class IdeaSeeder:
                             f"single-use helper — `apex inline {ih['function']}`"),
             )
 
+    def _seed_modernization(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Modernization debt → a safe, behavior-preserving cleanup direction.
         for module in (getattr(profile, "modernizable_modules", []) or [])[:2]:
             self._append_root(
@@ -1023,6 +1146,9 @@ class IdeaSeeder:
                 fact_value=f"{module} (== None / != None)",
             )
 
+    def _seed_top_directories(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # Dominant top-level directory → structure/boundaries idea.
         for directory in (getattr(profile, "top_directories", []) or [])[:1]:
             self._append_root(
@@ -1033,6 +1159,9 @@ class IdeaSeeder:
                 fact_value=directory,
             )
 
+    def _seed_missing_ci(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
         # If the project has no CI, that itself is a development direction.
         if not getattr(profile, "ci_files", None):
             self._append_root(
@@ -1042,7 +1171,5 @@ class IdeaSeeder:
                 fact_label="missing-ci",
                 fact_value="no CI workflow files detected",
             )
-
-        return roots
 
 

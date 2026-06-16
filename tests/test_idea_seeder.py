@@ -783,3 +783,192 @@ def test_seeded_set_matches_frozen_characterization():
     c = by_subject["app/c.py"]
     assert c[4][0].startswith("complexity-hotspot:")
     assert c[9] == (("app/c.py", "writer", 12, "impure, untested"),)
+
+
+def _all_families_profile() -> ProjectProfile:
+    """A profile that lights up EVERY seeding family at once.
+
+    Pins the full ordered seeded set so the orchestration order across the
+    extracted ``_seed_*`` helpers stays byte-identical: subjects, fact labels
+    and per-family count are characterized below. (``dream-insight`` is the one
+    family that cannot fire here — the seeder is hermetic without an explicit
+    ``project_root``, by design — so it is intentionally absent.)
+    """
+    return _profile(
+        extension_counts={".py": 42, ".js": 3},
+        top_directories=["app", "tests"],
+        entrypoints=["app/main.py", "app/cli.py", "app/extra_entry.py"],
+        ci_files=[],  # missing CI -> the CI root fires
+        config_files=["settings.toml", "config2.ini"],
+        sensitive_paths=["app/auth.py", "app/crypto.py", "app/secrets.py"],
+        security_finding_modules=["app/sec1.py", "app/sec2.py", "app/sec3.py"],
+        security_finding_ages={"app/sec1.py": 120, "app/sec2.py": 30},
+        correctness_bug_modules=["app/bug1.py", "app/bug2.py"],
+        dependency_hubs=["app/a.py", "app/b.py", "app/hub3.py"],
+        symbol_hubs=["app/sym1.py", "app/sym2.py"],
+        untested_modules=["app/ut1.py", "app/ut2.py"],
+        critical_untested_modules=["app/cu1.py", "app/cu2.py"],
+        dependency_edges=[
+            ("app/x.py", "app/a.py"),
+            ("app/y.py", "app/a.py"),
+            ("app/z.py", "app/b.py"),
+            ("app/a.py", "app/b.py"),
+            ("app/a.py", "app/c.py"),
+        ],
+        fragile_modules=["app/b.py"],
+        modernizable_modules=["app/mod1.py", "app/mod2.py"],
+        mutable_default_modules=["app/mut1.py", "app/mut2.py"],
+        debt_marker_modules=["app/debt1.py", "app/debt2.py"],
+        debt_marker_ages={"app/debt1.py": 200},
+        hotspot_modules=["app/c.py"],
+        shallow_tested_modules=["app/shallow1.py"],
+        hotspot_functions=[
+            {"module": "app/a.py", "function": "Klass.run", "line": 30,
+             "complexity": 14, "cognitive": 9},
+            {"module": "app/a.py", "function": "helper", "line": 10,
+             "complexity": 7},
+            {"module": "app/b.py", "function": "compute", "line": 5,
+             "complexity": 11},
+        ],
+        impure_untested_functions=[
+            {"module": "app/c.py", "function": "writer", "line": 12,
+             "side_effects": ["fs", "log", "net", "env"]},
+        ],
+        hub_untested_modules=[{"module": "app/hubu.py", "fan_in": 4}],
+        confluence_modules=[
+            {"module": "app/a.py", "family_count": 3,
+             "families": ("high-churn", "hub", "untested")},
+        ],
+        churn_hotspots=[{"module": "app/churn1.py", "commits": 17}],
+        cochange_test_gaps=[
+            {"a": "app/p.py", "b": "app/q.py", "cochanges": 8,
+             "links": [{"from": "app/p.py", "to": "app/q.py", "symbol": "foo"}]},
+            {"a": "app/r.py", "b": "app/s.py", "cochanges": 3, "links": []},
+        ],
+        knowledge_risks=[{"module": "app/kr.py", "share": 92, "commits": 14}],
+        doc_drift=[
+            {"doc": "README.md", "reference": "app/gone.py"},
+            {"doc": "README.md", "reference": "app/also_gone.py"},
+        ],
+        dead_params=[
+            {"module": "app/dp.py", "function": "do", "param": "unused",
+             "line": 7},
+        ],
+        extractable_blocks=[
+            {"module": "app/eb.py", "function": "big", "line": 3,
+             "start": 10, "end": 20, "name": "helper", "lines_saved": 8,
+             "params": ["x", "y"], "returns": ["z"]},
+        ],
+        inlinable_helpers=[{"module": "app/ih.py", "function": "tiny", "line": 4}],
+        polyglot_hotspots=[
+            {"path": "app/big.js", "loc": 900, "churn": 12,
+             "language": "JavaScript", "debt_markers": 3},
+        ],
+        incomplete_protocols=[
+            {"module": "app/proto.py", "class": "Box", "line": 5,
+             "have": "__enter__", "missing": "__exit__",
+             "protocol": "context-manager"},
+        ],
+        generalizable_duplications=[
+            {"modules": ["app/d1.py", "app/d2.py", "app/d3.py"],
+             "occurrences": 3, "lines": 12},
+        ],
+        coordinator_modules=[
+            {"module": "app/coord.py", "imports": ["app/m1.py", "app/m2.py"]},
+        ],
+        deeply_nested_functions=[{"module": "app/nest.py", "function": "deep"}],
+        god_classes=[{"module": "app/god.py", "classname": "Mega"}],
+    )
+
+
+# The FULL ordered seeded set on _all_families_profile(): (subject, fact_label).
+# This is the frozen characterization that pins the post-extraction orchestrator
+# order across every ``_seed_*`` helper. Any reordering, drop or addition trips it.
+_ALL_FAMILIES_ORDER = [
+    ("app/bug1.py", "correctness-bug"),
+    ("app/bug2.py", "correctness-bug"),
+    ("app/sec1.py", "security-finding"),
+    ("app/sec2.py", "security-finding"),
+    ("app/sec3.py", "security-finding"),
+    ("app/a.py", "confluence"),
+    ("app/b.py", "fragile"),
+    ("app/hub3.py", "dependency-hub"),
+    ("app/cu1.py", "critical-untested"),
+    ("app/cu2.py", "critical-untested"),
+    ("app/ut1.py", "untested"),
+    ("app/ut2.py", "untested"),
+    ("app/auth.py", "sensitive-path"),
+    ("app/crypto.py", "sensitive-path"),
+    ("app/secrets.py", "sensitive-path"),
+    ("app/main.py", "entrypoint"),
+    ("app/cli.py", "entrypoint"),
+    ("app/sym1.py", "symbol-hub"),
+    ("app/sym2.py", "symbol-hub"),
+    ("settings.toml", "config"),
+    ("app/shallow1.py", "shallow-coverage"),
+    ("app/c.py", "complexity-hotspot"),
+    ("app/a.py::Klass.run", "hotspot-function"),
+    ("app/a.py::helper", "hotspot-function"),
+    ("app/b.py::compute", "hotspot-function"),
+    ("app/c.py::writer", "impure-untested"),
+    ("app/hubu.py", "hub-untested"),
+    ("app/p.py + app/q.py", "cochange-testgap"),
+    ("app/r.py + app/s.py", "cochange-testgap"),
+    ("app/debt1.py", "debt-markers"),
+    ("app/debt2.py", "debt-markers"),
+    ("app/churn1.py", "churn-hotspot"),
+    ("app/big.js", "polyglot-hotspot"),
+    ("app/proto.py::Box", "incomplete-protocol"),
+    ("app/d1.py + app/d2.py", "generalizable-duplication"),
+    ("app/coord.py", "coordinator"),
+    ("app/nest.py::deep", "deep-nesting"),
+    ("app/god.py::Mega", "god-class"),
+    ("app/kr.py", "knowledge-risk"),
+    ("README.md", "doc-drift"),
+    ("Python type coverage", "extension-py"),
+    ("app/mut1.py", "mutable-default"),
+    ("app/mut2.py", "mutable-default"),
+    ("app/dp.py", "dead-parameter"),
+    ("app/eb.py", "extractable-block"),
+    ("app/ih.py", "inlinable-helper"),
+    ("app/mod1.py", "modernization"),
+    ("app/mod2.py", "modernization"),
+    ("app/ package", "top-directory"),
+    ("CI pipeline", "missing-ci"),
+]
+
+
+def test_full_ordered_seeded_set_across_all_families():
+    # Characterization: the orchestrator calls every ``_seed_*`` helper in the
+    # exact order that produces this byte-identical seeded set. This pins the
+    # decomposition of the (former) 398-LOC ``seed`` method — the helper order,
+    # the cross-helper dedup-by-subject, and each family's emission count.
+    roots = IdeaSeeder().seed(_all_families_profile())
+    got = [(r.subject, r.source_facts[0].split(":", 1)[0]) for r in roots]
+    assert got == _ALL_FAMILIES_ORDER
+
+    # Root invariants hold for every emitted node.
+    assert all(r.depth == 0 and r.operator == "root" for r in roots)
+    assert all(r.novelty == 1.0 for r in roots)
+    assert all(0.0 <= r.value <= 1.0 for r in roots)
+
+    # IDs are dense and in emission order (no gaps from the helper split).
+    assert [r.id for r in roots] == [f"idea-{i}" for i in range(len(roots))]
+
+
+def test_extraction_preserves_cross_helper_dedup():
+    # app/a.py is named by BOTH confluence (an earlier helper) and the
+    # dependency-hub rule family (a later helper). The dedup-by-subject must
+    # carry ``seen_subjects`` ACROSS helpers, so app/a.py is seeded exactly once
+    # (by confluence, which runs first) — not re-emitted by the rule family.
+    roots = IdeaSeeder().seed(_all_families_profile())
+    a_roots = [r for r in roots if r.subject == "app/a.py"]
+    assert len(a_roots) == 1
+    assert a_roots[0].source_facts[0].startswith("confluence:")
+
+
+def test_all_families_profile_seeds_one_per_listed_family():
+    # The frozen order list and the live seeded set agree on length — a guard so
+    # the order constant can't silently drift out of sync with the seeder.
+    roots = IdeaSeeder().seed(_all_families_profile())
+    assert len(roots) == len(_ALL_FAMILIES_ORDER)
