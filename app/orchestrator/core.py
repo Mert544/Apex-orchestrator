@@ -117,51 +117,10 @@ class FractalResearchOrchestrator:
             "max_depth": self.config.get("max_depth"),
         })
 
-        focus_claim = None
-        focus_question = None
-        if focus_branch:
-            focus_claim, focus_question = FocusBranchResolver.resolve(focus_branch, self.memory_state)
+        focus_claim, focus_question = self._resolve_focus(focus_branch)
 
         with metrics.context("decompose"):
-            if focus_branch and focus_claim:
-                root_nodes = [
-                    self.node_factory.make_node(
-                        id="focus-root",
-                        claim=focus_claim,
-                        depth=0,
-                        branch_path=focus_branch,
-                        source_question=focus_question,
-                    )
-                ]
-                self.debug_stats["focus_branch_hits"] += 1
-                self.debug.trace("focus_branch", f"Hit {focus_branch}", {"claim": focus_claim[:60]})
-            else:
-                if focus_branch:
-                    self.debug_stats["focus_branch_misses"] += 1
-                    self.debug.trace("focus_branch", f"Miss {focus_branch} — falling back to full scan")
-                raw_root_claims = [claim for claim in self.decomposer.decompose(objective) if self.claim_normalizer.is_viable(claim)]
-                root_claims = self.spam_guard.filter_claims(list(dict.fromkeys(raw_root_claims)))
-                self.debug_stats["spam_claims_filtered"] += max(0, len(raw_root_claims) - len(root_claims))
-                self.debug.trace("decompose", f"{len(root_claims)} root claims from objective", {
-                    "raw_count": len(raw_root_claims),
-                    "filtered_count": len(root_claims),
-                })
-
-                # Peer-review root claims via agent consensus
-                approved = self.evaluator.filter_approved(root_claims, min_confidence=0.5)
-                self.debug.trace("consensus", f"{len(approved)}/{len(root_claims)} claims approved by agent panel")
-
-                approved_claims = [claim for claim, _ in approved] if approved else root_claims[:5]
-                root_nodes = [
-                    self.node_factory.make_node(
-                        id=f"root-{i}",
-                        claim=claim,
-                        depth=0,
-                        branch_path=make_branch_path("x", i),
-                    )
-                    for i, claim in enumerate(approved_claims)
-                ]
-                root_nodes.sort(key=lambda n: n.claim_priority, reverse=True)
+            root_nodes = self._build_root_nodes(objective, focus_branch, focus_claim, focus_question)
 
         if on_progress:
             on_progress("decompose", 1, 1)
@@ -198,6 +157,72 @@ class FractalResearchOrchestrator:
         if on_progress:
             on_progress("complete", self.graph.size(), self.graph.size())
         return report
+
+    def _resolve_focus(self, focus_branch: str | None) -> tuple[str | None, str | None]:
+        """Resolve a focus branch to its (claim, question), or (None, None)."""
+        if focus_branch:
+            return FocusBranchResolver.resolve(focus_branch, self.memory_state)
+        return None, None
+
+    def _build_root_nodes(
+        self,
+        objective: str,
+        focus_branch: str | None,
+        focus_claim: str | None,
+        focus_question: str | None,
+    ) -> list[ResearchNode]:
+        """Produce the run's root nodes: a focus hit, or a decomposed full scan."""
+        if focus_branch and focus_claim:
+            return self._focus_root_nodes(focus_branch, focus_claim, focus_question)
+        if focus_branch:
+            self.debug_stats["focus_branch_misses"] += 1
+            self.debug.trace("focus_branch", f"Miss {focus_branch} — falling back to full scan")
+        return self._decomposed_root_nodes(objective)
+
+    def _focus_root_nodes(
+        self, focus_branch: str, focus_claim: str, focus_question: str | None
+    ) -> list[ResearchNode]:
+        """Single focus root for a resolved focus branch (the hit path)."""
+        self.debug_stats["focus_branch_hits"] += 1
+        self.debug.trace("focus_branch", f"Hit {focus_branch}", {"claim": focus_claim[:60]})
+        return [
+            self.node_factory.make_node(
+                id="focus-root",
+                claim=focus_claim,
+                depth=0,
+                branch_path=focus_branch,
+                source_question=focus_question,
+            )
+        ]
+
+    def _decomposed_root_nodes(self, objective: str) -> list[ResearchNode]:
+        """Decompose the objective into spam-filtered, consensus-approved roots."""
+        raw_root_claims = [claim for claim in self.decomposer.decompose(objective) if self.claim_normalizer.is_viable(claim)]
+        root_claims = self.spam_guard.filter_claims(list(dict.fromkeys(raw_root_claims)))
+        self.debug_stats["spam_claims_filtered"] += max(0, len(raw_root_claims) - len(root_claims))
+        self.debug.trace("decompose", f"{len(root_claims)} root claims from objective", {
+            "raw_count": len(raw_root_claims),
+            "filtered_count": len(root_claims),
+        })
+
+        approved_claims = self._approved_root_claims(root_claims)
+        root_nodes = [
+            self.node_factory.make_node(
+                id=f"root-{i}",
+                claim=claim,
+                depth=0,
+                branch_path=make_branch_path("x", i),
+            )
+            for i, claim in enumerate(approved_claims)
+        ]
+        root_nodes.sort(key=lambda n: n.claim_priority, reverse=True)
+        return root_nodes
+
+    def _approved_root_claims(self, root_claims: list[str]) -> list[str]:
+        """Peer-review root claims via agent consensus; fall back to the first 5."""
+        approved = self.evaluator.filter_approved(root_claims, min_confidence=0.5)
+        self.debug.trace("consensus", f"{len(approved)}/{len(root_claims)} claims approved by agent panel")
+        return [claim for claim, _ in approved] if approved else root_claims[:5]
 
     def _apply_deep_reasoning(self, node: ResearchNode) -> None:
         """Stress-test a claim with counterfactuals and calibrate its confidence.
