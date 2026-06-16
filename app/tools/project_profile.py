@@ -1433,37 +1433,62 @@ class ProjectProfiler(_CodeQualityScansMixin):
 
         out: list[dict] = []
         for module in candidates:
-            if not module.endswith(".py") or self._is_test_path(module):
+            prepared = self._prepare_impure_module(module, analyzer)
+            if prepared is None:
                 continue
-            path = self.root / module
-            try:
-                source = path.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                continue
-            try:
-                fns = analyzer.analyze_file(path)
-            except (OSError, SyntaxError):
-                continue
-            if not fns:
-                continue
+            source, fns = prepared
             _exercised = self._coverage_checker(module, source, module_to_tests,
                                                 whole_suite_text)
             for fn in fns:
-                if fn.get("purity") != "impure":
-                    continue
-                name = fn["name"]
-                simple = name.rsplit(".", 1)[-1]
-                if simple.startswith("__") and simple.endswith("__"):
-                    continue
-                if _exercised(name):
-                    continue
-                out.append({"module": module, "function": name,
-                            "line": fn.get("lineno", 0),
-                            "side_effects": list(fn.get("side_effects", []))})
+                hit = self._impure_untested_hit(module, fn, _exercised)
+                if hit is not None:
+                    out.append(hit)
         # Most side-effect reasons first (the broadest violation), then stable
         # by module/function so the ordering is deterministic.
         out.sort(key=lambda d: (-len(d["side_effects"]), d["module"], d["function"]))
         return out[:5]
+
+    def _prepare_impure_module(self, module: str, analyzer):
+        """Source text + analyzed functions for a scannable module, else None.
+
+        Pure given (filesystem, analyzer): skips non-``.py`` and test paths, and
+        modules that fail to read, fail to parse, or define no functions — the
+        exact guard set the inline loop used, so the candidate set is unchanged.
+        """
+        if not module.endswith(".py") or self._is_test_path(module):
+            return None
+        path = self.root / module
+        try:
+            source = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return None
+        try:
+            fns = analyzer.analyze_file(path)
+        except (OSError, SyntaxError):
+            return None
+        if not fns:
+            return None
+        return source, fns
+
+    @staticmethod
+    def _impure_untested_hit(module: str, fn: dict, exercised) -> dict | None:
+        """Record for an impure, non-dunder, untested function, else None.
+
+        Pure: same per-function guard order the inline loop applied (purity ==
+        ``impure``, skip ``__dunder__``, skip exercised), and builds the same
+        record shape with a copied ``side_effects`` list.
+        """
+        if fn.get("purity") != "impure":
+            return None
+        name = fn["name"]
+        simple = name.rsplit(".", 1)[-1]
+        if simple.startswith("__") and simple.endswith("__"):
+            return None
+        if exercised(name):
+            return None
+        return {"module": module, "function": name,
+                "line": fn.get("lineno", 0),
+                "side_effects": list(fn.get("side_effects", []))}
 
     # Fan-in bar for a *hub* (not merely "depended on by >=2", which is the
     # fragility floor): a module many others import, where a regression has the
