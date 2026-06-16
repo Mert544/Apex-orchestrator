@@ -61,29 +61,33 @@ def _assign_single_name(stmt: ast.stmt) -> tuple[ast.Name, ast.expr] | None:
     return target, stmt.value
 
 
-def _matches(node: ast.If) -> str | None:
-    """If ``node`` is the canonical shape, return the replacement RHS source.
+def _two_branch_assigns(
+    node: ast.If,
+) -> tuple[ast.Name, ast.expr, ast.expr] | None:
+    """Extract ``(target, if_value, else_value)`` from the two-branch shape.
 
-    The replacement is the full ``target = d.get(K, DEFAULT)`` statement text
-    (no indentation); the caller prefixes the block's indentation.
+    Requires exactly one statement per branch, both single-name assignments to
+    the SAME target. Returns ``None`` otherwise.
     """
-    # Exactly one statement in each branch; no elif / extra orelse.
     if len(node.body) != 1 or len(node.orelse) != 1:
         return None
-
     if_assign = _assign_single_name(node.body[0])
     else_assign = _assign_single_name(node.orelse[0])
     if if_assign is None or else_assign is None:
         return None
     if_target, if_value = if_assign
     else_target, else_value = else_assign
-
-    # Both branches must assign the SAME simple target name.
     if if_target.id != else_target.id:
         return None
+    return if_target, if_value, else_value
 
-    # The test must be exactly ``K in d`` with a single membership operator.
-    test = node.test
+
+def _membership_test(test: ast.expr) -> tuple[ast.expr, ast.expr] | None:
+    """Extract ``(key, container)`` from a simple ``K in d`` test.
+
+    The test must be a single membership operator over a simple key and a simple
+    container. Returns ``None`` otherwise.
+    """
     if (not isinstance(test, ast.Compare)
             or len(test.ops) != 1
             or not isinstance(test.ops[0], ast.In)
@@ -93,19 +97,47 @@ def _matches(node: ast.If) -> str | None:
     test_container = test.comparators[0]
     if not _is_simple_key(test_key) or not _is_simple_container(test_container):
         return None
+    return test_key, test_container
 
-    # The if-branch value must be exactly ``d[K]`` (a simple subscript) using the
-    # SAME container and key as the membership test.
-    if (not isinstance(if_value, ast.Subscript)
-            or not isinstance(if_value.ctx, ast.Load)):
-        return None
-    sub_container = if_value.value
-    sub_key = if_value.slice
+
+def _matching_subscript(
+    value: ast.expr, test_key: ast.expr, test_container: ast.expr
+) -> bool:
+    """Whether ``value`` is exactly ``d[K]`` matching the membership test.
+
+    The value must be a simple ``Load`` subscript whose container and key match
+    those of the membership test structurally.
+    """
+    if (not isinstance(value, ast.Subscript)
+            or not isinstance(value.ctx, ast.Load)):
+        return False
+    sub_container = value.value
+    sub_key = value.slice
     if not _is_simple_container(sub_container) or not _is_simple_key(sub_key):
+        return False
+    return (_same_expr(test_container, sub_container)
+            and _same_expr(test_key, sub_key))
+
+
+def _matches(node: ast.If) -> str | None:
+    """If ``node`` is the canonical shape, return the replacement RHS source.
+
+    The replacement is the full ``target = d.get(K, DEFAULT)`` statement text
+    (no indentation); the caller prefixes the block's indentation.
+    """
+    branches = _two_branch_assigns(node)
+    if branches is None:
         return None
-    if not _same_expr(test_container, sub_container):
+    if_target, if_value, else_value = branches
+
+    test = _membership_test(node.test)
+    if test is None:
         return None
-    if not _same_expr(test_key, sub_key):
+    test_key, test_container = test
+
+    # The if-branch value must be exactly ``d[K]`` using the SAME container and
+    # key as the membership test.
+    if not _matching_subscript(if_value, test_key, test_container):
         return None
 
     # The default (else value) must itself be side-effect-free so evaluating it
@@ -113,8 +145,8 @@ def _matches(node: ast.If) -> str | None:
     if not _is_simple_key(else_value):
         return None
 
-    container_src = ast.unparse(sub_container)
-    key_src = ast.unparse(sub_key)
+    container_src = ast.unparse(test_container)
+    key_src = ast.unparse(test_key)
     default_src = ast.unparse(else_value)
     return f"{if_target.id} = {container_src}.get({key_src}, {default_src})"
 
