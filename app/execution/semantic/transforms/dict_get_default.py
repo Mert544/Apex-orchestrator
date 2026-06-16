@@ -173,6 +173,62 @@ def _statement_at(tree: ast.Module, lineno: int) -> ast.stmt | None:
     return None
 
 
+def _trailing_newline(line: str) -> str:
+    """The line ending of ``line`` (``\\r\\n`` / ``\\n`` / ``\\r`` / ``""``).
+
+    Preserving the block's last physical line ending keeps the spliced
+    statement on the file's newline convention. An empty string means the
+    block ended at EOF with no trailing newline.
+    """
+    if line.endswith("\r\n"):
+        return "\r\n"
+    if line.endswith("\n"):
+        return "\n"
+    if line.endswith("\r"):
+        return "\r"
+    return ""
+
+
+def _rewrite_content(
+    node: ast.If, replacement: str, lines: list[str]
+) -> str | None:
+    """Splice ``replacement`` over ``node``'s line span; ``None`` if out of range.
+
+    Returns the full rewritten source, indented to match the block's first
+    line and terminated with the block's original newline convention.
+    """
+    start = node.lineno - 1
+    end = node.end_lineno or node.lineno  # 1-based inclusive last line
+    if start >= len(lines) or end > len(lines):
+        return None
+    indent = _get_indent(lines[start])
+    newline = _trailing_newline(lines[end - 1])
+    new_block = f"{indent}{replacement}{newline}"
+    return "".join(lines[:start] + [new_block] + lines[end:])
+
+
+def _validated_rewrite(node: ast.If, lines: list[str]) -> str | None:
+    """The accepted rewrite for ``node``, or ``None`` if it cannot be applied.
+
+    Refuses when the ``if`` is not the canonical shape, the span is out of
+    range, the result does not parse, or the result is not the expected
+    ``target = d.get(K, DEFAULT)`` assignment at the same start line.
+    """
+    replacement = _matches(node)
+    if replacement is None:
+        return None
+    new_content = _rewrite_content(node, replacement, lines)
+    if new_content is None:
+        return None
+    try:
+        new_tree = ast.parse(new_content)
+    except SyntaxError:
+        return None
+    if not _is_expected_get(_statement_at(new_tree, node.lineno)):
+        return None
+    return new_content
+
+
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
@@ -184,38 +240,8 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     for node in ast.walk(tree):
         if not isinstance(node, ast.If):
             continue
-        replacement = _matches(node)
-        if replacement is None:
-            continue
-
-        start = node.lineno - 1
-        end = node.end_lineno or node.lineno  # 1-based inclusive last line
-        if start >= len(lines) or end > len(lines):
-            continue
-        indent = _get_indent(lines[start])
-        # Preserve the line ending used on the block's last physical line so the
-        # spliced statement matches the file's newline convention.
-        last = lines[end - 1]
-        if last.endswith("\r\n"):
-            newline = "\r\n"
-        elif last.endswith("\n"):
-            newline = "\n"
-        elif last.endswith("\r"):
-            newline = "\r"
-        else:
-            newline = ""  # block ended at EOF with no trailing newline
-        new_block = f"{indent}{replacement}{newline}"
-
-        new_lines = lines[:start] + [new_block] + lines[end:]
-        new_content = "".join(new_lines)
-
-        # Re-parse; refuse if the rewrite does not parse or is not the expected
-        # ``target = d.get(K, DEFAULT)`` assignment at the same start line.
-        try:
-            new_tree = ast.parse(new_content)
-        except SyntaxError:
-            continue
-        if not _is_expected_get(_statement_at(new_tree, node.lineno)):
+        new_content = _validated_rewrite(node, lines)
+        if new_content is None:
             continue
 
         return SemanticPatchResult(

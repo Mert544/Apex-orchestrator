@@ -45,44 +45,68 @@ def _render_literal(node: ast.Call, source: str) -> str | None:
     return "{" + ", ".join(parts) + "}"
 
 
+def _candidate_replacement(
+    node: ast.AST, source: str
+) -> tuple[int, int, str] | None:
+    """Return ``(start, end, literal)`` for a rewritable ``dict(...)`` call.
+
+    Returns ``None`` for any node that is not a safe, splice-able candidate:
+    a non-call, an unsafe call, a value we cannot render, or a call whose
+    computed offsets do not splice back to its exact source segment.
+    """
+    if not isinstance(node, ast.Call) or not _is_rewritable_dict_call(node):
+        return None
+    literal = _render_literal(node, source)
+    if literal is None:
+        return None
+    call_text = ast.get_source_segment(source, node)
+    if call_text is None:
+        return None
+    start = _node_offset(source, node)
+    if start is None:
+        return None
+    end = start + len(call_text)
+    if source[start:end] != call_text:
+        return None
+    return start, end, literal
+
+
+def _collect_replacements(tree: ast.AST, source: str) -> list[tuple[int, int, str]]:
+    """Gather every splice-able ``dict(...)`` rewrite from ``tree``.
+
+    Use offsets so we can splice the original text and preserve value
+    formatting exactly. Process outermost-first via ``ast.walk``.
+    """
+    replacements: list[tuple[int, int, str]] = []
+    for node in ast.walk(tree):
+        candidate = _candidate_replacement(node, source)
+        if candidate is not None:
+            replacements.append(candidate)
+    return replacements
+
+
+def _splice(source: str, replacements: list[tuple[int, int, str]]) -> str:
+    """Apply replacements to ``source``, splicing in reverse source order.
+
+    Replacing right-to-left keeps earlier offsets valid as spans are swapped.
+    """
+    new_source = source
+    for start, end, literal in sorted(replacements, key=lambda item: item[0], reverse=True):
+        new_source = new_source[:start] + literal + new_source[end:]
+    return new_source
+
+
 def apply(rel_path: str, source: str, title: str = "") -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return None
 
-    # Collect candidate calls. Use offsets so we can splice the original text and
-    # preserve value formatting exactly. Process outermost-first, and replace in
-    # reverse source order so earlier offsets remain valid.
-    replacements: list[tuple[int, int, str]] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        if not _is_rewritable_dict_call(node):
-            continue
-        literal = _render_literal(node, source)
-        if literal is None:
-            continue
-        call_text = ast.get_source_segment(source, node)
-        if call_text is None:
-            continue
-        start = _node_offset(source, node)
-        if start is None:
-            continue
-        end = start + len(call_text)
-        if source[start:end] != call_text:
-            continue
-        replacements.append((start, end, literal))
-
+    replacements = _collect_replacements(tree, source)
     if not replacements:
         return None
 
-    # Reverse-sorted by start offset so splicing does not invalidate earlier spans.
-    replacements.sort(key=lambda item: item[0], reverse=True)
-    new_source = source
-    for start, end, literal in replacements:
-        new_source = new_source[:start] + literal + new_source[end:]
-
+    new_source = _splice(source, replacements)
     if new_source == source:
         return None
 
