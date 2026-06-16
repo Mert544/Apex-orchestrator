@@ -73,20 +73,22 @@ def _rebuild_with_param(source: str, fn: ast.FunctionDef | ast.AsyncFunctionDef,
     return ", ".join(parts)
 
 
-def plan_param_add(project_root: str | Path, func_name: str,
-                   param: str, default: str) -> RenamePlan:
-    """Build the project-wide plan that ADDS ``param=default`` to func_name."""
-    plan = RenamePlan(old="", new=param)
+def _check_inputs(plan: RenamePlan, param: str, default: str) -> bool:
+    """True iff the new name is a fresh identifier and the default parses —
+    appends the matching blocker and returns False otherwise."""
     if not param.isidentifier() or _kw.iskeyword(param):
         plan.blockers.append(f"'{param}' is not a valid identifier")
-        return plan
+        return False
     try:
         ast.parse(default, mode="eval")
     except SyntaxError:
         plan.blockers.append(f"default {default!r} is not a valid expression")
-        return plan
+        return False
+    return True
 
-    root = Path(project_root)
+
+def _parse_project(root: Path) -> tuple[dict[str, str], dict[str, ast.Module]]:
+    """Read every ``.py`` file once: its text and (when parseable) its tree."""
     files = _py_files(root)
     sources = dict(files)
     trees: dict[str, ast.Module] = {}
@@ -95,32 +97,49 @@ def plan_param_add(project_root: str | Path, func_name: str,
             trees[rel] = ast.parse(text)
         except SyntaxError:
             continue
+    return sources, trees
 
+
+def _sole_definition(plan: RenamePlan, trees: dict[str, ast.Module],
+                     func_name: str) -> tuple[str, ast.FunctionDef
+                                              | ast.AsyncFunctionDef] | None:
+    """The single top-level def of ``func_name`` — blocks (and returns None)
+    unless it is defined exactly once across the project."""
     definitions = [(rel, fn) for rel, tree in trees.items()
                    for fn in _function_defs(tree, func_name)]
     if len(definitions) != 1:
         plan.blockers.append(
             f"'{func_name}' must be defined exactly once at top level "
             f"(found {len(definitions)})")
-        return plan
-    defmod, fn = definitions[0]
-    plan.defined_in = defmod
-    dotted = defmod[:-3].replace("/", ".")
-    source = sources[defmod]
+        return None
+    return definitions[0]
 
+
+def _check_name_clash(plan: RenamePlan, fn: ast.FunctionDef
+                      | ast.AsyncFunctionDef, func_name: str,
+                      param: str) -> bool:
+    """True iff ``param`` is genuinely new — not an existing parameter and not
+    a name already resolved inside the body."""
     if param in [p.arg for p in _all_params(fn)]:
         plan.blockers.append(f"{func_name}() already has a parameter '{param}'")
-        return plan
+        return False
     if any(isinstance(n, ast.Name) and n.id == param for n in ast.walk(fn)):
         plan.blockers.append(
             f"'{param}' is already used inside {func_name}() — adding the "
             "parameter would change what that name means")
-        return plan
+        return False
+    return True
 
+
+def _signature_lines(plan: RenamePlan, source: str, defmod: str,
+                     fn: ast.FunctionDef | ast.AsyncFunctionDef
+                     ) -> tuple[tuple[int, int, int, int], list[str]] | None:
+    """The signature span plus the source lines — blocks (returns None) when
+    the span cannot be pinned or the signature block carries a comment."""
     span = _signature_span(source, fn)
     if span is None:
         plan.blockers.append(f"{defmod}: could not pin the signature span")
-        return plan
+        return None
     sl, sc, el, ec = span
     src_lines = source.splitlines(keepends=True)
     sig_text = (
@@ -130,10 +149,15 @@ def plan_param_add(project_root: str | Path, func_name: str,
         plan.blockers.append(
             f"{defmod}: the signature block contains a comment — rebuilding "
             "it would drop the comment, so this stays a human edit")
-        return plan
+        return None
+    return span, src_lines
 
-    # Call sites: one already passing the keyword means the addition would
-    # rewire it (into **kwargs before, into the new param after) — blocked.
+
+def _scan_call_sites(plan: RenamePlan, trees: dict[str, ast.Module],
+                     defmod: str, dotted: str, func_name: str,
+                     param: str) -> None:
+    """Walk every call of ``func_name``: a site already passing ``param=``
+    blocks, an ``f(**…)`` site warns."""
     for rel, tree in trees.items():
         from_names: set[str] = {func_name} if rel == defmod else set()
         module_aliases: set[str] = set()
@@ -164,6 +188,35 @@ def plan_param_add(project_root: str | Path, func_name: str,
                     plan.warnings.append(
                         f"{rel}:{node.lineno}: {func_name}(**…) may already "
                         f"carry '{param}' at runtime; check manually")
+
+
+def plan_param_add(project_root: str | Path, func_name: str,
+                   param: str, default: str) -> RenamePlan:
+    """Build the project-wide plan that ADDS ``param=default`` to func_name."""
+    plan = RenamePlan(old="", new=param)
+    if not _check_inputs(plan, param, default):
+        return plan
+
+    sources, trees = _parse_project(Path(project_root))
+    definition = _sole_definition(plan, trees, func_name)
+    if definition is None:
+        return plan
+    defmod, fn = definition
+    plan.defined_in = defmod
+    dotted = defmod[:-3].replace("/", ".")
+    source = sources[defmod]
+
+    if not _check_name_clash(plan, fn, func_name, param):
+        return plan
+
+    lines = _signature_lines(plan, source, defmod, fn)
+    if lines is None:
+        return plan
+    (sl, sc, el, ec), src_lines = lines
+
+    # Call sites: one already passing the keyword means the addition would
+    # rewire it (into **kwargs before, into the new param after) — blocked.
+    _scan_call_sites(plan, trees, defmod, dotted, func_name, param)
     if plan.blockers:
         return plan
 

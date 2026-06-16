@@ -184,3 +184,79 @@ def test_cli_signature_add(tmp_path, capsys):
     assert cmd_signature(ns) == 0
     assert "tests pass" in capsys.readouterr().out
     assert "retries=3" in (tmp_path / "app" / "core.py").read_text()
+
+
+def test_characterization_pins_plan_across_paths(tmp_path):
+    """Pin the exact plan for one happy path and every blocker/warning branch,
+    so the helper decomposition stays byte-identical."""
+    counter = [0]
+
+    def plan_for(files, func, param, default):
+        # Each case lives in its own subdir so earlier files never leak in.
+        counter[0] += 1
+        root = tmp_path / f"case{counter[0]}"
+        root.mkdir()
+        for rel, content in files.items():
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        out = plan_param_add(root, func, param, default)
+        return out.defined_in, sorted(out.blockers), sorted(out.warnings), \
+            dict(out.new_contents), dict(out.edits_by_file)
+
+    # Happy path: only the def site changes, keyword-only placement preserved.
+    defined, blockers, warnings, contents, edits = plan_for(
+        {"app/s.py": "def star(a, *items):\n    return a\n"}, "star", "retries", "3")
+    assert defined == "app/s.py" and not blockers and not warnings
+    assert contents == {"app/s.py": "def star(a, *items, retries=3):\n    return a\n"}
+    assert edits == {"app/s.py": 1}
+
+    # Blocker: invalid identifier (no project even parsed).
+    assert plan_for({}, "fn", "1bad", "3") == (
+        "", ["'1bad' is not a valid identifier"], [], {}, {})
+
+    # Blocker: default is not an expression.
+    assert plan_for({}, "fn", "retries", "def x") == (
+        "", ["default 'def x' is not a valid expression"], [], {}, {})
+
+    # Blocker: not defined exactly once.
+    assert plan_for({"a.py": "def fn(a):\n    return a\n",
+                     "b.py": "def fn(b):\n    return b\n"}, "fn", "retries", "3") == (
+        "", ["'fn' must be defined exactly once at top level (found 2)"], [], {}, {})
+
+    # Blocker: parameter already exists.
+    assert plan_for({"app/s.py": "def fn(a, retries=1):\n    return a\n"},
+                    "fn", "retries", "3")[1] == [
+        "fn() already has a parameter 'retries'"]
+
+    # Blocker: the name is already used in the body.
+    assert plan_for({"app/s.py": "def fn(a):\n    retries = 2\n    return retries\n"},
+                    "fn", "retries", "3")[1] == [
+        "'retries' is already used inside fn() — adding the "
+        "parameter would change what that name means"]
+
+    # Blocker: a comment inside the signature block.
+    assert plan_for({"app/s.py": "def fn(\n    a,  # first\n):\n    return a\n"},
+                    "fn", "retries", "3")[1] == [
+        "app/s.py: the signature block contains a comment — rebuilding "
+        "it would drop the comment, so this stays a human edit"]
+
+    # Blocker: a call site already passes the keyword.
+    assert plan_for(
+        {"app/core.py": "def fetch(url):\n    return url\n",
+         "app/user.py": "from app.core import fetch\n"
+                        "def f():\n    return fetch('a', retries=9)\n"},
+        "fetch", "retries", "3")[1] == [
+        "app/user.py:3: a call already passes 'retries=' — adding the "
+        "parameter would rewire it"]
+
+    # Warning: an f(**…) call site may already carry the param at runtime.
+    _, blk, warn, _, _ = plan_for(
+        {"app/core.py": "def fetch(url):\n    return url\n",
+         "app/user.py": "from app.core import fetch\n"
+                        "def f(d):\n    return fetch('a', **d)\n"},
+        "fetch", "retries", "3")
+    assert not blk
+    assert warn == [
+        "app/user.py:3: fetch(**…) may already carry 'retries' at "
+        "runtime; check manually"]
