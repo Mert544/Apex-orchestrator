@@ -140,38 +140,65 @@ class CounterfactualGenerator:
         context = claim.get("context", "").lower()
         symbol = claim.get("symbol", "")
         operator = claim.get("operator", "")
-        scenarios = []
 
         # Symbol-grounded scenarios come first: when the claim names an actual
         # function, the caveat should interrogate *it*, not recite a template.
-        if symbol:
-            scenarios.append(
-                f"What if {symbol}() hits its rarest branch with an input no test has ever exercised?"
-            )
-            scenarios.append(
-                f"What if a caller depends on an undocumented behavior of {symbol}() that a refactor silently changes?"
-            )
+        scenarios = self._symbol_scenarios(symbol)
 
+        # A keyed claim (development lens, or a root idea's seeding fact) routes
+        # to its own discriminated scenario list and returns immediately, so it
+        # never collapses onto the generic validation-keyword branch below.
+        keyed = self._keyed_scenarios(operator, claim.get("fact_label", ""))
+        if keyed is not None:
+            seed, extra = keyed
+            scenarios.extend(extra)
+            return self._build(scenarios, seed or text, claim)
+
+        # Otherwise interrogate the claim text/context for known risk patterns,
+        # falling back to a generic pair when none match.
+        scenarios.extend(self._keyword_scenarios(text, context))
+        if not scenarios:
+            scenarios.append("What if the claim holds in the current codebase but fails after the next refactoring?")
+            scenarios.append("What if the observed pattern is actually a symptom of a deeper architectural issue?")
+
+        return self._build(scenarios, text, claim)
+
+    def _build(
+        self, scenarios: list[str], insight_seed: str, claim: dict[str, Any]
+    ) -> CounterfactualResult:
+        return CounterfactualResult(
+            scenarios=scenarios[:5],
+            insight=self._generate_insight(insight_seed, scenarios),
+            claim_text=claim.get("text", ""),
+        )
+
+    @staticmethod
+    def _symbol_scenarios(symbol: str) -> list[str]:
+        if not symbol:
+            return []
+        return [
+            f"What if {symbol}() hits its rarest branch with an input no test has ever exercised?",
+            f"What if a caller depends on an undocumented behavior of {symbol}() that a refactor silently changes?",
+        ]
+
+    @staticmethod
+    def _keyed_scenarios(
+        operator: str, fact_label: str
+    ) -> tuple[str, list[str]] | None:
         # Lens-specific stress test: each development lens fails in a different
         # way, so the caveat must interrogate *that* lens — not route every idea
-        # through the validation-keyword branch below (which made 'extend',
-        # 'test', and 'generalize' all emit the same "attacker provides None"
-        # scenario). When the claim names its operator, branch on it directly.
+        # through the validation-keyword branch (which made 'extend', 'test',
+        # and 'generalize' all emit the same "attacker provides None" scenario).
         if operator in _LENS_SCENARIOS:
-            scenarios.extend(_LENS_SCENARIOS[operator])
-            insight = self._generate_insight(operator or text, scenarios)
-            return CounterfactualResult(
-                scenarios=scenarios[:5], insight=insight, claim_text=claim.get("text", ""),
-            )
-
+            return operator, list(_LENS_SCENARIOS[operator])
         # A root idea (no lens) is discriminated by the fact that seeded it.
-        fact_label = claim.get("fact_label", "")
         if fact_label in _FACT_SCENARIOS:
-            scenarios.extend(_FACT_SCENARIOS[fact_label])
-            insight = self._generate_insight(fact_label, scenarios)
-            return CounterfactualResult(
-                scenarios=scenarios[:5], insight=insight, claim_text=claim.get("text", ""),
-            )
+            return fact_label, list(_FACT_SCENARIOS[fact_label])
+        return None
+
+    @staticmethod
+    def _keyword_scenarios(text: str, context: str) -> list[str]:
+        scenarios: list[str] = []
 
         # Pattern: missing validation / no guard
         if any(k in text for k in ("validation", "guard", "check", "sanitize")):
@@ -214,18 +241,7 @@ class CounterfactualGenerator:
         if "mutable default" in text or "default arg" in text:
             scenarios.append("What if the function is called twice — does the default list accumulate state?")
 
-        # Fallback for unrecognized patterns
-        if not scenarios:
-            scenarios.append("What if the claim holds in the current codebase but fails after the next refactoring?")
-            scenarios.append("What if the observed pattern is actually a symptom of a deeper architectural issue?")
-
-        insight = self._generate_insight(text, scenarios)
-
-        return CounterfactualResult(
-            scenarios=scenarios[:5],
-            insight=insight,
-            claim_text=claim.get("text", ""),
-        )
+        return scenarios
 
     @staticmethod
     def _generate_insight(text: str, scenarios: list[str]) -> str:
