@@ -58,6 +58,7 @@ import ast
 from pathlib import Path
 
 from app.execution._transform_base import apply_column_rewrites, is_fixture_path
+from app.execution._transform_base import literal_inner as _literal_inner
 from app.execution._transform_base import (
     parse_module_source as _parse_module_source,
     read_module_source as _read_module_source,
@@ -164,33 +165,6 @@ def _parse_template(inner: str) -> tuple[list[str], list[_Field]] | None:
         i += 1
     segments.append("".join(buf))
     return segments, fields
-
-
-def _literal_inner(literal_src: str) -> tuple[str, str] | None:
-    """From a recovered string-literal source, return ``(quote, inner)`` for a
-    plain unprefixed ``"`` / ``'`` string, else None.
-
-    Rejects any prefix (raw / bytes / f / u), triple-quotes, and any string
-    whose body contains a backslash — keeping the inner text safe to embed
-    verbatim inside an f-string with the same quote char."""
-    if not literal_src:
-        return None
-    quote = literal_src[0]
-    if quote not in ("'", '"'):
-        return None  # has a prefix (r/b/f/u) or isn't a plain string literal
-    if literal_src[-1] != quote:
-        return None
-    # Triple-quoted strings are multi-line in spirit — out of scope.
-    if literal_src[:3] in ("'''", '"""'):
-        return None
-    if len(literal_src) < 2:
-        return None
-    inner = literal_src[1:-1]
-    if "\\" in inner:
-        return None
-    if quote in inner:
-        return None
-    return quote, inner
 
 
 def _keywords_by_name(kw_args: list[ast.keyword]) -> dict[str, ast.expr] | None:

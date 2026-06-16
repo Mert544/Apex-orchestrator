@@ -382,6 +382,22 @@ def literal_inner(literal_src: str) -> tuple[str, str] | None:
     return quote, inner
 
 
+def text_is_valid(text: str, count: int) -> bool:
+    """True iff ``text`` re-parses to exactly a JoinedStr with ``count``
+    FormattedValue fields — the crucial safety re-parse before committing.
+
+    This is the identical safety re-parse the f-string transforms
+    (fstring-convert, percent-to-fstring) each carried privately."""
+    try:
+        expr = ast.parse(text, mode="eval").body
+    except SyntaxError:
+        return False
+    if not isinstance(expr, ast.JoinedStr):
+        return False
+    formatted = [v for v in expr.values if isinstance(v, ast.FormattedValue)]
+    return len(formatted) == count
+
+
 class ColumnRewrite:
     """One located rewrite: replace ``line[col:end_col]`` on a single line
     (``lineno``, 1-based; cols 0-based) with ``text``.

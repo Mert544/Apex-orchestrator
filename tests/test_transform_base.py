@@ -15,8 +15,10 @@ from app.execution._transform_base import (
     apply_line_rewrites,
     is_fixture_path,
     iter_statement_blocks,
+    literal_inner,
     parse_trees,
     resolve_sole_definition,
+    text_is_valid,
 )
 
 
@@ -215,3 +217,40 @@ def test_resolve_sole_definition_ignores_nested_defs():
     assert resolve_sole_definition(plan, trees, "f") is None
     assert plan.blockers == [
         "'f' must be defined exactly once at top level (found 0)"]
+
+
+# ── literal_inner (shared by the f-string transforms) ───────────────────────
+
+
+def test_literal_inner_plain_double_and_single():
+    assert literal_inner('"abc"') == ('"', "abc")
+    assert literal_inner("'abc'") == ("'", "abc")
+
+
+def test_literal_inner_rejects_prefix_triple_quote_and_backslash():
+    assert literal_inner('r"raw"') is None      # prefix
+    assert literal_inner('"""x"""') is None     # triple-quoted
+    assert literal_inner('"a\\nb"') is None      # contains a backslash
+
+
+def test_literal_inner_rejects_inner_quote_short_and_empty():
+    assert literal_inner('"a"b"') is None        # embedded matching quote
+    assert literal_inner('"') is None            # too short to be a literal
+    assert literal_inner("") is None             # empty input
+
+
+# ── text_is_valid (shared JoinedStr safety re-parse) ────────────────────────
+
+
+def test_text_is_valid_matches_expected_field_count():
+    assert text_is_valid('f"{a} and {b}"', 2) is True
+    assert text_is_valid('f"no fields"', 0) is True
+
+
+def test_text_is_valid_rejects_count_mismatch_and_non_joinedstr():
+    assert text_is_valid('f"{a}"', 2) is False   # one field, expected two
+    assert text_is_valid('"plain"', 1) is False   # a Constant, not a JoinedStr
+
+
+def test_text_is_valid_rejects_unparseable_text():
+    assert text_is_valid("f'{'", 1) is False      # SyntaxError on re-parse

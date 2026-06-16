@@ -49,6 +49,7 @@ from app.execution._transform_base import ColumnRewrite as _Rewrite
 from app.execution._transform_base import is_simple_arg as _is_simple_arg
 from app.execution._transform_base import literal_inner as _literal_inner
 from app.execution._transform_base import plan_single_module_column_rewrite
+from app.execution._transform_base import text_is_valid as _text_is_valid
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_percent_to_fstring"]
@@ -57,6 +58,7 @@ __all__ = ["plan_percent_to_fstring"]
 #   _Rewrite       — the located single-line column-splice value (``ColumnRewrite``)
 #   _is_simple_arg — the "bare {name} is safe" predicate (``is_simple_arg``)
 #   _literal_inner — the plain-string-literal (quote, inner) recovery (``literal_inner``)
+#   _text_is_valid — the JoinedStr safety re-parse (``text_is_valid``)
 # The percent-specific ``%s``/``%%`` parsing, brace-escaping and BinOp matching
 # below stay private — they are NOT the ``.format`` logic and must not be merged.
 
@@ -174,19 +176,6 @@ def _build_text(quote: str, segments: list[str], arg_srcs: list[str]) -> str:
         parts.append("{" + arg_src + "}")
         parts.append(_escape(seg))
     return "f" + quote + "".join(parts) + quote
-
-
-def _text_is_valid(text: str, count: int) -> bool:
-    """True iff ``text`` re-parses to exactly a JoinedStr with ``count``
-    FormattedValue fields — the crucial safety re-parse before committing."""
-    try:
-        expr = ast.parse(text, mode="eval").body
-    except SyntaxError:
-        return False
-    if not isinstance(expr, ast.JoinedStr):
-        return False
-    formatted = [v for v in expr.values if isinstance(v, ast.FormattedValue)]
-    return len(formatted) == count
 
 
 def _recover_template(
