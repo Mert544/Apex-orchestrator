@@ -72,103 +72,54 @@ class ClaimEvaluator:
     def evaluate_batch(self, claims: list[str], context: dict[str, Any] | None = None) -> list[ConsensusResult]:
         return [self.evaluate(claim, context) for claim in claims]
 
+    @staticmethod
+    def _review_security(claim_lower: str) -> tuple[Verdict, float, str]:
+        risk_keywords = ["eval", "exec", "os.system", "pickle", "secret", "password", "sql"]
+        hits = [kw for kw in risk_keywords if kw in claim_lower]
+        if hits:
+            return (Verdict.REJECT, 0.85, f"Claim contains security-sensitive keyword: {hits[0]}")
+        return (Verdict.APPROVE, 0.7, "No obvious security risks detected")
+
+    @staticmethod
+    def _review_keyword(claim_lower: str, keywords: list[str], confidence: float, hit_reason: str, miss_reason: str) -> tuple[Verdict, float, str]:
+        if any(kw in claim_lower for kw in keywords):
+            return (Verdict.APPROVE, confidence, hit_reason)
+        return (Verdict.ABSTAIN, 0.5, miss_reason)
+
+    @classmethod
+    def _review_outcome(cls, role: str, claim_lower: str) -> tuple[Verdict, float, str]:
+        """Pure heuristic dispatch: maps (role, claim) to a verdict tuple."""
+        if role == "security_auditor":
+            return cls._review_security(claim_lower)
+        if role == "documentation_enforcer":
+            return cls._review_keyword(
+                claim_lower, ["docstring", "document", "missing"], 0.8,
+                "Claim relates to documentation improvement", "Claim not documentation-related",
+            )
+        if role == "test_coverage_analyst":
+            return cls._review_keyword(
+                claim_lower, ["test", "coverage", "untested"], 0.75,
+                "Claim relates to test coverage", "Claim not test-related",
+            )
+        if role == "architecture_analyst":
+            return cls._review_keyword(
+                claim_lower, ["dependency", "coupling", "module", "import", "hub", "boundary"], 0.8,
+                "Claim relates to architecture", "Claim not architecture-related",
+            )
+        return (Verdict.ABSTAIN, 0.5, "No specific evaluation logic")
+
     def _agent_review(self, agent: Agent, claim: str, context: dict[str, Any]) -> Vote:
         """Ask a single agent to review a claim. Returns a Vote."""
         # Simple heuristic-based evaluation (no LLM needed)
-        claim_lower = claim.lower()
         role = agent.role
-        weight = self.ROLE_WEIGHTS.get(role, 1.0)
-
-        # Security agent logic
-        if role == "security_auditor":
-            risk_keywords = ["eval", "exec", "os.system", "pickle", "secret", "password", "sql"]
-            if any(kw in claim_lower for kw in risk_keywords):
-                return Vote(
-                    agent_name=agent.name,
-                    agent_role=role,
-                    verdict=Verdict.REJECT,
-                    confidence=0.85,
-                    reasoning=f"Claim contains security-sensitive keyword: {[kw for kw in risk_keywords if kw in claim_lower][0]}",
-                    weight=weight,
-                )
-            return Vote(
-                agent_name=agent.name,
-                agent_role=role,
-                verdict=Verdict.APPROVE,
-                confidence=0.7,
-                reasoning="No obvious security risks detected",
-                weight=weight,
-            )
-
-        # Docstring agent logic
-        if role == "documentation_enforcer":
-            if "docstring" in claim_lower or "document" in claim_lower or "missing" in claim_lower:
-                return Vote(
-                    agent_name=agent.name,
-                    agent_role=role,
-                    verdict=Verdict.APPROVE,
-                    confidence=0.8,
-                    reasoning="Claim relates to documentation improvement",
-                    weight=weight,
-                )
-            return Vote(
-                agent_name=agent.name,
-                agent_role=role,
-                verdict=Verdict.ABSTAIN,
-                confidence=0.5,
-                reasoning="Claim not documentation-related",
-                weight=weight,
-            )
-
-        # Test stub agent logic
-        if role == "test_coverage_analyst":
-            if "test" in claim_lower or "coverage" in claim_lower or "untested" in claim_lower:
-                return Vote(
-                    agent_name=agent.name,
-                    agent_role=role,
-                    verdict=Verdict.APPROVE,
-                    confidence=0.75,
-                    reasoning="Claim relates to test coverage",
-                    weight=weight,
-                )
-            return Vote(
-                agent_name=agent.name,
-                agent_role=role,
-                verdict=Verdict.ABSTAIN,
-                confidence=0.5,
-                reasoning="Claim not test-related",
-                weight=weight,
-            )
-
-        # Dependency agent logic
-        if role == "architecture_analyst":
-            arch_keywords = ["dependency", "coupling", "module", "import", "hub", "boundary"]
-            if any(kw in claim_lower for kw in arch_keywords):
-                return Vote(
-                    agent_name=agent.name,
-                    agent_role=role,
-                    verdict=Verdict.APPROVE,
-                    confidence=0.8,
-                    reasoning="Claim relates to architecture",
-                    weight=weight,
-                )
-            return Vote(
-                agent_name=agent.name,
-                agent_role=role,
-                verdict=Verdict.ABSTAIN,
-                confidence=0.5,
-                reasoning="Claim not architecture-related",
-                weight=weight,
-            )
-
-        # Default
+        verdict, confidence, reasoning = self._review_outcome(role, claim.lower())
         return Vote(
             agent_name=agent.name,
             agent_role=role,
-            verdict=Verdict.ABSTAIN,
-            confidence=0.5,
-            reasoning="No specific evaluation logic",
-            weight=weight,
+            verdict=verdict,
+            confidence=confidence,
+            reasoning=reasoning,
+            weight=self.ROLE_WEIGHTS.get(role, 1.0),
         )
 
     def filter_approved(self, claims: list[str], context: dict[str, Any] | None = None, min_confidence: float = 0.5) -> list[tuple[str, ConsensusResult]]:
