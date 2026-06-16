@@ -13,64 +13,48 @@ from pathlib import Path
 
 from app.cli_common import _get_project_root
 
-def cmd_review(args: argparse.Namespace) -> int:
-    """Review only the lines changed since a base ref — Apex as a PR reviewer."""
-    from app.engine.diff_review import (
-        render_review_markdown,
-        render_review_summary,
-        review,
-    )
+def _fail_on_high_rc(args: argparse.Namespace, result) -> int:
+    """Shared exit-code rule: non-zero ONLY when --fail-on-high is set AND a REAL
+    high-severity issue lands in the diff (CI-friendly) — fixture/test code is
+    excluded, its flaws are intentional."""
+    if getattr(args, "fail_on_high", False):
+        from app.engine.diff_review import blocking_high_findings
 
-    target = Path(args.target).resolve() if args.target else _get_project_root()
-    result = review(str(target), base=getattr(args, "base", "HEAD") or "HEAD")
+        if blocking_high_findings(result):
+            return 1
+    return 0
 
-    # --summary: print ONLY the concise PR-comment verdict (for CI to post as a
-    # sticky comment) and nothing else — no fixes, no SARIF note, no full report.
-    if getattr(args, "summary", False):
-        print(render_review_summary(result))
-        if getattr(args, "fail_on_high", False):
-            from app.engine.diff_review import blocking_high_findings
 
-            if blocking_high_findings(result):
-                return 1
-        return 0
+def _write_sarif(result, sarif_out: str) -> None:
+    """--sarif: export findings for GitHub code scanning / CI dashboards."""
+    from app.engine.sarif_export import review_to_sarif
 
-    # --fix: apply the auto-fixable findings on the changed files, test-verified.
-    fix_report = None
-    if getattr(args, "fix", False):
-        fix_report = _apply_review_fixes(str(target), result)
+    sarif_path = Path(sarif_out)
+    sarif_path.parent.mkdir(parents=True, exist_ok=True)
+    sarif_path.write_text(json.dumps(review_to_sarif(result), indent=2) + "\n",
+                          encoding="utf-8")
 
-    # --sarif: export findings for GitHub code scanning / CI dashboards.
-    sarif_out = getattr(args, "sarif", "")
-    if sarif_out:
-        from app.engine.sarif_export import review_to_sarif
 
-        sarif_path = Path(sarif_out)
-        sarif_path.parent.mkdir(parents=True, exist_ok=True)
-        sarif_path.write_text(json.dumps(review_to_sarif(result), indent=2) + "\n",
-                              encoding="utf-8")
+def _emit_format(args: argparse.Namespace, result, fmt: str) -> None:
+    """--format: emit findings in a CI-interop format (CodeClimate/GitLab Code
+    Quality, JUnit, GitHub annotations, SonarQube, CSV, HTML) so Apex drops into
+    an existing pipeline next to — or in place of — SonarQube/CodeClimate. Goes
+    to --format-out (a file) or stdout, and is the sole output when set."""
+    text = _render_findings_format(fmt, result)
+    fmt_out = getattr(args, "format_out", "") or ""
+    if fmt_out:
+        p = Path(fmt_out)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+        print(f"[review] {fmt} written to {fmt_out}")
+    else:
+        print(text)
 
-    # --format: emit findings in a CI-interop format (CodeClimate/GitLab Code
-    # Quality, JUnit, GitHub annotations, SonarQube, CSV, HTML) so Apex drops into
-    # an existing pipeline next to — or in place of — SonarQube/CodeClimate. Goes
-    # to --format-out (a file) or stdout, and is the sole output when set.
-    fmt = getattr(args, "format", "") or ""
-    if fmt:
-        text = _render_findings_format(fmt, result)
-        fmt_out = getattr(args, "format_out", "") or ""
-        if fmt_out:
-            p = Path(fmt_out)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
-            print(f"[review] {fmt} written to {fmt_out}")
-        else:
-            print(text)
-        if getattr(args, "fail_on_high", False):
-            from app.engine.diff_review import blocking_high_findings
 
-            if blocking_high_findings(result):
-                return 1
-        return 0
+def _emit_report(args: argparse.Namespace, result, fix_report, sarif_out: str) -> None:
+    """Default output: JSON payload (with optional fixes) or the markdown report
+    (with optional fix summary + a SARIF-written note)."""
+    from app.engine.diff_review import render_review_markdown
 
     if args.json:
         payload = result.to_dict()
@@ -83,14 +67,37 @@ def cmd_review(args: argparse.Namespace) -> int:
             print(_render_review_fixes_markdown(fix_report))
         if sarif_out:
             print(f"[review] SARIF written to {sarif_out}")
-    # Non-zero exit when a REAL high-severity issue lands in the diff
-    # (CI-friendly) — fixture/test code is excluded, its flaws are intentional.
-    if getattr(args, "fail_on_high", False):
-        from app.engine.diff_review import blocking_high_findings
 
-        if blocking_high_findings(result):
-            return 1
-    return 0
+
+def cmd_review(args: argparse.Namespace) -> int:
+    """Review only the lines changed since a base ref — Apex as a PR reviewer."""
+    from app.engine.diff_review import render_review_summary, review
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    result = review(str(target), base=getattr(args, "base", "HEAD") or "HEAD")
+
+    # --summary: print ONLY the concise PR-comment verdict (for CI to post as a
+    # sticky comment) and nothing else — no fixes, no SARIF note, no full report.
+    if getattr(args, "summary", False):
+        print(render_review_summary(result))
+        return _fail_on_high_rc(args, result)
+
+    # --fix: apply the auto-fixable findings on the changed files, test-verified.
+    fix_report = None
+    if getattr(args, "fix", False):
+        fix_report = _apply_review_fixes(str(target), result)
+
+    sarif_out = getattr(args, "sarif", "")
+    if sarif_out:
+        _write_sarif(result, sarif_out)
+
+    fmt = getattr(args, "format", "") or ""
+    if fmt:
+        _emit_format(args, result, fmt)
+        return _fail_on_high_rc(args, result)
+
+    _emit_report(args, result, fix_report, sarif_out)
+    return _fail_on_high_rc(args, result)
 
 
 def _render_findings_format(fmt: str, result) -> str:

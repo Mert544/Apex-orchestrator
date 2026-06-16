@@ -13,15 +13,16 @@ from pathlib import Path
 
 from app.cli_common import _get_project_root
 
-def _maintain_build_plan(args, target):
-    """Scan -> ideate -> plan: the engine + bridge setup shared by every path.
-
-    Returns ``(engine, bridge, plan)`` — the engine is handed back so the apply
-    path can record its ``last_profile`` trend baseline."""
-    from app.engine.idea_action_bridge import IdeaActionBridge
+def cmd_maintain(args: argparse.Namespace) -> int:
+    """One-shot maintenance: scan -> ideate -> apply -> verify -> commit -> report."""
     from app.engine.idea_permutation import IdeaPermutationEngine
+    from app.engine.idea_action_bridge import (
+        IdeaActionBridge,
+        render_maintenance_markdown,
+    )
     from app.plugins.registry import PluginRegistry
 
+    target = Path(args.target).resolve() if args.target else _get_project_root()
     plugins = PluginRegistry()
     plugins.load_all()
 
@@ -35,74 +36,38 @@ def _maintain_build_plan(args, target):
 
     bridge = IdeaActionBridge()
     plan = bridge.plan_tree(report, mode=args.mode, top=(args.top or None), project_root=str(target))
-    return engine, bridge, plan
 
-
-def _maintain_scope_recipe(args, plan) -> bool:
-    """--recipe: scope the pass to one named intent (typo fails loudly).
-
-    Returns True to continue, False to abort the command with exit code 1."""
+    # --recipe: scope the pass to one named intent (typo fails loudly).
     recipe = getattr(args, "recipe", "") or ""
-    if not recipe:
-        return True
-    from app.execution.recipes import filter_plan
+    if recipe:
+        from app.execution.recipes import filter_plan
 
-    try:
-        remaining = filter_plan(plan, recipe)
-    except ValueError as exc:
-        print(f"⛔ {exc}")
-        return False
-    print(f"[maintain] scoped to recipe `{recipe}` — "
-          f"{remaining} executable step(s) in scope")
-    return True
+        try:
+            remaining = filter_plan(plan, recipe)
+        except ValueError as exc:
+            print(f"⛔ {exc}")
+            return 1
+        print(f"[maintain] scoped to recipe `{recipe}` — "
+              f"{remaining} executable step(s) in scope")
 
-
-def _maintain_dry_run(args, bridge, plan, target) -> None:
-    """Dry-run: preview the diffs without touching anything."""
-    preview = bridge.dry_run_plan(plan, str(target))
-    if args.json:
-        print(json.dumps(preview, indent=2))
-        return
-    print(f"# Apex Maintenance — dry run for `{target}`")
-    print(f"\n{preview['applicable']} of {preview['total_executable']} "
-          f"executable steps would change files (nothing applied).\n")
-    for p in preview["results"]:
-        if not p["applicable"]:
-            continue
-        print(f"## `{p['branch']}` {p['action']} → {p['transform_type']} "
-              f"({', '.join(f for f in p['files'] if f)})")
-        print("```diff")
-        print(p["diff"].rstrip())
-        print("```\n")
-
-
-def _maintain_write_out(args, md) -> None:
-    """--out: write the Markdown report to the requested path."""
-    if not args.out:
-        return
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(md, encoding="utf-8")
-    print(f"\n[maintain] Report written to {out_path}")
-
-
-def _maintain_write_proof(args, summary, target) -> None:
-    """Proof-of-fix: the auditable evidence record for everything this pass did."""
-    if not summary.get("results"):
-        return
-    from app.engine.proof_of_fix import build_proof, write_proof
-
-    proof = build_proof(summary, str(target), objective=args.objective or "")
-    proof_path = write_proof(proof, str(target), out=getattr(args, "proof", "") or None)
-    if not args.json:
-        print(f"\n[maintain] Proof-of-fix evidence written to {proof_path}")
-
-
-def _maintain_apply(args, engine, bridge, plan, target) -> int:
-    """Apply the plan (verified, guarded), then learn, record, report, prove."""
-    from app.engine.idea_action_bridge import render_maintenance_markdown
-    from app.engine.idea_memory import IdeaMemory
-    from app.engine.signal_trends import SignalTrends
+    # Dry-run: preview the diffs without touching anything.
+    if getattr(args, "dry_run", False):
+        preview = bridge.dry_run_plan(plan, str(target))
+        if args.json:
+            print(json.dumps(preview, indent=2))
+        else:
+            print(f"# Apex Maintenance — dry run for `{target}`")
+            print(f"\n{preview['applicable']} of {preview['total_executable']} "
+                  f"executable steps would change files (nothing applied).\n")
+            for p in preview["results"]:
+                if not p["applicable"]:
+                    continue
+                print(f"## `{p['branch']}` {p['action']} → {p['transform_type']} "
+                      f"({', '.join(f for f in p['files'] if f)})")
+                print("```diff")
+                print(p["diff"].rstrip())
+                print("```\n")
+        return 0
 
     summary = bridge.apply_plan(
         plan, str(target), mode=args.mode,
@@ -110,7 +75,11 @@ def _maintain_apply(args, engine, bridge, plan, target) -> int:
         max_apply=(args.max_apply or None) if args.max_apply else None,
         commit=args.commit,
     )
+    from app.engine.idea_memory import IdeaMemory
+
     IdeaMemory.learn_from(summary, str(target))  # learn from this run's outcomes
+    from app.engine.signal_trends import SignalTrends
+
     SignalTrends(str(target)).record(engine.last_profile)  # trend baseline
     md = render_maintenance_markdown(summary, str(target), objective=args.objective or "")
 
@@ -118,22 +87,20 @@ def _maintain_apply(args, engine, bridge, plan, target) -> int:
         print(json.dumps(summary, indent=2))
     else:
         print(md)
-    _maintain_write_out(args, md)
-    _maintain_write_proof(args, summary, target)
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(md, encoding="utf-8")
+        print(f"\n[maintain] Report written to {out_path}")
+    # Proof-of-fix: the auditable evidence record for everything this pass did.
+    if summary.get("results"):
+        from app.engine.proof_of_fix import build_proof, write_proof
+
+        proof = build_proof(summary, str(target), objective=args.objective or "")
+        proof_path = write_proof(proof, str(target), out=getattr(args, "proof", "") or None)
+        if not args.json:
+            print(f"\n[maintain] Proof-of-fix evidence written to {proof_path}")
     return 0
-
-
-def cmd_maintain(args: argparse.Namespace) -> int:
-    """One-shot maintenance: scan -> ideate -> apply -> verify -> commit -> report."""
-    target = Path(args.target).resolve() if args.target else _get_project_root()
-    engine, bridge, plan = _maintain_build_plan(args, target)
-
-    if not _maintain_scope_recipe(args, plan):
-        return 1
-    if getattr(args, "dry_run", False):
-        _maintain_dry_run(args, bridge, plan, target)
-        return 0
-    return _maintain_apply(args, engine, bridge, plan, target)
 
 
 
