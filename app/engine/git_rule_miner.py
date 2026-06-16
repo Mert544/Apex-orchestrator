@@ -56,6 +56,48 @@ def _extract_expr(line: str) -> str | None:
     return seg
 
 
+def _shas_from_log(log_stdout: str) -> list[str]:
+    """Extract commit SHAs from ``git log --oneline`` output.
+
+    Skips blank lines; the SHA is the first whitespace-delimited token.
+    """
+    shas: list[str] = []
+    for line in log_stdout.splitlines():
+        parts = line.split(None, 1)
+        if not parts:
+            continue
+        shas.append(parts[0])
+    return shas
+
+
+def _single_change(diff_stdout: str) -> tuple[str, str] | None:
+    """Return the (removed, added) line pair from a ``--unified=0`` diff.
+
+    Yields a pair only when exactly one line was removed and exactly one
+    added (a clean single-line change); otherwise None.
+    """
+    removed = [ln[1:] for ln in diff_stdout.splitlines()
+               if ln.startswith("-") and not ln.startswith("---")]
+    added = [ln[1:] for ln in diff_stdout.splitlines()
+             if ln.startswith("+") and not ln.startswith("+++")]
+    if len(removed) != 1 or len(added) != 1:
+        return None  # multi-line change — not a clean single-expression fix
+    return removed[0], added[0]
+
+
+def _expr_pair(removed: str, added: str) -> tuple[str, str] | None:
+    """Unwrap both lines to bare expressions, returning the pair if distinct.
+
+    Returns None when either line is not a parseable expression or the two
+    expressions are identical (no semantic change).
+    """
+    before_expr = _extract_expr(removed)
+    after_expr = _extract_expr(added)
+    if not before_expr or not after_expr or before_expr == after_expr:
+        return None
+    return before_expr, after_expr
+
+
 def mine_git_pairs(project_root: str | Path,
                    max_commits: int = 50) -> list[tuple[str, str]]:
     """Return (before, after) expression-text pairs from the last
@@ -75,26 +117,18 @@ def mine_git_pairs(project_root: str | Path,
         return []
 
     pairs: list[tuple[str, str]] = []
-    for line in log.stdout.splitlines():
-        parts = line.split(None, 1)
-        if not parts:
-            continue
-        sha = parts[0]
+    for sha in _shas_from_log(log.stdout):
         diff = subprocess.run(
             ["git", "diff", f"{sha}^..{sha}", "--unified=0", "--", "*.py"],
             cwd=root, capture_output=True, text=True, timeout=30,
         )
         if diff.returncode != 0:
             continue  # initial commit or merge commit — skip
-        removed = [ln[1:] for ln in diff.stdout.splitlines()
-                   if ln.startswith("-") and not ln.startswith("---")]
-        added = [ln[1:] for ln in diff.stdout.splitlines()
-                 if ln.startswith("+") and not ln.startswith("+++")]
-        if len(removed) != 1 or len(added) != 1:
-            continue  # multi-line change — not a clean single-expression fix
-        before_expr = _extract_expr(removed[0])
-        after_expr = _extract_expr(added[0])
-        if not before_expr or not after_expr or before_expr == after_expr:
+        change = _single_change(diff.stdout)
+        if change is None:
             continue
-        pairs.append((before_expr, after_expr))
+        pair = _expr_pair(*change)
+        if pair is None:
+            continue
+        pairs.append(pair)
     return pairs
