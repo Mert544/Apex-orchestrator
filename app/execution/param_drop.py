@@ -65,41 +65,55 @@ def _segment(source: str, node: ast.AST) -> str:
     return ast.get_source_segment(source, node) or ""
 
 
-def _rebuild_params(source: str, fn: ast.FunctionDef | ast.AsyncFunctionDef,
-                    drop: str) -> str:
-    """The new ``(...)`` interior without ``drop`` — each kept parameter's
-    text is sliced verbatim from the source, so annotations and defaults
-    keep their exact spelling."""
-    a = fn.args
-    parts: list[str] = []
+def _param_text(source: str, arg: ast.arg, default: ast.expr | None) -> str:
+    """One parameter's verbatim text, defaulted spelling included."""
+    text = _segment(source, arg)
+    if default is not None:
+        # PEP 8: spaces around "=" only when the parameter is annotated.
+        eq = " = " if arg.annotation is not None else "="
+        text += f"{eq}{_segment(source, default)}"
+    return text
 
-    def pos_text(arg: ast.arg, default: ast.expr | None) -> str:
-        text = _segment(source, arg)
-        if default is not None:
-            # PEP 8: spaces around "=" only when the parameter is annotated.
-            eq = " = " if arg.annotation is not None else "="
-            text += f"{eq}{_segment(source, default)}"
-        return text
 
-    # Positional (incl. positional-only) with right-aligned defaults.
+def _positional_parts(source: str, a: ast.arguments, drop: str) -> list[str]:
+    """Kept positional parameters (with the ``/`` marker when posonly survive),
+    defaults right-aligned exactly as Python stores them."""
     positional = [*a.posonlyargs, *a.args]
     defaults: list[ast.expr | None] = (
         [None] * (len(positional) - len(a.defaults)) + list(a.defaults))
     keeps_posonly = any(p.arg != drop for p in a.posonlyargs)
+    parts: list[str] = []
     for i, arg in enumerate(positional):
         if arg.arg != drop:
-            parts.append(pos_text(arg, defaults[i]))
+            parts.append(_param_text(source, arg, defaults[i]))
         if keeps_posonly and i == len(a.posonlyargs) - 1:
             parts.append("/")
+    return parts
+
+
+def _keyword_parts(source: str, a: ast.arguments, drop: str) -> list[str]:
+    """Kept keyword-only parameters, fronted by the ``*`` marker when any
+    survive and no ``*args`` already supplies it."""
+    parts: list[str] = []
     if a.vararg:
         parts.append(f"*{_segment(source, a.vararg)}")
     elif a.kwonlyargs and any(k.arg != drop for k in a.kwonlyargs):
         parts.append("*")
     for arg, default in zip(a.kwonlyargs, a.kw_defaults):
         if arg.arg != drop:
-            parts.append(pos_text(arg, default))
+            parts.append(_param_text(source, arg, default))
     if a.kwarg:
         parts.append(f"**{_segment(source, a.kwarg)}")
+    return parts
+
+
+def _rebuild_params(source: str, fn: ast.FunctionDef | ast.AsyncFunctionDef,
+                    drop: str) -> str:
+    """The new ``(...)`` interior without ``drop`` — each kept parameter's
+    text is sliced verbatim from the source, so annotations and defaults
+    keep their exact spelling."""
+    a = fn.args
+    parts = _positional_parts(source, a, drop) + _keyword_parts(source, a, drop)
     return ", ".join(parts)
 
 
@@ -173,6 +187,37 @@ def _call_aliases(tree: ast.Module, rel: str, defmod: str, dotted: str,
     return from_names, module_aliases
 
 
+def _call_targets_func(node: ast.Call, func_name: str, from_names: set[str],
+                       module_aliases: set[str]) -> bool:
+    """True when this call reaches our function by bare name or by an
+    imported module alias."""
+    f = node.func
+    return (isinstance(f, ast.Name) and f.id in from_names) or (
+        isinstance(f, ast.Attribute) and f.attr == func_name
+        and ast.unparse(f.value) in module_aliases)
+
+
+def _keyword_removals(node: ast.Call, rel: str, func_name: str, param: str,
+                      plan: RenamePlan) -> list[tuple[int, int, int]]:
+    """The intra-line spans for ``param=`` in one call; ``**kwargs`` warns and
+    a line-spanning keyword blocks."""
+    removals: list[tuple[int, int, int]] = []
+    for kw in node.keywords:
+        if kw.arg is None:
+            plan.warnings.append(
+                f"{rel}:{node.lineno}: {func_name}(**…) may still carry "
+                f"'{param}' at runtime; check manually")
+        elif kw.arg == param:
+            if kw.lineno != kw.value.end_lineno:
+                plan.blockers.append(
+                    f"{rel}:{node.lineno}: '{param}=' spans lines — "
+                    "collapse the call first")
+                continue
+            removals.append((kw.lineno, kw.col_offset,
+                             kw.value.end_col_offset))
+    return removals
+
+
 def _collect_removals(tree: ast.Module, rel: str, func_name: str, param: str,
                       pos_index: int | None, from_names: set[str],
                       module_aliases: set[str], plan: RenamePlan
@@ -183,30 +228,15 @@ def _collect_removals(tree: ast.Module, rel: str, func_name: str, param: str,
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        f = node.func
-        is_ours = (isinstance(f, ast.Name) and f.id in from_names) or (
-            isinstance(f, ast.Attribute) and f.attr == func_name
-            and ast.unparse(f.value) in module_aliases)
-        if not is_ours:
+        if not _call_targets_func(node, func_name, from_names, module_aliases):
             continue
         if pos_index is not None and len(node.args) > pos_index:
             plan.blockers.append(
                 f"{rel}:{node.lineno}: passes '{param}' POSITIONALLY — "
                 "convert that call to keywords first, then re-run")
             continue
-        for kw in node.keywords:
-            if kw.arg is None:
-                plan.warnings.append(
-                    f"{rel}:{node.lineno}: {func_name}(**…) may still carry "
-                    f"'{param}' at runtime; check manually")
-            elif kw.arg == param:
-                if kw.lineno != kw.value.end_lineno:
-                    plan.blockers.append(
-                        f"{rel}:{node.lineno}: '{param}=' spans lines — "
-                        "collapse the call first")
-                    continue
-                removals.append((kw.lineno, kw.col_offset,
-                                 kw.value.end_col_offset))
+        removals.extend(
+            _keyword_removals(node, rel, func_name, param, plan))
     return removals
 
 
