@@ -110,6 +110,48 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                      "Rewrite `== None` / `!= None` to `is` / `is not` in {s}", True),
     "unreachable-code": ("unreachable_cleanup",
                          "Drop statically-unreachable code after return/raise/break in {s}", True),
+    # More behaviour-preserving readability simplifications, each backed by a
+    # safe, refuse-on-unsafe, self-reparsing AST transform already in the repo
+    # (app/execution/semantic/transforms/). They share the idea budget, so a
+    # seeder emitting them is opt-in — but once emitted the action is executable
+    # through the SAME guarded, test-verified, auto-rollback apply path: the
+    # transform returns None when it can't act safely (so an unsafe input simply
+    # produces "no applicable patch", never a fabricated change). NONE of these
+    # touches logic/correctness — they only spell an equivalent expression more
+    # idiomatically.
+    "chained-comparison": ("chain_comparison",
+                           "Chain `a < b and b < c` into `a < b < c` in {s}", True),
+    "set-literal": ("set_literal",
+                    "Rewrite `set([...])` as a set literal `{{...}}` in {s}", True),
+    "startswith-tuple": ("startswith_tuple",
+                         "Collapse an `or`-chain of `startswith`/`endswith` into a "
+                         "single tuple call in {s}", True),
+    "not-in-simplify": ("not_in_simplify",
+                        "Rewrite `not a in b` / `not a is b` to `a not in b` / "
+                        "`a is not b` in {s}", True),
+    "tuple-membership": ("tuple_membership",
+                         "Use a tuple/set membership test instead of an `or`-chain "
+                         "of equalities in {s}", True),
+    "dict-literal": ("dict_literal",
+                     "Rewrite `dict(a=1, b=2)` as a dict literal `{{...}}` in {s}", True),
+    "double-not": ("double_not",
+                   "Collapse a redundant double negation `not not x` into `bool(x)` "
+                   "in {s}", True),
+    "swap-via-tuple": ("swap_via_tuple",
+                       "Collapse the three-statement temp-variable swap into a "
+                       "tuple swap `a, b = b, a` in {s}", True),
+    "membership-set": ("membership_set",
+                       "Use a set literal for a constant membership test "
+                       "`x in {{...}}` in {s}", True),
+    "percent-string-concat": ("percent_string_concat",
+                              "Constant-fold an adjacent string-literal "
+                              "concatenation `\"a\" + \"b\"` in {s}", True),
+    "redundant-lambda": ("redundant_lambda",
+                         "Drop a trivial forwarding lambda "
+                         "`lambda a, b: f(a, b)` -> `f` in {s}", True),
+    "augmented-assign": ("augmented_assign",
+                         "Combine a self-referential assignment `x = x + 1` into "
+                         "`x += 1` in {s}", True),
     # The hands exist (apex signature drop/keywordify) but as supervised CLI
     # muscles, not unattended transforms — the work order carries the command.
     "dead-parameter": ("design_task",
@@ -477,6 +519,22 @@ class IdeaActionBridge:
         "isinstance_merge": ["merge isinstance"],
         "simplify_none_compare": ["simplify none-compare"],
         "unreachable_cleanup": ["remove unreachable code"],
+        # Newly promoted behaviour-preserving simplifications. Each routes
+        # straight to its AST transform via _simplify_dispatch (the strategy
+        # hint is only a label for proof/preview rows); listing them here lets
+        # _step_targets recognise the action as a real transform objective.
+        "chain_comparison": ["chain comparison"],
+        "set_literal": ["set literal"],
+        "startswith_tuple": ["startswith endswith tuple"],
+        "not_in_simplify": ["simplify negated membership"],
+        "tuple_membership": ["tuple membership"],
+        "dict_literal": ["dict literal"],
+        "double_not": ["remove double negation"],
+        "swap_via_tuple": ["tuple swap"],
+        "membership_set": ["membership set literal"],
+        "percent_string_concat": ["fold string literal concat"],
+        "redundant_lambda": ["drop forwarding lambda"],
+        "augmented_assign": ["combine augmented assignment"],
     }
 
     # Behaviour-preserving readability simplifications dispatched STRAIGHT to
@@ -492,11 +550,23 @@ class IdeaActionBridge:
     # self-verifying simplification.
     @classmethod
     def _simplify_dispatch(cls):
+        from app.execution.semantic.transforms import augmented_assign
+        from app.execution.semantic.transforms import chained_comparison
         from app.execution.semantic.transforms import dict_get_default
+        from app.execution.semantic.transforms import dict_literal
+        from app.execution.semantic.transforms import double_not
         from app.execution.semantic.transforms import isinstance_merge
+        from app.execution.semantic.transforms import membership_set
         from app.execution.semantic.transforms import merge_nested_if
+        from app.execution.semantic.transforms import not_in_simplify
+        from app.execution.semantic.transforms import percent_string_concat
         from app.execution.semantic.transforms import redundant_else
+        from app.execution.semantic.transforms import redundant_lambda
+        from app.execution.semantic.transforms import set_literal
         from app.execution.semantic.transforms import simplify_comparison
+        from app.execution.semantic.transforms import startswith_tuple
+        from app.execution.semantic.transforms import swap_via_tuple
+        from app.execution.semantic.transforms import tuple_membership
         from app.execution.semantic.transforms import unreachable_cleanup
 
         return {
@@ -506,6 +576,30 @@ class IdeaActionBridge:
             "isinstance_merge": isinstance_merge.apply,
             "simplify_none_compare": simplify_comparison.apply,
             "unreachable_cleanup": unreachable_cleanup.apply,
+            # Newly promoted: each carries the SAME refuse-on-unsafe,
+            # self-reparsing, behaviour-preserving contract as the six above.
+            # Dispatched straight to its AST transform and vetted through the
+            # IDENTICAL apply_step gate (mode policy -> SafetyGates -> snapshot
+            # -> write -> test-verify -> auto-rollback); the bridge only chooses
+            # WHICH transform, it never bypasses the safety path.
+            "chain_comparison": chained_comparison.apply,
+            "set_literal": set_literal.apply,
+            "startswith_tuple": startswith_tuple.apply,
+            "not_in_simplify": not_in_simplify.apply,
+            "tuple_membership": tuple_membership.apply,
+            "dict_literal": dict_literal.apply,
+            "double_not": double_not.apply,
+            "swap_via_tuple": swap_via_tuple.apply,
+            "membership_set": membership_set.apply,
+            "percent_string_concat": percent_string_concat.apply,
+            "redundant_lambda": redundant_lambda.apply,
+            # ``augmented_assign.apply`` has a 2-arg signature (no ``title``);
+            # adapt it so the dispatch stays uniform. Without this the 3-arg
+            # call in _simplify_generate would raise TypeError (swallowed to
+            # None), making the step silently un-runnable — exactly the hollow
+            # "executable" the brief forbids.
+            "augmented_assign": (lambda rel, src, _title:
+                                 augmented_assign.apply(rel, src)),
         }
 
     @staticmethod

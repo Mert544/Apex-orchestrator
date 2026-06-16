@@ -1,4 +1,4 @@
-"""The 6 new behaviour-preserving simplification transforms must be
+"""The behaviour-preserving simplification transforms must be
 dispatchable through ``IdeaActionBridge``.
 
 These assert the registration (each action_type is in both the change-strategy
@@ -56,6 +56,79 @@ _CASES = {
         "unreachable-code",
         "remove_unreachable_code",
         "def f():\n    return 1\n    x = 2\n",
+        "def f():\n    return 1\n",
+    ),
+    # Promoted in this wave: same refuse-on-unsafe contract, same guarded gate.
+    "chain_comparison": (
+        "chained-comparison",
+        "chained_comparison",
+        "def f(a, b, c):\n    return a < b and b < c\n",
+        "def f():\n    return 1\n",
+    ),
+    "set_literal": (
+        "set-literal",
+        "set_literal",
+        "x = set([1, 2, 3])\n",
+        "def f():\n    return 1\n",
+    ),
+    "startswith_tuple": (
+        "startswith-tuple",
+        "startswith_tuple",
+        'def f(s):\n    return s.startswith("a") or s.startswith("b")\n',
+        "def f():\n    return 1\n",
+    ),
+    "not_in_simplify": (
+        "not-in-simplify",
+        "simplify_not_in",
+        "def f(a, b):\n    return not a in b\n",
+        "def f():\n    return 1\n",
+    ),
+    "tuple_membership": (
+        "tuple-membership",
+        "tuple_membership",
+        "def f(x):\n    return x == 1 or x == 2 or x == 3\n",
+        "def f():\n    return 1\n",
+    ),
+    "dict_literal": (
+        "dict-literal",
+        "dict_literal",
+        "x = dict(a=1, b=2)\n",
+        "def f():\n    return 1\n",
+    ),
+    "double_not": (
+        "double-not",
+        "double_not_to_bool",
+        "def f(x):\n    return not not x\n",
+        "def f():\n    return 1\n",
+    ),
+    "swap_via_tuple": (
+        "swap-via-tuple",
+        "swap_via_tuple",
+        "def f(a, b):\n    tmp = a\n    a = b\n    b = tmp\n    return a, b\n",
+        "def f():\n    return 1\n",
+    ),
+    "membership_set": (
+        "membership-set",
+        "membership_set",
+        "def f(x):\n    return x in (1, 2, 3)\n",
+        "def f():\n    return 1\n",
+    ),
+    "percent_string_concat": (
+        "percent-string-concat",
+        "fold_string_concat",
+        'x = "a" + "b"\n',
+        "def f():\n    return 1\n",
+    ),
+    "redundant_lambda": (
+        "redundant-lambda",
+        "drop_redundant_lambda",
+        "y = sorted(xs, key=lambda x: g(x))\n",
+        "def f():\n    return 1\n",
+    ),
+    "augmented_assign": (
+        "augmented-assign",
+        "augmented_assign",
+        "def f(x):\n    x = x + 1\n    return x\n",
         "def f():\n    return 1\n",
     ),
 }
@@ -176,3 +249,126 @@ def test_report_mode_never_applies(tmp_path: Path) -> None:
     out = bridge.apply_step(_step("merge_nested_if", rel), str(tmp_path),
                             mode="report")
     assert out["applied"] is False
+
+
+# --- The newly-promoted transforms each flow through the full apply gate. ---
+
+# action_types added in this wave (everything beyond the original six).
+_NEW = {
+    "chain_comparison", "set_literal", "startswith_tuple", "not_in_simplify",
+    "tuple_membership", "dict_literal", "double_not", "swap_via_tuple",
+    "membership_set", "percent_string_concat", "redundant_lambda",
+    "augmented_assign",
+}
+
+
+def test_new_labels_promoted_to_executable() -> None:
+    """Every newly-wired label is executable, has a dispatch + strategy, and
+    points at a transform_type the transform actually stamps."""
+    dispatch = IdeaActionBridge._simplify_dispatch()
+    for action_type in _NEW:
+        assert action_type in dispatch, action_type
+        assert action_type in IdeaActionBridge._ACTION_STRATEGY, action_type
+        fact_label, transform_type, *_ = _CASES[action_type]
+        mapped_action, _desc, executable = _FACT_ACTIONS[fact_label]
+        assert mapped_action == action_type
+        assert executable is True
+
+
+def test_new_transforms_apply_through_guarded_gate(tmp_path: Path) -> None:
+    """Each newly-promoted transform actually rewrites its matching file via the
+    SAME snapshot/apply gate (autonomous), proving the wiring is end-to-end."""
+    import ast
+
+    bridge = IdeaActionBridge()
+    for action_type in _NEW:
+        _fact, transform_type, match_src, _no = _CASES[action_type]
+        rel = f"{action_type}_apply.py"
+        (tmp_path / rel).write_text(match_src, encoding="utf-8")
+        out = bridge.apply_step(_step(action_type, rel), str(tmp_path),
+                                mode="autonomous")
+        assert out["applied"] is True, action_type
+        assert out["transform_type"] == transform_type, action_type
+        written = (tmp_path / rel).read_text(encoding="utf-8")
+        assert written != match_src, action_type
+        ast.parse(written)
+
+
+def test_new_transforms_verify_and_keep_on_green(tmp_path: Path) -> None:
+    """With verify on, a matching rewrite that leaves a green suite is KEPT
+    (not rolled back) — the full snapshot -> write -> test-verify path runs and
+    passes for a behaviour-preserving change."""
+    bridge = IdeaActionBridge()
+    # A trivially-green test so the suite passes after the (behaviour-preserving)
+    # rewrite of the sibling module.
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_ok.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8")
+
+    _fact, transform_type, match_src, _no = _CASES["set_literal"]
+    rel = "mod_under_change.py"
+    (tmp_path / rel).write_text(match_src, encoding="utf-8")
+    out = bridge.apply_step(_step("set_literal", rel), str(tmp_path),
+                            mode="autonomous", verify=True, run_tests=False)
+    assert out["applied"] is True
+    assert out.get("rolled_back") is False
+    assert out.get("verified") is True
+    # File stays changed (kept), not restored to its pre-patch snapshot.
+    assert (tmp_path / rel).read_text(encoding="utf-8") != match_src
+
+
+def test_new_transforms_rollback_on_red(tmp_path: Path) -> None:
+    """With verify on, if the suite goes red after a write, EVERY changed file
+    is restored to its snapshot — the auto-rollback gate is not weakened for the
+    promoted transforms."""
+    bridge = IdeaActionBridge()
+    # A suite that always fails, so any applied change must roll back.
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_red.py").write_text(
+        "def test_red():\n    assert False\n", encoding="utf-8")
+
+    _fact, _tt, match_src, _no = _CASES["double_not"]
+    rel = "mod_rollback.py"
+    (tmp_path / rel).write_text(match_src, encoding="utf-8")
+    # run_tests=False skips the PRE-write safety-gate test check (so the write
+    # happens), but verify=True still runs the POST-write suite — which is red,
+    # so the change must be rolled back.
+    out = bridge.apply_step(_step("double_not", rel), str(tmp_path),
+                            mode="autonomous", verify=True, run_tests=False)
+    assert out["applied"] is False
+    assert out.get("rolled_back") is True
+    # The original content was restored byte-for-byte.
+    assert (tmp_path / rel).read_text(encoding="utf-8") == match_src
+
+
+def test_new_transforms_unsafe_input_declines(tmp_path: Path) -> None:
+    """An input the transform can't act on safely returns None -> the step stays
+    safe (no patch, nothing applied), for every promoted transform."""
+    bridge = IdeaActionBridge()
+    for action_type in _NEW:
+        _fact, _tt, _match, no_src = _CASES[action_type]
+        rel = f"{action_type}_unsafe.py"
+        (tmp_path / rel).write_text(no_src, encoding="utf-8")
+        before = (tmp_path / rel).read_text(encoding="utf-8")
+        out = bridge.apply_step(_step(action_type, rel), str(tmp_path),
+                                mode="autonomous", verify=True, run_tests=True)
+        assert out["applied"] is False, action_type
+        assert out["reason"] == "no applicable patch generated", action_type
+        # Untouched: the refusal never wrote anything.
+        assert (tmp_path / rel).read_text(encoding="utf-8") == before, action_type
+
+
+def test_new_transforms_report_mode_never_applies(tmp_path: Path) -> None:
+    """Report mode is read-only for every promoted transform too."""
+    bridge = IdeaActionBridge()
+    for action_type in _NEW:
+        _fact, _tt, match_src, _no = _CASES[action_type]
+        rel = f"{action_type}_report.py"
+        (tmp_path / rel).write_text(match_src, encoding="utf-8")
+        out = bridge.apply_step(_step(action_type, rel), str(tmp_path),
+                                mode="report")
+        assert out["applied"] is False, action_type
+        # Read-only: the file is never modified.
+        assert (tmp_path / rel).read_text(encoding="utf-8") == match_src, action_type
