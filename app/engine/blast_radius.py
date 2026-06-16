@@ -161,6 +161,58 @@ def _reverse_map(graph: dict) -> dict[str, set[str]]:
     return reverse
 
 
+def _changed_adjacency(changed: list[str], graph: dict) -> dict[str, set[str]]:
+    """Undirected adjacency among CHANGED modules only (edge = import between two).
+
+    Connectivity over this subgraph means the change forms a single, related
+    cluster.
+    """
+    changed_set = set(changed)
+    adj: dict[str, set[str]] = {c: set() for c in changed}
+    for path in changed:
+        node = graph.get(path)
+        if node is None:
+            continue
+        for target in node.imports:
+            if target in changed_set:
+                adj[path].add(target)
+                adj[target].add(path)
+    return adj
+
+
+def _reachable_from(start: str, adj: dict[str, set[str]]) -> set[str]:
+    """Modules reachable from ``start`` over the undirected adjacency ``adj``.
+
+    Deterministic DFS (neighbours visited in sorted order).
+    """
+    seen: set[str] = set()
+    stack = [start]
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        stack.extend(sorted(adj[cur]))
+    return seen
+
+
+def _prefix_cohesion(n: int, packages: list[str]) -> Cohesion:
+    """Fallback signal: fraction of modules under the longest common package prefix."""
+    prefix = _common_prefix(packages)
+    if not prefix:
+        return Cohesion(
+            0.0, "scattered",
+            f"{n} modules share no common package and no import edges (possible scope creep)",
+        )
+    matching = sum(1 for pkg in packages if pkg == prefix or pkg.startswith(prefix + "/"))
+    score = round(matching / n, 4)
+    label = "tight" if score >= _TIGHT_THRESHOLD else "scattered"
+    return Cohesion(
+        score, label,
+        f"{matching}/{n} modules under common prefix '{prefix}'",
+    )
+
+
 def _compute_cohesion(changed: list[str], graph: dict) -> Cohesion:
     """Deterministic scope-cohesion signal for the changed set.
 
@@ -190,45 +242,11 @@ def _compute_cohesion(changed: list[str], graph: dict) -> Cohesion:
         pkg = packages[0] or "(repo root)"
         return Cohesion(1.0, "tight", f"all {n} modules share package '{pkg}'")
 
-    changed_set = set(changed)
-    # Undirected adjacency among the CHANGED modules only (an edge exists if one
-    # changed module imports another). Connectivity over this subgraph means the
-    # change forms a single, related cluster.
-    adj: dict[str, set[str]] = {c: set() for c in changed}
-    for path in changed:
-        node = graph.get(path)
-        if node is None:
-            continue
-        for target in node.imports:
-            if target in changed_set:
-                adj[path].add(target)
-                adj[target].add(path)
-
-    start = min(changed)
-    seen: set[str] = set()
-    stack = [start]
-    while stack:
-        cur = stack.pop()
-        if cur in seen:
-            continue
-        seen.add(cur)
-        stack.extend(sorted(adj[cur]))
-    if seen == changed_set:
+    adj = _changed_adjacency(changed, graph)
+    if _reachable_from(min(changed), adj) == set(changed):
         return Cohesion(1.0, "tight", f"all {n} changed modules are connected by direct imports")
 
-    prefix = _common_prefix(packages)
-    if not prefix:
-        return Cohesion(
-            0.0, "scattered",
-            f"{n} modules share no common package and no import edges (possible scope creep)",
-        )
-    matching = sum(1 for pkg in packages if pkg == prefix or pkg.startswith(prefix + "/"))
-    score = round(matching / n, 4)
-    label = "tight" if score >= _TIGHT_THRESHOLD else "scattered"
-    return Cohesion(
-        score, label,
-        f"{matching}/{n} modules under common prefix '{prefix}'",
-    )
+    return _prefix_cohesion(n, packages)
 
 
 def _covering_tests(root: Path, changed: list[str]) -> list[str]:

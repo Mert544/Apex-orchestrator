@@ -90,30 +90,47 @@ def _long_functions(source: str) -> list[tuple[int, str]]:
     return out
 
 
-def evidence_for_facet(source: str, phrase: str, limit: int = 2) -> list[tuple[int, str]]:
-    """Concrete ``(line, detail)`` evidence that ``phrase`` is a real concern in
-    ``source`` — or ``[]`` when the concern is (honestly) only a hypothesis."""
-    p = phrase.lower()
-    out: list[tuple[int, str]] = []
+def _matches(p: str, keys: tuple[str, ...]) -> bool:
+    """True if the lowercased phrase ``p`` contains any of ``keys``."""
+    return any(k in p for k in keys)
 
+
+def _rule_evidence(p: str, source: str) -> list[tuple[int, str]]:
+    """Finding-backed evidence: the first matching rule's qualifying issues."""
     issues: list[Issue] = detect(source)
+    out: list[tuple[int, str]] = []
     for keys, pred in _RULES:
-        if any(k in p for k in keys):
+        if _matches(p, keys):
             for i in issues:
                 if pred(i):
                     out.append((i.line, i.message.split("—")[0].strip()[:64]))
             break
+    return out
 
-    if not out and any(k in p for k in _SIGNATURE_KEYS):
+
+def _complexity_evidence(source: str) -> list[tuple[int, str]]:
+    """Per-function branch-count evidence at or above the complexity floor."""
+    from app.tools.code_metrics import function_complexities
+
+    out: list[tuple[int, str]] = []
+    for name, lineno, cx in function_complexities(source):
+        if cx >= _COMPLEXITY_FLOOR:
+            out.append((lineno, f"{name}() has {cx} branches"))
+    return out
+
+
+def evidence_for_facet(source: str, phrase: str, limit: int = 2) -> list[tuple[int, str]]:
+    """Concrete ``(line, detail)`` evidence that ``phrase`` is a real concern in
+    ``source`` — or ``[]`` when the concern is (honestly) only a hypothesis."""
+    p = phrase.lower()
+    out: list[tuple[int, str]] = _rule_evidence(p, source)
+
+    if not out and _matches(p, _SIGNATURE_KEYS):
         out += _long_signatures(source)
-    if not out and any(k in p for k in _LENGTH_KEYS):
+    if not out and _matches(p, _LENGTH_KEYS):
         out += _long_functions(source)
-    if not out and any(k in p for k in _COMPLEXITY_KEYS):
-        from app.tools.code_metrics import function_complexities
-
-        for name, lineno, cx in function_complexities(source):
-            if cx >= _COMPLEXITY_FLOOR:
-                out.append((lineno, f"{name}() has {cx} branches"))
+    if not out and _matches(p, _COMPLEXITY_KEYS):
+        out += _complexity_evidence(source)
 
     # Deterministic order: by line; cap so a noisy file can't flood the facet.
     out.sort(key=lambda t: t[0])
