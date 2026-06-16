@@ -959,3 +959,88 @@ def test_detect_kitchen_sink_suppressions_filter():
     assert all(i.fix_kind != "eval" for i in out)
     # Count drops by exactly the one suppressed eval finding.
     assert len(out) == len(_KITCHEN_SINK_FINDINGS) - 1
+
+
+# Characterization source exercising every per-Call rule: the Name-call rules
+# (eval/exec/open-encoding/empty-collection), the attr-call rules
+# (os.system/pickle/yaml/tempfile/weak-hash/sql-fstring/subprocess-shell), the
+# net-timeout rule, plus the negative variants each rule must NOT fire on
+# (set(), encoding= present, binary mode, yaml.safe_load, sha256,
+# usedforsecurity=False, shell=False, timeout= present, **kwargs). It pins the
+# exact (line, category, severity, fix_kind, message) tuples and their order so
+# the _detect_call decomposition stays byte-identical.
+_CALL_RULES_SRC = (
+    'import os, pickle, yaml, hashlib, subprocess, requests, httpx, tempfile, urllib\n'
+    'from urllib.request import urlopen\n'
+    '\n'
+    '\n'
+    'def _calls(x, data, stream, kw, cur):\n'
+    '    eval("1+1")\n'
+    '    exec("y=2")\n'
+    '    open("a.txt")\n'
+    '    open("a.txt", "rb")\n'
+    '    open("a.txt", encoding="utf-8")\n'
+    '    dict()\n'
+    '    list()\n'
+    '    tuple()\n'
+    '    set()\n'
+    '    os.system("ls")\n'
+    '    pickle.loads(data)\n'
+    '    yaml.load(stream)\n'
+    '    yaml.safe_load(stream)\n'
+    '    tempfile.mktemp()\n'
+    '    hashlib.md5(b"x")\n'
+    '    hashlib.sha1(b"x")\n'
+    '    hashlib.md5(b"x", usedforsecurity=False)\n'
+    '    hashlib.sha256(b"x")\n'
+    '    cur.execute(f"SELECT {x}")\n'
+    '    cur.executemany(f"INSERT {x}")\n'
+    '    subprocess.run("ls", shell=True)\n'
+    '    subprocess.check_output("ls", shell=True)\n'
+    '    subprocess.run("ls", shell=False)\n'
+    '    requests.get("http://x")\n'
+    '    requests.post("http://x", timeout=5)\n'
+    '    httpx.get("http://x")\n'
+    '    urlopen("http://x")\n'
+    '    urllib.request.urlopen("http://x")\n'
+    '    requests.get("http://x", **kw)\n'
+)
+
+_CALL_RULES_FINDINGS = [
+    (6, 'security', 'high', 'eval', 'eval() — code injection risk'),
+    (7, 'security', 'high', '', 'exec() — code injection risk'),
+    (8, 'bug', 'low', 'open-encoding',
+     'open() without encoding= is locale-dependent — pass encoding="utf-8"'),
+    (11, 'style', 'low', 'collection-literal', 'use a literal `{}` instead of `dict()`'),
+    (12, 'style', 'low', 'collection-literal', 'use a literal `[]` instead of `list()`'),
+    (13, 'style', 'low', 'collection-literal', 'use a literal `()` instead of `tuple()`'),
+    (15, 'security', 'high', 'os.system', 'os.system() — prefer subprocess.run()'),
+    (16, 'security', 'high', 'pickle', 'pickle.loads() — unsafe deserialization'),
+    (17, 'security', 'medium', 'yaml', 'yaml.load() — prefer yaml.safe_load()'),
+    (19, 'security', 'medium', 'tempfile',
+     'tempfile.mktemp() — TOCTOU race; use mkstemp()/NamedTemporaryFile'),
+    (20, 'security', 'medium', 'weak-hash',
+     'hashlib.md5() is weak for security — use sha256, or pass '
+     'usedforsecurity=False if non-security'),
+    (21, 'security', 'medium', 'weak-hash',
+     'hashlib.sha1() is weak for security — use sha256, or pass '
+     'usedforsecurity=False if non-security'),
+    (24, 'security', 'high', 'sql', 'SQL built from an f-string — injection risk'),
+    (25, 'security', 'high', 'sql', 'SQL built from an f-string — injection risk'),
+    (26, 'security', 'high', '', 'subprocess with shell=True — command injection risk'),
+    (27, 'security', 'high', '', 'subprocess with shell=True — command injection risk'),
+    (29, 'bug', 'medium', 'net-timeout',
+     'network call without timeout= can hang forever — pass timeout=...'),
+    (31, 'bug', 'medium', 'net-timeout',
+     'network call without timeout= can hang forever — pass timeout=...'),
+    (32, 'bug', 'medium', 'net-timeout',
+     'network call without timeout= can hang forever — pass timeout=...'),
+    (33, 'bug', 'medium', 'net-timeout',
+     'network call without timeout= can hang forever — pass timeout=...'),
+]
+
+
+def test_detect_call_rules_characterization():
+    out = detect(_CALL_RULES_SRC)
+    actual = [(i.line, i.category, i.severity, i.fix_kind, i.message) for i in out]
+    assert actual == _CALL_RULES_FINDINGS

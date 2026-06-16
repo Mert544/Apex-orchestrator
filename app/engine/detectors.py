@@ -147,48 +147,99 @@ def _detect_call(node: ast.Call, add) -> None:
     """Findings for a call node: a network call missing ``timeout=``; the
     ``eval``/``exec``/``open``/empty-collection builtins; and attribute-based
     risks (``os.system``, ``pickle.loads``, ``yaml.load``, ``tempfile.mktemp``,
-    weak hashes, SQL f-strings, ``subprocess`` with ``shell=True``)."""
+    weak hashes, SQL f-strings, ``subprocess`` with ``shell=True``).
+
+    The network-timeout check fires independently; the func-shape rules below it
+    are mutually exclusive (first match wins, preserving the original ``elif``
+    order), split into per-shape helpers so this dispatcher stays small.
+    """
     if _is_network_call_without_timeout(node):
         add(node.lineno, "bug", "medium",
             "network call without timeout= can hang forever — pass timeout=...", "net-timeout")
     f = node.func
-    if isinstance(f, ast.Name) and f.id == "eval":
+    if isinstance(f, ast.Name):
+        _detect_call_name(node, f, add)
+    elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+        _detect_call_attr(node, f, add)
+
+
+def _detect_call_name(node: ast.Call, f: ast.Name, add) -> None:
+    """Findings for a ``Name(...)`` call: ``eval``/``exec``, an encoding-less
+    text ``open()``, and an empty ``dict``/``list``/``tuple`` constructor. First
+    match wins, matching the original ``elif`` ordering."""
+    if f.id == "eval":
         add(node.lineno, "security", "high", "eval() — code injection risk", "eval")
-    elif isinstance(f, ast.Name) and f.id == "exec":
+    elif f.id == "exec":
         add(node.lineno, "security", "high", "exec() — code injection risk", "")
-    elif isinstance(f, ast.Name) and f.id == "open" and _is_text_open_without_encoding(node):
+    elif f.id == "open" and _is_text_open_without_encoding(node):
         add(node.lineno, "bug", "low",
             "open() without encoding= is locale-dependent — pass encoding=\"utf-8\"",
             "open-encoding")
-    elif (isinstance(f, ast.Name) and f.id in ("dict", "list", "tuple")
-          and not node.args and not node.keywords):
+    elif f.id in ("dict", "list", "tuple") and not node.args and not node.keywords:
         lit = {"dict": "{}", "list": "[]", "tuple": "()"}[f.id]
         add(node.lineno, "style", "low",
             f"use a literal `{lit}` instead of `{f.id}()`", "collection-literal")
-    elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
-        owner, attr = f.value.id, f.attr
-        if owner == "os" and attr == "system":
-            add(node.lineno, "security", "high", "os.system() — prefer subprocess.run()", "os.system")
-        elif owner == "pickle" and attr == "loads":
-            add(node.lineno, "security", "high", "pickle.loads() — unsafe deserialization", "pickle")
-        elif owner == "yaml" and attr == "load":
-            add(node.lineno, "security", "medium", "yaml.load() — prefer yaml.safe_load()", "yaml")
-        elif owner == "tempfile" and attr == "mktemp":
-            add(node.lineno, "security", "medium",
-                "tempfile.mktemp() — TOCTOU race; use mkstemp()/NamedTemporaryFile", "tempfile")
-        elif owner == "hashlib" and attr in ("md5", "sha1") and not _has_usedforsecurity_false(node):
-            add(node.lineno, "security", "medium",
-                f"hashlib.{attr}() is weak for security — use sha256, or pass "
-                "usedforsecurity=False if non-security", "weak-hash")
-        elif attr in ("execute", "executemany", "cursor") and any(
-            isinstance(a, ast.JoinedStr) for a in node.args
-        ):
-            add(node.lineno, "security", "high", "SQL built from an f-string — injection risk", "sql")
-        elif attr in ("run", "call", "Popen", "check_output", "check_call") and any(
-            kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
-            for kw in node.keywords
-        ):
-            add(node.lineno, "security", "high", "subprocess with shell=True — command injection risk", "")
+
+
+def _is_sql_fstring_call(node: ast.Call, owner: str, attr: str) -> bool:
+    """True for a DB-cursor ``execute``/``executemany``/``cursor`` call whose
+    args include an f-string (SQL built via interpolation — injection risk)."""
+    return attr in ("execute", "executemany", "cursor") and any(
+        isinstance(a, ast.JoinedStr) for a in node.args)
+
+
+def _is_shell_true_call(node: ast.Call, owner: str, attr: str) -> bool:
+    """True for a ``subprocess`` runner call passing ``shell=True``."""
+    return attr in ("run", "call", "Popen", "check_output", "check_call") and any(
+        kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+        for kw in node.keywords)
+
+
+def _is_weak_hash_call(node: ast.Call, owner: str, attr: str) -> bool:
+    """True for ``hashlib.md5``/``sha1`` not declared ``usedforsecurity=False``."""
+    return owner == "hashlib" and attr in ("md5", "sha1") and not _has_usedforsecurity_false(node)
+
+
+def _weak_hash_message(node: ast.Call, owner: str, attr: str) -> str:
+    return (f"hashlib.{attr}() is weak for security — use sha256, or pass "
+            "usedforsecurity=False if non-security")
+
+
+# Ordered rule table for an ``owner.attr(...)`` call (``owner`` a plain Name).
+# Each rule is (predicate, category, severity, message, fix_kind); the message
+# may be a str or a callable ``(node, owner, attr) -> str`` for the one rule that
+# interpolates ``attr``. First matching rule wins, preserving the historical
+# ``elif`` order the byte-for-byte finding contract depends on.
+_CALL_ATTR_RULES = (
+    (lambda n, o, a: o == "os" and a == "system",
+     "security", "high", "os.system() — prefer subprocess.run()", "os.system"),
+    (lambda n, o, a: o == "pickle" and a == "loads",
+     "security", "high", "pickle.loads() — unsafe deserialization", "pickle"),
+    (lambda n, o, a: o == "yaml" and a == "load",
+     "security", "medium", "yaml.load() — prefer yaml.safe_load()", "yaml"),
+    (lambda n, o, a: o == "tempfile" and a == "mktemp",
+     "security", "medium",
+     "tempfile.mktemp() — TOCTOU race; use mkstemp()/NamedTemporaryFile", "tempfile"),
+    (_is_weak_hash_call, "security", "medium", _weak_hash_message, "weak-hash"),
+    (_is_sql_fstring_call,
+     "security", "high", "SQL built from an f-string — injection risk", "sql"),
+    (_is_shell_true_call,
+     "security", "high", "subprocess with shell=True — command injection risk", ""),
+)
+
+
+def _detect_call_attr(node: ast.Call, f: ast.Attribute, add) -> None:
+    """Findings for an ``owner.attr(...)`` call (``owner`` a plain Name):
+    ``os.system``, ``pickle.loads``, ``yaml.load``, ``tempfile.mktemp``, a weak
+    hash, a SQL f-string, or ``subprocess`` with ``shell=True``. Walks
+    :data:`_CALL_ATTR_RULES` in order; the first match emits and wins (the same
+    first-match semantics as the original ``elif`` chain)."""
+    owner, attr = f.value.id, f.attr
+    for predicate, category, severity, message, fix_kind in _CALL_ATTR_RULES:
+        if predicate(node, owner, attr):
+            msg = message(node, owner, attr) if callable(message) else message
+            add(node.lineno, category, severity, msg, fix_kind)
+            return
 
 
 def _detect_assignment(node, add) -> None:
