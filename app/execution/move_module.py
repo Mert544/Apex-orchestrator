@@ -114,18 +114,24 @@ def _resolves_to(importer_rel: str, node: ast.ImportFrom, target_dotted: str) ->
     return resolved == target_parent and any(a.name == target_stem for a in node.names)
 
 
-def plan_move(project_root: str | Path, src_rel: str, dst_rel: str) -> MovePlan:
-    """Build the full module-move plan, or its blockers."""
-    src_rel = src_rel.replace("\\", "/")
-    dst_rel = dst_rel.replace("\\", "/")
-    plan = MovePlan(src=src_rel, dst=dst_rel)
-    root = Path(project_root)
+@dataclass
+class _Names:
+    """The dotted forms and parent/stem splits the rewriters need."""
+    old_dotted: str
+    new_dotted: str
+    old_parent: str
+    old_stem: str
+    new_parent: str
+    new_stem: str
 
+
+def _validate_move_paths(plan: MovePlan, root: Path, src_rel: str, dst_rel: str) -> bool:
+    """Append any path blockers; return True when planning may continue."""
     for rel, label in ((src_rel, "source"), (dst_rel, "destination")):
         if not rel.endswith(".py") or Path(rel).name.startswith("__"):
             plan.blockers.append(f"{label} must be a regular .py module: {rel}")
     if plan.blockers:
-        return plan
+        return False
     if not (root / src_rel).exists():
         plan.blockers.append(f"source not found: {src_rel}")
     if (root / dst_rel).exists():
@@ -133,142 +139,242 @@ def plan_move(project_root: str | Path, src_rel: str, dst_rel: str) -> MovePlan:
     for part in _dotted(dst_rel).split("."):
         if not part.isidentifier() or keyword.iskeyword(part):
             plan.blockers.append(f"destination path component '{part}' is not importable")
-    if plan.blockers:
-        return plan
+    return not plan.blockers
 
-    old_dotted, new_dotted = _dotted(src_rel), _dotted(dst_rel)
-    old_parent, _, old_stem = old_dotted.rpartition(".")
-    new_parent, _, new_stem = new_dotted.rpartition(".")
 
-    files = _py_files(root)
-    sources = dict(files)
+def _parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
+    """Parse each (rel, text) pair, skipping files that don't parse."""
     trees: dict[str, ast.Module] = {}
     for rel, text in files:
         try:
             trees[rel] = ast.parse(text)
         except SyntaxError:
             continue
-    if src_rel not in trees:
-        plan.blockers.append(f"{src_rel}: does not parse — fix it before moving")
-        return plan
+    return trees
 
-    # The moved file itself: relative imports break when the directory changes.
+
+def _moved_file_blocks_on_dir_change(src_rel: str, dst_rel: str, tree: ast.Module) -> bool:
+    """The moved file itself: relative imports break when the directory changes."""
     same_dir = Path(src_rel).parent == Path(dst_rel).parent
-    if not same_dir and any(
-        isinstance(n, ast.ImportFrom) and n.level >= 1 for n in ast.walk(trees[src_rel])
-    ):
+    return not same_dir and any(
+        isinstance(n, ast.ImportFrom) and n.level >= 1 for n in ast.walk(tree)
+    )
+
+
+def _import_node_spans(
+    plan: MovePlan, rel: str, tree: ast.Module, node: ast.Import, names: _Names,
+    spans: list[tuple[Span, str, str]],
+) -> None:
+    """Handle a plain ``import app.old [as m]`` node, appending its edits.
+
+    On a multi-line reference it records a blocker and empties ``spans`` (in
+    place), mirroring the original ``spans = []; break`` of the inner loop."""
+    for alias in node.names:
+        if alias.name == names.old_dotted:
+            spans.append(((alias.lineno, alias.col_offset,
+                           alias.col_offset + len(names.old_dotted)),
+                          names.old_dotted, names.new_dotted))
+            if alias.asname is None:
+                expr = _module_expr_spans(tree, names.old_dotted)
+                if expr is None:
+                    plan.blockers.append(
+                        f"{rel}: a `{names.old_dotted}` reference spans multiple lines")
+                    spans.clear()
+                    break
+                spans += [(s, names.old_dotted, names.new_dotted) for s in expr]
+
+
+def _from_pkg_import_spans(
+    plan: MovePlan, rel: str, lines: list[str], node: ast.ImportFrom, names: _Names,
+    spans: list[tuple[Span, str, str]],
+) -> bool:
+    """Handle ``from <old_parent> import <old_stem> [as m]``: the module
+    imported by name. Return whether a bare stem rename was triggered."""
+    if names.new_parent != names.old_parent and len(node.names) > 1:
         plan.blockers.append(
-            f"{src_rel}: uses relative imports and changes directory — make them absolute first")
+            f"{rel}:{node.lineno}: `from {names.old_parent} import …` lists several "
+            "names and the parent package changes — split it manually")
+        return False
+    if names.new_parent != names.old_parent:
+        span = _from_module_span(lines, node, names.old_parent)
+        if span is None:
+            plan.blockers.append(f"{rel}:{node.lineno}: could not locate "
+                                 f"`{names.old_parent}` in the from-import")
+            return False
+        spans.append((span, names.old_parent, names.new_parent))
+    stem_rename = False
+    for alias in node.names:
+        if alias.name == names.old_stem:
+            spans.append(((alias.lineno, alias.col_offset,
+                           alias.col_offset + len(names.old_stem)),
+                          names.old_stem, names.new_stem))
+            if alias.asname is None and names.old_stem != names.new_stem:
+                stem_rename = True
+    return stem_rename
 
-    for rel, tree in trees.items():
-        source = sources[rel]
-        lines = source.splitlines(keepends=True)
-        spans: list[tuple[Span, str, str]] = []  # (span, old_text, new_text)
-        stem_rename = False
 
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name == old_dotted:
-                        spans.append(((alias.lineno, alias.col_offset,
-                                       alias.col_offset + len(old_dotted)),
-                                      old_dotted, new_dotted))
-                        if alias.asname is None:
-                            expr = _module_expr_spans(tree, old_dotted)
-                            if expr is None:
-                                plan.blockers.append(
-                                    f"{rel}: a `{old_dotted}` reference spans multiple lines")
-                                spans = []
-                                break
-                            spans += [(s, old_dotted, new_dotted) for s in expr]
-            elif isinstance(node, ast.ImportFrom):
-                if node.level >= 1:
-                    if _resolves_to(rel, node, old_dotted):
-                        plan.blockers.append(
-                            f"{rel}:{node.lineno}: relative import of the moved module — "
-                            "convert to absolute first")
-                    continue
-                if node.module == old_dotted:
-                    span = _from_module_span(lines, node, old_dotted)
-                    if span is None:
-                        plan.blockers.append(f"{rel}:{node.lineno}: could not locate "
-                                             f"`{old_dotted}` in the from-import")
-                        continue
-                    spans.append((span, old_dotted, new_dotted))
-                elif node.module == old_parent and any(a.name == old_stem for a in node.names):
-                    # `from app import old [as m]` — the module imported by name.
-                    if new_parent != old_parent and len(node.names) > 1:
-                        plan.blockers.append(
-                            f"{rel}:{node.lineno}: `from {old_parent} import …` lists several "
-                            "names and the parent package changes — split it manually")
-                        continue
-                    if new_parent != old_parent:
-                        span = _from_module_span(lines, node, old_parent)
-                        if span is None:
-                            plan.blockers.append(f"{rel}:{node.lineno}: could not locate "
-                                                 f"`{old_parent}` in the from-import")
-                            continue
-                        spans.append((span, old_parent, new_parent))
-                    for alias in node.names:
-                        if alias.name == old_stem:
-                            spans.append(((alias.lineno, alias.col_offset,
-                                           alias.col_offset + len(old_stem)),
-                                          old_stem, new_stem))
-                            if alias.asname is None and old_stem != new_stem:
-                                stem_rename = True
+def _from_import_node_spans(
+    plan: MovePlan, rel: str, lines: list[str], node: ast.ImportFrom, names: _Names,
+    spans: list[tuple[Span, str, str]],
+) -> bool:
+    """Handle a ``from … import …`` node. Return whether it triggered a bare
+    stem rename (name-usage rewrites)."""
+    if node.level >= 1:
+        if _resolves_to(rel, node, names.old_dotted):
+            plan.blockers.append(
+                f"{rel}:{node.lineno}: relative import of the moved module — "
+                "convert to absolute first")
+        return False
+    if node.module == names.old_dotted:
+        span = _from_module_span(lines, node, names.old_dotted)
+        if span is None:
+            plan.blockers.append(f"{rel}:{node.lineno}: could not locate "
+                                 f"`{names.old_dotted}` in the from-import")
+            return False
+        spans.append((span, names.old_dotted, names.new_dotted))
+    elif node.module == names.old_parent and any(
+            a.name == names.old_stem for a in node.names):
+        return _from_pkg_import_spans(plan, rel, lines, node, names, spans)
+    return False
 
-        if stem_rename:
-            if _local_shadow(tree, old_stem):
-                plan.blockers.append(
-                    f"{rel}: '{old_stem}' is shadowed by a parameter/local — rename there first")
-                continue
-            if new_stem in _top_level_bindings(tree):
-                plan.blockers.append(f"{rel}: '{new_stem}' is already bound — collision")
-                continue
-            spans += [
-                ((n.lineno, n.col_offset, n.col_offset + len(old_stem)), old_stem, new_stem)
-                for n in ast.walk(tree)
-                if isinstance(n, ast.Name) and n.id == old_stem
-            ]
 
-        if not spans:
-            continue
-        # Apply per-text: group spans by replacement so the shared helper's
-        # single old->new contract holds for each group.
-        rewritten = source
-        for old_text in sorted({o for _, o, _ in spans}, key=len, reverse=True):
-            group = [s for s, o, _ in spans if o == old_text]
-            new_text = next(n for _, o, n in spans if o == old_text)
-            result = _apply_spans(rewritten, group, old_text, new_text)
-            if result is None:
-                plan.blockers.append(f"{rel}: a located span no longer matches `{old_text}`")
-                rewritten = source
-                break
-            rewritten = result
-        if rewritten != source:
-            plan.originals[rel] = source
-            plan.new_contents[rel] = rewritten
-            plan.edits_by_file[rel] = len(spans)
+def _collect_import_spans(
+    plan: MovePlan, rel: str, tree: ast.Module, lines: list[str], names: _Names,
+) -> tuple[list[tuple[Span, str, str]], bool]:
+    """Collect (span, old, new) edits for every import form in one file.
 
-    # String literals naming the module are dynamic references — warn only.
+    Returns the spans and whether a bare ``from pkg import stem`` rename was
+    seen (which pulls in name-usage rewrites). Appends blockers as found."""
+    spans: list[tuple[Span, str, str]] = []  # (span, old_text, new_text)
+    stem_rename = False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            _import_node_spans(plan, rel, tree, node, names, spans)
+        elif isinstance(node, ast.ImportFrom):
+            if _from_import_node_spans(plan, rel, lines, node, names, spans):
+                stem_rename = True
+
+    return spans, stem_rename
+
+
+def _append_stem_rename_spans(
+    plan: MovePlan, rel: str, tree: ast.Module, names: _Names,
+    spans: list[tuple[Span, str, str]],
+) -> bool:
+    """Add name-usage rewrites for a stem rename; return False to skip the file."""
+    if _local_shadow(tree, names.old_stem):
+        plan.blockers.append(
+            f"{rel}: '{names.old_stem}' is shadowed by a parameter/local — rename there first")
+        return False
+    if names.new_stem in _top_level_bindings(tree):
+        plan.blockers.append(f"{rel}: '{names.new_stem}' is already bound — collision")
+        return False
+    spans += [
+        ((n.lineno, n.col_offset, n.col_offset + len(names.old_stem)),
+         names.old_stem, names.new_stem)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Name) and n.id == names.old_stem
+    ]
+    return True
+
+
+def _rewrite_source(
+    plan: MovePlan, rel: str, source: str, spans: list[tuple[Span, str, str]],
+) -> str:
+    """Apply per-text span groups so the shared helper's single old->new
+    contract holds for each group. Returns the rewritten text (== source on
+    failure, after appending a blocker)."""
+    rewritten = source
+    for old_text in sorted({o for _, o, _ in spans}, key=len, reverse=True):
+        group = [s for s, o, _ in spans if o == old_text]
+        new_text = next(n for _, o, n in spans if o == old_text)
+        result = _apply_spans(rewritten, group, old_text, new_text)
+        if result is None:
+            plan.blockers.append(f"{rel}: a located span no longer matches `{old_text}`")
+            rewritten = source
+            break
+        rewritten = result
+    return rewritten
+
+
+def _plan_file_rewrite(
+    plan: MovePlan, rel: str, source: str, tree: ast.Module, names: _Names,
+) -> None:
+    """Locate edits in one file and record its rewrite on the plan."""
+    lines = source.splitlines(keepends=True)
+    spans, stem_rename = _collect_import_spans(plan, rel, tree, lines, names)
+
+    if stem_rename and not _append_stem_rename_spans(plan, rel, tree, names, spans):
+        return
+
+    if not spans:
+        return
+    rewritten = _rewrite_source(plan, rel, source, spans)
+    if rewritten != source:
+        plan.originals[rel] = source
+        plan.new_contents[rel] = rewritten
+        plan.edits_by_file[rel] = len(spans)
+
+
+def _warn_string_literals(plan: MovePlan, trees: dict[str, ast.Module], old_dotted: str) -> None:
+    """String literals naming the module are dynamic references — warn only."""
     for rel, tree in trees.items():
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and node.value == old_dotted:
                 plan.warnings.append(f"{rel}:{node.lineno}: string literal '{old_dotted}' — "
                                      "dynamic reference? check manually")
 
+
+def _destination_init_files(root: Path, dst_rel: str) -> list[str]:
+    """Every package directory on the destination path must be importable."""
+    init_files: list[str] = []
+    parent = Path(dst_rel).parent
+    while str(parent) not in (".", ""):
+        init = (parent / "__init__.py").as_posix()
+        if not (root / init).exists():
+            init_files.append(init)
+        parent = parent.parent
+    return init_files
+
+
+def plan_move(project_root: str | Path, src_rel: str, dst_rel: str) -> MovePlan:
+    """Build the full module-move plan, or its blockers."""
+    src_rel = src_rel.replace("\\", "/")
+    dst_rel = dst_rel.replace("\\", "/")
+    plan = MovePlan(src=src_rel, dst=dst_rel)
+    root = Path(project_root)
+
+    if not _validate_move_paths(plan, root, src_rel, dst_rel):
+        return plan
+
+    old_dotted, new_dotted = _dotted(src_rel), _dotted(dst_rel)
+    old_parent, _, old_stem = old_dotted.rpartition(".")
+    new_parent, _, new_stem = new_dotted.rpartition(".")
+    names = _Names(old_dotted, new_dotted, old_parent, old_stem, new_parent, new_stem)
+
+    files = _py_files(root)
+    sources = dict(files)
+    trees = _parse_trees(files)
+    if src_rel not in trees:
+        plan.blockers.append(f"{src_rel}: does not parse — fix it before moving")
+        return plan
+
+    if _moved_file_blocks_on_dir_change(src_rel, dst_rel, trees[src_rel]):
+        plan.blockers.append(
+            f"{src_rel}: uses relative imports and changes directory — make them absolute first")
+
+    for rel, tree in trees.items():
+        _plan_file_rewrite(plan, rel, sources[rel], tree, names)
+
+    _warn_string_literals(plan, trees, old_dotted)
+
     # The moved file's own (possibly rewritten) content lands at dst.
     plan.moved_content = plan.new_contents.pop(src_rel, sources[src_rel])
     plan.originals.setdefault(src_rel, sources[src_rel])
     plan.edits_by_file.pop(src_rel, None)
 
-    # Every package directory on the destination path must be importable.
-    parent = Path(dst_rel).parent
-    while str(parent) not in (".", ""):
-        init = (parent / "__init__.py").as_posix()
-        if not (root / init).exists():
-            plan.init_files.append(init)
-        parent = parent.parent
+    plan.init_files = _destination_init_files(root, dst_rel)
     return plan
 
 
