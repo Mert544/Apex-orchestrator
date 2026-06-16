@@ -114,153 +114,119 @@ def _run_swarm_with_plugins(
     return results, md_path
 
 
-def _env_flag(value: str | None) -> bool:
-    """Truthy when an env value is one of ``1``/``true``/``yes`` (lowercased)."""
-    return value.lower() in ("1", "true", "yes") if value else False
+def main() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    config = load_yaml(repo_root / "config" / "default.yaml")
 
+    target_root = Path(os.getenv("EPISTEMIC_TARGET_ROOT", str(repo_root))).resolve()
+    focus_branch = os.getenv("EPISTEMIC_FOCUS_BRANCH") or None
+    objective = os.getenv(
+        "EPISTEMIC_OBJECTIVE",
+        "Scan the target project, extract meaningful implementation claims, and continue with constitution-driven fractal questioning.",
+    )
+    automation_plan = os.getenv("EPISTEMIC_AUTOMATION_PLAN")
 
-def _build_policy() -> ModePolicy:
-    """Construct the ModePolicy from APEX_* environment overrides."""
+    mode = mode_from_string(os.getenv("APEX_MODE"))
+    auto_patch_env = os.getenv("APEX_AUTO_PATCH")
+    auto_commit_env = os.getenv("APEX_AUTO_COMMIT")
     max_fractal_env = os.getenv("APEX_MAX_FRACTAL_BUDGET")
-    return ModePolicy(
-        mode=mode_from_string(os.getenv("APEX_MODE")),
-        auto_patch=_env_flag(os.getenv("APEX_AUTO_PATCH")),
-        auto_commit=_env_flag(os.getenv("APEX_AUTO_COMMIT")),
+    safety_policy_env = os.getenv("APEX_SAFETY_POLICY")
+
+    policy = ModePolicy(
+        mode=mode,
+        auto_patch=auto_patch_env.lower() in ("1", "true", "yes")
+        if auto_patch_env
+        else False,
+        auto_commit=auto_commit_env.lower() in ("1", "true", "yes")
+        if auto_commit_env
+        else False,
         max_fractal_budget=int(max_fractal_env)
         if max_fractal_env and max_fractal_env.isdigit()
         else 10,
-        safety_policy=os.getenv("APEX_SAFETY_POLICY") or "standard",
+        safety_policy=safety_policy_env or "standard",
     )
 
-
-def _safety_gates_block(policy: ModePolicy, automation_plan: str | None) -> bool:
-    """Print/enforce safety gates; return True iff the run must abort."""
     if automation_plan and policy.permissions.requires_safety_gates:
         print(f"[mode] Running in {policy.mode.value} mode with safety gates enabled")
         if policy.permissions.requires_clean_working_tree:
             result = policy.enforce_clean_working_tree()
             if not result.passed:
                 print(f"[mode] BLOCKED: {result.message}")
-                return True
-    return False
+                return
 
+    if automation_plan and policy.auto_patch:
+        pass
 
-def _load_plugins(config: dict) -> PluginRegistry:
-    """Load plugins from config plus the APEX_PLUGIN_PATH environment override."""
+    # Load plugins from config or environment
     plugin_dirs = config.get("plugin_dirs", [])
     if os.getenv("APEX_PLUGIN_PATH"):
         plugin_dirs.extend(os.getenv("APEX_PLUGIN_PATH", "").split(os.pathsep))
     plugins = PluginRegistry(plugin_dirs=plugin_dirs)
     plugins.load_all()
-    return plugins
 
-
-def _resolve_use_fractal(objective: str) -> bool:
-    """True when fractal mode is requested via env or implied by the objective."""
-    if _env_flag(os.getenv("APEX_USE_FRACTAL", "")):
-        return True
-    # Auto-detect fractal mode for security/audit/risk goals.
-    return any(kw in objective.lower() for kw in ("security", "audit", "risk", "vuln"))
-
-
-def _run_swarm_plan(
-    swarm: SwarmCoordinator,
-    plugins: PluginRegistry,
-    *,
-    objective: str,
-    target_root: Path,
-    automation_plan: str,
-    use_fractal: bool,
-) -> None:
-    """Run the event-driven swarm branch (agents available) and print results."""
-    print(
-        f"[main] Running event-driven swarm with {len(swarm.registry.agents)} agent(s)"
-    )
-    if use_fractal:
-        print(
-            "[main] Fractal deep-analysis enabled (5-Whys + counter-evidence + meta-analysis)"
+    use_fractal = os.getenv("APEX_USE_FRACTAL", "").lower() in ("1", "true", "yes")
+    if not use_fractal:
+        # Auto-detect fractal mode for security/audit/risk goals
+        use_fractal = any(
+            kw in objective.lower() for kw in ("security", "audit", "risk", "vuln")
         )
-    results, md_path = _run_swarm_with_plugins(
-        swarm,
-        plugins,
-        objective=objective,
-        target=str(target_root),
-        mode="supervised",
-        plan_name=automation_plan,
-        report_dir=target_root / ".apex",
-    )
-    print(pretty_json({"swarm_results": results, "stats": swarm.stats()}))
-    print(f"[main] Report written to {md_path}")
 
+    if automation_plan:
+        # Try event-driven swarm first if agents are available
+        swarm = _build_swarm_for_plan(automation_plan, use_fractal=use_fractal)
+        if swarm.registry.agents:
+            mode = "supervised"
+            print(
+                f"[main] Running event-driven swarm with {len(swarm.registry.agents)} agent(s)"
+            )
+            if use_fractal:
+                print(
+                    "[main] Fractal deep-analysis enabled (5-Whys + counter-evidence + meta-analysis)"
+                )
+            results, md_path = _run_swarm_with_plugins(
+                swarm,
+                plugins,
+                objective=objective,
+                target=str(target_root),
+                mode=mode,
+                plan_name=automation_plan,
+                report_dir=target_root / ".apex",
+            )
+            print(pretty_json({"swarm_results": results, "stats": swarm.stats()}))
+            print(f"[main] Report written to {md_path}")
+            return
 
-def _run_legacy_plan(
-    plugins: PluginRegistry,
-    config: dict,
-    *,
-    objective: str,
-    target_root: Path,
-    focus_branch: str | None,
-    automation_plan: str,
-) -> None:
-    """Run the legacy SkillAutomationRunner fallback for a plan and print result."""
-    context = AutomationContext(
-        project_root=target_root,
-        objective=objective,
-        config=config,
-        focus_branch=focus_branch,
-    )
-    runner = SkillAutomationRunner(build_default_registry(), plugins=plugins)
-    result = runner.run_plan(automation_plan, context)
-    print(pretty_json(result.to_dict()))
-
-
-def _run_automation_plan(
-    plugins: PluginRegistry,
-    config: dict,
-    policy: ModePolicy,
-    *,
-    objective: str,
-    target_root: Path,
-    focus_branch: str | None,
-    automation_plan: str,
-    use_fractal: bool,
-) -> None:
-    """Dispatch a plan run: event-driven swarm if agents exist, else legacy."""
-    swarm = _build_swarm_for_plan(automation_plan, use_fractal=use_fractal)
-    if swarm.registry.agents:
-        _run_swarm_plan(
-            swarm,
-            plugins,
+        # Fallback to legacy runner
+        context = AutomationContext(
+            project_root=target_root,
             objective=objective,
-            target_root=target_root,
-            automation_plan=automation_plan,
-            use_fractal=use_fractal,
+            config=config,
+            focus_branch=focus_branch,
         )
+        runner = SkillAutomationRunner(build_default_registry(), plugins=plugins)
+        result = runner.run_plan(automation_plan, context)
+        print(pretty_json(result.to_dict()))
         return
-    _run_legacy_plan(
-        plugins,
-        config,
-        objective=objective,
-        target_root=target_root,
-        focus_branch=focus_branch,
-        automation_plan=automation_plan,
-    )
 
+    # Initialize integrated memory, metrics, and safety infrastructure
+    memory_bridge = CentralMemoryBridge(str(target_root))
+    metrics = MetricsMiddleware()
+    rollback = RollbackJournal(project_root=str(target_root))
+    checkpoint = CheckpointManager(project_root=str(target_root))
 
-def _build_orchestrator(
-    config: dict, policy: ModePolicy, target_root: Path
-) -> tuple[FractalResearchOrchestrator, DebugEngine]:
-    """Wire up validator/decomposer/memory/debug into a FractalResearchOrchestrator."""
+    # Debug engine — auto-enable at higher verbosity in autonomous mode
     debug_enabled = bool(config.get("debug_enabled", False)) or policy.mode.value == "autonomous"
     debug = DebugEngine(
         project_root=str(target_root),
         enabled=debug_enabled,
         level=DebugEngine.LEVEL_TRACE if policy.mode.value == "autonomous" else DebugEngine.LEVEL_INFO,
     )
+
     validator = Validator(evidence_mapper=EvidenceMapper(project_root=target_root))
     decomposer = Decomposer(project_root=target_root)
     memory_store = PersistentMemoryStore(project_root=target_root)
     memory_store.hydrate_graph(validator.evidence_mapper.graph if hasattr(validator.evidence_mapper, "graph") else None)
+
     orchestrator = FractalResearchOrchestrator(
         config=config,
         decomposer=decomposer,
@@ -269,25 +235,6 @@ def _build_orchestrator(
         memory_store=memory_store,
         debug=debug,
     )
-    return orchestrator, debug
-
-
-def _run_orchestrator(
-    policy: ModePolicy,
-    *,
-    objective: str,
-    target_root: Path,
-    focus_branch: str | None,
-    config: dict,
-) -> None:
-    """Run the full orchestrator path: scan, persist, snapshot, write metrics."""
-    # Initialize integrated memory, metrics, and safety infrastructure
-    memory_bridge = CentralMemoryBridge(str(target_root))
-    metrics = MetricsMiddleware()
-    rollback = RollbackJournal(project_root=str(target_root))
-    checkpoint = CheckpointManager(project_root=str(target_root))
-
-    orchestrator, debug = _build_orchestrator(config, policy, target_root)
 
     # Record run start
     import time
@@ -309,7 +256,7 @@ def _run_orchestrator(
     patches_blocked_val = getattr(report, "patches_blocked", 0)
     claims_count = len(findings)
     metrics.record_run(
-        plan="default",
+        plan=automation_plan or "default",
         duration_seconds=duration,
         claims_found=claims_count,
         patches_applied=patches_applied_val,
@@ -332,48 +279,6 @@ def _run_orchestrator(
     print(f"[metrics] Written to .apex/metrics.prom ({claims_count} claims, {patches_applied_val} patches)")
 
     memory_bridge.close()
-
-
-def main() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    config = load_yaml(repo_root / "config" / "default.yaml")
-
-    target_root = Path(os.getenv("EPISTEMIC_TARGET_ROOT", str(repo_root))).resolve()
-    focus_branch = os.getenv("EPISTEMIC_FOCUS_BRANCH") or None
-    objective = os.getenv(
-        "EPISTEMIC_OBJECTIVE",
-        "Scan the target project, extract meaningful implementation claims, and continue with constitution-driven fractal questioning.",
-    )
-    automation_plan = os.getenv("EPISTEMIC_AUTOMATION_PLAN")
-
-    policy = _build_policy()
-
-    if _safety_gates_block(policy, automation_plan):
-        return
-
-    plugins = _load_plugins(config)
-    use_fractal = _resolve_use_fractal(objective)
-
-    if automation_plan:
-        _run_automation_plan(
-            plugins,
-            config,
-            policy,
-            objective=objective,
-            target_root=target_root,
-            focus_branch=focus_branch,
-            automation_plan=automation_plan,
-            use_fractal=use_fractal,
-        )
-        return
-
-    _run_orchestrator(
-        policy,
-        objective=objective,
-        target_root=target_root,
-        focus_branch=focus_branch,
-        config=config,
-    )
 
 
 if __name__ == "__main__":
