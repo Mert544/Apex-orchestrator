@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import types
 from pathlib import Path
+
+import pytest
 
 from app.reporting.city_dashboard import build_city, build_city_model
 
@@ -84,3 +88,63 @@ def test_city_handles_empty_project(tmp_path: Path):
     assert "<!DOCTYPE html>" in html
     model = build_city_model(str(tmp_path))
     assert model["totals"]["buildings"] == len(model["buildings"])
+
+
+# --- characterization: refactor is byte-identical to the pre-refactor HEAD ---
+
+
+def _load_head_build_city_model():
+    """Exec the pre-refactor city_dashboard from git HEAD into an isolated module.
+
+    Returns ``None`` (the test self-skips) when HEAD already contains the
+    refactor, so the guard never goes stale after this change is committed.
+    """
+    try:
+        src = subprocess.check_output(
+            ["git", "show", "HEAD:app/reporting/city_dashboard.py"],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return None
+    # Only meaningful while HEAD is still the monolithic version we shrank.
+    if "_coordinator_signals" in src:
+        return None
+    mod = types.ModuleType("_city_dashboard_head")
+    exec(compile(src, "<head:city_dashboard.py>", "exec"), mod.__dict__)
+    return mod.build_city_model
+
+
+def _strip_clock(model: dict) -> dict:
+    # The single render-time timestamp is the only non-deterministic field.
+    return {k: v for k, v in model.items() if k != "generated"}
+
+
+def _fixtures(tmp_path: Path) -> list[Path]:
+    a = tmp_path / "a"
+    a.mkdir()
+    _project(a)
+    b = tmp_path / "b"  # empty project (no modules)
+    b.mkdir()
+    (b / "pyproject.toml").write_text("[project]\nname='e'\nversion='0'\n", encoding="utf-8")
+    return [a, b]
+
+
+def test_refactor_is_byte_identical_to_head():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        head_fn = _load_head_build_city_model()
+        if head_fn is None:
+            pytest.skip("HEAD already contains the refactored city_dashboard")
+        for root in _fixtures(Path(td)):
+            before = head_fn(str(root))
+            after = build_city_model(str(root))
+            # Same model sans the single timestamp, serialized byte-for-byte.
+            assert json.dumps(_strip_clock(before), sort_keys=True) == json.dumps(
+                _strip_clock(after), sort_keys=True
+            )
+            # The timestamp field itself is still present and well-formed.
+            assert re.fullmatch(
+                r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC", after["generated"]
+            )

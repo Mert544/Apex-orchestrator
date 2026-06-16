@@ -43,16 +43,8 @@ def _module_set(profile: Any) -> list[str]:
     return [m for m in ordered if isinstance(m, str) and m.endswith(".py")]
 
 
-def build_city_model(project_root: str, max_buildings: int = 60) -> dict[str, Any]:
-    """Assemble the deterministic city model from real project signals."""
-    from app.engine.health_score import grade
-    from app.tools.code_metrics import CodeMetrics
-    from app.tools.project_profile import ProjectProfiler
-
-    profile = ProjectProfiler(project_root).profile()
-
-    # Security findings per file (excluding fixtures is the grader's job; here we
-    # show the raw picture so a worker visibly has somewhere to go).
+def _findings_by_file(project_root: str) -> dict[str, int]:
+    """Security findings per file (raw picture so a worker has somewhere to go)."""
     findings_by_file: dict[str, int] = {}
     try:
         from app.agents.skills import SecurityAgent
@@ -63,20 +55,23 @@ def build_city_model(project_root: str, max_buildings: int = 60) -> dict[str, An
             findings_by_file[fp] = findings_by_file.get(fp, 0) + 1
     except Exception:
         pass
+    return findings_by_file
 
-    # Fan-in from the dependency graph (how many modules import this one).
+
+def _fan_in(profile: Any) -> dict[str, int]:
+    """Fan-in from the dependency graph (how many modules import this one)."""
     fan_in: dict[str, int] = {}
-    for src, dst in getattr(profile, "dependency_edges", []) or []:
+    for _src, dst in getattr(profile, "dependency_edges", []) or []:
         fan_in[dst] = fan_in.get(dst, 0) + 1
+    return fan_in
 
-    untested = set(getattr(profile, "untested_modules", []) or [])
-    hubs = set(getattr(profile, "dependency_hubs", []) or [])
-    fragile = set(getattr(profile, "fragile_modules", []) or [])
-    coverage = getattr(profile, "module_to_tests", {}) or {}
 
-    # Coordinator (high-fan-OUT) modules: god-modules that import many internal
-    # modules — the opposite edge direction from a dependency hub (high fan-IN).
-    # Surfaced as a distinct visual cue so a decoupling candidate is legible.
+def _coordinator_signals(profile: Any) -> tuple[dict[str, int], dict[str, list[str]]]:
+    """Coordinator (high-fan-OUT) modules: god-modules importing many internals.
+
+    The opposite edge direction from a dependency hub (high fan-IN); surfaced as
+    a distinct visual cue so a decoupling candidate is legible.
+    """
     fan_out: dict[str, int] = {}
     coord_imports: dict[str, list[str]] = {}
     for c in getattr(profile, "coordinator_modules", []) or []:
@@ -87,12 +82,23 @@ def build_city_model(project_root: str, max_buildings: int = 60) -> dict[str, An
             continue
         fan_out[mod] = int(c.get("fan_out", 0) or 0)
         coord_imports[mod] = [str(t) for t in (c.get("imports", []) or [])]
-    coordinators = set(fan_out)
+    return fan_out, coord_imports
 
-    modules = _module_set(profile)
-    metrics = CodeMetrics(project_root).for_modules(modules)
 
-    # Rank so that, when we cap, the most meaningful buildings survive.
+def _rank_modules(
+    modules: list[str],
+    max_buildings: int,
+    findings_by_file: dict[str, int],
+    fragile: set,
+    hubs: set,
+    coordinators: set,
+    untested: set,
+    fan_out: dict[str, int],
+    fan_in: dict[str, int],
+    metrics: Any,
+) -> list[str]:
+    """Rank so that, when we cap, the most meaningful buildings survive."""
+
     def _rank(m: str) -> tuple:
         return (
             findings_by_file.get(m, 0),
@@ -105,43 +111,55 @@ def build_city_model(project_root: str, max_buildings: int = 60) -> dict[str, An
             metrics[m].loc if m in metrics else 0,
         )
 
-    modules = sorted(modules, key=_rank, reverse=True)[:max_buildings]
+    return sorted(modules, key=_rank, reverse=True)[:max_buildings]
 
-    buildings: list[dict[str, Any]] = []
-    for m in modules:
-        mm = metrics.get(m)
-        loc = mm.loc if mm else 0
-        complexity = mm.complexity if mm else 0
-        nfind = findings_by_file.get(m, 0)
-        if nfind:
-            health = "security"
-        elif m in fragile:
-            health = "fragile"
-        elif m in untested:
-            health = "untested"
-        elif m in hubs:
-            health = "hub"
-        else:
-            health = "ok"
-        dept = m.split("/")[0] if "/" in m else "."
-        buildings.append({
-            "name": m,
-            "dept": dept,
-            "loc": loc,
-            "complexity": complexity,
-            "fan_in": fan_in.get(m, 0),
-            "fan_out": fan_out.get(m, 0),
-            "coordinator": m in coordinators,
-            "coord_imports": coord_imports.get(m, []),
-            "findings": nfind,
-            "tests": len(coverage.get(m, []) or []),
-            "health": health,
-        })
 
-    # Index helpers for assigning workers their rounds.
-    idx = {b["name"]: i for i, b in enumerate(buildings)}
+def _building(
+    m: str,
+    metrics: Any,
+    findings_by_file: dict[str, int],
+    fragile: set,
+    hubs: set,
+    untested: set,
+    coordinators: set,
+    coord_imports: dict[str, list[str]],
+    fan_in: dict[str, int],
+    fan_out: dict[str, int],
+    coverage: dict,
+) -> dict[str, Any]:
+    """Assemble one workstation/desk record from a module's real signals."""
+    mm = metrics.get(m)
+    loc = mm.loc if mm else 0
+    complexity = mm.complexity if mm else 0
+    nfind = findings_by_file.get(m, 0)
+    if nfind:
+        health = "security"
+    elif m in fragile:
+        health = "fragile"
+    elif m in untested:
+        health = "untested"
+    elif m in hubs:
+        health = "hub"
+    else:
+        health = "ok"
+    dept = m.split("/")[0] if "/" in m else "."
+    return {
+        "name": m,
+        "dept": dept,
+        "loc": loc,
+        "complexity": complexity,
+        "fan_in": fan_in.get(m, 0),
+        "fan_out": fan_out.get(m, 0),
+        "coordinator": m in coordinators,
+        "coord_imports": coord_imports.get(m, []),
+        "findings": nfind,
+        "tests": len(coverage.get(m, []) or []),
+        "health": health,
+    }
 
-    # Dependency "roads": real import edges between rendered buildings.
+
+def _edges(profile: Any, idx: dict[str, int]) -> list[list[int]]:
+    """Dependency "roads": real import edges between rendered buildings."""
     edges: list[list[int]] = []
     seen_edges: set[tuple[int, int]] = set()
     for src, dst in getattr(profile, "dependency_edges", []) or []:
@@ -155,6 +173,11 @@ def build_city_model(project_root: str, max_buildings: int = 60) -> dict[str, An
         edges.append([si, di])
         if len(edges) >= 160:  # keep the scene readable and fast
             break
+    return edges
+
+
+def _workers(buildings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Assign Apex agents their deterministic rounds over the rendered desks."""
 
     def _targets(pred) -> list[int]:
         return [i for i, b in enumerate(buildings) if pred(b)]
@@ -183,25 +206,75 @@ def build_city_model(project_root: str, max_buildings: int = 60) -> dict[str, An
     _add_worker("Architect", "#4d9bff", arch_targets)
     _add_worker("Doc Writer", "#b07cff", doc_targets)
     _add_worker("Refactorer", "#ffd24d", _targets(lambda b: b["complexity"] >= 12))
+    return workers
+
+
+def _totals(buildings: list[dict[str, Any]], workers: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate headline counts the HUD displays over the rendered floor."""
+    return {
+        "buildings": len(buildings),
+        "findings": sum(b["findings"] for b in buildings),
+        "untested": sum(1 for b in buildings if b["health"] == "untested"),
+        "coordinators": sum(1 for b in buildings if b["coordinator"]),
+        "workers": len(workers),
+        "loc": sum(b["loc"] for b in buildings),
+    }
+
+
+def _grade(project_root: str) -> dict[str, Any]:
+    """Real 0..100 project health score with a letter (or a safe fallback)."""
+    from app.engine.health_score import grade
 
     try:
         g = grade(project_root)
-        health = {"score": g.score, "letter": g.letter}
+        return {"score": g.score, "letter": g.letter}
     except Exception:
-        health = {"score": 0, "letter": "?"}
+        return {"score": 0, "letter": "?"}
+
+
+def build_city_model(project_root: str, max_buildings: int = 60) -> dict[str, Any]:
+    """Assemble the deterministic city model from real project signals."""
+    from app.tools.code_metrics import CodeMetrics
+    from app.tools.project_profile import ProjectProfiler
+
+    profile = ProjectProfiler(project_root).profile()
+
+    findings_by_file = _findings_by_file(project_root)
+    fan_in = _fan_in(profile)
+
+    untested = set(getattr(profile, "untested_modules", []) or [])
+    hubs = set(getattr(profile, "dependency_hubs", []) or [])
+    fragile = set(getattr(profile, "fragile_modules", []) or [])
+    coverage = getattr(profile, "module_to_tests", {}) or {}
+
+    fan_out, coord_imports = _coordinator_signals(profile)
+    coordinators = set(fan_out)
+
+    modules = _module_set(profile)
+    metrics = CodeMetrics(project_root).for_modules(modules)
+    modules = _rank_modules(
+        modules, max_buildings, findings_by_file, fragile, hubs,
+        coordinators, untested, fan_out, fan_in, metrics,
+    )
+
+    buildings: list[dict[str, Any]] = [
+        _building(
+            m, metrics, findings_by_file, fragile, hubs, untested,
+            coordinators, coord_imports, fan_in, fan_out, coverage,
+        )
+        for m in modules
+    ]
+
+    # Index helpers for assigning workers their rounds.
+    idx = {b["name"]: i for i, b in enumerate(buildings)}
+    edges = _edges(profile, idx)
+    workers = _workers(buildings)
 
     return {
         "project": project_root,
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "grade": health,
-        "totals": {
-            "buildings": len(buildings),
-            "findings": sum(b["findings"] for b in buildings),
-            "untested": sum(1 for b in buildings if b["health"] == "untested"),
-            "coordinators": sum(1 for b in buildings if b["coordinator"]),
-            "workers": len(workers),
-            "loc": sum(b["loc"] for b in buildings),
-        },
+        "grade": _grade(project_root),
+        "totals": _totals(buildings, workers),
         "buildings": buildings,
         "workers": workers,
         "edges": edges,
