@@ -35,19 +35,28 @@ from app.execution.near_dup_extract import plan_near_dup_extract as nde_new
 _REPO = Path(__file__).resolve().parents[1]
 
 
+def _pre_refactor_source(rel: str) -> str:
+    """The newest version of ``rel`` in history that PREDATES the finalise-helper
+    consolidation (i.e. still carries the inlined finalise tail). Walks back the
+    commits touching ``rel`` until one without ``stamp_multi_module_plan`` is found,
+    so the comparison is always against the genuine original no matter how many
+    follow-up commits land on top of the refactor."""
+    revs = subprocess.check_output(
+        ["git", "log", "--format=%H", "--", rel], cwd=_REPO, text=True).split()
+    for rev in revs:
+        src = subprocess.check_output(
+            ["git", "show", f"{rev}:{rel}"], cwd=_REPO, text=True)
+        if "stamp_multi_module_plan" not in src:
+            return src
+    raise AssertionError(
+        f"no pre-consolidation revision of {rel} found in history — "
+        "characterization would compare a refactor against itself")
+
+
 def _load_head(rel: str, modname: str, fn_name: str):
     """Import the PRE-refactor module as a standalone in-process module and return
-    its ``fn_name`` callable. The pre-refactor source carries the inlined finalise
-    tail; once the consolidation is committed it lives at ``HEAD`` so we fall back
-    to ``HEAD~1`` to recover the original (mirroring the sibling characterizations)."""
-    src = subprocess.check_output(
-        ["git", "show", f"HEAD:{rel}"], cwd=_REPO, text=True)
-    if "stamp_multi_module_plan" in src:
-        src = subprocess.check_output(
-            ["git", "show", f"HEAD~1:{rel}"], cwd=_REPO, text=True)
-    assert "stamp_multi_module_plan" not in src, (
-        f"could not recover a pre-consolidation {rel} from HEAD/HEAD~1 — "
-        "characterization would compare a refactor against itself")
+    its ``fn_name`` callable."""
+    src = _pre_refactor_source(rel)
     spec = importlib.util.spec_from_loader(modname, loader=None)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[modname] = mod
