@@ -281,6 +281,50 @@ def _concrete_test_description(node, fallback: str) -> str:
     return f"Add tests for {', '.join(phrases)}"
 
 
+def _stub_slug(raw: str, trim: str, fallback: str) -> str:
+    """Identifier-safe slug for a symbol/stem: non-identifier chars -> ``_``,
+    edge ``_`` trimmed via ``trim`` (``rstrip``/``strip``), lowercased."""
+    cleaned = "".join(c if (c.isalnum() or c == "_") else "_" for c in raw)
+    cleaned = cleaned.rstrip("_") if trim == "rstrip" else cleaned.strip("_")
+    return cleaned.lower() or fallback
+
+
+def _stub_header(target: str, module: str, mod_path: str) -> str:
+    """The recommend-only stub preamble (subject comment + optional import)."""
+    lines = [
+        "# Apex-proposed test stub (recommend-only — not applied).",
+        f"# Subject: {target or module}",
+        f"import {mod_path}  # noqa: F401" if mod_path else "",
+        "",
+    ]
+    return "\n".join([ln for ln in lines if ln is not None]).rstrip()
+
+
+def _stub_anchor_body(symbol: str, mod_path: str, target: str) -> str:
+    """One ``def test_<symbol>_behavior():`` skeleton for a named anchor.
+
+    Keeps the symbol's own underscores (a leading ``_`` is meaningful:
+    ``_scan_churn`` -> ``test__scan_churn_behavior``); trailing junk is trimmed.
+    """
+    slug = _stub_slug(symbol, "rstrip", "symbol")
+    return (
+        f"def test_{slug}_behavior():\n"
+        f"    # TODO: exercise {symbol} in {mod_path or target}.\n"
+        f"    assert False, \"write a real assertion for {symbol}\"\n"
+    )
+
+
+def _stub_smoke_body(target: str, module: str) -> str:
+    """A single module-level smoke skeleton when no anchor names a symbol."""
+    stem = (target or module).rsplit("/", 1)[-1].removesuffix(".py") or "module"
+    slug = _stub_slug(stem, "strip", "module")
+    return (
+        f"def test_{slug}_smoke():\n"
+        f"    # TODO: cover {target or module}.\n"
+        f"    assert False, \"write a real assertion\"\n"
+    )
+
+
 def _test_stub_body(node, target: str) -> str:
     """A deterministic pytest stub naming the REAL symbol(s) and import path.
 
@@ -291,36 +335,15 @@ def _test_stub_body(node, target: str) -> str:
     module = str(getattr(node, "subject", "") or "").split("::", 1)[0]
     mod_path = (target or module).removesuffix(".py").replace("/", ".")
     anchors = _function_anchors(node)
-    header = [
-        "# Apex-proposed test stub (recommend-only — not applied).",
-        f"# Subject: {target or module}",
-        f"import {mod_path}  # noqa: F401" if mod_path else "",
-        "",
-    ]
-    bodies: list[str] = []
+    header = _stub_header(target, module, mod_path)
     if anchors:
-        for a in anchors:
-            symbol = str(a.get("symbol") or "").strip()
-            # Keep the symbol's own underscores (a leading "_" is meaningful:
-            # `_scan_churn` -> `test__scan_churn_behavior`); only non-identifier
-            # characters become "_". Trailing junk is trimmed, never the symbol.
-            slug = "".join(c if (c.isalnum() or c == "_") else "_"
-                           for c in symbol).rstrip("_").lower() or "symbol"
-            bodies.append(
-                f"def test_{slug}_behavior():\n"
-                f"    # TODO: exercise {symbol} in {mod_path or target}.\n"
-                f"    assert False, \"write a real assertion for {symbol}\"\n"
-            )
+        bodies = [
+            _stub_anchor_body(str(a.get("symbol") or "").strip(), mod_path, target)
+            for a in anchors
+        ]
     else:
-        stem = (target or module).rsplit("/", 1)[-1].removesuffix(".py") or "module"
-        slug = "".join(c if (c.isalnum() or c == "_") else "_"
-                       for c in stem).strip("_").lower() or "module"
-        bodies.append(
-            f"def test_{slug}_smoke():\n"
-            f"    # TODO: cover {target or module}.\n"
-            f"    assert False, \"write a real assertion\"\n"
-        )
-    return "\n".join([ln for ln in header if ln is not None]).rstrip() + "\n\n\n" + "\n\n".join(bodies)
+        bodies = [_stub_smoke_body(target, module)]
+    return header + "\n\n\n" + "\n\n".join(bodies)
 
 
 class IdeaActionBridge:
@@ -962,6 +985,55 @@ class IdeaActionBridge:
     _MAX_PROOFS = 3
 
     @staticmethod
+    def _read_old(root: Path, rel: str) -> str:
+        """The current on-disk source for ``rel`` ("" when absent/unreadable)."""
+        fp = root / rel
+        try:
+            return fp.read_text(encoding="utf-8") if fp.exists() else ""
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _unified_diff(old: str, new: str, rel: str) -> str:
+        """The computed (never applied) unified diff for one changed file."""
+        import difflib
+
+        diff = "".join(difflib.unified_diff(
+            old.splitlines(keepends=True), new.splitlines(keepends=True),
+            fromfile=f"a/{rel}", tofile=f"b/{rel}",
+        ))
+        return diff
+
+    @staticmethod
+    def _count_changes(diff: str) -> tuple[int, int]:
+        """(+added, -removed) hunk lines, ignoring the ``+++``/``---`` headers."""
+        added = removed = 0
+        for ln in diff.splitlines():
+            if ln.startswith("+") and not ln.startswith("+++"):
+                added += 1
+            elif ln.startswith("-") and not ln.startswith("---"):
+                removed += 1
+        return added, removed
+
+    @staticmethod
+    def _py_verdict(old: str, new: str) -> tuple[bool, str]:
+        """(reparses, impact-summary) for transformed ``.py`` content.
+
+        The honest, cheap safety proof: does the source still ``ast.parse``?
+        When it does, quantify the before→after improvement (empty if no metric
+        moved); a parse failure yields no impact and a False verdict.
+        """
+        import ast
+
+        from app.engine.transform_impact import measure_impact, summarize
+
+        try:
+            ast.parse(new)
+        except SyntaxError:
+            return False, ""
+        return True, summarize(measure_impact(old, new))
+
+    @staticmethod
     def _diff_and_verdict(result, project_root: str) -> dict | None:
         """Turn an in-memory patch result into a PROOF: the exact draft diff
         (computed, not applied), its +added/−removed line stats, and a
@@ -971,12 +1043,6 @@ class IdeaActionBridge:
         Pure: parse + diff + count, no file writes, no subprocess. Returns
         None when the result carries nothing to draft.
         """
-        import ast
-        import difflib
-
-        from app.engine.transform_impact import measure_impact, summarize
-        from app.engine.verification_strength import module_referenced_by_suite
-
         requests = getattr(result, "patch_requests", None) or []
         if not requests:
             return None
@@ -990,50 +1056,46 @@ class IdeaActionBridge:
         # changed .py module is named by a test (pure file scan, no execution).
         covered = False
         for pr in requests:
-            rel = pr.get("path", "")
-            new = pr.get("new_content", "") or ""
-            fp = root / rel
-            try:
-                old = fp.read_text(encoding="utf-8") if fp.exists() else ""
-            except OSError:
-                old = ""
-            diff = "".join(difflib.unified_diff(
-                old.splitlines(keepends=True), new.splitlines(keepends=True),
-                fromfile=f"a/{rel}", tofile=f"b/{rel}",
-            ))
-            diff_parts.append(diff or f"(new file) b/{rel}")
-            for ln in diff.splitlines():
-                if ln.startswith("+") and not ln.startswith("+++"):
-                    added += 1
-                elif ln.startswith("-") and not ln.startswith("---"):
-                    removed += 1
-            # The honest, cheap safety proof: does the transformed source still
-            # parse? Only .py content is parse-checked; anything else can't
-            # claim a parse verdict, so it doesn't get to vouch "reparses".
-            if rel.endswith(".py"):
-                try:
-                    ast.parse(new)
-                except SyntaxError:
-                    reparses = False
-                else:
-                    # Proof of VALUE: quantify the before→after improvement
-                    # (max nesting / complexity / cognitive). Empty when the
-                    # change doesn't move any metric.
-                    summary = summarize(measure_impact(old, new))
-                    if summary:
-                        impact_parts.append(summary)
-                # Proof of COVERAGE: a green suite only vouches for what its
-                # tests look at. If any changed module is referenced by a test
-                # file, the verdict isn't applied-blind. Pure file scan, bounded
-                # by the already-bounded top-K proof steps.
-                if not covered and module_referenced_by_suite(project_root, rel):
-                    covered = True
+            part = IdeaActionBridge._diff_one(root, project_root, pr)
+            diff_parts.append(part["diff_part"])
+            added += part["added"]
+            removed += part["removed"]
+            reparses = reparses and part["reparses"]
+            impact_parts.extend(part["impact_parts"])
+            covered = covered or part["covered"]
         diff_text = "\n".join(diff_parts)
         if not diff_text.strip():
             return None
         return {"diff": diff_text, "added": added, "removed": removed,
                 "reparses": reparses, "impact": "; ".join(impact_parts),
                 "covered": covered}
+
+    @staticmethod
+    def _diff_one(root: Path, project_root: str, pr: dict) -> dict:
+        """The proof contribution of ONE patch request: its rendered diff part,
+        +/- counts, parse verdict, any impact summary, and whether the changed
+        ``.py`` module is referenced by the suite. Pure; non-``.py`` files stay
+        inert (reparses True, no impact, not covered)."""
+        from app.engine.verification_strength import module_referenced_by_suite
+
+        rel = pr.get("path", "")
+        new = pr.get("new_content", "") or ""
+        old = IdeaActionBridge._read_old(root, rel)
+        diff = IdeaActionBridge._unified_diff(old, new, rel)
+        added, removed = IdeaActionBridge._count_changes(diff)
+        reparses = True
+        impact_parts: list[str] = []
+        covered = False
+        # Only .py content is parse-checked; anything else can't claim a parse
+        # verdict or be referenced-by-suite, so it stays inert here.
+        if rel.endswith(".py"):
+            reparses, summary = IdeaActionBridge._py_verdict(old, new)
+            if summary:
+                impact_parts.append(summary)
+            covered = module_referenced_by_suite(project_root, rel)
+        return {"diff_part": diff or f"(new file) b/{rel}",
+                "added": added, "removed": removed, "reparses": reparses,
+                "impact_parts": impact_parts, "covered": covered}
 
     def prove_step(self, step: ActionStep, project_root: str) -> dict | None:
         """The proof a runnable step carries: the EXACT draft diff it would make
