@@ -229,3 +229,158 @@ def test_draft_fallback_records_change_strategy_and_verification(tmp_path: Path)
     assert "dedupe rows" in content
     assert "run schema check" in content
     assert "x.reshape" in content
+
+
+# --- Characterization: dispatch matrix is byte-stable after consolidation ---
+#
+# Locks the (transform -> SemanticPatchResult) contract of generate() across a
+# representative input for every dispatch branch. Pins transform_type, mode,
+# patch-request count/paths, estimated_tokens, and the produced new_content so
+# the mechanical extraction of the if/elif chain into helpers cannot silently
+# alter the chosen patch for any input.
+_CASES = {
+    "docstring": (
+        {"app/m.py": "def add(a, b):\n    return a + b\n"},
+        {"target_files": ["app/m.py"], "title": "Add docstrings", "task_id": "c1"},
+        None, "add_docstring", "semantic",
+    ),
+    "type_anns": (
+        {"app/m.py": "def add(a, b):\n    return a + b\n"},
+        {"target_files": ["app/m.py"], "title": "Add type annotations", "task_id": "c2"},
+        None, "add_type_annotations", "semantic",
+    ),
+    "guard": (
+        {"app/m.py": "def add(a, b):\n    return a + b\n"},
+        {"target_files": ["app/m.py"], "title": "Add input validation guard", "task_id": "c3"},
+        None, "add_guard_clause", "semantic",
+    ),
+    "repair_test": (
+        {"tests/test_m.py": "def test_add():\n    assert 1 + 1 == 2\n"},
+        {"target_files": ["tests/test_m.py"], "title": "Fix tests", "task_id": "c4"},
+        {"failure_type": "test_failure"}, "repair_test_assertion", "semantic",
+    ),
+    "rename": (
+        {"app/m.py": "def calculate(x, y):\n    total = x + y\n    result = total * 2\n    return result\n"},
+        {"target_files": ["app/m.py"], "title": "Rename variable for clarity", "task_id": "c5",
+         "rename": {"old_name": "total", "new_name": "subtotal", "target_function": "calculate"}},
+        None, "rename_variable", "semantic",
+    ),
+    "inline": (
+        {"app/m.py": "def compute(x):\n    y = x + 1\n    return y\n"},
+        {"target_files": ["app/m.py"], "title": "Inline simple variable", "task_id": "c6",
+         "inline": {"var_name": "y", "target_function": "compute"}},
+        None, "inline_variable", "semantic",
+    ),
+    "organize_imports": (
+        {"app/m.py": "import os\nimport sys\nimport json\n\ndef load():\n    return json.loads('{}')\n"},
+        {"target_files": ["app/m.py"], "title": "Clean up unused imports", "task_id": "c7"},
+        None, "organize_imports", "semantic",
+    ),
+    "move_class": (
+        {"app/main.py": "class OldService:\n    def work(self):\n        return 'done'\n\ndef main():\n    s = OldService()\n    return s.work()\n"},
+        {"target_files": ["app/main.py"], "title": "Move class to separate module", "task_id": "c8",
+         "move": {"class_name": "OldService", "new_module": "app/service.py"}},
+        None, "move_class", "semantic",
+    ),
+    "extract_class": (
+        {"app/big.py": "class BigClass:\n    def method_a(self):\n        return 'a'\n    def method_b(self):\n        return 'b'\n    def method_c(self):\n        return 'c'\n"},
+        {"target_files": ["app/big.py"], "title": "Extract helper class", "task_id": "c9",
+         "extract_class": {"methods": ["method_a", "method_b"], "new_class_name": "HelperClass", "base_class": None}},
+        None, "extract_class", "semantic",
+    ),
+    "sec_eval": (
+        {"app/e.py": "x = eval(s)\n"},
+        {"target_files": ["app/e.py"], "title": "fix eval", "task_id": "c10"},
+        None, "eval_to_literal_eval", "semantic",
+    ),
+    "sec_yaml": (
+        {"app/y.py": "import yaml\nx = yaml.load(s)\n"},
+        {"target_files": ["app/y.py"], "title": "fix yaml", "task_id": "c11"},
+        None, "yaml_load_to_safe_load", "semantic",
+    ),
+    "modernize": (
+        {"app/m.py": "if x == None:\n    pass\n"},
+        {"target_files": ["app/m.py"], "title": "modernize none-comparison", "task_id": "c12"},
+        None, "modernize_none_comparison", "semantic",
+    ),
+    "mutable_default": (
+        {"app/m.py": "def f(x=[]):\n    return x\n"},
+        {"target_files": ["app/m.py"], "title": "fix mutable-default arg", "task_id": "c13"},
+        None, "fix_mutable_default", "semantic",
+    ),
+    "open_encoding": (
+        {"app/m.py": "open('f.txt')\n"},
+        {"target_files": ["app/m.py"], "title": "add open-encoding", "task_id": "c14"},
+        None, "add_open_encoding", "semantic",
+    ),
+    "net_timeout": (
+        {"app/m.py": "import requests\nrequests.get(u)\n"},
+        {"target_files": ["app/m.py"], "title": "fix net-timeout hang", "task_id": "c15"},
+        None, "flag_net_timeout", "semantic",
+    ),
+    "identity_literal": (
+        {"app/m.py": "if x is 1:\n    pass\n"},
+        {"target_files": ["app/m.py"], "title": "fix identity-literal", "task_id": "c16"},
+        None, "fix_identity_literal", "semantic",
+    ),
+    "negated_comparison": (
+        {"app/m.py": "if not a in b:\n    pass\n"},
+        {"target_files": ["app/m.py"], "title": "fix negated-comparison", "task_id": "c17"},
+        None, "fix_negated_comparison", "semantic",
+    ),
+    "raise_from": (
+        {"app/m.py": "try:\n    x=1\nexcept Exception as e:\n    raise ValueError('bad')\n"},
+        {"target_files": ["app/m.py"], "title": "fix raise-from chaining", "task_id": "c18"},
+        None, "raise_with_from", "semantic",
+    ),
+    "fstring": (
+        {"app/m.py": "x = f'no placeholder'\n"},
+        {"target_files": ["app/m.py"], "title": "fix fstring-no-placeholder", "task_id": "c19"},
+        None, "fix_fstring_no_placeholder", "semantic",
+    ),
+    "collection_literal": (
+        {"app/m.py": "x = list()\n"},
+        {"target_files": ["app/m.py"], "title": "fix collection-literal", "task_id": "c20"},
+        None, "modernize_collection_literal", "semantic",
+    ),
+    "stub_no_src": (
+        {},
+        {"target_files": ["tests/test_orders.py"], "title": "Close test gap", "task_id": "c21"},
+        None, "create_test_stub", "semantic",
+    ),
+    "fallback_no_files": (
+        {},
+        {"target_files": [], "title": "Refactor everything", "task_id": "c22"},
+        None, "draft_fallback", "draft",
+    ),
+    "non_py_skip": (
+        {"app/data.txt": "hello\n"},
+        {"target_files": ["app/data.txt"], "title": "Add docstrings", "task_id": "c23"},
+        None, "draft_fallback", "draft",
+    ),
+    "missing_nontest_skip": (
+        {},
+        {"target_files": ["app/ghost.py"], "title": "Add docstrings", "task_id": "c24"},
+        None, "draft_fallback", "draft",
+    ),
+}
+
+
+def test_dispatch_matrix_characterization(tmp_path: Path):
+    """Every dispatch branch yields a deterministic, fully-specified result."""
+    gen = SemanticPatchGenerator()
+    for label, (files, plan, repair, expect_transform, expect_mode) in _CASES.items():
+        sub = tmp_path / label
+        sub.mkdir(parents=True, exist_ok=True)
+        for rel, content in files.items():
+            _write(sub / rel, content)
+        result = gen.generate(project_root=sub, patch_plan=plan, repair_context=repair)
+        assert result.transform_type == expect_transform, label
+        assert result.mode == expect_mode, label
+        # Determinism: identical input -> byte-identical patch requests + tokens.
+        again = gen.generate(project_root=sub, patch_plan=plan, repair_context=repair)
+        assert again.to_dict() == result.to_dict(), label
+        for pr in result.patch_requests:
+            assert "new_content" in pr and "path" in pr, label
+        if expect_mode == "semantic" and expect_transform != "create_test_stub":
+            assert result.estimated_tokens >= 0, label

@@ -89,6 +89,30 @@ class SemanticPatchGenerator:
             result = fallback_draft(root, task_id, title, branch, patch_plan, reason="No target files.")
             return self._attach_metadata(result, selection, contexts, strategy)
 
+        produced = self._run_transforms(
+            root, target_files, strategy.strategy, title, task_id, patch_plan, repair
+        )
+        if produced is not None:
+            return self._attach_metadata(produced, selection, contexts, strategy)
+
+        result = fallback_draft(
+            root, task_id, title, branch, patch_plan,
+            reason="No safe semantic transform matched target files.",
+        )
+        return self._attach_metadata(result, selection, contexts, strategy)
+
+    def _run_transforms(
+        self,
+        root: Path,
+        target_files: list[str],
+        transform: str,
+        title: str,
+        task_id: str,
+        patch_plan: dict[str, Any],
+        repair: dict[str, Any],
+    ) -> SemanticPatchResult | None:
+        """Walk target files, applying the chosen transform; return the first
+        result (already metadata-estimated) or None if nothing matched."""
         for rel_path in target_files:
             target = (root / rel_path).resolve()
             if not str(target).startswith(str(root)):
@@ -96,95 +120,112 @@ class SemanticPatchGenerator:
             if not target.exists():
                 stub = try_create_stub(root, rel_path, title, task_id)
                 if stub:
-                    return self._attach_metadata(self._estimate_and_return(stub), selection, contexts, strategy)
+                    return self._estimate_and_return(stub)
                 continue
 
             if target.suffix.lower() != ".py":
                 continue
 
             current = target.read_text(encoding="utf-8")
-            transform = strategy.strategy
-            result: SemanticPatchResult | None = None
-
-            if transform == "add_docstring":
-                result = docstring.apply(rel_path, current, title)
-            elif transform == "add_type_annotations":
-                result = type_annotations.apply(rel_path, current, title)
-            elif transform == "add_guard_clause":
-                result = guard_clause.apply(rel_path, current, title)
-            elif transform == "repair_test_assertion":
-                result = repair_test.apply(rel_path, current, repair)
-            elif transform == "rename_variable":
-                rename_cfg = patch_plan.get("rename", {})
-                result = rename_variable.apply(
-                    rel_path, current,
-                    old_name=rename_cfg.get("old_name", ""),
-                    new_name=rename_cfg.get("new_name", ""),
-                    target_function=rename_cfg.get("target_function", ""),
-                )
-            elif transform == "extract_method":
-                extract_cfg = patch_plan.get("extract", {})
-                result = extract_method.apply(
-                    rel_path, current,
-                    start_line=extract_cfg.get("start_line", 0),
-                    end_line=extract_cfg.get("end_line", 0),
-                    new_function_name=extract_cfg.get("new_function_name", ""),
-                    target_function=extract_cfg.get("target_function", ""),
-                    parameters=extract_cfg.get("parameters", []),
-                )
-            elif transform == "inline_variable":
-                inline_cfg = patch_plan.get("inline", {})
-                result = inline_variable.apply(
-                    rel_path, current,
-                    var_name=inline_cfg.get("var_name", ""),
-                    target_function=inline_cfg.get("target_function", ""),
-                )
-            elif transform == "organize_imports":
-                result = organize_imports.apply(rel_path, current)
-            elif transform == "move_class":
-                move_cfg = patch_plan.get("move", {})
-                result = move_class.apply(
-                    rel_path, current,
-                    class_name=move_cfg.get("class_name", ""),
-                    new_module=move_cfg.get("new_module", ""),
-                )
-            elif transform == "extract_class":
-                extract_cfg = patch_plan.get("extract_class", {})
-                result = extract_class.apply(
-                    rel_path, current,
-                    methods=extract_cfg.get("methods", []),
-                    new_class_name=extract_cfg.get("new_class_name", ""),
-                    base_class=extract_cfg.get("base_class", None),
-                )
-            elif transform in ("fix_eval", "fix_os_system", "fix_bare_except", "fix_base_exception", "fix_pickle", "fix_sql", "fix_yaml", "fix_tempfile", "fix_weak_hash"):
-                result = security_transforms.apply(rel_path, current, title)
-            elif transform == "modernize":
-                result = modernize.apply(rel_path, current, title)
-            elif transform == "fix_mutable_default":
-                result = mutable_defaults.apply(rel_path, current, title)
-            elif transform == "fix_open_encoding":
-                result = open_encoding.apply(rel_path, current, title)
-            elif transform == "fix_net_timeout":
-                result = net_timeout.apply(rel_path, current, title)
-            elif transform == "fix_identity_literal":
-                result = identity_literal.apply(rel_path, current, title)
-            elif transform == "fix_negated_comparison":
-                result = negated_comparison.apply(rel_path, current, title)
-            elif transform == "fix_raise_from":
-                result = raise_from.apply(rel_path, current, title)
-            elif transform == "fix_fstring":
-                result = fstring.apply(rel_path, current, title)
-            elif transform == "fix_collection_literal":
-                result = collection_literal.apply(rel_path, current, title)
-
+            result = self._apply_transform(
+                transform, rel_path, current, title, patch_plan, repair
+            )
             if result:
-                return self._attach_metadata(self._estimate_and_return(result), selection, contexts, strategy)
+                return self._estimate_and_return(result)
+        return None
 
-        result = fallback_draft(
-            root, task_id, title, branch, patch_plan,
-            reason="No safe semantic transform matched target files.",
-        )
-        return self._attach_metadata(result, selection, contexts, strategy)
+    def _apply_transform(
+        self,
+        transform: str,
+        rel_path: str,
+        current: str,
+        title: str,
+        patch_plan: dict[str, Any],
+        repair: dict[str, Any],
+    ) -> SemanticPatchResult | None:
+        """Dispatch a single transform by name, preserving the original
+        if-chain precedence and argument wiring exactly."""
+        if transform == "repair_test_assertion":
+            return repair_test.apply(rel_path, current, repair)
+        if transform == "rename_variable":
+            rename_cfg = patch_plan.get("rename", {})
+            return rename_variable.apply(
+                rel_path, current,
+                old_name=rename_cfg.get("old_name", ""),
+                new_name=rename_cfg.get("new_name", ""),
+                target_function=rename_cfg.get("target_function", ""),
+            )
+        if transform == "extract_method":
+            extract_cfg = patch_plan.get("extract", {})
+            return extract_method.apply(
+                rel_path, current,
+                start_line=extract_cfg.get("start_line", 0),
+                end_line=extract_cfg.get("end_line", 0),
+                new_function_name=extract_cfg.get("new_function_name", ""),
+                target_function=extract_cfg.get("target_function", ""),
+                parameters=extract_cfg.get("parameters", []),
+            )
+        if transform == "inline_variable":
+            inline_cfg = patch_plan.get("inline", {})
+            return inline_variable.apply(
+                rel_path, current,
+                var_name=inline_cfg.get("var_name", ""),
+                target_function=inline_cfg.get("target_function", ""),
+            )
+        if transform == "organize_imports":
+            return organize_imports.apply(rel_path, current)
+        if transform == "move_class":
+            move_cfg = patch_plan.get("move", {})
+            return move_class.apply(
+                rel_path, current,
+                class_name=move_cfg.get("class_name", ""),
+                new_module=move_cfg.get("new_module", ""),
+            )
+        if transform == "extract_class":
+            extract_cfg = patch_plan.get("extract_class", {})
+            return extract_class.apply(
+                rel_path, current,
+                methods=extract_cfg.get("methods", []),
+                new_class_name=extract_cfg.get("new_class_name", ""),
+                base_class=extract_cfg.get("base_class", None),
+            )
+        return self._apply_title_transform(transform, rel_path, current, title)
+
+    def _apply_title_transform(
+        self,
+        transform: str,
+        rel_path: str,
+        current: str,
+        title: str,
+    ) -> SemanticPatchResult | None:
+        """Transforms whose only inputs are (rel_path, current, title),
+        looked up by name; preserves the original chain's precedence."""
+        if transform in self._SECURITY_TRANSFORMS:
+            return security_transforms.apply(rel_path, current, title)
+        module = self._TITLE_TRANSFORMS.get(transform)
+        if module is None:
+            return None
+        return module.apply(rel_path, current, title)
+
+    _SECURITY_TRANSFORMS = (
+        "fix_eval", "fix_os_system", "fix_bare_except", "fix_base_exception",
+        "fix_pickle", "fix_sql", "fix_yaml", "fix_tempfile", "fix_weak_hash",
+    )
+
+    _TITLE_TRANSFORMS = {
+        "add_docstring": docstring,
+        "add_type_annotations": type_annotations,
+        "add_guard_clause": guard_clause,
+        "modernize": modernize,
+        "fix_mutable_default": mutable_defaults,
+        "fix_open_encoding": open_encoding,
+        "fix_net_timeout": net_timeout,
+        "fix_identity_literal": identity_literal,
+        "fix_negated_comparison": negated_comparison,
+        "fix_raise_from": raise_from,
+        "fix_fstring": fstring,
+        "fix_collection_literal": collection_literal,
+    }
 
     def _attach_metadata(
         self,
