@@ -94,6 +94,34 @@ def module_referenced_by_suite(project_root: str | Path, rel_path: str) -> bool:
                for _rel, text in _test_files(Path(project_root)))
 
 
+def _weaker(current: str, candidate: str) -> str:
+    """The weaker (lower-ranked) of two strength levels."""
+    return candidate if _RANK[candidate] < _RANK[current] else current
+
+
+def _names_changed_function(text: str, funcs: list[str]) -> bool:
+    """Does ``text`` mention (as a whole word) any of these function names?"""
+    return any(re.search(rf"\b{re.escape(name)}\b", text) for name in funcs)
+
+
+def _grade_file(
+    rel: str,
+    funcs: list[str],
+    tests: list[tuple[str, str]],
+) -> tuple[str, list[str], list[str]]:
+    """Grade one changed code file against the suite. Pure.
+
+    Returns ``(level, module_tests, function_tests)`` where ``level`` is the
+    file's own strength ("function"/"module"/"none")."""
+    referencing = [(t_rel, text) for t_rel, text in tests
+                   if _references_module(text, rel)]
+    module_tests = [t_rel for t_rel, _ in referencing]
+    function_tests = [t_rel for t_rel, text in referencing
+                      if _names_changed_function(text, funcs)]
+    level = "function" if function_tests else ("module" if referencing else "none")
+    return level, module_tests, function_tests
+
+
 def assess_strength(
     project_root: str | Path,
     changed_files: list[str],
@@ -115,17 +143,10 @@ def assess_strength(
     for rel in code_files:
         funcs = changed_functions(old_by_path.get(rel) or "", new_by_path.get(rel, ""))
         all_changed += [f"{rel}::{name}" for name in funcs]
-        referencing = [(t_rel, text) for t_rel, text in tests
-                       if _references_module(text, rel)]
-        module_tests += [t_rel for t_rel, _ in referencing]
-        naming = [
-            t_rel for t_rel, text in referencing
-            if any(re.search(rf"\b{re.escape(name)}\b", text) for name in funcs)
-        ]
-        function_tests += naming
-        level = "function" if naming else ("module" if referencing else "none")
-        if _RANK[level] < _RANK[worst]:
-            worst = level
+        level, file_module_tests, file_function_tests = _grade_file(rel, funcs, tests)
+        module_tests += file_module_tests
+        function_tests += file_function_tests
+        worst = _weaker(worst, level)
     return {
         "level": worst,
         "changed_functions": all_changed[:5],
