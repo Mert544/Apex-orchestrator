@@ -389,6 +389,148 @@ def _iter_closure_free_functions(tree: ast.Module):
                     yield item, top
 
 
+def _is_minable_function(fn) -> bool:
+    """True when ``fn`` is tall enough and has a body the O(n²) scan will mine."""
+    span = (fn.end_lineno or fn.lineno) - fn.lineno + 1
+    if span < _SUGGEST_FN_FLOOR:
+        return False
+    return _SUGGEST_MIN_STMTS <= len(fn.body) <= _SUGGEST_MAX_BODY
+
+
+def _prefix_stores(facts: list) -> list[set[str]]:
+    """``prefix_stores[i] == _stores(body[:i])`` — locals defined before stmt i."""
+    out: list[set[str]] = [set()]
+    raw_acc: set[str] = set()
+    comp_acc: set[str] = set()
+    for f in facts:
+        raw_acc = raw_acc | f.raw_stores
+        comp_acc = comp_acc | f.comp
+        out.append(raw_acc - comp_acc)
+    return out
+
+
+def _suffix_loads(facts: list) -> list[set[str]]:
+    """``suffix_loads[j] == _loads(body[j:])`` — names read at/after stmt j."""
+    n = len(facts)
+    out: list[set[str]] = [set()] * (n + 1)
+    loads_acc: set[str] = set()
+    for k in range(n - 1, -1, -1):
+        loads_acc = loads_acc | facts[k].loads
+        out[k] = loads_acc
+    return out
+
+
+def _scan_function(fn) -> dict | None:
+    """The single best contiguous run to extract from ``fn``, or None — the seam
+    with the highest score (most lines saved for the smallest interface)."""
+    body = fn.body
+    n = len(body)
+    # Walk each statement once; the O(n²) window scan below reuses these
+    # per-statement sets instead of re-walking overlapping ranges (the
+    # documented byte-identical decomposition of the list-level helpers).
+    facts = [_StmtFacts(s) for s in body]
+    line_lo = [s.lineno for s in body]
+    line_hi = [getattr(s, "end_lineno", s.lineno) for s in body]
+    prefix_stores = _prefix_stores(facts)
+    suffix_loads = _suffix_loads(facts)
+    param_names = _function_param_names(fn)
+
+    best: tuple[int, dict] | None = None
+    for i in range(n):
+        params_and_prior = param_names | prefix_stores[i]
+        windows = _windows_from(fn, i, facts, line_lo, line_hi,
+                                params_and_prior, suffix_loads)
+        best = _better(best, windows)
+    return best[1] if best is not None else None
+
+
+def _better(best: tuple[int, dict] | None, windows):
+    """Fold ``(key, candidate)`` pairs into ``best``, keeping the highest key."""
+    for key, cand in windows:
+        if best is None or key > best[0]:
+            best = (key, cand)
+    return best
+
+
+def _windows_from(fn, i: int, facts: list, line_lo: list, line_hi: list,
+                  params_and_prior: set[str], suffix_loads: list):
+    """Yield ``(tie_break_key, candidate)`` for every viable window ``[i, j)``.
+
+    Grows the window statement by statement, accumulating its data-flow sets in
+    O(1) per step rather than re-walking each window."""
+    n = len(facts)
+    start = line_lo[i]
+    win_loads: set[str] = set()
+    win_aug: set[str] = set()
+    win_raw: set[str] = set()
+    win_comp: set[str] = set()
+    win_end = 0
+    win_blocked = False
+    for j in range(i + 1, n + 1):
+        f = facts[j - 1]
+        win_loads |= f.loads
+        win_aug |= f.aug
+        win_raw |= f.raw_stores
+        win_comp |= f.comp
+        if line_hi[j - 1] > win_end:
+            win_end = line_hi[j - 1]
+        if f.blocks:
+            win_blocked = True
+        cand = _window_candidate(fn, i, j, n, start, win_end, win_blocked,
+                                 win_loads, win_aug, win_raw, win_comp,
+                                 params_and_prior, suffix_loads)
+        if cand is not None:
+            # Deterministic tie-break: higher score, then earlier/smaller span.
+            key = (cand["_score"], -cand["start"], -(cand["end"] - cand["start"]))
+            del cand["_score"]
+            yield key, cand
+
+
+def _window_shape_ok(i: int, j: int, n: int, lines_saved: int,
+                     win_blocked: bool) -> bool:
+    """The size/blocker gates a window must clear before its interface matters:
+    long enough run, not the whole body, relocate-safe, right line span."""
+    if j - i < _SUGGEST_MIN_STMTS:
+        return False
+    if j - i == n:
+        return False  # extracting the WHOLE body is a rename, not a seam
+    if win_blocked:
+        return False
+    return _SUGGEST_MIN_LINES <= lines_saved <= _SUGGEST_MAX_LINES
+
+
+def _window_candidate(fn, i: int, j: int, n: int, start: int, win_end: int,
+                      win_blocked: bool, win_loads: set[str], win_aug: set[str],
+                      win_raw: set[str], win_comp: set[str],
+                      params_and_prior: set[str], suffix_loads: list) -> dict | None:
+    """The candidate dict for window ``[i, j)`` (with a private ``_score``), or
+    None when the window fails a seam-quality gate."""
+    lines_saved = win_end - start + 1
+    if not _window_shape_ok(i, j, n, lines_saved, win_blocked):
+        return None
+    reads = win_loads | win_aug
+    live_in = sorted(nm for nm in reads if nm in params_and_prior)
+    if len(live_in) > _SUGGEST_MAX_PARAMS:
+        return None
+    defined = (win_raw - win_comp) | win_aug
+    live_out = sorted(nm for nm in defined if nm in suffix_loads[j])
+    if len(live_out) > _SUGGEST_MAX_RETURNS:
+        return None
+    # Favor a big body behind a small interface (few params/returns).
+    score = lines_saved - 2 * (len(live_in) + len(live_out))
+    return {
+        "function": fn.name,
+        "line": fn.lineno,
+        "start": start,
+        "end": win_end,
+        "name": f"_{fn.name}_part",
+        "params": live_in,
+        "returns": live_out,
+        "lines_saved": lines_saved,
+        "_score": score,
+    }
+
+
 def suggest_extractions(source: str, tree: ast.Module | None = None) -> list[dict]:
     """For each long, closure-free function, the single best contiguous run to
     extract — the seam with the most lines saved for the smallest interface.
@@ -409,92 +551,10 @@ def suggest_extractions(source: str, tree: ast.Module | None = None) -> list[dic
             return []
     out: list[dict] = []
     for fn, _container in _iter_closure_free_functions(tree):
-        span = (fn.end_lineno or fn.lineno) - fn.lineno + 1
-        body = fn.body
-        if span < _SUGGEST_FN_FLOOR or not (_SUGGEST_MIN_STMTS <= len(body) <= _SUGGEST_MAX_BODY):
+        if not _is_minable_function(fn):
             continue
-        n = len(body)
-        # Walk each statement once; the O(n²) window scan below reuses these
-        # per-statement sets instead of re-walking overlapping ranges (the
-        # documented byte-identical decomposition of the list-level helpers).
-        facts = [_StmtFacts(s) for s in body]
-        line_lo = [s.lineno for s in body]
-        line_hi = [getattr(s, "end_lineno", s.lineno) for s in body]
-
-        # prefix_stores[i] == _stores(body[:i]); suffix_loads[j] == _loads(body[j:]).
-        prefix_stores: list[set[str]] = [set()]
-        raw_acc: set[str] = set()
-        comp_acc: set[str] = set()
-        for f in facts:
-            raw_acc = raw_acc | f.raw_stores
-            comp_acc = comp_acc | f.comp
-            prefix_stores.append(raw_acc - comp_acc)
-        suffix_loads: list[set[str]] = [set()] * (n + 1)
-        loads_acc: set[str] = set()
-        for k in range(n - 1, -1, -1):
-            loads_acc = loads_acc | facts[k].loads
-            suffix_loads[k] = loads_acc
-
-        param_names = _function_param_names(fn)
-
-        best: tuple[int, dict] | None = None
-        for i in range(n):
-            params_and_prior = param_names | prefix_stores[i]
-            start = line_lo[i]
-            # Grow the window [i, j) statement by statement, accumulating its
-            # data-flow sets in O(1) per step rather than re-walking each window.
-            win_loads: set[str] = set()
-            win_aug: set[str] = set()
-            win_raw: set[str] = set()
-            win_comp: set[str] = set()
-            win_end = 0
-            win_blocked = False
-            for j in range(i + 1, n + 1):
-                f = facts[j - 1]
-                win_loads |= f.loads
-                win_aug |= f.aug
-                win_raw |= f.raw_stores
-                win_comp |= f.comp
-                e = line_hi[j - 1]
-                if e > win_end:
-                    win_end = e
-                if f.blocks:
-                    win_blocked = True
-                if j - i < _SUGGEST_MIN_STMTS:
-                    continue
-                if j - i == n:
-                    continue  # extracting the WHOLE body is a rename, not a seam
-                if win_blocked:
-                    continue
-                lines_saved = win_end - start + 1
-                if not (_SUGGEST_MIN_LINES <= lines_saved <= _SUGGEST_MAX_LINES):
-                    continue
-                reads = win_loads | win_aug
-                live_in = sorted(nm for nm in reads if nm in params_and_prior)
-                if len(live_in) > _SUGGEST_MAX_PARAMS:
-                    continue
-                defined = (win_raw - win_comp) | win_aug
-                reads_after = suffix_loads[j]
-                live_out = sorted(nm for nm in defined if nm in reads_after)
-                if len(live_out) > _SUGGEST_MAX_RETURNS:
-                    continue
-                # Favor a big body behind a small interface (few params/returns).
-                score = lines_saved - 2 * (len(live_in) + len(live_out))
-                cand = {
-                    "function": fn.name,
-                    "line": fn.lineno,
-                    "start": start,
-                    "end": win_end,
-                    "name": f"_{fn.name}_part",
-                    "params": live_in,
-                    "returns": live_out,
-                    "lines_saved": lines_saved,
-                }
-                # Deterministic tie-break: higher score, then earlier/smaller span.
-                key = (score, -cand["start"], -(cand["end"] - cand["start"]))
-                if best is None or key > best[0]:
-                    best = (key, cand)
+        best = _scan_function(fn)
         if best is not None:
-            out.append(best[1])
+            out.append(best)
     out.sort(key=lambda d: (-d["lines_saved"], d["function"]))
     return out
