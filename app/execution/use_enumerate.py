@@ -257,11 +257,9 @@ def _splice_body(lines: list[str], body_lo: int, body_hi: int,
     return out
 
 
-def _try_for(for_stmt: ast.For, source: str, lines: list[str],
-             scope_names: set[str]) -> _Rewrite | None:
-    """If ``for_stmt`` is the exact ``for i in range(len(seq)): ... seq[i] ...``
-    shape with ``i`` used only as ``seq[i]`` and ``seq`` not rebound, return its
-    rewrite; else None (the occurrence is skipped)."""
+def _match_header_seq(for_stmt: ast.For) -> tuple[ast.expr, list[str]] | None:
+    """The ``(seq_node, seq_names)`` of a ``for i in range(len(seq)):`` header
+    with no for/else and target the plain Name ``i``, else None."""
     if for_stmt.orelse:
         return None  # for/else changes semantics — skip
     if not isinstance(for_stmt.target, ast.Name) or for_stmt.target.id != "i":
@@ -272,31 +270,66 @@ def _try_for(for_stmt: ast.For, source: str, lines: list[str],
     seq_names = _attr_chain_names(seq)
     if seq_names is None:  # _range_len_seq guarantees this, but stay defensive
         return None
+    return seq, seq_names
 
-    if not _i_used_only_as_index(for_stmt.body, seq_names):
-        return None
-    if _seq_rebound(for_stmt.body, seq_names):
-        return None
 
-    # Collect the sanctioned ``seq[i]`` loads to splice (must be at least one, or
-    # the loop never reads the element and enumerate adds nothing).
+def _index_subs(body: list[ast.stmt], seq_names: list[str]) -> list[ast.Subscript]:
+    """Every sanctioned ``<seq>[i]`` Load subscript in ``body`` (the loads to be
+    spliced to the element name)."""
     subs: list[ast.Subscript] = []
-    for stmt in for_stmt.body:
+    for stmt in body:
         for node in ast.walk(stmt):
             if isinstance(node, ast.Subscript) and _is_seq_index_load(
                     node, seq_names):
                 subs.append(node)
-    if not subs:
-        return None
+    return subs
 
+
+def _seq_source(source: str, seq: ast.expr) -> str | None:
+    """The single-line source text of ``seq``, or None when it spans lines or
+    cannot be recovered."""
     if seq.lineno != seq.end_lineno:
         return None  # multi-line seq — skip
     seq_src = ast.get_source_segment(source, seq)
     if seq_src is None or "\n" in seq_src:
         return None  # can't recover the seq source — skip
+    return seq_src
+
+
+def _match_for(for_stmt: ast.For, source: str
+               ) -> tuple[str, list[str], list[ast.Subscript]] | None:
+    """The ``(seq_src, seq_names, subs)`` of a fully-validated convertible loop —
+    exact header, ``i`` used only as ``seq[i]``, ``seq`` not rebound, at least one
+    recoverable single-line ``seq[i]`` load — else None (the occurrence skips)."""
+    matched = _match_header_seq(for_stmt)
+    if matched is None:
+        return None
+    seq, seq_names = matched
+    if not _i_used_only_as_index(for_stmt.body, seq_names):
+        return None
+    if _seq_rebound(for_stmt.body, seq_names):
+        return None
+    # Need at least one ``seq[i]`` load, or enumerate adds nothing.
+    subs = _index_subs(for_stmt.body, seq_names)
+    if not subs:
+        return None
+    seq_src = _seq_source(source, seq)
+    if seq_src is None:
+        return None
+    return seq_src, seq_names, subs
+
+
+def _try_for(for_stmt: ast.For, source: str, lines: list[str],
+             scope_names: set[str]) -> _Rewrite | None:
+    """If ``for_stmt`` is the exact ``for i in range(len(seq)): ... seq[i] ...``
+    shape with ``i`` used only as ``seq[i]`` and ``seq`` not rebound, return its
+    rewrite; else None (the occurrence is skipped)."""
+    matched = _match_for(for_stmt, source)
+    if matched is None:
+        return None
+    seq_src, seq_names, subs = matched
 
     elem = _fresh_elem_name(seq_names, scope_names)
-
     body_lo = for_stmt.body[0].lineno
     body_hi = max(s.end_lineno for s in for_stmt.body)
     body_lines = _splice_body(lines, body_lo, body_hi, subs, elem)

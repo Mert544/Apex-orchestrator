@@ -105,6 +105,61 @@ def _items_text(items: list[ast.withitem], source: str) -> str | None:
     return ", ".join(parts)
 
 
+def _nests_plain_with(node: ast.With) -> bool:
+    """True when ``node``'s body is EXACTLY one plain (non-async) ``with``."""
+    return (not isinstance(node, ast.AsyncWith)
+            and len(node.body) == 1
+            and isinstance(node.body[0], ast.With)
+            and not isinstance(node.body[0], ast.AsyncWith))
+
+
+def _with_chain(node: ast.With) -> list[ast.With] | None:
+    """The maximal chain of singly-nested plain ``with`` headers from ``node``
+    down, or None when ``node`` does not nest a plain ``with``."""
+    if not _nests_plain_with(node):
+        return None
+    chain: list[ast.With] = [node]
+    current = node
+    while _nests_plain_with(current):
+        current = current.body[0]  # type: ignore[assignment]
+        chain.append(current)
+    return chain
+
+
+def _all_single_line_headers(chain: list[ast.With],
+                             source_lines: list[str]) -> bool:
+    """True when every ``with`` header in ``chain`` is single-line and
+    comment-free (so each header rewrite is trivial)."""
+    return all(_single_line_header(w, source_lines) for w in chain)
+
+
+def _chain_items_text(chain: list[ast.With], source: str) -> list[str] | None:
+    """The recovered, comma-joined item texts for each ``with`` in ``chain``,
+    outer-to-inner, or None if any item segment can't be recovered."""
+    item_texts: list[str] = []
+    for w in chain:
+        text = _items_text(w.items, source)
+        if text is None:
+            return None
+        item_texts.append(text)
+    return item_texts
+
+
+def _body_dedentable(source_lines: list[str], body_lo: int, body_hi: int,
+                     dedent: int, body_col: int) -> bool:
+    """True when every non-blank body line carries the expected leading spaces so
+    the ``dedent``-space removal is safe (vacuously true when ``dedent`` is 0)."""
+    if not dedent:
+        return True
+    for ln in range(body_lo, body_hi + 1):
+        line = source_lines[ln - 1]
+        if line.strip() == "":
+            continue  # blank lines are left as-is
+        if not line.startswith(" " * body_col):
+            return False
+    return True
+
+
 def _try_with(node: ast.With, source: str,
               source_lines: list[str]) -> _Rewrite | None:
     """If ``node`` is the OUTER of a singly-nested plain-``with`` chain, return
@@ -113,33 +168,18 @@ def _try_with(node: ast.With, source: str,
     A maximal chain is collected: ``node`` and each successively nested ``with``
     whose body is exactly one plain ``with`` are merged into one header, and the
     innermost body is dedented to one level under ``node``."""
-    if isinstance(node, ast.AsyncWith):
+    chain = _with_chain(node)
+    if chain is None:
         return None
-    if len(node.body) != 1 or not isinstance(node.body[0], ast.With):
-        return None
-    if isinstance(node.body[0], ast.AsyncWith):
-        return None
-
-    # Walk the chain of singly-nested plain withs from the outer node down.
-    chain: list[ast.With] = [node]
-    current = node
-    while (len(current.body) == 1 and isinstance(current.body[0], ast.With)
-           and not isinstance(current.body[0], ast.AsyncWith)):
-        current = current.body[0]
-        chain.append(current)
 
     # Every header on the chain must be single-line and comment-free.
-    for w in chain:
-        if not _single_line_header(w, source_lines):
-            return None
+    if not _all_single_line_headers(chain, source_lines):
+        return None
 
     # Recover and join every item across the chain, outer-to-inner.
-    item_texts: list[str] = []
-    for w in chain:
-        text = _items_text(w.items, source)
-        if text is None:
-            return None
-        item_texts.append(text)
+    item_texts = _chain_items_text(chain, source)
+    if item_texts is None:
+        return None
 
     outer_indent = node.col_offset
     inner = chain[-1]
@@ -161,13 +201,8 @@ def _try_with(node: ast.With, source: str,
         return None
 
     # Only dedent when every body line carries the expected leading spaces.
-    if dedent:
-        for ln in range(body_lo, body_hi + 1):
-            line = source_lines[ln - 1]
-            if line.strip() == "":
-                continue  # blank lines are left as-is
-            if not line.startswith(" " * body_col):
-                return None
+    if not _body_dedentable(source_lines, body_lo, body_hi, dedent, body_col):
+        return None
 
     header = " " * outer_indent + "with " + ", ".join(item_texts) + ":"
     return _Rewrite(node.lineno, inner.lineno, header,
