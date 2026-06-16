@@ -9,6 +9,21 @@ from app.runtime.git_adapter import GitAdapter
 from ._context import _target_root
 
 
+def _task_context(context: AutomationContext):
+    """Resolve the shared (target_root, changed_files, patch_plan, tasks, task) tuple.
+
+    Both git_commit_skill and generate_pr_summary_skill read the same five values
+    from the automation context; consolidating the byte-identical block keeps them
+    in lockstep.
+    """
+    target_root = _target_root(context)
+    changed_files = context.state.get("changed_files", [])
+    patch_plan = context.state.get("patch_plan", {})
+    tasks = context.state.get("task_plan", {}).get("tasks", [])
+    task = tasks[0] if tasks else {}
+    return target_root, changed_files, patch_plan, tasks, task
+
+
 def git_diff_skill(context: AutomationContext):
     target_root = _target_root(context)
     git = GitAdapter()
@@ -25,11 +40,7 @@ def git_diff_skill(context: AutomationContext):
 
 
 def git_commit_skill(context: AutomationContext):
-    target_root = _target_root(context)
-    changed_files = context.state.get("changed_files", [])
-    patch_plan = context.state.get("patch_plan", {})
-    tasks = context.state.get("task_plan", {}).get("tasks", [])
-    task = tasks[0] if tasks else {}
+    target_root, changed_files, patch_plan, tasks, task = _task_context(context)
     title = str(task.get("title", patch_plan.get("title", "Apex Orchestrator patch")))
     # Prefer PR summary commit_message if available (includes co-authored-by in team mode)
     pr_summary = context.state.get("pr_summary", {})
@@ -51,11 +62,7 @@ def git_commit_skill(context: AutomationContext):
 
 
 def generate_pr_summary_skill(context: AutomationContext):
-    target_root = _target_root(context)
-    changed_files = context.state.get("changed_files", [])
-    patch_plan = context.state.get("patch_plan", {})
-    tasks = context.state.get("task_plan", {}).get("tasks", [])
-    task = tasks[0] if tasks else {}
+    target_root, changed_files, patch_plan, tasks, task = _task_context(context)
     verification = context.state.get("verification", {})
     git_diff = context.state.get("git_diff", {})
     result = PRSummaryGenerator().generate(
