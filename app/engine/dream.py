@@ -122,14 +122,8 @@ def _review_briefs(root: Path, report: DreamReport, curate: bool) -> None:
                 f"brief `{branch}` in progress: {done}/{total} measured item(s) resolved.")
 
 
-def _review_proof(root: Path, report: DreamReport) -> None:
-    proof_path = root / ".apex" / "proof-of-fix.json"
-    if not proof_path.exists():
-        return
-    try:
-        proof = json.loads(proof_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return
+def _tally_proof(proof: dict) -> tuple[dict[str, int], dict[str, int]]:
+    """Count repeat failing tests and repeated block reasons across all fixes."""
     failing: dict[str, int] = {}
     reasons: dict[str, int] = {}
     for fix in proof.get("fixes", []) or []:
@@ -139,6 +133,18 @@ def _review_proof(root: Path, report: DreamReport) -> None:
         if reason:
             key = reason.split("—")[0].strip()[:80]
             reasons[key] = reasons.get(key, 0) + 1
+    return failing, reasons
+
+
+def _review_proof(root: Path, report: DreamReport) -> None:
+    proof_path = root / ".apex" / "proof-of-fix.json"
+    if not proof_path.exists():
+        return
+    try:
+        proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    failing, reasons = _tally_proof(proof)
     for test, n in sorted(failing.items(), key=lambda kv: (-kv[1], kv[0]))[:2]:
         report.patterns.append(
             f"`{test}` failed verification {n}× in the last pass — it guards "
@@ -183,12 +189,15 @@ def _review_promises(root: Path, profile: Any, report: DreamReport) -> None:
         pass
 
 
-def _review_pulse(root: Path, report: DreamReport) -> None:
-    """Where the project is alive — churn, trends, knowledge, promises."""
-    from app.engine.signal_trends import SignalTrends
-    from app.tools.project_profile import ProjectProfiler
+def _review_pulse_signals(root: Path, profile: Any, report: DreamReport) -> None:
+    """Emit the where-the-project-is-alive patterns: trends, churn, knowledge.
 
-    profile = ProjectProfiler(root).profile()
+    High-fan-OUT god-modules are gated on availability (older profiles / repos
+    with no god-module yield []), so the digest stays byte-identical when the
+    signal is absent. The profile already orders these (-fan_out, module).
+    """
+    from app.engine.signal_trends import SignalTrends
+
     for trend in SignalTrends(root).accelerating(profile)[:2]:
         report.patterns.append(
             f"`{trend['module']}` is ACCELERATING: {trend['churn_before']}→"
@@ -203,10 +212,6 @@ def _review_pulse(root: Path, report: DreamReport) -> None:
         report.patterns.append(
             f"`{kr['module']}` is {kr['share']}% single-author across "
             f"{kr['commits']} commits — a bus-factor seam.")
-    # High-fan-OUT god-modules: coordination chokepoints worth decoupling.
-    # Gated on availability (older profiles / repos with no god-module yield
-    # []), so the digest stays byte-identical when the signal is absent. The
-    # profile already orders these (-fan_out, module); name the heaviest.
     for coord in (profile.coordinator_modules or [])[:1]:
         wires = ", ".join(f"`{m}`" for m in (coord.get("imports") or [])[:3])
         tail = f" wiring together {wires}" if wires else ""
@@ -218,14 +223,28 @@ def _review_pulse(root: Path, report: DreamReport) -> None:
         report.patterns.append(
             f"{len(profile.doc_drift)} documentation promise(s) point at files "
             "that don't exist — the docs drifted.")
-    _review_promises(root, profile, report)
-    # Open-ended discovery: what travels with what on THIS codebase. No
-    # combination is named in advance — the data decides.
+
+
+def _review_discoveries(profile: Any, report: DreamReport) -> None:
+    """Open-ended discovery: what travels with what on THIS codebase.
+
+    No combination is named in advance — the data decides.
+    """
     from app.engine.dream_discovery import discover_structured
 
     for d in discover_structured(profile):
         report.discoveries.append(d.text)
         report.discovery_objs.append(d.to_dict())
+
+
+def _review_pulse(root: Path, report: DreamReport) -> None:
+    """Where the project is alive — churn, trends, knowledge, promises."""
+    from app.tools.project_profile import ProjectProfiler
+
+    profile = ProjectProfiler(root).profile()
+    _review_pulse_signals(root, profile, report)
+    _review_promises(root, profile, report)
+    _review_discoveries(profile, report)
 
 
 # A discovery graduates into a waking idea only when it is BOTH strong and
@@ -383,6 +402,73 @@ def _pattern_key(text: str) -> str:
     return text.strip()
 
 
+def _load_journal(journal_path: Path) -> list[Any]:
+    """Read the append-only dream journal, tolerating a missing/corrupt file."""
+    if journal_path.exists():
+        try:
+            return json.loads(journal_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+    return []
+
+
+def _consecutive_streak(history: list[Any], key: str) -> int:
+    """How many consecutive past dreams (plus this one) carried ``key``.
+
+    Entries are ``{key: text}`` maps or legacy bare lists; ``in`` works on
+    both, so a standing observation accumulates a streak either way.
+    """
+    streak = 1
+    for past in reversed(history):
+        if key in past:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _annotate_streaks(history: list[Any], report: DreamReport) -> tuple[
+        dict[str, str], dict[str, int]]:
+    """Tag every pattern/discovery with its streak; return the current map.
+
+    Mutates ``report.patterns``/``report.discoveries`` in place to append the
+    "seen in N consecutive dreams" suffix, and returns ``(current, streaks)``
+    where ``current`` is the ``{key: text}`` snapshot this dream records.
+    """
+    current: dict[str, str] = {}
+    streaks: dict[str, int] = {}
+    disc_key_by_index = {i: d["key"] for i, d in enumerate(report.discovery_objs)}
+    for i, text in enumerate(report.patterns):
+        key = _pattern_key(text)
+        current[key] = text
+        streaks[key] = _consecutive_streak(history, key)
+        if streaks[key] >= 2:
+            report.patterns[i] += f"  ⟲ seen in {streaks[key]} consecutive dreams"
+    for i, text in enumerate(report.discoveries):
+        key = disc_key_by_index.get(i) or _pattern_key(text)
+        current[key] = text
+        streaks[key] = _consecutive_streak(history, key)
+        if streaks[key] >= 2:
+            report.discoveries[i] += f"  ⟲ seen in {streaks[key]} consecutive dreams"
+    return current, streaks
+
+
+def _diff_since_last(history: list[Any], current: dict[str, str],
+                     report: DreamReport) -> None:
+    """Record what surfaced this dream and what stopped surfacing since the last.
+
+    "New" means *absent from the previous dream*; a standing item is by
+    definition present in it, so it can never be re-announced as new.
+    """
+    prev = history[-1] if history else {}
+    prev_keys = set(prev.keys()) if isinstance(prev, dict) else set(prev)
+    for key, text in current.items():
+        if key not in prev_keys:
+            report.new_since.append(text)
+    for key in sorted(prev_keys - set(current)):
+        report.resolved_since.append(prev[key] if isinstance(prev, dict) else key)
+
+
 def _consolidate(root: Path, report: DreamReport) -> None:
     """One journal, three jobs — streaks, the new/resolved flow, persistence.
 
@@ -394,49 +480,10 @@ def _consolidate(root: Path, report: DreamReport) -> None:
     had; legacy bare-list entries are still read.
     """
     journal_path = root / ".apex" / "dream-journal.json"
-    history: list[Any] = []
-    if journal_path.exists():
-        try:
-            history = json.loads(journal_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            history = []
-
-    def _present(entry: Any, key: str) -> bool:
-        return key in entry  # dict membership or list membership, both work
-
-    def _streak(key: str) -> int:
-        streak = 1
-        for past in reversed(history):
-            if _present(past, key):
-                streak += 1
-            else:
-                break
-        return streak
-
-    current: dict[str, str] = {}
-    streaks: dict[str, int] = {}
-    disc_key_by_index = {i: d["key"] for i, d in enumerate(report.discovery_objs)}
-    for i, text in enumerate(report.patterns):
-        key = _pattern_key(text)
-        current[key] = text
-        streaks[key] = _streak(key)
-        if streaks[key] >= 2:
-            report.patterns[i] += f"  ⟲ seen in {streaks[key]} consecutive dreams"
-    for i, text in enumerate(report.discoveries):
-        key = disc_key_by_index.get(i) or _pattern_key(text)
-        current[key] = text
-        streaks[key] = _streak(key)
-        if streaks[key] >= 2:
-            report.discoveries[i] += f"  ⟲ seen in {streaks[key]} consecutive dreams"
+    history = _load_journal(journal_path)
+    current, streaks = _annotate_streaks(history, report)
     report._streaks = streaks  # for promotion
-
-    prev = history[-1] if history else {}
-    prev_keys = set(prev.keys()) if isinstance(prev, dict) else set(prev)
-    for key, text in current.items():
-        if key not in prev_keys:
-            report.new_since.append(text)
-    for key in sorted(prev_keys - set(current)):
-        report.resolved_since.append(prev[key] if isinstance(prev, dict) else key)
+    _diff_since_last(history, current, report)
 
     history.append(current)
     try:
@@ -447,36 +494,45 @@ def _consolidate(root: Path, report: DreamReport) -> None:
         pass
 
 
+def _emit_section(lines: list[str], heading: str, items: list[str],
+                  prefix: str) -> None:
+    """Append a ``## heading`` block plus a blank line when ``items`` is non-empty.
+
+    Each item is rendered as ``{prefix}{item}``; an empty ``items`` emits
+    nothing, keeping the digest byte-identical when a section is absent.
+    """
+    if not items:
+        return
+    lines.append(heading)
+    lines += [f"{prefix}{item}" for item in items]
+    lines.append("")
+
+
+def _render_since_last(lines: list[str], report: DreamReport) -> None:
+    """The combined new/resolved block — two prefixes under one heading."""
+    if not (report.new_since or report.resolved_since):
+        return
+    lines.append("## Since the last dream")
+    lines += [f"- 🆕 {t}" for t in report.new_since]
+    lines += [f"- ✅ no longer surfaces: {t}" for t in report.resolved_since]
+    lines.append("")
+
+
 def render_dream_markdown(report: DreamReport) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = ["# Dream digest — what the organism learned while you were away",
              "", f"_Curated {ts} · deterministic · zero tokens · signed by barzeuss_", ""]
-    if report.new_since or report.resolved_since:
-        lines.append("## Since the last dream")
-        lines += [f"- 🆕 {t}" for t in report.new_since]
-        lines += [f"- ✅ no longer surfaces: {t}" for t in report.resolved_since]
-        lines.append("")
-    if report.promoted:
-        lines.append("## ⬆️ Graduated to the idea engine (confirmed across dreams)")
-        lines += [f"- {t}" for t in report.promoted]
-        lines.append("")
+    _render_since_last(lines, report)
+    _emit_section(lines, "## ⬆️ Graduated to the idea engine (confirmed across dreams)",
+                  report.promoted, "- ")
     if report.patterns:
-        lines.append("## Patterns")
-        lines += [f"- {p}" for p in report.patterns]
-        lines.append("")
+        _emit_section(lines, "## Patterns", report.patterns, "- ")
     else:
         lines += ["_No artifacts to learn from yet — run `apex maintain` or save "
                   "a brief, then dream again._", ""]
-    if report.discoveries:
-        lines.append("## Discoveries — open-ended, found in the data (not coded rules)")
-        lines += [f"- 🔍 {d}" for d in report.discoveries]
-        lines.append("")
-    if report.curated:
-        lines.append("## Curated")
-        lines += [f"- 🧹 {c}" for c in report.curated]
-        lines.append("")
-    if report.proposed:
-        lines.append("## Proposed curation — inputs untouched (apply with `apex dream --curate`)")
-        lines += [f"- 💤 {p}" for p in report.proposed]
-        lines.append("")
+    _emit_section(lines, "## Discoveries — open-ended, found in the data (not coded rules)",
+                  report.discoveries, "- 🔍 ")
+    _emit_section(lines, "## Curated", report.curated, "- 🧹 ")
+    _emit_section(lines, "## Proposed curation — inputs untouched (apply with `apex dream --curate`)",
+                  report.proposed, "- 💤 ")
     return "\n".join(lines)

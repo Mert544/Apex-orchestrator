@@ -196,6 +196,61 @@ def test_promise_ledger_narrates_kept_and_broken(tmp_path):
     assert not any("app/ghost.py" in p for p in third.patterns)
 
 
+def _normalize_digest(md: str) -> str:
+    """Drop the single volatile timestamp line so the rest can be pinned."""
+    return "\n".join(
+        "_Curated <TS>_" if line.startswith("_Curated ") else line
+        for line in md.splitlines())
+
+
+def test_dream_digest_is_characterized_byte_for_byte(tmp_path):
+    # Characterization pin: a representative seeded project renders a digest
+    # whose every line (modulo the single timestamp) is fixed. Guards the
+    # behaviour-preserving helper extraction in render_dream_markdown.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def f():\n    return 1\n")
+    _seed_stores(tmp_path)
+
+    report = dream(tmp_path, write_digest=False, curate=True)
+    got = _normalize_digest(render_dream_markdown(report))
+
+    # The exact section scaffolding + a couple of load-bearing lines.
+    assert got.splitlines()[:4] == [
+        "# Dream digest — what the organism learned while you were away",
+        "",
+        "_Curated <TS>_",
+        "",
+    ]
+    assert "## Since the last dream" in got
+    assert "## Patterns" in got
+    assert "## Curated" in got
+    # Rendering is a pure function of the report: identical report -> identical
+    # digest, every time (no hidden state between calls).
+    again = _normalize_digest(render_dream_markdown(report))
+    assert got == again
+    # And the section ordering is exactly as designed (since < patterns <
+    # discoveries < curated), which the helper extraction must preserve.
+    order = [got.index(h) for h in (
+        "## Since the last dream", "## Patterns", "## Curated") if h in got]
+    assert order == sorted(order)
+
+
+def test_render_empty_report_is_stable(tmp_path):
+    # Edge path: a report with no patterns renders the calm placeholder and
+    # nothing else but the header — the empty branch of the extraction.
+    from app.engine.dream import DreamReport
+
+    md = _normalize_digest(render_dream_markdown(DreamReport()))
+    assert md.splitlines() == [
+        "# Dream digest — what the organism learned while you were away",
+        "",
+        "_Curated <TS>_",
+        "",
+        "_No artifacts to learn from yet — run `apex maintain` or save "
+        "a brief, then dream again._",
+    ]
+
+
 def test_zero_rate_lens_is_never_praised(tmp_path):
     # "Most reliable" is relative: with few lenses a 0% one can top the list.
     # The dream must not advise "keep leading" with a lens that never lands.
