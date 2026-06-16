@@ -19,76 +19,111 @@ from app.tools.function_fractal_analyzer import FunctionFractalAnalyzer
 from app.tools.project_profile import ProjectProfiler
 
 
-def run_audit(project_root: Path) -> dict:
-    profiler = ProjectProfiler(project_root)
-    profile = profiler.profile()
+# Skip tests, venvs, generated code, examples, and audit scripts.
+# `.claude/` holds agent git worktrees — full repo copies. Without
+# this the audit re-scans every worktree's tree (8x+ the files),
+# turning a seconds-long walk into a multi-minute near-hang.
+_SKIP_DIRS = (
+    "tests/", "test_", ".venv", "venv", "__pycache__", ".apex",
+    "examples/", "scripts/",
+    ".claude/", ".epistemic/", "node_modules/", "dist/", "build/",
+)
 
+_CRITICAL_PATTERNS = ("eval()", "exec()", "os.system()", "pickle.loads", "yaml.load")
+
+
+def _is_skipped(rel: str) -> bool:
+    return any(skip in rel for skip in _SKIP_DIRS)
+
+
+def _fn_risks(fn: dict, rel: str) -> list[dict]:
+    return [
+        {
+            "file": rel,
+            "function": fn["name"],
+            "risk": risk,
+            "risk_score": fn["risk_score"],
+        }
+        for risk in fn["risks"]
+    ]
+
+
+def _is_critical(risk: dict) -> bool:
+    return any(p in risk["risk"] for p in _CRITICAL_PATTERNS)
+
+
+def _severity(risk: dict) -> str:
+    if _is_critical(risk):
+        return "critical"
+    score = risk["risk_score"]
+    if score >= 0.3:
+        return "high"
+    if score >= 0.1:
+        return "medium"
+    return "low"
+
+
+def _categorize(all_risks: list[dict]) -> dict[str, list[dict]]:
+    buckets: dict[str, list[dict]] = {"critical": [], "high": [], "medium": [], "low": []}
+    for risk in all_risks:
+        buckets[_severity(risk)].append(risk)
+    return buckets
+
+
+def _scan(project_root: Path) -> tuple[list[dict], int]:
     analyzer = FunctionFractalAnalyzer()
-    all_risks = []
+    all_risks: list[dict] = []
     functions_analyzed = 0
-
     for py_file in project_root.rglob("*.py"):
-        # Skip tests, venvs, generated code, examples, and audit scripts
         rel = py_file.relative_to(project_root).as_posix()
-        skip_dirs = (
-            "tests/", "test_", ".venv", "venv", "__pycache__", ".apex",
-            "examples/", "scripts/",
-            # `.claude/` holds agent git worktrees — full repo copies. Without
-            # this the audit re-scans every worktree's tree (8x+ the files),
-            # turning a seconds-long walk into a multi-minute near-hang.
-            ".claude/", ".epistemic/", "node_modules/", "dist/", "build/",
-        )
-        if any(skip in rel for skip in skip_dirs):
+        if _is_skipped(rel):
             continue
         try:
             results = analyzer.analyze_file(py_file)
-            functions_analyzed += len(results)
-            for fn in results:
-                all_risks.extend(
-                    {
-                        "file": rel,
-                        "function": fn["name"],
-                        "risk": risk,
-                        "risk_score": fn["risk_score"],
-                    }
-                    for risk in fn["risks"]
-                )
         except Exception:
             continue
+        functions_analyzed += len(results)
+        for fn in results:
+            all_risks.extend(_fn_risks(fn, rel))
+    return all_risks, functions_analyzed
 
-    # Categorize risks
-    critical_patterns = ("eval()", "exec()", "os.system()", "pickle.loads", "yaml.load")
-    critical = [r for r in all_risks if any(p in r["risk"] for p in critical_patterns)]
-    high = [r for r in all_risks if r["risk_score"] >= 0.3 and r not in critical]
-    medium = [r for r in all_risks if 0.1 <= r["risk_score"] < 0.3 and r not in critical and r not in high]
-    low = [r for r in all_risks if r["risk_score"] < 0.1 and r not in critical and r not in high and r not in medium]
 
-    report = {
+def _build_report(project_root: Path, profile, all_risks: list[dict],
+                  functions_analyzed: int, buckets: dict[str, list[dict]]) -> dict:
+    return {
         "project_root": str(project_root),
         "summary": {
             "total_files": profile.total_files,
             "functions_analyzed": functions_analyzed,
             "total_risks": len(all_risks),
-            "critical": len(critical),
-            "high": len(high),
-            "medium": len(medium),
-            "low": len(low),
+            "critical": len(buckets["critical"]),
+            "high": len(buckets["high"]),
+            "medium": len(buckets["medium"]),
+            "low": len(buckets["low"]),
         },
         "risks": {
-            "critical": critical,
-            "high": high,
-            "medium": medium,
-            "low": low,
+            "critical": buckets["critical"],
+            "high": buckets["high"],
+            "medium": buckets["medium"],
+            "low": buckets["low"],
         },
         "critical_untested_modules": profile.critical_untested_modules,
     }
 
-    # Persist report
+
+def _persist_report(project_root: Path, report: dict) -> None:
     apex_dir = project_root / ".apex"
     apex_dir.mkdir(exist_ok=True)
     report_path = apex_dir / "security-report.json"
     report_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
 
+
+def run_audit(project_root: Path) -> dict:
+    profile = ProjectProfiler(project_root).profile()
+    all_risks, functions_analyzed = _scan(project_root)
+    buckets = _categorize(all_risks)
+    report = _build_report(project_root, profile, all_risks, functions_analyzed, buckets)
+    _persist_report(project_root, report)
     return report
 
 
