@@ -58,22 +58,8 @@ def _find(report: IdeaTreeReport, branch_path: str) -> IdeaNode | None:
     return next((i for i in report.ideas if i.branch_path == branch_path), None)
 
 
-def explain_idea(report: IdeaTreeReport, branch_path: str) -> IdeaExplanation | None:
-    """Reconstruct the full reasoning behind one idea, by its branch path."""
-    node = _find(report, branch_path)
-    if node is None:
-        return None
-
-    from app.engine.idea_action_bridge import IdeaActionBridge
-    from app.engine.idea_roadmap import RoadmapSynthesizer
-
-    roadmap = RoadmapSynthesizer().build(report)
-    item = next(
-        (i for ph in roadmap.phases for i in ph.items if i.branch_path == branch_path), None
-    )
-    step = IdeaActionBridge().plan_idea(node)
-
-    has_objective = bool((report.objective or "").strip())
+def _value_formula(node: IdeaNode, has_objective: bool) -> str:
+    """The exact value formula with the weights actually used, plus any bonus."""
     if has_objective:
         formula = (
             f"value = 0.4·relevance + 0.3·novelty + 0.3·feasibility "
@@ -92,27 +78,53 @@ def explain_idea(report: IdeaTreeReport, branch_path: str) -> IdeaExplanation | 
     if magnitude:
         formula += (f" (includes +{magnitude} magnitude bonus: the measured quantity "
                     f"in the seeding fact — months exposed / commits / complexity)")
+    return formula
 
-    # Reconstruct the deterministic derivations the engine used.
+
+def _novelty_explanation(node: IdeaNode) -> str:
+    """Reconstruct the deterministic novelty derivation the engine used."""
     if node.operator == "root":
-        novelty_exp = "roots are maximally novel by definition (novelty = 1.0)"
-    else:
-        novelty_exp = (
-            f"novelty = 1.0 − 0.15·depth − 0.10·(repeats of this lens chain) − "
-            f"0.04·(ideas on this subject), floored at 0.2 → {node.novelty} "
-            f"(depth {node.depth})"
-        )
+        return "roots are maximally novel by definition (novelty = 1.0)"
+    return (
+        f"novelty = 1.0 − 0.15·depth − 0.10·(repeats of this lens chain) − "
+        f"0.04·(ideas on this subject), floored at 0.2 → {node.novelty} "
+        f"(depth {node.depth})"
+    )
+
+
+def _roadmap_fields(item: Any) -> tuple[str, float, float, float, int, int]:
+    """The roadmap placement fields for an idea, defaulted when it has no item.
+
+    Returns ``(phase, impact, effort, roi, fan_in, loc)``.
+    """
+    if item is None:
+        return "", 0.0, 0.0, 0.0, 0, 0
+    return item.phase, item.impact, item.effort, item.roi, item.fan_in, item.loc
+
+
+def explain_idea(report: IdeaTreeReport, branch_path: str) -> IdeaExplanation | None:
+    """Reconstruct the full reasoning behind one idea, by its branch path."""
+    node = _find(report, branch_path)
+    if node is None:
+        return None
+
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.engine.idea_roadmap import RoadmapSynthesizer
+
+    roadmap = RoadmapSynthesizer().build(report)
+    item = next(
+        (i for ph in roadmap.phases for i in ph.items if i.branch_path == branch_path), None
+    )
+    step = IdeaActionBridge().plan_idea(node)
+
+    formula = _value_formula(node, bool((report.objective or "").strip()))
+    novelty_exp = _novelty_explanation(node)
     feasibility_exp = (
         f"feasibility {node.feasibility}: cheaper lenses score higher, decayed by depth "
         f"(×0.9^{node.depth}) and re-weighted for security-relevant subjects"
     )
 
-    impact = item.impact if item else 0.0
-    effort = item.effort if item else 0.0
-    roi = item.roi if item else 0.0
-    fan_in = item.fan_in if item else 0
-    loc = item.loc if item else 0
-    phase = item.phase if item else ""
+    phase, impact, effort, roi, fan_in, loc = _roadmap_fields(item)
     impact_exp = (
         f"impact {impact}: idea value plus structural-risk boosts and measured fan-in "
         f"(imported by {fan_in} module(s) → blast radius)"

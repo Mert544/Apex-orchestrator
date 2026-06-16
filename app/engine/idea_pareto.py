@@ -42,6 +42,63 @@ def _dominates(b: Any, a: Any) -> bool:
     return at_least and strictly
 
 
+def _dedup_by_vector(items: list[Any]) -> list[Any]:
+    """Collapse identical objective vectors to their best-ROI representative.
+
+    Identical vectors can't dominate each other (so all would survive); keep the
+    best-ROI (then path) representative for a clean frontier. Order follows
+    insertion of first-seen keys, which is deterministic for a given input.
+    """
+    by_vector: dict[tuple[float, float, float], Any] = {}
+    for it in items:
+        key = (round(it.impact, 4), round(it.effort, 4), round(it.value, 4))
+        cur = by_vector.get(key)
+        if cur is None or (it.roi, it.branch_path) > (cur.roi, cur.branch_path):
+            by_vector[key] = it
+    return list(by_vector.values())
+
+
+def _non_dominated(unique: list[Any]) -> list[Any]:
+    """The subset of ``unique`` not dominated by any other member."""
+    return [a for a in unique if not any(_dominates(b, a) for b in unique if b is not a)]
+
+
+def _frontier_reasons(p: Any, max_impact: float, min_effort: float,
+                      max_value: float, max_roi: float) -> list[str]:
+    """Why ``p`` earns its frontier place — extremes, else balanced trade-off."""
+    reasons: list[str] = []
+    if p.impact == max_impact:
+        reasons.append("highest impact")
+    if p.effort == min_effort:
+        reasons.append("lowest effort")
+    if p.value == max_value:
+        reasons.append("highest value")
+    if p.roi == max_roi:
+        reasons.append("best ROI")
+    if not reasons:
+        reasons.append("balanced trade-off")
+    return reasons
+
+
+def _annotate_frontier(frontier: list[Any]) -> list[ParetoPoint]:
+    """Wrap each frontier idea as an annotated ``ParetoPoint``, sorted stably."""
+    max_impact = max(p.impact for p in frontier)
+    min_effort = min(p.effort for p in frontier)
+    max_value = max(p.value for p in frontier)
+    max_roi = max(p.roi for p in frontier)
+    points = [
+        ParetoPoint(
+            branch_path=p.branch_path, title=p.title, phase=getattr(p, "phase", ""),
+            impact=p.impact, effort=p.effort, value=p.value, roi=p.roi,
+            reasons=_frontier_reasons(p, max_impact, min_effort, max_value, max_roi),
+        )
+        for p in frontier
+    ]
+    # Strongest impact first; ties broken by lower effort then path (deterministic).
+    points.sort(key=lambda p: (-p.impact, p.effort, p.branch_path))
+    return points
+
+
 def pareto_frontier(items: list[Any]) -> list[ParetoPoint]:
     """Return the non-dominated ideas, deduped by objective vector, annotated.
 
@@ -50,44 +107,9 @@ def pareto_frontier(items: list[Any]) -> list[ParetoPoint]:
     """
     if not items:
         return []
-
-    # Dedup identical objective vectors (they can't dominate each other, so all
-    # would survive); keep the best-ROI representative for a clean frontier.
-    by_vector: dict[tuple[float, float, float], Any] = {}
-    for it in items:
-        key = (round(it.impact, 4), round(it.effort, 4), round(it.value, 4))
-        cur = by_vector.get(key)
-        if cur is None or (it.roi, it.branch_path) > (cur.roi, cur.branch_path):
-            by_vector[key] = it
-    unique = list(by_vector.values())
-
-    frontier = [a for a in unique if not any(_dominates(b, a) for b in unique if b is not a)]
-
-    # Annotate why each point earns its place (extremes vs. balanced trade-off).
-    max_impact = max(p.impact for p in frontier)
-    min_effort = min(p.effort for p in frontier)
-    max_value = max(p.value for p in frontier)
-    max_roi = max(p.roi for p in frontier)
-    points: list[ParetoPoint] = []
-    for p in frontier:
-        reasons: list[str] = []
-        if p.impact == max_impact:
-            reasons.append("highest impact")
-        if p.effort == min_effort:
-            reasons.append("lowest effort")
-        if p.value == max_value:
-            reasons.append("highest value")
-        if p.roi == max_roi:
-            reasons.append("best ROI")
-        if not reasons:
-            reasons.append("balanced trade-off")
-        points.append(ParetoPoint(
-            branch_path=p.branch_path, title=p.title, phase=getattr(p, "phase", ""),
-            impact=p.impact, effort=p.effort, value=p.value, roi=p.roi, reasons=reasons,
-        ))
-    # Strongest impact first; ties broken by lower effort then path (deterministic).
-    points.sort(key=lambda p: (-p.impact, p.effort, p.branch_path))
-    return points
+    unique = _dedup_by_vector(items)
+    frontier = _non_dominated(unique)
+    return _annotate_frontier(frontier)
 
 
 def _bang_for_buck(p: ParetoPoint) -> float:
