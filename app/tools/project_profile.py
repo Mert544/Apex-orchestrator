@@ -218,6 +218,19 @@ class ProjectProfile:
     # classname) and capped; a repo with no god-class yields [] so seeding stays
     # byte-identical. Each entry: {"module","classname","methods","attributes"}.
     god_classes: list[dict] = field(default_factory=list)
+    # Safe-simplification opportunities (CONSTRUCTIVE, EXECUTABLE signal): modules
+    # where one of Apex's 18 behaviour-preserving AST transforms (double-not,
+    # redundant-else, none-compare, ...) would actually FIRE. Produced by
+    # ``app.tools.simplification_scan.scan_simplifications``, which DRY-RUNS every
+    # safe transform over each in-scope (non-fixture/test) ``.py`` file and records
+    # one entry per (module, transform) it would act on, using the EXACT fact-label
+    # the idea action bridge's ``_FACT_ACTIONS`` maps to that transform — so the
+    # seeded idea is executable, not recommend-only. A whole-tree dry-run of 18
+    # transforms the GRADE never reads (too costly for the light/ascend path), so
+    # gated behind ``not light``. Deterministic, sorted ``(module, fact_label)`` and
+    # capped by the scanner; an all-clean repo yields [] so seeding stays
+    # byte-identical. Each entry: {"module","transform","fact_label"}.
+    simplification_opportunities: list[dict] = field(default_factory=list)
 
 
 class ProjectProfiler(_CodeQualityScansMixin):
@@ -516,6 +529,14 @@ class ProjectProfiler(_CodeQualityScansMixin):
         # light/ascend path (the idea engine profiles with light=False; a
         # repo with no god-class yields []).
         self._scan_god_classes(profile)
+        # Safe-simplification opportunities: DRY-RUN Apex's 18 behaviour-
+        # preserving AST transforms over the tree and record where each would
+        # actually fire (the EXECUTABLE "clean this up" signal the seeder turns
+        # into a real ``apex`` action, not recommend-only). A whole-tree dry-run
+        # of 18 transforms — far too costly for the light/ascend path the grade
+        # uses — so gated out of the light path (the idea engine profiles with
+        # light=False; an all-clean repo yields []).
+        self._scan_simplifications(profile)
         # Polyglot hotspots: name the biggest / most-churned NON-Python
         # source files for the idea engine to recommend attention on. A
         # bounded git pass + walk that the GRADE never reads, so it is gated
@@ -640,6 +661,30 @@ class ProjectProfiler(_CodeQualityScansMixin):
             if len(hotspots) >= 3:
                 break
         profile.polyglot_hotspots = hotspots
+
+    def _scan_simplifications(self, profile: ProjectProfile) -> None:
+        """Find modules where a safe AST simplification transform WOULD fire.
+
+        Delegates to ``scan_simplifications``, which DRY-RUNS each of Apex's 18
+        behaviour-preserving transforms over every in-scope (non-fixture/test)
+        ``.py`` file and records ``{"module","transform","fact_label"}`` for each
+        (file, transform) that would actually act. The scanner is pure (no writes,
+        no clock, no randomness), sorted ``(module, fact_label)`` and capped, so
+        this stays deterministic.
+
+        Best-effort: any failure leaves ``simplification_opportunities`` at its
+        empty default rather than failing the whole profile. Gated behind
+        ``not light`` by the caller — a whole-tree 18-transform dry-run the GRADE
+        never reads, so the light/ascend path must not pay for it.
+        """
+        try:
+            from app.tools.simplification_scan import scan_simplifications
+
+            profile.simplification_opportunities = scan_simplifications(
+                self.root, max_files=self.max_files
+            )
+        except Exception:
+            profile.simplification_opportunities = []
 
     # Stable marker the reporting layer writes into every generated idea-tree
     # page (``<title>Apex Idea Tree</title>``). An HTML file carrying it is an
