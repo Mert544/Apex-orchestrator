@@ -35,49 +35,74 @@ from app.execution.param_drop import _segment, _signature_span
 __all__ = ["plan_param_reorder"]
 
 
-def _rebuild_reordered(source: str, fn: ast.FunctionDef | ast.AsyncFunctionDef,
-                       order: list[str]) -> str | None:
-    """The new ``(...)`` interior with regular params in ``order`` — verbatim
-    source segments, defaults attached to their own parameter. None when the
-    reorder would put a required parameter after a defaulted one."""
-    a = fn.args
-    parts: list[str] = []
+def _param_text(source: str, arg: ast.arg, default: ast.expr | None) -> str:
+    """One parameter's verbatim text, default attached with annotation-aware
+    spacing (`` = `` when annotated, ``=`` otherwise)."""
+    text = _segment(source, arg)
+    if default is not None:
+        eq = " = " if arg.annotation is not None else "="
+        text += f"{eq}{_segment(source, default)}"
+    return text
 
-    def pos_text(arg: ast.arg, default: ast.expr | None) -> str:
-        text = _segment(source, arg)
-        if default is not None:
-            eq = " = " if arg.annotation is not None else "="
-            text += f"{eq}{_segment(source, default)}"
-        return text
 
+def _positional_defaults(a: ast.arguments) -> dict[str, tuple[ast.arg, ast.expr | None]]:
+    """Map each positional param name to its ``(arg, default)`` pair, padding
+    leading required params with ``None`` defaults."""
     positional = [*a.posonlyargs, *a.args]
     defaults: list[ast.expr | None] = (
         [None] * (len(positional) - len(a.defaults)) + list(a.defaults))
-    by_name = {arg.arg: (arg, defaults[i]) for i, arg in enumerate(positional)}
+    return {arg.arg: (arg, defaults[i]) for i, arg in enumerate(positional)}
 
-    for arg in a.posonlyargs:                       # order untouched: API
-        parts.append(pos_text(*by_name[arg.arg]))
-    if a.posonlyargs:
-        parts.append("/")
 
+def _reordered_regulars(
+    source: str, by_name: dict[str, tuple[ast.arg, ast.expr | None]],
+    order: list[str],
+) -> list[str] | None:
+    """Regular-param segments in ``order``. None when a required parameter
+    would land after a defaulted one (the signature wouldn't compile)."""
+    parts: list[str] = []
     seen_default = False
     for name in order:
         arg, default = by_name[name]
         if default is None and seen_default:
             return None  # required after defaulted — wouldn't compile
         seen_default = seen_default or default is not None
-        parts.append(pos_text(arg, default))
+        parts.append(_param_text(source, arg, default))
+    return parts
 
+
+def _kwonly_parts(source: str, a: ast.arguments) -> list[str]:
+    """The ``*``/``*args`` marker (if any) plus each keyword-only param."""
+    parts: list[str] = []
     if a.vararg:
         parts.append(f"*{_segment(source, a.vararg)}")
     elif a.kwonlyargs:
         parts.append("*")
     for arg, default in zip(a.kwonlyargs, a.kw_defaults):
-        text = _segment(source, arg)
-        if default is not None:
-            eq = " = " if arg.annotation is not None else "="
-            text += f"{eq}{_segment(source, default)}"
-        parts.append(text)
+        parts.append(_param_text(source, arg, default))
+    return parts
+
+
+def _rebuild_reordered(source: str, fn: ast.FunctionDef | ast.AsyncFunctionDef,
+                       order: list[str]) -> str | None:
+    """The new ``(...)`` interior with regular params in ``order`` — verbatim
+    source segments, defaults attached to their own parameter. None when the
+    reorder would put a required parameter after a defaulted one."""
+    a = fn.args
+    by_name = _positional_defaults(a)
+
+    parts: list[str] = []
+    for arg in a.posonlyargs:                       # order untouched: API
+        parts.append(_param_text(source, *by_name[arg.arg]))
+    if a.posonlyargs:
+        parts.append("/")
+
+    regulars = _reordered_regulars(source, by_name, order)
+    if regulars is None:
+        return None
+    parts.extend(regulars)
+
+    parts.extend(_kwonly_parts(source, a))
     if a.kwarg:
         parts.append(f"**{_segment(source, a.kwarg)}")
     return ", ".join(parts)
