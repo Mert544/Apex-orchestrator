@@ -49,18 +49,128 @@ def _span_clean(lines: list[str], start: tuple[int, int], end: tuple[int, int],
     return stripped == ("," if expect_comma else "")
 
 
-def plan_keywordify(project_root: str | Path, func_name: str) -> RenamePlan:
-    """Build the project-wide positional→keyword conversion plan."""
-    plan = RenamePlan(old=func_name, new=func_name)
-    root = Path(project_root)
-    files = _py_files(root)
-    sources = dict(files)
+def _parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
+    """Parse every file that parses; silently skip the ones that don't."""
     trees: dict[str, ast.Module] = {}
     for rel, text in files:
         try:
             trees[rel] = ast.parse(text)
         except SyntaxError:
             continue
+    return trees
+
+
+def _resolve_names(tree: ast.Module, func_name: str, dotted: str,
+                   is_defmod: bool) -> tuple[set[str], set[str]]:
+    """Collect the local bindings of ``func_name`` (direct and module-alias)
+    visible in one module's imports."""
+    from_names: set[str] = {func_name} if is_defmod else set()
+    module_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == dotted:
+            for alias in node.names:
+                if alias.name == func_name:
+                    from_names.add(alias.asname or func_name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == dotted:
+                    module_aliases.add(alias.asname or alias.name)
+    return from_names, module_aliases
+
+
+def _is_target_call(node: ast.Call, func_name: str, from_names: set[str],
+                    module_aliases: set[str]) -> bool:
+    """True when ``node`` calls our function by one of its known bindings."""
+    f = node.func
+    return (isinstance(f, ast.Name) and f.id in from_names) or (
+        isinstance(f, ast.Attribute) and f.attr == func_name
+        and ast.unparse(f.value) in module_aliases)
+
+
+def _arg_anchor(node: ast.Call, i: int) -> tuple[int, int]:
+    """The argument's left anchor: the call's "(" for the first argument,
+    the previous argument's end otherwise."""
+    if i == 0:
+        f = node.func
+        return (f.end_lineno, f.end_col_offset + 1)
+    prev = node.args[i - 1]
+    return (prev.end_lineno, prev.end_col_offset)
+
+
+def _call_inserts(node: ast.Call, lines: list[str], positional: list[ast.arg],
+                  n_posonly: int, rel: str, func_name: str,
+                  plan: RenamePlan) -> list[tuple[int, int, str]] | None:
+    """The ``name=`` insertions for one clean call, or ``None`` (with a
+    blocker recorded) when an argument's spelling can't be verified."""
+    call_inserts: list[tuple[int, int, str]] = []
+    for i, arg in enumerate(node.args):
+        # Anything but whitespace/one comma between an argument and its left
+        # anchor (wrapping parens, a comment) makes "name=" unsafe to prefix.
+        if not _span_clean(lines, _arg_anchor(node, i),
+                           (arg.lineno, arg.col_offset), expect_comma=(i > 0)):
+            plan.blockers.append(
+                f"{rel}:{node.lineno}: argument {i + 1} of {func_name}() "
+                "has non-trivial spelling (parens or a comment) — "
+                "convert that call by hand")
+            return None
+        if i >= n_posonly:
+            call_inserts.append((arg.lineno, arg.col_offset,
+                                 f"{positional[i].arg}="))
+    return call_inserts
+
+
+def _collect_inserts(tree: ast.Module, lines: list[str], rel: str,
+                     func_name: str, from_names: set[str],
+                     module_aliases: set[str], fn: ast.FunctionDef,
+                     positional: list[ast.arg], n_posonly: int,
+                     has_vararg: bool,
+                     plan: RenamePlan) -> list[tuple[int, int, str]]:
+    """Walk one module, gathering every keyword insertion for our calls and
+    recording blockers/warnings for the calls we refuse to touch."""
+    inserts: list[tuple[int, int, str]] = []  # (line, col, "name=")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not _is_target_call(node, func_name, from_names, module_aliases) \
+                or not node.args:
+            continue
+        if any(isinstance(a, ast.Starred) for a in node.args):
+            plan.blockers.append(
+                f"{rel}:{node.lineno}: {func_name}(*…) — the positional "
+                "mapping is unknowable statically; expand it first")
+            continue
+        if len(node.args) > len(positional):
+            if has_vararg:
+                plan.warnings.append(
+                    f"{rel}:{node.lineno}: call feeds *{fn.args.vararg.arg} — "
+                    "those arguments can't be named; call left as-is")
+            # No vararg = the call is already broken; not ours to touch.
+            continue
+        call_inserts = _call_inserts(node, lines, positional, n_posonly, rel,
+                                     func_name, plan)
+        if call_inserts is not None:
+            inserts.extend(call_inserts)
+    return inserts
+
+
+def _record_file(plan: RenamePlan, rel: str, source: str, lines: list[str],
+                 inserts: list[tuple[int, int, str]]) -> None:
+    """Apply the insertions to ``lines`` (right-to-left) and stash the new
+    contents on the plan."""
+    for line_no, col, prefix in sorted(set(inserts), reverse=True):
+        row = lines[line_no - 1]
+        lines[line_no - 1] = row[:col] + prefix + row[col:]
+    plan.originals[rel] = source
+    plan.new_contents[rel] = "".join(lines)
+    plan.edits_by_file[rel] = len(set(inserts))
+
+
+def plan_keywordify(project_root: str | Path, func_name: str) -> RenamePlan:
+    """Build the project-wide positional→keyword conversion plan."""
+    plan = RenamePlan(old=func_name, new=func_name)
+    files = _py_files(Path(project_root))
+    sources = dict(files)
+    trees = _parse_trees(files)
 
     definitions = [(rel, fn) for rel, tree in trees.items()
                    for fn in _function_defs(tree, func_name)]
@@ -79,72 +189,14 @@ def plan_keywordify(project_root: str | Path, func_name: str) -> RenamePlan:
     for rel, tree in trees.items():
         source = sources[rel]
         lines = source.splitlines(keepends=True)
-        from_names: set[str] = {func_name} if rel == defmod else set()
-        module_aliases: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module == dotted:
-                for alias in node.names:
-                    if alias.name == func_name:
-                        from_names.add(alias.asname or func_name)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name == dotted:
-                        module_aliases.add(alias.asname or alias.name)
-
-        inserts: list[tuple[int, int, str]] = []  # (line, col, "name=")
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            f = node.func
-            is_ours = (isinstance(f, ast.Name) and f.id in from_names) or (
-                isinstance(f, ast.Attribute) and f.attr == func_name
-                and ast.unparse(f.value) in module_aliases)
-            if not is_ours or not node.args:
-                continue
-            if any(isinstance(a, ast.Starred) for a in node.args):
-                plan.blockers.append(
-                    f"{rel}:{node.lineno}: {func_name}(*…) — the positional "
-                    "mapping is unknowable statically; expand it first")
-                continue
-            if len(node.args) > len(positional):
-                if has_vararg:
-                    plan.warnings.append(
-                        f"{rel}:{node.lineno}: call feeds *{fn.args.vararg.arg} — "
-                        "those arguments can't be named; call left as-is")
-                # No vararg = the call is already broken; not ours to touch.
-                continue
-            call_inserts: list[tuple[int, int, str]] = []
-            clean = True
-            for i, arg in enumerate(node.args):
-                # The argument's left anchor: the call's "(" for the first
-                # argument, the previous argument's end otherwise. Anything
-                # but whitespace/one comma in between (wrapping parens, a
-                # comment) makes "name=" unsafe to prefix.
-                start = ((f.end_lineno, f.end_col_offset + 1) if i == 0
-                         else (node.args[i - 1].end_lineno,
-                               node.args[i - 1].end_col_offset))
-                if not _span_clean(lines, start, (arg.lineno, arg.col_offset),
-                                   expect_comma=(i > 0)):
-                    plan.blockers.append(
-                        f"{rel}:{node.lineno}: argument {i + 1} of {func_name}() "
-                        "has non-trivial spelling (parens or a comment) — "
-                        "convert that call by hand")
-                    clean = False
-                    break
-                if i >= n_posonly:
-                    call_inserts.append((arg.lineno, arg.col_offset,
-                                         f"{positional[i].arg}="))
-            if clean:
-                inserts.extend(call_inserts)
-
+        from_names, module_aliases = _resolve_names(
+            tree, func_name, dotted, rel == defmod)
+        inserts = _collect_inserts(
+            tree, lines, rel, func_name, from_names, module_aliases, fn,
+            positional, n_posonly, has_vararg, plan)
         if plan.blockers or not inserts:
             continue
-        for line_no, col, prefix in sorted(set(inserts), reverse=True):
-            row = lines[line_no - 1]
-            lines[line_no - 1] = row[:col] + prefix + row[col:]
-        plan.originals[rel] = source
-        plan.new_contents[rel] = "".join(lines)
-        plan.edits_by_file[rel] = len(set(inserts))
+        _record_file(plan, rel, source, lines, inserts)
 
     if plan.blockers:
         plan.new_contents.clear()

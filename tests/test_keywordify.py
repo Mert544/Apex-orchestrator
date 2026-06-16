@@ -145,6 +145,54 @@ def test_keywordify_then_drop_chains(tmp_path):
     assert "render(text=t)" in drop.new_contents["app/m.py"]
 
 
+def test_plan_is_pinned_characterization(tmp_path):
+    # Characterization pin: locks the exact, byte-for-byte plan a known
+    # project yields (every public field of RenamePlan), so the mechanical
+    # decomposition of plan_keywordify can never silently drift.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "core.py").write_text(
+        "def scale(value, factor=2, bias=0):\n"
+        "    return value * factor + bias\n"
+    )
+    (tmp_path / "app" / "user.py").write_text(
+        "from app.core import scale\n"
+        "\n"
+        "def f(v):\n"
+        "    return scale(v, 4)  # positional today\n"
+    )
+    (tmp_path / "app" / "attr_user.py").write_text(
+        "import app.core\n"
+        "\n"
+        "def h(v):\n"
+        "    return app.core.scale(v, 5, 1)\n"
+    )
+    plan = plan_keywordify(tmp_path, "scale")
+
+    assert (plan.old, plan.new, plan.defined_in) == ("scale", "scale", "app/core.py")
+    assert plan.blockers == []
+    assert plan.warnings == []
+    assert plan.edits_by_file == {"app/user.py": 2, "app/attr_user.py": 3}
+    assert plan.new_contents == {
+        "app/user.py": (
+            "from app.core import scale\n"
+            "\n"
+            "def f(v):\n"
+            "    return scale(value=v, factor=4)  # positional today\n"
+        ),
+        "app/attr_user.py": (
+            "import app.core\n"
+            "\n"
+            "def h(v):\n"
+            "    return app.core.scale(value=v, factor=5, bias=1)\n"
+        ),
+    }
+    assert plan.originals == {
+        "app/user.py": (tmp_path / "app" / "user.py").read_text(),
+        "app/attr_user.py": (tmp_path / "app" / "attr_user.py").read_text(),
+    }
+
+
 def test_cli_signature_keywordify(tmp_path, capsys):
     from app.cli import cmd_signature
 
