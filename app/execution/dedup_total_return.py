@@ -189,6 +189,225 @@ def _resolve_total_return(rel: str, start_line: int, n_statements: int,
                        True)  # tail_return=True: call site becomes `return helper(...)`
 
 
+def _validate_block(block, plan: RenamePlan) -> tuple[list, int] | None:
+    """Pull ``occurrences`` and statement count off ``block``, recording the
+    relevant blocker and returning ``None`` when the block can't be a shared
+    helper (fewer than two copies, or no statements)."""
+    occurrences = list(getattr(block, "occurrences", []) or [])
+    n_statements = int(getattr(block, "lines", 0) or 0)
+    if len(occurrences) < 2:
+        plan.blockers.append("a shared helper needs at least two occurrences")
+        return None
+    if n_statements < 1:
+        plan.blockers.append("block has no statements to extract")
+        return None
+    return occurrences, n_statements
+
+
+def _read_modules(root: Path, rels: list, plan: RenamePlan
+                  ) -> tuple[dict, dict] | None:
+    """Read & parse every involved module once (caller passes ``rels`` already
+    sorted for deterministic order). Records a blocker and returns ``None`` on
+    the first unreadable or unparseable module."""
+    sources: dict[str, str] = {}
+    trees: dict[str, ast.Module] = {}
+    for rel in rels:
+        try:
+            text = (root / rel).read_text(encoding="utf-8")
+        except OSError:
+            plan.blockers.append(f"cannot read {rel}")
+            return None
+        try:
+            trees[rel] = ast.parse(text)
+        except SyntaxError as e:
+            plan.blockers.append(f"{rel} doesn't parse: {e}")
+            return None
+        sources[rel] = text
+    return sources, trees
+
+
+def _signature_gate(resolved: list, plan: RenamePlan) -> tuple | None:
+    """The shared helper has ONE interface: require an identical live-in signature
+    across all copies (live_out is empty for every total-return block), else they
+    aren't a clean shared helper. Returns the common ``(live_in, live_out)`` or
+    ``None`` (with a blocker) on mismatch. Reuses dedup_extract's signature gate."""
+    sig0 = (resolved[0].live_in, resolved[0].live_out)
+    for occ in resolved[1:]:
+        if (occ.live_in, occ.live_out) != sig0:
+            plan.blockers.append(
+                "occurrences have different data-flow signatures "
+                f"(params/returns differ: {sig0} vs "
+                f"{(occ.live_in, occ.live_out)}) — not a clean shared helper")
+            return None
+    return sig0
+
+
+def _build_helper_block(first: _Occurrence, helper_name: str,
+                        live_in: list) -> str:
+    """Build the returning helper from the FIRST occurrence's real source. The
+    block already contains its own returns, so NO trailing ``return`` is appended
+    (live_out is empty) — we lift the run verbatim."""
+    range_lines = first.lines[first.span_lo - 1:first.span_hi]
+    base_indent = len(range_lines[0]) - len(range_lines[0].lstrip())
+    body_lines = _reindent(range_lines, base_indent)
+    helper_src = [f"def {helper_name}({', '.join(live_in)}):"] + body_lines
+    return "\n".join(helper_src) + "\n\n\n"
+
+
+def _emit_file(rel: str, occs: list, sources: dict, trees: dict,
+               first: _Occurrence, first_dotted: str, helper_name: str,
+               helper_block: str, call_line: str) -> tuple[str | None, str]:
+    """Rewrite ONE module: replace each copy with ``return helper(...)`` (bottom-up
+    so earlier spans stay valid), then either splice the helper def in (the file
+    that defines it) or import it (any other file). Returns ``(new_source, "")``
+    on success, or ``(None, blocker)`` if the emitted module would not parse."""
+    lines = list(sources[rel].splitlines(keepends=True))
+
+    # Replace each copy with a `return helper(...)`, bottom-up so earlier
+    # spans stay valid.
+    for occ in sorted(occs, key=lambda o: o.span_lo, reverse=True):
+        indent = " " * (len(occ.lines[occ.span_lo - 1])
+                        - len(occ.lines[occ.span_lo - 1].lstrip()))
+        lines[occ.span_lo - 1:occ.span_hi] = [f"{indent}{call_line}"]
+
+    if rel == first.rel:
+        insert_at = _helper_insert_index(first.container, occs)
+        lines[insert_at:insert_at] = [helper_block]
+    else:
+        # Another module: import the helper at the top (after __future__).
+        import_line = f"from {first_dotted} import {helper_name}\n"
+        lines.insert(_import_insert_index(trees[rel]), import_line)
+
+    new_source = "".join(lines)
+    try:
+        ast.parse(new_source)
+    except SyntaxError as e:
+        return None, f"{rel}: extraction would not parse ({e})"
+
+    # Gate-clean: lifting the block out can strand the imports it used, leaving
+    # the emitted module with `F401 imported but unused`. Reuse the unused-import
+    # detector on the NEW source and drop exactly those dead top-level imports;
+    # the result is re-parse-checked inside that helper.
+    cleaned = strip_unused_imports(new_source)
+    return (new_source if cleaned is None else cleaned), ""
+
+
+def _helper_insert_index(container, occs: list) -> int:
+    """Index at which to splice the helper def: above the first occurrence's
+    container. The anchor is an ORIGINAL-tree line number, but the bottom-up
+    replacements just collapsed each copy's span (hi-lo+1 lines) to ONE call
+    line, shrinking the buffer. ``first`` is first in EMIT order, NOT topmost in
+    the file, so a copy may sit ABOVE this container; rebase the anchor by the net
+    line-delta of every replacement whose span ends above it, or the def lands
+    inside an earlier function's body (the same above/below partition
+    inline_function uses so splice and deletions don't interfere)."""
+    anchor = min(
+        [container.lineno]
+        + [d.lineno for d in getattr(container, "decorator_list", [])]
+    )
+    delta_above = sum(
+        1 - (o.span_hi - o.span_lo + 1)
+        for o in occs if o.span_hi < anchor
+    )
+    return anchor - 1 + delta_above
+
+
+def _resolve_all(parsed: list, n_statements: int, sources: dict, trees: dict,
+                 plan: RenamePlan) -> list | None:
+    """Resolve every parsed occurrence into an :class:`_Occurrence`. Any unsafe /
+    non-total-return one records its blocker (inside ``_resolve_total_return``)
+    and aborts the whole plan — returns ``None``."""
+    resolved: list[_Occurrence] = []
+    for rel, line in parsed:  # type: ignore[misc]
+        occ = _resolve_total_return(rel, line, n_statements, sources, trees, plan)
+        if occ is None:
+            return None
+        resolved.append(occ)
+    return resolved
+
+
+def _choose_helper_name(resolved: list, trees: dict, rels: list,
+                        plan: RenamePlan) -> str | None:
+    """Human-readable name from the common tokens of the enclosing function names,
+    falling back to the machine ``_shared_<n>`` scheme when none is clean/free.
+    Records a blocker and returns ``None`` if no free name exists."""
+    fn_names = [occ.fn.name for occ in resolved]
+    helper_name = (_descriptive_helper_name(fn_names, trees, set(rels))
+                   or _free_helper_name(trees, set(rels)))
+    if helper_name is None:
+        plan.blockers.append("could not find a free `_shared_<n>` helper name")
+    return helper_name
+
+
+def _emit_all_files(resolved: list, sources: dict, trees: dict,
+                    first: _Occurrence, helper_name: str, helper_block: str,
+                    call_line: str, plan: RenamePlan
+                    ) -> tuple[dict, dict] | None:
+    """Group occurrences by file and rewrite each (deterministic ``sorted`` order),
+    accumulating ``(new_contents, edits_by_file)``. Returns ``None`` (after
+    recording a blocker) if any emitted module would not parse."""
+    first_dotted = _module_dotted(first.rel)
+    by_file: dict[str, list[_Occurrence]] = {}
+    for occ in resolved:
+        by_file.setdefault(occ.rel, []).append(occ)
+
+    new_contents: dict[str, str] = {}
+    edits: dict[str, int] = {}
+    for rel in sorted(by_file):
+        occs = sorted(by_file[rel], key=lambda o: o.span_lo)
+        new_source, emit_blocker = _emit_file(
+            rel, occs, sources, trees, first, first_dotted,
+            helper_name, helper_block, call_line)
+        if new_source is None:
+            plan.blockers.append(emit_blocker)
+            return None
+        new_contents[rel] = new_source
+        edits[rel] = len(occs) + (1 if rel != first.rel else 0)
+    return new_contents, edits
+
+
+def _prepare(root: Path, block, plan: RenamePlan) -> dict | None:
+    """Run the whole admissibility prelude — validate the block, parse occurrence
+    locations, read & parse modules, resolve every occurrence, gate the shared
+    signature, and pick a helper name. Each step records its own blocker; the
+    first failure returns ``None``. On success returns a context dict with the
+    ``sources``/``trees``, ``resolved`` occurrences, the common ``live_in``/
+    ``live_out`` signature, the ``first`` occurrence, and the ``helper_name``."""
+    validated = _validate_block(block, plan)
+    if validated is None:
+        return None
+    occurrences, n_statements = validated
+
+    parsed = [_parse_occurrence(o) for o in occurrences]
+    if any(p is None for p in parsed):
+        plan.blockers.append("malformed occurrence location(s)")
+        return None
+
+    rels = sorted({rel for rel, _ in parsed})  # type: ignore[misc]
+    read = _read_modules(root, rels, plan)
+    if read is None:
+        return None
+    sources, trees = read
+
+    resolved = _resolve_all(parsed, n_statements, sources, trees, plan)
+    if resolved is None:
+        return None
+
+    sig0 = _signature_gate(resolved, plan)
+    if sig0 is None:
+        return None
+
+    helper_name = _choose_helper_name(resolved, trees, rels, plan)
+    if helper_name is None:
+        return None
+
+    return {
+        "sources": sources, "trees": trees, "resolved": resolved,
+        "live_in": sig0[0], "live_out": sig0[1],
+        "first": resolved[0], "helper_name": helper_name,
+    }
+
+
 def plan_dedup_total_return(project_root: str | Path, block) -> RenamePlan:
     """Plan lifting a TOTAL-RETURN exact-duplicate block into one shared helper.
 
@@ -205,147 +424,23 @@ def plan_dedup_total_return(project_root: str | Path, block) -> RenamePlan:
     empty ``new_contents`` — correctness and safety over coverage.
     """
     plan = RenamePlan(old=getattr(block, "fingerprint", "dedup"), new="_shared")
-    root = Path(project_root)
 
-    occurrences = list(getattr(block, "occurrences", []) or [])
-    n_statements = int(getattr(block, "lines", 0) or 0)
-    if len(occurrences) < 2:
-        plan.blockers.append("a shared helper needs at least two occurrences")
+    ctx = _prepare(Path(project_root), block, plan)
+    if ctx is None:
         return plan
-    if n_statements < 1:
-        plan.blockers.append("block has no statements to extract")
+    sources, trees, resolved = ctx["sources"], ctx["trees"], ctx["resolved"]
+    live_in, live_out = ctx["live_in"], ctx["live_out"]
+    first, helper_name = ctx["first"], ctx["helper_name"]
+
+    helper_block = _build_helper_block(first, helper_name, live_in)
+    # The block's own returns are inside the helper — return its result.
+    call_line = f"return {helper_name}({', '.join(live_in)})\n"
+
+    emitted = _emit_all_files(resolved, sources, trees, first, helper_name,
+                              helper_block, call_line, plan)
+    if emitted is None:
         return plan
-
-    parsed = [_parse_occurrence(o) for o in occurrences]
-    if any(p is None for p in parsed):
-        plan.blockers.append("malformed occurrence location(s)")
-        return plan
-
-    # Read & parse every involved module once (deterministic order).
-    sources: dict[str, str] = {}
-    trees: dict[str, ast.Module] = {}
-    rels = sorted({rel for rel, _ in parsed})  # type: ignore[misc]
-    for rel in rels:
-        try:
-            text = (root / rel).read_text(encoding="utf-8")
-        except OSError:
-            plan.blockers.append(f"cannot read {rel}")
-            return plan
-        try:
-            trees[rel] = ast.parse(text)
-        except SyntaxError as e:
-            plan.blockers.append(f"{rel} doesn't parse: {e}")
-            return plan
-        sources[rel] = text
-
-    # Resolve each occurrence; any unsafe / non-total-return one blocks the plan.
-    resolved: list[_Occurrence] = []
-    for rel, line in parsed:  # type: ignore[misc]
-        occ = _resolve_total_return(rel, line, n_statements, sources, trees, plan)
-        if occ is None:
-            return plan
-        resolved.append(occ)
-
-    # The shared helper has ONE interface: require an identical live-in signature
-    # across all copies (live_out is empty for every total-return block), else
-    # they aren't a clean shared helper. Reuses dedup_extract's signature gate.
-    sig0 = (resolved[0].live_in, resolved[0].live_out)
-    for occ in resolved[1:]:
-        if (occ.live_in, occ.live_out) != sig0:
-            plan.blockers.append(
-                "occurrences have different data-flow signatures "
-                f"(params/returns differ: {sig0} vs "
-                f"{(occ.live_in, occ.live_out)}) — not a clean shared helper")
-            return plan
-    live_in, live_out = sig0
-
-    first = resolved[0]
-    first_dotted = _module_dotted(first.rel)
-    # Human-readable name from the common tokens of the enclosing function names,
-    # falling back to the machine `_shared_<n>` scheme when none is clean/free.
-    fn_names = [occ.fn.name for occ in resolved]
-    helper_name = (_descriptive_helper_name(fn_names, trees, set(rels))
-                   or _free_helper_name(trees, set(rels)))
-    if helper_name is None:
-        plan.blockers.append("could not find a free `_shared_<n>` helper name")
-        return plan
-
-    # ── Build the returning helper from the FIRST occurrence's real source. ──
-    # The block already contains its own returns, so NO trailing `return` is
-    # appended (live_out is empty) — we lift the run verbatim.
-    range_lines = first.lines[first.span_lo - 1:first.span_hi]
-    base_indent = len(range_lines[0]) - len(range_lines[0].lstrip())
-    body_lines = _reindent(range_lines, base_indent)
-    helper_src = [f"def {helper_name}({', '.join(live_in)}):"] + body_lines
-    helper_block = "\n".join(helper_src) + "\n\n\n"
-
-    call_expr = f"{helper_name}({', '.join(live_in)})"
-
-    def _call_line(indent: str) -> str:
-        # The block's own returns are inside the helper — return its result.
-        return f"{indent}return {call_expr}\n"
-
-    # ── Group occurrences by file; apply bottom-up within each file. ──
-    by_file: dict[str, list[_Occurrence]] = {}
-    for occ in resolved:
-        by_file.setdefault(occ.rel, []).append(occ)
-
-    new_contents: dict[str, str] = {}
-    edits: dict[str, int] = {}
-    for rel in sorted(by_file):
-        occs = sorted(by_file[rel], key=lambda o: o.span_lo)
-        lines = list(sources[rel].splitlines(keepends=True))
-
-        # Replace each copy with a `return helper(...)`, bottom-up so earlier
-        # spans stay valid.
-        for occ in sorted(occs, key=lambda o: o.span_lo, reverse=True):
-            indent = " " * (len(occ.lines[occ.span_lo - 1])
-                            - len(occ.lines[occ.span_lo - 1].lstrip()))
-            lines[occ.span_lo - 1:occ.span_hi] = [_call_line(indent)]
-
-        if rel == first.rel:
-            # Insert the helper above the first occurrence's container. The
-            # anchor is an ORIGINAL-tree line number, but the bottom-up
-            # replacements above just collapsed each copy's span (hi-lo+1 lines)
-            # to ONE call line, shrinking the buffer. `first` is first in EMIT
-            # order, NOT topmost in the file, so a copy may sit ABOVE this
-            # container; rebase the anchor by the net line-delta of every
-            # replacement whose span ends above it, or the def lands inside an
-            # earlier function's body (the same above/below partition
-            # inline_function uses so splice and deletions don't interfere).
-            container = first.container
-            anchor = min(
-                [container.lineno]
-                + [d.lineno for d in getattr(container, "decorator_list", [])]
-            )
-            delta_above = sum(
-                1 - (o.span_hi - o.span_lo + 1)
-                for o in occs if o.span_hi < anchor
-            )
-            insert_at = anchor - 1 + delta_above
-            lines[insert_at:insert_at] = [helper_block]
-        else:
-            # Another module: import the helper at the top (after __future__).
-            import_line = f"from {first_dotted} import {helper_name}\n"
-            lines.insert(_import_insert_index(trees[rel]), import_line)
-
-        new_source = "".join(lines)
-        try:
-            ast.parse(new_source)
-        except SyntaxError as e:
-            plan.blockers.append(f"{rel}: extraction would not parse ({e})")
-            return plan
-
-        # Gate-clean: lifting the block out can strand the imports it used,
-        # leaving the emitted module with `F401 imported but unused`. Reuse the
-        # unused-import detector on the NEW source and drop exactly those dead
-        # top-level imports; the result is re-parse-checked inside that helper.
-        cleaned = strip_unused_imports(new_source)
-        if cleaned is not None:
-            new_source = cleaned
-
-        new_contents[rel] = new_source
-        edits[rel] = len(occs) + (1 if rel != first.rel else 0)
+    new_contents, edits = emitted
 
     plan.new = helper_name
     plan.defined_in = first.rel
