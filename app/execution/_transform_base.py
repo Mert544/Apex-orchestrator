@@ -48,7 +48,97 @@ __all__ = [
     "plan_single_module_column_rewrite",
     "parse_trees",
     "resolve_sole_definition",
+    "read_module_source",
+    "parse_module_source",
+    "record_module_rewrite",
+    "finalize_module_rewrite",
 ]
+
+
+def read_module_source(
+    plan: object, project_root: str | Path, module_rel: str,
+) -> str | None:
+    """Read ``project_root / module_rel`` as UTF-8 text, or ``None`` (after
+    appending a ``f"cannot read {module_rel}"`` blocker to ``plan.blockers``) if
+    it can't be read.
+
+    This is the identical read step the single-module source transforms
+    (bool-return, chain-comparison, dict-get, merge-isinstance, set-literal,
+    redundant-else, ...) each carried verbatim. ``plan`` only needs a ``blockers``
+    list, so this stays decoupled from any concrete plan type and keeps
+    ``_transform_base`` free of a back-import on the transforms."""
+    path = Path(project_root) / module_rel
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        plan.blockers.append(f"cannot read {module_rel}")
+        return None
+
+
+def parse_module_source(
+    plan: object, module_rel: str, source: str,
+) -> ast.Module | None:
+    """Parse ``source`` into its module tree, or ``None`` (after appending a
+    ``f"{module_rel} doesn't parse: {e}"`` blocker to ``plan.blockers``) on a
+    :class:`SyntaxError`.
+
+    This is the identical parse step the single-module source transforms shared
+    verbatim. ``plan`` only needs a ``blockers`` list, so this stays decoupled
+    from any concrete plan type."""
+    try:
+        return ast.parse(source)
+    except SyntaxError as e:
+        plan.blockers.append(f"{module_rel} doesn't parse: {e}")
+        return None
+
+
+def record_module_rewrite(
+    plan: object, module_rel: str, source: str, new_source: str, edits: int,
+) -> object:
+    """Record a completed single-module rewrite onto ``plan`` and return it.
+
+    Stores the original source under ``plan.originals[module_rel]``, the rewritten
+    text under ``plan.new_contents[module_rel]``, and the rewrite count under
+    ``plan.edits_by_file[module_rel]``. This is the identical finalise step every
+    single-module source transform carried verbatim; returning ``plan`` lets the
+    caller end on ``return record_module_rewrite(...)``. ``plan`` only needs those
+    three mapping attributes, so this stays decoupled from any concrete plan type."""
+    plan.originals[module_rel] = source
+    plan.new_contents[module_rel] = new_source
+    plan.edits_by_file[module_rel] = edits
+    return plan
+
+
+def finalize_module_rewrite(
+    plan: object,
+    module_rel: str,
+    source: str,
+    new_source: str,
+    edits: int,
+    *,
+    reparse_phrase: str,
+) -> object:
+    """Verify ``new_source`` re-parses, then record the rewrite onto ``plan``.
+
+    The shared tail every single-module source transform carried verbatim: if
+    ``new_source`` doesn't parse, append a
+    ``f"{module_rel}: {reparse_phrase} would not re-parse ({e}) — blocked"``
+    blocker and return ``plan`` unchanged; if the rewrite is a no-op
+    (``new_source == source``) return ``plan`` unchanged; otherwise record it via
+    :func:`record_module_rewrite`. ``reparse_phrase`` is the transform's own verb
+    phrase (e.g. ``"simplification"``, ``"merge"``, ``"chaining"``) so the blocker
+    text stays identical to the inlined version. ``plan`` only needs a ``blockers``
+    list and the three rewrite mappings, so this stays decoupled from any concrete
+    plan type."""
+    try:
+        ast.parse(new_source)
+    except SyntaxError as e:
+        plan.blockers.append(
+            f"{module_rel}: {reparse_phrase} would not re-parse ({e}) — blocked")
+        return plan
+    if new_source == source:
+        return plan
+    return record_module_rewrite(plan, module_rel, source, new_source, edits)
 
 
 def parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:

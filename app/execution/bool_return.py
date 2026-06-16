@@ -40,6 +40,11 @@ from app.execution._transform_base import (
     is_fixture_path,
     iter_statement_blocks,
 )
+from app.execution._transform_base import (
+    parse_module_source as _parse_module_source,
+    read_module_source as _read_module_source,
+    finalize_module_rewrite as _finalize_module_rewrite,
+)
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_simplify_bool_return"]
@@ -173,18 +178,12 @@ def plan_simplify_bool_return(project_root: str | Path,
     into ``return bool(c)`` / ``return not (c)``; an empty plan means nothing
     matched (a no-op, not a failure)."""
     plan = RenamePlan(old=module_rel, new="simplify-bool-return")
-    root = Path(project_root)
-    path = root / module_rel
-    try:
-        source = path.read_text(encoding="utf-8")
-    except OSError:
-        plan.blockers.append(f"cannot read {module_rel}")
+    source = _read_module_source(plan, project_root, module_rel)
+    if source is None:
         return plan
 
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as e:
-        plan.blockers.append(f"{module_rel} doesn't parse: {e}")
+    tree = _parse_module_source(plan, module_rel, source)
+    if tree is None:
         return plan
 
     rewrites = _collect_rewrites(tree, source)
@@ -197,16 +196,6 @@ def plan_simplify_bool_return(project_root: str | Path,
         return plan  # nothing to do — empty plan (ok is False, no blockers)
 
     new_source = _apply(source, rewrites)
-    try:
-        ast.parse(new_source)
-    except SyntaxError as e:
-        plan.blockers.append(
-            f"{module_rel}: simplification would not re-parse ({e}) — blocked")
-        return plan
-    if new_source == source:
-        return plan
-
-    plan.originals[module_rel] = source
-    plan.new_contents[module_rel] = new_source
-    plan.edits_by_file[module_rel] = len(rewrites)
-    return plan
+    return _finalize_module_rewrite(
+        plan, module_rel, source, new_source, len(rewrites),
+        reparse_phrase="simplification")
