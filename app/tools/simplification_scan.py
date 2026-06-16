@@ -1,6 +1,6 @@
 """Deterministic scanner for safe-simplification opportunities.
 
-Apex already owns 18 behaviour-preserving AST simplification transforms in
+Apex already owns 20 behaviour-preserving AST simplification transforms in
 ``app/execution/semantic/transforms/`` and the idea action bridge already makes
 them EXECUTABLE (each carries the same refuse-on-unsafe, self-reparsing,
 test-verified, auto-rollback apply path). What was missing is the discovery
@@ -47,7 +47,7 @@ _DRY_RUN_TITLE = "simplification scan (dry-run)"
 
 
 def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
-    """The 18 safe transforms as ``(fact_label, apply)`` pairs.
+    """The 20 safe transforms as ``(fact_label, apply)`` pairs.
 
     Each ``apply(rel_path, source, title)`` is the transform's own pure entry
     point: it returns a patch result when it WOULD act and ``None`` otherwise.
@@ -60,9 +60,11 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
     """
     from app.execution.semantic.transforms import augmented_assign
     from app.execution.semantic.transforms import chained_comparison
+    from app.execution.semantic.transforms import collection_literal
     from app.execution.semantic.transforms import dict_get_default
     from app.execution.semantic.transforms import dict_literal
     from app.execution.semantic.transforms import double_not
+    from app.execution.semantic.transforms import fstring
     from app.execution.semantic.transforms import isinstance_merge
     from app.execution.semantic.transforms import membership_set
     from app.execution.semantic.transforms import merge_nested_if
@@ -95,6 +97,13 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
         ("swap-via-tuple", swap_via_tuple.apply),
         ("membership-set", membership_set.apply),
         ("percent-string-concat", percent_string_concat.apply),
+        # Two more behaviour-preserving readability transforms, each a pure 3-arg
+        # ``apply`` that validates its own output and refuses (None) when it can't
+        # act safely — both distinct from every transform above (collection_literal
+        # rewrites empty constructors; fstring drops a dead `f` prefix and proves
+        # the result parses to the same string).
+        ("collection-literal", collection_literal.apply),
+        ("fstring-no-placeholder", fstring.apply),
         # 2-arg signature → adapt to the uniform 3-arg dry-run call.
         ("augmented-assign", lambda rel, src, _title: augmented_assign.apply(rel, src)),
     ]

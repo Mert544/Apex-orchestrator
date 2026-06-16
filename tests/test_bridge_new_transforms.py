@@ -131,6 +131,18 @@ _CASES = {
         "def f(x):\n    x = x + 1\n    return x\n",
         "def f():\n    return 1\n",
     ),
+    "collection_literal": (
+        "collection-literal",
+        "modernize_collection_literal",
+        "x = dict()\n",
+        "def f():\n    return 1\n",
+    ),
+    "fstring_no_placeholder": (
+        "fstring-no-placeholder",
+        "fix_fstring_no_placeholder",
+        'x = f"hello"\n',
+        "def f():\n    return 1\n",
+    ),
 }
 
 
@@ -258,7 +270,7 @@ _NEW = {
     "chain_comparison", "set_literal", "startswith_tuple", "not_in_simplify",
     "tuple_membership", "dict_literal", "double_not", "swap_via_tuple",
     "membership_set", "percent_string_concat", "redundant_lambda",
-    "augmented_assign",
+    "augmented_assign", "collection_literal", "fstring_no_placeholder",
 }
 
 

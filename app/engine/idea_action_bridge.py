@@ -152,6 +152,13 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "augmented-assign": ("augmented_assign",
                          "Combine a self-referential assignment `x = x + 1` into "
                          "`x += 1` in {s}", True),
+    "collection-literal": ("collection_literal",
+                           "Replace an empty `dict()` / `list()` / `tuple()` "
+                           "constructor with its literal `{{}}` / `[]` / `()` "
+                           "in {s}", True),
+    "fstring-no-placeholder": ("fstring_no_placeholder",
+                               "Drop the dead `f` prefix from a placeholder-less "
+                               "f-string `f\"text\"` -> `\"text\"` in {s}", True),
     # The hands exist (apex signature drop/keywordify) but as supervised CLI
     # muscles, not unattended transforms — the work order carries the command.
     "dead-parameter": ("design_task",
@@ -535,6 +542,8 @@ class IdeaActionBridge:
         "percent_string_concat": ["fold string literal concat"],
         "redundant_lambda": ["drop forwarding lambda"],
         "augmented_assign": ["combine augmented assignment"],
+        "collection_literal": ["empty collection literal"],
+        "fstring_no_placeholder": ["drop dead fstring prefix"],
     }
 
     # Behaviour-preserving readability simplifications dispatched STRAIGHT to
@@ -552,9 +561,11 @@ class IdeaActionBridge:
     def _simplify_dispatch(cls):
         from app.execution.semantic.transforms import augmented_assign
         from app.execution.semantic.transforms import chained_comparison
+        from app.execution.semantic.transforms import collection_literal
         from app.execution.semantic.transforms import dict_get_default
         from app.execution.semantic.transforms import dict_literal
         from app.execution.semantic.transforms import double_not
+        from app.execution.semantic.transforms import fstring
         from app.execution.semantic.transforms import isinstance_merge
         from app.execution.semantic.transforms import membership_set
         from app.execution.semantic.transforms import merge_nested_if
@@ -593,6 +604,13 @@ class IdeaActionBridge:
             "membership_set": membership_set.apply,
             "percent_string_concat": percent_string_concat.apply,
             "redundant_lambda": redundant_lambda.apply,
+            # Two more pure 3-arg ``apply(rel, src, title)`` transforms (no
+            # adapter needed): collection_literal rewrites an empty
+            # constructor to its literal; fstring drops a placeholder-less
+            # `f` prefix only after proving the result parses to the same
+            # string. Both refuse via None on anything they can't act on.
+            "collection_literal": collection_literal.apply,
+            "fstring_no_placeholder": fstring.apply,
             # ``augmented_assign.apply`` has a 2-arg signature (no ``title``);
             # adapt it so the dispatch stays uniform. Without this the 3-arg
             # call in _simplify_generate would raise TypeError (swallowed to
