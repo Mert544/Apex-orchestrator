@@ -317,42 +317,83 @@ class IdeaSeeder:
 
         Numbers are real and the target list is deterministic (pre-sorted).
         """
+        fanin, targets = self._resolve_fanin_targets(
+            profile, module, name_targets=name_targets)
+        parts: list[str] = []
+        fanin_part = self._fanin_part(fanin)
+        if fanin_part:
+            parts.append(fanin_part)
+        if name_targets:
+            targets_part = self._targets_part(targets)
+            if targets_part:
+                parts.append(targets_part)
+        return " ".join(parts)
+
+    def _resolve_fanin_targets(
+        self, profile: ProjectProfile, module: str, *, name_targets: bool,
+    ) -> tuple[int | None, list[str] | None]:
+        """Fan-in count and fan-out targets for ``module``, with edge fallback.
+
+        Prefers the profile's precomputed ``module_fanin`` / ``module_fanout``;
+        falls back to counting ``dependency_edges`` directly (via a per-profile
+        importers cache) only for whichever value the dicts didn't supply.
+        """
         fanin = (getattr(profile, "module_fanin", {}) or {}).get(module)
         targets = (getattr(profile, "module_fanout", {}) or {}).get(module)
         # Fall back to the raw edge list when the precomputed dicts are absent.
         if fanin is None or (name_targets and targets is None):
-            edges = getattr(profile, "dependency_edges", []) or []
-            # The importers graph is invariant across modules in one seed pass —
-            # build it once and reuse it instead of re-scanning every edge per
-            # module that falls back to the raw edge list.
-            cache = self.__dict__.setdefault("_importers_cache", {})
-            ckey = id(profile)
-            importers = cache.get(ckey)
-            if importers is None:
-                importers = self._build_importers(edges)
-                cache[ckey] = importers
-            edge_fanin, edge_targets = self._fanin_fanout_from_edges(
-                edges, module, importers)
+            edge_fanin, edge_targets = self._edge_fallback(profile, module)
             if fanin is None:
                 fanin = edge_fanin
             if targets is None:
                 targets = edge_targets
-        parts: list[str] = []
-        if fanin:
-            noun = "module" if fanin == 1 else "modules"
-            parts.append(
-                f"Imported by {fanin} {noun} — a change here ripples to all of them."
-            )
-        if name_targets and targets:
-            listed = ", ".join(targets)
-            n = len(targets)
-            noun = "dependency" if n == 1 else "dependencies"
-            verb = "is" if n == 1 else "are"
-            parts.append(
-                f"Its {n} heaviest {noun} {verb} {listed} "
-                f"— decoupling one cuts the convergence."
-            )
-        return " ".join(parts)
+        return fanin, targets
+
+    def _edge_fallback(
+        self, profile: ProjectProfile, module: str,
+    ) -> tuple[int, list[str]]:
+        """Fan-in/fan-out for ``module`` counted from the raw edge list."""
+        edges = getattr(profile, "dependency_edges", []) or []
+        importers = self._cached_importers(profile, edges)
+        return self._fanin_fanout_from_edges(edges, module, importers)
+
+    def _cached_importers(
+        self, profile: ProjectProfile, edges: list[tuple[str, str]],
+    ) -> dict[str, set[str]]:
+        """The importers graph for ``profile``, built once and reused.
+
+        The graph is invariant across modules in one seed pass, so cache it per
+        profile instead of re-scanning every edge for each falling-back module.
+        """
+        cache = self.__dict__.setdefault("_importers_cache", {})
+        ckey = id(profile)
+        importers = cache.get(ckey)
+        if importers is None:
+            importers = self._build_importers(edges)
+            cache[ckey] = importers
+        return importers
+
+    @staticmethod
+    def _fanin_part(fanin: int | None) -> str:
+        """The blast-radius clause, or ``""`` when fan-in is unknown/zero."""
+        if not fanin:
+            return ""
+        noun = "module" if fanin == 1 else "modules"
+        return f"Imported by {fanin} {noun} — a change here ripples to all of them."
+
+    @staticmethod
+    def _targets_part(targets: list[str] | None) -> str:
+        """The decoupling clause naming heaviest dependencies, or ``""``."""
+        if not targets:
+            return ""
+        listed = ", ".join(targets)
+        n = len(targets)
+        noun = "dependency" if n == 1 else "dependencies"
+        verb = "is" if n == 1 else "are"
+        return (
+            f"Its {n} heaviest {noun} {verb} {listed} "
+            f"— decoupling one cuts the convergence."
+        )
 
     @staticmethod
     def _anchor_phrase(anchors: list[dict]) -> str:
