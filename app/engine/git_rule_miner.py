@@ -14,6 +14,46 @@ from pathlib import Path
 import subprocess
 
 
+def _is_expr(text: str) -> bool:
+    """True if ``text`` parses as a standalone Python expression."""
+    try:
+        ast.parse(text, mode="eval")
+    except SyntaxError:
+        return False
+    return True
+
+
+def _stmt_value(stmt: ast.stmt) -> ast.expr | None:
+    """Return the value node of a single-line statement we can unwrap.
+
+    Covers ``return EXPR``, ``x = EXPR``, annotated assigns, and bare
+    expression statements; returns None for any other statement form.
+    """
+    if isinstance(stmt, ast.Return) and stmt.value is not None:
+        return stmt.value
+    if isinstance(stmt, ast.Assign) and stmt.targets:
+        return stmt.value
+    if isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+        return stmt.value
+    if isinstance(stmt, ast.Expr):
+        return stmt.value
+    return None
+
+
+def _unwrap_statement(stripped: str) -> str | None:
+    """Unwrap a single-line statement to the source text of its value node."""
+    try:
+        tree = ast.parse(stripped, mode="exec")
+    except SyntaxError:
+        return None
+    if len(tree.body) != 1:
+        return None
+    value = _stmt_value(tree.body[0])
+    if value is None:
+        return None
+    return ast.get_source_segment(stripped, value)
+
+
 def _extract_expr(line: str) -> str | None:
     """Extract the expression part from a single Python line.
 
@@ -23,35 +63,14 @@ def _extract_expr(line: str) -> str | None:
     """
     stripped = line.strip()
     # Fast path: bare expression.
-    try:
-        ast.parse(stripped, mode="eval")
+    if _is_expr(stripped):
         return stripped
-    except SyntaxError:
-        pass
     # Unwrap common single-line statement forms.
-    try:
-        tree = ast.parse(stripped, mode="exec")
-    except SyntaxError:
-        return None
-    if len(tree.body) != 1:
-        return None
-    stmt = tree.body[0]
-    if isinstance(stmt, ast.Return) and stmt.value is not None:
-        seg = ast.get_source_segment(stripped, stmt.value)
-    elif isinstance(stmt, ast.Assign) and stmt.targets:
-        seg = ast.get_source_segment(stripped, stmt.value)
-    elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
-        seg = ast.get_source_segment(stripped, stmt.value)
-    elif isinstance(stmt, ast.Expr):
-        seg = ast.get_source_segment(stripped, stmt.value)
-    else:
-        return None
+    seg = _unwrap_statement(stripped)
     if not seg:
         return None
     # Verify the extracted segment is itself a valid expression.
-    try:
-        ast.parse(seg, mode="eval")
-    except SyntaxError:
+    if not _is_expr(seg):
         return None
     return seg
 
