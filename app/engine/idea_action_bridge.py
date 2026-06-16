@@ -159,6 +159,27 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "fstring-no-placeholder": ("fstring_no_placeholder",
                                "Drop the dead `f` prefix from a placeholder-less "
                                "f-string `f\"text\"` -> `\"text\"` in {s}", True),
+    # Four more behaviour-preserving simplifications, each backed by an on-disk
+    # ``plan_<name>(root, rel) -> RenamePlan`` rewrite under ``app/execution/``
+    # (rather than an in-memory ``apply``). The bridge adapts them to the SAME
+    # refuse-on-unsafe, self-reparsing, test-verified, auto-rollback apply path
+    # via ``plan_to_apply`` in ``_simplify_dispatch`` — so once a seeder emits
+    # one, the action is genuinely executable, never a recommend-only stub. Each
+    # is strictly guarded (an unsafe input yields no patch) and behaviour-
+    # preserving; ``merge_isinstance`` is intentionally NOT among them (it is the
+    # duplicate of the already-wired ``isinstance-merge``).
+    "nested-with": ("combine_nested_with",
+                    "Collapse nested `with A:`/`with B:` into one `with A, B:` "
+                    "in {s}", True),
+    "comprehension": ("simplify_comprehension",
+                      "Fold an `out = []` + `for ...: out.append(x)` accumulator "
+                      "loop into a list comprehension in {s}", True),
+    "use-enumerate": ("use_enumerate",
+                      "Rewrite `for i in range(len(seq)): ... seq[i]` to "
+                      "`for _, item in enumerate(seq)` in {s}", True),
+    "len-comparison": ("simplify_len_comparison",
+                       "Rewrite a boolean-context `len(x) == 0` / `> 0` to "
+                       "`not x` / `bool(x)` in {s}", True),
     # The hands exist (apex signature drop/keywordify) but as supervised CLI
     # muscles, not unattended transforms — the work order carries the command.
     "dead-parameter": ("design_task",
@@ -544,6 +565,14 @@ class IdeaActionBridge:
         "augmented_assign": ["combine augmented assignment"],
         "collection_literal": ["empty collection literal"],
         "fstring_no_placeholder": ["drop dead fstring prefix"],
+        # On-disk ``plan_*`` simplifications, adapted to the in-memory dispatch
+        # by ``plan_to_apply``. Listed here (like the transforms above) only so
+        # ``_step_targets`` recognises the action as a real transform objective;
+        # the actual rewrite is chosen in ``_simplify_dispatch``.
+        "combine_nested_with": ["combine nested with"],
+        "simplify_comprehension": ["accumulator loop to comprehension"],
+        "use_enumerate": ["range len index to enumerate"],
+        "simplify_len_comparison": ["len comparison to truthiness"],
     }
 
     # Behaviour-preserving readability simplifications dispatched STRAIGHT to
@@ -559,6 +588,11 @@ class IdeaActionBridge:
     # self-verifying simplification.
     @classmethod
     def _simplify_dispatch(cls):
+        from app.execution.comprehension import plan_simplify_comprehension
+        from app.execution.nested_with import plan_combine_nested_with
+        from app.execution.simplify_len_comparison import plan_simplify_len_comparison
+        from app.execution.use_enumerate import plan_use_enumerate
+        from app.tools.simplification_scan import plan_to_apply
         from app.execution.semantic.transforms import augmented_assign
         from app.execution.semantic.transforms import chained_comparison
         from app.execution.semantic.transforms import collection_literal
@@ -618,6 +652,20 @@ class IdeaActionBridge:
             # "executable" the brief forbids.
             "augmented_assign": (lambda rel, src, _title:
                                  augmented_assign.apply(rel, src)),
+            # Four on-disk ``plan_<name>(root, rel) -> RenamePlan`` rewrites
+            # under ``app/execution/``, adapted by ``plan_to_apply`` to the same
+            # ``apply(rel, src, title) -> SemanticPatchResult | None`` shape (it
+            # materialises the source, runs the real plan, and translates the
+            # RenamePlan; a no-op/blocked plan → None). Each then flows into the
+            # IDENTICAL guarded apply_step gate (mode policy → SafetyGates →
+            # snapshot → write → test-verify → auto-rollback). All four are
+            # strictly guarded, behaviour-preserving simplifications;
+            # ``merge_isinstance`` is excluded as a duplicate of the already-
+            # wired ``isinstance-merge`` above.
+            "combine_nested_with": plan_to_apply(plan_combine_nested_with),
+            "simplify_comprehension": plan_to_apply(plan_simplify_comprehension),
+            "use_enumerate": plan_to_apply(plan_use_enumerate),
+            "simplify_len_comparison": plan_to_apply(plan_simplify_len_comparison),
         }
 
     @staticmethod

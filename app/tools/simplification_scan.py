@@ -31,6 +31,7 @@ owner's follow-up; this module is the pure producer.
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -46,6 +47,73 @@ _MAX_OPPORTUNITIES = 8
 _DRY_RUN_TITLE = "simplification scan (dry-run)"
 
 
+def plan_to_apply(plan_fn: Callable[..., object]):
+    """Adapt a ``plan_<name>(project_root, module_rel) -> RenamePlan`` transform
+    to the uniform ``apply(rel_path, source, title)`` shape every other safe
+    transform exposes — so the family of ``app/execution/`` source rewrites
+    (``nested_with``, ``comprehension``, ``use_enumerate``,
+    ``simplify_len_comparison``) plugs into the SAME dry-run scan and the SAME
+    ``_simplify_dispatch`` apply path as the ``semantic/transforms/`` rewrites.
+
+    Those ``plan_*`` transforms read their input from disk (they take a
+    project root and a relative path, not a source string), so the adapter
+    materialises ``source`` into a throwaway temp directory at ``rel_path``,
+    runs the real ``plan_fn`` against it, and translates the resulting
+    ``RenamePlan`` back into a :class:`SemanticPatchResult`:
+
+      - a plan with no rewrite (``not plan.ok`` — empty ``new_contents`` or a
+        recorded blocker) → ``None``, the exact refuse-on-unsafe contract the
+        dispatch already relies on (an unsafe input fabricates nothing);
+      - otherwise a single patch request carrying the original source as
+        ``expected_old_content`` and the transform's rewritten text as
+        ``new_content`` — the same shape the in-place transforms emit, so the
+        guarded ``apply_step`` gate (snapshot → write → verify → auto-rollback)
+        treats it identically.
+
+    Pure and deterministic: the temp directory name never influences the
+    result (the transform keys off ``rel_path`` + source only), nothing under
+    the real project tree is read or written, and the temp dir is removed
+    before returning. Never raises — a transform that errors on exotic input is
+    treated as "would not safely act" (``None``), matching the scan's own
+    guard.
+    """
+
+    def _apply(rel_path: str, source: str, _title: str):
+        from app.execution.semantic.result import SemanticPatchResult
+
+        # Normalise to a forward-slash relative path and mirror it under a
+        # throwaway root so the on-disk ``plan_*`` transform can read it.
+        rel = Path(rel_path).as_posix()
+        try:
+            with tempfile.TemporaryDirectory() as droot:
+                fpath = Path(droot) / rel
+                fpath.parent.mkdir(parents=True, exist_ok=True)
+                fpath.write_text(source, encoding="utf-8")
+                plan = plan_fn(droot, rel)
+        except Exception:
+            return None
+        if not getattr(plan, "ok", False):
+            return None  # no rewrite / blocked → refuse, fabricate nothing
+        new_content = plan.new_contents.get(rel)
+        if new_content is None or new_content == source:
+            return None
+        edits = plan.edits_by_file.get(rel, 1)
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel_path,
+                "new_content": new_content,
+                "expected_old_content": source,
+            }],
+            transform_type=plan.new,
+            rationale=[
+                f"Applied {edits} behaviour-preserving {plan.new} "
+                f"simplification(s) in {rel_path}."
+            ],
+        )
+
+    return _apply
+
+
 def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
     """The safe transforms as ``(fact_label, apply)`` pairs.
 
@@ -58,6 +126,10 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
     executable action — emitting any other spelling would route the seeded idea
     to the generic recommend-only fallback instead of the real transform.
     """
+    from app.execution.comprehension import plan_simplify_comprehension
+    from app.execution.nested_with import plan_combine_nested_with
+    from app.execution.simplify_len_comparison import plan_simplify_len_comparison
+    from app.execution.use_enumerate import plan_use_enumerate
     from app.execution.semantic.transforms import augmented_assign
     from app.execution.semantic.transforms import chained_comparison
     from app.execution.semantic.transforms import collection_literal
@@ -117,6 +189,28 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
         ("mutable-default", mutable_defaults.apply),
         # 2-arg signature → adapt to the uniform 3-arg dry-run call.
         ("augmented-assign", lambda rel, src, _title: augmented_assign.apply(rel, src)),
+        # Four more behaviour-preserving rewrites that live under
+        # ``app/execution/`` as on-disk ``plan_<name>(root, rel) -> RenamePlan``
+        # transforms rather than in-memory ``apply``. ``plan_to_apply`` adapts
+        # each to the uniform 3-arg dry-run shape (materialise source → run the
+        # real plan → translate the RenamePlan), so they dry-run and apply
+        # through the SAME refuse-on-unsafe, re-parsing, auto-rollback path as
+        # every transform above. Each is strictly guarded and distinct:
+        #   - nested-with collapses ``with A:\n with B:`` → ``with A, B:``;
+        #   - comprehension folds ``out=[]`` + ``for ...: out.append(x)`` into a
+        #     list comprehension;
+        #   - use-enumerate rewrites ``for i in range(len(seq)): seq[i]`` into
+        #     ``for _, item in enumerate(seq)`` (``i`` proven used only as the
+        #     index, ``seq`` proven not rebound);
+        #   - len-comparison rewrites ``len(x) == 0`` / ``!= 0`` / ``> 0`` /
+        #     ``>= 1`` into ``not x`` / ``bool(x)`` ONLY in a boolean context.
+        # ``merge_isinstance`` (also a ``plan_*`` transform) is deliberately
+        # EXCLUDED here — it is the exact duplicate of the already-wired
+        # ``isinstance-merge`` in-memory transform above.
+        ("nested-with", plan_to_apply(plan_combine_nested_with)),
+        ("comprehension", plan_to_apply(plan_simplify_comprehension)),
+        ("use-enumerate", plan_to_apply(plan_use_enumerate)),
+        ("len-comparison", plan_to_apply(plan_simplify_len_comparison)),
     ]
 
 
