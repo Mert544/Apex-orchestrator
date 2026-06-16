@@ -154,22 +154,15 @@ def _parse_file(path: Path) -> tuple[list[str], list[str]] | None:
     return parsed
 
 
-def _parse_source(path: Path) -> tuple[list[str], list[str]] | None:
-    """Uncached read + parse + extract. Single source of the import/symbol graph."""
-    try:
-        source = path.read_text(encoding="utf-8", errors="ignore")
-        tree = ast.parse(source)
-    except (SyntaxError, OSError, ValueError):
-        return None
+def _type_only_import_ids(tree: ast.Module) -> set[int]:
+    """``id()`` of every import node under an ``if TYPE_CHECKING:`` body.
 
-    imports: list[str] = []
-    symbols: list[str] = []
-
-    # Imports under `if TYPE_CHECKING:` are type-only — they never run, so they
-    # are NOT real import edges. Counting them lets a type-hint import that was
-    # added to BREAK a cycle get miscounted AS a cycle (a false positive that
-    # cost real grade points). Collect those nodes and skip them below. The
-    # `else` arm of such a block DOES run, so only its `body` is excluded.
+    Imports under `if TYPE_CHECKING:` are type-only — they never run, so they
+    are NOT real import edges. Counting them lets a type-hint import that was
+    added to BREAK a cycle get miscounted AS a cycle (a false positive that
+    cost real grade points). The `else` arm of such a block DOES run, so only
+    its `body` is excluded.
+    """
     type_only: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.If) and _is_type_checking_test(node.test):
@@ -177,18 +170,44 @@ def _parse_source(path: Path) -> tuple[list[str], list[str]] | None:
                 for inner in ast.walk(stmt):
                     if isinstance(inner, (ast.Import, ast.ImportFrom)):
                         type_only.add(id(inner))
+    return type_only
 
+
+def _import_names(node: ast.AST) -> list[str]:
+    """Import edge name(s) for a single node; ``[]`` for non-import nodes."""
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    if isinstance(node, ast.ImportFrom):
+        module = node.module or ""
+        return [module] if module else []
+    return []
+
+
+def _is_symbol(node: ast.AST) -> bool:
+    """True for a top-level-style def/class node whose name is a symbol."""
+    return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+
+
+def _extract_graph(tree: ast.Module) -> tuple[list[str], list[str]]:
+    """Walk ``tree`` into ``(sorted imports, sorted symbols)``, skipping
+    type-only import edges. Pure: same tree -> same output."""
+    type_only = _type_only_import_ids(tree)
+    imports: list[str] = []
+    symbols: list[str] = []
     for node in ast.walk(tree):
         if id(node) in type_only:
             continue
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                imports.append(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if module:
-                imports.append(module)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            symbols.append(node.name)
-
+        imports.extend(_import_names(node))
+        if _is_symbol(node):
+            symbols.append(node.name)  # type: ignore[attr-defined]
     return sorted(set(imports)), sorted(set(symbols))
+
+
+def _parse_source(path: Path) -> tuple[list[str], list[str]] | None:
+    """Uncached read + parse + extract. Single source of the import/symbol graph."""
+    try:
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        tree = ast.parse(source)
+    except (SyntaxError, OSError, ValueError):
+        return None
+    return _extract_graph(tree)
