@@ -466,65 +466,103 @@ def best_first_move(roadmap: Roadmap) -> RoadmapItem | None:
     )
 
 
-def render_roadmap_markdown(roadmap: Roadmap) -> str:
-    """Render the roadmap as a readable, phase-ordered markdown document."""
-    lines = [f"# Engineering Roadmap for `{roadmap.project_root}`", ""]
+def _render_header(roadmap: Roadmap) -> list[str]:
+    """Title + meta block (objective, idea count, mean ROI)."""
     meta = (
         f"{roadmap.stats.get('total_items', 0)} ideas sequenced · "
         f"mean ROI {roadmap.stats.get('mean_roi', 0)}"
     )
     if roadmap.objective:
         meta = f"objective: _{roadmap.objective}_ · " + meta
-    lines += [meta, ""]
+    return [f"# Engineering Roadmap for `{roadmap.project_root}`", "", meta, ""]
 
-    # Best first move: the single highest value-per-effort pick, surfaced up top
-    # so a reader knows where to start. Gated on a real pick so an empty roadmap
-    # (no phases) renders exactly as before. Wording avoids literal magnitude
-    # tokens so the byte-stable / negative render tests stay green.
+
+def _render_best_first_move(roadmap: Roadmap) -> list[str]:
+    """Best-first-move block, or empty when the roadmap has no pick.
+
+    The single highest value-per-effort pick, surfaced up top so a reader knows
+    where to start. Gated on a real pick so an empty roadmap (no phases) renders
+    exactly as before. Wording avoids literal magnitude tokens so the byte-stable
+    / negative render tests stay green.
+    """
     best = best_first_move(roadmap)
-    if best is not None:
-        lines.append("## 🎯 Best first move")
-        lines.append(
+    if best is None:
+        return []
+    return [
+        "## 🎯 Best first move",
+        (
             f"- `{best.branch_path}` **{best.title}** in {best.phase} "
             f"(ROI {best.roi} · impact {best.impact} · effort {best.effort}) — "
             f"the strongest value-per-effort pick to start with."
+        ),
+        "",
+    ]
+
+
+def _render_quick_wins(roadmap: Roadmap) -> list[str]:
+    """Quick-wins block, or empty when there are none."""
+    if not roadmap.quick_wins:
+        return []
+    lines = ["## ⚡ Quick wins (high impact, low effort)"]
+    for i in roadmap.quick_wins:
+        lines.append(
+            f"- `{i.branch_path}` **{i.title}** "
+            f"(ROI {i.roi} · impact {i.impact} · effort {i.effort})"
         )
-        lines.append("")
+    lines.append("")
+    return lines
 
-    if roadmap.quick_wins:
-        lines.append("## ⚡ Quick wins (high impact, low effort)")
-        for i in roadmap.quick_wins:
-            lines.append(
-                f"- `{i.branch_path}` **{i.title}** "
-                f"(ROI {i.roi} · impact {i.impact} · effort {i.effort})"
-            )
-        lines.append("")
 
+def _render_measured(item: RoadmapItem) -> str:
+    """The ` · imported by N · M LOC` suffix for an item's headline (may be empty)."""
+    measured = []
+    if item.fan_in:
+        measured.append(f"imported by {item.fan_in}")
+    if item.loc:
+        measured.append(f"{item.loc} LOC")
+    return f" · {' · '.join(measured)}" if measured else ""
+
+
+def _render_why(item: RoadmapItem) -> list[str]:
+    """The grounded ``↳ why:`` line for an item, or empty when there's nothing.
+
+    Surfaces the already-grounded reasoning (the node's rationale, else its
+    seeding fact) plus an expected payoff, turning a ranked list into a *reasoned*
+    plan. Phrased to avoid the literals "imported by"/"LOC" so the zero-metric
+    negative-render test holds.
+    """
+    why = (item.rationale or "").strip() or (
+        item.source_facts[0].strip() if item.source_facts else "")
+    payoff = (
+        f" — doing it protects the {item.fan_in} module(s) that depend on it"
+        if item.fan_in else "")
+    if why or payoff:
+        return [f"    ↳ why: {why}{payoff}"]
+    return []
+
+
+def _render_phase(n: int, phase: RoadmapPhase) -> list[str]:
+    """One phase: heading, summary line, then each item with its why-line."""
+    lines = [
+        f"## Phase {n}: {phase.name} — {phase.theme}",
+        f"_{len(phase.items)} ideas · total impact {phase.total_impact}_",
+        "",
+    ]
+    for i in phase.items:
+        lines.append(
+            f"- `{i.branch_path}` {i.title}  "
+            f"(ROI {i.roi} · impact {i.impact} · effort {i.effort}{_render_measured(i)})"
+        )
+        lines += _render_why(i)
+    lines.append("")
+    return lines
+
+
+def render_roadmap_markdown(roadmap: Roadmap) -> str:
+    """Render the roadmap as a readable, phase-ordered markdown document."""
+    lines = _render_header(roadmap)
+    lines += _render_best_first_move(roadmap)
+    lines += _render_quick_wins(roadmap)
     for n, phase in enumerate(roadmap.phases, start=1):
-        lines.append(f"## Phase {n}: {phase.name} — {phase.theme}")
-        lines.append(f"_{len(phase.items)} ideas · total impact {phase.total_impact}_")
-        lines.append("")
-        for i in phase.items:
-            measured = []
-            if i.fan_in:
-                measured.append(f"imported by {i.fan_in}")
-            if i.loc:
-                measured.append(f"{i.loc} LOC")
-            measured_str = f" · {' · '.join(measured)}" if measured else ""
-            lines.append(
-                f"- `{i.branch_path}` {i.title}  "
-                f"(ROI {i.roi} · impact {i.impact} · effort {i.effort}{measured_str})"
-            )
-            # WHY: surface the already-grounded reasoning (the node's rationale,
-            # else its seeding fact) plus an expected payoff, turning a ranked
-            # list into a *reasoned* plan. Phrased to avoid the literals
-            # "imported by"/"LOC" so the zero-metric negative-render test holds.
-            why = (i.rationale or "").strip() or (
-                i.source_facts[0].strip() if i.source_facts else "")
-            payoff = (
-                f" — doing it protects the {i.fan_in} module(s) that depend on it"
-                if i.fan_in else "")
-            if why or payoff:
-                lines.append(f"    ↳ why: {why}{payoff}")
-        lines.append("")
+        lines += _render_phase(n, phase)
     return "\n".join(lines)
