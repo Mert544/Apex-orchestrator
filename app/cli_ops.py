@@ -93,6 +93,50 @@ def cmd_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _consensus_status_icon(verdict_name: str) -> str:
+    if verdict_name == "APPROVE":
+        return "[OK]"
+    if verdict_name == "REJECT":
+        return "[NO]"
+    return "[--]"
+
+
+def _print_consensus_summary(args, evaluator, results, elapsed) -> None:
+    counts = {n: 0 for n in ("APPROVE", "REJECT", "ABSTAIN")}
+    cached = 0
+    for r in results:
+        if r.final_verdict.name in counts:
+            counts[r.final_verdict.name] += 1
+        if r.metadata.get("cached"):
+            cached += 1
+
+    print(f"\n=== CONSENSUS RESULTS ({args.strategy}) ===")
+    print(
+        f"Total: {len(results)} | Approved: {counts['APPROVE']} | Rejected: {counts['REJECT']} | Abstained: {counts['ABSTAIN']}"
+    )
+    if args.use_memory:
+        print(
+            f"Cached: {cached} | Memory entries: {evaluator.memory.stats()['total_entries']}"
+        )
+    print(f"Time: {elapsed:.3f}s")
+    print()
+
+
+def _print_consensus_result(result) -> None:
+    cached_mark = " [CACHED]" if result.metadata.get("cached") else ""
+    status_icon = _consensus_status_icon(result.final_verdict.name)
+    print(f"{status_icon}{cached_mark} {result.claim[:80]}...")
+    print(
+        f"   Verdict: {result.final_verdict.name} (confidence: {result.confidence:.2f})"
+    )
+    for vote in result.votes:
+        icon = "+" if vote.verdict.name == result.final_verdict.name else "-"
+        print(
+            f"   {icon} {vote.agent_name} ({vote.agent_role}): {vote.verdict.name} @ {vote.confidence:.2f} — {vote.reasoning[:60]}"
+        )
+    print()
+
+
 def cmd_consensus(args: argparse.Namespace) -> int:
     from app.agents.evaluator import ClaimEvaluator
 
@@ -111,41 +155,9 @@ def cmd_consensus(args: argparse.Namespace) -> int:
     results = evaluator.evaluate_batch(claims)
     elapsed = time.perf_counter() - start
 
-    approved = [r for r in results if r.final_verdict.name == "APPROVE"]
-    rejected = [r for r in results if r.final_verdict.name == "REJECT"]
-    abstained = [r for r in results if r.final_verdict.name == "ABSTAIN"]
-    cached = [r for r in results if r.metadata.get("cached")]
-
-    print(f"\n=== CONSENSUS RESULTS ({args.strategy}) ===")
-    print(
-        f"Total: {len(results)} | Approved: {len(approved)} | Rejected: {len(rejected)} | Abstained: {len(abstained)}"
-    )
-    if args.use_memory:
-        print(
-            f"Cached: {len(cached)} | Memory entries: {evaluator.memory.stats()['total_entries']}"
-        )
-    print(f"Time: {elapsed:.3f}s")
-    print()
-
+    _print_consensus_summary(args, evaluator, results, elapsed)
     for result in results:
-        cached_mark = " [CACHED]" if result.metadata.get("cached") else ""
-        status_icon = (
-            "[OK]"
-            if result.final_verdict.name == "APPROVE"
-            else "[NO]"
-            if result.final_verdict.name == "REJECT"
-            else "[--]"
-        )
-        print(f"{status_icon}{cached_mark} {result.claim[:80]}...")
-        print(
-            f"   Verdict: {result.final_verdict.name} (confidence: {result.confidence:.2f})"
-        )
-        for vote in result.votes:
-            icon = "+" if vote.verdict.name == result.final_verdict.name else "-"
-            print(
-                f"   {icon} {vote.agent_name} ({vote.agent_role}): {vote.verdict.name} @ {vote.confidence:.2f} — {vote.reasoning[:60]}"
-            )
-        print()
+        _print_consensus_result(result)
 
     if args.json:
         import json
