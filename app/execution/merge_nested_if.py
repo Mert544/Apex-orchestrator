@@ -80,34 +80,74 @@ def _body_end(body: list[ast.stmt]) -> int:
     return max(s.end_lineno for s in body)
 
 
-def _try_if(outer: ast.If, source: str, lines: list[str]) -> _Rewrite | None:
-    """If ``outer`` is an ``if`` whose whole body is a single nested ``if`` with
-    no else on either side and an unambiguous merge, return its rewrite, else
-    None (the occurrence is skipped)."""
-    if outer.orelse:
-        return None  # else / elif on the outer — semantics differ, skip
-    if len(outer.body) != 1:
-        return None  # outer body is more than the single nested if — skip
+def _inner_if(outer: ast.If) -> ast.If | None:
+    """The single nested ``if`` that makes ``outer`` mergeable, else None.
+
+    Mergeable means: no else/elif on the outer, the outer body is exactly one
+    statement, that statement is an ``ast.If``, and that inner ``if`` has no
+    else/elif of its own — any branch on either side changes semantics."""
+    if outer.orelse or len(outer.body) != 1:
+        return None  # else/elif, or outer body is more than the nested if
     inner = outer.body[0]
-    if not isinstance(inner, ast.If):
-        return None
-    if inner.orelse:
-        return None  # else / elif on the inner — skip
+    if not isinstance(inner, ast.If) or inner.orelse:
+        return None  # inner isn't an if, or carries an else/elif — skip
+    return inner
 
-    # Both tests must be single-line so their original source splices cleanly.
-    if outer.test.lineno != outer.test.end_lineno:
-        return None
-    if inner.test.lineno != inner.test.end_lineno:
-        return None
 
+def _tests_single_line(outer: ast.If, inner: ast.If) -> bool:
+    """Whether both ``if`` tests are single-line, so each original source
+    segment splices cleanly into the merged header."""
+    return (outer.test.lineno == outer.test.end_lineno
+            and inner.test.lineno == inner.test.end_lineno)
+
+
+def _test_sources(source: str, outer: ast.If,
+                  inner: ast.If) -> tuple[str, str] | None:
+    """The original source of each ``if`` test, or None if either can't be
+    recovered (``ast.get_source_segment`` returns None)."""
     a_src = ast.get_source_segment(source, outer.test)
     b_src = ast.get_source_segment(source, inner.test)
     if a_src is None or b_src is None:
         return None
+    return a_src, b_src
+
+
+def _dedent_unit(inner: ast.If) -> int:
+    """The inner ``if``'s own indentation step (its body's extra indent)."""
+    return inner.body[0].col_offset - inner.col_offset
+
+
+def _all_lines_carry(lines: list[str], lo: int, hi: int, unit: int) -> bool:
+    """Whether every non-blank line in [lo, hi] starts with ``unit`` spaces, so
+    dedenting by that much is unambiguous (no continuation indented less)."""
+    pad = " " * unit
+    for n in range(lo, hi + 1):
+        line = lines[n - 1]
+        if line.strip() and not line.startswith(pad):
+            return False
+    return True
+
+
+def _try_if(outer: ast.If, source: str, lines: list[str]) -> _Rewrite | None:
+    """If ``outer`` is an ``if`` whose whole body is a single nested ``if`` with
+    no else on either side and an unambiguous merge, return its rewrite, else
+    None (the occurrence is skipped)."""
+    inner = _inner_if(outer)
+    if inner is None:
+        return None
+
+    # Both tests must be single-line so their original source splices cleanly.
+    if not _tests_single_line(outer, inner):
+        return None
+
+    srcs = _test_sources(source, outer, inner)
+    if srcs is None:
+        return None
+    a_src, b_src = srcs
 
     # Dedent the inner body by exactly the inner ``if``'s own indentation step,
     # so it lands one level under the merged header (where the outer body sat).
-    unit = inner.body[0].col_offset - inner.col_offset
+    unit = _dedent_unit(inner)
     if unit <= 0:
         return None
 
@@ -116,11 +156,8 @@ def _try_if(outer: ast.If, source: str, lines: list[str]) -> _Rewrite | None:
     # Every non-blank inner-body line must carry at least ``unit`` leading
     # spaces, or the dedent would be ambiguous (a continuation indented less
     # than the block). Skip to stay safe.
-    pad = " " * unit
-    for n in range(body_lo, body_hi + 1):
-        line = lines[n - 1]
-        if line.strip() and not line.startswith(pad):
-            return None
+    if not _all_lines_carry(lines, body_lo, body_hi, unit):
+        return None
 
     newline = "\n" if lines[outer.lineno - 1].endswith("\n") else ""
     header = " " * outer.col_offset + f"if ({a_src}) and ({b_src}):" + newline
