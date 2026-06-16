@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,16 @@ from app.engine.idea_facets import (  # noqa: F401  (re-exports: surface unchang
     _FACETS,
 )
 from app.engine.idea_seeder import IdeaSeeder  # noqa: F401  (re-export)
+
+
+@dataclass
+class _PairState:
+    """Threaded state for the module-pair synthesis sections: one bounded
+    ``pidx`` counter and the cross-section dedup set, so cycle/co-change/edge
+    ideas share the same numbering and never re-propose the same pair."""
+
+    pidx: int = 0
+    seen_pairs: set[tuple[str, str]] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -424,48 +434,96 @@ class IdeaPermutationEngine:
                 out.append(node)
         return out
 
+    def _collect_convergence_dims(
+        self, profile: ProjectProfile
+    ) -> dict[str, list[str]]:
+        """Map each subject to the distinct risk dimensions independently
+        flagging it (the raw material convergence is read off)."""
+        from collections import defaultdict
+
+        dims_by_subject: dict[str, list[str]] = defaultdict(list)
+
+        for subject, label in self._structural_dims(profile):
+            # Distinct dimensions only: two signals that mean the same thing
+            # (name-sensitive AND content-finding both → "security-sensitive")
+            # count as one, so they can't fake a convergence by themselves.
+            if label not in dims_by_subject[subject]:
+                dims_by_subject[subject].append(label)
+
+        for subject, label in self._coverage_dims(profile):
+            dims_by_subject[subject].append(label)
+        return dims_by_subject
+
+    def _structural_dims(self, profile: ProjectProfile):
+        """Yield the (subject, label) risk dimensions read off the profile's
+        structure (the list-valued signals, churn, and acceleration), in the
+        original order, before coverage labels are layered on."""
+        for attr, label in self._CONVERGENCE_DIMS:
+            for subject in (getattr(profile, attr, []) or []):
+                yield subject, label
+        yield from self._churn_dims(profile)
+        # The time dimension: a subject getting WORSE since the last snapshot
+        # converges with whatever else flags it — urgency from the slope.
+        for subject in (getattr(self, "_accelerating", {}) or {}):
+            yield subject, "accelerating"
+
+    @staticmethod
+    def _churn_dims(profile: ProjectProfile):
+        """Churn carries its count, so it isn't a plain module list: a subject
+        many recent commits touch adds the "high-churn" dimension — combined
+        with a complexity hotspot this is the classic change×complexity hotspot,
+        the strongest refactoring mandate structure analysis offers."""
+        for spot in (getattr(profile, "churn_hotspots", []) or []):
+            subject = spot.get("module", "")
+            if subject:
+                yield subject, "high-churn"
+
+    @staticmethod
+    def _coverage_dims(profile: ProjectProfile) -> list[tuple[str, str]]:
+        """Coverage is one dimension; emit the most-severe label a subject
+        carries, in the original deterministic (sorted-subject) order."""
+        crit = set(getattr(profile, "critical_untested_modules", []) or [])
+        untested = set(getattr(profile, "untested_modules", []) or [])
+        shallow = set(getattr(profile, "shallow_tested_modules", []) or [])
+        out: list[tuple[str, str]] = []
+        for subject in sorted(crit | untested | shallow):
+            if subject in crit:
+                out.append((subject, "critically untested"))
+            elif subject in untested:
+                out.append((subject, "untested"))
+            else:
+                out.append((subject, "only shallowly tested"))
+        return out
+
+    @staticmethod
+    def _make_convergence_node(idx: int, subject: str, labels: list[str]) -> IdeaNode:
+        """Build the convergence idea for a subject and its agreeing labels."""
+        n = len(labels)
+        return IdeaNode(
+            id=f"conv-{idx}",
+            title=f"Prioritize {subject} — {n} independent analyses converge ({_join_phrase(labels)})",
+            subject=subject,
+            rationale=(
+                f"Synthesized: {n} independent signals flag this same module, so "
+                "convergence marks it the highest-leverage target — stabilize and "
+                "secure it before lower-agreement work."
+            ),
+            branch_path=f"x.c{idx}",
+            depth=1,
+            operator="synthesis",
+            operator_chain=["harden"],
+            source_facts=[f"convergence: {'+'.join(labels)}"],
+            kind="synthesis",
+            # More converging signals = a clearer, higher-priority mandate.
+            feasibility=min(0.95, 0.7 + 0.1 * n),
+        )
+
     def _convergence_ideas(
         self, profile: ProjectProfile, relevance: RelevanceScorer, graph: GraphStore
     ) -> list[IdeaNode]:
         """Subjects independently flagged by >=2 risk dimensions — the engine's
         highest-leverage targets, where multiple analyses agree."""
-        from collections import defaultdict
-
-        dims_by_subject: dict[str, list[str]] = defaultdict(list)
-        for attr, label in self._CONVERGENCE_DIMS:
-            for subject in (getattr(profile, attr, []) or []):
-                # Distinct dimensions only: two signals that mean the same thing
-                # (name-sensitive AND content-finding both → "security-sensitive")
-                # count as one, so they can't fake a convergence by themselves.
-                if label not in dims_by_subject[subject]:
-                    dims_by_subject[subject].append(label)
-
-        # Churn carries its count, so it isn't a plain module list: a subject
-        # many recent commits touch adds the "high-churn" dimension — combined
-        # with a complexity hotspot this is the classic change×complexity
-        # hotspot, the strongest refactoring mandate structure analysis offers.
-        for spot in (getattr(profile, "churn_hotspots", []) or []):
-            subject = spot.get("module", "")
-            if subject and "high-churn" not in dims_by_subject[subject]:
-                dims_by_subject[subject].append("high-churn")
-        # The time dimension: a subject getting WORSE since the last snapshot
-        # converges with whatever else flags it — urgency from the slope.
-        for subject in (getattr(self, "_accelerating", {}) or {}):
-            if "accelerating" not in dims_by_subject[subject]:
-                dims_by_subject[subject].append("accelerating")
-
-        # Coverage is one dimension; take the most-severe label a subject carries.
-        crit = set(getattr(profile, "critical_untested_modules", []) or [])
-        untested = set(getattr(profile, "untested_modules", []) or [])
-        shallow = set(getattr(profile, "shallow_tested_modules", []) or [])
-        for subject in sorted(crit | untested | shallow):
-            if subject in crit:
-                dims_by_subject[subject].append("critically untested")
-            elif subject in untested:
-                dims_by_subject[subject].append("untested")
-            else:
-                dims_by_subject[subject].append("only shallowly tested")
-
+        dims_by_subject = self._collect_convergence_dims(profile)
         converged = [
             (subject, labels) for subject, labels in dims_by_subject.items()
             if len(labels) >= 2
@@ -475,25 +533,7 @@ class IdeaPermutationEngine:
 
         out: list[IdeaNode] = []
         for idx, (subject, labels) in enumerate(converged[:3]):
-            n = len(labels)
-            node = IdeaNode(
-                id=f"conv-{idx}",
-                title=f"Prioritize {subject} — {n} independent analyses converge ({_join_phrase(labels)})",
-                subject=subject,
-                rationale=(
-                    f"Synthesized: {n} independent signals flag this same module, so "
-                    "convergence marks it the highest-leverage target — stabilize and "
-                    "secure it before lower-agreement work."
-                ),
-                branch_path=f"x.c{idx}",
-                depth=1,
-                operator="synthesis",
-                operator_chain=["harden"],
-                source_facts=[f"convergence: {'+'.join(labels)}"],
-                kind="synthesis",
-                # More converging signals = a clearer, higher-priority mandate.
-                feasibility=min(0.95, 0.7 + 0.1 * n),
-            )
+            node = self._make_convergence_node(idx, subject, labels)
             self._score(node, relevance)
             if not graph.has_similar_claim(node.title):
                 out.append(node)
@@ -534,10 +574,40 @@ class IdeaPermutationEngine:
         out.extend(self._thematic_ideas(profile, relevance, graph))
 
         # 1. Cross-lens synthesis per subject.
+        out.extend(self._cross_lens_ideas(emitted, relevance, graph))
+
+        # 2. Module-pair ideas (cycles, then co-change, then plain edges), all
+        # sharing one bounded `pidx`/dedup state so the strongest coupling
+        # evidence claims the low branch paths.
+        state = _PairState()
+        in_cycle = self._cycle_ideas(profile, relevance, graph, out, state)
+        self._cochange_ideas(profile, relevance, graph, out, state)
+        self._edge_ideas(profile, relevance, graph, out, state, in_cycle)
+        return out
+
+    def _emit_synth(
+        self, node: IdeaNode, relevance: RelevanceScorer, graph: GraphStore,
+        out: list[IdeaNode],
+    ) -> bool:
+        """Score a synthesized candidate and append it unless it duplicates an
+        existing claim. Returns whether it was kept (so callers advance their
+        index only on success, exactly as before)."""
+        self._score(node, relevance)
+        if graph.has_similar_claim(node.title):
+            return False
+        out.append(node)
+        return True
+
+    def _cross_lens_ideas(
+        self, emitted: list[IdeaNode], relevance: RelevanceScorer, graph: GraphStore,
+    ) -> list[IdeaNode]:
+        """If a subject got BOTH 'test' and 'harden' lenses, propose a dedicated
+        security-focused test suite for it."""
         lenses_by_subject: dict[str, set[str]] = {}
         for idea in emitted:
             if idea.subject:
                 lenses_by_subject.setdefault(idea.subject, set()).update(idea.operator_chain)
+        out: list[IdeaNode] = []
         sidx = 0
         for subject, lenses in lenses_by_subject.items():
             if {"test", "harden"} <= lenses:
@@ -556,99 +626,102 @@ class IdeaPermutationEngine:
                     source_facts=["synthesis: test+harden"],
                     kind="synthesis",
                 )
-                self._score(node, relevance)
-                if not graph.has_similar_claim(node.title):
-                    out.append(node)
+                if self._emit_synth(node, relevance, graph, out):
                     sidx += 1
+        return out
 
-        # 2. Import-cycle ideas — real cycles incl. indirect A->B->C->A, from
-        # the dependency graph's cycle detector. Modules already covered by a
-        # cycle idea are not re-proposed as plain interface pairs.
-        pidx = 0
+    def _cycle_ideas(
+        self, profile: ProjectProfile, relevance: RelevanceScorer, graph: GraphStore,
+        out: list[IdeaNode], state: _PairState,
+    ) -> set[str]:
+        """Import-cycle ideas — real cycles incl. indirect A->B->C->A, from the
+        dependency graph's cycle detector. Returns the set of modules covered so
+        they aren't re-proposed as plain interface pairs."""
         in_cycle: set[str] = set()
         for cycle in (getattr(profile, "import_cycles", []) or [])[:3]:
-            if pidx >= 4:
+            if state.pidx >= 4:
                 break
             ring = " → ".join(cycle)
             members = [m for m in cycle if m]
             in_cycle.update(members)
             node = IdeaNode(
-                id=f"pair-{pidx}",
+                id=f"pair-{state.pidx}",
                 title=f"Break the import cycle {ring}",
                 subject="↔".join(dict.fromkeys(members)),
                 rationale=f"Synthesized: {len(set(members))} modules form an import cycle.",
-                branch_path=f"x.p{pidx}",
+                branch_path=f"x.p{state.pidx}",
                 depth=1,
                 operator="synthesis",
                 operator_chain=["integrate"],
                 source_facts=["dependency-cycle"],
                 kind="pair",
             )
-            self._score(node, relevance)
-            if not graph.has_similar_claim(node.title):
-                out.append(node)
-                pidx += 1
+            if self._emit_synth(node, relevance, graph, out):
+                state.pidx += 1
+        return in_cycle
 
-        # Co-change pairs (temporal coupling): modules that repeatedly change
-        # in the SAME commits are factually coupled, whether or not an import
-        # connects them — the hidden seam static analysis can't see. Measured
-        # evidence, so these outrank plain dependency-edge pairs below.
-        seen_pairs: set[tuple[str, str]] = set()
+    def _cochange_ideas(
+        self, profile: ProjectProfile, relevance: RelevanceScorer, graph: GraphStore,
+        out: list[IdeaNode], state: _PairState,
+    ) -> None:
+        """Co-change pairs (temporal coupling): modules that repeatedly change
+        in the SAME commits are factually coupled, whether or not an import
+        connects them — the hidden seam static analysis can't see. Measured
+        evidence, so these outrank plain dependency-edge pairs below."""
         for cc in (getattr(profile, "change_coupling", []) or []):
-            if pidx >= 5:
+            if state.pidx >= 5:
                 break
             a, b, n = cc.get("a", ""), cc.get("b", ""), cc.get("commits", 0)
             key = tuple(sorted((a, b)))
-            if not a or not b or key in seen_pairs:
+            if not a or not b or key in state.seen_pairs:
                 continue
-            seen_pairs.add(key)
+            state.seen_pairs.add(key)
             node = IdeaNode(
-                id=f"pair-{pidx}",
+                id=f"pair-{state.pidx}",
                 title=f"Decouple {a} and {b} — they changed together in {n} commits",
                 subject=f"{a}\N{LEFT RIGHT ARROW}{b}",
                 rationale=("Synthesized: temporal coupling measured from git history — "
                            "these modules co-change whether or not an import connects them."),
-                branch_path=f"x.p{pidx}",
+                branch_path=f"x.p{state.pidx}",
                 depth=1,
                 operator="synthesis",
                 operator_chain=["integrate"],
                 source_facts=[f"co-change: {a} + {b} ({n} commits together)"],
                 kind="pair",
             )
-            self._score(node, relevance)
-            if not graph.has_similar_claim(node.title):
-                out.append(node)
-                pidx += 1
+            if self._emit_synth(node, relevance, graph, out):
+                state.pidx += 1
 
-        # Plain coupling ideas for edges not already inside a reported cycle.
+    def _edge_ideas(
+        self, profile: ProjectProfile, relevance: RelevanceScorer, graph: GraphStore,
+        out: list[IdeaNode], state: _PairState, in_cycle: set[str],
+    ) -> None:
+        """Plain coupling ideas for dependency edges not already inside a
+        reported cycle."""
         edges = getattr(profile, "dependency_edges", []) or []
         for source, target in edges:
-            if pidx >= 5:  # keep total pair ideas bounded
+            if state.pidx >= 5:  # keep total pair ideas bounded
                 break
             if source in in_cycle and target in in_cycle:
                 continue
             key = tuple(sorted((source, target)))
-            if key in seen_pairs:
+            if key in state.seen_pairs:
                 continue
-            seen_pairs.add(key)
+            state.seen_pairs.add(key)
             node = IdeaNode(
-                id=f"pair-{pidx}",
+                id=f"pair-{state.pidx}",
                 title=f"Standardize the interface between {source} and {target}",
                 subject=f"{source}↔{target}",
                 rationale="Synthesized: a dependency edge couples these modules.",
-                branch_path=f"x.p{pidx}",
+                branch_path=f"x.p{state.pidx}",
                 depth=1,
                 operator="synthesis",
                 operator_chain=["integrate"],
                 source_facts=["dependency-edge"],
                 kind="pair",
             )
-            self._score(node, relevance)
-            if not graph.has_similar_claim(node.title):
-                out.append(node)
-                pidx += 1
-
-        return out
+            if self._emit_synth(node, relevance, graph, out):
+                state.pidx += 1
 
     def _effective_max_depth(self, node: IdeaNode) -> int:
         """How deep this branch may go. Adaptive mode lets high-value branches
@@ -902,6 +975,13 @@ class IdeaPermutationEngine:
         return max(0.2, round(nov, 4))
 
     def _score(self, node: IdeaNode, relevance: RelevanceScorer) -> None:
+        self._score_signals(node, relevance)
+        node.value = self._score_value(node)
+        self._attach_caveats(node)
+
+    def _score_signals(self, node: IdeaNode, relevance: RelevanceScorer) -> None:
+        """Set ``relevance``, ``feasibility`` (with the learning nudge) and
+        ``novelty`` on the node — the per-signal inputs the value blend reads."""
         # Score relevance against the idea's *grounding* — its title, subject,
         # fact labels, and lens chain — not just the rendered title. A "security"
         # objective should match a harden/sensitive-path/security-finding idea
@@ -919,16 +999,20 @@ class IdeaPermutationEngine:
             if factor != 1.0:
                 node.feasibility = round(min(1.0, max(0.0, node.feasibility * factor)), 4)
         node.novelty = self._novelty(node)
+
+    def _score_value(self, node: IdeaNode) -> float:
+        """Blend relevance/novelty/feasibility into the node's value, then layer
+        the bounded convergence/evidence/magnitude bonuses on top."""
         # Weight calibration: relevance only discriminates when an objective is
         # set (otherwise it is constant 1.0 and the 0.4 term is dead, flattening
         # scores). With no objective, redistribute that weight to the signals
         # that actually vary — novelty and feasibility.
         if self._has_objective:
-            node.value = round(
+            value = round(
                 0.4 * node.relevance + 0.3 * node.novelty + 0.3 * node.feasibility, 4
             )
         else:
-            node.value = round(
+            value = round(
                 0.2 * node.relevance + 0.4 * node.novelty + 0.4 * node.feasibility, 4
             )
         # Convergence bonus: a node where N independent analyses agree is, by its
@@ -938,12 +1022,12 @@ class IdeaPermutationEngine:
         # instead of contradicting its "highest-leverage" rationale.
         conv = convergence_labels(node)
         if len(conv) >= 2:
-            node.value = round(min(1.0, node.value + 0.08 * (len(conv) - 1)), 4)
+            value = round(min(1.0, value + 0.08 * (len(conv) - 1)), 4)
         # Evidence bonus: a facet whose concern was verified in the actual code
         # (a real finding at a real line) outranks a sibling hypothesis, so the
         # value-guided zoom drills into what is *demonstrably* there.
         if node.kind == "facet" and any(f.startswith("evidence:") for f in node.source_facts):
-            node.value = round(min(1.0, node.value + 0.08), 4)
+            value = round(min(1.0, value + 0.08), 4)
         # Magnitude bonus: when the seeding fact carries a MEASURED quantity —
         # months a finding/debt has sat in the code, commits of churn, branch
         # complexity — the number itself moves the ranking (bounded like the
@@ -953,7 +1037,33 @@ class IdeaPermutationEngine:
         if node.operator == "root":
             bonus = _magnitude_bonus(node)
             if bonus:
-                node.value = round(min(1.0, node.value + bonus), 4)
+                value = round(min(1.0, value + bonus), 4)
+        return value
+
+    def _attach_caveats(self, node: IdeaNode) -> None:
+        """Generate the node's counterfactual caveats from a claim grounded in
+        its lens/fact/symbol context, leading a facet with its own sub-concern."""
+        node.caveats = self.counterfactual.generate(self._caveat_claim(node)).scenarios[:2]
+        # A facet refines into a specific sub-concern; lead its caveat with a
+        # stress-test of *that* concern so the fractal deepens the reasoning, not
+        # just the title. The lens caveat stays as the second scenario.
+        if node.kind == "facet" and node.source_facts:
+            self._lead_facet_caveat(node)
+
+    def _lead_facet_caveat(self, node: IdeaNode) -> None:
+        """Reorder a facet's caveats so its own sub-concern stress-test leads,
+        keeping the lens caveat as the second scenario."""
+        facet_facts = [f for f in node.source_facts if f.startswith("facet:")]
+        if facet_facts:
+            phrase = facet_facts[-1].split("facet:", 1)[-1].strip()
+            specific = self._facet_caveat(phrase)
+            if specific:
+                node.caveats = [specific] + [c for c in node.caveats if c != specific][:1]
+
+    @staticmethod
+    def _caveat_claim(node: IdeaNode) -> dict:
+        """Build the counterfactual claim dict — text plus the most-specific
+        discriminator (terminal lens, else root fact label) and any symbol."""
         # Feed operator/fact context so counterfactual caveats are relevant to
         # the development direction, not generic. Symbol-granular subjects
         # (``mod.py::Class.func``) also pass the symbol so caveats can name the
@@ -973,17 +1083,7 @@ class IdeaPermutationEngine:
         # mistaking a facet phrase for a function name.
         if "::" in node.subject and node.kind != "facet":
             claim["symbol"] = node.subject.split("::", 1)[1].rsplit(".", 1)[-1]
-        node.caveats = self.counterfactual.generate(claim).scenarios[:2]
-        # A facet refines into a specific sub-concern; lead its caveat with a
-        # stress-test of *that* concern so the fractal deepens the reasoning, not
-        # just the title. The lens caveat stays as the second scenario.
-        if node.kind == "facet" and node.source_facts:
-            facet_facts = [f for f in node.source_facts if f.startswith("facet:")]
-            if facet_facts:
-                phrase = facet_facts[-1].split("facet:", 1)[-1].strip()
-                specific = self._facet_caveat(phrase)
-                if specific:
-                    node.caveats = [specific] + [c for c in node.caveats if c != specific][:1]
+        return claim
 
 
 # Keyword-rich context per development lens so the CounterfactualGenerator
