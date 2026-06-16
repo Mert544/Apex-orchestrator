@@ -193,6 +193,116 @@ def _literal_inner(literal_src: str) -> tuple[str, str] | None:
     return quote, inner
 
 
+def _keywords_by_name(kw_args: list[ast.keyword]) -> dict[str, ast.expr] | None:
+    """Map every keyword to its value, or None on ``**kwargs`` unpacking or a
+    duplicate keyword (the latter shouldn't parse, but is guarded anyway)."""
+    kw_by_name: dict[str, ast.expr] = {}
+    for kw in kw_args:
+        if kw.arg is None:  # **kwargs unpacking
+            return None
+        if kw.arg in kw_by_name:
+            return None  # duplicate keyword (shouldn't parse, guard anyway)
+        kw_by_name[kw.arg] = kw.value
+    return kw_by_name
+
+
+def _mixes_numbering(fields: list[_Field]) -> bool:
+    """True iff the fields mix auto-numbered ``{}`` with explicit-index ``{0}``
+    numbering — which ``str.format`` forbids."""
+    has_auto = any(f.kind == "auto" for f in fields)
+    has_index = any(f.kind == "index" for f in fields)
+    return has_auto and has_index
+
+
+def _resolve_fields(
+    fields: list[_Field],
+    pos_args: list[ast.expr],
+    kw_by_name: dict[str, ast.expr],
+) -> tuple[list[ast.expr], dict[int, int], dict[str, int]] | None:
+    """Resolve each field to its arg in order, returning
+    ``(resolved, pos_refs, name_refs)`` (the reference-count maps) or None.
+
+    Empty fields auto-number 0, 1, 2, ...; index fields use their int key; named
+    fields draw from ``kw_by_name``. Mixing auto-numbered with explicit-index
+    fields is rejected (``str.format`` forbids it); a missing index or keyword
+    skips the occurrence."""
+    if _mixes_numbering(fields):
+        return None  # str.format forbids mixing automatic and manual numbering
+
+    pos_refs: dict[int, int] = {}  # positional index -> reference count
+    name_refs: dict[str, int] = {}
+    resolved: list[ast.expr] = []
+    auto_counter = 0
+    for field in fields:
+        if field.kind == "name":
+            name = field.key  # type: ignore[assignment]
+            if name not in kw_by_name:
+                return None
+            name_refs[name] = name_refs.get(name, 0) + 1
+            resolved.append(kw_by_name[name])
+            continue
+        if field.kind == "auto":
+            idx = auto_counter
+            auto_counter += 1
+        else:  # index
+            idx = field.key  # type: ignore[assignment]
+        if idx < 0 or idx >= len(pos_args):
+            return None
+        pos_refs[idx] = pos_refs.get(idx, 0) + 1
+        resolved.append(pos_args[idx])
+    return resolved, pos_refs, name_refs
+
+
+def _refs_consume_all(
+    pos_refs: dict[int, int],
+    name_refs: dict[str, int],
+    pos_args: list[ast.expr],
+    kw_by_name: dict[str, ast.expr],
+) -> bool:
+    """True iff every positional arg and every keyword is referenced exactly
+    once across the fields — a count/name mismatch leaves leftovers."""
+    if len(pos_refs) != len(pos_args):
+        return False
+    if len(name_refs) != len(kw_by_name):
+        return False
+    return True
+
+
+def _no_recalled_call(
+    pos_refs: dict[int, int],
+    name_refs: dict[str, int],
+    pos_args: list[ast.expr],
+    kw_by_name: dict[str, ast.expr],
+) -> bool:
+    """True iff no ``Call`` arg is referenced by more than one field.
+
+    An f-string evaluates each field, so a Call referenced more than once would
+    run more than once (a behaviour change ``.format`` doesn't make)."""
+    for idx, count in pos_refs.items():
+        if count > 1 and isinstance(pos_args[idx], ast.Call):
+            return False
+    for name, count in name_refs.items():
+        if count > 1 and isinstance(kw_by_name[name], ast.Call):
+            return False
+    return True
+
+
+def _arg_sources(resolved: list[ast.expr], source: str) -> list[str] | None:
+    """Recover each resolved arg's source in order, or None to skip.
+
+    A brace in the arg source would grow an unexpected f-string field; a
+    backslash is illegal inside an f-string replacement field (< 3.12)."""
+    arg_srcs: list[str] = []
+    for arg in resolved:
+        seg = ast.get_source_segment(source, arg)
+        if seg is None:
+            return None
+        if "{" in seg or "}" in seg or "\\" in seg:
+            return None
+        arg_srcs.append(seg)
+    return arg_srcs
+
+
 def _map_args(
     fields: list[_Field],
     pos_args: list[ast.expr],
@@ -210,71 +320,23 @@ def _map_args(
     mapped arg must be a simple expression with a recoverable, brace/backslash/
     quote-free source. A ``Call`` arg referenced by more than one field is
     rejected (an f-string would re-evaluate it)."""
-    kw_by_name: dict[str, ast.expr] = {}
-    for kw in kw_args:
-        if kw.arg is None:  # **kwargs unpacking
-            return None
-        if kw.arg in kw_by_name:
-            return None  # duplicate keyword (shouldn't parse, guard anyway)
-        kw_by_name[kw.arg] = kw.value
-
-    has_auto = any(f.kind == "auto" for f in fields)
-    has_index = any(f.kind == "index" for f in fields)
-    if has_auto and has_index:
-        return None  # str.format forbids mixing automatic and manual numbering
-
-    pos_refs: dict[int, int] = {}  # positional index -> reference count
-    name_refs: dict[str, int] = {}
-    resolved: list[ast.expr] = []
-    auto_counter = 0
-    for field in fields:
-        if field.kind == "auto":
-            idx = auto_counter
-            auto_counter += 1
-        elif field.kind == "index":
-            idx = field.key  # type: ignore[assignment]
-        else:  # name
-            name = field.key  # type: ignore[assignment]
-            if name not in kw_by_name:
-                return None
-            name_refs[name] = name_refs.get(name, 0) + 1
-            resolved.append(kw_by_name[name])
-            continue
-        if idx < 0 or idx >= len(pos_args):
-            return None
-        pos_refs[idx] = pos_refs.get(idx, 0) + 1
-        resolved.append(pos_args[idx])
-
-    # Every positional arg and every keyword must be consumed — a count/name
-    # mismatch skips the occurrence.
-    if len(pos_refs) != len(pos_args):
-        return None
-    if len(name_refs) != len(kw_by_name):
+    kw_by_name = _keywords_by_name(kw_args)
+    if kw_by_name is None:
         return None
 
-    # Reject re-evaluating a Call: an f-string evaluates each field, so a Call
-    # referenced more than once would run more than once (behaviour change).
-    for idx, count in pos_refs.items():
-        if count > 1 and isinstance(pos_args[idx], ast.Call):
-            return None
-    for name, count in name_refs.items():
-        if count > 1 and isinstance(kw_by_name[name], ast.Call):
-            return None
+    resolution = _resolve_fields(fields, pos_args, kw_by_name)
+    if resolution is None:
+        return None
+    resolved, pos_refs, name_refs = resolution
 
+    if not _refs_consume_all(pos_refs, name_refs, pos_args, kw_by_name):
+        return None
+    if not _no_recalled_call(pos_refs, name_refs, pos_args, kw_by_name):
+        return None
     if not all(_is_simple_arg(a) for a in resolved):
         return None
 
-    arg_srcs: list[str] = []
-    for arg in resolved:
-        seg = ast.get_source_segment(source, arg)
-        if seg is None:
-            return None
-        # A brace in the arg source would grow an unexpected f-string field; a
-        # backslash is illegal inside an f-string replacement field (< 3.12).
-        if "{" in seg or "}" in seg or "\\" in seg:
-            return None
-        arg_srcs.append(seg)
-    return arg_srcs
+    return _arg_sources(resolved, source)
 
 
 def _try_call(node: ast.Call, source: str) -> _Rewrite | None:

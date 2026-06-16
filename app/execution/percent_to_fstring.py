@@ -96,34 +96,107 @@ def _split_template(inner: str) -> list[str] | None:
     return segments
 
 
-def _try_binop(node: ast.BinOp, source: str) -> _Rewrite | None:
-    """If ``node`` is a convertible string-literal ``%``-format BinOp, return
-    its rewrite, else None."""
-    if not isinstance(node.op, ast.Mod):
-        return None
-    template = node.left
-    if not isinstance(template, ast.Constant) or not isinstance(template.value, str):
-        return None
+def _binop_args(node: ast.BinOp) -> list[ast.expr] | None:
+    """The args a ``%``-format BinOp supplies, or None to skip.
 
-    # Determine the args: a Tuple supplies its elements in order; any other
-    # expression is the sole arg.
+    A Tuple right side supplies its elements in order (a starred element can't be
+    a positional arg we map to a placeholder); any other expression is the sole
+    arg. Every arg must be a SIMPLE expression."""
     right = node.right
     if isinstance(right, ast.Tuple):
         args: list[ast.expr] = list(right.elts)
-        # A starred element can't be a positional arg we map to a placeholder.
         if any(isinstance(a, ast.Starred) for a in args):
             return None
     else:
         args = [right]
     if not all(_is_simple_arg(a) for a in args):
         return None
+    return args
 
-    # Single-line literal and single-line BinOp keep the column splice trivial.
+
+def _match_binop(node: ast.BinOp) -> tuple[ast.Constant, list[ast.expr]] | None:
+    """Return ``(template, args)`` for a single-line, simple-arg ``%``-format
+    BinOp, else None.
+
+    Gates ``op == Mod`` with a ``str`` ``ast.Constant`` left side, resolves the
+    args (:func:`_binop_args`), and requires both the literal and the whole BinOp
+    to live on a single line so the column splice is trivial."""
+    if not isinstance(node.op, ast.Mod):
+        return None
+    template = node.left
+    if not isinstance(template, ast.Constant) or not isinstance(template.value, str):
+        return None
+    args = _binop_args(node)
+    if args is None:
+        return None
     if template.lineno != template.end_lineno:
         return None
     if node.lineno != node.end_lineno:
         return None
+    return template, args
 
+
+def _arg_source(arg: ast.expr, source: str) -> str | None:
+    """The recovered source of one ``arg``, or None if it can't be recovered or
+    contains a brace/backslash.
+
+    A simple arg's source never contains a brace; the guard holds anyway so the
+    built f-string can't grow an unexpected field."""
+    seg = ast.get_source_segment(source, arg)
+    if seg is None:
+        return None
+    if "{" in seg or "}" in seg or "\\" in seg:
+        return None
+    return seg
+
+
+def _collect_arg_sources(args: list[ast.expr], source: str) -> list[str] | None:
+    """Recover every arg's source in order, or None to skip."""
+    arg_srcs: list[str] = []
+    for arg in args:
+        seg = _arg_source(arg, source)
+        if seg is None:
+            return None
+        arg_srcs.append(seg)
+    return arg_srcs
+
+
+def _escape(text: str) -> str:
+    """Escape literal braces already in the template for the f-string."""
+    return text.replace("{", "{{").replace("}", "}}")
+
+
+def _build_text(quote: str, segments: list[str], arg_srcs: list[str]) -> str:
+    """Splice the escaped literal segments and ``{arg}`` fields into the
+    f-string text."""
+    parts: list[str] = [_escape(segments[0])]
+    for arg_src, seg in zip(arg_srcs, segments[1:]):
+        parts.append("{" + arg_src + "}")
+        parts.append(_escape(seg))
+    return "f" + quote + "".join(parts) + quote
+
+
+def _text_is_valid(text: str, count: int) -> bool:
+    """True iff ``text`` re-parses to exactly a JoinedStr with ``count``
+    FormattedValue fields — the crucial safety re-parse before committing."""
+    try:
+        expr = ast.parse(text, mode="eval").body
+    except SyntaxError:
+        return False
+    if not isinstance(expr, ast.JoinedStr):
+        return False
+    formatted = [v for v in expr.values if isinstance(v, ast.FormattedValue)]
+    return len(formatted) == count
+
+
+def _recover_template(
+    template: ast.Constant, source: str, arg_count: int,
+) -> tuple[str, list[str], int] | None:
+    """Recover the literal, split it on ``%s`` placeholders, and check the count.
+
+    Returns ``(quote, segments, placeholder_count)`` when the literal recovers to
+    a plain string whose ``%s`` count both equals ``arg_count`` and is nonzero,
+    else None (nothing to interpolate is left alone)."""
     literal_src = ast.get_source_segment(source, template)
     if literal_src is None:
         return None
@@ -136,42 +209,32 @@ def _try_binop(node: ast.BinOp, source: str) -> _Rewrite | None:
     if segments is None:
         return None
     count = len(segments) - 1
-    if count != len(args):
+    if count != arg_count:
         return None
     if count == 0:
         return None  # nothing to interpolate — leave it alone
+    return quote, segments, count
 
-    arg_srcs: list[str] = []
-    for arg in args:
-        seg = ast.get_source_segment(source, arg)
-        if seg is None:
-            return None
-        # A simple arg's source never contains a brace; guard anyway so the
-        # built f-string can't grow an unexpected field.
-        if "{" in seg or "}" in seg or "\\" in seg:
-            return None
-        arg_srcs.append(seg)
 
-    # Literal braces already in the template must be escaped for the f-string.
-    def _escape(text: str) -> str:
-        return text.replace("{", "{{").replace("}", "}}")
-
-    parts: list[str] = [_escape(segments[0])]
-    for arg_src, seg in zip(arg_srcs, segments[1:]):
-        parts.append("{" + arg_src + "}")
-        parts.append(_escape(seg))
-    text = "f" + quote + "".join(parts) + quote
-
-    # CRUCIAL safety: the built text must parse to exactly a JoinedStr with the
-    # expected number of FormattedValue fields, or we skip the occurrence.
-    try:
-        expr = ast.parse(text, mode="eval").body
-    except SyntaxError:
+def _try_binop(node: ast.BinOp, source: str) -> _Rewrite | None:
+    """If ``node`` is a convertible string-literal ``%``-format BinOp, return
+    its rewrite, else None."""
+    matched = _match_binop(node)
+    if matched is None:
         return None
-    if not isinstance(expr, ast.JoinedStr):
+    template, args = matched
+
+    recovered = _recover_template(template, source, len(args))
+    if recovered is None:
         return None
-    formatted = [v for v in expr.values if isinstance(v, ast.FormattedValue)]
-    if len(formatted) != count:
+    quote, segments, count = recovered
+
+    arg_srcs = _collect_arg_sources(args, source)
+    if arg_srcs is None:
+        return None
+
+    text = _build_text(quote, segments, arg_srcs)
+    if not _text_is_valid(text, count):
         return None
 
     return _Rewrite(node.lineno, node.col_offset, node.end_col_offset, text)
