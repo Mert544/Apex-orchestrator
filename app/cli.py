@@ -111,17 +111,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
     return 1 if any(r.error for r in results) else 0
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    from app.intent.parser import IntentParser
-    from app.automation.planner import AutonomousPlanner
-
-    target = Path(args.target).resolve() if args.target else _get_project_root()
-    intent_parser = IntentParser()
-    intent = intent_parser.parse(args.goal, explicit_mode=args.mode)
-
-    planner = AutonomousPlanner()
-    plan = planner.build_plan(intent)
-
+def _run_print_plan(intent, plan) -> None:
+    """Echo the planned autonomous run header to stdout."""
     print("\n=== APEX ORCHESTRATOR — AUTONOMOUS RUN ===")
     print(f"Goal: {intent.goal}")
     print(f"Plan: {plan.plan_name}")
@@ -133,6 +124,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"Rationale: {plan.rationale}")
     print()
 
+
+def _run_set_env(args: argparse.Namespace, target: Path, intent, plan) -> None:
+    """Export the EPISTEMIC_*/APEX_* environment knobs the run reads."""
     os.environ["EPISTEMIC_TARGET_ROOT"] = str(target)
     os.environ["EPISTEMIC_AUTOMATION_PLAN"] = plan.plan_name
     os.environ["EPISTEMIC_OBJECTIVE"] = intent.goal
@@ -151,6 +145,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.mode is not None:
         os.environ["APEX_MODE"] = args.mode
 
+
+def _run_mode_message(plan) -> None:
+    """Print the one-line oversight note matching the resolved plan mode."""
     if plan.mode == "supervised":
         print(
             "[supervised mode] Running with human oversight. Patches will be staged, not committed."
@@ -164,24 +161,46 @@ def cmd_run(args: argparse.Namespace) -> int:
     if plan.mode == "report":
         print("[report mode] Scanning only. No files will be modified.")
 
+
+def _run_fractal_summary(intent, target: Path) -> None:
+    """Emit an auto-fractal security digest when the goal is risk-flavored."""
+    # Auto-fractal summary for security/audit goals
+    if not any(kw in intent.goal.lower() for kw in ("security", "audit", "risk", "vuln")):
+        return
+    print("\n=== AUTO-FRACTAL SUMMARY ===")
+    from app.agents.fractal_agents import FractalSecurityAgent
+
+    agent = FractalSecurityAgent()
+    result = agent.run(project_root=str(target), max_depth=3)
+    from app.reporting.composer import ReportComposer
+
+    composer = ReportComposer([result])
+    summary = composer.to_markdown()
+    print(summary[:1500])  # Print first 1500 chars to avoid flooding
+    if len(summary) > 1500:
+        print("\n... (truncated) Use `apex report` for full output.")
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    from app.intent.parser import IntentParser
+    from app.automation.planner import AutonomousPlanner
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    intent_parser = IntentParser()
+    intent = intent_parser.parse(args.goal, explicit_mode=args.mode)
+
+    planner = AutonomousPlanner()
+    plan = planner.build_plan(intent)
+
+    _run_print_plan(intent, plan)
+    _run_set_env(args, target, intent, plan)
+    _run_mode_message(plan)
+
     from app.main import main
 
     main()
 
-    # Auto-fractal summary for security/audit goals
-    if any(kw in intent.goal.lower() for kw in ("security", "audit", "risk", "vuln")):
-        print("\n=== AUTO-FRACTAL SUMMARY ===")
-        from app.agents.fractal_agents import FractalSecurityAgent
-
-        agent = FractalSecurityAgent()
-        result = agent.run(project_root=str(target), max_depth=3)
-        from app.reporting.composer import ReportComposer
-
-        composer = ReportComposer([result])
-        summary = composer.to_markdown()
-        print(summary[:1500])  # Print first 1500 chars to avoid flooding
-        if len(summary) > 1500:
-            print("\n... (truncated) Use `apex report` for full output.")
+    _run_fractal_summary(intent, target)
 
     return 0
 
