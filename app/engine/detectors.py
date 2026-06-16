@@ -328,33 +328,67 @@ def _detect_negated_comparison(node: ast.UnaryOp, add) -> None:
         f"{'in' if kind == 'not in' else 'is'}`)", "negated-comparison")
 
 
+def _compare_has_eq(node: ast.Compare) -> bool:
+    """True if any operator in the comparison is ``==`` or ``!=``."""
+    return any(isinstance(o, (ast.Eq, ast.NotEq)) for o in node.ops)
+
+
+def _compare_eq_none(node: ast.Compare, operands: list[ast.expr]) -> bool:
+    """True if an ``==``/``!=`` compares against the ``None`` constant literal."""
+    return _compare_has_eq(node) and any(
+        isinstance(x, ast.Constant) and x.value is None for x in operands)
+
+
+def _compare_eq_bool(node: ast.Compare, operands: list[ast.expr]) -> bool:
+    """True if an ``==``/``!=`` compares against a ``True``/``False`` literal."""
+    return _compare_has_eq(node) and any(
+        isinstance(x, ast.Constant) and isinstance(x.value, bool) for x in operands)
+
+
+def _compare_has_type_call(operands: list[ast.expr]) -> bool:
+    """True if any operand is a ``type(...)`` call (suggests isinstance())."""
+    return any(isinstance(x, ast.Call) and isinstance(x.func, ast.Name) and x.func.id == "type"
+               for x in operands)
+
+
+def _compare_is_identity_literal(node: ast.Compare) -> bool:
+    """True if an ``is``/``is not`` operator compares against a forbidden literal."""
+    return (any(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops)
+            and any(_is_identity_literal(x) for x in node.comparators))
+
+
+def _compare_self_reference(node: ast.Compare, operands: list[ast.expr]) -> bool:
+    """True if a non-eq operator compares a pure reference with itself.
+
+    Comparing a pure reference with itself is always constant — a likely typo
+    (meant a different operand). ``!=``/``==`` are excluded: ``x != x`` /
+    ``x == x`` are the idiomatic NaN checks.
+    """
+    for i, op in enumerate(node.ops):
+        if not isinstance(op, (ast.Eq, ast.NotEq)) and _same_ref(operands[i], operands[i + 1]):
+            return True
+    return False
+
+
 def _detect_compare(node: ast.Compare, add) -> None:
     """Findings for a comparison node: ``== None`` / ``== True`` style checks,
     comparing ``type()`` instead of ``isinstance``, identity against a literal,
     and a self-comparison that is always constant (likely a typo)."""
     operands = [node.left, *node.comparators]
-    has_eq = any(isinstance(o, (ast.Eq, ast.NotEq)) for o in node.ops)
-    if has_eq and any(isinstance(x, ast.Constant) and x.value is None for x in operands):
+    if _compare_eq_none(node, operands):
         add(node.lineno, "style", "low", "compare to None with `is` / `is not`", "none-comparison")
-    if has_eq and any(isinstance(x, ast.Constant) and isinstance(x.value, bool) for x in operands):
+    if _compare_eq_bool(node, operands):
         add(node.lineno, "style", "low",
             "compare to True/False directly (drop `== True` / `== False`)", "")
-    if any(isinstance(x, ast.Call) and isinstance(x.func, ast.Name) and x.func.id == "type"
-           for x in operands):
+    if _compare_has_type_call(operands):
         add(node.lineno, "style", "medium", "use isinstance() instead of comparing type()", "")
-    if any(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops) and \
-       any(_is_identity_literal(x) for x in node.comparators):
+    if _compare_is_identity_literal(node):
         add(node.lineno, "bug", "medium",
             "identity check against a literal (`is`/`is not`) is a bug — use ==/!=",
             "identity-literal")
-    for i, op in enumerate(node.ops):
-        # Comparing a pure reference with itself is always constant — a
-        # likely typo (meant a different operand). `!=`/`==` are excluded:
-        # `x != x` / `x == x` are the idiomatic NaN checks.
-        if not isinstance(op, (ast.Eq, ast.NotEq)) and _same_ref(operands[i], operands[i + 1]):
-            add(node.lineno, "bug", "medium",
-                "comparison with itself is always constant — likely a typo", "")
-            break
+    if _compare_self_reference(node, operands):
+        add(node.lineno, "bug", "medium",
+            "comparison with itself is always constant — likely a typo", "")
 
 
 def _detect_classdef(node: ast.ClassDef, add) -> None:
@@ -725,27 +759,25 @@ def _self_attr(node: ast.AST) -> str | None:
     return None
 
 
-def _mutable_class_attribute_lines(cls: ast.ClassDef) -> dict[int, str]:
-    """Class-level mutable attributes that are MUTATED in place by a method and
-    not reassigned per-instance — a shared-state bug (every instance sees the
-    same list/dict/set). Conservative: a class-level mutable that is only read,
-    or that ``__init__`` reassigns with ``self.x = ...``, is NOT flagged.
+def _class_level_mutables(cls: ast.ClassDef) -> dict[str, int]:
+    """Direct class-body assignments of a mutable constructor → ``{name: line}``.
 
-    Returns ``{lineno: attr_name}`` for each flagged class-level assignment.
+    Only the direct class body is scanned (not nested defs).
     """
-    class_level: dict[str, int] = {}      # name -> class-body assignment line
-    for stmt in cls.body:                 # direct class body only (not nested)
+    class_level: dict[str, int] = {}
+    for stmt in cls.body:
         if (isinstance(stmt, ast.Assign)) and (_is_mutable_constructor(stmt.value)):
             for t in stmt.targets:
                 if isinstance(t, ast.Name):
                     class_level[t.id] = stmt.lineno
         if (isinstance(stmt, ast.AnnAssign) and stmt.value is not None) and (isinstance(stmt.target, ast.Name) and _is_mutable_constructor(stmt.value)):
             class_level[stmt.target.id] = stmt.lineno
-    if not class_level:
-        return {}
+    return class_level
 
-    reassigned: set[str] = set()          # self.x = ... in __init__ → per-instance
-    mutated: set[str] = set()             # self.x mutated in place anywhere
+
+def _init_reassigned_attrs(cls: ast.ClassDef) -> set[str]:
+    """Attribute names reassigned ``self.x = ...`` inside ``__init__`` (per-instance)."""
+    reassigned: set[str] = set()
     for sub in ast.walk(cls):
         if isinstance(sub, ast.FunctionDef) and sub.name == "__init__":
             for n in ast.walk(sub):
@@ -754,22 +786,53 @@ def _mutable_class_attribute_lines(cls: ast.ClassDef) -> dict[int, str]:
                         name = _self_attr(t)
                         if name:
                             reassigned.add(name)
-        # Mutation evidence: self.x.append(...) and friends.
-        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
-            name = _self_attr(sub.func.value)
-            if name and sub.func.attr in _MUTATING_METHODS:
-                mutated.add(name)
-        # self.x[...] = ...  /  del self.x[...]
-        elif isinstance(sub, ast.Subscript):
-            name = _self_attr(sub.value)
-            if name and isinstance(sub.ctx, (ast.Store, ast.Del)):
-                mutated.add(name)
-        # self.x += ...
-        elif isinstance(sub, ast.AugAssign):
-            name = _self_attr(sub.target)
-            if name:
-                mutated.add(name)
+    return reassigned
 
+
+def _in_place_mutated_attr(sub: ast.AST) -> str | None:
+    """The ``self.x`` attribute name this node mutates in place, else None.
+
+    Covers ``self.x.append(...)`` and friends, ``self.x[...] = ...`` /
+    ``del self.x[...]``, and ``self.x += ...``.
+    """
+    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
+        name = _self_attr(sub.func.value)
+        if name and sub.func.attr in _MUTATING_METHODS:
+            return name
+    elif isinstance(sub, ast.Subscript):
+        name = _self_attr(sub.value)
+        if name and isinstance(sub.ctx, (ast.Store, ast.Del)):
+            return name
+    elif isinstance(sub, ast.AugAssign):
+        name = _self_attr(sub.target)
+        if name:
+            return name
+    return None
+
+
+def _mutated_attrs(cls: ast.ClassDef) -> set[str]:
+    """Attribute names mutated in place anywhere in the class body."""
+    mutated: set[str] = set()
+    for sub in ast.walk(cls):
+        name = _in_place_mutated_attr(sub)
+        if name:
+            mutated.add(name)
+    return mutated
+
+
+def _mutable_class_attribute_lines(cls: ast.ClassDef) -> dict[int, str]:
+    """Class-level mutable attributes that are MUTATED in place by a method and
+    not reassigned per-instance — a shared-state bug (every instance sees the
+    same list/dict/set). Conservative: a class-level mutable that is only read,
+    or that ``__init__`` reassigns with ``self.x = ...``, is NOT flagged.
+
+    Returns ``{lineno: attr_name}`` for each flagged class-level assignment.
+    """
+    class_level = _class_level_mutables(cls)
+    if not class_level:
+        return {}
+    reassigned = _init_reassigned_attrs(cls)
+    mutated = _mutated_attrs(cls)
     return {line: name for name, line in class_level.items()
             if name in mutated and name not in reassigned}
 
