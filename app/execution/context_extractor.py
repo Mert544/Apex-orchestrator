@@ -23,6 +23,76 @@ class ContextExtractionResult:
         return {"contexts": [asdict(context) for context in self.contexts]}
 
 
+def _read_source(target: Path, root: Path) -> str | None:
+    if not str(target).startswith(str(root)) or not target.exists():
+        return None
+    try:
+        return target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _parse_tree(source: str) -> ast.AST | None:
+    try:
+        return ast.parse(source)
+    except SyntaxError:
+        return None
+
+
+def _format_import(node: ast.Import) -> list[str]:
+    return [f"import {alias.name}" for alias in node.names]
+
+
+def _format_import_from(node: ast.ImportFrom) -> str:
+    module = node.module or ""
+    names = ", ".join(alias.name for alias in node.names)
+    return f"from {module} import {names}"
+
+
+def _collect_imports_and_symbols(source: str) -> tuple[list[str], list[str]]:
+    imports: list[str] = []
+    symbols: list[str] = []
+    tree = _parse_tree(source)
+    if tree is None:
+        return imports, symbols
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.extend(_format_import(node))
+        elif isinstance(node, ast.ImportFrom):
+            imports.append(_format_import_from(node))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            symbols.append(node.name)
+    return imports, symbols
+
+
+def _find_related_tests(root: Path, rel_path: str) -> list[str]:
+    test_dir = root / "tests"
+    if not test_dir.exists():
+        return []
+    stem = Path(rel_path).stem
+    return [
+        str(test_file.relative_to(root).as_posix())
+        for test_file in test_dir.rglob("*.py")
+        if stem in test_file.name
+    ]
+
+
+def _build_file_context(root: Path, rel_path: str, window_lines: int) -> FileContext | None:
+    target = (root / rel_path).resolve()
+    source = _read_source(target, root)
+    if source is None:
+        return None
+    window = "\n".join(source.splitlines()[:window_lines])
+    imports, symbols = _collect_imports_and_symbols(source)
+    return FileContext(
+        target_file=rel_path,
+        code_window=window,
+        imports=imports,
+        related_tests=_find_related_tests(root, rel_path),
+        surrounding_symbols=symbols,
+    )
+
+
 class ContextExtractor:
     """Extract compact code windows around semantic patch targets."""
 
@@ -34,55 +104,8 @@ class ContextExtractor:
     ) -> ContextExtractionResult:
         root = Path(project_root).resolve()
         contexts: list[FileContext] = []
-
         for rel_path in target_files[:3]:
-            target = (root / rel_path).resolve()
-            if not str(target).startswith(str(root)) or not target.exists():
-                continue
-
-            try:
-                source = target.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-
-            lines = source.splitlines()
-            window = "\n".join(lines[:window_lines])
-
-            symbols: list[str] = []
-            imports: list[str] = []
-            try:
-                tree = ast.parse(source)
-            except SyntaxError:
-                tree = None
-
-            if tree is not None:
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Import):
-                        for alias in node.names:
-                            imports.append(f"import {alias.name}")
-                    elif isinstance(node, ast.ImportFrom):
-                        module = node.module or ""
-                        names = ", ".join(alias.name for alias in node.names)
-                        imports.append(f"from {module} import {names}")
-                    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                        symbols.append(node.name)
-
-            related_tests: list[str] = []
-            test_dir = root / "tests"
-            if test_dir.exists():
-                stem = Path(rel_path).stem
-                for test_file in test_dir.rglob("*.py"):
-                    if stem in test_file.name:
-                        related_tests.append(str(test_file.relative_to(root).as_posix()))
-
-            contexts.append(
-                FileContext(
-                    target_file=rel_path,
-                    code_window=window,
-                    imports=imports,
-                    related_tests=related_tests,
-                    surrounding_symbols=symbols,
-                )
-            )
-
+            context = _build_file_context(root, rel_path, window_lines)
+            if context is not None:
+                contexts.append(context)
         return ContextExtractionResult(contexts=contexts)
