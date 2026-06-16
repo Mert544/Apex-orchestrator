@@ -215,6 +215,103 @@ def _statement_fragment(
     return "".join(out), list(wildcards.items())
 
 
+def _window_template(
+    frags: list[tuple[str, list[tuple[str, str]]]],
+    start: int,
+    min_statements: int,
+) -> tuple[str, list[tuple[str, str]]]:
+    """The template string and sorted wildcard ``(path, segment)`` list for the window
+    of ``min_statements`` statements starting at ``frags[start]``.
+
+    Fragments overlap between windows, so they are pre-computed once per body and only
+    concatenated here. Statement ``i`` in the window prefixes its subpaths with ``s{i}``
+    to recover the exact per-window wildcard path; the fragment STRING is
+    path-independent, so concatenating fragments equals templating the whole window."""
+    parts: list[str] = []
+    wc_items: list[tuple[str, str]] = []
+    for i in range(min_statements):
+        frag_t, frag_wc = frags[start + i]
+        parts.append(frag_t)
+        parts.append("|")
+        for subpath, seg in frag_wc:
+            wc_items.append((f"s{i}{subpath}", seg))
+    return "".join(parts), sorted(wc_items)
+
+
+def _index_body(
+    rel: str,
+    body: list[ast.stmt],
+    lines: list[str],
+    min_statements: int,
+    buckets: dict[str, dict[str, tuple[str, ...]]],
+    bucket_paths: dict[str, tuple[str, ...]],
+) -> None:
+    """Bucket every sliding window of one function body into ``buckets``/``bucket_paths``.
+
+    ``buckets`` maps template -> { ``"module:lineno"`` -> per-path segment tuple };
+    ``bucket_paths`` records each template's sorted wildcard paths once. Windows are
+    bounded by :data:`_MAX_WINDOWS_PER_FUNCTION`; a location reached twice (overlapping
+    self) is counted once. Mutates the two dicts in place; returns nothing."""
+    limit = len(body) - min_statements + 1
+    if limit <= 0:
+        return
+    limit = min(limit, _MAX_WINDOWS_PER_FUNCTION)
+    # Template each statement that appears in any window ONCE; windows
+    # then concatenate fragments (they overlap by min_statements - 1).
+    needed = limit + min_statements - 1
+    frags = [_statement_fragment(body[k], lines) for k in range(needed)]
+    for start in range(limit):
+        template, wildcards = _window_template(frags, start, min_statements)
+        location = f"{rel}:{body[start].lineno}"
+        occ = buckets.setdefault(template, {})
+        if location in occ:
+            # Same location reached twice (overlapping self) — count once.
+            continue
+        occ[location] = tuple(seg for _, seg in wildcards)
+        bucket_paths.setdefault(template, tuple(p for p, _ in wildcards))
+
+
+def _diff_columns(
+    occ_map: dict[str, tuple[str, ...]],
+    locations: list[str],
+    n_paths: int,
+) -> list[list[str]]:
+    """Per-wildcard-path columns whose recorded segments are NOT identical across
+    ``locations`` (path order is deterministic). Each returned column lists the segment
+    each location carries, in ``locations`` order."""
+    columns: list[list[str]] = []
+    for col in range(n_paths):
+        values = [occ_map[loc][col] for loc in locations]
+        if len(set(values)) > 1:
+            columns.append(values)
+    return columns
+
+
+def _build_group(
+    occ_map: dict[str, tuple[str, ...]],
+    paths: tuple[str, ...],
+    min_statements: int,
+    min_occurrences: int,
+    max_diffs: int,
+) -> NearDuplicateGroup | None:
+    """The :class:`NearDuplicateGroup` for one template bucket, or ``None`` if it fails
+    a threshold: fewer than ``min_occurrences`` occurrences, or a differing-position
+    count outside ``1..max_diffs`` (0 == exact duplicate, dedup's job)."""
+    if len(occ_map) < min_occurrences:
+        return None
+    locations = sorted(occ_map)
+    diff_columns = _diff_columns(occ_map, locations, len(paths))
+    diff_count = len(diff_columns)
+    if diff_count < 1 or diff_count > max_diffs:
+        return None
+    return NearDuplicateGroup(
+        occurrences=locations,
+        lines=min_statements,
+        diff_count=diff_count,
+        differences=diff_columns,
+    )
+
+
 def find_near_duplicates(
     project_root: str | Path,
     *,
@@ -245,65 +342,21 @@ def find_near_duplicates(
     bucket_paths: dict[str, tuple[str, ...]] = {}
 
     for module in indexed_project(project_root).parsed_modules():
-        rel = module.rel
         tree = module.tree
         assert tree is not None  # parsed_modules() guarantees this
         # Pre-split the source ONCE per module so each value-leaf's segment is an
         # O(1) slice of these lines, not a fresh re-split of the whole source.
         lines = _split_source_lines(module.source)
-
         for body in _function_bodies(tree):
-            limit = len(body) - min_statements + 1
-            if limit <= 0:
-                continue
-            limit = min(limit, _MAX_WINDOWS_PER_FUNCTION)
-            # Template each statement that appears in any window ONCE; windows
-            # then concatenate fragments (they overlap by min_statements - 1).
-            needed = limit + min_statements - 1
-            frags = [_statement_fragment(body[k], lines) for k in range(needed)]
-            for start in range(limit):
-                parts: list[str] = []
-                wc_items: list[tuple[str, str]] = []
-                for i in range(min_statements):
-                    frag_t, frag_wc = frags[start + i]
-                    parts.append(frag_t)
-                    parts.append("|")
-                    for subpath, seg in frag_wc:
-                        wc_items.append((f"s{i}{subpath}", seg))
-                template = "".join(parts)
-                wildcards = sorted(wc_items)
-                location = f"{rel}:{body[start].lineno}"
-                occ = buckets.setdefault(template, {})
-                if location in occ:
-                    # Same location reached twice (overlapping self) — count once.
-                    continue
-                occ[location] = tuple(seg for _, seg in wildcards)
-                bucket_paths.setdefault(template, tuple(p for p, _ in wildcards))
+            _index_body(module.rel, body, lines, min_statements, buckets, bucket_paths)
 
     groups: list[NearDuplicateGroup] = []
     for template, occ_map in buckets.items():
-        if len(occ_map) < min_occurrences:
-            continue
-        locations = sorted(occ_map)
-        # Columns of segments, one per wildcard path (path order is deterministic).
-        n_paths = len(bucket_paths[template])
-        diff_columns: list[list[str]] = []
-        for col in range(n_paths):
-            values = [occ_map[loc][col] for loc in locations]
-            if len(set(values)) > 1:
-                diff_columns.append(values)
-        diff_count = len(diff_columns)
-        # 0 diffs == exact duplicate (dedup's job); too many diffs == not a clone.
-        if diff_count < 1 or diff_count > max_diffs:
-            continue
-        groups.append(
-            NearDuplicateGroup(
-                occurrences=locations,
-                lines=min_statements,
-                diff_count=diff_count,
-                differences=diff_columns,
-            )
+        group = _build_group(
+            occ_map, bucket_paths[template], min_statements, min_occurrences, max_diffs
         )
+        if group is not None:
+            groups.append(group)
 
     groups.sort(key=lambda g: (-g.lines, -len(g.occurrences), _group_key(g)))
     return groups
