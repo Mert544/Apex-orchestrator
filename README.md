@@ -15,11 +15,11 @@
 <br/>
 
 **Scan → Ideate → Prioritize → Fix → Prove.**
-Apex profiles your project, proposes a grounded engineering roadmap, and applies **real, test‑verified fixes** under strict safety gates — its core runs **deterministically, offline, with no LLM**, so it's cheap, reproducible, and safe to drop into CI.
+Apex profiles your project, proposes a grounded engineering roadmap, and applies **real, test‑verified fixes** under strict safety gates. Its core runs **deterministically, offline, zero‑token** — no API keys, no network, nothing leaves the machine — so CI can depend on it the way it can't depend on an LLM. Every recommendation is **proof‑carrying** (exact diff, re‑parse verdict, before→after delta, whether your tests exercise the change), and Apex **never fakes a green**: `apex scope` reports exactly what fraction it analyses, and fixes apply only when the suite passes, with automatic rollback. The optional LLM layer is **off by default**.
 
 <br/>
 
-[**🌐 Website**](https://mert544.github.io/Apex-orchestrator/) · [**📊 Live demo**](https://mert544.github.io/Apex-orchestrator/demo.html) · [**🚀 Quick Start**](#-quick-start) · [**💡 Idea Engine**](#-the-idea-engine) · [**🗺️ Roadmap**](#️-roadmap-grounded-prioritization) · [**🤖 Maintenance**](#-guarded-autonomous-maintenance) · [**🛡️ Safety**](#️-safety-model)
+[**🌐 Website**](https://mert544.github.io/Apex-orchestrator/) · [**📊 Live demo**](https://mert544.github.io/Apex-orchestrator/demo.html) · [**🚀 Quickstart**](docs/quickstart.md) · [**💡 Idea Engine**](#-the-idea-engine) · [**🗺️ Roadmap**](#️-roadmap-grounded-prioritization) · [**🤖 Maintenance**](#-guarded-autonomous-maintenance) · [**🔌 CI**](docs/ci.md) · [**🛡️ Safety**](#️-safety-model)
 
 </div>
 
@@ -60,13 +60,15 @@ flowchart LR
 | 👁️ **Scan** | Profiles structure; finds security risks, import cycles, fragile/untested modules | every run |
 | 💡 **Ideate** | Generates a **fractal tree of grounded development ideas** from real code facts | `apex ideate` |
 | 🗺️ **Prioritize** | Sequences ideas into a phased roadmap with **impact / effort / ROI** from measured structure | `apex ideate --roadmap` |
-| 🔎 **Review** | Reviews a PR diff like a human — issues on the *changed* lines, with a **suggested‑fix diff** for clean one‑liners, CI‑ready | `apex review` |
+| 🔎 **Review** | Reviews a PR diff like a human — issues on the *changed* lines, with a **suggested‑fix diff** for clean one‑liners. Exports to **SARIF, Code Climate, JUnit, GitHub annotations, SonarQube, CSV, HTML** via `--format` so findings land in your CI natively | `apex review --base origin/main` |
+| 🩺 **Gate** | Zero‑config deterministic **PASS/FAIL build gate** (exit 0/1) on Apex's own metrics; `--baseline` answers "did THIS change make it worse?" | `apex gate` |
 | 🤖 **Fix** | Applies real, **test‑verified** fixes with automatic rollback + safety gates | `apex maintain` |
 | 📐 **Brief** | Turns a **design‑level idea** into an actionable work order — grounding facts, measured context, the fractal vocabulary as a checklist, and a definition‑of‑done the engine itself verifies next run | `apex brief` |
 | ♻️ **Refactor** | **Cross‑file rename, parameter rename/drop/add/reorder, call keywordification & module move**: definitions, imports, call sites and keyword arguments rewritten across the whole project, comment‑preserving, blocked on any ambiguity, test‑verified | `apex rename old new [--param func]` · `apex signature drop\|add\|keywordify\|reorder func [param]` · `apex move a/old.py b/new.py` |
 | 🔁 **Evolve** | Improves cycle by cycle **to a fixpoint**, then proves the gain | `apex evolve` |
 | 🧪 **Simulate** | Previews autonomous improvement — on a throwaway copy, changing nothing | `apex simulate` |
 | 🎓 **Grade** | One memorable health grade (A–F), with the cheapest ways to climb | `apex grade` |
+| 🔬 **Analyze** | A deterministic analyzer suite — hotspots, dependency audit, dead code (runtime‑confirmable), duplication, blast‑radius, honest scope — each `--json`‑able | `apex hotspots` · `apex deps` · `apex deadcode` · `apex scope` |
 | 📏 **Bench** | The same rubric on **pinned real codebases** (click, jinja, attrs, httpx) — calibration for the grade, reproducible by SHA | `apex bench` |
 | 📜 **Changelog** | Release notes **written from evidence, not memory**: commits since the last tag, verified fixes from the proof record, roadmap work that landed, the grade | `apex changelog` |
 | 💤 **Dream** | Nightly curator over Apex's own memory: extracts patterns, **discovers the project's own signal grammar** (open‑ended associations + confluences), narrates a **new/resolved flow** across nights, archives resolved briefs — deterministic, zero tokens | `apex dream` |
@@ -115,6 +117,8 @@ apex auto --apply --commit  # full autonomy: apply verified fixes and commit eac
 ```
 
 `apex` assesses the project, prioritizes the highest‑ROI work, and **decides for itself whether to act**: on a clean git tree with safe, verified fixes available it applies them (in roadmap order, capped, auto‑rolled‑back, *not committed*); on a dirty tree — or when nothing is safely auto‑applicable — it recommends and tells you the one command to proceed. The specialized commands below are there when you want them; you never *have* to memorize them.
+
+> 📖 New here? The **[60‑second quickstart](docs/quickstart.md)** walks the whole path — install from source, `apex grade`, `apex review --base origin/main`, `apex gate`, the analyzer suite, and an HTML dashboard — plus the one‑line GitHub Action and the pre‑commit hook. For CI specifically, see **[docs/ci.md](docs/ci.md)**.
 
 ---
 
