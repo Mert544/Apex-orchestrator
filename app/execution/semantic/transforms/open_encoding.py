@@ -18,28 +18,44 @@ import ast
 from ..result import SemanticPatchResult
 
 
-def _is_text_open_without_encoding(node: ast.Call) -> bool:
-    """True if ``node`` is a builtin text-mode ``open()`` lacking ``encoding=``."""
-    if not (isinstance(node.func, ast.Name) and node.func.id == "open"):
-        return False
-    if not node.args:
-        return False  # open() needs at least a path; a bare open() is not ours
+def _is_builtin_open_with_args(node: ast.Call) -> bool:
+    """True if ``node`` calls the builtin ``open`` with at least a path arg."""
+    return isinstance(node.func, ast.Name) and node.func.id == "open" and bool(node.args)
+
+
+def _encoding_is_provable_absent(node: ast.Call) -> bool:
+    """True only if no ``encoding=`` and no ``**kwargs`` could supply one."""
     # A `**kwargs` (keyword with arg=None) could smuggle in encoding — stay safe.
     if any(kw.arg is None for kw in node.keywords):
         return False
-    if any(kw.arg == "encoding" for kw in node.keywords):
-        return False
-    # Resolve the mode: positional arg[1] or keyword mode=.
+    return not any(kw.arg == "encoding" for kw in node.keywords)
+
+
+def _resolve_mode_node(node: ast.Call) -> ast.expr | None:
+    """The mode argument: positional arg[1] or a ``mode=`` keyword (keyword wins)."""
     mode_node: ast.expr | None = node.args[1] if len(node.args) >= 2 else None
     for kw in node.keywords:
         if kw.arg == "mode":
             mode_node = kw.value
-    if mode_node is not None:
-        if not (isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str)):
-            return False  # dynamic mode — can't prove it is text
-        if "b" in mode_node.value:
-            return False  # binary mode takes no encoding
-    return True
+    return mode_node
+
+
+def _mode_is_provable_text(mode_node: ast.expr | None) -> bool:
+    """True if an absent/constant non-binary mode proves the call is text-mode."""
+    if mode_node is None:
+        return True
+    if not (isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str)):
+        return False  # dynamic mode — can't prove it is text
+    return "b" not in mode_node.value  # binary mode takes no encoding
+
+
+def _is_text_open_without_encoding(node: ast.Call) -> bool:
+    """True if ``node`` is a builtin text-mode ``open()`` lacking ``encoding=``."""
+    if not _is_builtin_open_with_args(node):
+        return False
+    if not _encoding_is_provable_absent(node):
+        return False
+    return _mode_is_provable_text(_resolve_mode_node(node))
 
 
 def _open_calls(tree: ast.Module) -> list[ast.Call]:

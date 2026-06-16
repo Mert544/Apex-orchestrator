@@ -489,6 +489,36 @@ def _is_network_call_without_timeout(node: ast.Call) -> bool:
     return False
 
 
+def _is_builtin_open_with_args(node: ast.Call) -> bool:
+    """True if ``node`` calls the builtin ``open`` with at least a path arg."""
+    return isinstance(node.func, ast.Name) and node.func.id == "open" and bool(node.args)
+
+
+def _encoding_is_provable_absent(node: ast.Call) -> bool:
+    """True only if no ``encoding=`` and no ``**kwargs`` could supply one."""
+    if any(kw.arg is None for kw in node.keywords):
+        return False
+    return not any(kw.arg == "encoding" for kw in node.keywords)
+
+
+def _resolve_open_mode_node(node: ast.Call) -> ast.expr | None:
+    """The mode argument: positional arg[1] or a ``mode=`` keyword (keyword wins)."""
+    mode_node: ast.expr | None = node.args[1] if len(node.args) >= 2 else None
+    for kw in node.keywords:
+        if kw.arg == "mode":
+            mode_node = kw.value
+    return mode_node
+
+
+def _mode_is_provable_text(mode_node: ast.expr | None) -> bool:
+    """True if an absent/constant non-binary mode proves the call is text-mode."""
+    if mode_node is None:
+        return True
+    if not (isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str)):
+        return False
+    return "b" not in mode_node.value
+
+
 def _is_text_open_without_encoding(node: ast.Call) -> bool:
     """True if ``node`` is a builtin text-mode ``open()`` lacking ``encoding=``.
 
@@ -496,22 +526,11 @@ def _is_text_open_without_encoding(node: ast.Call) -> bool:
     a dynamic/binary mode or an existing ``encoding=`` (or ``**kwargs``) is left
     alone.
     """
-    if not (isinstance(node.func, ast.Name) and node.func.id == "open") or not node.args:
+    if not _is_builtin_open_with_args(node):
         return False
-    if any(kw.arg is None for kw in node.keywords):
+    if not _encoding_is_provable_absent(node):
         return False
-    if any(kw.arg == "encoding" for kw in node.keywords):
-        return False
-    mode_node: ast.expr | None = node.args[1] if len(node.args) >= 2 else None
-    for kw in node.keywords:
-        if kw.arg == "mode":
-            mode_node = kw.value
-    if mode_node is not None:
-        if not (isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str)):
-            return False
-        if "b" in mode_node.value:
-            return False
-    return True
+    return _mode_is_provable_text(_resolve_open_mode_node(node))
 
 
 # BaseException subclasses that ``except Exception`` does NOT catch — so a later
