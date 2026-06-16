@@ -512,6 +512,56 @@ def plan_inline(project_root: str | Path, function_name: str) -> RenamePlan:
 _SUGGEST_MAX_CALL_SITES = 2
 
 
+def _suggest_trees(
+        project_root: str | Path,
+        trees: dict[str, ast.Module] | None) -> dict[str, ast.Module]:
+    """The parses ``suggest_inlines`` will scan: the caller-supplied ``trees``
+    untouched, or — when None — read+parse every ``*.py`` from disk, dropping
+    files that don't parse (exactly the old inline fallback)."""
+    if trees is not None:
+        return trees
+    parsed: dict[str, ast.Module] = {}
+    for rel, text in _py_files(Path(project_root)):
+        try:
+            parsed[rel] = ast.parse(text)
+        except SyntaxError:
+            continue
+    return parsed
+
+
+def _defs_by_name(
+        trees: dict[str, ast.Module]) -> dict[str, list[tuple[str, ast.FunctionDef]]]:
+    """name → list of ``(module, FunctionDef)`` for every top-level def, modules
+    visited in sorted order so the per-name lists are deterministic. Names with a
+    single entry are the only inline candidates."""
+    defs_by_name: dict[str, list[tuple[str, ast.FunctionDef]]] = {}
+    for rel in sorted(trees):
+        for node in trees[rel].body:
+            if isinstance(node, ast.FunctionDef):
+                defs_by_name.setdefault(node.name, []).append((rel, node))
+    return defs_by_name
+
+
+def _suggest_qualifies(
+        name: str, fn: ast.FunctionDef, bare: set[str], n_sites: int) -> bool:
+    """The lightweight structural mirror of ``plan_inline``'s qualification rules
+    for ONE single-definition helper: no decorators, simple params, a single
+    ``return EXPR`` body, non-recursive, never a bare object, and a SMALL call
+    count (1..``_SUGGEST_MAX_CALL_SITES``). True only when every rule passes."""
+    if fn.decorator_list or not _simple_params(fn):
+        return False
+    expr = _return_expr(fn)
+    if expr is None:
+        return False
+    # Non-recursive: the body must not call back to its own name.
+    if any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(expr)):
+        return False
+    # Never travels as a bare object — only ever called.
+    if name in bare:
+        return False
+    return 1 <= n_sites <= _SUGGEST_MAX_CALL_SITES
+
+
 def suggest_inlines(project_root: str | Path,
                     trees: dict[str, ast.Module] | None = None) -> list[dict]:
     """Project-level scan for tiny single-use helpers ``apex inline`` would
@@ -536,23 +586,8 @@ def suggest_inlines(project_root: str | Path,
     Returns a deterministic, sorted list of ``{module, function, line,
     call_sites}`` dicts. Read-only and stdlib-only; the suggestion is a
     proposal, the real ``plan_inline`` re-verifies."""
-    if trees is None:
-        root = Path(project_root)
-        files = _py_files(root)
-        trees = {}
-        for rel, text in files:
-            try:
-                trees[rel] = ast.parse(text)
-            except SyntaxError:
-                continue
-
-    # Single-definition map: name → list of (module, FunctionDef) so we can keep
-    # only names that are defined exactly once at top level project-wide.
-    defs_by_name: dict[str, list[tuple[str, ast.FunctionDef]]] = {}
-    for rel in sorted(trees):
-        for node in trees[rel].body:
-            if isinstance(node, ast.FunctionDef):
-                defs_by_name.setdefault(node.name, []).append((rel, node))
+    trees = _suggest_trees(project_root, trees)
+    defs_by_name = _defs_by_name(trees)
 
     # The bare-object guard and the call-site count are both whole-project and
     # name-independent, so compute each ONCE rather than re-walking every tree
@@ -569,19 +604,8 @@ def suggest_inlines(project_root: str | Path,
         if len(defs) != 1:
             continue
         rel, fn = defs[0]
-        if fn.decorator_list or not _simple_params(fn):
-            continue
-        expr = _return_expr(fn)
-        if expr is None:
-            continue
-        # Non-recursive: the body must not call back to its own name.
-        if any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(expr)):
-            continue
-        # Never travels as a bare object — only ever called.
-        if name in bare:
-            continue
         n_sites = call_counts.get(name, 0)
-        if not (1 <= n_sites <= _SUGGEST_MAX_CALL_SITES):
+        if not _suggest_qualifies(name, fn, bare, n_sites):
             continue
         found.append({"module": rel, "function": name,
                       "line": fn.lineno, "call_sites": n_sites})
