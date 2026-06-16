@@ -109,6 +109,71 @@ def _is_bool_arg(arg: ast.arg, default: ast.expr | None) -> bool:
     return False
 
 
+def _counted_positional(
+    args: ast.arguments, is_method: bool
+) -> list[ast.arg]:
+    """Positional-or-keyword params, dropping a method's implicit receiver."""
+    positional = list(args.posonlyargs) + list(args.args)
+    if is_method and positional and positional[0].arg in _RECEIVER_NAMES:
+        positional = positional[1:]
+    return positional
+
+
+def _pad_defaults(
+    defaults: list[ast.expr | None], count: int
+) -> list[ast.expr | None]:
+    """Left-pad ``defaults`` with ``None`` to length ``count`` (tail-bound)."""
+    padded = [None] * (count - len(defaults)) + list(defaults)
+    if len(padded) < count:  # defensive; shouldn't happen
+        padded = [None] * count
+    return padded
+
+
+def _count_bool_params(
+    positional: list[ast.arg],
+    keyword_only: list[ast.arg],
+    args: ast.arguments,
+) -> int:
+    """Total parameters that read as boolean flags across positional + kw-only.
+
+    Positional defaults bind to the TAIL of the positional list; kw-only defaults
+    pair index-for-index with kwonlyargs (right-padded with ``None``).
+    """
+    pos_defaults = _pad_defaults(list(args.defaults), len(positional))
+    kw_defaults = list(args.kw_defaults)
+    if len(kw_defaults) < len(keyword_only):
+        kw_defaults += [None] * (len(keyword_only) - len(kw_defaults))
+    return sum(
+        _is_bool_arg(a, d) for a, d in zip(positional, pos_defaults)
+    ) + sum(
+        _is_bool_arg(a, d) for a, d in zip(keyword_only, kw_defaults)
+    )
+
+
+def _detect_smells(
+    param_count: int,
+    bool_params: int,
+    positional_count: int,
+    has_kw_only_marker: bool,
+    max_params: int,
+) -> tuple[set[str], list[str]]:
+    """Map measured counts to the ``(smells, reasons)`` this function trips."""
+    smells: set[str] = set()
+    reasons: list[str] = []
+    if param_count > max_params:
+        smells.add("long_param")
+        reasons.append(f"long parameter list ({param_count} > {max_params})")
+    if bool_params >= 2:
+        smells.add("boolean_trap")
+        reasons.append(f"boolean trap ({bool_params} bool params)")
+    if positional_count > max_params and not has_kw_only_marker:
+        smells.add("positional_overload")
+        reasons.append(
+            f"positional overload ({positional_count} positional, no keyword-only marker)"
+        )
+    return smells, reasons
+
+
 def _analyze_function(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     qualified: str,
@@ -122,56 +187,22 @@ def _analyze_function(
     function isn't among the surfaced offenders).
     """
     args = node.args
-
-    # Positional-or-keyword params, dropping the implicit receiver of a method.
-    positional = list(args.posonlyargs) + list(args.args)
-    if is_method and positional and positional[0].arg in _RECEIVER_NAMES:
-        positional = positional[1:]
-
+    positional = _counted_positional(args, is_method)
     keyword_only = list(args.kwonlyargs)
-    counted = positional + keyword_only
+    param_count = len(positional) + len(keyword_only)
 
     # A function that is *only* *args/**kwargs (no fixed params) has unbounded
     # arity by design — never a fixed long list, never flagged.
-    if not counted:
+    if not param_count:
         return None, set()
 
-    # Align defaults with their parameters so bool-default detection is exact.
-    # Positional defaults bind to the TAIL of the positional list; kw-only
-    # defaults pair index-for-index with kwonlyargs.
-    pos_defaults: list[ast.expr | None] = (
-        [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
-    )
-    if len(pos_defaults) < len(positional):  # defensive; shouldn't happen
-        pos_defaults = [None] * len(positional)
-    kw_defaults: list[ast.expr | None] = list(args.kw_defaults)
-    if len(kw_defaults) < len(keyword_only):
-        kw_defaults += [None] * (len(keyword_only) - len(kw_defaults))
-
-    bool_params = sum(
-        _is_bool_arg(a, d) for a, d in zip(positional, pos_defaults)
-    ) + sum(
-        _is_bool_arg(a, d) for a, d in zip(keyword_only, kw_defaults)
-    )
-
-    param_count = len(counted)
+    bool_params = _count_bool_params(positional, keyword_only, args)
     # A `*` marker exists if there are kw-only args OR a bare/`*args` vararg.
     has_kw_only_marker = bool(keyword_only) or args.vararg is not None
 
-    smells: set[str] = set()
-    reasons: list[str] = []
-    if param_count > max_params:
-        smells.add("long_param")
-        reasons.append(f"long parameter list ({param_count} > {max_params})")
-    if bool_params >= 2:
-        smells.add("boolean_trap")
-        reasons.append(f"boolean trap ({bool_params} bool params)")
-    if len(positional) > max_params and not has_kw_only_marker:
-        smells.add("positional_overload")
-        reasons.append(
-            f"positional overload ({len(positional)} positional, no keyword-only marker)"
-        )
-
+    smells, reasons = _detect_smells(
+        param_count, bool_params, len(positional), has_kw_only_marker, max_params
+    )
     if not smells:
         return None, set()
 
