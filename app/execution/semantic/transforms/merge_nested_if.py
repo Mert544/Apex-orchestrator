@@ -78,47 +78,32 @@ def _intended_dump(node: ast.If, inner: ast.If) -> str:
     return ast.dump(module)
 
 
-def _try_merge_one(source: str, lines: list[str], node: ast.If) -> str | None:
-    """Produce flattened source for one outer ``if``, or ``None`` to refuse."""
-    inner = _is_mergeable(node)
-    if inner is None:
-        return None
+def _line_indent(line: str) -> str:
+    """Leading-whitespace prefix of ``line``."""
+    return line[: len(line) - len(line.lstrip())]
 
-    outer_hdr_idx = node.lineno - 1            # 0-based line of `if A:`
-    inner_hdr_idx = inner.lineno - 1           # 0-based line of `    if B:`
+
+def _headers_adjacent(lines: list[str], outer_hdr_idx: int,
+                      inner_hdr_idx: int) -> bool:
+    """Both header indices are in range and the inner immediately follows the outer."""
     if not (0 <= outer_hdr_idx < inner_hdr_idx < len(lines)):
-        return None
-
+        return False
     # The inner header must immediately follow the outer one. Anything between
     # them (a comment, say) would be silently dropped, so refuse.
-    if inner_hdr_idx != outer_hdr_idx + 1:
-        return None
+    return inner_hdr_idx == outer_hdr_idx + 1
 
-    outer_line = lines[outer_hdr_idx]
-    inner_line = lines[inner_hdr_idx]
 
-    outer_indent = outer_line[: len(outer_line) - len(outer_line.lstrip())]
-    inner_indent = inner_line[: len(inner_line) - len(inner_line.lstrip())]
-    if not inner_indent.startswith(outer_indent) or len(inner_indent) <= len(outer_indent):
-        return None
+def _header_tail_ok(line: str, test: ast.expr) -> bool:
+    """The header carries nothing after the test besides ``:`` and whitespace."""
+    if test.end_col_offset is None:
+        return False
+    tail = line.splitlines()[0][test.end_col_offset:].strip()
+    return tail == ":"
 
-    a_src = _condition_src(lines, node.test)
-    b_src = _condition_src(lines, inner.test)
-    if a_src is None or b_src is None:
-        return None
 
-    # Refuse if either header carries anything after the test besides `:` and
-    # whitespace (guards against inline bodies / trailing comments on the header).
-    if node.test.end_col_offset is None or inner.test.end_col_offset is None:
-        return None
-    outer_tail = outer_line.splitlines()[0][node.test.end_col_offset:].strip()
-    inner_tail = inner_line.splitlines()[0][inner.test.end_col_offset:].strip()
-    if outer_tail != ":" or inner_tail != ":":
-        return None
-
-    newline = outer_line[len(outer_line.rstrip("\r\n")):] or "\n"
-    merged_header = f"{outer_indent}if ({a_src}) and ({b_src}):{newline}"
-
+def _merged_body_lines(lines: list[str], inner: ast.If, inner_hdr_idx: int,
+                       outer_indent: str, inner_indent: str) -> list[str] | None:
+    """Inner-``if`` body dedented by one step, or ``None`` on an unexpected shape."""
     # Body lines: everything inside the inner `if`, dedented by one step.
     body_start = inner_hdr_idx + 1
     body_end = inner.end_lineno or inner.lineno  # inclusive 1-based -> exclusive slice
@@ -130,17 +115,17 @@ def _try_merge_one(source: str, lines: list[str], node: ast.If) -> str | None:
         if not raw.startswith(inner_indent):
             return None                           # unexpected shape — refuse
         body_lines.append(outer_indent + raw[len(inner_indent):])
+    return body_lines
 
-    new_lines = lines[:outer_hdr_idx] + [merged_header] + body_lines + lines[body_end:]
-    candidate = "".join(new_lines)
-    if candidate == source:
-        return None
 
+def _verify_candidate(candidate: str, outer_hdr_idx: int,
+                      node: ast.If, inner: ast.If) -> bool:
+    """Re-parse ``candidate`` and confirm the merged ``if`` matches the intended flatten."""
     # Re-parse: never emit anything that does not compile.
     try:
         new_tree = ast.parse(candidate)
     except SyntaxError:
-        return None
+        return False
 
     # Structural verification: the merged `if` must match the intended flatten.
     target = None
@@ -149,12 +134,70 @@ def _try_merge_one(source: str, lines: list[str], node: ast.If) -> str | None:
             target = n
             break
     if target is None:
-        return None
+        return False
     got = ast.Module(body=[ast.If(test=target.test, body=list(target.body), orelse=[])], type_ignores=[])
     ast.fix_missing_locations(got)
-    if _intended_dump(node, inner) != ast.dump(got):
+    return _intended_dump(node, inner) == ast.dump(got)
+
+
+def _indents_compatible(outer_indent: str, inner_indent: str) -> bool:
+    """Inner header sits exactly one (or more) indentation steps deeper than outer."""
+    return inner_indent.startswith(outer_indent) and len(inner_indent) > len(outer_indent)
+
+
+def _merged_header(lines: list[str], outer_line: str, inner_line: str,
+                   outer_indent: str, node: ast.If, inner: ast.If) -> str | None:
+    """Validate conditions/tails and build the merged header line, or ``None``."""
+    a_src = _condition_src(lines, node.test)
+    b_src = _condition_src(lines, inner.test)
+    if a_src is None or b_src is None:
+        return None
+    # Refuse if either header carries anything after the test besides `:` and
+    # whitespace (guards against inline bodies / trailing comments on the header).
+    if not _header_tail_ok(outer_line, node.test) or not _header_tail_ok(inner_line, inner.test):
+        return None
+    newline = outer_line[len(outer_line.rstrip("\r\n")):] or "\n"
+    return f"{outer_indent}if ({a_src}) and ({b_src}):{newline}"
+
+
+def _try_merge_one(source: str, lines: list[str], node: ast.If) -> str | None:
+    """Produce flattened source for one outer ``if``, or ``None`` to refuse."""
+    inner = _is_mergeable(node)
+    if inner is None:
         return None
 
+    outer_hdr_idx = node.lineno - 1            # 0-based line of `if A:`
+    inner_hdr_idx = inner.lineno - 1           # 0-based line of `    if B:`
+    if not _headers_adjacent(lines, outer_hdr_idx, inner_hdr_idx):
+        return None
+
+    outer_line = lines[outer_hdr_idx]
+    inner_line = lines[inner_hdr_idx]
+    outer_indent = _line_indent(outer_line)
+    inner_indent = _line_indent(inner_line)
+    if not _indents_compatible(outer_indent, inner_indent):
+        return None
+
+    merged_header = _merged_header(lines, outer_line, inner_line, outer_indent, node, inner)
+    if merged_header is None:
+        return None
+
+    body_lines = _merged_body_lines(lines, inner, inner_hdr_idx, outer_indent, inner_indent)
+    if body_lines is None:
+        return None
+    body_end = inner.end_lineno or inner.lineno
+
+    candidate = "".join(
+        lines[:outer_hdr_idx] + [merged_header] + body_lines + lines[body_end:]
+    )
+    return _accept_candidate(candidate, source, outer_hdr_idx, node, inner)
+
+
+def _accept_candidate(candidate: str, source: str, outer_hdr_idx: int,
+                      node: ast.If, inner: ast.If) -> str | None:
+    """Return ``candidate`` if it differs from source and verifies, else ``None``."""
+    if candidate == source or not _verify_candidate(candidate, outer_hdr_idx, node, inner):
+        return None
     return candidate
 
 
