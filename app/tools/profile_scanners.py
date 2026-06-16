@@ -416,6 +416,80 @@ class _CodeQualityScansMixin:
         found.sort(key=lambda d: (d["call_sites"], d["module"], d["function"]))
         profile.inlinable_helpers = found[:5]
 
+    @staticmethod
+    def _module_object_refs(tree: ast.AST) -> set[str]:
+        """Every name/attribute in ``tree`` referenced as a BARE object (not the
+        direct callee of a ``Call``). Such a reference means the function travels
+        as an object — callbacks, dispatch tables, ``set_defaults(func=...)`` —
+        so its signature belongs to whoever receives it, not to itself."""
+        call_funcs = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+        refs: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and id(node) not in call_funcs:
+                refs.add(node.id)
+            elif isinstance(node, ast.Attribute) and id(node) not in call_funcs:
+                refs.add(node.attr)
+        return refs
+
+    @staticmethod
+    def _is_stub_body(fn: ast.AST) -> bool:
+        """True when ``fn``'s body (ignoring a leading docstring/constant Expr) is
+        only ``pass``/``raise`` — a stub or protocol shape whose params are the
+        contract and must be kept, never flagged as dead."""
+        body = [s for s in fn.body
+                if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
+        return all(isinstance(s, (ast.Pass, ast.Raise)) for s in body)
+
+    @staticmethod
+    def _dead_params_of(fn: ast.AST) -> list[str]:
+        """The positional/kw-only params of ``fn`` no statement in its body reads,
+        in declaration order. ``self``/``cls`` and ``_``-prefixed params (already
+        declared intentional) are excluded; ``*args``/``**kwargs`` are never
+        considered. Pure — depends only on the function's own AST."""
+        read = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
+        a = fn.args
+        dead: list[str] = []
+        for p in [*a.posonlyargs, *a.args, *a.kwonlyargs]:
+            if p.arg.startswith("_") or p.arg in ("self", "cls"):
+                continue
+            if p.arg not in read:
+                dead.append(p.arg)
+        return dead
+
+    def _collect_dead_param_defs(
+        self,
+    ) -> tuple[dict[str, list[tuple[str, ast.AST]]], set[str]]:
+        """Walk the in-scope, non-fixture modules and gather the raw inputs for the
+        dead-parameter decision: ``defs_by_name`` (every TOP-LEVEL function keyed by
+        name, so a name defined in 2+ modules can be recognised as an interface
+        family) and ``object_refs`` (every name that ever travels as a bare object,
+        project-wide). Routes through the canonical ``iter_source_files`` (sorted,
+        skip-dir/worktree pruned) so the whole tree isn't re-walked; the hand-rolled
+        skip set's ``.turbo``/``.next`` entries only ever matched JS-tool dirs (never
+        Python sources) and OMITTED ``.claude`` (FULL repo-copy agent worktrees that
+        sort first and would flood the ``max_files`` budget with throwaway copies).
+        The canonical set prunes ``.claude`` (matching every sibling scan), so the
+        surviving real-source set, order and ``max_files`` cap are preserved."""
+        defs_by_name: dict[str, list[tuple[str, ast.AST]]] = {}
+        object_refs: set[str] = set()
+        scanned = 0
+        for path in iter_source_files(self.root):
+            if scanned >= self.max_files:
+                break
+            rel_str = path.relative_to(self.root).as_posix()
+            if self._is_fixture_path(rel_str):
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+            except (OSError, SyntaxError):
+                continue
+            scanned += 1
+            object_refs |= self._module_object_refs(tree)
+            for fn in tree.body:
+                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    defs_by_name.setdefault(fn.name, []).append((rel_str, fn))
+        return defs_by_name, object_refs
+
     def _scan_dead_params(self, profile: ProjectProfile) -> None:
         """Parameters no statement in the function body ever reads.
 
@@ -432,59 +506,16 @@ class _CodeQualityScansMixin:
           - the parameter isn't ``_``-prefixed (already declared intentional)
             and isn't ``*args``/``**kwargs``.
         """
-        defs_by_name: dict[str, list[tuple[str, ast.AST]]] = {}
-        object_refs: set[str] = set()
-        scanned = 0
-        # Was a bare ``sorted(rglob)`` + a hand-rolled skip set; route through the
-        # canonical ``iter_source_files`` (sorted, skip-dir/worktree pruned) so the
-        # whole tree isn't re-walked. The hand-rolled set's ``.turbo``/``.next``
-        # entries only ever match JS-tool dirs (never Python sources), and it
-        # OMITTED ``.claude`` — which holds FULL repo-copy agent worktrees that
-        # sort first and would otherwise flood the ``max_files`` budget with
-        # throwaway copies before the real code is reached. The canonical set
-        # prunes ``.claude`` (worktree-safe, matching every sibling scan), so the
-        # surviving real-source set, order and cap are preserved.
-        for path in iter_source_files(self.root):
-            if scanned >= self.max_files:
-                break
-            rel_str = path.relative_to(self.root).as_posix()
-            if self._is_fixture_path(rel_str):
-                continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
-            except (OSError, SyntaxError):
-                continue
-            scanned += 1
-            call_funcs = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
-            for node in ast.walk(tree):
-                # Any non-call reference means the function travels as an
-                # object — its signature belongs to whoever receives it.
-                if isinstance(node, ast.Name) and id(node) not in call_funcs:
-                    object_refs.add(node.id)
-                elif isinstance(node, ast.Attribute) and id(node) not in call_funcs:
-                    object_refs.add(node.attr)
-            for fn in tree.body:
-                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    defs_by_name.setdefault(fn.name, []).append((rel_str, fn))
-
+        defs_by_name, object_refs = self._collect_dead_param_defs()
         found: list[dict] = []
         for name, defs in defs_by_name.items():
             if len(defs) != 1 or name in object_refs:
                 continue
             rel_str, fn = defs[0]
-            if fn.decorator_list:
+            if fn.decorator_list or self._is_stub_body(fn):
                 continue
-            body = [s for s in fn.body
-                    if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
-            if all(isinstance(s, (ast.Pass, ast.Raise)) for s in body):
-                continue  # stub / protocol shape — params are the contract
-            read = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
-            a = fn.args
-            for p in [*a.posonlyargs, *a.args, *a.kwonlyargs]:
-                if p.arg.startswith("_") or p.arg in ("self", "cls"):
-                    continue
-                if p.arg not in read:
-                    found.append({"module": rel_str, "function": name,
-                                  "param": p.arg, "line": fn.lineno})
+            for param in self._dead_params_of(fn):
+                found.append({"module": rel_str, "function": name,
+                              "param": param, "line": fn.lineno})
         found.sort(key=lambda d: (d["module"], d["line"], d["param"]))
         profile.dead_params = found[:5]
