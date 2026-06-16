@@ -258,43 +258,26 @@ class FractalResearchOrchestrator:
             report.llm_summary = summary
             self.debug.trace("llm_summary", "Attached LLM summary", {"chars": len(summary)})
 
-    def _expand(
-        self,
-        node: ResearchNode,
-        on_progress: Callable[[str, int, int], None] | None = None,
-        current_root: int = 0,
-        total_roots: int = 0,
-    ) -> None:
-        self.debug.trace("expand_enter", f"Expanding {node.id}", {
-            "branch": node.branch_path,
-            "depth": node.depth,
-            "claim": node.claim[:60],
-        })
+    @staticmethod
+    def _stop_node(node: ResearchNode, reason: StopReason) -> None:
+        """Mark a node stopped for a named reason (the shared stop epilogue)."""
+        node.status = NodeStatus.STOPPED
+        node.stop_reason = reason
 
-        stop = self.termination.should_stop_before_expansion(node, self.budget)
-        if stop is not None:
-            node.status = NodeStatus.STOPPED
-            node.stop_reason = stop
-            self.debug.trace("expand_stop", f"Pre-expansion stop: {stop}", {"node": node.id})
-            return
-
-        # Focus on the main idea: score this branch's relevance to the objective
-        # and prune it if it has drifted off-topic (only when enabled via config).
-        node.relevance = self.relevance_scorer.score(node.claim)
-        if (
+    def _is_focus_drift(self, node: ResearchNode) -> bool:
+        """True when focus pruning is enabled and this node has drifted off-topic."""
+        return (
             self.focus_min_relevance > 0.0
             and node.depth >= self.focus_min_depth
             and node.relevance < self.focus_min_relevance
-        ):
-            node.status = NodeStatus.STOPPED
-            node.stop_reason = StopReason.FOCUS_DRIFT
-            self.debug_stats["focus_drift_pruned"] += 1
-            self.debug.trace("focus_drift", f"Pruned off-topic {node.id}", {
-                "relevance": node.relevance,
-                "claim": node.claim[:60],
-            })
-            return
+        )
 
+    def _analyze_node(self, node: ResearchNode) -> ResearchNode:
+        """Validate, score, and enrich a node in place; return the live node.
+
+        Mirrors the original straight-line analysis block exactly (validation,
+        counter-evidence policy, confidence, deep reasoning, questions, scoring).
+        """
         validation = self.validator.validate(node.claim)
         node.evidence_for = validation.get("evidence_for", [])
         node.evidence_against = validation.get("evidence_against", [])
@@ -321,97 +304,176 @@ class FractalResearchOrchestrator:
 
         node.security = self.security_governor.review(node)
         node.quality = self.quality_judge.evaluate(node)
+        return node
+
+    def _accept_question(self, question, node: ResearchNode) -> bool:
+        """Score and register a non-duplicate, non-spam question; True if kept."""
+        if self.graph.has_similar_question(question.text):
+            self.debug_stats["run_question_duplicates_blocked"] += 1
+            return False
+        if self.spam_guard.is_low_value_question(question.text, node.claim):
+            self.debug_stats["spam_questions_filtered"] += 1
+            return False
+        if self.graph.has_memory_question(question.text):
+            self.debug_stats["memory_question_repeats_degraded"] += 1
+        question.novelty = self.novelty_scorer.score_question(question.text)
+        question.priority = score_question_priority(
+            impact=question.impact,
+            uncertainty=question.uncertainty,
+            risk=question.risk,
+            novelty=question.novelty,
+            relevance=self.relevance_scorer.score(question.text),
+        )
+        self.graph.register_question(question.text)
+        return True
+
+    def _fresh_questions(self, node: ResearchNode) -> list:
+        """Filter/score the node's questions, preserving original order."""
+        return [q for q in node.questions if self._accept_question(q, node)]
+
+    def _make_child_nodes(self, node: ResearchNode, question, idx: int, child_counter: int) -> list[ResearchNode]:
+        """Build, relevance-score, and rank the child nodes for one question.
+
+        Returns them ordered exactly as the original (claim_priority weighted by
+        relevance, descending), consuming branch slots from ``child_counter``.
+        """
+        raw_child_claims = self.decomposer.decompose(question.text)
+        child_claims = [claim for claim in raw_child_claims if self.claim_normalizer.is_viable(claim)]
+        deduped_claims = list(dict.fromkeys(child_claims))
+        filtered_claims = self.spam_guard.filter_claims(deduped_claims, parent_claim=node.claim)
+        self.debug_stats["spam_claims_filtered"] += max(0, len(deduped_claims) - len(filtered_claims))
+
+        child_nodes = []
+        for j, child_claim in enumerate(filtered_claims):
+            branch_path = make_branch_path(node.branch_path, child_counter)
+            child_counter += 1
+            child_nodes.append(
+                self.node_factory.make_node(
+                    id=f"{node.id}-{idx}-{j}",
+                    claim=child_claim,
+                    parent_ids=[node.id],
+                    depth=node.depth + 1,
+                    branch_path=branch_path,
+                    source_question=question.text,
+                )
+            )
+        for child in child_nodes:
+            child.relevance = self.relevance_scorer.score(child.claim)
+        child_nodes.sort(
+            key=lambda n: n.claim_priority * (0.5 + 0.5 * n.relevance), reverse=True
+        )
+        return child_nodes
+
+    def _admit_child(self, child: ResearchNode) -> bool:
+        """Register a non-duplicate child into graph/budget; True if admitted."""
+        if self.graph.has_similar_claim(child.claim):
+            self.debug_stats["run_claim_duplicates_blocked"] += 1
+            return False
+        if self.graph.has_memory_claim(child.claim):
+            self.debug_stats["memory_claim_repeats_degraded"] += 1
+        child.novelty = self.novelty_scorer.score_node(child)
+        self.graph.add_node(child)
+        self.budget.consume_node()
+        return True
+
+    def _expand_children(self, child_nodes, node, on_progress, current_root, total_roots):
+        """Admit and recursively expand one question's ranked children.
+
+        Returns ``(created, exhausted)``: how many children were admitted, and
+        whether the budget tripped mid-loop (the caller then stops ``node``).
+        """
+        created = 0
+        for child in child_nodes:
+            if self.budget.exhausted:
+                self.debug.trace("budget_exhausted", f"Node {node.id} — child creation")
+                return created, True
+            if not self._admit_child(child):
+                continue
+            created += 1
+            self._expand(child, on_progress=on_progress, current_root=current_root, total_roots=total_roots)
+            if on_progress and total_roots > 0:
+                on_progress("expand", current_root + 1, total_roots)
+        return created, False
+
+    def _grow_children(self, node, selected_questions, on_progress, current_root, total_roots):
+        """Expand every selected question into children.
+
+        Returns ``(total_children, stopped)``. Stops ``node`` with
+        ``BUDGET_EXHAUSTED`` if the budget trips before or during a question,
+        matching the original two budget guards exactly; ``stopped`` then tells
+        the caller to skip the EXPANDED epilogue.
+        """
+        child_counter = 0
+        total_children = 0
+        for idx, question in enumerate(selected_questions):
+            if self.budget.exhausted:
+                self._stop_node(node, StopReason.BUDGET_EXHAUSTED)
+                self.debug.trace("budget_exhausted", f"Node {node.id} — mid-expansion")
+                return total_children, True
+
+            child_nodes = self._make_child_nodes(node, question, idx, child_counter)
+            child_counter += len(child_nodes)
+            if not child_nodes:
+                continue
+
+            created, exhausted = self._expand_children(child_nodes, node, on_progress, current_root, total_roots)
+            total_children += created
+            if exhausted:
+                self._stop_node(node, StopReason.BUDGET_EXHAUSTED)
+                return total_children, True
+        return total_children, False
+
+    def _expand(
+        self,
+        node: ResearchNode,
+        on_progress: Callable[[str, int, int], None] | None = None,
+        current_root: int = 0,
+        total_roots: int = 0,
+    ) -> None:
+        self.debug.trace("expand_enter", f"Expanding {node.id}", {
+            "branch": node.branch_path,
+            "depth": node.depth,
+            "claim": node.claim[:60],
+        })
+
+        stop = self.termination.should_stop_before_expansion(node, self.budget)
+        if stop is not None:
+            self._stop_node(node, stop)
+            self.debug.trace("expand_stop", f"Pre-expansion stop: {stop}", {"node": node.id})
+            return
+
+        # Focus on the main idea: score this branch's relevance to the objective
+        # and prune it if it has drifted off-topic (only when enabled via config).
+        node.relevance = self.relevance_scorer.score(node.claim)
+        if self._is_focus_drift(node):
+            self._stop_node(node, StopReason.FOCUS_DRIFT)
+            self.debug_stats["focus_drift_pruned"] += 1
+            self.debug.trace("focus_drift", f"Pruned off-topic {node.id}", {
+                "relevance": node.relevance,
+                "claim": node.claim[:60],
+            })
+            return
+
+        node = self._analyze_node(node)
 
         stop = self.termination.should_stop_after_scoring(node)
         if stop is not None:
-            node.status = NodeStatus.STOPPED
-            node.stop_reason = stop
+            self._stop_node(node, stop)
             return
 
-        fresh_questions = []
-        for question in node.questions:
-            if self.graph.has_similar_question(question.text):
-                self.debug_stats["run_question_duplicates_blocked"] += 1
-                continue
-            if self.spam_guard.is_low_value_question(question.text, node.claim):
-                self.debug_stats["spam_questions_filtered"] += 1
-                continue
-            if self.graph.has_memory_question(question.text):
-                self.debug_stats["memory_question_repeats_degraded"] += 1
-            question.novelty = self.novelty_scorer.score_question(question.text)
-            question.priority = score_question_priority(
-                impact=question.impact,
-                uncertainty=question.uncertainty,
-                risk=question.risk,
-                novelty=question.novelty,
-                relevance=self.relevance_scorer.score(question.text),
-            )
-            self.graph.register_question(question.text)
-            fresh_questions.append(question)
-
+        fresh_questions = self._fresh_questions(node)
         if not fresh_questions:
-            node.status = NodeStatus.STOPPED
-            node.stop_reason = StopReason.DUPLICATE_BRANCH
+            self._stop_node(node, StopReason.DUPLICATE_BRANCH)
             return
 
         selected_questions = sorted(fresh_questions, key=lambda q: q.priority, reverse=True)[: int(self.config["top_k_questions"])]
         self.debug.trace("questions_selected", f"Node {node.id}", {"selected": len(selected_questions), "fresh": len(fresh_questions)})
 
-        child_counter = 0
-        total_children = 0
-        for idx, question in enumerate(selected_questions):
-            if self.budget.exhausted:
-                node.status = NodeStatus.STOPPED
-                node.stop_reason = StopReason.BUDGET_EXHAUSTED
-                self.debug.trace("budget_exhausted", f"Node {node.id} — mid-expansion")
-                return
-
-            raw_child_claims = self.decomposer.decompose(question.text)
-            child_claims = [claim for claim in raw_child_claims if self.claim_normalizer.is_viable(claim)]
-            deduped_claims = list(dict.fromkeys(child_claims))
-            filtered_claims = self.spam_guard.filter_claims(deduped_claims, parent_claim=node.claim)
-            self.debug_stats["spam_claims_filtered"] += max(0, len(deduped_claims) - len(filtered_claims))
-            if not filtered_claims:
-                continue
-
-            child_nodes = []
-            for j, child_claim in enumerate(filtered_claims):
-                branch_path = make_branch_path(node.branch_path, child_counter)
-                child_counter += 1
-                child_nodes.append(
-                    self.node_factory.make_node(
-                        id=f"{node.id}-{idx}-{j}",
-                        claim=child_claim,
-                        parent_ids=[node.id],
-                        depth=node.depth + 1,
-                        branch_path=branch_path,
-                        source_question=question.text,
-                    )
-                )
-            for child in child_nodes:
-                child.relevance = self.relevance_scorer.score(child.claim)
-            child_nodes.sort(
-                key=lambda n: n.claim_priority * (0.5 + 0.5 * n.relevance), reverse=True
-            )
-
-            for child in child_nodes:
-                if self.budget.exhausted:
-                    node.status = NodeStatus.STOPPED
-                    node.stop_reason = StopReason.BUDGET_EXHAUSTED
-                    self.debug.trace("budget_exhausted", f"Node {node.id} — child creation")
-                    return
-                if self.graph.has_similar_claim(child.claim):
-                    self.debug_stats["run_claim_duplicates_blocked"] += 1
-                    continue
-                if self.graph.has_memory_claim(child.claim):
-                    self.debug_stats["memory_claim_repeats_degraded"] += 1
-                child.novelty = self.novelty_scorer.score_node(child)
-                self.graph.add_node(child)
-                self.budget.consume_node()
-                total_children += 1
-                self._expand(child, on_progress=on_progress, current_root=current_root, total_roots=total_roots)
-                if on_progress and total_roots > 0:
-                    on_progress("expand", current_root + 1, total_roots)
+        total_children, stopped = self._grow_children(
+            node, selected_questions, on_progress, current_root, total_roots
+        )
+        if stopped:
+            return
 
         node.status = NodeStatus.EXPANDED
         self.debug.trace("expand_exit", f"Node {node.id} expanded", {
