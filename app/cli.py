@@ -264,6 +264,7 @@ def main() -> int:
     import app.cli_autonomy as cli_autonomy
     import app.cli_ideate as cli_ideate
     import app.cli_insight as cli_insight
+    import app.cli_insights as cli_insights
     import app.cli_ops as cli_ops
     import app.cli_plugins as cli_plugins
     import app.cli_reporting as cli_reporting
@@ -278,6 +279,7 @@ def main() -> int:
     # analysis/refactor surface, then operations and reporting.
     cli_autonomy.register_parsers(subparsers)    # auto, simulate, evolve, maintain
     cli_insight.register_parsers(subparsers)     # grade, impact, brief, dream, ...
+    cli_insights.register_parsers(subparsers)    # insights (analyzer suite sweep)
     cli_ideate.register_parsers(subparsers)      # ideate
     cli_review.register_parsers(subparsers)      # review
     cli_refactor.register_parsers(subparsers)    # rename, move, signature
