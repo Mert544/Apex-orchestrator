@@ -32,6 +32,46 @@ def _base(subject: str) -> str:
     return subject.split(" :: ", 1)[0]
 
 
+def _modules(subject: str) -> set[str]:
+    """Tokenize a pair subject (``a.py↔b.py``) into its module names."""
+    return set(subject.replace("↔", " ").split())
+
+
+def _group_by_base(ideas: list[IdeaNode]) -> dict[str, list[IdeaNode]]:
+    """Group ideas by their base subject (facets fold into their leaf)."""
+    by_subject: dict[str, list[IdeaNode]] = defaultdict(list)
+    for i in ideas:
+        by_subject[_base(i.subject)].append(i)
+    return by_subject
+
+
+def _peers(idea: IdeaNode, group: list[IdeaNode], operators: set[str]) -> set[str]:
+    """Ids of other ideas in ``group`` whose operator is in ``operators``."""
+    return {i.id for i in group if i.operator in operators and i.id != idea.id}
+
+
+def _prereqs_for(idea: IdeaNode, group: list[IdeaNode]) -> set[str]:
+    """Within one base-subject group, the prerequisite ids for ``idea``.
+
+    A mutating lens waits on the group's tests; a document/observe lens waits
+    on the group's builds. ``idea`` never depends on itself.
+    """
+    out: set[str] = set()
+    if idea.operator in _MUTATING:
+        out.update(_peers(idea, group, {"test"}))
+    if idea.operator in _AFTER_BUILD:
+        out.update(_peers(idea, group, _BUILD))
+    return out
+
+
+def _cycle_prereqs(idea: IdeaNode, cycles: list[IdeaNode]) -> set[str]:
+    """Interface pairs wait on cycle-break pairs over overlapping modules."""
+    if not (idea.kind == "pair" and "interface" in idea.title.lower()):
+        return set()
+    members = _modules(_base(idea.subject))
+    return {c.id for c in cycles if members & _modules(c.subject)}
+
+
 @dataclass
 class ExecStep:
     branch_path: str
@@ -58,28 +98,15 @@ def infer_dependencies(ideas: list[IdeaNode]) -> dict[str, set[str]]:
     """
     deps: dict[str, set[str]] = {i.id: set() for i in ideas}
 
-    by_subject: dict[str, list[IdeaNode]] = defaultdict(list)
-    for i in ideas:
-        by_subject[_base(i.subject)].append(i)
-
-    for group in by_subject.values():
-        tests = [i for i in group if i.operator == "test"]
-        builds = [i for i in group if i.operator in _BUILD]
+    for group in _group_by_base(ideas).values():
         for i in group:
-            if i.operator in _MUTATING and tests:
-                deps[i.id].update(t.id for t in tests if t.id != i.id)
-            if i.operator in _AFTER_BUILD and builds:
-                deps[i.id].update(b.id for b in builds if b.id != i.id)
+            deps[i.id].update(_prereqs_for(i, group))
 
     # Cycle-before-interface: a coupling/interface pair waits on a cycle break
     # that covers overlapping modules.
     cycles = [i for i in ideas if i.kind == "pair" and "cycle" in i.title.lower()]
     for i in ideas:
-        if i.kind == "pair" and "interface" in i.title.lower():
-            members = set(_base(i.subject).replace("↔", " ").split())
-            for c in cycles:
-                if members & set(c.subject.replace("↔", " ").split()):
-                    deps[i.id].add(c.id)
+        deps[i.id].update(_cycle_prereqs(i, cycles))
     return deps
 
 
