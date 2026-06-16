@@ -143,6 +143,32 @@ _CASES = {
         'x = f"hello"\n',
         "def f():\n    return 1\n",
     ),
+    # Wired this wave: on-disk plan_* transforms routed through the
+    # plan_to_apply adapter, same refuse-on-unsafe / guarded-gate contract.
+    "combine_nested_with": (
+        "nested-with",
+        "combine-nested-with",
+        "def f():\n    with open('a') as a:\n        with open('b') as b:\n            return a, b\n",
+        "def f():\n    return 1\n",
+    ),
+    "simplify_comprehension": (
+        "comprehension",
+        "simplify-comprehension",
+        "def f(xs):\n    out = []\n    for x in xs:\n        out.append(x + 1)\n    return out\n",
+        "def f():\n    return 1\n",
+    ),
+    "use_enumerate": (
+        "use-enumerate",
+        "use-enumerate",
+        "def f(xs):\n    for i in range(len(xs)):\n        x = xs[i]\n        print(x)\n",
+        "def f():\n    return 1\n",
+    ),
+    "simplify_len_comparison": (
+        "len-comparison",
+        "simplify-len-comparison",
+        "def f(xs):\n    if len(xs) > 0:\n        return 1\n    return 0\n",
+        "def f():\n    return 1\n",
+    ),
 }
 
 
@@ -271,6 +297,8 @@ _NEW = {
     "tuple_membership", "dict_literal", "double_not", "swap_via_tuple",
     "membership_set", "percent_string_concat", "redundant_lambda",
     "augmented_assign", "collection_literal", "fstring_no_placeholder",
+    "combine_nested_with", "simplify_comprehension", "use_enumerate",
+    "simplify_len_comparison",
 }
 
 
