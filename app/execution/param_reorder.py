@@ -80,80 +80,87 @@ def _rebuild_reordered(source: str, fn: ast.FunctionDef | ast.AsyncFunctionDef,
     return ", ".join(parts)
 
 
-def plan_param_reorder(project_root: str | Path, func_name: str,
-                       order: list[str]) -> RenamePlan:
-    """Build the reorder plan: def site rebuilt, call sites untouched."""
-    plan = RenamePlan(old=func_name, new=func_name)
-    root = Path(project_root)
-    files = _py_files(root)
-    sources = dict(files)
+def _parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
+    """Parse every source, skipping files that don't compile."""
     trees: dict[str, ast.Module] = {}
     for rel, text in files:
         try:
             trees[rel] = ast.parse(text)
         except SyntaxError:
             continue
+    return trees
 
+
+def _locate_definition(
+    plan: RenamePlan, trees: dict[str, ast.Module], func_name: str,
+) -> tuple[str, ast.FunctionDef | ast.AsyncFunctionDef] | None:
+    """The single top-level def of ``func_name`` — or None with a blocker set."""
     definitions = [(rel, fn) for rel, tree in trees.items()
                    for fn in _function_defs(tree, func_name)]
     if len(definitions) != 1:
         plan.blockers.append(
             f"'{func_name}' must be defined exactly once at top level "
             f"(found {len(definitions)})")
-        return plan
-    defmod, fn = definitions[0]
-    plan.defined_in = defmod
-    dotted = defmod[:-3].replace("/", ".")
-    source = sources[defmod]
+        return None
+    return definitions[0]
 
+
+def _validate_permutation(
+    plan: RenamePlan, fn: ast.FunctionDef | ast.AsyncFunctionDef,
+    func_name: str, order: list[str],
+) -> bool:
+    """False (with a blocker) unless ``order`` is a true reordering."""
     current = [p.arg for p in fn.args.args]
     if sorted(order) != sorted(current):
         plan.blockers.append(
             f"the new order must be a permutation of {func_name}()'s regular "
             f"parameters ({', '.join(current) or 'none'})")
-        return plan
+        return False
     if order == current:
         plan.blockers.append("the requested order is already the current order")
-        return plan
+        return False
+    return True
 
-    span = _signature_span(source, fn)
-    if span is None:
-        plan.blockers.append(f"{defmod}: could not pin the signature span")
-        return plan
+
+def _signature_text(source: str, span: tuple[int, int, int, int]) -> str:
+    """The verbatim ``(...)`` interior text for the pinned signature span."""
     sl, sc, el, ec = span
     src_lines = source.splitlines(keepends=True)
-    sig_text = (
+    return (
         src_lines[sl - 1][sc:ec] if sl == el
         else src_lines[sl - 1][sc:] + "".join(src_lines[sl:el - 1]) + src_lines[el - 1][:ec])
-    if "#" in sig_text:
-        plan.blockers.append(
-            f"{defmod}: the signature block contains a comment — rebuilding "
-            "it would drop the comment, so this stays a human edit")
-        return plan
 
-    new_inner = _rebuild_reordered(source, fn, order)
-    if new_inner is None:
-        plan.blockers.append(
-            "the reorder would put a required parameter after a defaulted "
-            "one — that signature wouldn't compile")
-        return plan
 
-    # Every caller must already pass the regular params as keywords: a
-    # positional argument beyond the positional-only prefix would silently
-    # re-bind to a DIFFERENT parameter after the reorder.
-    n_posonly = len(fn.args.posonlyargs)
+def _module_call_names(
+    tree: ast.Module, defmod: str, dotted: str, func_name: str, rel: str,
+) -> tuple[set[str], set[str]]:
+    """Local names and module aliases through which this file calls the def."""
+    from_names: set[str] = {func_name} if rel == defmod else set()
+    module_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == dotted:
+            for alias in node.names:
+                if alias.name == func_name:
+                    from_names.add(alias.asname or func_name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == dotted:
+                    module_aliases.add(alias.asname or alias.name)
+    return from_names, module_aliases
+
+
+def _check_positional_callers(
+    plan: RenamePlan, trees: dict[str, ast.Module], defmod: str, dotted: str,
+    func_name: str, n_posonly: int,
+) -> None:
+    """Block on any caller passing reordered params positionally.
+
+    A positional argument beyond the positional-only prefix would silently
+    re-bind to a DIFFERENT parameter after the reorder.
+    """
     for rel, tree in trees.items():
-        from_names: set[str] = {func_name} if rel == defmod else set()
-        module_aliases: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module == dotted:
-                for alias in node.names:
-                    if alias.name == func_name:
-                        from_names.add(alias.asname or func_name)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name == dotted:
-                        module_aliases.add(alias.asname or alias.name)
+        from_names, module_aliases = _module_call_names(
+            tree, defmod, dotted, func_name, rel)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -166,9 +173,52 @@ def plan_param_reorder(project_root: str | Path, func_name: str,
                     f"{rel}:{node.lineno}: passes reordered parameters "
                     "POSITIONALLY — run `apex signature keywordify "
                     f"{func_name}` first, then re-run")
+
+
+def plan_param_reorder(project_root: str | Path, func_name: str,
+                       order: list[str]) -> RenamePlan:
+    """Build the reorder plan: def site rebuilt, call sites untouched."""
+    plan = RenamePlan(old=func_name, new=func_name)
+    root = Path(project_root)
+    files = _py_files(root)
+    sources = dict(files)
+    trees = _parse_trees(files)
+
+    located = _locate_definition(plan, trees, func_name)
+    if located is None:
+        return plan
+    defmod, fn = located
+    plan.defined_in = defmod
+    dotted = defmod[:-3].replace("/", ".")
+    source = sources[defmod]
+
+    if not _validate_permutation(plan, fn, func_name, order):
+        return plan
+
+    span = _signature_span(source, fn)
+    if span is None:
+        plan.blockers.append(f"{defmod}: could not pin the signature span")
+        return plan
+    if "#" in _signature_text(source, span):
+        plan.blockers.append(
+            f"{defmod}: the signature block contains a comment — rebuilding "
+            "it would drop the comment, so this stays a human edit")
+        return plan
+
+    new_inner = _rebuild_reordered(source, fn, order)
+    if new_inner is None:
+        plan.blockers.append(
+            "the reorder would put a required parameter after a defaulted "
+            "one — that signature wouldn't compile")
+        return plan
+
+    _check_positional_callers(
+        plan, trees, defmod, dotted, func_name, len(fn.args.posonlyargs))
     if plan.blockers:
         return plan
 
+    sl, sc, el, ec = span
+    src_lines = source.splitlines(keepends=True)
     new_def = src_lines[sl - 1][:sc] + f"({new_inner})" + src_lines[el - 1][ec:]
     plan.originals[defmod] = source
     plan.new_contents[defmod] = "".join([*src_lines[:sl - 1], new_def, *src_lines[el:]])

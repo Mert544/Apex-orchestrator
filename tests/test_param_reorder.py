@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import ast
+import subprocess
+import sys
+import types
 from pathlib import Path
 
 from app.execution.cross_file_rename import apply_rename
@@ -111,6 +114,76 @@ def test_comment_inside_signature_blocks(tmp_path):
     plan = plan_param_reorder(tmp_path, "fetch", ["timeout", "url"])
     assert not plan.ok
     assert any("comment" in b for b in plan.blockers)
+
+
+def _plan_repr(plan) -> tuple:
+    """A fully-ordered, hashable snapshot of every observable plan field."""
+    return (
+        plan.old, plan.new, plan.defined_in,
+        tuple(plan.blockers),
+        tuple(sorted(plan.originals.items())),
+        tuple(sorted(plan.new_contents.items())),
+        tuple(sorted(plan.edits_by_file.items())),
+    )
+
+
+def _load_pre_refactor():
+    """Import the HEAD (pre-refactor) param_reorder under a private name."""
+    src = subprocess.check_output(
+        ["git", "show", "HEAD:app/execution/param_reorder.py"],
+        cwd=Path(__file__).resolve().parent.parent, text=True)
+    mod = types.ModuleType("_param_reorder_baseline")
+    exec(compile(src, "<baseline>", "exec"), mod.__dict__)  # noqa: S102
+    sys.modules["_param_reorder_baseline"] = mod
+    return mod
+
+
+def test_characterization_byte_identical_to_pre_refactor(tmp_path):
+    """The refactored planner reproduces the pre-refactor plan byte-for-byte
+    across success and every blocker path."""
+    baseline = _load_pre_refactor().plan_param_reorder
+
+    cases = [
+        ("fetch", ["url", "retries", "timeout"]),   # success
+        ("fetch", ["url", "timeout"]),              # not a permutation
+        ("fetch", ["url", "timeout", "ghost"]),     # unknown name
+        ("fetch", ["url", "timeout", "retries"]),   # identity no-op
+        ("fetch", ["timeout", "url", "retries"]),   # required-after-default
+        ("missing", ["a", "b"]),                    # defined-zero-times
+    ]
+    for func, order in cases:
+        proj = tmp_path / f"{func}_{'_'.join(order)}"
+        proj.mkdir()
+        _project(proj)
+        assert _plan_repr(plan_param_reorder(proj, func, order)) == \
+            _plan_repr(baseline(proj, func, order)), (func, order)
+
+
+def test_characterization_positional_and_comment_blockers(tmp_path):
+    """Positional-caller and in-signature-comment blocker paths also match."""
+    baseline = _load_pre_refactor().plan_param_reorder
+
+    pos = tmp_path / "pos"
+    pos.mkdir()
+    _project(pos)
+    (pos / "app" / "p.py").write_text(
+        "from app.core import fetch\n"
+        "def g():\n"
+        "    return fetch('a', 5)\n"
+    )
+    assert _plan_repr(plan_param_reorder(pos, "fetch", ["url", "retries", "timeout"])) == \
+        _plan_repr(baseline(pos, "fetch", ["url", "retries", "timeout"]))
+
+    comm = tmp_path / "comm"
+    comm.mkdir()
+    (comm / "app").mkdir()
+    (comm / "app" / "core.py").write_text(
+        "def fetch(url,  # endpoint\n"
+        "          timeout=10):\n"
+        "    return url\n"
+    )
+    assert _plan_repr(plan_param_reorder(comm, "fetch", ["timeout", "url"])) == \
+        _plan_repr(baseline(comm, "fetch", ["timeout", "url"]))
 
 
 def test_apply_verifies_and_cli_round_trip(tmp_path, capsys):
