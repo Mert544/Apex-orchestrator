@@ -43,39 +43,40 @@ def _is_pure_reference(node: ast.expr) -> bool:
     return False
 
 
-def _is_forwarding_lambda(node: ast.Lambda) -> bool:
-    args = node.args
+def _has_only_plain_params(args: ast.arguments) -> bool:
+    """True when the lambda has only plain positional params, no defaults."""
     # No *args / **kwargs / keyword-only / positional-only / defaults.
     if args.vararg or args.kwarg or args.kwonlyargs or args.posonlyargs:
         return False
     if args.defaults or args.kw_defaults:
         return False
+    return bool(args.args)
 
-    params = [a.arg for a in args.args]
-    if not params:
-        return False
 
-    body = node.body
+def _call_forwards_params(body: ast.expr, params: list[str]) -> bool:
+    """True when ``body`` is a plain call passing exactly ``params`` in order."""
     if not isinstance(body, ast.Call):
         return False
-
     # Callable must be a side-effect-free reference, never itself a call.
     if not _is_pure_reference(body.func):
         return False
-
     # No keyword args, no */** unpacking in the call.
-    if body.keywords:
+    if body.keywords or any(isinstance(a, ast.Starred) for a in body.args):
         return False
-    if any(isinstance(a, ast.Starred) for a in body.args):
-        return False
-
     # Positional args must be EXACTLY the params, same count and order.
     if len(body.args) != len(params):
         return False
-    for arg, param in zip(body.args, params):
-        if not isinstance(arg, ast.Name) or arg.id != param:
-            return False
-    return True
+    return all(
+        isinstance(arg, ast.Name) and arg.id == param
+        for arg, param in zip(body.args, params)
+    )
+
+
+def _is_forwarding_lambda(node: ast.Lambda) -> bool:
+    if not _has_only_plain_params(node.args):
+        return False
+    params = [a.arg for a in node.args.args]
+    return _call_forwards_params(node.body, params)
 
 
 def _targets(tree: ast.Module) -> list[ast.Lambda]:

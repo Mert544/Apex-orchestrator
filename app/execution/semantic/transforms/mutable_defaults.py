@@ -75,6 +75,82 @@ def _flagged_functions(tree: ast.Module) -> list[tuple[ast.AST, list[tuple[str, 
     return out
 
 
+def _has_multiline_default(mutables: list) -> bool:
+    """True if any default spans multiple lines (skip the function, stay safe)."""
+    return any(default.lineno != default.end_lineno for _arg, default, _lit, _node in mutables)
+
+
+def _span_text(lines: list[str], node: ast.expr) -> str:
+    """The exact source slice covered by a single-line ``node``."""
+    return lines[node.lineno - 1][node.col_offset:node.end_col_offset]
+
+
+def _annotation_edits(
+    lines: list[str], mutables: list
+) -> list[tuple[int, int, int, str]]:
+    """Span edits widening each nullable-able annotation ``T`` to ``T | None``."""
+    edits: list[tuple[int, int, int, str]] = []
+    for _arg, _default, _lit, arg_node in mutables:
+        ann = getattr(arg_node, "annotation", None)
+        if ann is None or ann.lineno != ann.end_lineno:
+            continue  # no annotation, or multi-line — stay safe
+        orig = _span_text(lines, ann)
+        if "None" in orig or "Optional" in orig:
+            continue  # already nullable
+        edits.append((ann.lineno, ann.col_offset, ann.end_col_offset, f"{orig} | None"))
+    return edits
+
+
+def _collect_span_edits(
+    lines: list[str], mutables: list, widen_annotations: bool
+) -> list[tuple[int, int, int, str]]:
+    """All in-place span replacements: each default → None, optional annotation widening."""
+    # Apply right-to-left per line so neighbouring spans on the same line stay valid.
+    edits: list[tuple[int, int, int, str]] = [
+        (default.lineno, default.col_offset, default.end_col_offset, "None")
+        for _arg, default, _lit, _node in mutables
+    ]
+    if widen_annotations:
+        edits += _annotation_edits(lines, mutables)
+    return edits
+
+
+def _apply_span_edits(lines: list[str], span_edits: list[tuple[int, int, int, str]]) -> None:
+    """Splice each ``(lineno, col, end_col, text)`` in place, right-to-left."""
+    for li_one, col, end_col, text in sorted(span_edits, reverse=True):
+        li = li_one - 1
+        line = lines[li]
+        lines[li] = line[:col] + text + line[end_col:]
+
+
+def _build_guard(indent: str, mutables: list, guard_value: dict) -> str:
+    """The ``if arg is None: arg = <value>`` guard block, in arg order."""
+    return "".join(
+        f"{indent}if {arg} is None:\n{indent}    {arg} = {guard_value[id(default)]}\n"
+        for arg, default, _lit, _node in mutables
+    )
+
+
+def _patch_one_function(lines: list[str], func: ast.AST, mutables: list, widen_annotations: bool) -> int:
+    """Rewrite one function in ``lines``; return the count of defaults fixed."""
+    if not func.body:
+        return 0
+    if _has_multiline_default(mutables):
+        return 0
+    first_stmt = func.body[0]
+    indent = " " * first_stmt.col_offset
+    # Capture each default's *original* source text BEFORE rewriting it, so
+    # the guard preserves the real value (e.g. [1, 2], not a generic []).
+    guard_value = {
+        id(default): _span_text(lines, default)
+        for _arg, default, _lit, _node in mutables
+    }
+    _apply_span_edits(lines, _collect_span_edits(lines, mutables, widen_annotations))
+    # Insert guards just before the first body statement, in arg order.
+    lines.insert(first_stmt.lineno - 1, _build_guard(indent, mutables, guard_value))
+    return len(mutables)
+
+
 def _patch_mutable_defaults(
     rel_path: str, source: str, tree: ast.Module
 ) -> SemanticPatchResult | None:
@@ -89,52 +165,7 @@ def _patch_mutable_defaults(
     # Deepest function first so inserting guard lines never shifts a function we
     # have yet to edit.
     for func, mutables in sorted(flagged, key=lambda fm: fm[0].lineno, reverse=True):
-        if not func.body:
-            continue
-        first_stmt = func.body[0]
-        indent = " " * first_stmt.col_offset
-        # Replace each mutable default span with None (right-to-left on each line).
-        edits = sorted(mutables, key=lambda m: (m[1].lineno, m[1].col_offset), reverse=True)
-        ok = True
-        for _arg, default, _lit, _node in edits:
-            if default.lineno != default.end_lineno:
-                ok = False  # multi-line default — skip this function, stay safe
-                break
-        if not ok:
-            continue
-        # Capture each default's *original* source text BEFORE rewriting it, so
-        # the guard preserves the real value (e.g. [1, 2], not a generic []).
-        guard_value = {
-            id(default): lines[default.lineno - 1][default.col_offset:default.end_col_offset]
-            for _arg, default, _lit, _node in mutables
-        }
-        # Build a flat list of in-place span replacements (default → None, and
-        # optionally annotation T → "T | None"); apply right-to-left per line so
-        # neighbouring spans on the same line stay valid.
-        span_edits: list[tuple[int, int, int, str]] = []  # (lineno, col, end_col, text)
-        for _arg, default, _lit, _node in mutables:
-            span_edits.append((default.lineno, default.col_offset, default.end_col_offset, "None"))
-        if widen_annotations:
-            for _arg, default, _lit, arg_node in mutables:
-                ann = getattr(arg_node, "annotation", None)
-                if ann is None or ann.lineno != ann.end_lineno:
-                    continue  # no annotation, or multi-line — stay safe
-                orig = lines[ann.lineno - 1][ann.col_offset:ann.end_col_offset]
-                if "None" in orig or "Optional" in orig:
-                    continue  # already nullable
-                span_edits.append((ann.lineno, ann.col_offset, ann.end_col_offset, f"{orig} | None"))
-        for li_one, col, end_col, text in sorted(span_edits, reverse=True):
-            li = li_one - 1
-            line = lines[li]
-            lines[li] = line[:col] + text + line[end_col:]
-        # Insert guards just before the first body statement, in arg order.
-        guard = "".join(
-            f"{indent}if {arg} is None:\n{indent}    {arg} = {guard_value[id(default)]}\n"
-            for arg, default, _lit, _node in mutables
-        )
-        insert_at = first_stmt.lineno - 1
-        lines.insert(insert_at, guard)
-        fixed_count += len(mutables)
+        fixed_count += _patch_one_function(lines, func, mutables, widen_annotations)
 
     if fixed_count == 0:
         return None
