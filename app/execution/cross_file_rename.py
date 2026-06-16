@@ -31,6 +31,7 @@ from pathlib import Path
 # output). Kept as a module alias so the many importers of this name — and
 # `_py_files` below — stay on the single source of truth in app.engine.skip_dirs.
 from app.engine.skip_dirs import SKIPPED_DIRS as _SKIPPED_DIRS
+from app.execution._apply_verify import run_full_suite_verification
 
 # A rename span: (line, col_start, col_end) — 1-based line, 0-based cols.
 Span = tuple[int, int, int]
@@ -388,14 +389,7 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
                        reason="impacted tests failed after change; files restored")
             return out
 
-    from app.engine.proof_of_fix import summarize_test_run
-    from app.skills.execution.run_tests import RunTestsSkill
-
-    summary = RunTestsSkill().run(str(root))
-    out["verified"] = bool(summary.ok)
-    out["test_evidence"] = summarize_test_run(summary)
-    if summary.ok or not summary.commands:
-        out["rolled_back"] = False
+    if run_full_suite_verification(root, out):
         return out
     _rollback(root, plan, created)
     out.update(applied=False, rolled_back=True,

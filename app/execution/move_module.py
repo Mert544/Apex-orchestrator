@@ -27,6 +27,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.execution._apply_verify import run_full_suite_verification
 from app.execution._transform_base import parse_trees as _parse_trees
 from app.execution.cross_file_rename import (
     Span,
@@ -389,14 +390,7 @@ def apply_move(project_root: str | Path, plan: MovePlan, verify: bool = True) ->
     if not verify:
         return out
 
-    from app.engine.proof_of_fix import summarize_test_run
-    from app.skills.execution.run_tests import RunTestsSkill
-
-    summary = RunTestsSkill().run(str(root))
-    out["verified"] = bool(summary.ok)
-    out["test_evidence"] = summarize_test_run(summary)
-    if summary.ok or not summary.commands:
-        out["rolled_back"] = False
+    if run_full_suite_verification(root, out):
         return out
 
     # Tests failed -> restore everything exactly as it was.
