@@ -189,18 +189,11 @@ def _hole_param_names(diff_node_segments: list[list[tuple[ast.AST, str]]],
     return names
 
 
-def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
-    """Plan lifting a near-duplicate ``group`` into one parameterized helper.
-
-    ``group`` is a :class:`~app.engine.near_dup.NearDuplicateGroup`: its
-    ``occurrences`` are ``"module:lineno"`` of each block's first statement and
-    its ``differences`` lists, per differing position, the source text each
-    occurrence carries there. Returns a :class:`RenamePlan` ready for
-    ``apply_rename`` (suite-verified, auto-rollback). On the slightest doubt the
-    plan carries a blocker and empty ``new_contents``."""
-    plan = RenamePlan(old="near_dup", new="_shared")
-    root = Path(project_root)
-
+def _validate_group_shape(group, plan: RenamePlan):
+    """Read the group's fields and gate its shape. Returns
+    ``(occurrences, n_statements, diff_count, differences)`` on success, or
+    ``None`` (recording a blocker) on any malformed shape — same checks and
+    messages as the inline version, in the same order."""
     occurrences = list(getattr(group, "occurrences", []) or [])
     n_statements = int(getattr(group, "lines", 0) or 0)
     diff_count = int(getattr(group, "diff_count", 0) or 0)
@@ -208,30 +201,30 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
 
     if len(occurrences) < 2:
         plan.blockers.append("a shared helper needs at least two occurrences")
-        return plan
+        return None
     if n_statements < 1:
         plan.blockers.append("block has no statements to extract")
-        return plan
+        return None
     if diff_count < 1 or not differences:
         plan.blockers.append(
             "a near-duplicate has >= 1 differing position — a zero-diff group is "
             "an exact duplicate (dedup_extract's job), nothing to parameterize")
-        return plan
+        return None
     if len(differences) != diff_count:
         plan.blockers.append("malformed group: diff_count disagrees with "
                              "the differences columns")
-        return plan
+        return None
     if any(len(col) != len(occurrences) for col in differences):
         plan.blockers.append("malformed group: a differences column is not "
                              "parallel to the occurrences")
-        return plan
+        return None
+    return occurrences, n_statements, diff_count, differences
 
-    parsed = [_parse_occurrence(o) for o in occurrences]
-    if any(p is None for p in parsed):
-        plan.blockers.append("malformed occurrence location(s)")
-        return plan
 
-    # Read & parse every involved module once (deterministic order).
+def _read_modules(root: Path, parsed, plan: RenamePlan):
+    """Read & parse every involved module once (deterministic order). Returns
+    ``(sources, trees, rels)`` or ``None`` (recording a blocker) on a read or
+    parse failure."""
     sources: dict[str, str] = {}
     trees: dict[str, ast.Module] = {}
     rels = sorted({rel for rel, _ in parsed})  # type: ignore[misc]
@@ -240,24 +233,31 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
             text = (root / rel).read_text(encoding="utf-8")
         except OSError:
             plan.blockers.append(f"cannot read {rel}")
-            return plan
+            return None
         try:
             trees[rel] = ast.parse(text)
         except SyntaxError as e:
             plan.blockers.append(f"{rel} doesn't parse: {e}")
-            return plan
+            return None
         sources[rel] = text
+    return sources, trees, rels
 
-    # Resolve each occurrence with dedup_extract's EXACT path — same contiguous-run
-    # snapping, same control-flow blockers, same tail-return handling, same
-    # live-in/live-out data flow. Any unsafe one blocks the whole plan. The
-    # occurrences stay PARALLEL to the differences columns (same order).
+
+def _resolve_all_occurrences(root: Path, parsed, n_statements: int,
+                             sources, trees, plan: RenamePlan):
+    """Resolve every occurrence with dedup_extract's EXACT path, then enforce a
+    single live-in/live-out signature and a single tail-return shape across them
+    all. Returns ``(resolved, live_in, live_out, tail_return)`` or ``None``
+    (recording a blocker) on any unsafe occurrence or divergence."""
+    # Same contiguous-run snapping, same control-flow blockers, same tail-return
+    # handling, same live-in/live-out data flow. Any unsafe one blocks the whole
+    # plan. The occurrences stay PARALLEL to the differences columns (same order).
     resolved: list[_Occurrence] = []
     for rel, line in parsed:  # type: ignore[misc]
         occ = _resolve_occurrence(root, rel, line, n_statements, sources,
                                   trees, plan)
         if occ is None:
-            return plan
+            return None
         resolved.append(occ)
 
     # ONE interface: require an identical live-in/live-out signature everywhere,
@@ -270,19 +270,24 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
                 "occurrences have different data-flow signatures "
                 f"(params/returns differ: {sig0} vs "
                 f"{(occ.live_in, occ.live_out)}) — not a clean shared helper")
-            return plan
+            return None
     live_in, live_out = sig0
 
     tail_return = resolved[0].tail_return
     if any(occ.tail_return != tail_return for occ in resolved[1:]):
         plan.blockers.append("occurrences disagree on tail-return shape — "
                              "not a clean shared helper")
-        return plan
+        return None
+    return resolved, live_in, live_out, tail_return
 
-    # ── Locate the differing value leaves STRUCTURALLY in every occurrence. ──
-    # Re-derive near_dup's value-leaf walk for each occurrence's run. The columns
-    # (sorted by structural path) line up across occurrences and with the
-    # detector's `differences`. A column DIFFERS iff its segment text varies.
+
+def _locate_diff_columns(resolved, diff_count: int, differences, plan: RenamePlan):
+    """Locate the differing value leaves STRUCTURALLY in every occurrence.
+
+    Re-derive near_dup's value-leaf walk for each occurrence's run, check the
+    templates line up across occurrences, derive which columns differ, and gate
+    that those differences match the detector's report. Returns
+    ``(per_occ_leaves, diff_cols)`` or ``None`` (recording a blocker)."""
     per_occ_leaves: list[list[tuple[str, ast.AST]]] = []
     n_cols = -1
     for occ in resolved:
@@ -293,7 +298,7 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
             plan.blockers.append(
                 "occurrences expose different value-leaf shapes — the structural "
                 "templates disagree, so they can't be one parameterized helper")
-            return plan
+            return None
         per_occ_leaves.append(leaves)
 
     # The structural paths must be identical column-by-column across occurrences;
@@ -304,7 +309,7 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
             plan.blockers.append(
                 "occurrences expose different value-leaf paths — structural "
                 "mismatch, refusing to parameterize")
-            return plan
+            return None
 
     # A column is a differing position iff its per-occurrence segment text varies.
     diff_cols: list[int] = []
@@ -322,20 +327,27 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
         plan.blockers.append(
             f"re-derived {len(diff_cols)} differing position(s) but the group "
             f"reports {diff_count} — column mapping is unsound, refusing")
-        return plan
+        return None
     if [sorted(col) for col in diff_segments] != [sorted(col) for col in differences]:
         plan.blockers.append(
             "re-derived differing values disagree with the detector's report — "
             "column mapping is unsound, refusing")
-        return plan
+        return None
+    return per_occ_leaves, diff_cols
 
-    # EVERY differing leaf must be a parameterizable VALUE in every occurrence:
-    # an ast.Constant, or an ast.Name LOADED (read). A differing loaded Name is
-    # provably safe — because the detector only wildcards value leaves and a
-    # name BOUND inside the block is a Store (structure that must match to group),
-    # any differing loaded Name is a FREE name (global/builtin/outer), so passing
-    # its value as an argument is identical to reading it inline. Anything else
-    # (a Store/Del target, an attribute — neither is a value leaf) blocks.
+
+def _gate_value_holes(resolved, per_occ_leaves, diff_cols,
+                      plan: RenamePlan) -> bool:
+    """EVERY differing leaf must be a parameterizable VALUE in every occurrence:
+    an ast.Constant, or an ast.Name LOADED (read). Returns ``True`` if all holes
+    pass, else ``False`` (recording a blocker).
+
+    A differing loaded Name is provably safe — because the detector only
+    wildcards value leaves and a name BOUND inside the block is a Store
+    (structure that must match to group), any differing loaded Name is a FREE
+    name (global/builtin/outer), so passing its value as an argument is identical
+    to reading it inline. Anything else (a Store/Del target, an attribute —
+    neither is a value leaf) blocks."""
     for col in diff_cols:
         for i, occ in enumerate(resolved):
             node = per_occ_leaves[i][col][1]
@@ -346,45 +358,16 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
                     "a differing position is not a value (constant or loaded "
                     f"name) in every occurrence ({_segment(occ.source, node)!r} "
                     f"at {occ.rel}:{occ.span_lo}) — can't become a value parameter")
-                return plan
+                return False
+    return True
 
-    first = resolved[0]
-    first_dotted = _module_dotted(first.rel)
-    # Human-readable helper name from the common tokens of the enclosing function
-    # names, falling back to the machine `_shared_<n>` scheme when none is free.
-    fn_names = [occ.fn.name for occ in resolved]
-    helper_name = (_descriptive_helper_name(fn_names, trees, set(rels))
-                   or _free_helper_name(trees, set(rels)))
-    if helper_name is None:
-        plan.blockers.append("could not find a free `_shared_<n>` helper name")
-        return plan
 
-    # Parameter names for the holes: a descriptive name from a common NAME affix
-    # token where every occurrence's leaf agrees, else the neutral `p<n>` fallback.
-    # Never collide with each other or with live_in (which seeds `taken`).
-    diff_node_segments = [
-        [(per_occ_leaves[i][col][1], _segment(occ.source, per_occ_leaves[i][col][1]))
-         for i, occ in enumerate(resolved)]
-        for col in diff_cols
-    ]
-    param_names = _hole_param_names(diff_node_segments, live_in)
-
-    # ── Splice the FIRST occurrence's source: replace each differing constant
-    # with its parameter name, located by source span (structural, not textual).
-    helper_body_text = _splice_first(first, diff_cols, per_occ_leaves[0],
-                                     param_names, plan)
-    if helper_body_text is None:
-        return plan
-
-    base_indent = (len(first.lines[first.span_lo - 1])
-                   - len(first.lines[first.span_lo - 1].lstrip()))
-    body_lines = _reindent(helper_body_text.splitlines(keepends=True), base_indent)
-    if live_out:
-        body_lines.append("    return " + ", ".join(live_out))
-    sig_params = list(live_in) + param_names
-    helper_src = [f"def {helper_name}({', '.join(sig_params)}):"] + body_lines
-    helper_block = "\n".join(helper_src) + "\n\n\n"
-
+def _emit_rewrites(resolved, sources, trees, rels, first, first_dotted,
+                   helper_name, helper_block, per_occ_leaves, diff_cols,
+                   live_in, live_out, tail_return, plan: RenamePlan):
+    """Rewrite every involved file (helper insertion + call sites + imports),
+    bottom-up so spans stay valid. Returns ``(new_contents, edits)`` or ``None``
+    (recording a blocker) if any rewritten file fails to parse."""
     # ── Per-occurrence call site: its OWN live_in args plus its OWN constants. ──
     def _call_line(occ: _Occurrence, occ_index: int, indent: str) -> str:
         const_args = [_segment(occ.source, per_occ_leaves[occ_index][col][1])
@@ -444,7 +427,7 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
             ast.parse(new_source)
         except SyntaxError as e:
             plan.blockers.append(f"{rel}: extraction would not parse ({e})")
-            return plan
+            return None
 
         # Gate-clean: lifting the block out can strand the imports it used.
         cleaned = strip_unused_imports(new_source)
@@ -453,6 +436,107 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
 
         new_contents[rel] = new_source
         edits[rel] = len(occs) + (1 if rel != first.rel else 0)
+    return new_contents, edits
+
+
+def _build_helper_block(resolved, trees, rels, first, per_occ_leaves,
+                        diff_cols, live_in, live_out, plan: RenamePlan):
+    """Choose the helper name and param names, splice the first occurrence's
+    source, and assemble the ``def ...:`` helper block text. Returns
+    ``(helper_name, helper_block)`` or ``None`` (recording a blocker) when no
+    free name exists or a hole can't be spliced."""
+    # Human-readable helper name from the common tokens of the enclosing function
+    # names, falling back to the machine `_shared_<n>` scheme when none is free.
+    fn_names = [occ.fn.name for occ in resolved]
+    helper_name = (_descriptive_helper_name(fn_names, trees, set(rels))
+                   or _free_helper_name(trees, set(rels)))
+    if helper_name is None:
+        plan.blockers.append("could not find a free `_shared_<n>` helper name")
+        return None
+
+    # Parameter names for the holes: a descriptive name from a common NAME affix
+    # token where every occurrence's leaf agrees, else the neutral `p<n>` fallback.
+    # Never collide with each other or with live_in (which seeds `taken`).
+    diff_node_segments = [
+        [(per_occ_leaves[i][col][1], _segment(occ.source, per_occ_leaves[i][col][1]))
+         for i, occ in enumerate(resolved)]
+        for col in diff_cols
+    ]
+    param_names = _hole_param_names(diff_node_segments, live_in)
+
+    # ── Splice the FIRST occurrence's source: replace each differing constant
+    # with its parameter name, located by source span (structural, not textual).
+    helper_body_text = _splice_first(first, diff_cols, per_occ_leaves[0],
+                                     param_names, plan)
+    if helper_body_text is None:
+        return None
+
+    base_indent = (len(first.lines[first.span_lo - 1])
+                   - len(first.lines[first.span_lo - 1].lstrip()))
+    body_lines = _reindent(helper_body_text.splitlines(keepends=True), base_indent)
+    if live_out:
+        body_lines.append("    return " + ", ".join(live_out))
+    sig_params = list(live_in) + param_names
+    helper_src = [f"def {helper_name}({', '.join(sig_params)}):"] + body_lines
+    helper_block = "\n".join(helper_src) + "\n\n\n"
+    return helper_name, helper_block
+
+
+def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
+    """Plan lifting a near-duplicate ``group`` into one parameterized helper.
+
+    ``group`` is a :class:`~app.engine.near_dup.NearDuplicateGroup`: its
+    ``occurrences`` are ``"module:lineno"`` of each block's first statement and
+    its ``differences`` lists, per differing position, the source text each
+    occurrence carries there. Returns a :class:`RenamePlan` ready for
+    ``apply_rename`` (suite-verified, auto-rollback). On the slightest doubt the
+    plan carries a blocker and empty ``new_contents``."""
+    plan = RenamePlan(old="near_dup", new="_shared")
+    root = Path(project_root)
+
+    shape = _validate_group_shape(group, plan)
+    if shape is None:
+        return plan
+    occurrences, n_statements, diff_count, differences = shape
+
+    parsed = [_parse_occurrence(o) for o in occurrences]
+    if any(p is None for p in parsed):
+        plan.blockers.append("malformed occurrence location(s)")
+        return plan
+
+    read = _read_modules(root, parsed, plan)
+    if read is None:
+        return plan
+    sources, trees, rels = read
+
+    occ_result = _resolve_all_occurrences(root, parsed, n_statements, sources,
+                                          trees, plan)
+    if occ_result is None:
+        return plan
+    resolved, live_in, live_out, tail_return = occ_result
+
+    located = _locate_diff_columns(resolved, diff_count, differences, plan)
+    if located is None:
+        return plan
+    per_occ_leaves, diff_cols = located
+
+    if not _gate_value_holes(resolved, per_occ_leaves, diff_cols, plan):
+        return plan
+
+    first = resolved[0]
+    first_dotted = _module_dotted(first.rel)
+    built = _build_helper_block(resolved, trees, rels, first, per_occ_leaves,
+                                diff_cols, live_in, live_out, plan)
+    if built is None:
+        return plan
+    helper_name, helper_block = built
+
+    emitted = _emit_rewrites(resolved, sources, trees, rels, first, first_dotted,
+                             helper_name, helper_block, per_occ_leaves, diff_cols,
+                             live_in, live_out, tail_return, plan)
+    if emitted is None:
+        return plan
+    new_contents, edits = emitted
 
     plan.new = helper_name
     plan.defined_in = first.rel
