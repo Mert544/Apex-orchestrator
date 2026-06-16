@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -110,6 +111,118 @@ _FACT_SCENARIOS: dict[str, list[str]] = {
 }
 
 
+# Risk-pattern rule table for keyword-derived scenarios. Each rule is a
+# (predicate, scenarios) pair: the predicate inspects the lowercased claim text
+# and context, and when it fires its scenarios are appended in table order. The
+# table replaces a flat series of independent guards so _keyword_scenarios stays
+# a simple fold; rule ORDER here is the emitted scenario order and must not move.
+
+
+def _has_any(text: str, *needles: str) -> bool:
+    return any(n in text for n in needles)
+
+
+# Pattern: missing validation / no guard
+def _rule_validation(text: str, context: str) -> bool:
+    return _has_any(text, "validation", "guard", "check", "sanitize")
+
+
+# Pattern: eval / exec / dangerous function
+def _rule_eval(text: str, context: str) -> bool:
+    return "eval" in text or "exec" in text
+
+
+# Pattern: missing docstring / documentation
+def _rule_docs(text: str, context: str) -> bool:
+    return "docstring" in text or "documented" in text
+
+
+# Pattern: network / external call
+def _rule_network(text: str, context: str) -> bool:
+    return _has_any(text, "network", "request", "fetch", "call")
+
+
+# Pattern: hardcoded values / secrets
+def _rule_secrets(text: str, context: str) -> bool:
+    return _has_any(text, "hardcoded", "secret", "password")
+
+
+# Pattern: bare except
+def _rule_bare_except(text: str, context: str) -> bool:
+    return "bare except" in text or "except:" in context
+
+
+# Pattern: long function / complex
+def _rule_complex(text: str, context: str) -> bool:
+    return "long" in text or "complex" in text
+
+
+# Pattern: mutable default argument
+def _rule_mutable_default(text: str, context: str) -> bool:
+    return "mutable default" in text or "default arg" in text
+
+
+_KEYWORD_RULES: list[tuple[Callable[[str, str], bool], list[str]]] = [
+    (
+        _rule_validation,
+        [
+            "What if an attacker provides None or malformed input?",
+            "What if the input is at the maximum possible size?",
+            "What if the input contains unicode null bytes or escape sequences?",
+        ],
+    ),
+    (
+        _rule_eval,
+        [
+            "What if the expression string contains '__import__('os').system('rm -rf /')'?",
+            "What if a trusted user accidentally passes user-controlled input?",
+        ],
+    ),
+    (
+        _rule_docs,
+        [
+            "What if a new developer joins and cannot understand the function's contract?",
+            "What if the function behavior changes but the callers assume the old contract?",
+        ],
+    ),
+    (
+        _rule_network,
+        [
+            "What if the remote server is down or responds with a 500 error?",
+            "What if the connection hangs indefinitely (no timeout)?",
+            "What if DNS resolution fails or the network is partitioned?",
+        ],
+    ),
+    (
+        _rule_secrets,
+        [
+            "What if the source code is leaked or committed to a public repository?",
+            "What if the hardcoded value needs to change across environments (dev/staging/prod)?",
+        ],
+    ),
+    (
+        _rule_bare_except,
+        [
+            "What if a KeyboardInterrupt or SystemExit is silently swallowed?",
+            "What if an unrelated bug is masked because all exceptions are caught?",
+        ],
+    ),
+    (
+        _rule_complex,
+        [
+            "What if a bug exists in line 40 but tests only cover lines 1-10?",
+            "What if two developers modify different parts of this function simultaneously?",
+        ],
+    ),
+    (
+        _rule_mutable_default,
+        [
+            "What if the function is called twice — does the default list accumulate state?",
+        ],
+    ),
+]
+
+
 @dataclass
 class CounterfactualResult:
     scenarios: list[str] = field(default_factory=list)
@@ -199,48 +312,9 @@ class CounterfactualGenerator:
     @staticmethod
     def _keyword_scenarios(text: str, context: str) -> list[str]:
         scenarios: list[str] = []
-
-        # Pattern: missing validation / no guard
-        if any(k in text for k in ("validation", "guard", "check", "sanitize")):
-            scenarios.append("What if an attacker provides None or malformed input?")
-            scenarios.append("What if the input is at the maximum possible size?")
-            scenarios.append("What if the input contains unicode null bytes or escape sequences?")
-
-        # Pattern: eval / exec / dangerous function
-        if "eval" in text or "exec" in text:
-            scenarios.append("What if the expression string contains '__import__('os').system('rm -rf /')'?")
-            scenarios.append("What if a trusted user accidentally passes user-controlled input?")
-
-        # Pattern: missing docstring / documentation
-        if "docstring" in text or "documented" in text:
-            scenarios.append("What if a new developer joins and cannot understand the function's contract?")
-            scenarios.append("What if the function behavior changes but the callers assume the old contract?")
-
-        # Pattern: network / external call
-        if "network" in text or "request" in text or "fetch" in text or "call" in text:
-            scenarios.append("What if the remote server is down or responds with a 500 error?")
-            scenarios.append("What if the connection hangs indefinitely (no timeout)?")
-            scenarios.append("What if DNS resolution fails or the network is partitioned?")
-
-        # Pattern: hardcoded values / secrets
-        if "hardcoded" in text or "secret" in text or "password" in text:
-            scenarios.append("What if the source code is leaked or committed to a public repository?")
-            scenarios.append("What if the hardcoded value needs to change across environments (dev/staging/prod)?")
-
-        # Pattern: bare except
-        if "bare except" in text or "except:" in context:
-            scenarios.append("What if a KeyboardInterrupt or SystemExit is silently swallowed?")
-            scenarios.append("What if an unrelated bug is masked because all exceptions are caught?")
-
-        # Pattern: long function / complex
-        if "long" in text or "complex" in text:
-            scenarios.append("What if a bug exists in line 40 but tests only cover lines 1-10?")
-            scenarios.append("What if two developers modify different parts of this function simultaneously?")
-
-        # Pattern: mutable default argument
-        if "mutable default" in text or "default arg" in text:
-            scenarios.append("What if the function is called twice — does the default list accumulate state?")
-
+        for predicate, matches in _KEYWORD_RULES:
+            if predicate(text, context):
+                scenarios.extend(matches)
         return scenarios
 
     @staticmethod
