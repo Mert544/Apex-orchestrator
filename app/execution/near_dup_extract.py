@@ -386,24 +386,83 @@ def _gate_value_holes(resolved, per_occ_leaves, diff_cols,
     return True
 
 
+def _call_line(occ: _Occurrence, const_args: list[str], helper_name: str,
+               live_in, live_out, tail_return: bool, indent: str) -> str:
+    """The ONE call line that replaces an occurrence's block: its OWN ``live_in``
+    args plus its OWN per-column constants, in the tail-return / live-out / bare
+    form. Pure."""
+    args = list(live_in) + const_args
+    call_expr = f"{helper_name}({', '.join(args)})"
+    if tail_return:
+        return f"{indent}return {call_expr}\n"
+    if live_out:
+        return f"{indent}{', '.join(live_out)} = {call_expr}\n"
+    return f"{indent}{call_expr}\n"
+
+
+def _rewrite_call_sites(lines: list[str], occs, index_of, per_occ_leaves,
+                        diff_cols, helper_name, live_in, live_out,
+                        tail_return: bool) -> None:
+    """Replace every occurrence's block in ``lines`` with its single call line,
+    bottom-up so spans stay valid. Mutates ``lines`` in place. Pure given inputs
+    (no I/O)."""
+    for occ in sorted(occs, key=lambda o: o.span_lo, reverse=True):
+        const_args = [_segment(occ.source,
+                               per_occ_leaves[index_of[id(occ)]][col][1])
+                      for col in diff_cols]
+        indent = " " * (len(occ.lines[occ.span_lo - 1])
+                        - len(occ.lines[occ.span_lo - 1].lstrip()))
+        lines[occ.span_lo - 1:occ.span_hi] = [
+            _call_line(occ, const_args, helper_name, live_in, live_out,
+                       tail_return, indent)]
+
+
+def _helper_insert_index(first: _Occurrence, occs) -> int:
+    """Where to splice the helper block: the first occurrence's container anchor
+    (its def/decorator line) rebased by the net line-delta of every replacement
+    whose span ends ABOVE it. Pure.
+
+    The anchor is an ORIGINAL-tree line number, but the bottom-up call-site
+    replacements collapsed each copy's span (hi-lo+1 lines) to ONE call line,
+    shrinking the buffer. ``first`` is first in EMIT order, NOT topmost in the
+    file, so a copy may sit above this container; rebasing keeps the def from
+    landing inside an earlier function's body (the same above/below partition
+    inline_function uses so splice and deletions don't interfere)."""
+    container = first.container
+    anchor = min(
+        [container.lineno]
+        + [d.lineno for d in getattr(container, "decorator_list", [])]
+    )
+    delta_above = sum(
+        1 - (o.span_hi - o.span_lo + 1)
+        for o in occs if o.span_hi < anchor
+    )
+    return anchor - 1 + delta_above
+
+
+def _finalize_source(lines: list[str], rel: str,
+                     plan: RenamePlan) -> str | None:
+    """Join ``lines``, gate that the result parses, and strip imports stranded by
+    lifting the block out. Returns the final source or ``None`` (recording a
+    blocker) on a parse failure."""
+    new_source = "".join(lines)
+    try:
+        ast.parse(new_source)
+    except SyntaxError as e:
+        plan.blockers.append(f"{rel}: extraction would not parse ({e})")
+        return None
+    cleaned = strip_unused_imports(new_source)
+    if cleaned is not None:
+        new_source = cleaned
+    return new_source
+
+
 def _emit_rewrites(resolved, sources, trees, rels, first, first_dotted,
                    helper_name, helper_block, per_occ_leaves, diff_cols,
                    live_in, live_out, tail_return, plan: RenamePlan):
     """Rewrite every involved file (helper insertion + call sites + imports),
     bottom-up so spans stay valid. Returns ``(new_contents, edits)`` or ``None``
     (recording a blocker) if any rewritten file fails to parse."""
-    # ── Per-occurrence call site: its OWN live_in args plus its OWN constants. ──
-    def _call_line(occ: _Occurrence, occ_index: int, indent: str) -> str:
-        const_args = [_segment(occ.source, per_occ_leaves[occ_index][col][1])
-                      for col in diff_cols]
-        args = list(live_in) + const_args
-        call_expr = f"{helper_name}({', '.join(args)})"
-        if tail_return:
-            return f"{indent}return {call_expr}\n"
-        if live_out:
-            return f"{indent}{', '.join(live_out)} = {call_expr}\n"
-        return f"{indent}{call_expr}\n"
-
     # ── Group occurrences by file; rewrite bottom-up so spans stay valid. ──
     index_of = {id(occ): i for i, occ in enumerate(resolved)}
     by_file: dict[str, list[_Occurrence]] = {}
@@ -415,49 +474,19 @@ def _emit_rewrites(resolved, sources, trees, rels, first, first_dotted,
     for rel in sorted(by_file):
         occs = by_file[rel]
         lines = list(sources[rel].splitlines(keepends=True))
-        for occ in sorted(occs, key=lambda o: o.span_lo, reverse=True):
-            indent = " " * (len(occ.lines[occ.span_lo - 1])
-                            - len(occ.lines[occ.span_lo - 1].lstrip()))
-            lines[occ.span_lo - 1:occ.span_hi] = [
-                _call_line(occ, index_of[id(occ)], indent)]
+        _rewrite_call_sites(lines, occs, index_of, per_occ_leaves, diff_cols,
+                            helper_name, live_in, live_out, tail_return)
 
         if rel == first.rel:
-            # Insert the helper above the first occurrence's container. The
-            # anchor is an ORIGINAL-tree line number, but the bottom-up
-            # replacements above just collapsed each copy's span (hi-lo+1 lines)
-            # to ONE call line, shrinking the buffer. `first` is first in EMIT
-            # order, NOT topmost in the file, so a copy may sit ABOVE this
-            # container; rebase the anchor by the net line-delta of every
-            # replacement whose span ends above it, or the def lands inside an
-            # earlier function's body (the same above/below partition
-            # inline_function uses so splice and deletions don't interfere).
-            container = first.container
-            anchor = min(
-                [container.lineno]
-                + [d.lineno for d in getattr(container, "decorator_list", [])]
-            )
-            delta_above = sum(
-                1 - (o.span_hi - o.span_lo + 1)
-                for o in occs if o.span_hi < anchor
-            )
-            insert_at = anchor - 1 + delta_above
+            insert_at = _helper_insert_index(first, occs)
             lines[insert_at:insert_at] = [helper_block]
         else:
             import_line = f"from {first_dotted} import {helper_name}\n"
             lines.insert(_import_insert_index(trees[rel]), import_line)
 
-        new_source = "".join(lines)
-        try:
-            ast.parse(new_source)
-        except SyntaxError as e:
-            plan.blockers.append(f"{rel}: extraction would not parse ({e})")
+        new_source = _finalize_source(lines, rel, plan)
+        if new_source is None:
             return None
-
-        # Gate-clean: lifting the block out can strand the imports it used.
-        cleaned = strip_unused_imports(new_source)
-        if cleaned is not None:
-            new_source = cleaned
-
         new_contents[rel] = new_source
         edits[rel] = len(occs) + (1 if rel != first.rel else 0)
     return new_contents, edits
