@@ -281,13 +281,10 @@ def _resolve_all_occurrences(root: Path, parsed, n_statements: int,
     return resolved, live_in, live_out, tail_return
 
 
-def _locate_diff_columns(resolved, diff_count: int, differences, plan: RenamePlan):
-    """Locate the differing value leaves STRUCTURALLY in every occurrence.
-
-    Re-derive near_dup's value-leaf walk for each occurrence's run, check the
-    templates line up across occurrences, derive which columns differ, and gate
-    that those differences match the detector's report. Returns
-    ``(per_occ_leaves, diff_cols)`` or ``None`` (recording a blocker)."""
+def _collect_per_occ_leaves(resolved, plan: RenamePlan):
+    """Re-derive each occurrence's value-leaf walk, gating a uniform column
+    count. Returns ``(per_occ_leaves, n_cols)`` or ``None`` (recording a
+    blocker) when the structural templates expose different leaf shapes."""
     per_occ_leaves: list[list[tuple[str, ast.AST]]] = []
     n_cols = -1
     for occ in resolved:
@@ -300,18 +297,19 @@ def _locate_diff_columns(resolved, diff_count: int, differences, plan: RenamePla
                 "templates disagree, so they can't be one parameterized helper")
             return None
         per_occ_leaves.append(leaves)
+    return per_occ_leaves, n_cols
 
-    # The structural paths must be identical column-by-column across occurrences;
-    # if not, the blocks aren't really the same template and we refuse to guess.
+
+def _paths_match(per_occ_leaves) -> bool:
+    """Whether every occurrence exposes the SAME column-by-column leaf paths."""
     base_paths = [p for p, _ in per_occ_leaves[0]]
-    for leaves in per_occ_leaves[1:]:
-        if [p for p, _ in leaves] != base_paths:
-            plan.blockers.append(
-                "occurrences expose different value-leaf paths — structural "
-                "mismatch, refusing to parameterize")
-            return None
+    return all([p for p, _ in leaves] == base_paths
+               for leaves in per_occ_leaves[1:])
 
-    # A column is a differing position iff its per-occurrence segment text varies.
+
+def _derive_diff_columns(resolved, per_occ_leaves, n_cols: int):
+    """Per-column segment scan. Returns ``(diff_cols, diff_segments)`` — a column
+    is differing iff its per-occurrence segment text varies."""
     diff_cols: list[int] = []
     diff_segments: list[list[str]] = []
     for col in range(n_cols):
@@ -320,6 +318,32 @@ def _locate_diff_columns(resolved, diff_count: int, differences, plan: RenamePla
         if len(set(segs)) > 1:
             diff_cols.append(col)
             diff_segments.append(segs)
+    return diff_cols, diff_segments
+
+
+def _locate_diff_columns(resolved, diff_count: int, differences, plan: RenamePlan):
+    """Locate the differing value leaves STRUCTURALLY in every occurrence.
+
+    Re-derive near_dup's value-leaf walk for each occurrence's run, check the
+    templates line up across occurrences, derive which columns differ, and gate
+    that those differences match the detector's report. Returns
+    ``(per_occ_leaves, diff_cols)`` or ``None`` (recording a blocker)."""
+    collected = _collect_per_occ_leaves(resolved, plan)
+    if collected is None:
+        return None
+    per_occ_leaves, n_cols = collected
+
+    # The structural paths must be identical column-by-column across occurrences;
+    # if not, the blocks aren't really the same template and we refuse to guess.
+    if not _paths_match(per_occ_leaves):
+        plan.blockers.append(
+            "occurrences expose different value-leaf paths — structural "
+            "mismatch, refusing to parameterize")
+        return None
+
+    # A column is a differing position iff its per-occurrence segment text varies.
+    diff_cols, diff_segments = _derive_diff_columns(
+        resolved, per_occ_leaves, n_cols)
 
     # Re-deriving the diffs must agree with what the detector reported, else our
     # column mapping is unsound — block rather than risk splicing the wrong hole.
@@ -546,6 +570,57 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
     return plan
 
 
+def _hole_edit(first: _Occurrence, node: ast.AST, n_block_lines: int,
+               pname: str, plan: RenamePlan):
+    """Locate ONE differing constant ``node`` and return its
+    ``(line_idx, col_start, col_end, replacement)`` edit, or ``None`` (recording
+    a blocker) if it lacks position info, spans rows, falls outside the run, or
+    can't be re-read."""
+    lineno = getattr(node, "lineno", None)
+    col_off = getattr(node, "col_offset", None)
+    end_lineno = getattr(node, "end_lineno", None)
+    end_col = getattr(node, "end_col_offset", None)
+    if (lineno is None or col_off is None or end_lineno is None
+            or end_col is None):
+        plan.blockers.append(
+            "a differing constant lacks position info — can't splice it "
+            "safely, refusing")
+        return None
+    if lineno != end_lineno:
+        # A multi-line literal hole would span snippet rows — out of this
+        # version's conservative scope.
+        plan.blockers.append(
+            "a differing constant spans multiple lines — refusing to splice "
+            "a multi-line hole in this version")
+        return None
+    idx = lineno - first.span_lo
+    if not (0 <= idx < n_block_lines):
+        plan.blockers.append(
+            "a differing constant falls outside the located run — refusing")
+        return None
+    # Verify the span really is THIS constant's source (defence in depth),
+    # reading against the FULL module source where the node's positions live.
+    if ast.get_source_segment(first.source, node) is None:
+        plan.blockers.append(
+            "could not re-read a differing constant's source span — refusing")
+        return None
+    return idx, col_off, end_col, pname
+
+
+def _apply_line_holes(line: str, holes: list[tuple[int, int, str]],
+                      plan: RenamePlan) -> str | None:
+    """Splice every ``(col_start, col_end, replacement)`` hole into ONE ``line``,
+    right-to-left so earlier columns stay valid. Returns the new line or ``None``
+    (recording a blocker) if any span is out of range."""
+    for c0, c1, pname in sorted(holes, key=lambda h: h[0], reverse=True):
+        if c1 > len(line.rstrip("\n")) or c0 < 0 or c0 >= c1:
+            plan.blockers.append(
+                "a differing constant's span is out of range — refusing")
+            return None
+        line = line[:c0] + pname + line[c1:]
+    return line
+
+
 def _splice_first(first: _Occurrence, diff_cols: list[int],
                   leaves: list[tuple[str, ast.AST]], param_names: list[str],
                   plan: RenamePlan) -> str | None:
@@ -564,49 +639,19 @@ def _splice_first(first: _Occurrence, diff_cols: list[int],
     # Collect (line_idx, col_start, col_end, replacement) edits for each hole.
     edits: list[tuple[int, int, int, str]] = []
     for col, pname in zip(diff_cols, param_names):
-        node = leaves[col][1]
-        lineno = getattr(node, "lineno", None)
-        col_off = getattr(node, "col_offset", None)
-        end_lineno = getattr(node, "end_lineno", None)
-        end_col = getattr(node, "end_col_offset", None)
-        if (lineno is None or col_off is None or end_lineno is None
-                or end_col is None):
-            plan.blockers.append(
-                "a differing constant lacks position info — can't splice it "
-                "safely, refusing")
+        edit = _hole_edit(first, leaves[col][1], len(block_lines), pname, plan)
+        if edit is None:
             return None
-        if lineno != end_lineno:
-            # A multi-line literal hole would span snippet rows — out of this
-            # version's conservative scope.
-            plan.blockers.append(
-                "a differing constant spans multiple lines — refusing to splice "
-                "a multi-line hole in this version")
-            return None
-        idx = lineno - first.span_lo
-        if not (0 <= idx < len(block_lines)):
-            plan.blockers.append(
-                "a differing constant falls outside the located run — refusing")
-            return None
-        # Verify the span really is THIS constant's source (defence in depth),
-        # reading against the FULL module source where the node's positions live.
-        if ast.get_source_segment(first.source, node) is None:
-            plan.blockers.append(
-                "could not re-read a differing constant's source span — refusing")
-            return None
-        edits.append((idx, col_off, end_col, pname))
+        edits.append(edit)
 
     # Apply per-line, right-to-left, so earlier columns stay valid.
     grouped: dict[int, list[tuple[int, int, str]]] = {}
     for idx, c0, c1, pname in edits:
         grouped.setdefault(idx, []).append((c0, c1, pname))
     for idx, holes in grouped.items():
-        line = block_lines[idx]
-        for c0, c1, pname in sorted(holes, key=lambda h: h[0], reverse=True):
-            if c1 > len(line.rstrip("\n")) or c0 < 0 or c0 >= c1:
-                plan.blockers.append(
-                    "a differing constant's span is out of range — refusing")
-                return None
-            line = line[:c0] + pname + line[c1:]
+        line = _apply_line_holes(block_lines[idx], holes, plan)
+        if line is None:
+            return None
         block_lines[idx] = line
 
     return "".join(block_lines)
