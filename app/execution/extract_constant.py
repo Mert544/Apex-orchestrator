@@ -249,6 +249,116 @@ def _insert_index(tree: ast.Module) -> int:
     return idx
 
 
+def _load_source(
+    plan: RenamePlan, root: Path, rel: str, source: str | None
+) -> str | None:
+    """The module text for ``rel``, or ``None`` after appending a not-found
+    blocker. A supplied ``source`` is trusted as-is; otherwise the project walk
+    locates it."""
+    if source is not None:
+        return source
+    sources = dict(_py_files(root))
+    if rel not in sources:
+        plan.blockers.append(f"{rel}: module not found under project root")
+        return None
+    return sources[rel]
+
+
+def _module_tree(
+    plan: RenamePlan, root: Path, rel: str, source: str | None
+) -> tuple[ast.Module, str] | None:
+    """The parsed ``(tree, source)`` for ``rel``, or ``None`` after appending a
+    not-found / does-not-parse blocker."""
+    source = _load_source(plan, root, rel, source)
+    if source is None:
+        return None
+    try:
+        return ast.parse(source), source
+    except SyntaxError:
+        plan.blockers.append(f"{rel}: module does not parse")
+        return None
+
+
+def _resolve_name(plan: RenamePlan, rel: str, tree: ast.Module, value: object) -> str | None:
+    """A free, valid constant name for ``value`` in ``tree``, or ``None`` after
+    appending a blocker when no valid identifier can be synthesized."""
+    name = _free_name(_base_name(value), _top_level_bindings(tree))
+    if not name.isidentifier() or keyword.iskeyword(name):
+        plan.blockers.append(f"{rel}: could not synthesize a valid constant name")
+        return None
+    return name
+
+
+def _reparses(plan: RenamePlan, rel: str, new_content: str) -> bool:
+    """True if ``new_content`` re-parses; else append the abort blocker."""
+    try:
+        ast.parse(new_content)
+    except SyntaxError:
+        plan.blockers.append(f"{rel}: result does not re-parse — aborting")
+        return False
+    return True
+
+
+def _best_candidate(
+    by_value: dict[object, list[ast.Constant]], min_occurrences: int
+) -> tuple[object, list[ast.Constant]] | None:
+    """The most-repeated qualifying literal seen ``>= min_occurrences`` times,
+    tie-broken deterministically on the value's repr. ``None`` if none qualify."""
+    candidates = [
+        (value, nodes) for value, nodes in by_value.items()
+        if len(nodes) >= min_occurrences
+    ]
+    if not candidates:
+        return None
+    best = max(len(ns) for _, ns in candidates)
+    return min(
+        ((v, ns) for v, ns in candidates if len(ns) == best),
+        key=lambda c: repr(c[0]),
+    )
+
+
+def _splice_occurrences(
+    plan: RenamePlan,
+    rel: str,
+    lines: list[str],
+    spans: list[tuple[int, int, int]],
+    name: str,
+    value: object,
+) -> bool:
+    """Replace each occurrence in ``lines`` with ``name``, bottom-up /
+    right-to-left so earlier spans stay valid. Returns False (after appending a
+    blocker) if any span no longer re-reads to the exact literal."""
+    for line_no, start, end in sorted(set(spans), reverse=True):
+        row = lines[line_no - 1]
+        segment = row[start:end]
+        try:
+            parsed = ast.literal_eval(segment)
+        except (ValueError, SyntaxError):
+            plan.blockers.append(
+                f"{rel}:{line_no}: span is not a re-readable literal")
+            return False
+        if parsed != value or type(parsed) is not type(value):
+            plan.blockers.append(
+                f"{rel}:{line_no}: span no longer holds the literal")
+            return False
+        lines[line_no - 1] = row[:start] + name + row[end:]
+    return True
+
+
+def _insert_assignment(
+    tree: ast.Module, lines: list[str], name: str, value: object
+) -> None:
+    """Splice ``NAME = <literal>`` into ``lines`` after the import/docstring
+    prologue, matching the file's existing newline style."""
+    insert_at = _insert_index(tree)
+    newline = "\n"
+    for ln in lines:
+        if ln.endswith("\r\n"):
+            newline = "\r\n"
+            break
+    lines.insert(insert_at, f"{name} = {repr(value)}{newline}")
+
+
 def plan_extract_constant(
     project_root: str | Path,
     module_rel: str,
@@ -276,78 +386,34 @@ def plan_extract_constant(
         plan.blockers.append(f"{rel}: fixture/test/example module — skipped")
         return plan
 
-    if source is None:
-        sources = dict(_py_files(root))
-        if rel not in sources:
-            plan.blockers.append(f"{rel}: module not found under project root")
-            return plan
-        source = sources[rel]
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        plan.blockers.append(f"{rel}: module does not parse")
+    parsed = _module_tree(plan, root, rel, source)
+    if parsed is None:
         return plan
+    tree, source = parsed
 
-    by_value = _collect_occurrences(tree)
-    candidates = [
-        (value, nodes) for value, nodes in by_value.items()
-        if len(nodes) >= min_occurrences
-    ]
-    if not candidates:
+    chosen = _best_candidate(_collect_occurrences(tree), min_occurrences)
+    if chosen is None:
         # No qualifying literal — an empty, non-blocking plan (nothing to do).
         return plan
+    value, nodes = chosen
 
-    # Most-repeated wins; deterministic tie-break on the value's repr.
-    best = max(len(ns) for _, ns in candidates)
-    value, nodes = min(
-        ((v, ns) for v, ns in candidates if len(ns) == best),
-        key=lambda c: repr(c[0]),
-    )
-
-    taken = _top_level_bindings(tree)
-    name = _free_name(_base_name(value), taken)
-    if not name.isidentifier() or keyword.iskeyword(name):
-        plan.blockers.append(f"{rel}: could not synthesize a valid constant name")
+    name = _resolve_name(plan, rel, tree, value)
+    if name is None:
         return plan
 
     lines = source.splitlines(keepends=True)
-
-    # Splice every occurrence, bottom-up / right-to-left, so earlier spans stay
-    # valid as we edit. Each span must still hold the literal's exact source.
     spans: list[tuple[int, int, int]] = [
         (n.lineno, n.col_offset, n.end_col_offset) for n in nodes
     ]
-    for line_no, start, end in sorted(set(spans), reverse=True):
-        row = lines[line_no - 1]
-        segment = row[start:end]
-        try:
-            parsed = ast.literal_eval(segment)
-        except (ValueError, SyntaxError):
-            plan.blockers.append(
-                f"{rel}:{line_no}: span is not a re-readable literal")
-            return plan
-        if parsed != value or type(parsed) is not type(value):
-            plan.blockers.append(
-                f"{rel}:{line_no}: span no longer holds the literal")
-            return plan
-        lines[line_no - 1] = row[:start] + name + row[end:]
+    if not _splice_occurrences(plan, rel, lines, spans, name, value):
+        return plan
 
     # Insert `NAME = <literal>` after the import/docstring prologue. The literal
     # text is the canonical repr so the assignment re-parses to the same value.
-    insert_at = _insert_index(tree)
-    newline = "\n"
-    for ln in lines:
-        if ln.endswith("\r\n"):
-            newline = "\r\n"
-            break
-    assign = f"{name} = {repr(value)}{newline}"
-    lines.insert(insert_at, assign)
+    _insert_assignment(tree, lines, name, value)
 
     new_content = "".join(lines)
-    try:
-        ast.parse(new_content)
-    except SyntaxError:
-        plan.blockers.append(f"{rel}: result does not re-parse — aborting")
+    if not _reparses(plan, rel, new_content):
         return plan
 
     plan.defined_in = rel
