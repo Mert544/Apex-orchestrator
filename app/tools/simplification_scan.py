@@ -130,53 +130,38 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
     from app.execution.nested_with import plan_combine_nested_with
     from app.execution.simplify_len_comparison import plan_simplify_len_comparison
     from app.execution.use_enumerate import plan_use_enumerate
-    from app.execution.semantic.transforms import augmented_assign
-    from app.execution.semantic.transforms import chained_comparison
-    from app.execution.semantic.transforms import collection_literal
-    from app.execution.semantic.transforms import dict_get_default
-    from app.execution.semantic.transforms import dict_literal
-    from app.execution.semantic.transforms import double_not
-    from app.execution.semantic.transforms import fstring
-    from app.execution.semantic.transforms import isinstance_merge
-    from app.execution.semantic.transforms import membership_set
-    from app.execution.semantic.transforms import merge_nested_if
-    from app.execution.semantic.transforms import mutable_defaults
-    from app.execution.semantic.transforms import not_in_simplify
-    from app.execution.semantic.transforms import percent_string_concat
-    from app.execution.semantic.transforms import redundant_else
-    from app.execution.semantic.transforms import redundant_lambda
-    from app.execution.semantic.transforms import set_literal
-    from app.execution.semantic.transforms import simplify_comparison
-    from app.execution.semantic.transforms import startswith_tuple
-    from app.execution.semantic.transforms import swap_via_tuple
-    from app.execution.semantic.transforms import tuple_membership
-    from app.execution.semantic.transforms import unreachable_cleanup
+    # One namespace import of the transforms package replaces the former
+    # per-transform import list (consolidated here and in the bridge's
+    # ``_simplify_dispatch`` to drain the duplicate-window metric). The package
+    # ``__init__`` eagerly binds each submodule, so ``_t.<name>`` resolves; the
+    # pairs below reference the exact same callables as before.
+    from app.execution.semantic import transforms as _t
 
     return [
-        ("merge-nested-if", merge_nested_if.apply),
-        ("redundant-else", redundant_else.apply),
-        ("dict-get-default", dict_get_default.apply),
-        ("isinstance-merge", isinstance_merge.apply),
-        ("none-compare", simplify_comparison.apply),
-        ("unreachable-code", unreachable_cleanup.apply),
-        ("chained-comparison", chained_comparison.apply),
-        ("redundant-lambda", redundant_lambda.apply),
-        ("set-literal", set_literal.apply),
-        ("startswith-tuple", startswith_tuple.apply),
-        ("not-in-simplify", not_in_simplify.apply),
-        ("tuple-membership", tuple_membership.apply),
-        ("dict-literal", dict_literal.apply),
-        ("double-not", double_not.apply),
-        ("swap-via-tuple", swap_via_tuple.apply),
-        ("membership-set", membership_set.apply),
-        ("percent-string-concat", percent_string_concat.apply),
+        ("merge-nested-if", _t.merge_nested_if.apply),
+        ("redundant-else", _t.redundant_else.apply),
+        ("dict-get-default", _t.dict_get_default.apply),
+        ("isinstance-merge", _t.isinstance_merge.apply),
+        ("none-compare", _t.simplify_comparison.apply),
+        ("unreachable-code", _t.unreachable_cleanup.apply),
+        ("chained-comparison", _t.chained_comparison.apply),
+        ("redundant-lambda", _t.redundant_lambda.apply),
+        ("set-literal", _t.set_literal.apply),
+        ("startswith-tuple", _t.startswith_tuple.apply),
+        ("not-in-simplify", _t.not_in_simplify.apply),
+        ("tuple-membership", _t.tuple_membership.apply),
+        ("dict-literal", _t.dict_literal.apply),
+        ("double-not", _t.double_not.apply),
+        ("swap-via-tuple", _t.swap_via_tuple.apply),
+        ("membership-set", _t.membership_set.apply),
+        ("percent-string-concat", _t.percent_string_concat.apply),
         # Two more behaviour-preserving readability transforms, each a pure 3-arg
         # ``apply`` that validates its own output and refuses (None) when it can't
         # act safely — both distinct from every transform above (collection_literal
         # rewrites empty constructors; fstring drops a dead `f` prefix and proves
         # the result parses to the same string).
-        ("collection-literal", collection_literal.apply),
-        ("fstring-no-placeholder", fstring.apply),
+        ("collection-literal", _t.collection_literal.apply),
+        ("fstring-no-placeholder", _t.fstring.apply),
         # A correctness-preserving fix the bridge ALSO makes executable (its
         # ``mutable-default`` fact routes to ``fix_mutable_defaults`` via the
         # same SemanticPatchGenerator + guarded apply_step path). The classic
@@ -186,9 +171,9 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
         # without a mutable default — so it never fabricates an opportunity. It
         # is distinct from every readability transform above (none of which
         # touches default arguments) and overlaps none of them.
-        ("mutable-default", mutable_defaults.apply),
+        ("mutable-default", _t.mutable_defaults.apply),
         # 2-arg signature → adapt to the uniform 3-arg dry-run call.
-        ("augmented-assign", lambda rel, src, _title: augmented_assign.apply(rel, src)),
+        ("augmented-assign", lambda rel, src, _title: _t.augmented_assign.apply(rel, src)),
         # Four more behaviour-preserving rewrites that live under
         # ``app/execution/`` as on-disk ``plan_<name>(root, rel) -> RenamePlan``
         # transforms rather than in-memory ``apply``. ``plan_to_apply`` adapts

@@ -616,65 +616,51 @@ class IdeaActionBridge:
         from app.execution.simplify_len_comparison import plan_simplify_len_comparison
         from app.execution.use_enumerate import plan_use_enumerate
         from app.tools.simplification_scan import plan_to_apply
-        from app.execution.semantic.transforms import augmented_assign
-        from app.execution.semantic.transforms import chained_comparison
-        from app.execution.semantic.transforms import collection_literal
-        from app.execution.semantic.transforms import dict_get_default
-        from app.execution.semantic.transforms import dict_literal
-        from app.execution.semantic.transforms import double_not
-        from app.execution.semantic.transforms import fstring
-        from app.execution.semantic.transforms import isinstance_merge
-        from app.execution.semantic.transforms import membership_set
-        from app.execution.semantic.transforms import merge_nested_if
-        from app.execution.semantic.transforms import not_in_simplify
-        from app.execution.semantic.transforms import percent_string_concat
-        from app.execution.semantic.transforms import redundant_else
-        from app.execution.semantic.transforms import redundant_lambda
-        from app.execution.semantic.transforms import set_literal
-        from app.execution.semantic.transforms import simplify_comparison
-        from app.execution.semantic.transforms import startswith_tuple
-        from app.execution.semantic.transforms import swap_via_tuple
-        from app.execution.semantic.transforms import tuple_membership
-        from app.execution.semantic.transforms import unreachable_cleanup
+        # One namespace import of the transforms package replaces the former
+        # per-transform import list (consolidated here and in
+        # ``simplification_scan`` to drain the duplicate-window metric). The
+        # package ``__init__`` eagerly binds each submodule, so ``_t.<name>``
+        # resolves; the dispatch below references the exact same callables.
+        from app.execution.semantic import transforms as _t
 
         return {
-            "merge_nested_if": merge_nested_if.apply,
-            "redundant_else": redundant_else.apply,
-            "dict_get_default": dict_get_default.apply,
-            "isinstance_merge": isinstance_merge.apply,
-            "simplify_none_compare": simplify_comparison.apply,
-            "unreachable_cleanup": unreachable_cleanup.apply,
+            "merge_nested_if": _t.merge_nested_if.apply,
+            "redundant_else": _t.redundant_else.apply,
+            "dict_get_default": _t.dict_get_default.apply,
+            "isinstance_merge": _t.isinstance_merge.apply,
+            "simplify_none_compare": _t.simplify_comparison.apply,
+            "unreachable_cleanup": _t.unreachable_cleanup.apply,
             # Newly promoted: each carries the SAME refuse-on-unsafe,
             # self-reparsing, behaviour-preserving contract as the six above.
             # Dispatched straight to its AST transform and vetted through the
             # IDENTICAL apply_step gate (mode policy -> SafetyGates -> snapshot
             # -> write -> test-verify -> auto-rollback); the bridge only chooses
             # WHICH transform, it never bypasses the safety path.
-            "chain_comparison": chained_comparison.apply,
-            "set_literal": set_literal.apply,
-            "startswith_tuple": startswith_tuple.apply,
-            "not_in_simplify": not_in_simplify.apply,
-            "tuple_membership": tuple_membership.apply,
-            "dict_literal": dict_literal.apply,
-            "double_not": double_not.apply,
-            "swap_via_tuple": swap_via_tuple.apply,
-            "membership_set": membership_set.apply,
-            "percent_string_concat": percent_string_concat.apply,
-            "redundant_lambda": redundant_lambda.apply,
+            "chain_comparison": _t.chained_comparison.apply,
+            "set_literal": _t.set_literal.apply,
+            "startswith_tuple": _t.startswith_tuple.apply,
+            "not_in_simplify": _t.not_in_simplify.apply,
+            "tuple_membership": _t.tuple_membership.apply,
+            "dict_literal": _t.dict_literal.apply,
+            "double_not": _t.double_not.apply,
+            "swap_via_tuple": _t.swap_via_tuple.apply,
+            "membership_set": _t.membership_set.apply,
+            "percent_string_concat": _t.percent_string_concat.apply,
+            "redundant_lambda": _t.redundant_lambda.apply,
             # Two more pure 3-arg ``apply(rel, src, title)`` transforms (no
             # adapter needed): collection_literal rewrites an empty
             # constructor to its literal; fstring drops a placeholder-less
             # `f` prefix only after proving the result parses to the same
             # string. Both refuse via None on anything they can't act on.
-            "collection_literal": collection_literal.apply,
-            "fstring_no_placeholder": fstring.apply,
+            "collection_literal": _t.collection_literal.apply,
+            "fstring_no_placeholder": _t.fstring.apply,
             # ``augmented_assign.apply`` has a 2-arg signature (no ``title``);
             # adapt it so the dispatch stays uniform. Without this the 3-arg
             # call in _simplify_generate would raise TypeError (swallowed to
             # None), making the step silently un-runnable — exactly the hollow
             # "executable" the brief forbids.
             "augmented_assign": (lambda rel, src, _title:
-                                 augmented_assign.apply(rel, src)),
+                                 _t.augmented_assign.apply(rel, src)),
             # Four on-disk ``plan_<name>(root, rel) -> RenamePlan`` rewrites
             # under ``app/execution/``, adapted by ``plan_to_apply`` to the same
             # ``apply(rel, src, title) -> SemanticPatchResult | None`` shape (it
