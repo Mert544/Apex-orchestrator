@@ -62,42 +62,42 @@ def cmd_rename(args: argparse.Namespace) -> int:
 
 
 
-def cmd_signature(args: argparse.Namespace) -> int:
-    """Signature family: ``drop`` removes an UNUSED parameter project-wide;
-    ``add`` introduces one with a safe default (no call site can break).
+def _signature_resolve_plan(args: argparse.Namespace, target: str):
+    """Resolve (plan, label) for the chosen signature op.
 
-    Positional callers of a dropped param block (no silent repositioning);
-    a caller already passing an added param's keyword blocks. Apply is
-    test-verified with rollback, like every Apex change.
+    Returns ``(plan, label, None)`` on success, or ``(None, None, rc)`` when the
+    caller should print-and-exit with ``rc`` (the ``drop`` usage error).
     """
-    from app.execution.cross_file_rename import apply_rename
-
-    target = Path(args.target).resolve() if args.target else _get_project_root()
     if args.op == "keywordify":
         from app.execution.keywordify import plan_keywordify
 
-        plan = plan_keywordify(str(target), args.function)
-        label = f"convert positional calls of `{args.function}()` to keywords"
-    elif args.op == "reorder":
+        plan = plan_keywordify(target, args.function)
+        return plan, f"convert positional calls of `{args.function}()` to keywords", None
+    if args.op == "reorder":
         from app.execution.param_reorder import plan_param_reorder
 
         order = [s.strip() for s in (args.param or "").split(",") if s.strip()]
-        plan = plan_param_reorder(str(target), args.function, order)
-        label = f"reorder `{args.function}()` parameters to ({', '.join(order)})"
-    elif args.op == "add":
+        plan = plan_param_reorder(target, args.function, order)
+        return plan, f"reorder `{args.function}()` parameters to ({', '.join(order)})", None
+    if args.op == "add":
         from app.execution.param_add import plan_param_add
 
         default = getattr(args, "default", "") or "None"
-        plan = plan_param_add(str(target), args.function, args.param, default)
-        label = f"add `{args.param}={default}` to `{args.function}()`"
-    else:
-        from app.execution.param_drop import plan_param_drop
+        plan = plan_param_add(target, args.function, args.param, default)
+        return plan, f"add `{args.param}={default}` to `{args.function}()`", None
 
-        if not args.param:
-            print(f"# Signature change blocked: `{args.op}` needs a PARAM argument")
-            return 1
-        plan = plan_param_drop(str(target), args.function, args.param)
-        label = f"drop `{args.param}` from `{args.function}()`"
+    from app.execution.param_drop import plan_param_drop
+
+    if not args.param:
+        print(f"# Signature change blocked: `{args.op}` needs a PARAM argument")
+        return None, None, 1
+    plan = plan_param_drop(target, args.function, args.param)
+    return plan, f"drop `{args.param}` from `{args.function}()`", None
+
+
+def _signature_render(args: argparse.Namespace, target: str, plan, label: str) -> int:
+    """Render a resolved signature plan: blocked / dry-run / apply / json."""
+    from app.execution.cross_file_rename import apply_rename
 
     if plan.blockers:
         print(f"# Signature change blocked: {label}\n")
@@ -114,7 +114,7 @@ def cmd_signature(args: argparse.Namespace) -> int:
             print(f"- ⚠️ {w}")
         return 0
 
-    res = apply_rename(str(target), plan, verify=not getattr(args, "no_verify", False))
+    res = apply_rename(target, plan, verify=not getattr(args, "no_verify", False))
     if args.json:
         print(json.dumps(res, indent=2))
         return 0 if res.get("applied") else 1
@@ -128,6 +128,23 @@ def cmd_signature(args: argparse.Namespace) -> int:
         return 0
     print(f"↩️ {res.get('reason', 'signature change not applied')}")
     return 1
+
+
+def cmd_signature(args: argparse.Namespace) -> int:
+    """Signature family: ``drop`` removes an UNUSED parameter project-wide;
+    ``add`` introduces one with a safe default (no call site can break).
+
+    Positional callers of a dropped param block (no silent repositioning);
+    a caller already passing an added param's keyword blocks. Apply is
+    test-verified with rollback, like every Apex change.
+    """
+    target = str(Path(args.target).resolve() if args.target else _get_project_root())
+
+    plan, label, rc = _signature_resolve_plan(args, target)
+    if rc is not None:
+        return rc
+
+    return _signature_render(args, target, plan, label)
 
 
 def cmd_extract(args: argparse.Namespace) -> int:
@@ -398,6 +415,65 @@ def cmd_rewrite(args: argparse.Namespace) -> int:
     return _rewrite_apply_plan(args, target, plan, label)
 
 
+def _teach_collect_pairs(args: argparse.Namespace, target: str):
+    """Resolve example pairs from ``--from-git`` or explicit BEFORE/AFTER args.
+
+    Returns ``(pairs, rc)``; ``rc`` is non-None when the caller should
+    print-and-exit with it.
+    """
+    if getattr(args, "from_git", False):
+        from app.engine.git_rule_miner import mine_git_pairs
+
+        n = int(getattr(args, "commits", 50) or 50)
+        pairs = mine_git_pairs(target, n)
+        if not pairs:
+            print(f"No single-line expression changes found in the last {n} commit(s).")
+            return None, 0
+        print(f"Mined {len(pairs)} single-line change(s) from the last {n} commit(s).")
+        for b, a in pairs[:5]:
+            suffix = " …" if len(pairs) > 5 and (b, a) == pairs[4] else ""
+            print(f"  `{b}` → `{a}`{suffix}")
+        return pairs, None
+
+    examples = list(args.examples or [])
+    if len(examples) % 2 != 0:
+        print("⛔ teach takes BEFORE/AFTER pairs (an even number of expressions)")
+        return None, 1
+    return list(zip(examples[::2], examples[1::2])), None
+
+
+def _teach_preview(target: str, rule) -> None:
+    """Print the learned rule, its notes, and a project-wide match preview."""
+    from app.execution.pattern_rewrite import plan_pattern_rewrite
+
+    print(f"# Learned rule: `{rule.pattern}` → `{rule.replacement}`")
+    for n in rule.notes:
+        print(f"- {n}")
+
+    plan = plan_pattern_rewrite(target, rule.pattern, rule.replacement)
+    if plan.new_contents:
+        print(f"\nWould rewrite {sum(plan.edits_by_file.values())} match(es) "
+              f"across {len(plan.new_contents)} file(s) — preview:\n")
+        print("```diff")
+        print(plan.render_diff().rstrip()[:4000])
+        print("```")
+    else:
+        print("\nNo match in the project right now (the rule still guards the future).")
+
+
+def _teach_save(args: argparse.Namespace, target: str, rule) -> int:
+    """Optionally persist the learned rule (``--save``); return the exit code."""
+    from app.execution.rewrite_rules import save_rule
+
+    if getattr(args, "save", ""):
+        err = save_rule(target, args.save, rule.pattern, rule.replacement)
+        print(f"⛔ {err}" if err else f"💾 rule '{args.save}' saved — apply with: "
+              f"apex rewrite --rule {args.save}")
+        if err:
+            return 1
+    return 0
+
+
 def cmd_teach(args: argparse.Namespace) -> int:
     """Learn a rewrite rule FROM EXAMPLES (deterministic anti-unification).
 
@@ -409,29 +485,13 @@ def cmd_teach(args: argparse.Namespace) -> int:
     requiring explicit examples — pairs where both sides parse as expressions
     are fed through the same anti-unification engine.
     """
-    from app.execution.pattern_rewrite import plan_pattern_rewrite
-    from app.execution.rewrite_rules import save_rule
     from app.execution.rule_learn import learn_rule
 
-    target = Path(args.target).resolve() if args.target else _get_project_root()
+    target = str(Path(args.target).resolve() if args.target else _get_project_root())
 
-    if getattr(args, "from_git", False):
-        from app.engine.git_rule_miner import mine_git_pairs
-        n = int(getattr(args, "commits", 50) or 50)
-        pairs = mine_git_pairs(str(target), n)
-        if not pairs:
-            print(f"No single-line expression changes found in the last {n} commit(s).")
-            return 0
-        print(f"Mined {len(pairs)} single-line change(s) from the last {n} commit(s).")
-        for b, a in pairs[:5]:
-            suffix = " …" if len(pairs) > 5 and (b, a) == pairs[4] else ""
-            print(f"  `{b}` → `{a}`{suffix}")
-    else:
-        examples = list(args.examples or [])
-        if len(examples) % 2 != 0:
-            print("⛔ teach takes BEFORE/AFTER pairs (an even number of expressions)")
-            return 1
-        pairs = list(zip(examples[::2], examples[1::2]))
+    pairs, rc = _teach_collect_pairs(args, target)
+    if rc is not None:
+        return rc
 
     if not pairs:
         print("⛔ no example pairs to learn from")
@@ -444,27 +504,8 @@ def cmd_teach(args: argparse.Namespace) -> int:
             print(f"- ⛔ {b}")
         return 1
 
-    print(f"# Learned rule: `{rule.pattern}` → `{rule.replacement}`")
-    for n in rule.notes:
-        print(f"- {n}")
-
-    plan = plan_pattern_rewrite(str(target), rule.pattern, rule.replacement)
-    if plan.new_contents:
-        print(f"\nWould rewrite {sum(plan.edits_by_file.values())} match(es) "
-              f"across {len(plan.new_contents)} file(s) — preview:\n")
-        print("```diff")
-        print(plan.render_diff().rstrip()[:4000])
-        print("```")
-    else:
-        print("\nNo match in the project right now (the rule still guards the future).")
-
-    if getattr(args, "save", ""):
-        err = save_rule(str(target), args.save, rule.pattern, rule.replacement)
-        print(f"⛔ {err}" if err else f"💾 rule '{args.save}' saved — apply with: "
-              f"apex rewrite --rule {args.save}")
-        if err:
-            return 1
-    return 0
+    _teach_preview(target, rule)
+    return _teach_save(args, target, rule)
 
 
 def register_parsers(subparsers) -> None:
