@@ -104,8 +104,6 @@ def generate_setups(candles: list[Candle], min_rr: float = 1.5) -> list[TradeSet
     fvgs = find_fvgs(candles)
     sweeps = find_sweeps(candles)
     events = market_structure(candles)
-    range_low = min(c.low for c in candles)
-    range_high = max(c.high for c in candles)
 
     setups: list[TradeSetup] = []
     for ev in events:
@@ -113,6 +111,13 @@ def generate_setups(candles: list[Candle], min_rr: float = 1.5) -> list[TradeSet
         if aligned is None:
             continue
         ob, sweep = aligned
+        # Causal (point-in-time) dealing range: only candles up to and including
+        # the event bar are visible. Computing it once over ALL candles would let
+        # a setup forming at ``ev.index`` "see" future highs/lows -- a look-ahead
+        # bias that inflates the premium/discount gate and the target/RR.
+        window = candles[: ev.index + 1]
+        range_low = min(c.low for c in window)
+        range_high = max(c.high for c in window)
         setup = _build_setup(ev, ob, sweep, range_low, range_high, min_rr)
         if setup is not None:
             setups.append(setup)

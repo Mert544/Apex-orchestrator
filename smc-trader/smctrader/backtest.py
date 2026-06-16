@@ -30,9 +30,20 @@ class BacktestReport:
 
 
 def _resolve(candles: list[Candle], setup: TradeSetup) -> str:
-    """Did target or stop get hit first after the setup formed?"""
+    """Did target or stop get hit first after the setup formed?
+
+    Intrabar tie-break: OHLC candles do not record the *order* in which a bar's
+    high and low were traded. When a single future bar straddles BOTH levels
+    (a long bar with ``low <= stop`` and ``high >= target``, or the short
+    mirror) the true sequence is unknowable from this data. We therefore adopt
+    the CONSERVATIVE convention of assuming the stop was hit first and record a
+    loss. This deliberately understates performance rather than letting an
+    ambiguous bar count as a win, and avoids any look-ahead: only candles
+    strictly after ``setup.index`` are inspected, in chronological order.
+    """
     for c in candles[setup.index + 1:]:
         if setup.direction == "long":
+            # Stop checked first => straddling bars resolve as a loss (conservative).
             if c.low <= setup.stop:
                 return "loss"
             if c.high >= setup.target:
