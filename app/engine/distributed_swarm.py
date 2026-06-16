@@ -195,55 +195,77 @@ class SwarmNodeServer:
     def register_task(self, name: str, fn: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
         self.task_registry[name] = fn
 
+    @staticmethod
+    def _recv_headers(conn: socket.socket) -> bytes:
+        """Read from *conn* until the end-of-headers marker (or EOF)."""
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+    @staticmethod
+    def _parse_request_line(headers: str) -> tuple[str, str]:
+        """Return (method, path) from the first HTTP request line."""
+        method, path, _ = headers.split("\r\n")[0].split(" ")
+        return method, path
+
+    @staticmethod
+    def _content_length(headers: str) -> int:
+        """Return the Content-Length header value, or 0 if absent."""
+        for line in headers.split("\r\n"):
+            if line.lower().startswith("content-length:"):
+                return int(line.split(":")[1].strip())
+        return 0
+
+    def _read_full_body(self, conn: socket.socket, headers: str, body: bytes) -> bytes:
+        """Extend *body* until it reaches the declared Content-Length."""
+        content_length = self._content_length(headers)
+        while len(body) < content_length:
+            body += conn.recv(4096)
+        return body
+
+    def _health_body(self) -> str:
+        return json.dumps({"status": "ok", "node_id": self.node_id})
+
+    def _execute_body(self, body: bytes) -> str:
+        try:
+            req = json.loads(body.decode("utf-8"))
+            task_name = req.get("task", "")
+            payload = req.get("payload", {})
+            fn = self.task_registry.get(task_name)
+            if fn:
+                result = fn(payload)
+                return json.dumps({"node_id": self.node_id, "result": result})
+            return json.dumps({"error": f"Unknown task: {task_name}"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def _route(
+        self, conn: socket.socket, method: str, path: str, headers: str, body: bytes
+    ) -> tuple[int, str]:
+        """Map a parsed request to an (status, response_body) pair."""
+        if path == "/health" and method == "GET":
+            return 200, self._health_body()
+        if path == "/execute" and method == "POST":
+            body = self._read_full_body(conn, headers, body)
+            return 200, self._execute_body(body)
+        return 404, json.dumps({"error": "Not found"})
+
     def _handle_request(self, conn: socket.socket) -> None:
         try:
-            data = b""
-            while b"\r\n\r\n" not in data:
-                chunk = conn.recv(4096)
-                if not chunk:
-                    break
-                data += chunk
+            data = self._recv_headers(conn)
             if not data:
                 return
             header_end = data.find(b"\r\n\r\n")
             headers = data[:header_end].decode("utf-8", errors="ignore")
             body = data[header_end + 4 :]
 
-            # Very simple HTTP parsing
-            first_line = headers.split("\r\n")[0]
-            method, path, _ = first_line.split(" ")
-
-            if path == "/health" and method == "GET":
-                resp_body = json.dumps({"status": "ok", "node_id": self.node_id})
-                conn.sendall(self._http_response(200, resp_body).encode("utf-8"))
-                return
-
-            if path == "/execute" and method == "POST":
-                # Read remaining body if Content-Length present
-                content_length = 0
-                for line in headers.split("\r\n"):
-                    if line.lower().startswith("content-length:"):
-                        content_length = int(line.split(":")[1].strip())
-                        break
-                while len(body) < content_length:
-                    body += conn.recv(4096)
-
-                try:
-                    req = json.loads(body.decode("utf-8"))
-                    task_name = req.get("task", "")
-                    payload = req.get("payload", {})
-                    fn = self.task_registry.get(task_name)
-                    if fn:
-                        result = fn(payload)
-                        resp_body = json.dumps({"node_id": self.node_id, "result": result})
-                    else:
-                        resp_body = json.dumps({"error": f"Unknown task: {task_name}"})
-                except Exception as e:
-                    resp_body = json.dumps({"error": str(e)})
-                conn.sendall(self._http_response(200, resp_body).encode("utf-8"))
-                return
-
-            conn.sendall(self._http_response(404, json.dumps({"error": "Not found"})).encode("utf-8"))
+            method, path = self._parse_request_line(headers)
+            status, resp_body = self._route(conn, method, path, headers, body)
+            conn.sendall(self._http_response(status, resp_body).encode("utf-8"))
         finally:
             conn.close()
 
