@@ -46,21 +46,24 @@ import ast
 from pathlib import Path
 
 from app.execution._transform_base import ColumnRewrite as _Rewrite
+from app.execution._transform_base import collect_arg_sources as _collect_arg_sources
 from app.execution._transform_base import is_simple_arg as _is_simple_arg
-from app.execution._transform_base import literal_inner as _literal_inner
 from app.execution._transform_base import plan_single_module_column_rewrite
+from app.execution._transform_base import recover_fstring_template as _recover_fstring_template
 from app.execution._transform_base import text_is_valid as _text_is_valid
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_percent_to_fstring"]
 
 # Shared with fstring-convert via ``app.execution._transform_base``:
-#   _Rewrite       — the located single-line column-splice value (``ColumnRewrite``)
-#   _is_simple_arg — the "bare {name} is safe" predicate (``is_simple_arg``)
-#   _literal_inner — the plain-string-literal (quote, inner) recovery (``literal_inner``)
-#   _text_is_valid — the JoinedStr safety re-parse (``text_is_valid``)
-# The percent-specific ``%s``/``%%`` parsing, brace-escaping and BinOp matching
-# below stay private — they are NOT the ``.format`` logic and must not be merged.
+#   _Rewrite                 — the located single-line column-splice value (``ColumnRewrite``)
+#   _is_simple_arg           — the "bare {name} is safe" predicate (``is_simple_arg``)
+#   _collect_arg_sources     — the recover-every-arg-source loop (``collect_arg_sources``)
+#   _recover_fstring_template — the literal-recover/count tail (``recover_fstring_template``)
+#   _text_is_valid           — the JoinedStr safety re-parse (``text_is_valid``)
+# The percent-specific ``%s``/``%%`` parsing (``_split_template``), brace-escaping
+# (``_escape`` / ``_build_text``) and BinOp matching below stay private — they are
+# NOT the ``.format`` logic and must not be merged.
 
 
 def _split_template(inner: str) -> list[str] | None:
@@ -138,31 +141,6 @@ def _match_binop(node: ast.BinOp) -> tuple[ast.Constant, list[ast.expr]] | None:
     return template, args
 
 
-def _arg_source(arg: ast.expr, source: str) -> str | None:
-    """The recovered source of one ``arg``, or None if it can't be recovered or
-    contains a brace/backslash.
-
-    A simple arg's source never contains a brace; the guard holds anyway so the
-    built f-string can't grow an unexpected field."""
-    seg = ast.get_source_segment(source, arg)
-    if seg is None:
-        return None
-    if "{" in seg or "}" in seg or "\\" in seg:
-        return None
-    return seg
-
-
-def _collect_arg_sources(args: list[ast.expr], source: str) -> list[str] | None:
-    """Recover every arg's source in order, or None to skip."""
-    arg_srcs: list[str] = []
-    for arg in args:
-        seg = _arg_source(arg, source)
-        if seg is None:
-            return None
-        arg_srcs.append(seg)
-    return arg_srcs
-
-
 def _escape(text: str) -> str:
     """Escape literal braces already in the template for the f-string."""
     return text.replace("{", "{{").replace("}", "}}")
@@ -183,26 +161,12 @@ def _recover_template(
 ) -> tuple[str, list[str], int] | None:
     """Recover the literal, split it on ``%s`` placeholders, and check the count.
 
-    Returns ``(quote, segments, placeholder_count)`` when the literal recovers to
-    a plain string whose ``%s`` count both equals ``arg_count`` and is nonzero,
-    else None (nothing to interpolate is left alone)."""
-    literal_src = ast.get_source_segment(source, template)
-    if literal_src is None:
-        return None
-    parsed = _literal_inner(literal_src)
-    if parsed is None:
-        return None
-    quote, inner = parsed
-
-    segments = _split_template(inner)
-    if segments is None:
-        return None
-    count = len(segments) - 1
-    if count != arg_count:
-        return None
-    if count == 0:
-        return None  # nothing to interpolate — leave it alone
-    return quote, segments, count
+    Thin ``%s``-specific binding of the shared
+    :func:`~app.execution._transform_base.recover_fstring_template` — it supplies
+    the ``%s`` placeholder :func:`_split_template`; the recover/count tail (the
+    byte-identical body once shared with fstring-convert) lives there once."""
+    return _recover_fstring_template(
+        template, source, arg_count, split=_split_template)
 
 
 def _try_binop(node: ast.BinOp, source: str) -> _Rewrite | None:
