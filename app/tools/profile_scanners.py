@@ -102,6 +102,46 @@ class _CodeQualityScansMixin:
     # Maintainability / structural signal, recommend-only.
     _GOD_CLASS_METHOD_FLOOR = 15
 
+    @staticmethod
+    def _class_method_count(cls: ast.ClassDef) -> int:
+        """Number of ``def``/``async def`` DIRECT children of ``cls``'s body — the
+        class's own method tally (nested classes are not counted here). Pure."""
+        return sum(
+            1 for member in cls.body
+            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+
+    @staticmethod
+    def _class_attr_names(node: ast.AST, attrs: set[str]) -> None:
+        """Collect every ``self.X`` assignment target in ``node``'s body into
+        ``attrs``, without descending into a nested class (its attributes are its
+        own). Pure (mutates only the passed-in set)."""
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                continue  # a nested class owns its own attributes
+            if isinstance(child, ast.Attribute) and isinstance(
+                child.ctx, ast.Store
+            ) and isinstance(child.value, ast.Name) and child.value.id == "self":
+                attrs.add(child.attr)
+            _CodeQualityScansMixin._class_attr_names(child, attrs)
+
+    def _god_classes_in_tree(self, tree: ast.AST, rel_str: str) -> list[dict]:
+        """Per-module god-class entries for one parsed ``tree``: each TOP-LEVEL
+        class whose own method count reaches ``_GOD_CLASS_METHOD_FLOOR``, with its
+        distinct ``self.X`` attribute count riding along. Pure on its inputs."""
+        out: list[dict] = []
+        for cls in tree.body:
+            if not isinstance(cls, ast.ClassDef):
+                continue
+            methods = self._class_method_count(cls)
+            if methods < self._GOD_CLASS_METHOD_FLOOR:
+                continue  # ordinary class — too few methods to be a god-class
+            attrs: set[str] = set()
+            self._class_attr_names(cls, attrs)
+            out.append({"module": rel_str, "classname": cls.name,
+                        "methods": methods, "attributes": len(attrs)})
+        return out
+
     def _scan_god_classes(self, profile: ProjectProfile) -> None:
         """Name top-level classes doing too much — a Single-Responsibility
         violation and a decomposition candidate (a structural signal).
@@ -121,19 +161,6 @@ class _CodeQualityScansMixin:
         god-class yields [] so seeding stays byte-identical. Each entry:
         ``{"module", "classname", "methods", "attributes"}``.
         """
-
-        def _attr_targets(node: ast.AST, attrs: set[str]) -> None:
-            """Collect every ``self.X`` assignment target in ``node``'s body,
-            without descending into a nested class (its attributes are its own)."""
-            for child in ast.iter_child_nodes(node):
-                if isinstance(child, ast.ClassDef):
-                    continue  # a nested class owns its own attributes
-                if isinstance(child, ast.Attribute) and isinstance(
-                    child.ctx, ast.Store
-                ) and isinstance(child.value, ast.Name) and child.value.id == "self":
-                    attrs.add(child.attr)
-                _attr_targets(child, attrs)
-
         found: list[dict] = []
         scanned = 0
         # iter_source_files is sorted AND already skip-dir/worktree pruned, so the
@@ -151,19 +178,7 @@ class _CodeQualityScansMixin:
             except (OSError, SyntaxError):
                 continue
             scanned += 1
-            for cls in tree.body:
-                if not isinstance(cls, ast.ClassDef):
-                    continue
-                methods = sum(
-                    1 for member in cls.body
-                    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
-                )
-                if methods < self._GOD_CLASS_METHOD_FLOOR:
-                    continue  # ordinary class — too few methods to be a god-class
-                attrs: set[str] = set()
-                _attr_targets(cls, attrs)
-                found.append({"module": rel_str, "classname": cls.name,
-                              "methods": methods, "attributes": len(attrs)})
+            found.extend(self._god_classes_in_tree(tree, rel_str))
         found.sort(key=lambda d: (-d["methods"], d["module"], d["classname"]))
         profile.god_classes = found[:5]
 
