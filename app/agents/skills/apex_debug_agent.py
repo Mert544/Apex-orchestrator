@@ -70,6 +70,50 @@ class ApexDebugAgent:
         self.min_severity = min_severity
         self._last_result: Optional[AgentAnalysisResult] = None
 
+    def _resolve_target(self, target: Optional[str]) -> Optional[Path]:
+        """Resolve a target to an existing path, or None if it does not exist."""
+        path = Path(target) if target else self.project_root
+        if not path.exists():
+            path = self.project_root / path
+        if not path.exists():
+            return None
+        return path
+
+    @staticmethod
+    def _finding_from_raw(raw: dict, min_sev: Severity) -> Optional[Finding]:
+        """Build a Finding from one raw scan entry, or None if below threshold."""
+        sev = _SEVERITY.get(str(raw.get("severity", "low")).lower(), Severity.LOW)
+        if sev < min_sev:
+            return None
+        title = raw.get("risk_type") or raw.get("risk") or raw.get("details") or "issue"
+        return Finding(
+            title=str(title),
+            message=str(raw.get("details") or raw.get("suggestion") or ""),
+            category="security",
+            severity=sev,
+            file=str(raw.get("file", "")),
+            line=int(raw.get("line", 0) or 0),
+        )
+
+    def _collect_findings(self, scan: dict) -> list[Finding]:
+        """Normalize raw scan findings into Finding objects above min_severity."""
+        min_sev = Severity.from_name(self.min_severity)
+        findings: list[Finding] = []
+        for raw in scan.get("findings", []):
+            finding = self._finding_from_raw(raw, min_sev)
+            if finding is not None:
+                findings.append(finding)
+        return findings
+
+    @staticmethod
+    def _apply_category_filter(
+        findings: list[Finding], categories: Optional[list[str]]
+    ) -> list[Finding]:
+        """Drop findings when caller asked for categories other than security."""
+        if categories and "security" not in categories:
+            return []  # only the security category is produced in-process
+        return findings
+
     def run(
         self,
         target: Optional[str] = None,
@@ -80,10 +124,8 @@ class ApexDebugAgent:
         from app.agents.skills.security_agent import SecurityAgent
 
         start = time.perf_counter()
-        path = Path(target) if target else self.project_root
-        if not path.exists():
-            path = self.project_root / path
-        if not path.exists():
+        path = self._resolve_target(target)
+        if path is None:
             return AgentAnalysisResult(errors=[f"Target '{target}' not found in {self.project_root}"])
 
         try:
@@ -91,24 +133,7 @@ class ApexDebugAgent:
         except Exception as exc:  # never let analysis crash the workflow
             return AgentAnalysisResult(errors=[f"Analysis failed: {exc}"])
 
-        min_sev = Severity.from_name(self.min_severity)
-        findings: list[Finding] = []
-        for raw in scan.get("findings", []):
-            sev = _SEVERITY.get(str(raw.get("severity", "low")).lower(), Severity.LOW)
-            if sev < min_sev:
-                continue
-            title = raw.get("risk_type") or raw.get("risk") or raw.get("details") or "issue"
-            findings.append(Finding(
-                title=str(title),
-                message=str(raw.get("details") or raw.get("suggestion") or ""),
-                category="security",
-                severity=sev,
-                file=str(raw.get("file", "")),
-                line=int(raw.get("line", 0) or 0),
-            ))
-
-        if categories and "security" not in categories:
-            findings = []  # only the security category is produced in-process
+        findings = self._apply_category_filter(self._collect_findings(scan), categories)
 
         result = AgentAnalysisResult(
             findings=findings,
