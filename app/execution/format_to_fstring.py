@@ -339,9 +339,21 @@ def _map_args(
     return _arg_sources(resolved, source)
 
 
-def _try_call(node: ast.Call, source: str) -> _Rewrite | None:
-    """If ``node`` is a convertible string-literal ``.format(...)`` call, return
-    its rewrite, else None."""
+def _has_unpacking(node: ast.Call) -> bool:
+    """True iff the call carries ``*args`` or ``**kwargs`` unpacking anywhere —
+    which makes the positional/keyword mapping non-trivial, so we skip it."""
+    if any(isinstance(a, ast.Starred) for a in node.args):
+        return True
+    return any(kw.arg is None for kw in node.keywords)
+
+
+def _format_template(node: ast.Call) -> ast.Constant | None:
+    """The string-literal template of a single-line ``"...".format(...)`` call
+    with no ``*args`` / ``**kwargs`` unpacking, else None.
+
+    Requires ``node.func`` to be an ``Attribute`` ``attr == "format"`` over an
+    ``ast.Constant`` ``str``, and both the literal and the whole call to live on
+    a single line (so the column-span splice is trivially correct)."""
     func = node.func
     if not isinstance(func, ast.Attribute) or func.attr != "format":
         return None
@@ -349,10 +361,7 @@ def _try_call(node: ast.Call, source: str) -> _Rewrite | None:
     if not isinstance(template, ast.Constant) or not isinstance(template.value, str):
         return None
 
-    # No *args / **kwargs unpacking anywhere in the call.
-    if any(isinstance(a, ast.Starred) for a in node.args):
-        return None
-    if any(kw.arg is None for kw in node.keywords):
+    if _has_unpacking(node):
         return None
 
     # Single-line literal and single-line call keep the column splice trivial.
@@ -360,7 +369,18 @@ def _try_call(node: ast.Call, source: str) -> _Rewrite | None:
         return None
     if node.lineno != node.end_lineno:
         return None
+    return template
 
+
+def _template_parts(
+    template: ast.Constant, source: str,
+) -> tuple[str, list[str], list[_Field]] | None:
+    """Recover the template literal and parse it into ``(quote, segments,
+    fields)``, or None to skip.
+
+    Skips an unrecoverable literal source, a prefixed/triple-quoted/backslashed
+    literal, an out-of-shape template, and an empty field set (nothing to
+    interpolate — leave it alone)."""
     literal_src = ast.get_source_segment(source, template)
     if literal_src is None:
         return None
@@ -375,27 +395,53 @@ def _try_call(node: ast.Call, source: str) -> _Rewrite | None:
     segments, fields = parsed_template
     if not fields:
         return None  # nothing to interpolate — leave it alone
+    return quote, segments, fields
+
+
+def _build_fstring(quote: str, segments: list[str], arg_srcs: list[str]) -> str:
+    """Splice the literal segments and recovered arg sources into f-string text,
+    reusing the template's ``quote``."""
+    parts: list[str] = [segments[0]]
+    for arg_src, seg in zip(arg_srcs, segments[1:]):
+        parts.append("{" + arg_src + "}")
+        parts.append(seg)
+    return "f" + quote + "".join(parts) + quote
+
+
+def _reparses_as_fstring(text: str, field_count: int) -> bool:
+    """True iff ``text`` re-parses to exactly a ``JoinedStr`` with ``field_count``
+    ``FormattedValue`` fields — the crucial safety check before any rewrite."""
+    try:
+        expr = ast.parse(text, mode="eval").body
+    except SyntaxError:
+        return False
+    if not isinstance(expr, ast.JoinedStr):
+        return False
+    formatted = [v for v in expr.values if isinstance(v, ast.FormattedValue)]
+    return len(formatted) == field_count
+
+
+def _try_call(node: ast.Call, source: str) -> _Rewrite | None:
+    """If ``node`` is a convertible string-literal ``.format(...)`` call, return
+    its rewrite, else None."""
+    template = _format_template(node)
+    if template is None:
+        return None
+
+    parts = _template_parts(template, source)
+    if parts is None:
+        return None
+    quote, segments, fields = parts
 
     arg_srcs = _map_args(fields, node.args, node.keywords, source)
     if arg_srcs is None:
         return None
 
-    parts: list[str] = [segments[0]]
-    for arg_src, seg in zip(arg_srcs, segments[1:]):
-        parts.append("{" + arg_src + "}")
-        parts.append(seg)
-    text = "f" + quote + "".join(parts) + quote
+    text = _build_fstring(quote, segments, arg_srcs)
 
     # CRUCIAL safety: the built text must parse to exactly a JoinedStr with the
     # expected number of FormattedValue fields, or we skip the occurrence.
-    try:
-        expr = ast.parse(text, mode="eval").body
-    except SyntaxError:
-        return None
-    if not isinstance(expr, ast.JoinedStr):
-        return None
-    formatted = [v for v in expr.values if isinstance(v, ast.FormattedValue)]
-    if len(formatted) != len(fields):
+    if not _reparses_as_fstring(text, len(fields)):
         return None
 
     return _Rewrite(node.lineno, node.col_offset, node.end_col_offset, text)
