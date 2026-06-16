@@ -30,6 +30,24 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     return patcher(rel_path, source, tree)
 
 
+def _is_weak_hash_call(node: ast.AST) -> bool:
+    """``hashlib.md5()``/``sha1()`` without an explicit ``usedforsecurity=False``."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if not (isinstance(func, ast.Attribute) and func.attr in ("md5", "sha1")):
+        return False
+    if not (isinstance(func.value, ast.Name) and func.value.id == "hashlib"):
+        return False
+    return not _has_kw_false(node, "usedforsecurity")
+
+
+def _has_kw_false(node: ast.Call, name: str) -> bool:
+    """True when ``node`` passes ``name=False`` as a constant keyword argument."""
+    return any(kw.arg == name and isinstance(kw.value, ast.Constant)
+               and kw.value.value is False for kw in node.keywords)
+
+
 def _patch_weak_hash(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
     """Flag a weak ``hashlib.md5()``/``sha1()`` used for security with a comment.
 
@@ -38,43 +56,51 @@ def _patch_weak_hash(rel_path: str, source: str, tree: ast.Module) -> SemanticPa
     only correct when the caller really isn't using it for security — a judgment
     the tool can't make. So we annotate the call site, like the pickle/SQL flags.
     """
+    warning_text = (
+        "Apex: weak hash for security — use hashlib.sha256(), "
+        "or pass usedforsecurity=False if this isn't security-related"
+    )
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
+        if not _is_weak_hash_call(node):
             continue
-        func = node.func
-        if not (isinstance(func, ast.Attribute) and func.attr in ("md5", "sha1")):
-            continue
-        if not (isinstance(func.value, ast.Name) and func.value.id == "hashlib"):
-            continue
-        if any(kw.arg == "usedforsecurity" and isinstance(kw.value, ast.Constant)
-               and kw.value.value is False for kw in node.keywords):
-            continue  # caller already declared this non-security
-
-        lineno = node.lineno
-        lines = source.splitlines(keepends=True)
-        if lineno > len(lines):
-            continue
-        line_content = lines[lineno - 1]
-        prev_line = lines[lineno - 2] if lineno >= 2 else ""
-        if "Apex: weak hash" in line_content or "Apex: weak hash" in prev_line:
-            continue  # already flagged
-        indent = line_content[: len(line_content) - len(line_content.lstrip())]
-        warning = (
-            f"{indent}# SECURITY (Apex: weak hash for security — use hashlib.sha256(), "
-            f"or pass usedforsecurity=False if this isn't security-related)\n"
+        result = _flag_call_site(
+            rel_path, source, node.lineno, "Apex: weak hash", warning_text,
+            "flag_weak_hash",
+            f"Flagged weak hashlib.md5()/sha1() with a security warning in {rel_path}.",
         )
-        new_lines = list(lines)
-        new_lines.insert(lineno - 1, warning)
-        return SemanticPatchResult(
-            patch_requests=[{
-                "path": rel_path,
-                "new_content": "".join(new_lines),
-                "expected_old_content": source,
-            }],
-            transform_type="flag_weak_hash",
-            rationale=[f"Flagged weak hashlib.md5()/sha1() with a security warning in {rel_path}."],
-        )
+        if result is not None:
+            return result
     return None
+
+
+def _flag_call_site(rel_path: str, source: str, lineno: int, marker: str,
+                    warning_text: str, transform_type: str,
+                    rationale: str) -> SemanticPatchResult | None:
+    """Insert a ``# SECURITY (<warning_text>)`` comment above line ``lineno``.
+
+    Returns None when the line is out of range or already carries ``marker`` (on
+    that line or the one before), so the caller can try the next occurrence.
+    """
+    lines = source.splitlines(keepends=True)
+    if lineno > len(lines):
+        return None
+    line_content = lines[lineno - 1]
+    prev_line = lines[lineno - 2] if lineno >= 2 else ""
+    if marker in line_content or marker in prev_line:
+        return None
+    indent = line_content[: len(line_content) - len(line_content.lstrip())]
+    warning = f"{indent}# SECURITY ({warning_text})\n"
+    new_lines = list(lines)
+    new_lines.insert(lineno - 1, warning)
+    return SemanticPatchResult(
+        patch_requests=[{
+            "path": rel_path,
+            "new_content": "".join(new_lines),
+            "expected_old_content": source,
+        }],
+        transform_type=transform_type,
+        rationale=[rationale],
+    )
 
 
 def _patch_mktemp(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
@@ -250,37 +276,49 @@ def _patch_pickle(rel_path: str, source: str, tree: ast.Module) -> SemanticPatch
     return None
 
 
+def _eval_arg(node: ast.AST) -> ast.expr | None:
+    """The first positional arg of a bare ``eval(...)`` call, else None."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+        return None
+    if node.func.id != "eval" or not node.args:
+        return None
+    return node.args[0]
+
+
+def _eval_arg_rewritable(arg_node: ast.expr) -> bool:
+    """Whether ``eval(arg)`` may be narrowed to ``ast.literal_eval(arg)``.
+
+    Declines f-strings (never a literal, would always crash) and string literals
+    whose content is a runtime expression rather than a Python literal (e.g.
+    ``eval("a * b")``) — rewriting those would ship code that crashes.
+    """
+    if isinstance(arg_node, ast.JoinedStr):
+        return False
+    if isinstance(arg_node, ast.Constant) and isinstance(arg_node.value, str):
+        try:
+            ast.literal_eval(arg_node.value)
+        except (ValueError, SyntaxError, TypeError):
+            return False
+    return True
+
+
+def _eval_line_content(lines: list[str], lineno: int) -> str:
+    """The 1-based source line for ``lineno``, or "" when out of range."""
+    return lines[lineno - 1] if lineno <= len(lines) else ""
+
+
 def _patch_eval(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
+        arg_node = _eval_arg(node)
+        if arg_node is None or not _eval_arg_rewritable(arg_node):
             continue
-        if not isinstance(node.func, ast.Name):
-            continue
-        if node.func.id != "eval":
-            continue
-        if not node.args:
-            continue
-        arg_node = node.args[0]
-        # An f-string argument is never a Python literal, so narrowing
-        # eval(f"...") to ast.literal_eval(f"...") would always crash — decline.
-        if isinstance(arg_node, ast.JoinedStr):
-            continue
-        # A string-literal argument is only safe to narrow to ast.literal_eval
-        # if the string itself is a Python literal. eval("a * b") /
-        # eval("acc['x']") are runtime *expressions* that literal_eval raises on,
-        # so rewriting them would ship code that crashes — leave them for a human.
-        if isinstance(arg_node, ast.Constant) and isinstance(arg_node.value, str):
-            try:
-                ast.literal_eval(arg_node.value)
-            except (ValueError, SyntaxError, TypeError):
-                continue
         arg_source = _get_arg_source(arg_node, source)
         if not arg_source:
             continue
 
         lineno = node.lineno
         lines = source.splitlines(keepends=True)
-        line_content = lines[lineno - 1] if lineno <= len(lines) else ""
+        line_content = _eval_line_content(lines, lineno)
         _get_indent(line_content)
 
         if arg_source.startswith(("ast.literal_eval(", "json.loads(")):
