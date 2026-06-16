@@ -235,3 +235,154 @@ def test_changed_from_git_failure_returns_empty(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(_sp, "run", lambda *a, **k: _Proc())
     assert changed_from_git(tmp_path) == []
+
+
+def _make_repr_project(root: Path) -> None:
+    """A representative multi-package project with a diamond import shape, two
+    tests, a scattered (no-edge) module, and a ``.claude`` worktree copy.
+
+    app.core <- app.engine.runner <- app.cli   (and app.engine.util <- runner)
+    app.engine.scatter imports nothing internal (used for the scattered case).
+    """
+    (root / "app" / "engine").mkdir(parents=True)
+    (root / "tests").mkdir(parents=True)
+    (root / ".claude" / "worktrees" / "wt" / "app").mkdir(parents=True)
+
+    (root / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "app" / "core.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "app" / "cli.py").write_text(
+        "from app.engine.runner import VALUE\n", encoding="utf-8"
+    )
+    (root / "app" / "engine" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "app" / "engine" / "runner.py").write_text(
+        "from app.core import VALUE\nfrom app.engine.util import helper\n", encoding="utf-8"
+    )
+    (root / "app" / "engine" / "util.py").write_text(
+        "from app.core import VALUE\n\n\ndef helper():\n    return VALUE\n", encoding="utf-8"
+    )
+    (root / "app" / "engine" / "scatter.py").write_text("import os\n", encoding="utf-8")
+    # Top-level module sharing no package prefix with anything under app/ — used
+    # to force the genuinely-scattered (no common prefix, no edge) branch.
+    (root / "solo.py").write_text("import sys\n", encoding="utf-8")
+    (root / "tests" / "test_core.py").write_text(
+        "from app.core import VALUE\n\n\ndef test_v():\n    assert VALUE == 1\n", encoding="utf-8"
+    )
+    (root / "tests" / "test_runner.py").write_text(
+        "from app.engine.runner import VALUE\n\n\ndef test_r():\n    assert True\n", encoding="utf-8"
+    )
+    # Full-repo worktree copy: must never appear in any result.
+    (root / ".claude" / "worktrees" / "wt" / "app" / "core.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+
+
+def test_characterization_blast_radius_output_is_pinned(tmp_path: Path):
+    """Golden characterization of the full blast-radius output on a representative
+    project. Pins the exact dicts and markdown so any change to the algorithm's
+    meaning (set membership, cohesion verdict, ordering, rendering) is caught.
+
+    Performance refactors that keep output byte-identical leave this test green.
+    """
+    _make_repr_project(tmp_path)
+
+    # 1) Single changed source at the root of the diamond — wide blast radius.
+    br = blast_radius(tmp_path, ["app/core.py"])
+    assert br.to_dict() == {
+        "changed": ["app/core.py"],
+        "direct_dependents": [
+            "app/engine/runner.py",
+            "app/engine/util.py",
+            "tests/test_core.py",
+        ],
+        "transitive_dependents": [
+            "app/cli.py",
+            "app/engine/runner.py",
+            "app/engine/util.py",
+            "tests/test_core.py",
+            "tests/test_runner.py",
+        ],
+        "covering_tests": ["tests/test_core.py"],
+        "cohesion": {
+            "score": 1.0,
+            "label": "tight",
+            "reason": "single changed module is cohesive by definition",
+        },
+    }
+
+    # 2) Two modules connected by a direct import edge -> tight by connectivity.
+    br2 = blast_radius(tmp_path, ["app/core.py", "app/engine/util.py"])
+    assert br2.cohesion is not None
+    assert br2.cohesion.label == "tight"
+    assert br2.cohesion.score == 1.0
+    assert "connected by direct imports" in br2.cohesion.reason
+    assert br2.direct_dependents == [
+        "app/engine/runner.py",
+        "tests/test_core.py",
+    ]
+    assert br2.transitive_dependents == [
+        "app/cli.py",
+        "app/engine/runner.py",
+        "tests/test_core.py",
+        "tests/test_runner.py",
+    ]
+
+    # 3) Two modules sharing no common package prefix and no edge -> scattered, 0.0.
+    br3 = blast_radius(tmp_path, ["solo.py", "app/engine/scatter.py"])
+    assert br3.cohesion is not None
+    assert br3.cohesion.label == "scattered"
+    assert br3.cohesion.score == 0.0
+    assert "scope creep" in br3.cohesion.reason
+
+    # 3b) Two modules in different packages but sharing the 'app' prefix -> tight
+    #     by fractional common-prefix coverage (2/2 under 'app').
+    br3b = blast_radius(tmp_path, ["app/cli.py", "app/engine/scatter.py"])
+    assert br3b.cohesion is not None
+    assert br3b.cohesion.label == "tight"
+    assert br3b.cohesion.score == 1.0
+    assert "common prefix 'app'" in br3b.cohesion.reason
+
+    # 4) Worktree copy in the changed set is dropped before anything else runs.
+    br4 = blast_radius(
+        tmp_path, [".claude/worktrees/wt/app/core.py", "app/core.py"]
+    )
+    assert br4.changed == ["app/core.py"]
+    for path in (
+        br4.direct_dependents
+        + br4.transitive_dependents
+        + br4.covering_tests
+    ):
+        assert ".claude" not in path
+
+    # 5) Markdown rendering is pinned for the single-module case.
+    md = render_blast_radius_markdown(br)
+    assert md == (
+        "# Change Blast Radius\n"
+        "\n"
+        "| Dimension | Count |\n"
+        "| --- | --- |\n"
+        "| Changed modules | 1 |\n"
+        "| Direct dependents | 3 |\n"
+        "| Transitive dependents | 5 |\n"
+        "| Covering tests | 1 |\n"
+        "\n"
+        "## Changed\n"
+        "- `app/core.py`\n"
+        "\n"
+        "## Direct dependents\n"
+        "- `app/engine/runner.py`\n"
+        "- `app/engine/util.py`\n"
+        "- `tests/test_core.py`\n"
+        "\n"
+        "## Transitive dependents\n"
+        "- `app/cli.py`\n"
+        "- `app/engine/runner.py`\n"
+        "- `app/engine/util.py`\n"
+        "- `tests/test_core.py`\n"
+        "- `tests/test_runner.py`\n"
+        "\n"
+        "## Covering tests\n"
+        "- `tests/test_core.py`\n"
+        "\n"
+        "## Scope cohesion\n"
+        "**tight** (score 1.00) — single changed module is cohesive by definition\n"
+    )

@@ -134,12 +134,28 @@ def _reverse_map(graph: dict) -> dict[str, set[str]]:
     both ends so a ``.claude`` copy can neither be a dependent nor pull a real
     module into the radius.
     """
-    reverse: dict[str, set[str]] = {path: set() for path in graph if not is_skipped(path)}
+    # ``is_skipped`` is a pure path-component check, but the same path strings
+    # recur as both nodes and import targets across the whole graph. Memoize it so
+    # each distinct path is classified once instead of re-walking ``Path(..).parts``
+    # for every node that mentions it, and fold the seed pass (the old dict
+    # comprehension) into this single iteration. The produced reverse map is
+    # byte-identical to building it in two passes.
+    _skip_cache: dict[str, bool] = {}
+
+    def _skip(path: str) -> bool:
+        cached = _skip_cache.get(path)
+        if cached is None:
+            cached = is_skipped(path)
+            _skip_cache[path] = cached
+        return cached
+
+    reverse: dict[str, set[str]] = {}
     for path, node in graph.items():
-        if is_skipped(path):
+        if _skip(path):
             continue
+        reverse.setdefault(path, set())
         for target in node.imports:
-            if is_skipped(target):
+            if _skip(target):
                 continue
             reverse.setdefault(target, set()).add(path)
     return reverse
@@ -268,18 +284,21 @@ def blast_radius(project_root: str | Path, changed: list[str]) -> BlastRadius:
     direct -= changed_set
 
     # Deterministic BFS over reverse edges for the full reachable affected set.
+    # The next frontier is de-duplicated and sorted as a whole (``sorted(set(nxt))``),
+    # so the per-node ``sorted()`` that fed it was pure overhead with no effect on
+    # the final ordering — collect into a set directly instead.
     transitive: set[str] = set()
     visited: set[str] = set(changed_set)
     queue = sorted(direct)
     while queue:
-        nxt: list[str] = []
+        nxt: set[str] = set()
         for mod in queue:
             if mod in visited:
                 continue
             visited.add(mod)
             transitive.add(mod)
-            nxt.extend(sorted(reverse.get(mod, set())))
-        queue = sorted(set(nxt))
+            nxt |= reverse.get(mod, set())
+        queue = sorted(nxt)
     transitive -= changed_set
 
     covering = _covering_tests(root, changed_norm)
