@@ -190,82 +190,131 @@ def _normalize_anchors(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _render_anchor(anchor: dict[str, Any]) -> str:
-    """Render one anchor as ``symbol (module:line, metric)`` — omitting blanks."""
-    symbol = anchor.get("symbol") or ""
-    module = anchor.get("module") or ""
-    line = anchor.get("line")
-    metric = anchor.get("metric") or ""
+def _has_line(line: Any) -> bool:
+    """True when an anchor's ``line`` names a concrete position (not blank/None)."""
+    return line is not None and str(line).strip() != ""
 
-    locus_bits: list[str] = []
+
+def _anchor_locus_bits(module: str, line: Any, metric: str) -> list[str]:
+    """The location fragments — module(:line) or bare line, plus metric — in order."""
+    bits: list[str] = []
     if module:
-        loc = module
-        if line is not None and str(line).strip() != "":
-            loc = f"{module}:{line}"
-        locus_bits.append(loc)
-    elif line is not None and str(line).strip() != "":
-        locus_bits.append(f"line {line}")
+        bits.append(f"{module}:{line}" if _has_line(line) else module)
+    elif _has_line(line):
+        bits.append(f"line {line}")
     if metric:
-        locus_bits.append(metric)
+        bits.append(metric)
+    return bits
 
-    head = f"`{symbol}`" if symbol else ""
-    paren = f"({', '.join(locus_bits)})" if locus_bits else ""
+
+def _join_anchor_parts(head: str, paren: str) -> str:
+    """Combine a ``symbol`` head and a ``(...)`` parenthetical, dropping the blank."""
     if head and paren:
         return f"{head} {paren}"
     return head or paren
 
 
-def render_explanation_markdown(exp: IdeaExplanation) -> str:
-    """Render an idea's reasoning as a legible 'show your work' card."""
+def _render_anchor(anchor: dict[str, Any]) -> str:
+    """Render one anchor as ``symbol (module:line, metric)`` — omitting blanks."""
+    symbol = anchor.get("symbol") or ""
+    bits = _anchor_locus_bits(
+        anchor.get("module") or "", anchor.get("line"), anchor.get("metric") or ""
+    )
+    head = f"`{symbol}`" if symbol else ""
+    paren = f"({', '.join(bits)})" if bits else ""
+    return _join_anchor_parts(head, paren)
+
+
+def _render_header_lines(exp: IdeaExplanation) -> list[str]:
+    """The title block: heading, subject/kind/depth, optional lens chain."""
     lines = [f"# Why `{exp.branch_path}` — {exp.title}", ""]
     lines.append(f"**Subject:** `{exp.subject}`  ·  **kind:** {exp.kind}  ·  **depth:** {exp.depth}")
     if exp.operator_chain:
         lines.append(f"**Lens chain:** {' → '.join(exp.operator_chain)}")
     lines.append("")
+    return lines
 
-    lines.append("## Provenance (what grounds this idea)")
-    for fact in exp.source_facts:
-        lines.append(f"- {fact}")
+
+def _render_provenance_lines(exp: IdeaExplanation) -> list[str]:
+    """The provenance section: one bullet per source fact."""
+    lines = ["## Provenance (what grounds this idea)"]
+    lines.extend(f"- {fact}" for fact in exp.source_facts)
     lines.append("")
+    return lines
 
-    # Concrete locus — only emitted when we actually have one, so an idea with
-    # neither anchors nor a rationale renders byte-identically to the legacy card.
+
+def _render_locus_lines(exp: IdeaExplanation) -> list[str]:
+    """The concrete-locus section — empty when neither anchors nor rationale exist.
+
+    Returning ``[]`` keeps an idea with no locus byte-identical to the legacy card.
+    """
     anchors = exp.anchors or []
     rationale = (exp.rationale or "").strip()
-    if anchors or rationale:
-        lines.append("## Where (the concrete locus)")
-        rendered = [_render_anchor(a) for a in anchors]
-        rendered = [r for r in rendered if r]
-        if rendered:
-            lines.append(f"- **Focus:** {rendered[0]}")
-            for extra in rendered[1:]:
-                lines.append(f"- also: {extra}")
-        if rationale:
-            lines.append(f"- {rationale}")
-        lines.append("")
-
-    lines.append("## Score breakdown")
-    lines.append(f"- **Relevance:** {exp.relevance}")
-    lines.append(f"- **Novelty:** {exp.novelty} — {exp.novelty_explanation}")
-    lines.append(f"- **Feasibility:** {exp.feasibility} — {exp.feasibility_explanation}")
-    lines.append(f"- **Value:** `{exp.value_formula}`")
+    if not (anchors or rationale):
+        return []
+    rendered = [r for r in (_render_anchor(a) for a in anchors) if r]
+    lines = ["## Where (the concrete locus)"]
+    if rendered:
+        lines.append(f"- **Focus:** {rendered[0]}")
+        lines.extend(f"- also: {extra}" for extra in rendered[1:])
+    if rationale:
+        lines.append(f"- {rationale}")
     lines.append("")
+    return lines
 
-    lines.append("## Roadmap placement")
-    lines.append(f"- **Phase:** {exp.phase or '—'}")
-    lines.append(f"- **Impact:** {exp.impact} — {exp.impact_explanation}")
-    lines.append(f"- **Effort:** {exp.effort} — {exp.effort_explanation}")
-    lines.append(f"- **ROI:** {exp.roi}  (impact ÷ effort)")
-    lines.append("")
 
-    lines.append("## Acting on it")
+def _render_score_lines(exp: IdeaExplanation) -> list[str]:
+    """The score-breakdown section: relevance, novelty, feasibility, value formula."""
+    return [
+        "## Score breakdown",
+        f"- **Relevance:** {exp.relevance}",
+        f"- **Novelty:** {exp.novelty} — {exp.novelty_explanation}",
+        f"- **Feasibility:** {exp.feasibility} — {exp.feasibility_explanation}",
+        f"- **Value:** `{exp.value_formula}`",
+        "",
+    ]
+
+
+def _render_roadmap_lines(exp: IdeaExplanation) -> list[str]:
+    """The roadmap-placement section: phase, impact, effort, ROI."""
+    return [
+        "## Roadmap placement",
+        f"- **Phase:** {exp.phase or '—'}",
+        f"- **Impact:** {exp.impact} — {exp.impact_explanation}",
+        f"- **Effort:** {exp.effort} — {exp.effort_explanation}",
+        f"- **ROI:** {exp.roi}  (impact ÷ effort)",
+        "",
+    ]
+
+
+def _render_action_lines(exp: IdeaExplanation) -> list[str]:
+    """The 'acting on it' section: action type, human/Apex marker, description."""
     kind = "executable by Apex" if exp.executable else "a design task for a human"
-    lines.append(f"- **{exp.action_type}** ({kind}) — {exp.action_description}")
-    lines.append("")
+    return [
+        "## Acting on it",
+        f"- **{exp.action_type}** ({kind}) — {exp.action_description}",
+        "",
+    ]
 
-    if exp.caveats:
-        lines.append("## Caveats (counterfactual stress-tests)")
-        for c in exp.caveats:
-            lines.append(f"- ⚠ {c}")
-        lines.append("")
+
+def _render_caveats_lines(exp: IdeaExplanation) -> list[str]:
+    """The caveats section — empty when there are none."""
+    if not exp.caveats:
+        return []
+    lines = ["## Caveats (counterfactual stress-tests)"]
+    lines.extend(f"- ⚠ {c}" for c in exp.caveats)
+    lines.append("")
+    return lines
+
+
+def render_explanation_markdown(exp: IdeaExplanation) -> str:
+    """Render an idea's reasoning as a legible 'show your work' card."""
+    lines: list[str] = []
+    lines.extend(_render_header_lines(exp))
+    lines.extend(_render_provenance_lines(exp))
+    lines.extend(_render_locus_lines(exp))
+    lines.extend(_render_score_lines(exp))
+    lines.extend(_render_roadmap_lines(exp))
+    lines.extend(_render_action_lines(exp))
+    lines.extend(_render_caveats_lines(exp))
     return "\n".join(lines)
