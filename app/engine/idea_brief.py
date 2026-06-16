@@ -86,55 +86,65 @@ def _lens_for(node: IdeaNode) -> str:
     return _LABEL_LENS.get(label, "extend")
 
 
-def build_brief(report: IdeaTreeReport, branch_path: str = "",
-                subject: str = "") -> Brief | None:
-    """The brief for ``branch_path``/``subject`` — or for the most valuable
-    design-level idea when neither is given. None when nothing matches.
+def _subject_module(node: IdeaNode) -> str:
+    """The stable module path of an idea's subject (drop any ``:: symbol``)."""
+    return node.subject.split(" :: ", 1)[0].split("::", 1)[0]
 
-    Prefer ``subject`` (a module path) when saving for a later ``--check``:
-    branch paths drift run to run as the tree reseeds, but a subject names
-    the same work tomorrow.
+
+def _is_candidate(node: IdeaNode, subject: str, bridge) -> bool:
+    """A default-selection candidate: a ``subject``-module match when a subject
+    is given, else any design-level (non-executable) idea."""
+    if subject:
+        return _subject_module(node) == subject
+    return not bridge.plan_idea(node).executable
+
+
+def _select_node(report: IdeaTreeReport, branch_path: str,
+                 subject: str) -> IdeaNode | None:
+    """The idea a brief is for: an exact ``branch_path`` match, else the most
+    valuable design-level (non-executable) idea — optionally filtered to a
+    ``subject`` module. ``None`` when nothing matches.
     """
     from app.engine.idea_action_bridge import IdeaActionBridge
 
+    if branch_path:
+        for node in report.ideas:
+            if node.branch_path == branch_path:
+                return node
+        return None
     bridge = IdeaActionBridge()
-    candidates: list[IdeaNode] = []
-    for node in report.ideas:
-        if branch_path and node.branch_path == branch_path:
-            candidates = [node]
-            break
-        if subject and not branch_path:
-            base = node.subject.split(" :: ", 1)[0].split("::", 1)[0]
-            if base == subject:
-                candidates.append(node)
-        elif not branch_path and not bridge.plan_idea(node).executable:
-            candidates.append(node)
+    candidates = [n for n in report.ideas if _is_candidate(n, subject, bridge)]
     if not candidates:
         return None
-    node = (candidates[0] if branch_path
-            else max(candidates, key=lambda n: (n.value, n.branch_path)))
+    return max(candidates, key=lambda n: (n.value, n.branch_path))
 
-    subject_module = node.subject.split(" :: ", 1)[0].split("::", 1)[0]
-    fan_in = (report.stats.get("fan_in") or {}).get(subject_module)
+
+def _measured_for(report: IdeaTreeReport, subject_module: str,
+                  fan_in: Any) -> dict[str, Any]:
+    """The non-null measured context (fan-in, LOC, complexity, symbols)."""
     metrics = (report.stats.get("metrics") or {}).get(subject_module) or {}
-    measured = {k: v for k, v in {
+    return {k: v for k, v in {
         "fan_in": fan_in,
         "loc": metrics.get("loc"),
         "complexity": metrics.get("complexity"),
         "symbols": metrics.get("symbols"),
     }.items() if v is not None}
 
-    lens = _lens_for(node)
-    plan = [(aspect, list(_FACET_SUBASPECTS.get(aspect, []))) for aspect in _FACETS[lens]]
 
+def _work_plan(lens: str) -> list[tuple[str, list[str]]]:
+    """The lens's aspects, each paired with its sub-concerns."""
+    return [(aspect, list(_FACET_SUBASPECTS.get(aspect, [])))
+            for aspect in _FACETS[lens]]
+
+
+def _phased_steps(node: IdeaNode) -> list[dict]:
+    """The convergence mini-roadmap, when the idea converges >= 2 dimensions."""
     conv = convergence_labels(node)
-    phased = convergence_plan(conv) if len(conv) >= 2 else []
+    return convergence_plan(conv) if len(conv) >= 2 else []
 
-    # Bind each checklist phrase to evidence in the subject's actual code,
-    # so the work order starts life knowing which items are VERIFIED concerns
-    # and which are hypotheses — the burndown baseline.
-    evidence = _bind_evidence(report, subject_module, plan)
 
+def _done_when(node: IdeaNode, fan_in: Any) -> list[str]:
+    """The definition of done the engine itself re-verifies on the next run."""
     done = [
         "`pytest -q` stays green (every change test-verified).",
         f"`apex ideate --roadmap --diff` no longer surfaces “{node.title}” "
@@ -144,13 +154,42 @@ def build_brief(report: IdeaTreeReport, branch_path: str = "",
     if fan_in:
         done.insert(1, f"The {fan_in} importing module(s) still pass their tests "
                        "(blast radius re-verified).")
+    return done
 
+
+def _why(node: IdeaNode) -> list[str]:
+    """The idea's grounding facts (and rationale, when present), verbatim."""
+    facts = list(node.source_facts[:2])
+    return [*facts, node.rationale] if node.rationale else facts
+
+
+def build_brief(report: IdeaTreeReport, branch_path: str = "",
+                subject: str = "") -> Brief | None:
+    """The brief for ``branch_path``/``subject`` — or for the most valuable
+    design-level idea when neither is given. None when nothing matches.
+
+    Prefer ``subject`` (a module path) when saving for a later ``--check``:
+    branch paths drift run to run as the tree reseeds, but a subject names
+    the same work tomorrow.
+    """
+    node = _select_node(report, branch_path, subject)
+    if node is None:
+        return None
+
+    subject_module = _subject_module(node)
+    fan_in = (report.stats.get("fan_in") or {}).get(subject_module)
+    lens = _lens_for(node)
+    plan = _work_plan(lens)
+
+    # Bind each checklist phrase to evidence in the subject's actual code,
+    # so the work order starts life knowing which items are VERIFIED concerns
+    # and which are hypotheses — the burndown baseline.
     return Brief(
         branch_path=node.branch_path, title=node.title, subject=node.subject,
-        operator=lens,
-        why=[*node.source_facts[:2], node.rationale] if node.rationale else list(node.source_facts[:2]),
-        measured=measured, plan=plan, phased_steps=phased, done_when=done,
-        evidence=evidence,
+        operator=lens, why=_why(node),
+        measured=_measured_for(report, subject_module, fan_in), plan=plan,
+        phased_steps=_phased_steps(node), done_when=_done_when(node, fan_in),
+        evidence=_bind_evidence(report, subject_module, plan),
     )
 
 
