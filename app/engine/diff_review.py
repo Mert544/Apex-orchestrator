@@ -151,47 +151,56 @@ def scan_findings(rel_path: str, source: str) -> list[ReviewFinding]:
 
 # Pure single-line rewrites — safe to show as an inline before/after suggestion
 # (no import injection or multi-line surgery). Maps fix_kind -> a transform call.
-def _line_suggestion(rel: str, source: str, finding: ReviewFinding) -> tuple[str, str] | None:
-    """The (old_line, new_line) a clean single-line fix would make at this
-    finding's line, or None when the fix isn't a tidy one-liner (eval/os.system
-    add imports; flag-only fixes annotate) — those stay 'auto-fixable' without a
-    shown diff."""
+def _suggestion_transform(fk: str):
+    """The (apply_fn, label) for a one-liner ``fix_kind``, or ``None`` when the
+    kind isn't a tidy single-line rewrite (eval/os.system add imports; flag-only
+    fixes annotate). Pure lookup — no source touched, just the routing table."""
     from app.execution.semantic.transforms import (
         collection_literal, fstring, modernize, open_encoding, identity_literal,
         negated_comparison, raise_from,
     )
     from app.execution.semantic.transforms import security as security_transforms
 
-    fk = finding.fix_kind
+    table = {
+        "open-encoding": (open_encoding.apply, "open encoding"),
+        "none-comparison": (modernize.apply, "modernize none-comparison"),
+        "identity-literal": (identity_literal.apply, "identity-literal"),
+        "negated-comparison": (negated_comparison.apply, "negated-comparison"),
+        "raise-from": (raise_from.apply, "raise-from"),
+        "fstring-no-placeholder": (fstring.apply, "fstring no placeholder"),
+        "collection-literal": (collection_literal.apply, "collection literal"),
+    }
+    if fk in table:
+        return table[fk]
+    if fk in ("bare except", "base-exception"):
+        return (security_transforms.apply, f"fix {fk}")
+    return None
+
+
+def _rewritten_source(rel: str, source: str, fk: str) -> str | None:
+    """The transform's new file content for ``fk`` on ``source``, or ``None`` when
+    ``fk`` isn't a one-liner kind, the transform raises, or it yields no patch."""
+    routed = _suggestion_transform(fk)
+    if routed is None:
+        return None
+    apply_fn, label = routed
     try:
-        if fk == "open-encoding":
-            res = open_encoding.apply(rel, source, "open encoding")
-        elif fk == "none-comparison":
-            res = modernize.apply(rel, source, "modernize none-comparison")
-        elif fk == "identity-literal":
-            res = identity_literal.apply(rel, source, "identity-literal")
-        elif fk == "negated-comparison":
-            res = negated_comparison.apply(rel, source, "negated-comparison")
-        elif fk == "raise-from":
-            res = raise_from.apply(rel, source, "raise-from")
-        elif fk == "fstring-no-placeholder":
-            res = fstring.apply(rel, source, "fstring no placeholder")
-        elif fk == "collection-literal":
-            res = collection_literal.apply(rel, source, "collection literal")
-        elif fk in ("bare except", "base-exception"):
-            res = security_transforms.apply(rel, source, f"fix {fk}")
-        else:
-            return None
+        res = apply_fn(rel, source, label)
     except Exception:
         return None
     if not res or not res.patch_requests:
         return None
-    new = res.patch_requests[0].get("new_content", "")
-    old_lines = source.splitlines()
-    new_lines = new.splitlines()
+    return res.patch_requests[0].get("new_content", "")
+
+
+def _single_line_change(old_lines: list[str], new_lines: list[str],
+                        line: int) -> tuple[str, str] | None:
+    """The (old, new) stripped pair for a clean one-line edit between two
+    equal-length splits: the change at the finding's line if it moved, else the
+    sole differing line. ``None`` for a length mismatch or any multi-line edit."""
     if len(old_lines) != len(new_lines):
         return None  # an import was added or lines shifted — not a tidy one-liner
-    idx = finding.line - 1
+    idx = line - 1
     if 0 <= idx < len(old_lines) and old_lines[idx] != new_lines[idx]:
         return (old_lines[idx].strip(), new_lines[idx].strip())
     # fall back to the single differing line, if exactly one changed
@@ -200,6 +209,17 @@ def _line_suggestion(rel: str, source: str, finding: ReviewFinding) -> tuple[str
         i = diffs[0]
         return (old_lines[i].strip(), new_lines[i].strip())
     return None
+
+
+def _line_suggestion(rel: str, source: str, finding: ReviewFinding) -> tuple[str, str] | None:
+    """The (old_line, new_line) a clean single-line fix would make at this
+    finding's line, or None when the fix isn't a tidy one-liner (eval/os.system
+    add imports; flag-only fixes annotate) — those stay 'auto-fixable' without a
+    shown diff."""
+    new = _rewritten_source(rel, source, finding.fix_kind)
+    if new is None:
+        return None
+    return _single_line_change(source.splitlines(), new.splitlines(), finding.line)
 
 
 def _rule_findings(project_root: str, rel: str, source: str,
