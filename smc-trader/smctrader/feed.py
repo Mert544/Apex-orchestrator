@@ -43,7 +43,7 @@ def rows_to_candles(rows: list[dict[str, str]]) -> list[Candle]:
             continue
         vol_raw = _pick(row, "volume")
         try:
-            vol = float(vol_raw) if vol_raw not in (None, "") else 0.0
+            vol = float(vol_raw) if vol_raw not in {None, ""} else 0.0
         except ValueError:
             vol = 0.0
         time_raw = _pick(row, "time")
