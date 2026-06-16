@@ -34,6 +34,7 @@ from app.execution._transform_base import (
     apply_line_rewrites,
     is_fixture_path,
     iter_statement_blocks,
+    plan_single_module_rewrite,
 )
 from app.execution.cross_file_rename import RenamePlan
 
@@ -81,38 +82,10 @@ def plan_remove_unreachable_after_terminator(project_root: str | Path,
     """Build the single-module plan, or its blockers. An empty plan (no
     ``new_contents``, no blockers) means nothing matched — a no-op, not a
     failure."""
-    plan = RenamePlan(old=module_rel, new="remove-unreachable-after-terminator")
-    if _is_fixture_path(module_rel):
-        return plan
-
-    path = Path(project_root) / module_rel
-    try:
-        source = path.read_text(encoding="utf-8")
-    except OSError:
-        plan.blockers.append(f"cannot read {module_rel}")
-        return plan
-
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as e:
-        plan.blockers.append(f"{module_rel} doesn't parse: {e}")
-        return plan
-
-    removals = _collect_removals(tree)
-    if not removals:
-        return plan  # nothing to do — empty plan (ok is False, no blockers)
-
-    new_source = apply_line_rewrites(source, [(lo, hi, []) for lo, hi in removals])
-    try:
-        ast.parse(new_source)
-    except SyntaxError as e:
-        plan.blockers.append(
-            f"{module_rel}: removing unreachable code would not re-parse ({e})")
-        return plan
-    if new_source == source:
-        return plan
-
-    plan.originals[module_rel] = source
-    plan.new_contents[module_rel] = new_source
-    plan.edits_by_file[module_rel] = len(removals)
-    return plan
+    return plan_single_module_rewrite(
+        project_root, module_rel,
+        plan_label="remove-unreachable-after-terminator",
+        collect=lambda tree, source: _collect_removals(tree),
+        apply=lambda source, removals: apply_line_rewrites(
+            source, [(lo, hi, []) for lo, hi in removals]),
+        reparse_phrase="removing unreachable code")
