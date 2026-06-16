@@ -94,6 +94,106 @@ class FunctionFractalAnalyzer:
 
         return results
 
+    # Risk for a call to a bare builtin name: id -> (message, score).
+    _NAME_CALL_RISKS = {
+        "eval": ("Uses eval() — arbitrary code execution risk", 0.3),
+        "exec": ("Uses exec() — arbitrary code execution risk", 0.3),
+        "input": ("Uses input() in Python 2 style — security concern", 0.3),
+        "__import__": ("Dynamic import — potential code injection", 0.3),
+    }
+    # Risk for a call to a dotted chain: "mod.attr" -> (message, score).
+    _CHAIN_CALL_RISKS = {
+        "os.system": ("Uses os.system() — shell injection risk", 0.3),
+        "subprocess.call": ("Uses subprocess without shell=False — injection risk", 0.3),
+        "pickle.loads": ("Uses pickle.loads() — deserialization risk", 0.3),
+        "yaml.load": ("Uses yaml.load() without Loader — arbitrary object risk", 0.3),
+    }
+
+    @staticmethod
+    def _attribute_chain(func: ast.Attribute) -> str:
+        """Render a dotted attribute call target (e.g. ``os.system``) from its AST."""
+        chain: list[str] = []
+        current: ast.AST = func
+        while isinstance(current, ast.Attribute):
+            chain.append(current.attr)
+            current = current.value
+        if isinstance(current, ast.Name):
+            chain.append(current.id)
+        return ".".join(reversed(chain))
+
+    @classmethod
+    def _call_risk(cls, call: ast.Call) -> tuple[str, float] | None:
+        """Return ``(message, score)`` if this call matches a known risk, else ``None``."""
+        func = call.func
+        if isinstance(func, ast.Name):
+            return cls._NAME_CALL_RISKS.get(func.id)
+        if isinstance(func, ast.Attribute):
+            return cls._CHAIN_CALL_RISKS.get(cls._attribute_chain(func))
+        return None
+
+    @classmethod
+    def _call_pattern_risks(
+        cls, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> list[tuple[str, float]]:
+        """Scan call sites for known dangerous patterns, in traversal order.
+
+        Uses AST Call nodes (avoids false positives in strings); pure over the AST.
+        """
+        hits: list[tuple[str, float]] = []
+        for subnode in ast.walk(node):
+            if isinstance(subnode, ast.Call):
+                hit = cls._call_risk(subnode)
+                if hit is not None:
+                    hits.append(hit)
+        return hits
+
+    @staticmethod
+    def _count_bare_excepts(node: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+        """Number of bare ``except:`` handlers anywhere in ``node`` (each scores)."""
+        return sum(
+            1
+            for sub in ast.walk(node)
+            if isinstance(sub, ast.ExceptHandler) and sub.type is None
+        )
+
+    @classmethod
+    def _detect_risks(
+        cls,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        has_docstring: bool,
+        lines: int,
+        arg_count: int,
+    ) -> tuple[list[str], float]:
+        """Collect risk labels and accumulated risk score for ``node``.
+
+        Pure over the AST and the precomputed metrics; appends in the exact order
+        the inlined checks once used so the emitted ``risks`` list is unchanged.
+        """
+        risks: list[str] = []
+        risk_score = 0.0
+
+        for message, score in cls._call_pattern_risks(node):
+            risks.append(message)
+            risk_score += score
+
+        if not has_docstring:
+            risks.append("missing_docstring")
+            risk_score += 0.1
+
+        if lines > 30:
+            risks.append(f"long_function ({lines} lines)")
+            risk_score += 0.1
+
+        if arg_count > 5:
+            risks.append(f"too_many_arguments ({arg_count})")
+            risk_score += 0.1
+
+        for _ in range(cls._count_bare_excepts(node)):
+            risks.append("bare_except")
+            risk_score += 0.2
+
+        return risks, risk_score
+
     def _analyze_function(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef, module_name: str, source: str, class_name: str | None = None
     ) -> dict[str, Any]:
@@ -101,70 +201,11 @@ class FunctionFractalAnalyzer:
         full_name = f"{module_name}::{name}"
 
         has_docstring = ast.get_docstring(node) is not None
-        risks = []
-        risk_score = 0.0
-
-        # Check for risk patterns via AST Call nodes (avoids false positives in strings)
         fn_source = ast.unparse(node) if hasattr(ast, "unparse") else ""
-        for subnode in ast.walk(node):
-            if isinstance(subnode, ast.Call):
-                if isinstance(subnode.func, ast.Name):
-                    if subnode.func.id == "eval":
-                        risks.append("Uses eval() — arbitrary code execution risk")
-                        risk_score += 0.3
-                    elif subnode.func.id == "exec":
-                        risks.append("Uses exec() — arbitrary code execution risk")
-                        risk_score += 0.3
-                    elif subnode.func.id == "input":
-                        risks.append("Uses input() in Python 2 style — security concern")
-                        risk_score += 0.3
-                    elif subnode.func.id == "__import__":
-                        risks.append("Dynamic import — potential code injection")
-                        risk_score += 0.3
-                elif isinstance(subnode.func, ast.Attribute):
-                    chain = []
-                    current = subnode.func
-                    while isinstance(current, ast.Attribute):
-                        chain.append(current.attr)
-                        current = current.value
-                    if isinstance(current, ast.Name):
-                        chain.append(current.id)
-                    chain_str = ".".join(reversed(chain))
-                    if chain_str == "os.system":
-                        risks.append("Uses os.system() — shell injection risk")
-                        risk_score += 0.3
-                    elif chain_str == "subprocess.call":
-                        risks.append("Uses subprocess without shell=False — injection risk")
-                        risk_score += 0.3
-                    elif chain_str == "pickle.loads":
-                        risks.append("Uses pickle.loads() — deserialization risk")
-                        risk_score += 0.3
-                    elif chain_str == "yaml.load":
-                        risks.append("Uses yaml.load() without Loader — arbitrary object risk")
-                        risk_score += 0.3
-
-        # Missing docstring
-        if not has_docstring:
-            risks.append("missing_docstring")
-            risk_score += 0.1
-
-        # Long function heuristic
         lines = fn_source.count("\n")
-        if lines > 30:
-            risks.append(f"long_function ({lines} lines)")
-            risk_score += 0.1
-
-        # Too many arguments
         arg_count = len(node.args.args) + len(node.args.kwonlyargs)
-        if arg_count > 5:
-            risks.append(f"too_many_arguments ({arg_count})")
-            risk_score += 0.1
 
-        # Bare except
-        for subnode in ast.walk(node):
-            if isinstance(subnode, ast.ExceptHandler) and subnode.type is None:
-                risks.append("bare_except")
-                risk_score += 0.2
+        risks, risk_score = self._detect_risks(node, has_docstring, lines, arg_count)
 
         # Purity / side-effect dimension (additive; does NOT touch risks/risk_score).
         purity, side_effects = self._analyze_purity(node)

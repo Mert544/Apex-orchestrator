@@ -53,6 +53,73 @@ def _tile(num: str, label: str) -> str:
     )
 
 
+def _tile_raw(num: str, label: str) -> str:
+    """Render a tile whose ``num`` is already escaped (label is escaped here).
+
+    The grade tile needs a single escape pass over its letter; pre-escaping then
+    re-escaping via :func:`_tile` would double-encode. This sibling escapes only
+    the label so the caller controls the number slot.
+    """
+    return (
+        "<div class='vital'>"
+        f"<span class='vital-num'>{num}</span>"
+        f"<span class='vital-label'>{html.escape(label)}</span>"
+        "</div>"
+    )
+
+
+def _plural(count: int, singular: str, plural: str) -> str:
+    """Return ``singular`` when ``count == 1`` else ``plural``."""
+    return singular if count == 1 else plural
+
+
+def _grade_tile(grade_letter: str, grade_score: int) -> str | None:
+    """Render the grade tile, or ``None`` when no grade signal is present.
+
+    Pairs an escaped letter (may be empty) with a coerced score. The letter is
+    the prominent number-slot; the score grounds the label.
+    """
+    grade = (grade_letter or "").strip()
+    score = _coerce_int(grade_score)
+    if not (grade or score is not None):
+        return None
+    num = html.escape(grade) if grade else (str(score) if score is not None else "")
+    label = f"Grade {score}/100" if score is not None else "Grade"
+    return _tile_raw(num, label)
+
+
+def _count_tile(value: object, singular: str, plural: str) -> str | None:
+    """Render a tile whose number is a non-negative count with a pluralised noun.
+
+    Returns ``None`` when the metric is "not applicable" (non-coercible or
+    negative), so the caller omits the tile.
+    """
+    count = _coerce_int(value)
+    if count is None or count < 0:
+        return None
+    return _tile(str(count), _plural(count, singular, plural))
+
+
+def _percent_tile(value: object, label: str) -> str | None:
+    """Render a ``N%`` tile, or ``None`` for a not-applicable metric.
+
+    Returns ``None`` when the metric is non-coercible or negative, so the caller
+    omits the tile.
+    """
+    pct = _coerce_int(value)
+    if pct is None or pct < 0:
+        return None
+    return _tile(f"{pct}%", label)
+
+
+def _top_move_markup(top_move: str) -> str:
+    """Render the optional one-line "top next move", or ``""`` when blank."""
+    move = (top_move or "").strip()
+    if not move:
+        return ""
+    return f"<p class='vital-top-move'>{html.escape(move)}</p>"
+
+
 def render_vitals(
     *,
     grade_letter: str,
@@ -77,52 +144,13 @@ def render_vitals(
 
     The output is deterministic and stdlib-only: no time, no randomness, no I/O.
     """
-    tiles: list[str] = []
-
-    # Grade: pairs an escaped letter (may be empty) with a coerced score. The
-    # letter is the prominent number-slot; the score grounds the label.
-    grade = (grade_letter or "").strip()
-    score = _coerce_int(grade_score)
-    if grade or score is not None:
-        num = html.escape(grade) if grade else (str(score) if score is not None else "")
-        label = f"Grade {score}/100" if score is not None else "Grade"
-        # _tile escapes again; pre-escaping `grade` would double-encode, so build
-        # the grade tile inline to keep a single escape pass over the letter.
-        tiles.append(
-            "<div class='vital'>"
-            f"<span class='vital-num'>{num}</span>"
-            f"<span class='vital-label'>{html.escape(label)}</span>"
-            "</div>"
-        )
-
-    coverage = _coerce_int(coverage_pct)
-    if coverage is not None and coverage >= 0:
-        tiles.append(_tile(f"{coverage}%", "Coverage"))
-
-    findings = _coerce_int(security_findings)
-    if findings is not None and findings >= 0:
-        noun = "security finding" if findings == 1 else "security findings"
-        tiles.append(_tile(str(findings), noun))
-
-    scope = _coerce_int(scope_pct)
-    if scope is not None and scope >= 0:
-        tiles.append(_tile(f"{scope}%", "in scope"))
-
-    ideas = _coerce_int(idea_count)
-    if ideas is not None and ideas >= 0:
-        noun = "idea" if ideas == 1 else "ideas"
-        tiles.append(_tile(str(ideas), noun))
-
-    runnable = _coerce_int(runnable_actions)
-    if runnable is not None and runnable >= 0:
-        tiles.append(_tile(str(runnable), "runnable now"))
-
-    parts = [f"<div class='vitals'>{''.join(tiles)}</div>"]
-
-    move = (top_move or "").strip()
-    if move:
-        parts.append(
-            f"<p class='vital-top-move'>{html.escape(move)}</p>"
-        )
-
-    return "".join(parts)
+    candidates = (
+        _grade_tile(grade_letter, grade_score),
+        _percent_tile(coverage_pct, "Coverage"),
+        _count_tile(security_findings, "security finding", "security findings"),
+        _percent_tile(scope_pct, "in scope"),
+        _count_tile(idea_count, "idea", "ideas"),
+        _count_tile(runnable_actions, "runnable now", "runnable now"),
+    )
+    tiles = "".join(tile for tile in candidates if tile is not None)
+    return f"<div class='vitals'>{tiles}</div>{_top_move_markup(top_move)}"
