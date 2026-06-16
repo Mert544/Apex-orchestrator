@@ -104,30 +104,11 @@ def cmd_maintain(args: argparse.Namespace) -> int:
 
 
 
-def cmd_auto(args: argparse.Namespace) -> int:
-    """One autonomous command — no flags to memorize.
+def _auto_resolve_mode(args, goal):
+    """The user's explicit --mode, or one inferred from a natural-language goal.
 
-    Assesses the project, decides what matters most (via the roadmap), and either
-    recommends the best next moves (default, no changes) or, with ``--apply``,
-    safely applies the test-verified, auto-rolled-back fixes in roadmap order.
-    An optional natural-language goal focuses the ideas and can hint the mode.
-    """
-    from app.engine.idea_action_bridge import (
-        IdeaActionBridge,
-        render_maintenance_markdown,
-    )
-    from app.engine.idea_permutation import IdeaPermutationEngine
-    from app.engine.idea_roadmap import RoadmapSynthesizer
-    from app.engine.idea_tree_shape import analyze_tree_shape
-    from app.plugins.registry import PluginRegistry
-
-    target = Path(args.target).resolve() if args.target else _get_project_root()
-    goal = (getattr(args, "goal", "") or "").strip()
-    explicit_apply = getattr(args, "apply", False)
-    explicit_recommend = getattr(args, "recommend", False)
-
-    # An explicit --mode (or one inferred from the goal) is honored; otherwise
-    # the AutonomyPolicy picks the mode based on what's safe to do.
+    An explicit --mode always wins; otherwise we try the IntentParser on the
+    goal (best-effort — a parser failure leaves the mode unset for the policy)."""
     explicit_mode = getattr(args, "mode", None)
     if not explicit_mode and goal:
         try:
@@ -136,22 +117,14 @@ def cmd_auto(args: argparse.Namespace) -> int:
             explicit_mode = IntentParser().parse(goal).mode
         except Exception:
             explicit_mode = None
+    return explicit_mode
 
-    plugins = PluginRegistry()
-    plugins.load_all()
-    engine = IdeaPermutationEngine(
-        config={"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4},
-        project_root=str(target),
-        extra_operators=plugins.idea_operators(),
-    )
-    report = engine.run(objective=goal or None)
-    roadmap = RoadmapSynthesizer().build(report)
-    shape = analyze_tree_shape(report)
 
-    # Best-effort security headline (a failing scanner must not break auto).
-    # Split project code from example/fixture code with the same predicate the
-    # grade uses, so auto and grade tell one consistent story: demo fixtures
-    # carry intentional vulnerabilities and must not inflate the headline.
+def _auto_security_counts(target):
+    """Best-effort (project, fixture) security-finding counts for the headline.
+
+    A failing scanner must not break auto, and example/fixture code is split out
+    with the grade's own predicate so auto and grade tell one consistent story."""
     sec_n = fixture_n = 0
     try:
         from app.agents.skills import SecurityAgent
@@ -164,8 +137,12 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 sec_n += 1
     except Exception:
         sec_n = fixture_n = 0
+    return sec_n, fixture_n
 
-    # --- Narrative: the state of the project ---------------------------------
+
+def _auto_narrative(target, goal, shape, roadmap, sec_n, fixture_n) -> list[str]:
+    """The Markdown brief on the state of the project (headline + standouts +
+    quick wins + best-effort 'what I've learned'). Pure string assembly."""
     lines = [f"# Apex — autonomous review of `{target}`", ""]
     if goal:
         lines.append(f"_goal: {goal}_\n")
@@ -186,71 +163,59 @@ def cmd_auto(args: argparse.Namespace) -> int:
         lines.append("**Best next moves (high impact, low effort):**")
         lines += [f"- {i.title}  (ROI {i.roi})" for i in roadmap.quick_wins]
         lines.append("")
-    # What the engine has learned about this project from past runs.
+    lines += _auto_memory_line(target)
+    return lines
+
+
+def _auto_memory_line(target) -> list[str]:
+    """The best-effort 'what I've learned here' line (or nothing).
+
+    A missing/corrupt memory ledger or an unexpected summary shape must never
+    break the brief — we simply omit the line rather than fail the command."""
     try:
         from app.engine.idea_memory import IdeaMemory
 
         mem = IdeaMemory.load(str(target)).summary()
         if mem.get("most_reliable"):
             best = mem["most_reliable"][0]
-            lines.append(
+            return [
                 f"_What I've learned here: `{best['key']}` fixes land "
                 f"{int(best['success_rate'] * 100)}% of the time "
                 f"({best['samples']} samples) — I weight that in._\n"
-            )
+            ]
     except Exception:
-        # Best-effort enrichment only: a missing/corrupt memory ledger or an
-        # unexpected summary shape must never break the brief — we simply omit
-        # the "what I've learned" line rather than fail the whole command.
         pass
-    emit_json = getattr(args, "json", False)
-    if not emit_json:
-        print("\n".join(lines))
+    return []
 
-    bridge = IdeaActionBridge()
-    commit = getattr(args, "commit", False)
 
-    # How many safe, executable fixes are available, and is the tree clean?
-    scout = bridge.plan_roadmap(report, mode="report", project_root=str(target))
-    executable = scout.stats.get("executable_steps", 0)
-    tree_clean = _working_tree_clean(target)
-
-    # Apex decides — autonomously — whether to act or recommend.
-    from app.policies.autonomy_policy import AutonomyPolicy
-
-    decision = AutonomyPolicy().decide(
-        executable_steps=executable,
-        working_tree_clean=tree_clean,
-        explicit_apply=explicit_apply,
-        explicit_recommend=explicit_recommend,
-        commit=commit,
-    )
-    mode = explicit_mode or decision.mode
-    if decision.act and mode == "report":
-        mode = "supervised"  # acting requires a patch-capable mode
-
-    # --- Recommend: never touch the tree -------------------------------------
-    if not decision.act:
-        if emit_json:
-            print(json.dumps({
-                "target": str(target), "goal": goal, "ideas": shape.total_ideas,
-                "modules": shape.distinct_subjects, "security_findings": sec_n,
-                "observations": shape.observations,
-                "quick_wins": [{"title": i.title, "roi": i.roi} for i in roadmap.quick_wins],
-                "applicable": executable, "applied": False, "decision": decision.to_dict(),
-            }, indent=2))
-            return 0
-        print(f"_Apex chose not to apply automatically: {decision.reason}._\n")
-        print(
-            f"I can safely apply **{executable}** of these (test-verified, "
-            "auto-rolled-back). When you're ready:\n\n"
-            "  • Apply now:            apex auto --apply\n"
-            "  • Preview as diffs:     apex maintain --dry-run\n"
-            "  • See the full roadmap: apex ideate --roadmap"
-        )
+def _auto_recommend(args, target, goal, shape, roadmap, sec_n,
+                    executable, decision, emit_json) -> int:
+    """The recommend path: never touch the tree, report what could be applied."""
+    if emit_json:
+        print(json.dumps({
+            "target": str(target), "goal": goal, "ideas": shape.total_ideas,
+            "modules": shape.distinct_subjects, "security_findings": sec_n,
+            "observations": shape.observations,
+            "quick_wins": [{"title": i.title, "roi": i.roi} for i in roadmap.quick_wins],
+            "applicable": executable, "applied": False, "decision": decision.to_dict(),
+        }, indent=2))
         return 0
+    print(f"_Apex chose not to apply automatically: {decision.reason}._\n")
+    print(
+        f"I can safely apply **{executable}** of these (test-verified, "
+        "auto-rolled-back). When you're ready:\n\n"
+        "  • Apply now:            apex auto --apply\n"
+        "  • Preview as diffs:     apex maintain --dry-run\n"
+        "  • See the full roadmap: apex ideate --roadmap"
+    )
+    return 0
 
-    # --- Act: roadmap-ordered, verified, capped for safety -------------------
+
+def _auto_act(args, target, goal, bridge, engine, report, mode,
+              commit, decision, emit_json) -> int:
+    """The act path: roadmap-ordered, verified, capped guarded apply + report."""
+    from app.engine.idea_action_bridge import render_maintenance_markdown
+
     plan = bridge.plan_roadmap(report, mode=mode, project_root=str(target), draft=True)
     summary = bridge.apply_plan(
         plan, str(target), mode=mode,
@@ -286,6 +251,71 @@ def cmd_auto(args: argparse.Namespace) -> int:
         out_path.write_text(md, encoding="utf-8")
         print(f"\n[auto] Report written to {out_path}")
     return 0
+
+
+def cmd_auto(args: argparse.Namespace) -> int:
+    """One autonomous command — no flags to memorize.
+
+    Assesses the project, decides what matters most (via the roadmap), and either
+    recommends the best next moves (default, no changes) or, with ``--apply``,
+    safely applies the test-verified, auto-rolled-back fixes in roadmap order.
+    An optional natural-language goal focuses the ideas and can hint the mode.
+    """
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.engine.idea_permutation import IdeaPermutationEngine
+    from app.engine.idea_roadmap import RoadmapSynthesizer
+    from app.engine.idea_tree_shape import analyze_tree_shape
+    from app.plugins.registry import PluginRegistry
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    goal = (getattr(args, "goal", "") or "").strip()
+    explicit_apply = getattr(args, "apply", False)
+    explicit_recommend = getattr(args, "recommend", False)
+    explicit_mode = _auto_resolve_mode(args, goal)
+
+    plugins = PluginRegistry()
+    plugins.load_all()
+    engine = IdeaPermutationEngine(
+        config={"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4},
+        project_root=str(target),
+        extra_operators=plugins.idea_operators(),
+    )
+    report = engine.run(objective=goal or None)
+    roadmap = RoadmapSynthesizer().build(report)
+    shape = analyze_tree_shape(report)
+    sec_n, fixture_n = _auto_security_counts(target)
+
+    emit_json = getattr(args, "json", False)
+    if not emit_json:
+        print("\n".join(_auto_narrative(target, goal, shape, roadmap, sec_n, fixture_n)))
+
+    bridge = IdeaActionBridge()
+    commit = getattr(args, "commit", False)
+
+    # How many safe, executable fixes are available, and is the tree clean?
+    scout = bridge.plan_roadmap(report, mode="report", project_root=str(target))
+    executable = scout.stats.get("executable_steps", 0)
+    tree_clean = _working_tree_clean(target)
+
+    # Apex decides — autonomously — whether to act or recommend.
+    from app.policies.autonomy_policy import AutonomyPolicy
+
+    decision = AutonomyPolicy().decide(
+        executable_steps=executable,
+        working_tree_clean=tree_clean,
+        explicit_apply=explicit_apply,
+        explicit_recommend=explicit_recommend,
+        commit=commit,
+    )
+    mode = explicit_mode or decision.mode
+    if decision.act and mode == "report":
+        mode = "supervised"  # acting requires a patch-capable mode
+
+    if not decision.act:
+        return _auto_recommend(args, target, goal, shape, roadmap, sec_n,
+                               executable, decision, emit_json)
+    return _auto_act(args, target, goal, bridge, engine, report, mode,
+                     commit, decision, emit_json)
 
 
 
@@ -396,6 +426,107 @@ def cmd_evolve(args: argparse.Namespace) -> int:
     return 0
 
 
+_APPLIED_TREE_NOTE = ("_Applied to your working tree, not committed — "
+                      "review with `git diff`._")
+
+
+def _develop_playbook(args, target) -> int:
+    """`apex develop --playbook`: show the learned composition playbook, run nothing."""
+    from app.engine.composition_archive import (
+        CompositionArchive, render_playbook_markdown,
+    )
+
+    archive = CompositionArchive.load(str(target))
+    if args.json:
+        print(json.dumps(archive.to_dict(), indent=2))
+    else:
+        print(render_playbook_markdown(archive))
+    return 0
+
+
+def _develop_history(args, target) -> int:
+    """`apex develop --history`: show the development trajectory, run nothing."""
+    from app.engine.dev_history import DevHistory, render_history_markdown
+
+    history = DevHistory.load(str(target))
+    if args.json:
+        print(json.dumps(history.to_dict(), indent=2))
+    else:
+        print(render_history_markdown(history))
+    return 0
+
+
+def _develop_goal(args, target, goal, max_steps, verify, apply) -> int:
+    """`apex develop --goal`: pursue a high-level goal that fractally decomposes."""
+    from app.engine.fractal_develop import compile_goal, render_goal_markdown
+
+    gr = compile_goal(str(target), goal, max_steps=max_steps, verify=verify, apply=apply)
+    if args.json:
+        print(json.dumps(gr.to_dict(), indent=2))
+    else:
+        print(render_goal_markdown(gr))
+        if apply and gr.total_moves:
+            print(_APPLIED_TREE_NOTE)
+    return 0 if gr.objectives else 1
+
+
+def _develop_all(args, target, grade_before, max_steps, verify, apply) -> int:
+    """`apex develop --all`: sweep every objective in order."""
+    from app.engine.objective_compiler import compile_all, render_all_markdown
+
+    results = compile_all(str(target), max_steps=max_steps, verify=verify, apply=apply)
+    changed = apply and any(r.steps for r in results)
+    if args.json:
+        print(json.dumps([r.to_dict() for r in results], indent=2))
+    else:
+        print(render_all_markdown(results))
+        if changed:
+            print(_APPLIED_TREE_NOTE)
+    _print_grade_proof(str(target), grade_before, changed,
+                       objective="all", moves=sum(len(r.steps) for r in results))
+    return 0
+
+
+def _develop_from_dream(args, target, objective, max_steps, verify, apply) -> int:
+    """`apex develop --from-dream`: scope the campaign to dream-flagged confluences."""
+    from app.engine.objective_compiler import (
+        compile_from_dream, dream_confluence_modules, render_from_dream_markdown,
+    )
+
+    modules = dream_confluence_modules(str(target))
+    results = compile_from_dream(str(target), objective=objective,
+                                 max_steps=max_steps, verify=verify, apply=apply)
+    if args.json:
+        print(json.dumps({"modules": modules,
+                          "campaigns": [r.to_dict() for r in results]}, indent=2))
+    else:
+        print(render_from_dream_markdown(results, modules))
+        if apply and any(r.steps for r in results):
+            print(_APPLIED_TREE_NOTE)
+    return 0
+
+
+def _develop_objective(args, target, objective, grade_before, max_steps, verify, apply) -> int:
+    """`apex develop` default: compose verified transforms toward one objective metric."""
+    from app.engine.objective_compiler import compile_objective, render_compile_markdown
+
+    result = compile_objective(
+        str(target), objective=objective, max_steps=max_steps,
+        verify=verify, apply=apply, scope_verify=getattr(args, "fast", False),
+    )
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        print(render_compile_markdown(result))
+        if result.applied and result.steps:
+            print(_APPLIED_TREE_NOTE)
+    _print_grade_proof(str(target), grade_before, result.applied and bool(result.steps),
+                       objective=objective, moves=len(result.steps))
+    # Non-zero only when an explicitly named objective is unknown (a usage error).
+    return 1 if (result.blocked and not result.steps
+                 and any("unknown objective" in b for b in result.blocked)) else 0
+
+
 def cmd_develop(args: argparse.Namespace) -> int:
     """Goal-directed composition: drive an OBJECTIVE metric to its target by
     composing verified transforms, each suite-gated with auto-rollback.
@@ -413,27 +544,9 @@ def cmd_develop(args: argparse.Namespace) -> int:
     apply = getattr(args, "apply", False)
 
     if getattr(args, "playbook", False):
-        from app.engine.composition_archive import (
-            CompositionArchive, render_playbook_markdown,
-        )
-
-        archive = CompositionArchive.load(str(target))
-        if args.json:
-            print(json.dumps(archive.to_dict(), indent=2))
-        else:
-            print(render_playbook_markdown(archive))
-        return 0
-
+        return _develop_playbook(args, target)
     if getattr(args, "history", False):
-        from app.engine.dev_history import DevHistory, render_history_markdown
-
-        history = DevHistory.load(str(target))
-        if args.json:
-            print(json.dumps(history.to_dict(), indent=2))
-        else:
-            print(render_history_markdown(history))
-        return 0
-
+        return _develop_history(args, target)
     if getattr(args, "top", False):
         return _develop_top(args, target)
 
@@ -442,69 +555,13 @@ def cmd_develop(args: argparse.Namespace) -> int:
 
     goal = getattr(args, "goal", "") or ""
     if goal:
-        from app.engine.fractal_develop import compile_goal, render_goal_markdown
-
-        gr = compile_goal(str(target), goal, max_steps=max_steps, verify=verify, apply=apply)
-        if args.json:
-            print(json.dumps(gr.to_dict(), indent=2))
-        else:
-            print(render_goal_markdown(gr))
-            if apply and gr.total_moves:
-                print("_Applied to your working tree, not committed — "
-                      "review with `git diff`._")
-        return 0 if gr.objectives else 1
-
+        return _develop_goal(args, target, goal, max_steps, verify, apply)
     if getattr(args, "all_objectives", False):
-        from app.engine.objective_compiler import compile_all, render_all_markdown
-
-        results = compile_all(str(target), max_steps=max_steps, verify=verify, apply=apply)
-        if args.json:
-            print(json.dumps([r.to_dict() for r in results], indent=2))
-        else:
-            print(render_all_markdown(results))
-            if apply and any(r.steps for r in results):
-                print("_Applied to your working tree, not committed — "
-                      "review with `git diff`._")
-        _print_grade_proof(str(target), grade_before, apply and any(r.steps for r in results),
-                           objective="all", moves=sum(len(r.steps) for r in results))
-        return 0
-
+        return _develop_all(args, target, grade_before, max_steps, verify, apply)
     if getattr(args, "from_dream", False):
-        from app.engine.objective_compiler import (
-            compile_from_dream, dream_confluence_modules, render_from_dream_markdown,
-        )
-
-        modules = dream_confluence_modules(str(target))
-        results = compile_from_dream(str(target), objective=objective,
-                                     max_steps=max_steps, verify=verify, apply=apply)
-        if args.json:
-            print(json.dumps({"modules": modules,
-                              "campaigns": [r.to_dict() for r in results]}, indent=2))
-        else:
-            print(render_from_dream_markdown(results, modules))
-            if apply and any(r.steps for r in results):
-                print("_Applied to your working tree, not committed — "
-                      "review with `git diff`._")
-        return 0
-
-    from app.engine.objective_compiler import compile_objective, render_compile_markdown
-
-    result = compile_objective(
-        str(target), objective=objective, max_steps=max_steps,
-        verify=verify, apply=apply, scope_verify=getattr(args, "fast", False),
-    )
-    if args.json:
-        print(json.dumps(result.to_dict(), indent=2))
-    else:
-        print(render_compile_markdown(result))
-        if result.applied and result.steps:
-            print("_Applied to your working tree, not committed — "
-                  "review with `git diff`._")
-    _print_grade_proof(str(target), grade_before, result.applied and bool(result.steps),
-                       objective=objective, moves=len(result.steps))
-    # Non-zero only when an explicitly named objective is unknown (a usage error).
-    return 1 if (result.blocked and not result.steps
-                 and any("unknown objective" in b for b in result.blocked)) else 0
+        return _develop_from_dream(args, target, objective, max_steps, verify, apply)
+    return _develop_objective(args, target, objective, grade_before,
+                              max_steps, verify, apply)
 
 
 def _top_runnable_step(plan):
