@@ -14,6 +14,120 @@ class EditStrategyResult:
         return asdict(self)
 
 
+# Patch-plan flags that map directly to a refactoring strategy. Ordered: the
+# first truthy flag wins, matching the original sequential if-chain.
+_PLAN_FLAG_RULES: tuple[tuple[str, str, float, str], ...] = (
+    ("rename", "rename_variable", 0.9, "Patch plan explicitly requests a rename."),
+    ("extract", "extract_method", 0.8, "Patch plan explicitly requests method extraction."),
+    ("inline", "inline_variable", 0.8, "Patch plan explicitly requests variable inlining."),
+    ("move", "move_class", 0.7, "Patch plan explicitly requests class move."),
+    ("extract_class", "extract_class", 0.7, "Patch plan explicitly requests class extraction."),
+)
+
+# Keyword rules over the combined title+strategy text. Each entry lists the
+# substrings that trigger it; the first matching rule wins. Ordered exactly as
+# the original if-chain so precedence (e.g. eval before guard) is preserved.
+_KEYWORD_RULES: tuple[tuple[tuple[str, ...], str, float, str], ...] = (
+    (("eval",), "fix_eval", 0.85, "Keywords suggest an eval() security fix."),
+    (("os.system",), "fix_os_system", 0.85, "Keywords suggest an os.system() security fix."),
+    (("bare except", "bareexcept"), "fix_bare_except", 0.9, "Keywords suggest a bare-except fix."),
+    (
+        ("base-exception", "baseexception"),
+        "fix_base_exception",
+        0.9,
+        "Keywords suggest narrowing except BaseException.",
+    ),
+    (("pickle",), "fix_pickle", 0.8, "Keywords suggest flagging unsafe pickle.loads()."),
+    (("sql", "injection"), "fix_sql", 0.8, "Keywords suggest flagging an SQL-injection risk."),
+    (("yaml",), "fix_yaml", 0.85, "Keywords suggest a yaml.load() safety fix."),
+    (
+        ("tempfile", "mktemp"),
+        "fix_tempfile",
+        0.8,
+        "Keywords suggest flagging an insecure tempfile.mktemp().",
+    ),
+    (
+        ("weak-hash", "hashlib"),
+        "fix_weak_hash",
+        0.8,
+        "Keywords suggest flagging a weak hashlib.md5()/sha1().",
+    ),
+    (
+        ("mutable default", "mutable-default"),
+        "fix_mutable_default",
+        0.85,
+        "Keywords suggest a mutable-default-argument fix.",
+    ),
+    (
+        ("modernize", "none-comparison", "none comparison"),
+        "modernize",
+        0.85,
+        "Keywords suggest behavior-preserving modernization.",
+    ),
+    (
+        ("open-encoding", "encoding"),
+        "fix_open_encoding",
+        0.85,
+        "Keywords suggest adding an explicit open() encoding.",
+    ),
+    (
+        ("net-timeout", "timeout", "hang"),
+        "fix_net_timeout",
+        0.8,
+        "Keywords suggest flagging a network call without a timeout.",
+    ),
+    (
+        ("identity-literal", "identity comparison"),
+        "fix_identity_literal",
+        0.85,
+        "Keywords suggest fixing an identity-vs-literal comparison.",
+    ),
+    (
+        ("negated-comparison",),
+        "fix_negated_comparison",
+        0.85,
+        "Keywords suggest fixing a negated membership/identity test.",
+    ),
+    (
+        ("raise-from", "raise without from"),
+        "fix_raise_from",
+        0.85,
+        "Keywords suggest chaining a re-raised exception to its cause.",
+    ),
+    (
+        ("fstring-no-placeholder", "f-string without placeholder"),
+        "fix_fstring",
+        0.85,
+        "Keywords suggest dropping a dead f-string prefix.",
+    ),
+    (
+        ("collection-literal",),
+        "fix_collection_literal",
+        0.85,
+        "Keywords suggest replacing an empty constructor with a literal.",
+    ),
+    (
+        ("import", "unused", "cleanup"),
+        "organize_imports",
+        0.7,
+        "Keywords suggest import cleanup.",
+    ),
+    (("docstring", "document"), "add_docstring", 0.85, "Keywords suggest documentation."),
+    (
+        ("type", "typing", "annotation"),
+        "add_type_annotations",
+        0.8,
+        "Keywords suggest type annotation work.",
+    ),
+    (
+        ("guard", "validate", "input", "security"),
+        "add_guard_clause",
+        0.85,
+        "Keywords suggest input validation.",
+    ),
+)
+
+
 class EditStrategy:
     """Choose a conservative semantic edit strategy from task + patch signals."""
 
@@ -24,124 +138,82 @@ class EditStrategy:
         related_tests: list[str] | None = None,
         repair_context: dict[str, Any] | None = None,
     ) -> EditStrategyResult:
-        title_lower = (title or "").lower()
-        strategy_text = " ".join(patch_plan.get("change_strategy", [])).lower()
-        combined = f"{title_lower} {strategy_text}"
         related_tests = related_tests or []
         repair_context = repair_context or {}
-        reasons: list[str] = []
+        combined = self._combined_text(title, patch_plan)
 
+        for resolve in (
+            self._from_repair_context,
+            self._from_plan_flags,
+            self._from_keywords,
+        ):
+            result = resolve(combined, patch_plan, repair_context)
+            if result is not None:
+                return result
+
+        return self._default(combined, related_tests)
+
+    @staticmethod
+    def _combined_text(title: str, patch_plan: dict[str, Any]) -> str:
+        title_lower = (title or "").lower()
+        strategy_text = " ".join(patch_plan.get("change_strategy", [])).lower()
+        return f"{title_lower} {strategy_text}"
+
+    @staticmethod
+    def _from_repair_context(
+        combined: str,
+        patch_plan: dict[str, Any],
+        repair_context: dict[str, Any],
+    ) -> EditStrategyResult | None:
         failure_type = str(repair_context.get("failure_type", ""))
         if failure_type == "test_failure":
-            reasons.append("Repair context indicates a test failure.")
-            return EditStrategyResult(strategy="repair_test_assertion", confidence=0.8, reasons=reasons)
+            return EditStrategyResult(
+                strategy="repair_test_assertion",
+                confidence=0.8,
+                reasons=["Repair context indicates a test failure."],
+            )
         if failure_type == "patch_scope_failure":
-            reasons.append("Repair context indicates scope reduction is needed.")
-            return EditStrategyResult(strategy="add_docstring", confidence=0.6, reasons=reasons)
+            return EditStrategyResult(
+                strategy="add_docstring",
+                confidence=0.6,
+                reasons=["Repair context indicates scope reduction is needed."],
+            )
+        return None
 
-        if patch_plan.get("rename"):
-            reasons.append("Patch plan explicitly requests a rename.")
-            return EditStrategyResult(strategy="rename_variable", confidence=0.9, reasons=reasons)
-        if patch_plan.get("extract"):
-            reasons.append("Patch plan explicitly requests method extraction.")
-            return EditStrategyResult(strategy="extract_method", confidence=0.8, reasons=reasons)
-        if patch_plan.get("inline"):
-            reasons.append("Patch plan explicitly requests variable inlining.")
-            return EditStrategyResult(strategy="inline_variable", confidence=0.8, reasons=reasons)
-        if patch_plan.get("move"):
-            reasons.append("Patch plan explicitly requests class move.")
-            return EditStrategyResult(strategy="move_class", confidence=0.7, reasons=reasons)
-        if patch_plan.get("extract_class"):
-            reasons.append("Patch plan explicitly requests class extraction.")
-            return EditStrategyResult(strategy="extract_class", confidence=0.7, reasons=reasons)
+    @staticmethod
+    def _from_plan_flags(
+        combined: str,
+        patch_plan: dict[str, Any],
+        repair_context: dict[str, Any],
+    ) -> EditStrategyResult | None:
+        for flag, strategy, confidence, reason in _PLAN_FLAG_RULES:
+            if patch_plan.get(flag):
+                return EditStrategyResult(strategy=strategy, confidence=confidence, reasons=[reason])
+        return None
 
+    @staticmethod
+    def _from_keywords(
+        combined: str,
+        patch_plan: dict[str, Any],
+        repair_context: dict[str, Any],
+    ) -> EditStrategyResult | None:
         # Concrete security fixes (AST-based) take priority over a generic
         # guard clause when the issue names a known dangerous pattern.
-        if "eval" in combined:
-            reasons.append("Keywords suggest an eval() security fix.")
-            return EditStrategyResult(strategy="fix_eval", confidence=0.85, reasons=reasons)
-        if "os.system" in combined:
-            reasons.append("Keywords suggest an os.system() security fix.")
-            return EditStrategyResult(strategy="fix_os_system", confidence=0.85, reasons=reasons)
-        if "bare except" in combined or "bareexcept" in combined:
-            reasons.append("Keywords suggest a bare-except fix.")
-            return EditStrategyResult(strategy="fix_bare_except", confidence=0.9, reasons=reasons)
-        if "base-exception" in combined or "baseexception" in combined:
-            reasons.append("Keywords suggest narrowing except BaseException.")
-            return EditStrategyResult(strategy="fix_base_exception", confidence=0.9, reasons=reasons)
-        if "pickle" in combined:
-            reasons.append("Keywords suggest flagging unsafe pickle.loads().")
-            return EditStrategyResult(strategy="fix_pickle", confidence=0.8, reasons=reasons)
-        if "sql" in combined or "injection" in combined:
-            reasons.append("Keywords suggest flagging an SQL-injection risk.")
-            return EditStrategyResult(strategy="fix_sql", confidence=0.8, reasons=reasons)
-        if "yaml" in combined:
-            reasons.append("Keywords suggest a yaml.load() safety fix.")
-            return EditStrategyResult(strategy="fix_yaml", confidence=0.85, reasons=reasons)
+        for keywords, strategy, confidence, reason in _KEYWORD_RULES:
+            if any(keyword in combined for keyword in keywords):
+                return EditStrategyResult(strategy=strategy, confidence=confidence, reasons=[reason])
+        return None
 
-        if "tempfile" in combined or "mktemp" in combined:
-            reasons.append("Keywords suggest flagging an insecure tempfile.mktemp().")
-            return EditStrategyResult(strategy="fix_tempfile", confidence=0.8, reasons=reasons)
-
-        if "weak-hash" in combined or "hashlib" in combined:
-            reasons.append("Keywords suggest flagging a weak hashlib.md5()/sha1().")
-            return EditStrategyResult(strategy="fix_weak_hash", confidence=0.8, reasons=reasons)
-
-        if "mutable default" in combined or "mutable-default" in combined:
-            reasons.append("Keywords suggest a mutable-default-argument fix.")
-            return EditStrategyResult(strategy="fix_mutable_default", confidence=0.85, reasons=reasons)
-
-        if "modernize" in combined or "none-comparison" in combined or "none comparison" in combined:
-            reasons.append("Keywords suggest behavior-preserving modernization.")
-            return EditStrategyResult(strategy="modernize", confidence=0.85, reasons=reasons)
-
-        if "open-encoding" in combined or "encoding" in combined:
-            reasons.append("Keywords suggest adding an explicit open() encoding.")
-            return EditStrategyResult(strategy="fix_open_encoding", confidence=0.85, reasons=reasons)
-
-        if "net-timeout" in combined or "timeout" in combined or "hang" in combined:
-            reasons.append("Keywords suggest flagging a network call without a timeout.")
-            return EditStrategyResult(strategy="fix_net_timeout", confidence=0.8, reasons=reasons)
-
-        if "identity-literal" in combined or "identity comparison" in combined:
-            reasons.append("Keywords suggest fixing an identity-vs-literal comparison.")
-            return EditStrategyResult(strategy="fix_identity_literal", confidence=0.85, reasons=reasons)
-
-        if "negated-comparison" in combined:
-            reasons.append("Keywords suggest fixing a negated membership/identity test.")
-            return EditStrategyResult(strategy="fix_negated_comparison", confidence=0.85, reasons=reasons)
-
-        if "raise-from" in combined or "raise without from" in combined:
-            reasons.append("Keywords suggest chaining a re-raised exception to its cause.")
-            return EditStrategyResult(strategy="fix_raise_from", confidence=0.85, reasons=reasons)
-
-        if "fstring-no-placeholder" in combined or "f-string without placeholder" in combined:
-            reasons.append("Keywords suggest dropping a dead f-string prefix.")
-            return EditStrategyResult(strategy="fix_fstring", confidence=0.85, reasons=reasons)
-
-        if "collection-literal" in combined:
-            reasons.append("Keywords suggest replacing an empty constructor with a literal.")
-            return EditStrategyResult(strategy="fix_collection_literal", confidence=0.85, reasons=reasons)
-
-        if "import" in combined or "unused" in combined or "cleanup" in combined:
-            reasons.append("Keywords suggest import cleanup.")
-            return EditStrategyResult(strategy="organize_imports", confidence=0.7, reasons=reasons)
-
-        if "docstring" in combined or "document" in combined:
-            reasons.append("Keywords suggest documentation.")
-            return EditStrategyResult(strategy="add_docstring", confidence=0.85, reasons=reasons)
-
-        if "type" in combined or "typing" in combined or "annotation" in combined:
-            reasons.append("Keywords suggest type annotation work.")
-            return EditStrategyResult(strategy="add_type_annotations", confidence=0.8, reasons=reasons)
-
-        if "guard" in combined or "validate" in combined or "input" in combined or "security" in combined:
-            reasons.append("Keywords suggest input validation.")
-            return EditStrategyResult(strategy="add_guard_clause", confidence=0.85, reasons=reasons)
-
+    @staticmethod
+    def _default(combined: str, related_tests: list[str]) -> EditStrategyResult:
         if "test" in combined or "coverage" in combined or related_tests:
-            reasons.append("Context suggests test-related work.")
-            return EditStrategyResult(strategy="add_docstring", confidence=0.6, reasons=reasons)
-
-        reasons.append("No strong signal; defaulting to add_docstring.")
-        return EditStrategyResult(strategy="add_docstring", confidence=0.5, reasons=reasons)
+            return EditStrategyResult(
+                strategy="add_docstring",
+                confidence=0.6,
+                reasons=["Context suggests test-related work."],
+            )
+        return EditStrategyResult(
+            strategy="add_docstring",
+            confidence=0.5,
+            reasons=["No strong signal; defaulting to add_docstring."],
+        )
