@@ -935,6 +935,112 @@ def _quality_pct_bar(label: str, ratio: float, detail: str = "") -> str:
     )
 
 
+def _quality_hotspots(heading: str, rows: list[str]) -> list[str]:
+    """Wrap pre-rendered ``<li>`` ``rows`` in a titled ``.commits`` list block.
+
+    Returns a one-element ``blocks`` fragment, or ``[]`` when there are no rows,
+    so callers can ``+=`` unconditionally without an inline guard.
+    """
+    if not rows:
+        return []
+    return [
+        f"<h4 style='margin:8px 0 4px'>{heading}</h4>"
+        f"<ul class='commits'>{''.join(rows)}</ul>"
+    ]
+
+
+def _quality_type_hints(th: Any) -> tuple[list[str], list[str]]:
+    """Render the type-hint-coverage analyzer (chip + bar + thinnest modules)."""
+    if th is None or th.total_functions <= 0:
+        return [], []
+    chips = [_chip("type hints", f"{int(round(th.overall_ratio * 100))}%")]
+    blocks = [_quality_pct_bar(
+        "Type-hint coverage", th.overall_ratio,
+        f"{th.annotated_functions}/{th.total_functions} functions fully annotated",
+    )]
+    worst = [m for m in th.worst_modules if m.get("ratio", 1.0) < 1.0][:5]
+    rows = [
+        f"<li><code>{_esc(m.get('module', '?'))}</code> "
+        f"<span class='val'>{int(round(float(m.get('ratio', 0)) * 100))}%</span> "
+        f"<span class='muted'>({_esc(m.get('annotated', 0))}/"
+        f"{_esc(m.get('total', 0))})</span></li>"
+        for m in worst
+    ]
+    blocks += _quality_hotspots("Thinnest-typed modules", rows)
+    return chips, blocks
+
+
+def _quality_docstrings(dc: Any) -> tuple[list[str], list[str]]:
+    """Render the public-docstring-coverage analyzer (chip + bar)."""
+    if dc is None or dc.total_public <= 0:
+        return [], []
+    chips = [_chip("public docs", f"{int(round(dc.overall_public_ratio * 100))}%")]
+    blocks = [_quality_pct_bar(
+        "Public docstring coverage", dc.overall_public_ratio,
+        f"{dc.documented_public}/{dc.total_public} public symbols documented",
+    )]
+    return chips, blocks
+
+
+def _quality_complexity(cx: Any) -> tuple[list[str], list[str]]:
+    """Render the cyclomatic-complexity analyzer (chips + summary + hotspots)."""
+    if cx is None or cx.total <= 0:
+        return [], []
+    chips = [
+        _chip(f"complexity > {cx.threshold}", cx.over_threshold),
+        _chip("max complexity", cx.max),
+    ]
+    blocks = [
+        "<p class='muted' style='margin:6px 0 4px'>"
+        f"{_esc(cx.over_threshold)} of {_esc(cx.total)} functions exceed "
+        f"complexity {_esc(cx.threshold)} "
+        f"(mean {_esc(cx.mean)} · median {_esc(cx.median)} · max {_esc(cx.max)}).</p>"
+    ]
+    rows = [
+        f"<li><code>{_esc(h.get('module', '?'))}</code>"
+        f"<span class='muted'>·</span><code>{_esc(h.get('function', '?'))}</code> "
+        f"<span class='val'>{_esc(h.get('complexity', 0))}</span></li>"
+        for h in cx.hotspots[:5]
+    ]
+    blocks += _quality_hotspots("Complexity hotspots", rows)
+    return chips, blocks
+
+
+def _quality_todo_debt(td: Any) -> tuple[list[str], list[str]]:
+    """Render the inline TODO/FIXME debt census (chip + summary + recent markers)."""
+    if td is None or td.total <= 0:
+        return [], []
+    chips = [_chip("debt markers", td.total)]
+    by = " · ".join(
+        f"{_esc(k)} {_esc(v)}" for k, v in td.by_marker.items() if v
+    )
+    blocks = [
+        f"<p class='muted' style='margin:6px 0 4px'>{_esc(td.total)} inline "
+        f"debt markers — {by}</p>"
+    ]
+    rows = [
+        f"<li><code>{_esc(i.get('module', '?'))}:{_esc(i.get('line', '?'))}</code> "
+        f"<span class='op'>{_esc(i.get('marker', ''))}</span> "
+        f"<span class='muted'>{_esc(i.get('text', ''))}</span></li>"
+        for i in td.items[:5]
+    ]
+    blocks += _quality_hotspots("Recent markers", rows)
+    return chips, blocks
+
+
+def _quality_run(project_root: str, module: str, func: str) -> Any:
+    """Import ``func`` from ``app.tools.<module>`` and run it over ``project_root``.
+
+    Returns ``None`` if the module is absent or the analyzer raises, so a single
+    analyzer failure degrades to "omitted" rather than breaking the card.
+    """
+    try:
+        mod = __import__(f"app.tools.{module}", fromlist=[func])
+        return getattr(mod, func)(project_root)
+    except Exception:
+        return None
+
+
 def _quality_section(project_root: str) -> str:
     """Surface the deterministic code-quality analyzers as one dashboard card.
 
@@ -949,101 +1055,16 @@ def _quality_section(project_root: str) -> str:
     """
     chips: list[str] = []
     blocks: list[str] = []
-
-    try:
-        from app.tools.type_hint_coverage import analyze_type_hint_coverage
-
-        th = analyze_type_hint_coverage(project_root)
-    except Exception:
-        th = None
-    if th is not None and th.total_functions > 0:
-        chips.append(_chip("type hints", f"{int(round(th.overall_ratio * 100))}%"))
-        blocks.append(_quality_pct_bar(
-            "Type-hint coverage", th.overall_ratio,
-            f"{th.annotated_functions}/{th.total_functions} functions fully annotated",
-        ))
-        worst = [m for m in th.worst_modules if m.get("ratio", 1.0) < 1.0][:5]
-        if worst:
-            lis = "".join(
-                f"<li><code>{_esc(m.get('module', '?'))}</code> "
-                f"<span class='val'>{int(round(float(m.get('ratio', 0)) * 100))}%</span> "
-                f"<span class='muted'>({_esc(m.get('annotated', 0))}/"
-                f"{_esc(m.get('total', 0))})</span></li>"
-                for m in worst
-            )
-            blocks.append(
-                "<h4 style='margin:8px 0 4px'>Thinnest-typed modules</h4>"
-                f"<ul class='commits'>{lis}</ul>"
-            )
-
-    try:
-        from app.tools.docstring_coverage import analyze_docstring_coverage
-
-        dc = analyze_docstring_coverage(project_root)
-    except Exception:
-        dc = None
-    if dc is not None and dc.total_public > 0:
-        chips.append(_chip("public docs", f"{int(round(dc.overall_public_ratio * 100))}%"))
-        blocks.append(_quality_pct_bar(
-            "Public docstring coverage", dc.overall_public_ratio,
-            f"{dc.documented_public}/{dc.total_public} public symbols documented",
-        ))
-
-    try:
-        from app.tools.complexity_profile import analyze_complexity
-
-        cx = analyze_complexity(project_root)
-    except Exception:
-        cx = None
-    if cx is not None and cx.total > 0:
-        chips.append(_chip(f"complexity > {cx.threshold}", cx.over_threshold))
-        chips.append(_chip("max complexity", cx.max))
-        blocks.append(
-            "<p class='muted' style='margin:6px 0 4px'>"
-            f"{_esc(cx.over_threshold)} of {_esc(cx.total)} functions exceed "
-            f"complexity {_esc(cx.threshold)} "
-            f"(mean {_esc(cx.mean)} · median {_esc(cx.median)} · max {_esc(cx.max)}).</p>"
-        )
-        hot = cx.hotspots[:5]
-        if hot:
-            lis = "".join(
-                f"<li><code>{_esc(h.get('module', '?'))}</code>"
-                f"<span class='muted'>·</span><code>{_esc(h.get('function', '?'))}</code> "
-                f"<span class='val'>{_esc(h.get('complexity', 0))}</span></li>"
-                for h in hot
-            )
-            blocks.append(
-                "<h4 style='margin:8px 0 4px'>Complexity hotspots</h4>"
-                f"<ul class='commits'>{lis}</ul>"
-            )
-
-    try:
-        from app.tools.todo_debt import analyze_todo_debt
-
-        td = analyze_todo_debt(project_root)
-    except Exception:
-        td = None
-    if td is not None and td.total > 0:
-        chips.append(_chip("debt markers", td.total))
-        by = " · ".join(
-            f"{_esc(k)} {_esc(v)}" for k, v in td.by_marker.items() if v
-        )
-        blocks.append(
-            f"<p class='muted' style='margin:6px 0 4px'>{_esc(td.total)} inline "
-            f"debt markers — {by}</p>"
-        )
-        items = td.items[:5]
-        if items:
-            lis = "".join(
-                f"<li><code>{_esc(i.get('module', '?'))}:{_esc(i.get('line', '?'))}</code> "
-                f"<span class='op'>{_esc(i.get('marker', ''))}</span> "
-                f"<span class='muted'>{_esc(i.get('text', ''))}</span></li>"
-                for i in items
-            )
-            blocks.append(
-                "<h4 style='margin:8px 0 4px'>Recent markers</h4>"
-                f"<ul class='commits'>{lis}</ul>"
-            )
+    renderers = (
+        (_quality_type_hints, "type_hint_coverage", "analyze_type_hint_coverage"),
+        (_quality_docstrings, "docstring_coverage", "analyze_docstring_coverage"),
+        (_quality_complexity, "complexity_profile", "analyze_complexity"),
+        (_quality_todo_debt, "todo_debt", "analyze_todo_debt"),
+    )
+    for render, module, func in renderers:
+        c, b = render(_quality_run(project_root, module, func))
+        chips += c
+        blocks += b
 
     if not chips and not blocks:
         return ""
