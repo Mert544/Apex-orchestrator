@@ -268,6 +268,73 @@ class DeadCodeReport:
     truncated: bool = False
 
 
+def _gather_facts(root: Path, max_files: int) -> list[_ModuleFacts]:
+    """Parse up to ``max_files`` project modules into ``_ModuleFacts`` (skip-dirs
+    excluded); unreadable/unparsable files contribute nothing, conservatively."""
+    files = [p for p in iter_source_files(root) if not is_skipped(p.relative_to(root))]
+    files = files[: max(0, max_files)]
+
+    facts: list[_ModuleFacts] = []
+    for path in files:
+        try:
+            source = path.read_text(encoding="utf-8", errors="ignore")
+            tree = ast.parse(source)
+        except (OSError, SyntaxError, ValueError):
+            continue
+        rel = path.relative_to(root).as_posix()
+        facts.append(_collect_module_facts(rel, tree))
+    return facts
+
+
+def _live_names(facts: list[_ModuleFacts]) -> frozenset[str]:
+    """Project-wide "live" name universe (rules 1, 3, 6): every name used,
+    exported, or appearing as a string constant anywhere in the project."""
+    live: set[str] = set()
+    for fact in facts:
+        live |= fact.uses
+        live |= fact.exports
+        live |= fact.string_constants
+    return frozenset(live)
+
+
+def _star_targets(facts: list[_ModuleFacts]) -> frozenset[str]:
+    """Whole modules star-imported anywhere — their defs are re-exported (rule 7)."""
+    targets: set[str] = set()
+    for fact in facts:
+        targets |= fact.star_targets
+    return frozenset(targets)
+
+
+def _is_excluded_definition_module(fact: _ModuleFacts, star_targets: frozenset[str]) -> bool:
+    """Whether a whole module's defs are exempt: a test/``__init__`` site (rule
+    10), a module with dynamic access (rule 7), or a star-import target (rule 7)."""
+    return (
+        _is_excluded_definition_site(fact.rel)
+        or fact.has_dynamic_access
+        or _module_name(fact.rel) in star_targets
+    )
+
+
+def _collect_candidates(
+    facts: list[_ModuleFacts], live_names: frozenset[str], star_targets: frozenset[str]
+) -> tuple[list[dict], int]:
+    """Surviving dead-code candidates and the count of definitions considered."""
+    definitions_seen = 0
+    candidates: list[dict] = []
+    for fact in facts:
+        if _is_excluded_definition_module(fact, star_targets):
+            continue
+        for name, kind, line in fact.definitions:
+            definitions_seen += 1
+            if name in live_names:  # rules 1, 3, 6
+                continue
+            candidates.append(
+                {"module": fact.rel, "symbol": name, "kind": kind, "line": line}
+            )
+    candidates.sort(key=lambda c: (c["module"], c["line"], c["symbol"]))
+    return candidates, definitions_seen
+
+
 def analyze_dead_code(root: str | Path, max_files: int = 500) -> DeadCodeReport:
     """Flag top-level functions/classes that nothing in the project references.
 
@@ -283,58 +350,18 @@ def analyze_dead_code(root: str | Path, max_files: int = 500) -> DeadCodeReport:
     if not root.exists():
         return DeadCodeReport()
 
-    files = [p for p in iter_source_files(root) if not is_skipped(p.relative_to(root))]
-    files = files[: max(0, max_files)]
+    facts = _gather_facts(root, max_files)
+    star_targets = _star_targets(facts)
+    candidates, definitions_seen = _collect_candidates(
+        facts, _live_names(facts), star_targets
+    )
 
-    facts: list[_ModuleFacts] = []
-    for path in files:
-        try:
-            source = path.read_text(encoding="utf-8", errors="ignore")
-            tree = ast.parse(source)
-        except (OSError, SyntaxError, ValueError):
-            continue  # unreadable/unparsable files contribute nothing, conservatively
-        rel = path.relative_to(root).as_posix()
-        facts.append(_collect_module_facts(rel, tree))
-
-    files_scanned = len(facts)
-
-    # Project-wide use universe (rules 1, 3, 6): a name is "live" if it is used,
-    # exported, or appears as a string constant anywhere in the project. Star
-    # targets (rule 7) name whole modules whose defs are re-exported wholesale.
-    used_names: set[str] = set()
-    exported_names: set[str] = set()
-    string_names: set[str] = set()
-    star_targets: set[str] = set()
-    for fact in facts:
-        used_names |= fact.uses
-        exported_names |= fact.exports
-        string_names |= fact.string_constants
-        star_targets |= fact.star_targets
-
-    definitions_seen = 0
-    candidates: list[dict] = []
-    for fact in facts:
-        if _is_excluded_definition_site(fact.rel):  # rule 10
-            continue
-        if fact.has_dynamic_access:  # rule 7: dynamic resolution in this module
-            continue
-        if _module_name(fact.rel) in star_targets:  # rule 7: re-exported via `*`
-            continue
-        for name, kind, line in fact.definitions:
-            definitions_seen += 1
-            if name in used_names or name in exported_names or name in string_names:
-                continue  # rules 1, 3, 6
-            candidates.append(
-                {"module": fact.rel, "symbol": name, "kind": kind, "line": line}
-            )
-
-    candidates.sort(key=lambda c: (c["module"], c["line"], c["symbol"]))
     candidate_count = len(candidates)
     reported = candidates[:_MAX_CANDIDATES]
 
     return DeadCodeReport(
         candidates=reported,
-        files_scanned=files_scanned,
+        files_scanned=len(facts),
         definitions_seen=definitions_seen,
         candidate_count=candidate_count,
         reported_count=len(reported),

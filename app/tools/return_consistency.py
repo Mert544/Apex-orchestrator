@@ -132,6 +132,39 @@ def _is_bare_return(node: ast.Return) -> bool:
     return isinstance(node.value, ast.Constant) and node.value.value is None
 
 
+def _if_always_exits(node: ast.If) -> bool:
+    """An ``if`` exits only with a present ``else`` whose every branch exits."""
+    return (
+        bool(node.orelse)
+        and _block_always_exits(node.body)
+        and _block_always_exits(node.orelse)
+    )
+
+
+def _try_always_exits(node: ast.Try) -> bool:
+    """A ``try`` exits via a proven ``finally``, or via its normal-completion
+    path (body then ``else``) plus every ``except`` handler."""
+    if node.finalbody and _block_always_exits(node.finalbody):
+        return True
+    main = node.orelse if node.orelse else node.body
+    if not _block_always_exits(main):
+        return False
+    return all(_block_always_exits(h.body) for h in node.handlers)
+
+
+def _stmt_always_exits(last: ast.stmt) -> bool:
+    """Whether a single (final) statement always exits its function."""
+    if isinstance(last, (ast.Return, ast.Raise)):
+        return True
+    if isinstance(last, ast.If):
+        return _if_always_exits(last)
+    if isinstance(last, (ast.With, ast.AsyncWith)):
+        return _block_always_exits(last.body)
+    if isinstance(last, ast.Try):
+        return _try_always_exits(last)
+    return False
+
+
 def _block_always_exits(body: list[ast.stmt]) -> bool:
     """Conservatively decide whether a statement block ALWAYS exits its function
     (so control cannot fall through off its end).
@@ -144,27 +177,7 @@ def _block_always_exits(body: list[ast.stmt]) -> bool:
     as possibly falling through — biasing toward NOT flagging."""
     if not body:
         return False
-    last = body[-1]
-    if isinstance(last, ast.Return):
-        return True
-    if isinstance(last, ast.Raise):
-        return True
-    if isinstance(last, ast.If):
-        return bool(last.orelse) and _block_always_exits(last.body) and _block_always_exits(
-            last.orelse
-        )
-    if isinstance(last, (ast.With, ast.AsyncWith)):
-        return _block_always_exits(last.body)
-    if isinstance(last, ast.Try):
-        if last.finalbody and _block_always_exits(last.finalbody):
-            return True
-        # Otherwise every normal-completion path must exit: the try body (then
-        # its else, if any) and every except handler.
-        main = last.orelse if last.orelse else last.body
-        if not _block_always_exits(main):
-            return False
-        return all(_block_always_exits(h.body) for h in last.handlers)
-    return False
+    return _stmt_always_exits(body[-1])
 
 
 def _classify_function(
