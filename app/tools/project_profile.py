@@ -407,7 +407,6 @@ class ProjectProfiler(_CodeQualityScansMixin):
         security_finding_modules: list[str] = []
         correctness_bug_modules: list[str] = []
 
-        skipped_dirs = {".turbo", ".next"}
         scanned = 0
         for path in self.root.rglob("*"):
             if scanned >= self.max_files:
@@ -415,55 +414,98 @@ class ProjectProfiler(_CodeQualityScansMixin):
             if not path.is_file():
                 continue
             rel = path.relative_to(self.root)
-            rel_str = str(rel)
-            # Skip the canonical excluded dirs (incl. .claude worktrees) plus a
-            # couple of JS-toolchain caches the canonical set doesn't carry.
-            if is_skipped(rel) or any(part in skipped_dirs for part in rel.parts):
+            if self._walk_skipped(rel):
                 continue
             scanned += 1
             profile.total_files += 1
 
+            rel_str = str(rel)
             ext = path.suffix.lower() or ""
             if ext:
                 ext_counter[ext] += 1
-
             if rel.parts:
                 dir_counter[rel.parts[0]] += 1
 
-            name_lower = path.name.lower()
-            rel_lower = rel_str.lower()
+            self._classify_walk_file(profile, path, rel_str, ext)
+            self._collect_py_findings(
+                path, rel_str, ext, debt_counts,
+                security_finding_modules, correctness_bug_modules,
+            )
 
-            if name_lower in self.ENTRYPOINT_NAMES:
-                profile.entrypoints.append(rel_str)
-            if name_lower.startswith("test_") or "/tests/" in f"/{rel_lower}/" or rel_lower.startswith("tests/"):
-                profile.test_files.append(rel_str)
-            if ".github" in rel_lower and "workflows" in rel_lower:
-                profile.ci_files.append(rel_str)
-            if name_lower in self.CONFIG_NAMES:
-                profile.config_files.append(rel_str)
-            if ext in self.CODE_EXTENSIONS and any(hint in rel_lower for hint in self.SENSITIVE_HINTS):
-                profile.sensitive_paths.append(rel_str)
+        self._finalize_base_lists(
+            profile, ext_counter, dir_counter, debt_counts,
+            security_finding_modules, correctness_bug_modules,
+        )
+        return ext_counter
 
-            # Count technical-debt markers in Python comments, folded into the
-            # existing walk so we don't add a second full-tree pass.
-            if ext == ".py" and not (
-                name_lower.startswith("test_") or "/tests/" in f"/{rel_lower}/"
-                or rel_lower.startswith("tests/")
-            ):
-                count = self._count_debt_markers(path)
-                if count:
-                    debt_counts[rel_str] = count
-                # Content-based security findings (eval/os.system/pickle/...),
-                # so the idea engine can point at the *actual* dangerous file —
-                # not only files whose name matches a sensitive hint.
-                if self._has_security_finding(path):
-                    security_finding_modules.append(rel_str)
-                # High-severity logic bugs (frozen-dataclass mutation, return in
-                # finally, unreachable except, ...) — likely/guaranteed crashes
-                # the idea engine should surface as a top fix, not just the grade.
-                if self._has_correctness_bug(path):
-                    correctness_bug_modules.append(rel_str)
+    # Canonical excluded dirs (incl. .claude worktrees) plus a couple of
+    # JS-toolchain caches the canonical set doesn't carry.
+    _WALK_SKIPPED_DIRS = {".turbo", ".next"}
 
+    def _walk_skipped(self, rel: Path) -> bool:
+        """True if ``rel`` lives under an excluded dir and must be skipped."""
+        return is_skipped(rel) or any(
+            part in self._WALK_SKIPPED_DIRS for part in rel.parts
+        )
+
+    @staticmethod
+    def _is_base_test_path(name_lower: str, rel_lower: str) -> bool:
+        """The base-walk test-file predicate (name or path lives under tests).
+
+        Distinct from ``_is_test_path`` (which takes a single rel path): this one
+        preserves the exact two-input form the original walk used inline.
+        """
+        return (name_lower.startswith("test_")
+                or "/tests/" in f"/{rel_lower}/" or rel_lower.startswith("tests/"))
+
+    def _classify_walk_file(self, profile: ProjectProfile, path: Path,
+                            rel_str: str, ext: str) -> None:
+        """Append ``rel_str`` to the entrypoint/test/CI/config/sensitive lists."""
+        name_lower = path.name.lower()
+        rel_lower = rel_str.lower()
+        if name_lower in self.ENTRYPOINT_NAMES:
+            profile.entrypoints.append(rel_str)
+        if self._is_base_test_path(name_lower, rel_lower):
+            profile.test_files.append(rel_str)
+        if ".github" in rel_lower and "workflows" in rel_lower:
+            profile.ci_files.append(rel_str)
+        if name_lower in self.CONFIG_NAMES:
+            profile.config_files.append(rel_str)
+        if ext in self.CODE_EXTENSIONS and any(
+                hint in rel_lower for hint in self.SENSITIVE_HINTS):
+            profile.sensitive_paths.append(rel_str)
+
+    def _collect_py_findings(self, path: Path, rel_str: str, ext: str,
+                             debt_counts: Counter[str],
+                             security_finding_modules: list[str],
+                             correctness_bug_modules: list[str]) -> None:
+        """Fold debt-marker / security / correctness detection into the walk.
+
+        Skips test code and non-Python files, so we add no second full-tree pass
+        and read each in-scope ``.py`` exactly as the original walk did.
+        """
+        if ext != ".py" or self._is_base_test_path(path.name.lower(), rel_str.lower()):
+            return
+        count = self._count_debt_markers(path)
+        if count:
+            debt_counts[rel_str] = count
+        # Content-based security findings (eval/os.system/pickle/...), so the
+        # idea engine can point at the *actual* dangerous file — not only files
+        # whose name matches a sensitive hint.
+        if self._has_security_finding(path):
+            security_finding_modules.append(rel_str)
+        # High-severity logic bugs (frozen-dataclass mutation, return in finally,
+        # unreachable except, ...) — likely/guaranteed crashes the idea engine
+        # should surface as a top fix, not just the grade.
+        if self._has_correctness_bug(path):
+            correctness_bug_modules.append(rel_str)
+
+    def _finalize_base_lists(self, profile: ProjectProfile,
+                             ext_counter: Counter[str], dir_counter: Counter[str],
+                             debt_counts: Counter[str],
+                             security_finding_modules: list[str],
+                             correctness_bug_modules: list[str]) -> None:
+        """Sort/dedup/cap the accumulated base-walk lists onto the profile."""
         profile.extension_counts = dict(ext_counter.most_common())
         profile.top_directories = [name for name, _count in dir_counter.most_common(5)]
         profile.entrypoints = sorted(dict.fromkeys(profile.entrypoints))
@@ -483,7 +525,6 @@ class ProjectProfiler(_CodeQualityScansMixin):
         profile.debt_marker_modules = sorted(
             flagged, key=lambda m: (-debt_counts[m], m)
         )[:5]
-        return ext_counter
 
     def _run_full_scans(self, profile: ProjectProfile) -> None:
         """The non-light scan group: constructive AST scans + git/doc/refactor
@@ -848,50 +889,11 @@ class ProjectProfiler(_CodeQualityScansMixin):
         a sweeping reformat couples everything and means nothing. Non-git
         directories simply yield no signal.
         """
-        import subprocess
-        from itertools import combinations
-
-        try:
-            out = subprocess.run(
-                ["git", "log", "--name-only", "--pretty=format:@commit@%an",
-                 "-n", str(self.CHURN_COMMIT_WINDOW)],
-                cwd=self.root, capture_output=True, text=True, timeout=15,
-            )
-        except Exception:
+        stdout = self._run_churn_git()
+        if stdout is None:
             return
-        if out.returncode != 0:
-            return
-
-        commits: list[tuple[str, list[str]]] = []  # (author, files)
-        author, current = "", []
-        for line in out.stdout.splitlines():
-            line = line.strip()
-            if line.startswith("@commit@"):
-                if current:
-                    commits.append((author, current))
-                author, current = line[len("@commit@"):], []
-            elif line:
-                current.append(line)
-        if current:
-            commits.append((author, current))
-
-        counts: Counter[str] = Counter()
-        pair_counts: Counter[tuple[str, str]] = Counter()
-        author_touches: dict[str, Counter[str]] = {}  # module -> author -> n
-        all_authors: set[str] = set()
-        for commit_author, files in commits:
-            all_authors.add(commit_author)
-            pys = sorted({
-                rel for rel in files
-                if rel.endswith(".py") and not self._is_fixture_path(rel)
-                and (self.root / rel).exists()
-            })
-            for rel in pys:
-                counts[rel] += 1
-                author_touches.setdefault(rel, Counter())[commit_author] += 1
-            if 2 <= len(pys) <= self.MAX_COMMIT_FILES:
-                for a, b in combinations(pys, 2):
-                    pair_counts[(a, b)] += 1
+        commits = self._parse_churn_commits(stdout)
+        counts, pair_counts, author_touches = self._tally_churn(commits)
 
         profile.churn_hotspots = [
             {"module": module, "commits": commits_n}
@@ -903,25 +905,93 @@ class ProjectProfiler(_CodeQualityScansMixin):
             for (a, b), n in sorted(pair_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
             if n >= self.COCHANGE_THRESHOLD
         ]
+        risks = self._build_knowledge_risks(commits, author_touches)
+        if risks is not None:
+            profile.knowledge_risks = risks
 
-        # Knowledge concentration only means something when at least TWO
-        # authors are genuinely active (a drive-by single commit or a bot
-        # doesn't make a project multi-author).
+    def _run_churn_git(self) -> str | None:
+        """Run the bounded ``git log --name-only`` pass; ``None`` outside git."""
+        import subprocess
+
+        try:
+            out = subprocess.run(
+                ["git", "log", "--name-only", "--pretty=format:@commit@%an",
+                 "-n", str(self.CHURN_COMMIT_WINDOW)],
+                cwd=self.root, capture_output=True, text=True, timeout=15,
+            )
+        except Exception:
+            return None
+        if out.returncode != 0:
+            return None
+        return out.stdout
+
+    @staticmethod
+    def _parse_churn_commits(stdout: str) -> list[tuple[str, list[str]]]:
+        """Parse the ``@commit@<author>`` + file-list stream into ``(author, files)``."""
+        commits: list[tuple[str, list[str]]] = []
+        author, current = "", []
+        for line in stdout.splitlines():
+            line = line.strip()
+            if line.startswith("@commit@"):
+                if current:
+                    commits.append((author, current))
+                author, current = line[len("@commit@"):], []
+            elif line:
+                current.append(line)
+        if current:
+            commits.append((author, current))
+        return commits
+
+    def _tally_churn(self, commits: list[tuple[str, list[str]]]):
+        """Per-commit touch counts, co-change pair counts and per-author touches.
+
+        Mega-commits (> MAX_COMMIT_FILES files) are excluded from coupling — a
+        sweeping reformat couples everything and means nothing.
+        """
+        from itertools import combinations
+
+        counts: Counter[str] = Counter()
+        pair_counts: Counter[tuple[str, str]] = Counter()
+        author_touches: dict[str, Counter[str]] = {}  # module -> author -> n
+        for commit_author, files in commits:
+            pys = sorted({
+                rel for rel in files
+                if rel.endswith(".py") and not self._is_fixture_path(rel)
+                and (self.root / rel).exists()
+            })
+            for rel in pys:
+                counts[rel] += 1
+                author_touches.setdefault(rel, Counter())[commit_author] += 1
+            if 2 <= len(pys) <= self.MAX_COMMIT_FILES:
+                for a, b in combinations(pys, 2):
+                    pair_counts[(a, b)] += 1
+        return counts, pair_counts, author_touches
+
+    def _build_knowledge_risks(self, commits: list[tuple[str, list[str]]],
+                               author_touches: dict[str, Counter[str]]):
+        """Modules whose recent changes concentrate in ONE author (bus factor).
+
+        Returns ``None`` when fewer than two authors are genuinely active (a
+        drive-by single commit or a bot doesn't make a project multi-author), so
+        the caller leaves ``knowledge_risks`` at its default; otherwise the
+        sorted, capped risk list.
+        """
         author_commits: Counter[str] = Counter(a for a, _files in commits)
         active = [a for a, n in author_commits.items() if n >= self.KNOWLEDGE_MIN_COMMITS]
-        if len(active) >= 2:
-            risks = []
-            for module, by_author in author_touches.items():
-                total = sum(by_author.values())
-                if total < self.KNOWLEDGE_MIN_COMMITS:
-                    continue
-                top = by_author.most_common(1)[0][1]
-                share = top / total
-                if share >= self.KNOWLEDGE_SHARE:
-                    risks.append({"module": module, "share": int(share * 100),
-                                  "commits": total})
-            risks.sort(key=lambda r: (-r["share"], -r["commits"], r["module"]))
-            profile.knowledge_risks = risks[:5]
+        if len(active) < 2:
+            return None
+        risks = []
+        for module, by_author in author_touches.items():
+            total = sum(by_author.values())
+            if total < self.KNOWLEDGE_MIN_COMMITS:
+                continue
+            top = by_author.most_common(1)[0][1]
+            share = top / total
+            if share >= self.KNOWLEDGE_SHARE:
+                risks.append({"module": module, "share": int(share * 100),
+                              "commits": total})
+        risks.sort(key=lambda r: (-r["share"], -r["commits"], r["module"]))
+        return risks[:5]
 
     # Mirrors app.engine.health_score._is_fixture_path (kept local to avoid a
     # project_profile <-> health_score import cycle). Example/fixture/test code
