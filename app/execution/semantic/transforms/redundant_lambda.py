@@ -84,45 +84,52 @@ def _targets(tree: ast.Module) -> list[ast.Lambda]:
             if isinstance(n, ast.Lambda) and _is_forwarding_lambda(n)]
 
 
-def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
+def _parse(source: str) -> ast.Module | None:
+    """Parse ``source``; return the module, or ``None`` if it does not parse."""
     try:
-        tree = ast.parse(source)
+        return ast.parse(source)
     except SyntaxError:
         return None
-    nodes = _targets(tree)
-    if not nodes:
-        return None
 
-    lines = source.splitlines(keepends=True)
+
+def _spliced_line(lines: list[str], node: ast.Lambda) -> str | None:
+    """The rewritten line for ``node``, or ``None`` when the splice must skip.
+
+    Skips (keeping the splice exact) when the lambda spans lines, its line is
+    out of range, or its column span is empty or runs past the line.
+    """
+    if node.lineno != node.end_lineno:
+        return None  # multi-line — skip to keep the splice exact
+    li = node.lineno - 1
+    if li >= len(lines):
+        return None
+    line = lines[li]
+    start, end = node.col_offset, node.end_col_offset or 0
+    if end <= start or end > len(line):
+        return None
+    assert isinstance(node.body, ast.Call)
+    replacement = ast.unparse(node.body.func)
+    return line[:start] + replacement + line[end:]
+
+
+def _rewrite_lines(lines: list[str], nodes: list[ast.Lambda]) -> int:
+    """Splice each forwarding lambda in ``lines`` in place; return change count.
+
+    Rightmost-first so splicing one node never shifts an earlier node's columns.
+    """
     changed = 0
-    # Rightmost-first so splicing one node never shifts an earlier node's columns.
     for node in sorted(nodes, key=lambda n: (n.lineno, n.col_offset), reverse=True):
-        if node.lineno != node.end_lineno:
-            continue  # multi-line — skip to keep the splice exact
-        li = node.lineno - 1
-        if li >= len(lines):
+        new_line = _spliced_line(lines, node)
+        if new_line is None:
             continue
-        line = lines[li]
-        start, end = node.col_offset, node.end_col_offset or 0
-        if end <= start or end > len(line):
-            continue
-        assert isinstance(node.body, ast.Call)
-        replacement = ast.unparse(node.body.func)
-        lines[li] = line[:start] + replacement + line[end:]
+        lines[node.lineno - 1] = new_line
         changed += 1
+    return changed
 
-    if changed == 0:
-        return None
 
-    new_content = "".join(lines)
-    if new_content == source:
-        return None
-    # Never corrupt the file: a spliced result that won't parse is discarded.
-    try:
-        ast.parse(new_content)
-    except SyntaxError:
-        return None
-
+def _build_result(rel_path: str, source: str, new_content: str,
+                  changed: int) -> SemanticPatchResult:
+    """Assemble the patch result for ``changed`` rewritten lambdas."""
     return SemanticPatchResult(
         patch_requests=[{
             "path": rel_path,
@@ -135,3 +142,26 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
             f"(`lambda a, b: f(a, b)` -> `f`) in {rel_path} (behaviour-preserving)."
         ],
     )
+
+
+def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
+    tree = _parse(source)
+    if tree is None:
+        return None
+    nodes = _targets(tree)
+    if not nodes:
+        return None
+
+    lines = source.splitlines(keepends=True)
+    changed = _rewrite_lines(lines, nodes)
+    if changed == 0:
+        return None
+
+    new_content = "".join(lines)
+    if new_content == source:
+        return None
+    # Never corrupt the file: a spliced result that won't parse is discarded.
+    if _parse(new_content) is None:
+        return None
+
+    return _build_result(rel_path, source, new_content, changed)
