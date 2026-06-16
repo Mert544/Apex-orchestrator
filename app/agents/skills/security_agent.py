@@ -20,6 +20,59 @@ def _has_shell_true(node: ast.Call) -> bool:
     )
 
 
+def _call_pattern_matches(func_name: str, pattern: str) -> bool:
+    """Whether a resolved call name matches a configured sink pattern.
+
+    Module-qualified sinks (``os.system``, ``pickle.loads``) match the dotted
+    name or any attribute path ending in it; a bare builtin (``eval``) matches
+    only an exact name so unrelated methods like ``model.compile()`` are skipped.
+    """
+    if "." in pattern:
+        return func_name == pattern or func_name.endswith("." + pattern)
+    return func_name == pattern
+
+
+def _call_is_false_positive(pattern: str, func_name: str, node: ast.Call) -> bool:
+    """Whether a matched sink is a known-safe usage that must not be flagged."""
+    if pattern == "compile" and any(safe in func_name for safe in ("re.compile", "regex.compile")):
+        return True
+    if pattern == "eval" and "literal_eval" in func_name:
+        return True
+    return pattern == "subprocess.call" and not _has_shell_true(node)
+
+
+def _sink_finding(rel_path: str, node: ast.Call, pattern: str, risk_type: str, severity: str, suggestion: str) -> dict[str, Any]:
+    """Build the finding dict for a matched dangerous sink call."""
+    line = getattr(node, "lineno", 1)
+    return {
+        "file": rel_path,
+        "line": line,
+        "risk_type": risk_type,
+        "severity": severity,
+        "details": f"Detected {pattern} at line {line}",
+        "suggestion": suggestion,
+    }
+
+
+def _sql_injection_findings(rel_path: str, node: ast.Call, func_name: str) -> list[dict[str, Any]]:
+    """Findings for f-strings passed to execute()/cursor() SQL calls."""
+    findings: list[dict[str, Any]] = []
+    for arg in node.args:
+        if isinstance(arg, ast.JoinedStr) and any(sql in func_name for sql in ("execute", "cursor")):
+            line = getattr(arg, "lineno", 1)
+            findings.append(
+                {
+                    "file": rel_path,
+                    "line": line,
+                    "risk_type": "sql_injection",
+                    "severity": "critical",
+                    "details": f"f-string used in SQL query at line {line}",
+                    "suggestion": "Use parameterized queries",
+                }
+            )
+    return findings
+
+
 _SUPPRESS_RE = re.compile(r"#\s*(noqa|nosec)\b(?:\s*[:=]\s*([A-Za-z0-9 ,]+))?", re.IGNORECASE)
 
 
@@ -186,53 +239,13 @@ class SecurityAgent(Agent):
             return findings
 
         for pattern, (risk_type, severity, suggestion) in self.patterns.items():
-            if "." in pattern:
-                # Module-qualified sink (os.system, pickle.loads, ...): match the
-                # dotted name or any attribute path ending in it.
-                is_match = func_name == pattern or func_name.endswith("." + pattern)
-            else:
-                # Builtin (eval/exec/compile): ONLY a bare call is the dangerous
-                # builtin. A method call like model.compile() (Keras), df.eval()
-                # (pandas) or self.compile() (jinja's template compiler) is an
-                # unrelated user-defined method — matching it by name is a false
-                # positive that punishes ML/data/template code.
-                is_match = func_name == pattern
-            if is_match:
-                # False positive filters
-                if pattern == "compile" and any(safe in func_name for safe in ("re.compile", "regex.compile")):
-                    continue
-                if pattern == "eval" and "literal_eval" in func_name:
-                    continue
-                # subprocess.call/run with list args is safe; only shell=True is
-                # the injection risk. Without this, mature code that correctly
-                # launches an editor/pager (e.g. click) gets false positives.
-                if pattern == "subprocess.call" and not _has_shell_true(node):
-                    continue
-                line = getattr(node, "lineno", 1)
-                findings.append(
-                    {
-                        "file": rel_path,
-                        "line": line,
-                        "risk_type": risk_type,
-                        "severity": severity,
-                        "details": f"Detected {pattern} at line {line}",
-                        "suggestion": suggestion,
-                    }
-                )
+            if not _call_pattern_matches(func_name, pattern):
+                continue
+            if _call_is_false_positive(pattern, func_name, node):
+                continue
+            findings.append(_sink_finding(rel_path, node, pattern, risk_type, severity, suggestion))
 
-        for arg in node.args:
-            if isinstance(arg, ast.JoinedStr) and any(sql in func_name for sql in ("execute", "cursor")):
-                line = getattr(arg, "lineno", 1)
-                findings.append(
-                    {
-                        "file": rel_path,
-                        "line": line,
-                        "risk_type": "sql_injection",
-                        "severity": "critical",
-                        "details": f"f-string used in SQL query at line {line}",
-                        "suggestion": "Use parameterized queries",
-                    }
-                )
+        findings.extend(_sql_injection_findings(rel_path, node, func_name))
         return findings
 
     def _docstring_interior_lines(self, source: str) -> set[int]:
