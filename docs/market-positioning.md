@@ -21,7 +21,9 @@ The bottleneck of AI-assisted engineering is no longer *generation* — it is
 
 **2. Privacy/on-prem became a hard differentiator.** Enterprises increasingly block
 cloud assistants over IP and compliance concerns and ask for self-hosted options.
-A stdlib-only, fully offline core is not a limitation here — it is the feature.
+A core with no AI service, no token cost, and no code egress — fully offline — is
+not a limitation here, it is the feature. (Apex ships two small libraries, pydantic
+and PyYAML; it is not pure-stdlib, but it calls no external service.)
 
 **3. The deterministic gap is open.** The competitive field is layered:
 
@@ -49,16 +51,46 @@ That combination is Apex's lane.
 > reproducible, free per run.*
 
 Apex is **not** a Copilot/Cursor competitor and should never frame itself as one.
-It is the **trust layer** that the generation tools created demand for:
+It is the **trust layer** that the generation tools created demand for.
 
-1. **Deterministic** — same input, same output; auditable; CI-safe. Directly answers
-   the 3%-trust problem: you don't have to trust it, you can replay it.
-2. **Offline & self-hosted by construction** — stdlib-only core, no API keys, no
-   data leaves the machine. Directly answers the IP/compliance blocking trend.
+**The headline moat — what is genuinely sole-occupancy:**
+
+> **Apex never fakes a green, and every recommendation carries its own proof.**
+
+Determinism alone is *not* the differentiator — SonarQube, Semgrep, bandit and the
+other quality/security tools are deterministic too. What no incumbent does is the
+combination below:
+
+- **It never fakes a green.** When the host suite does not exercise the code a fix
+  touches, Apex refuses to claim "verified" — `apex develop --top` blocks (non-zero
+  rc so CI notices) unless you pass `--force`, and `--shield` writes a
+  characterization-test stub first. A `--force` apply is honestly labeled *weak
+  verification*. (Code: the false-green guard in `app/cli_autonomy.py`.)
+- **It is proof-carrying.** Every recommendation/fix emits the exact draft diff, a
+  re-parse safety verdict, the before→after metric delta, and whether your tests
+  actually exercise the change. The audit artifact `.apex/proof-of-fix.json` is
+  something a reviewer or compliance officer can open. (Code:
+  `app/engine/proof_of_fix.py`, `app/engine/verification_strength.py`.) "Trust me"
+  becomes "here is the evidence."
+
+The remaining properties are necessary supports, not the moat:
+
+1. **Deterministic** — same input, same output; auditable; CI-safe. Table stakes for
+   the category (competitors share it), but it underwrites the replayability of the
+   proof above: you don't have to trust it, you can replay it.
+2. **No AI service, no token cost, no code egress** — no API keys, nothing leaves
+   the machine; runs fully offline / air-gapped. Apex ships two small libraries
+   (pydantic + PyYAML) and calls no external service. Directly answers the
+   IP/compliance blocking trend.
 3. **Zero marginal cost** — no tokens; runs on every commit without budget anxiety.
 4. **Test-verified apply with rollback** — fixes ship with their own verification
    (full-suite run, auto-rollback on failure), not with optimism.
-5. **The Idea Permutation Engine** — the unique asset no one in the table has: a
+5. **An optional LLM layer, off by default** — the local/BYO-endpoint adapter
+   (`app/llm/router.py`) defaults to a `NoOpProvider` (`provider = "none"`); it does
+   nothing and makes no network call unless a project explicitly configures a
+   provider and supplies its own key. The offline/zero-token guarantees are the
+   default, not a setting.
+6. **The Idea Permutation Engine** — the unique asset no one in the table has: a
    deterministic, evidence-grounded answer to *"what should we build/improve next?"*
    Scanners list issues; Apex sequences a roadmap from measured structure, and
    every facet either cites a concrete finding (📌 verified observation) or is
@@ -133,6 +165,44 @@ Ordered by leverage against the signals above:
 7. **Optional local-LLM escalation, verifier-gated (see blind spot #2).** Keeps the
    offline guarantee while covering ambiguous work: *the LLM proposes, the
    deterministic verifier disposes.*
+
+---
+
+## 3b. CI-interop output formats — Apex as a drop-in for existing pipelines
+
+`apex review` now emits its findings in the formats the major CI quality systems
+already ingest, so adopting Apex means dropping a step into an existing pipeline
+rather than replacing the dashboard. The flag is verified in
+`app/cli_review.py` (`--format` choices: `sarif`, `codeclimate`, `junit`,
+`github`, `sonar`, `csv`, `html`; output goes to `--format-out PATH` or stdout):
+
+```
+apex review --format sarif       --format-out apex.sarif   # GitHub code scanning / Security tab
+apex review --format codeclimate --format-out gl-code-quality-report.json  # GitLab Code Quality / CodeClimate
+apex review --format sonar       --format-out apex-sonar.json   # SonarQube generic issue import
+apex review --format junit       --format-out apex-junit.xml     # any JUnit-aware CI report
+apex review --format github                                      # GitHub Actions inline annotations
+apex review --format csv         --format-out findings.csv       # spreadsheets / ad-hoc analysis
+apex review --format html        --format-out findings.html      # human-readable standalone report
+```
+
+Because the CodeClimate exporter produces the GitLab Code Quality schema and the
+`sonar` exporter produces SonarQube's generic issue format, **Apex is now a drop-in
+for SonarQube / CodeClimate / GitLab Code Quality pipelines** — the deterministic,
+zero-token reviewer feeding the dashboard a team already runs. See
+[`output-formats.md`](output-formats.md) for the per-format reference.
+
+Two adoption on-ramps ship alongside the formats:
+
+- **`.pre-commit-hooks.yaml`** — exposes `apex-gate` (offline health gate) and
+  `apex-review` (review staged changes vs `HEAD`, fail on high severity) as
+  [pre-commit](https://pre-commit.com) hooks, so the air-gap / zero-token wedge
+  holds on the developer's machine, not just in CI.
+- **SARIF-upload GitHub Action** — `.github/workflows/apex-ci.yml` runs
+  `apex review --sarif apex.sarif` and uploads it via
+  `github/codeql-action/upload-sarif@v3`, landing Apex's deterministic findings as
+  inline code-scanning alerts on the PR's Security tab. (`.github/workflows/apex-review.yml`
+  additionally posts the verdict as a sticky PR comment.)
 
 ---
 
@@ -248,8 +318,10 @@ override, a null/missing-key counting asymmetry).
 
 **Why a company chooses Apex (what an LLM assistant structurally cannot give):**
 
-1. **Zero-token, zero-cost, air-gappable.** Stdlib-only, no API keys, no code
-   leaves the machine. Finance / defense / healthcare / any IP-sensitive shop that
+1. **Zero-token, zero-cost, air-gappable.** No AI service, no token cost, no code
+   egress — no API keys, nothing leaves the machine (Apex ships two small libs,
+   pydantic + PyYAML, and calls no external service; the optional LLM layer is off
+   by default). Finance / defense / healthcare / any IP-sensitive shop that
    *cannot* send source to a cloud LLM can still run Apex on every commit. This is
    not a price advantage — it is an *access* advantage: Apex works where LLMs are
    banned.
