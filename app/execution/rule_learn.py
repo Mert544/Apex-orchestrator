@@ -114,13 +114,9 @@ def _to_display(template_tree: ast.AST) -> str:
     return ast.unparse(template_tree).replace(_MV_PREFIX, "$")
 
 
-def learn_rule(examples: list[tuple[str, str]]) -> LearnedRule:
-    """Anti-unify ``(before, after)`` example pairs into a verified rule."""
-    rule = LearnedRule()
-    if not examples:
-        rule.blockers.append("teach needs at least one BEFORE/AFTER example pair")
-        return rule
-
+def _parse_examples(examples, rule: LearnedRule):
+    """Parse every ``(before, after)`` pair; append a blocker and return ``None``
+    on the first syntactically invalid example."""
     befores, afters = [], []
     for i, (b, a) in enumerate(examples, 1):
         try:
@@ -128,43 +124,75 @@ def learn_rule(examples: list[tuple[str, str]]) -> LearnedRule:
             afters.append(ast.parse(a, mode="eval").body)
         except SyntaxError:
             rule.blockers.append(f"example {i} is not a pair of valid expressions")
-            return rule
+            return None
+    return befores, afters
 
-    if len(examples) == 1:
-        rule.pattern, rule.replacement = examples[0]
-        rule.notes.append("one example → an exact-match rule (no metavariables); "
-                          "teach with a second example to generalize")
-    else:
-        holes = _Holes()
-        sources = [b for b, _ in examples]
-        try:
-            pattern_tree = _generalize(list(befores), sources, holes)
-        except _MustHole:
-            pattern_tree = None
-        if pattern_tree is None or (isinstance(pattern_tree, ast.Name)
-                                    and pattern_tree.id.startswith(_MV_PREFIX)):
-            rule.blockers.append(
-                "the BEFORE examples don't share a structure — the whole "
-                "pattern would be one metavariable, which matches everything")
-            return rule
-        pattern_pairs = set(holes.by_pair)
 
-        after_sources = [a for _, a in examples]
-        try:
-            repl_tree = _generalize(list(afters), after_sources, holes)
-        except _MustHole:
-            rule.blockers.append("the AFTER examples don't share a structure")
-            return rule
-        unbound = set(holes.by_pair) - pattern_pairs
-        if unbound:
-            rule.blockers.append(
-                "the change uses values the pattern doesn't capture — the "
-                "AFTER sides differ where the BEFORE sides agree")
-            return rule
-        rule.pattern = _to_display(pattern_tree)
-        rule.replacement = _to_display(repl_tree)
+def _learn_pattern(befores, examples, holes: _Holes, rule: LearnedRule):
+    """Anti-unify the BEFORE trees; append a blocker and return ``None`` if the
+    only shared skeleton is a single bare metavariable."""
+    sources = [b for b, _ in examples]
+    try:
+        pattern_tree = _generalize(list(befores), sources, holes)
+    except _MustHole:
+        pattern_tree = None
+    if pattern_tree is None or (isinstance(pattern_tree, ast.Name)
+                                and pattern_tree.id.startswith(_MV_PREFIX)):
+        rule.blockers.append(
+            "the BEFORE examples don't share a structure — the whole "
+            "pattern would be one metavariable, which matches everything")
+        return None
+    return pattern_tree
 
-    # SELF-CHECK: the learned rule must reproduce every example, structurally.
+
+def _learn_replacement(afters, examples, holes: _Holes,
+                       pattern_pairs, rule: LearnedRule):
+    """Anti-unify the AFTER trees reusing the pattern's captures; append a
+    blocker and return ``None`` if they don't share a structure or introduce a
+    hole the pattern never captured."""
+    after_sources = [a for _, a in examples]
+    try:
+        repl_tree = _generalize(list(afters), after_sources, holes)
+    except _MustHole:
+        rule.blockers.append("the AFTER examples don't share a structure")
+        return None
+    if set(holes.by_pair) - pattern_pairs:
+        rule.blockers.append(
+            "the change uses values the pattern doesn't capture — the "
+            "AFTER sides differ where the BEFORE sides agree")
+        return None
+    return repl_tree
+
+
+def _generalize_rule(befores, afters, examples, rule: LearnedRule) -> bool:
+    """Fill ``rule.pattern``/``rule.replacement`` from multiple examples; return
+    ``False`` (with a blocker appended) when generalization fails."""
+    holes = _Holes()
+    pattern_tree = _learn_pattern(befores, examples, holes, rule)
+    if pattern_tree is None:
+        return False
+    pattern_pairs = set(holes.by_pair)
+    repl_tree = _learn_replacement(afters, examples, holes, pattern_pairs, rule)
+    if repl_tree is None:
+        return False
+    rule.pattern = _to_display(pattern_tree)
+    rule.replacement = _to_display(repl_tree)
+    return True
+
+
+def _reproduces(replacement: str, after: str, bindings: dict[str, str]) -> bool:
+    """Does rendering ``replacement`` with ``bindings`` match ``after`` structurally?"""
+    produced = _render(replacement, bindings)
+    try:
+        return ast.dump(ast.parse(produced, mode="eval")) == ast.dump(
+            ast.parse(after, mode="eval"))
+    except SyntaxError:
+        return False
+
+
+def _self_check(rule: LearnedRule, examples) -> bool:
+    """The learned rule must reproduce every taught AFTER; append a blocker and
+    return ``False`` on the first example it fails."""
     from app.execution.pattern_rewrite import _encode_metavars
 
     p_tree = ast.parse(_encode_metavars(rule.pattern), mode="eval").body
@@ -173,17 +201,35 @@ def learn_rule(examples: list[tuple[str, str]]) -> LearnedRule:
         bindings: dict[str, str] = {}
         if not _match(node, p_tree, b, bindings):
             rule.blockers.append(f"self-check failed: the rule doesn't match example {i}")
-            return rule
-        produced = _render(rule.replacement, bindings)
-        try:
-            same = ast.dump(ast.parse(produced, mode="eval")) == ast.dump(
-                ast.parse(a, mode="eval"))
-        except SyntaxError:
-            same = False
-        if not same:
+            return False
+        if not _reproduces(rule.replacement, a, bindings):
+            produced = _render(rule.replacement, bindings)
             rule.blockers.append(
                 f"self-check failed: applying the rule to example {i} gives "
                 f"{produced!r}, not the taught AFTER")
-            return rule
-    rule.notes.append(f"self-check passed on {len(examples)} example(s)")
+            return False
+    return True
+
+
+def learn_rule(examples: list[tuple[str, str]]) -> LearnedRule:
+    """Anti-unify ``(before, after)`` example pairs into a verified rule."""
+    rule = LearnedRule()
+    if not examples:
+        rule.blockers.append("teach needs at least one BEFORE/AFTER example pair")
+        return rule
+
+    parsed = _parse_examples(examples, rule)
+    if parsed is None:
+        return rule
+    befores, afters = parsed
+
+    if len(examples) == 1:
+        rule.pattern, rule.replacement = examples[0]
+        rule.notes.append("one example → an exact-match rule (no metavariables); "
+                          "teach with a second example to generalize")
+    elif not _generalize_rule(befores, afters, examples, rule):
+        return rule
+
+    if _self_check(rule, examples):
+        rule.notes.append(f"self-check passed on {len(examples)} example(s)")
     return rule
