@@ -84,6 +84,50 @@ def _is_name_target(target: ast.AST) -> bool:
     return False
 
 
+def _loop_body_call(for_stmt: ast.For) -> ast.Call | None:
+    """The single ``Call`` of a ``for`` whose body is exactly one call-expression
+    statement and whose target is a plain Name (tuple/list of Names), with no
+    ``else``, else None."""
+    if for_stmt.orelse or len(for_stmt.body) != 1:
+        return None
+    if not _is_name_target(for_stmt.target):
+        return None
+    stmt = for_stmt.body[0]
+    if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
+        return None
+    return stmt.value
+
+
+def _append_receiver(call: ast.Call, name: str) -> ast.Name | None:
+    """The receiver ``Name`` of a ``<name>.append(...)`` call, else None."""
+    func = call.func
+    if not isinstance(func, ast.Attribute) or func.attr != "append":
+        return None
+    if not isinstance(func.value, ast.Name) or func.value.id != name:
+        return None
+    return func.value
+
+
+def _single_positional(call: ast.Call) -> ast.expr | None:
+    """The one positional (non-starred) argument of ``call``, with no keywords,
+    else None."""
+    if len(call.args) != 1 or call.keywords:
+        return None
+    arg = call.args[0]
+    if isinstance(arg, ast.Starred):
+        return None
+    return arg
+
+
+def _only_reference(node: ast.AST, name: str, receiver: ast.Name) -> bool:
+    """True iff ``name`` appears within ``node`` ONLY as ``receiver`` — any other
+    reference (e.g. ``out.append(out)``) keeps the loop non-trivial."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name) and sub.id == name and sub is not receiver:
+            return False
+    return True
+
+
 def _append_arg(for_stmt: ast.For, name: str) -> ast.expr | None:
     """The single positional argument of a ``for`` whose body is exactly one
     ``<name>.append(<arg>)`` expression statement, else None.
@@ -92,32 +136,17 @@ def _append_arg(for_stmt: ast.For, name: str) -> ast.expr | None:
     that is not ``<name>.append(...)``, starargs/keywords, the wrong arg count,
     and any other reference to ``<name>`` inside the body (so the loop builds
     the list and nothing else)."""
-    if for_stmt.orelse:
+    call = _loop_body_call(for_stmt)
+    if call is None:
         return None
-    if len(for_stmt.body) != 1:
+    receiver = _append_receiver(call, name)
+    if receiver is None:
         return None
-    if not _is_name_target(for_stmt.target):
+    arg = _single_positional(call)
+    if arg is None:
         return None
-    stmt = for_stmt.body[0]
-    if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
+    if not _only_reference(for_stmt.body[0], name, receiver):
         return None
-    call = stmt.value
-    func = call.func
-    if not isinstance(func, ast.Attribute) or func.attr != "append":
-        return None
-    if not isinstance(func.value, ast.Name) or func.value.id != name:
-        return None
-    if len(call.args) != 1 or call.keywords:
-        return None
-    arg = call.args[0]
-    if isinstance(arg, ast.Starred):
-        return None
-    # The body must touch ``name`` ONLY through this ``.append`` receiver —
-    # any other reference (e.g. ``out.append(out)``) keeps the loop non-trivial.
-    receiver = func.value
-    for node in ast.walk(stmt):
-        if isinstance(node, ast.Name) and node.id == name and node is not receiver:
-            return None
     return arg
 
 
