@@ -20,7 +20,7 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING
 
-from app.engine.skip_dirs import is_skipped
+from app.engine.skip_dirs import iter_source_files
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type hints
     from app.tools.project_profile import ProjectProfile
@@ -136,12 +136,15 @@ class _CodeQualityScansMixin:
 
         found: list[dict] = []
         scanned = 0
-        for path in sorted(self.root.rglob("*.py")):
+        # iter_source_files is sorted AND already skip-dir/worktree pruned, so the
+        # bare ``sorted(rglob)`` + per-file ``is_skipped`` re-walk is gone; the
+        # surviving set, order and ``max_files`` cap are identical (only the
+        # redundant tree walk is removed). Fixture exclusion stays the file's own.
+        for path in iter_source_files(self.root):
             if scanned >= self.max_files:
                 break
-            rel = path.relative_to(self.root)
-            rel_str = rel.as_posix()
-            if is_skipped(rel) or self._is_fixture_path(rel_str):
+            rel_str = path.relative_to(self.root).as_posix()
+            if self._is_fixture_path(rel_str):
                 continue
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
@@ -199,12 +202,14 @@ class _CodeQualityScansMixin:
 
         found: list[dict] = []
         scanned = 0
-        for path in sorted(self.root.rglob("*.py")):
+        # Same pruned/sorted walk as above (see ``_scan_god_classes``): the file
+        # set, order and ``max_files`` cap are byte-identical, only the duplicate
+        # tree walk is dropped.
+        for path in iter_source_files(self.root):
             if scanned >= self.max_files:
                 break
-            rel = path.relative_to(self.root)
-            rel_str = rel.as_posix()
-            if is_skipped(rel) or self._is_fixture_path(rel_str):
+            rel_str = path.relative_to(self.root).as_posix()
+            if self._is_fixture_path(rel_str):
                 continue
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
@@ -371,15 +376,17 @@ class _CodeQualityScansMixin:
 
         found: list[dict] = []
         scanned = 0
-        for path in sorted(self.root.rglob("*.py")):
+        # iter_source_files applies the canonical skip set (it knows about
+        # ``.claude`` agent worktrees — FULL repo copies — a hand-rolled set used
+        # to omit it and leaked self-referential ideas) AND is sorted, so the
+        # surviving file set, order and ``max_files`` cap match the old
+        # ``sorted(rglob)`` + ``is_skipped`` pass exactly — only the redundant
+        # whole-tree re-walk is removed.
+        for path in iter_source_files(self.root):
             if scanned >= self.max_files:
                 break
-            rel = path.relative_to(self.root)
-            rel_str = rel.as_posix()
-            # Use the canonical skip set (it knows about ``.claude`` agent
-            # worktrees — FULL repo copies); a hand-rolled set used to omit it and
-            # leaked self-referential ideas about throwaway worktree modules.
-            if is_skipped(rel) or self._is_fixture_path(rel_str):
+            rel_str = path.relative_to(self.root).as_posix()
+            if self._is_fixture_path(rel_str):
                 continue
             try:
                 source = path.read_text(encoding="utf-8", errors="ignore")
@@ -425,18 +432,22 @@ class _CodeQualityScansMixin:
           - the parameter isn't ``_``-prefixed (already declared intentional)
             and isn't ``*args``/``**kwargs``.
         """
-        skipped_dirs = {".git", "__pycache__", ".apex", ".epistemic", "node_modules",
-                        ".venv", "venv", "dist", "build", ".turbo", ".next"}
         defs_by_name: dict[str, list[tuple[str, ast.AST]]] = {}
         object_refs: set[str] = set()
         scanned = 0
-        for path in sorted(self.root.rglob("*.py")):
+        # Was a bare ``sorted(rglob)`` + a hand-rolled skip set; route through the
+        # canonical ``iter_source_files`` (sorted, skip-dir/worktree pruned) so the
+        # whole tree isn't re-walked. The hand-rolled set's ``.turbo``/``.next``
+        # entries only ever match JS-tool dirs (never Python sources), and it
+        # OMITTED ``.claude`` — which holds FULL repo-copy agent worktrees that
+        # sort first and would otherwise flood the ``max_files`` budget with
+        # throwaway copies before the real code is reached. The canonical set
+        # prunes ``.claude`` (worktree-safe, matching every sibling scan), so the
+        # surviving real-source set, order and cap are preserved.
+        for path in iter_source_files(self.root):
             if scanned >= self.max_files:
                 break
-            rel = path.relative_to(self.root)
-            rel_str = rel.as_posix()
-            if any(part in skipped_dirs for part in rel.parts):
-                continue
+            rel_str = path.relative_to(self.root).as_posix()
             if self._is_fixture_path(rel_str):
                 continue
             try:
