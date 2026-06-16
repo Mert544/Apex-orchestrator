@@ -54,28 +54,42 @@ def _is_excluded_candidate(rel: str) -> bool:
             or "/examples/" in f"/{r}" or "/fixtures/" in f"/{r}")
 
 
+def _node_refs(node: ast.AST) -> set[str]:
+    """Names a single AST node references (empty for nodes that reference none)."""
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+        return {node.id}
+    if isinstance(node, ast.Attribute):
+        return {node.attr}
+    if isinstance(node, ast.ImportFrom):
+        return {a.asname or a.name for a in node.names}
+    if isinstance(node, ast.Import):
+        return {(a.asname or a.name).split(".")[0] for a in node.names}
+    return set()
+
+
+def _is_all_assign(node: ast.AST) -> bool:
+    """True for an ``__all__ = [...]``/``(...)`` assignment (a literal seq)."""
+    return (isinstance(node, ast.Assign)
+            and isinstance(node.value, (ast.List, ast.Tuple))
+            and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets))
+
+
+def _all_exports(node: ast.Assign) -> set[str]:
+    """The string constants listed in an ``__all__`` literal sequence."""
+    return {
+        e.value for e in node.value.elts
+        if isinstance(e, ast.Constant) and isinstance(e.value, str)
+    }
+
+
 def _collect_references(tree: ast.Module) -> tuple[set[str], set[str]]:
     """(names referenced anywhere, names listed in __all__) for one module."""
     refs: set[str] = set()
     exports: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            refs.add(node.id)
-        elif isinstance(node, ast.Attribute):
-            refs.add(node.attr)
-        elif isinstance(node, ast.ImportFrom):
-            for a in node.names:
-                refs.add(a.asname or a.name)
-        elif isinstance(node, ast.Import):
-            for a in node.names:
-                refs.add((a.asname or a.name).split(".")[0])
-        elif isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name) and t.id == "__all__" and isinstance(node.value, (ast.List, ast.Tuple)):
-                    exports.update(
-                        e.value for e in node.value.elts
-                        if isinstance(e, ast.Constant) and isinstance(e.value, str)
-                    )
+        refs |= _node_refs(node)
+        if _is_all_assign(node):
+            exports |= _all_exports(node)
     return refs, exports
 
 

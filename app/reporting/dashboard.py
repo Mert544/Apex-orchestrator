@@ -471,6 +471,46 @@ _BRAND_MARK = (
 )
 
 
+def _shape_has_ideas(shape) -> bool:
+    """The shape card renders only when it has at least one idea to describe."""
+    return shape is not None and bool(getattr(shape, "total_ideas", 0))
+
+
+def _roadmap_has_phases(roadmap) -> bool:
+    """The roadmap card renders only when the roadmap carries phases."""
+    return roadmap is not None and bool(getattr(roadmap, "phases", None))
+
+
+def _learned_has_entries(learned) -> bool:
+    """The learned card renders only when memory has reliable/unreliable entries."""
+    return bool(learned and (learned.get("most_reliable") or learned.get("least_reliable")))
+
+
+def _dream_exists(project_root) -> bool:
+    """The dream card renders only when its digest file is present."""
+    return (Path(project_root) / ".apex" / "dream-digest.md").exists()
+
+
+def _middle_nav_links(
+    project_root, git, debug, roadmap, shape, autonomy, pareto, trajectory,
+    learned, sections: RenderedSections,
+) -> list[tuple[str, str]]:
+    """The optional, gated nav entries (in page order) between the fixed head/tail."""
+    gated = [
+        (bool(sections.quality_html), ("quality", "Quality")),
+        (_shape_has_ideas(shape), ("shape", "Shape")),
+        (_roadmap_has_phases(roadmap), ("roadmap", "Roadmap")),
+        (bool(pareto), ("frontier", "Frontier")),
+        (bool(autonomy), ("autonomy", "Autonomy")),
+        (bool(trajectory), ("trajectory", "Trajectory")),
+        (_learned_has_entries(learned), ("learned", "Learned")),
+        (bool(sections.trackrecord_html), ("trackrecord", "Track record")),
+        (bool(sections.outscope_html), ("outscope", "Out of scope")),
+        (_dream_exists(project_root), ("dream", "Dream")),
+    ]
+    return [link for cond, link in gated if cond]
+
+
 def _nav_links(
     project_root, git, debug, roadmap, shape, autonomy, pareto, trajectory,
     learned, *, sections: RenderedSections,
@@ -484,26 +524,10 @@ def _nav_links(
     """
     nav_links = [("overview", "Overview"), ("findings", "Findings"),
                  ("architecture", "Architecture"), ("ideas", "Ideas")]
-    if sections.quality_html:
-        nav_links.append(("quality", "Quality"))
-    if shape is not None and getattr(shape, "total_ideas", 0):
-        nav_links.append(("shape", "Shape"))
-    if roadmap is not None and getattr(roadmap, "phases", None):
-        nav_links.append(("roadmap", "Roadmap"))
-    if pareto:
-        nav_links.append(("frontier", "Frontier"))
-    if autonomy:
-        nav_links.append(("autonomy", "Autonomy"))
-    if trajectory:
-        nav_links.append(("trajectory", "Trajectory"))
-    if learned and (learned.get("most_reliable") or learned.get("least_reliable")):
-        nav_links.append(("learned", "Learned"))
-    if sections.trackrecord_html:
-        nav_links.append(("trackrecord", "Track record"))
-    if sections.outscope_html:
-        nav_links.append(("outscope", "Out of scope"))
-    if (Path(project_root) / ".apex" / "dream-digest.md").exists():
-        nav_links.append(("dream", "Dream"))
+    nav_links += _middle_nav_links(
+        project_root, git, debug, roadmap, shape, autonomy, pareto, trajectory,
+        learned, sections,
+    )
     nav_links += [("actions", "Actions"), ("reasoning", "Reasoning"), ("profile", "Profile")]
     if debug:
         nav_links.append(("debug", "Debug"))
