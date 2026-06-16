@@ -129,52 +129,71 @@ def _module_name(path: Path, root: Path) -> str:
     return ".".join(parts)
 
 
-def _scan_file(path: Path, module: str, mutables: list[dict], muts: list[dict]) -> None:
+def _parse_module(path: Path) -> ast.Module | None:
+    """Parse ``path`` into a module AST, or ``None`` on read/parse failure."""
     try:
         source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source)
+        return ast.parse(source)
     except (OSError, SyntaxError, ValueError):
-        return
+        return None
 
-    # Module-level assignments only (direct children of Module). Class bodies
-    # and nested scopes are intentionally NOT walked here.
+
+def _assign_targets_value(node: ast.stmt) -> tuple[list[ast.expr], ast.expr | None]:
+    """Targets and value of a module-level assignment, or ``([], None)`` if
+    ``node`` is not a value-bearing ``Assign``/``AnnAssign``."""
+    if isinstance(node, ast.Assign):
+        return node.targets, node.value
+    if isinstance(node, ast.AnnAssign) and node.value is not None:
+        return [node.target], node.value
+    return [], None
+
+
+def _scan_mutable_globals(module: str, tree: ast.Module) -> list[dict]:
+    """Module-level mutable-container assignments (direct children of Module).
+    Class bodies and nested scopes are intentionally NOT walked here."""
+    found: list[dict] = []
     for node in tree.body:
-        targets: list[ast.expr] = []
-        value: ast.expr | None = None
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-            value = node.value
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            targets = [node.target]
-            value = node.value
-        else:
-            continue
-
-        kind = _mutable_kind(value)
+        targets, value = _assign_targets_value(node)
+        kind = _mutable_kind(value) if value is not None else None
         if kind is None:
             continue
         for name in (n for t in targets for n in _assigned_names(t)):
             if _is_constant_name(name):
                 continue
-            mutables.append(
+            found.append(
                 {"module": module, "name": name, "line": node.lineno, "kind": kind}
             )
+    return found
 
-    # Functions that declare a module global via ``global X``.
+
+def _scan_global_mutations(module: str, tree: ast.Module) -> list[dict]:
+    """Functions that declare a module global via a ``global X`` statement,
+    one entry per (function, global-name) pair."""
+    found: list[dict] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for sub in ast.walk(node):
-            if isinstance(sub, ast.Global):
-                for gname in sub.names:
-                    muts.append(
-                        {
-                            "module": module,
-                            "function": node.name,
-                            "name": gname,
-                            "line": sub.lineno,
-                        }
-                    )
+            if not isinstance(sub, ast.Global):
+                continue
+            for gname in sub.names:
+                found.append(
+                    {
+                        "module": module,
+                        "function": node.name,
+                        "name": gname,
+                        "line": sub.lineno,
+                    }
+                )
+    return found
+
+
+def _scan_file(path: Path, module: str, mutables: list[dict], muts: list[dict]) -> None:
+    tree = _parse_module(path)
+    if tree is None:
+        return
+    mutables.extend(_scan_mutable_globals(module, tree))
+    muts.extend(_scan_global_mutations(module, tree))
 
 
 def analyze_global_state(root: str | Path, max_files: int = 500) -> GlobalState:
