@@ -93,25 +93,49 @@ class _Rewrite:
         self.text = text
 
 
+def _shape_ok(node: ast.BoolOp) -> bool:
+    """The boolean's pre-method shape gate: a single-line ``or`` of at least two
+    values. Anything else skips the whole boolean."""
+    return (
+        isinstance(node.op, ast.Or)
+        and len(node.values) >= 2
+        and node.lineno == node.end_lineno
+    )
+
+
+def _common_method(values: list[ast.expr]) -> str | None:
+    """The single method (all ``startswith`` or all ``endswith``) every value is
+    a one-positional-arg call to, or None if no method covers them all."""
+    for m in _METHODS:
+        if all(_matching_call(v, m) is not None for v in values):
+            return m
+    return None
+
+
+def _merged_arg_texts(
+        calls: list[ast.Call], source: str) -> list[str] | None:
+    """The de-duplicated, first-seen-order argument texts across all ``calls``,
+    or None if any call's source segments can't be recovered."""
+    seen: list[str] = []
+    for call in calls:
+        texts = _arg_texts(call, source)
+        if texts is None:
+            return None
+        for t in texts:
+            if t not in seen:
+                seen.append(t)
+    return seen
+
+
 def _try_boolop(node: ast.BoolOp, source: str) -> _Rewrite | None:
     """The rewrite for an ``or`` of same-receiver ``startswith``/``endswith``
     calls, or None if the boolean doesn't match the exact shape."""
-    if not isinstance(node.op, ast.Or):
-        return None
-    if len(node.values) < 2:
-        return None
-    if node.lineno != node.end_lineno:
+    if not _shape_ok(node):
         return None
 
-    # All values must call the same method (all startswith, or all endswith).
-    method: str | None = None
-    for m in _METHODS:
-        if all(_matching_call(v, m) is not None for v in node.values):
-            method = m
-            break
+    method = _common_method(node.values)
     if method is None:
         return None
-
     calls = [_matching_call(v, method) for v in node.values]
 
     # Every receiver must be identical (by ast.dump) — else skip the boolean.
@@ -124,14 +148,9 @@ def _try_boolop(node: ast.BoolOp, source: str) -> _Rewrite | None:
     if receiver_src is None:
         return None
 
-    seen: list[str] = []
-    for call in calls:
-        texts = _arg_texts(call, source)  # type: ignore[arg-type]
-        if texts is None:
-            return None
-        for t in texts:
-            if t not in seen:
-                seen.append(t)
+    seen = _merged_arg_texts(calls, source)  # type: ignore[arg-type]
+    if seen is None:
+        return None
 
     inner = ", ".join(seen)
     text = f"{receiver_src}.{method}(({inner}))"

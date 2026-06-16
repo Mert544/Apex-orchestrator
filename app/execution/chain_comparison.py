@@ -98,39 +98,59 @@ def _is_side_effect_free(node: ast.AST) -> bool:
     return False
 
 
-def _try_boolop(node: ast.BoolOp, source: str) -> _Rewrite | None:
-    """If ``node`` is a chainable ``X op1 Y and Y op2 Z`` BoolOp, return its
-    rewrite, else None."""
+def _pair_of_comparisons(node: ast.BoolOp) -> tuple[ast.Compare, ast.Compare] | None:
+    """The two single-line ``and``-ed values when each is an ``ast.Compare`` with
+    exactly one operator, else None — the structural gate before operators."""
     if not isinstance(node.op, ast.And):
         return None
     if node.lineno != node.end_lineno:
         return None
     if len(node.values) != 2:
         return None
-
     left, right = node.values
     if not (isinstance(left, ast.Compare) and isinstance(right, ast.Compare)):
         return None
     if len(left.ops) != 1 or len(right.ops) != 1:
         return None
+    return left, right
+
+
+def _same_family(op1: type, op2: type) -> bool:
+    """True iff both operators are chainable and share a monotonic family, so the
+    chain is equivalent to the ``and`` it replaces."""
+    if op1 not in _OP_FAMILY or op2 not in _OP_FAMILY:
+        return False
+    return _OP_FAMILY[op1] == _OP_FAMILY[op2]
+
+
+def _shared_middle(
+        left: ast.Compare, right: ast.Compare) -> bool:
+    """True iff left's right comparator and right's left operand are an identical
+    (by ``ast.dump``) side-effect-free middle — the once-evaluated chain pivot."""
+    middle_left = left.comparators[0]
+    if ast.dump(middle_left) != ast.dump(right.left):
+        return False
+    return _is_side_effect_free(middle_left)
+
+
+def _try_boolop(node: ast.BoolOp, source: str) -> _Rewrite | None:
+    """If ``node`` is a chainable ``X op1 Y and Y op2 Z`` BoolOp, return its
+    rewrite, else None."""
+    pair = _pair_of_comparisons(node)
+    if pair is None:
+        return None
+    left, right = pair
 
     op1 = type(left.ops[0])
     op2 = type(right.ops[0])
-    if op1 not in _OP_FAMILY or op2 not in _OP_FAMILY:
-        return None
-    if _OP_FAMILY[op1] != _OP_FAMILY[op2]:
+    if not _same_family(op1, op2):
         return None
 
-    # The shared middle: left's right comparator vs right's left operand.
-    middle_left = left.comparators[0]
-    middle_right = right.left
-    if ast.dump(middle_left) != ast.dump(middle_right):
-        return None
-    if not _is_side_effect_free(middle_left):
+    if not _shared_middle(left, right):
         return None
 
     x_src = splice_operand(source, left.left)
-    y_src = splice_operand(source, middle_left)
+    y_src = splice_operand(source, left.comparators[0])
     z_src = splice_operand(source, right.comparators[0])
     if x_src is None or y_src is None or z_src is None:
         return None
