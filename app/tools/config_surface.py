@@ -103,6 +103,71 @@ def _is_os_environ(node: ast.AST, environ_names: set[str]) -> bool:
     return isinstance(node, ast.Name) and node.id in environ_names
 
 
+def _is_os_getenv(func: ast.AST) -> bool:
+    """True if ``func`` is the ``os.getenv`` attribute access."""
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "getenv"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "os"
+    )
+
+
+def _os_import_names(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """Names bound by ``from os import ...`` treated as the unqualified forms.
+
+    Returns ``(getenv_names, environ_names)`` — the local names under which ``getenv``
+    and ``environ`` were imported from ``os`` (honouring ``as`` aliases).
+    """
+    getenv_names: set[str] = set()
+    environ_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "os":
+            for alias in node.names:
+                local = alias.asname or alias.name
+                if alias.name == "getenv":
+                    getenv_names.add(local)
+                elif alias.name == "environ":
+                    environ_names.add(local)
+    return getenv_names, environ_names
+
+
+def _first_arg_key(node: ast.Call) -> str:
+    """Key of a call read: its first positional arg as a constant, else dynamic."""
+    arg = node.args[0] if node.args else None
+    return _const_str(arg) or DYNAMIC_KEY
+
+
+def _is_config_call(func: ast.AST, getenv_names: set[str], environ_names: set[str]) -> bool:
+    """True if ``func`` is a recognised env-reading call target.
+
+    Covers ``os.getenv(...)``, ``os.environ.get(...)`` / ``environ.get(...)``, and a
+    bare ``getenv(...)`` name imported ``from os``.
+    """
+    if _is_os_getenv(func):
+        return True
+    if isinstance(func, ast.Attribute) and func.attr == "get":
+        return _is_os_environ(func.value, environ_names)
+    return isinstance(func, ast.Name) and func.id in getenv_names
+
+
+def _read_key(
+    node: ast.AST, getenv_names: set[str], environ_names: set[str]
+) -> str | None:
+    """Return the config key ``node`` reads, or ``None`` if it is not a config read.
+
+    Covers ``os.environ[...]`` / ``environ[...]`` subscripts, ``os.getenv(...)``,
+    ``os.environ.get(...)`` / ``environ.get(...)``, and bare ``getenv(...)`` imported
+    from ``os``. The key is the constant string when present, else :data:`DYNAMIC_KEY`.
+    """
+    # Subscript: os.environ["X"] / environ["X"]
+    if isinstance(node, ast.Subscript) and _is_os_environ(node.value, environ_names):
+        return _const_str(node.slice) or DYNAMIC_KEY
+    if isinstance(node, ast.Call) and _is_config_call(node.func, getenv_names, environ_names):
+        return _first_arg_key(node)
+    return None
+
+
 def _iter_reads(source: str):
     """Yield ``key`` strings for every config read in ``source``.
 
@@ -115,38 +180,11 @@ def _iter_reads(source: str):
     except (SyntaxError, ValueError):
         return
 
-    # Names bound by ``from os import ...`` that we treat as the unqualified forms.
-    getenv_names: set[str] = set()
-    environ_names: set[str] = set()
+    getenv_names, environ_names = _os_import_names(tree)
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "os":
-            for alias in node.names:
-                local = alias.asname or alias.name
-                if alias.name == "getenv":
-                    getenv_names.add(local)
-                elif alias.name == "environ":
-                    environ_names.add(local)
-
-    for node in ast.walk(tree):
-        # Subscript: os.environ["X"] / environ["X"]
-        if isinstance(node, ast.Subscript) and _is_os_environ(node.value, environ_names):
-            yield _const_str(node.slice) or DYNAMIC_KEY
-            continue
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        # os.getenv(...) / os.environ.get(...) / environ.get(...)
-        if isinstance(func, ast.Attribute):
-            if func.attr == "getenv" and isinstance(func.value, ast.Name) and func.value.id == "os":
-                arg = node.args[0] if node.args else None
-                yield _const_str(arg) or DYNAMIC_KEY
-            elif func.attr == "get" and _is_os_environ(func.value, environ_names):
-                arg = node.args[0] if node.args else None
-                yield _const_str(arg) or DYNAMIC_KEY
-        # getenv(...) imported from os
-        elif isinstance(func, ast.Name) and func.id in getenv_names:
-            arg = node.args[0] if node.args else None
-            yield _const_str(arg) or DYNAMIC_KEY
+        key = _read_key(node, getenv_names, environ_names)
+        if key is not None:
+            yield key
 
 
 def _is_test_or_fixture(rel: Path) -> bool:

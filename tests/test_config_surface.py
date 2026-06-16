@@ -3,8 +3,42 @@ from __future__ import annotations
 from app.tools.config_surface import (
     DYNAMIC_KEY,
     ConfigSurface,
+    _iter_reads,
     analyze_config_surface,
 )
+
+
+def test_iter_reads_yields_all_forms_in_source_order():
+    # Characterization: pin the exact sequence and order _iter_reads yields for a
+    # source mixing every recognised form, including the <dynamic> fallback.
+    source = (
+        "import os\n"
+        "from os import getenv, environ as ENV\n"
+        "a = os.environ['SUB']\n"
+        "b = os.getenv('GET')\n"
+        "c = os.environ.get('EGET', 'd')\n"
+        "var = 'V'\n"
+        "d = os.environ[var]\n"
+        "e = getenv('IMPORTED')\n"
+        "f = ENV['IMPORTED_SUB']\n"
+        "g = ENV.get('IMPORTED_GET')\n"
+        "os.path.join('x', 'y')\n"      # not a config read
+        "obj.getenv('NOPE')\n"          # getenv on another object
+    )
+    assert list(_iter_reads(source)) == [
+        "SUB",
+        "GET",
+        "EGET",
+        DYNAMIC_KEY,
+        "IMPORTED",
+        "IMPORTED_SUB",
+        "IMPORTED_GET",
+    ]
+
+
+def test_iter_reads_empty_on_syntax_error():
+    assert list(_iter_reads("def (:\n")) == []
+    assert list(_iter_reads("")) == []
 
 
 def _write(root, rel, text):
