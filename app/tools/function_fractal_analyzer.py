@@ -240,69 +240,83 @@ class FunctionFractalAnalyzer:
         purity = "impure" if reasons else "pure"
         return purity, sorted(reasons)
 
-    def build_call_graph(self, project_root: str | Path) -> dict[str, dict[str, Any]]:
-        """Build a cross-file call graph: who calls whom."""
-        root = Path(project_root)
-        cache_key = str(root.resolve())
-        if self._call_graph_cache is not None and self._call_graph_cache.get("key") == cache_key:
-            return self._call_graph_cache["graph"]
+    def _collect_graph_files(self, root: Path) -> list[Path]:
+        """Collect Python files to graph, skipping tests and applying ``max_files``.
 
-        graph: dict[str, dict[str, Any]] = {}
-        all_functions: dict[str, str] = {}  # full_name -> file_path
-
-        # Collect Python files once, skipping tests and never descending into
-        # excluded dirs. The skip matters doubly here: `.claude` worktrees are
-        # full repo copies and sort early, so without it a `max_files` cap could
-        # fill with worktree copies and graph them INSTEAD of the real code.
+        The skip matters doubly here: `.claude` worktrees are full repo copies
+        and sort early, so without it a `max_files` cap could fill with worktree
+        copies and graph them INSTEAD of the real code.
+        """
         py_files = [f for f in iter_source_files(root)
                     if not self._is_test_file(f)]
         if self.max_files > 0:
             py_files = py_files[:self.max_files]
+        return py_files
 
-        file_infos: list[tuple[str, dict[str, str], list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]]] = []
+    @staticmethod
+    def _build_parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+        """Build a child -> parent pointer map for ``tree`` in one traversal."""
+        parent_map: dict[ast.AST, ast.AST] = {}
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                parent_map[child] = parent
+        return parent_map
 
-        # First pass: collect all functions and imports with a single parent map per file
-        for py_file in py_files:
-            parsed = self._get_cached_ast(py_file)
-            if parsed is None:
-                continue
-            tree, _ = parsed
-            module = self._module_name_from_path(py_file)
+    @staticmethod
+    def _collect_imports(tree: ast.AST) -> dict[str, str]:
+        """Map each bound import name to its source module within ``tree``."""
+        imports: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports[alias.asname or alias.name] = alias.name
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                for alias in node.names:
+                    name = alias.asname or alias.name
+                    imports[name] = mod
+        return imports
 
-            # Build parent-pointer map in one traversal
-            parent_map: dict[ast.AST, ast.AST] = {}
-            for parent in ast.walk(tree):
-                for child in ast.iter_child_nodes(parent):
-                    parent_map[child] = parent
+    @staticmethod
+    def _qualified_function_name(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        parent_map: dict[ast.AST, ast.AST],
+    ) -> str:
+        """Return ``Class.method`` when ``node`` is nested in a class, else its name."""
+        current: ast.AST = node
+        while current in parent_map:
+            current = parent_map[current]
+            if isinstance(current, ast.ClassDef):
+                return f"{current.name}.{node.name}"
+        return node.name
 
-            imports: dict[str, str] = {}
-            functions: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+    def _collect_file_functions(
+        self,
+        tree: ast.AST,
+        module: str,
+        py_file: Path,
+        parent_map: dict[ast.AST, ast.AST],
+        graph: dict[str, dict[str, Any]],
+        all_functions: dict[str, str],
+    ) -> list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
+        """Seed ``graph``/``all_functions`` with each function and return them."""
+        functions: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                fn_name = self._qualified_function_name(node, parent_map)
+                full = f"{module}::{fn_name}"
+                all_functions[full] = str(py_file)
+                graph[full] = {"callees": set(), "callers": set(), "file": str(py_file)}
+                functions.append((full, node))
+        return functions
 
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        imports[alias.asname or alias.name] = alias.name
-                elif isinstance(node, ast.ImportFrom):
-                    mod = node.module or ""
-                    for alias in node.names:
-                        name = alias.asname or alias.name
-                        imports[name] = mod
-                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    fn_name = node.name
-                    current = node
-                    while current in parent_map:
-                        current = parent_map[current]
-                        if isinstance(current, ast.ClassDef):
-                            fn_name = f"{current.name}.{node.name}"
-                            break
-                    full = f"{module}::{fn_name}"
-                    all_functions[full] = str(py_file)
-                    graph[full] = {"callees": set(), "callers": set(), "file": str(py_file)}
-                    functions.append((full, node))
-
-            file_infos.append((module, imports, functions))
-
-        # Second pass: find calls
+    def _build_call_edges(
+        self,
+        file_infos: list[tuple[str, dict[str, str], list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]]],
+        graph: dict[str, dict[str, Any]],
+        all_functions: dict[str, str],
+    ) -> None:
+        """Resolve calls in every collected function and wire caller/callee edges."""
         for module, imports, functions in file_infos:
             for caller, node in functions:
                 for sub in ast.walk(node):
@@ -312,10 +326,43 @@ class FunctionFractalAnalyzer:
                             graph[caller]["callees"].add(callee)
                             graph[callee]["callers"].add(caller)
 
-        # Convert sets to lists for JSON serialization
+    @staticmethod
+    def _finalize_graph(graph: dict[str, dict[str, Any]]) -> None:
+        """Convert the callee/caller sets to sorted lists for JSON serialization."""
         for key in graph:
             graph[key]["callees"] = sorted(graph[key]["callees"])
             graph[key]["callers"] = sorted(graph[key]["callers"])
+
+    def build_call_graph(self, project_root: str | Path) -> dict[str, dict[str, Any]]:
+        """Build a cross-file call graph: who calls whom."""
+        root = Path(project_root)
+        cache_key = str(root.resolve())
+        if self._call_graph_cache is not None and self._call_graph_cache.get("key") == cache_key:
+            return self._call_graph_cache["graph"]
+
+        graph: dict[str, dict[str, Any]] = {}
+        all_functions: dict[str, str] = {}  # full_name -> file_path
+        file_infos: list[tuple[str, dict[str, str], list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]]] = []
+
+        # First pass: collect all functions and imports with a single parent map per file
+        for py_file in self._collect_graph_files(root):
+            parsed = self._get_cached_ast(py_file)
+            if parsed is None:
+                continue
+            tree, _ = parsed
+            module = self._module_name_from_path(py_file)
+            parent_map = self._build_parent_map(tree)
+            imports = self._collect_imports(tree)
+            functions = self._collect_file_functions(
+                tree, module, py_file, parent_map, graph, all_functions
+            )
+            file_infos.append((module, imports, functions))
+
+        # Second pass: find calls
+        self._build_call_edges(file_infos, graph, all_functions)
+
+        # Convert sets to lists for JSON serialization
+        self._finalize_graph(graph)
 
         self._call_graph_cache = {"key": cache_key, "graph": graph}
         return graph
