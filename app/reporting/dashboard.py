@@ -407,6 +407,60 @@ footer .sig{color:var(--accent2)}
 """
 
 
+def _hero_coverage_pct(findings) -> int:
+    """Coverage percentage from scanner findings, or ``-1`` when unavailable."""
+    cov = findings.get("coverage", {}) or {}
+    if "coverage_ratio" not in cov:
+        return -1
+    return int(cov.get("coverage_ratio", 0) * 100)
+
+
+def _hero_security_count(findings) -> int:
+    """Security finding count from scanner findings (``0`` when absent)."""
+    sec = findings.get("security", {}) or {}
+    return sec.get("findings_count", 0) or 0
+
+
+def _hero_scope_pct(profile) -> int:
+    """Analyzed-scope percentage from the project profile (``0`` when absent)."""
+    return int(round(float(getattr(profile, "analyzed_ratio", 1.0) or 0.0) * 100))
+
+
+def _hero_top_move(action_plan) -> str:
+    """Title of the highest-priority action, or ``""`` when there are no steps."""
+    steps = getattr(action_plan, "steps", None) or []
+    return steps[0].title if steps else ""
+
+
+def _hero_grade(project_root) -> tuple[str, int | None]:
+    """Run the single deterministic health-grade pass (best-effort).
+
+    Same light profile + detector pass as ``apex review``/``apex ascend``. A
+    degraded grade just yields ``("", None)`` so the tile is omitted.
+    """
+    try:
+        from app.engine.health_score import grade as _grade
+
+        g = _grade(project_root)
+        return g.letter, g.score
+    except Exception:
+        return "", None
+
+
+def _hero_charts_html(grade_letter, grade_score, scope_pct) -> str:
+    """The optional gauge + scope-bar chart strip; ``""`` when neither applies."""
+    from app.reporting.dashboard_charts import grade_gauge, scope_bar
+
+    gauge = grade_gauge(grade_score, grade_letter) if isinstance(grade_score, int) and grade_score >= 0 else ""
+    scope_svg = scope_bar(scope_pct) if scope_pct >= 0 else ""
+    return f"<div class='hero-charts'>{gauge}{scope_svg}</div>" if (gauge or scope_svg) else ""
+
+
+def _hero_top_move_html(top_move) -> str:
+    """The top-move paragraph rendered on its own line; ``""`` when empty."""
+    return f"<p class='vital-top-move'>{_esc(top_move)}</p>" if top_move else ""
+
+
 def _hero_vitals(project_root, profile, findings, idea_report, action_plan) -> str:
     """Build the hero "vital signs" banner: stat tiles + grade gauge + scope bar.
 
@@ -415,44 +469,23 @@ def _hero_vitals(project_root, profile, findings, idea_report, action_plan) -> s
     metric degrades gracefully to "omitted" when it is not available, so the banner
     never crashes and stays byte-identical for identical inputs.
     """
-    from app.reporting.dashboard_charts import grade_gauge, scope_bar
     from app.reporting.dashboard_hero import render_vitals
 
-    sec = findings.get("security", {}) or {}
-    cov = findings.get("coverage", {}) or {}
-    cov_pct = int(cov.get("coverage_ratio", 0) * 100) if "coverage_ratio" in cov else -1
-    sec_n = sec.get("findings_count", 0) or 0
-    scope_pct = int(round(float(getattr(profile, "analyzed_ratio", 1.0) or 0.0) * 100))
-    idea_count = idea_report.stats.get("total_ideas", 0)
-    runnable = len(action_plan.executable_steps())
-    steps = getattr(action_plan, "steps", None) or []
-    top_move = steps[0].title if steps else ""
-
-    # The single source of the grade — same light profile + detector pass as
-    # `apex review`/`apex ascend`. Best-effort: a degraded grade just omits the tile.
-    grade_letter, grade_score = "", None
-    try:
-        from app.engine.health_score import grade as _grade
-
-        g = _grade(project_root)
-        grade_letter, grade_score = g.letter, g.score
-    except Exception:
-        grade_letter, grade_score = "", None
+    scope_pct = _hero_scope_pct(profile)
+    grade_letter, grade_score = _hero_grade(project_root)
 
     vitals = render_vitals(
         grade_letter=grade_letter,
         grade_score=grade_score,
-        coverage_pct=cov_pct,
-        security_findings=sec_n,
+        coverage_pct=_hero_coverage_pct(findings),
+        security_findings=_hero_security_count(findings),
         scope_pct=scope_pct,
-        idea_count=idea_count,
-        runnable_actions=runnable,
+        idea_count=idea_report.stats.get("total_ideas", 0),
+        runnable_actions=len(action_plan.executable_steps()),
         top_move="",  # rendered separately below so it sits on its own line
     )
-    gauge = grade_gauge(grade_score, grade_letter) if isinstance(grade_score, int) and grade_score >= 0 else ""
-    scope_svg = scope_bar(scope_pct) if scope_pct >= 0 else ""
-    charts = f"<div class='hero-charts'>{gauge}{scope_svg}</div>" if (gauge or scope_svg) else ""
-    top_html = f"<p class='vital-top-move'>{_esc(top_move)}</p>" if top_move else ""
+    charts = _hero_charts_html(grade_letter, grade_score, scope_pct)
+    top_html = _hero_top_move_html(_hero_top_move(action_plan))
     return f"<div class='hero-vitals'>{vitals}{charts}</div>{top_html}"
 
 
