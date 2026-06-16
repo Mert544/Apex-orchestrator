@@ -94,33 +94,43 @@ def idea_canvas(project_root: str | Path, **engine_config: Any) -> dict:
     return canvas_from_ideas(report.ideas)
 
 
-def canvas_from_ideas(ideas: list[IdeaNode]) -> dict:
-    """Render an explicit list of idea nodes as a JSONCanvas (layout + edges).
-
-    Split out from :func:`idea_canvas` so the layout is testable on a synthetic
-    tree without running the engine. Conservative on the empty case.
-    """
-    if not ideas:
-        return to_canvas([], [])
-
-    # Index ideas by their canvas id; map each parent to its sorted children so
-    # the layout walks a deterministic tree regardless of emit order.
+def _index_by_id(ideas: list[IdeaNode]) -> dict[str, IdeaNode]:
+    """Index ideas by their canvas id (last write wins, mirroring emit order)."""
     by_id: dict[str, IdeaNode] = {}
     for idea in ideas:
         by_id[_node_id(idea)] = idea
+    return by_id
 
+
+def _children_map(
+    ideas: list[IdeaNode], by_id: dict[str, IdeaNode]
+) -> dict[str | None, list[IdeaNode]]:
+    """Map each parent id to its sorted children.
+
+    An idea is a child of its parent only when that parent is in the tree;
+    synthesis/pair ideas are parentless and so render as their own roots (keyed
+    under ``None``). Each bucket is sorted by the stable structural key so the
+    layout walks a deterministic tree regardless of emit order.
+    """
     children: dict[str | None, list[IdeaNode]] = {}
     for idea in ideas:
-        # An idea is a child of its parent only when that parent is in the tree;
-        # synthesis/pair ideas are parentless and so render as their own roots.
         parent = idea.parent_id if (idea.parent_id in by_id) else None
         children.setdefault(parent, []).append(idea)
     for bucket in children.values():
         bucket.sort(key=_sort_key)
+    return children
 
-    # Assign each idea a (depth, row) slot. Depth comes from walking the parent
-    # links (robust even if a stored ``depth`` field is stale), and a per-depth
-    # running counter assigns rows in a stable pre-order walk.
+
+def _position(
+    ideas: list[IdeaNode], children: dict[str | None, list[IdeaNode]]
+) -> dict[str, tuple[int, int]]:
+    """Assign each idea a ``(depth, row)`` slot via a stable pre-order walk.
+
+    Depth comes from walking the parent links (robust even if a stored ``depth``
+    field is stale); a per-depth running counter assigns rows. Roots are walked
+    first in stable order, then any idea unreachable from a root still gets a
+    slot at depth 0 so no idea is silently dropped.
+    """
     row_in_depth: dict[int, int] = {}
     positioned: dict[str, tuple[int, int]] = {}
 
@@ -134,35 +144,35 @@ def canvas_from_ideas(ideas: list[IdeaNode]) -> dict:
         for child in children.get(key, []):
             place(child, depth + 1)
 
-    # Roots = parentless ideas, in stable order; walk each subtree pre-order.
     for root in sorted(children.get(None, []), key=_sort_key):
         place(root, 0)
-    # Any idea unreachable from a root (e.g. an orphaned parent ref) still gets a
-    # slot at depth 0 so no idea is silently dropped.
     for idea in sorted(ideas, key=_sort_key):
         if _node_id(idea) not in positioned:
             place(idea, 0)
+    return positioned
 
-    nodes: list[dict] = []
-    for idea in sorted(ideas, key=_sort_key):
-        key = _node_id(idea)
-        depth, row = positioned[key]
-        x = depth * (_NODE_WIDTH + _COL_GAP)
-        y = row * (_NODE_HEIGHT + _ROW_GAP)
-        nodes.append(
-            node(
-                key,
-                _text(idea),
-                x,
-                y,
-                width=_NODE_WIDTH,
-                height=_NODE_HEIGHT,
-                color=_KIND_COLORS.get(idea.kind or "permutation"),
-            )
-        )
 
-    # One edge per parent→child link, both endpoints present. Sorted by id and
-    # de-duplicated so the edge list is reproducible.
+def _build_node(idea: IdeaNode, slot: tuple[int, int]) -> dict:
+    """Render one idea at its ``(depth, row)`` slot as a JSONCanvas node."""
+    depth, row = slot
+    x = depth * (_NODE_WIDTH + _COL_GAP)
+    y = row * (_NODE_HEIGHT + _ROW_GAP)
+    return node(
+        _node_id(idea),
+        _text(idea),
+        x,
+        y,
+        width=_NODE_WIDTH,
+        height=_NODE_HEIGHT,
+        color=_KIND_COLORS.get(idea.kind or "permutation"),
+    )
+
+
+def _build_edges(ideas: list[IdeaNode], by_id: dict[str, IdeaNode]) -> list[dict]:
+    """One edge per parent→child link, both endpoints present.
+
+    Sorted by id and de-duplicated so the edge list is reproducible.
+    """
     seen: set[str] = set()
     edges: list[dict] = []
     for idea in ideas:
@@ -176,5 +186,25 @@ def canvas_from_ideas(ideas: list[IdeaNode]) -> dict:
         seen.add(edge_id)
         edges.append(edge(edge_id, parent, child_id))
     edges.sort(key=lambda item: item["id"])
+    return edges
 
+
+def canvas_from_ideas(ideas: list[IdeaNode]) -> dict:
+    """Render an explicit list of idea nodes as a JSONCanvas (layout + edges).
+
+    Split out from :func:`idea_canvas` so the layout is testable on a synthetic
+    tree without running the engine. Conservative on the empty case.
+    """
+    if not ideas:
+        return to_canvas([], [])
+
+    by_id = _index_by_id(ideas)
+    children = _children_map(ideas, by_id)
+    positioned = _position(ideas, children)
+
+    nodes = [
+        _build_node(idea, positioned[_node_id(idea)])
+        for idea in sorted(ideas, key=_sort_key)
+    ]
+    edges = _build_edges(ideas, by_id)
     return to_canvas(nodes, edges)
