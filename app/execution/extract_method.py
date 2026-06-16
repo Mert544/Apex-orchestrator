@@ -272,46 +272,93 @@ def _reindent(src_lines: list[str], base_indent: int) -> list[str]:
     return out
 
 
+def _read_and_parse(path: Path, file_rel: str, helper_name: str,
+                    start_line: int, end_line: int):
+    """Read ``path`` and validate the request, returning ``(source, tree, None)``
+    on success or ``(None, None, blocker)`` for the first failing precondition —
+    the byte-identical prelude of :func:`plan_extract`'s guard chain."""
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError:
+        return None, None, f"cannot read {file_rel}"
+    if not helper_name.isidentifier():
+        return None, None, f"`{helper_name}` is not a valid function name"
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as e:
+        return None, None, f"{file_rel} doesn't parse: {e}"
+    if start_line > end_line:
+        return None, None, "start line must be <= end line"
+    if helper_name in _top_level_bindings(tree):
+        return None, None, (
+            f"`{helper_name}` is already defined at module level — pick another name")
+    return source, tree, None
+
+
+def _locate_statements(tree: ast.Module, start_line: int, end_line: int):
+    """Resolve the range to its enclosing function and contiguous statement run,
+    returning ``(fn, container, stmts, None)`` or ``(None, None, None, blocker)``."""
+    fn, container = _enclosing_function(tree, start_line, end_line)
+    if fn is None:
+        return None, None, None, (
+            f"lines {start_line}-{end_line} aren't inside one top-level "
+            "function/method body (nested-function ranges aren't supported)")
+    stmts = _selected_statements(fn, start_line, end_line)
+    if not stmts:
+        return None, None, None, (
+            "the range must cover a contiguous run of complete statements "
+            "in the function body (it snaps to statement boundaries)")
+    return fn, container, stmts, None
+
+
+def _build_helper_block(range_lines: list[str], base_indent: int,
+                        helper_name: str, live_in: list[str],
+                        live_out: list[str]) -> str:
+    """The module-level helper ``def`` text (with trailing blank lines) for the
+    reindented range and its data-flow interface."""
+    body_lines = _reindent(range_lines, base_indent)
+    if live_out:
+        body_lines.append("    return " + ", ".join(live_out))
+    helper_src = [f"def {helper_name}({', '.join(live_in)}):"] + body_lines
+    return "\n".join(helper_src) + "\n\n\n"
+
+
+def _build_call_line(call_indent: str, helper_name: str,
+                     live_in: list[str], live_out: list[str]) -> str:
+    """The replacement call line for the extracted range."""
+    call_expr = f"{helper_name}({', '.join(live_in)})"
+    if live_out:
+        return f"{call_indent}{', '.join(live_out)} = {call_expr}\n"
+    return f"{call_indent}{call_expr}\n"
+
+
+def _assemble_source(lines: list[str], span_lo: int, span_hi: int,
+                     call_line: str, helper_block: str, container) -> str:
+    """Apply the two edits bottom-up: replace the range with the call, then
+    insert the helper above the container (and its decorators)."""
+    new_lines = list(lines)
+    new_lines[span_lo - 1:span_hi] = [call_line]
+    insert_at = min([container.lineno] +
+                    [d.lineno for d in getattr(container, "decorator_list", [])]) - 1
+    new_lines[insert_at:insert_at] = [helper_block]
+    return "".join(new_lines)
+
+
 def plan_extract(project_root: str | Path, file_rel: str,
                  start_line: int, end_line: int, helper_name: str) -> RenamePlan:
     """Build the single-file extract-method plan for ``file_rel``."""
     plan = RenamePlan(old=f"{file_rel}:{start_line}-{end_line}", new=helper_name)
-    root = Path(project_root)
-    path = root / file_rel
-    try:
-        source = path.read_text(encoding="utf-8")
-    except OSError:
-        plan.blockers.append(f"cannot read {file_rel}")
+    path = Path(project_root) / file_rel
+
+    source, tree, blocker = _read_and_parse(
+        path, file_rel, helper_name, start_line, end_line)
+    if blocker is not None:
+        plan.blockers.append(blocker)
         return plan
 
-    if not helper_name.isidentifier():
-        plan.blockers.append(f"`{helper_name}` is not a valid function name")
-        return plan
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as e:
-        plan.blockers.append(f"{file_rel} doesn't parse: {e}")
-        return plan
-    if start_line > end_line:
-        plan.blockers.append("start line must be <= end line")
-        return plan
-    if helper_name in _top_level_bindings(tree):
-        plan.blockers.append(
-            f"`{helper_name}` is already defined at module level — pick another name")
-        return plan
-
-    fn, container = _enclosing_function(tree, start_line, end_line)
-    if fn is None:
-        plan.blockers.append(
-            f"lines {start_line}-{end_line} aren't inside one top-level "
-            "function/method body (nested-function ranges aren't supported)")
-        return plan
-
-    stmts = _selected_statements(fn, start_line, end_line)
-    if not stmts:
-        plan.blockers.append(
-            "the range must cover a contiguous run of complete statements "
-            "in the function body (it snaps to statement boundaries)")
+    fn, container, stmts, blocker = _locate_statements(tree, start_line, end_line)
+    if blocker is not None:
+        plan.blockers.append(blocker)
         return plan
     if _has_blocking_control(stmts, plan):
         return plan
@@ -326,29 +373,13 @@ def plan_extract(project_root: str | Path, file_rel: str,
     span_hi = max(getattr(s, "end_lineno", s.lineno) for s in stmts)
     range_lines = lines[span_lo - 1:span_hi]
     base_indent = len(range_lines[0]) - len(range_lines[0].lstrip())
-    call_indent = " " * base_indent
 
-    body_lines = _reindent(range_lines, base_indent)
-    if live_out:
-        body_lines.append("    return " + ", ".join(live_out))
-    helper_src = [f"def {helper_name}({', '.join(live_in)}):"] + body_lines
-    helper_block = "\n".join(helper_src) + "\n\n\n"
+    helper_block = _build_helper_block(
+        range_lines, base_indent, helper_name, live_in, live_out)
+    call_line = _build_call_line(" " * base_indent, helper_name, live_in, live_out)
+    new_source = _assemble_source(
+        lines, span_lo, span_hi, call_line, helper_block, container)
 
-    call_expr = f"{helper_name}({', '.join(live_in)})"
-    if live_out:
-        call_line = f"{call_indent}{', '.join(live_out)} = {call_expr}\n"
-    else:
-        call_line = f"{call_indent}{call_expr}\n"
-
-    # Apply edits bottom-up so earlier line numbers stay valid: replace the
-    # range first, then insert the helper above the container.
-    new_lines = list(lines)
-    new_lines[span_lo - 1:span_hi] = [call_line]
-    insert_at = min([container.lineno] +
-                    [d.lineno for d in getattr(container, "decorator_list", [])]) - 1
-    new_lines[insert_at:insert_at] = [helper_block]
-
-    new_source = "".join(new_lines)
     # Sanity: the result must still parse (a malformed extraction is a blocker,
     # not a silent corrupt write).
     try:
