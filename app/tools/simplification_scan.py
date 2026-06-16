@@ -47,7 +47,7 @@ _DRY_RUN_TITLE = "simplification scan (dry-run)"
 
 
 def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
-    """The 20 safe transforms as ``(fact_label, apply)`` pairs.
+    """The safe transforms as ``(fact_label, apply)`` pairs.
 
     Each ``apply(rel_path, source, title)`` is the transform's own pure entry
     point: it returns a patch result when it WOULD act and ``None`` otherwise.
@@ -68,6 +68,7 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
     from app.execution.semantic.transforms import isinstance_merge
     from app.execution.semantic.transforms import membership_set
     from app.execution.semantic.transforms import merge_nested_if
+    from app.execution.semantic.transforms import mutable_defaults
     from app.execution.semantic.transforms import not_in_simplify
     from app.execution.semantic.transforms import percent_string_concat
     from app.execution.semantic.transforms import redundant_else
@@ -104,6 +105,16 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
         # the result parses to the same string).
         ("collection-literal", collection_literal.apply),
         ("fstring-no-placeholder", fstring.apply),
+        # A correctness-preserving fix the bridge ALSO makes executable (its
+        # ``mutable-default`` fact routes to ``fix_mutable_defaults`` via the
+        # same SemanticPatchGenerator + guarded apply_step path). The classic
+        # ``def f(x=[])`` footgun: the transform rewrites it to the sentinel
+        # ``def f(x=None): if x is None: x = []`` form, is idempotent (a None
+        # default is no longer flagged), and refuses via None on any function
+        # without a mutable default — so it never fabricates an opportunity. It
+        # is distinct from every readability transform above (none of which
+        # touches default arguments) and overlaps none of them.
+        ("mutable-default", mutable_defaults.apply),
         # 2-arg signature → adapt to the uniform 3-arg dry-run call.
         ("augmented-assign", lambda rel, src, _title: augmented_assign.apply(rel, src)),
     ]
