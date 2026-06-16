@@ -319,6 +319,64 @@ def _captured_oracle(repr_text: str, value: object) -> str | None:
     return None
 
 
+def _stale_module_names(dotted: str, module_names: list[str]) -> list[str]:
+    """The cached module names that shadow ``dotted`` (it, or a package prefix).
+
+    Pure: dropping exactly these from ``sys.modules`` forces the import to bind
+    to the file under THIS project root, not a stale earlier one.
+    """
+    return [
+        name
+        for name in module_names
+        if name == dotted or dotted.startswith(name + ".")
+    ]
+
+
+def _capture_one_oracle(module: object, name: str, call_args: str) -> str | None:
+    """The literal ``repr`` oracle for ``module.name`` called with ``call_args``,
+    or ``None`` when no honest value oracle is available.
+
+    Pure given an already-imported ``module``: returns ``None`` for any decline
+    (arg not a plain literal, attribute missing/not callable, the call raises,
+    a non-literal return, or a ``repr`` that does not round-trip) so the caller
+    falls back to the "callable & runs" smoke assertion.
+    """
+    try:
+        args, kwargs = _eval_call_args(call_args)
+    except (ValueError, SyntaxError):
+        return None  # a synthesized arg is not a plain literal -> no oracle
+    fn = getattr(module, name, None)
+    if not callable(fn):
+        return None
+    try:
+        value = fn(*args, **kwargs)
+    except Exception:
+        return None  # the call raises on synthesized args -> smoke fallback
+    if not _is_simple_literal(value):
+        return None  # non-literal return -> smoke fallback (no value oracle)
+    return _captured_oracle(repr(value), value)
+
+
+def _restore_modules(saved_modules: dict[str, object]) -> None:
+    """Restore ``sys.modules`` to ``saved_modules`` exactly: drop anything the
+    import added, and put back anything that was evicted beforehand."""
+    for mod_name in list(sys.modules):
+        if mod_name not in saved_modules:
+            del sys.modules[mod_name]
+    sys.modules.update(saved_modules)
+
+
+def _collect_oracles(module: object, specs: list[tuple[str, str]]) -> dict[str, str]:
+    """Map ``function name -> literal repr`` for the ``specs`` whose real return is
+    a simple, reproducible literal, against an already-imported ``module``."""
+    oracles: dict[str, str] = {}
+    for name, call_args in specs:
+        oracle = _capture_one_oracle(module, name, call_args)
+        if oracle is not None:
+            oracles[name] = oracle
+    return oracles
+
+
 def _capture_oracles(
     project_root: Path, dotted: str, specs: list[tuple[str, str]]
 ) -> dict[str, str]:
@@ -338,9 +396,8 @@ def _capture_oracles(
     Deterministic: only proven-literal return values produce an oracle; nothing
     here consults time or randomness.
     """
-    oracles: dict[str, str] = {}
     if not specs:
-        return oracles
+        return {}
 
     root_str = str(project_root)
     added_to_path = root_str not in sys.path
@@ -350,41 +407,18 @@ def _capture_oracles(
     try:
         # Drop any cached copy of the target (and its package) so the import
         # binds to the file under THIS project root, not a stale earlier one.
-        for mod_name in list(sys.modules):
-            if mod_name == dotted or dotted.startswith(mod_name + "."):
-                del sys.modules[mod_name]
+        for mod_name in _stale_module_names(dotted, list(sys.modules)):
+            del sys.modules[mod_name]
         importlib.invalidate_caches()
         try:
             module = importlib.import_module(dotted)
         except Exception:
-            return oracles  # not importable -> no oracles (smoke handles import)
-        for name, call_args in specs:
-            try:
-                args, kwargs = _eval_call_args(call_args)
-            except (ValueError, SyntaxError):
-                continue  # a synthesized arg is not a plain literal -> no oracle
-            fn = getattr(module, name, None)
-            if not callable(fn):
-                continue
-            try:
-                value = fn(*args, **kwargs)
-            except Exception:
-                continue  # the call raises on synthesized args -> smoke fallback
-            if not _is_simple_literal(value):
-                continue  # non-literal return -> smoke fallback (no value oracle)
-            oracle = _captured_oracle(repr(value), value)
-            if oracle is not None:
-                oracles[name] = oracle
+            return {}  # not importable -> no oracles (smoke handles import)
+        return _collect_oracles(module, specs)
     finally:
         if added_to_path and sys.path and sys.path[0] == root_str:
             sys.path.pop(0)
-        # Restore sys.modules exactly: drop anything the import added, and put
-        # back anything we evicted above.
-        for mod_name in list(sys.modules):
-            if mod_name not in saved_modules:
-                del sys.modules[mod_name]
-        sys.modules.update(saved_modules)
-    return oracles
+        _restore_modules(saved_modules)
 
 
 def _eval_call_args(call_args: str) -> tuple[tuple[object, ...], dict[str, object]]:
