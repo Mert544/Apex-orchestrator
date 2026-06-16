@@ -280,3 +280,82 @@ def test_cli_signature_drop(tmp_path, capsys):
                              json=False)
     assert cmd_signature(ns2) == 1
     assert "⛔" in capsys.readouterr().out
+
+
+def _plan_fingerprint(plan):
+    """Order-stable structural snapshot of a plan — what callers observe."""
+    return (
+        plan.old, plan.new, plan.defined_in,
+        sorted(plan.blockers), sorted(plan.warnings),
+        sorted(plan.new_contents.items()),
+        sorted(plan.originals.items()),
+        sorted(plan.edits_by_file.items()),
+    )
+
+
+def test_plan_is_pinned_for_the_canonical_drop(tmp_path):
+    """Characterization: the canonical multi-call drop produces this exact
+    plan. Pins the refactored decomposition byte-for-byte against the
+    behavior it replaced — any drift here is an unintended logic change."""
+    _project(tmp_path)
+    plan = plan_param_drop(tmp_path, "render", "color")
+
+    assert plan.old == "color"
+    assert plan.new == ""
+    assert plan.defined_in == "app/core.py"
+    assert plan.blockers == []
+    assert plan.warnings == []
+    assert plan.new_contents == {
+        "app/core.py": (
+            "def render(text, width=80):\n"
+            "    # color was never wired up\n"
+            "    return text[:width]\n"
+        ),
+        "app/kw_user.py": (
+            "from app.core import render\n"
+            "\n"
+            "def f(t):\n"
+            "    return render(t, width=40)\n"
+        ),
+        "app/attr_user.py": (
+            "import app.core\n"
+            "\n"
+            "def h(t):\n"
+            "    return app.core.render(t)\n"
+        ),
+    }
+    assert plan.edits_by_file == {
+        "app/core.py": 1, "app/kw_user.py": 1, "app/attr_user.py": 1,
+    }
+    # The originals captured for rollback match the on-disk sources exactly.
+    for rel, original in plan.originals.items():
+        assert original == (tmp_path / rel).read_text()
+
+
+def test_plan_fingerprint_stable_across_repeated_runs(tmp_path):
+    """Determinism: re-planning the same project yields an identical plan."""
+    _project(tmp_path)
+    first = _plan_fingerprint(plan_param_drop(tmp_path, "render", "color"))
+    second = _plan_fingerprint(plan_param_drop(tmp_path, "render", "color"))
+    assert first == second
+
+
+def test_plan_pinned_for_blocked_positional_call(tmp_path):
+    """Characterization of the empty/blocked path: a positional pass blocks
+    the drop and clears every staged edit."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "core.py").write_text(
+        "def g(a, b, c):\n    return a\n"
+    )
+    (tmp_path / "app" / "caller.py").write_text(
+        "from app.core import g\ndef f():\n    return g(1, 2, 3)\n"
+    )
+    plan = plan_param_drop(tmp_path, "g", "b")
+    assert not plan.ok
+    assert plan.blockers == [
+        "app/caller.py:3: passes 'b' POSITIONALLY — "
+        "convert that call to keywords first, then re-run"
+    ]
+    assert plan.new_contents == {}
+    assert plan.originals == {}
+    assert plan.edits_by_file == {}

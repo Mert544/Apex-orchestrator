@@ -110,49 +110,60 @@ def _positional_index(fn: ast.FunctionDef | ast.AsyncFunctionDef,
     return None
 
 
-def plan_param_drop(project_root: str | Path, func_name: str,
-                    param: str) -> RenamePlan:
-    """Build the project-wide drop plan for an UNUSED parameter."""
-    plan = RenamePlan(old=param, new="")
-    root = Path(project_root)
-    files = _py_files(root)
-    sources = dict(files)
+def _parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
+    """Parse every source; unparseable files are silently skipped."""
     trees: dict[str, ast.Module] = {}
     for rel, text in files:
         try:
             trees[rel] = ast.parse(text)
         except SyntaxError:
             continue
+    return trees
 
+
+def _resolve_definition(
+        trees: dict[str, ast.Module], func_name: str, plan: RenamePlan
+) -> tuple[str, ast.FunctionDef | ast.AsyncFunctionDef] | None:
+    """The lone top-level definition of ``func_name``; appends a blocker and
+    returns None unless there is exactly one."""
     definitions = [(rel, fn) for rel, tree in trees.items()
                    for fn in _function_defs(tree, func_name)]
     if len(definitions) != 1:
         plan.blockers.append(
             f"'{func_name}' must be defined exactly once at top level "
             f"(found {len(definitions)})")
-        return plan
-    defmod, fn = definitions[0]
-    plan.defined_in = defmod
-    dotted = defmod[:-3].replace("/", ".")
-    source = sources[defmod]
+        return None
+    return definitions[0]
 
+
+def _validate_droppable(fn: ast.FunctionDef | ast.AsyncFunctionDef,
+                        func_name: str, param: str, plan: RenamePlan) -> bool:
+    """True when ``param`` is a real, unused, non-vararg parameter; appends
+    the matching blocker and returns False otherwise."""
     if param not in [p.arg for p in _all_params(fn)]:
         plan.blockers.append(f"'{param}' is not a parameter of {func_name}()")
-        return plan
+        return False
     if (fn.args.vararg and fn.args.vararg.arg == param) or (
             fn.args.kwarg and fn.args.kwarg.arg == param):
         plan.blockers.append(f"'{param}' is *args/**kwargs — not droppable")
-        return plan
+        return False
     if any(isinstance(n, ast.Name) and n.id == param for n in ast.walk(fn)):
         plan.blockers.append(
             f"{func_name}() actually READS '{param}' — dropping it would "
             "change behavior, not clean it")
-        return plan
+        return False
+    return True
 
+
+def _pin_signature(source: str, fn: ast.FunctionDef | ast.AsyncFunctionDef,
+                   defmod: str, plan: RenamePlan
+                   ) -> tuple[int, int, int, int] | None:
+    """The signature span, or None with a blocker when it can't be pinned or
+    the header carries a comment we'd be forced to drop."""
     span = _signature_span(source, fn)
     if span is None:
         plan.blockers.append(f"{defmod}: could not pin the signature span")
-        return plan
+        return None
     sl, sc, el, ec = span
     src_lines = source.splitlines(keepends=True)
     sig_text = (
@@ -162,96 +173,130 @@ def plan_param_drop(project_root: str | Path, func_name: str,
         plan.blockers.append(
             f"{defmod}: the signature block contains a comment — rebuilding "
             "it would drop the comment, so this stays a human edit")
-        return plan
+        return None
+    return span
 
-    pos_index = _positional_index(fn, param)
 
-    # Call sites FIRST, project-wide: keyword removal is intra-line, so the
-    # AST line numbers stay valid file-wide. The def rebuild runs last —
-    # collapsing a multi-line header SHIFTS every line below it, and any
-    # same-file call site located after that shift would be mangled.
+def _call_aliases(tree: ast.Module, rel: str, defmod: str, dotted: str,
+                  func_name: str) -> tuple[set[str], set[str]]:
+    """The bare names and module aliases under which ``func_name`` is reachable
+    in this file: ``(from_names, module_aliases)``."""
+    from_names: set[str] = {func_name} if rel == defmod else set()
+    module_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == dotted:
+            for alias in node.names:
+                if alias.name == func_name:
+                    from_names.add(alias.asname or func_name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == dotted:
+                    module_aliases.add(alias.asname or alias.name)
+    return from_names, module_aliases
+
+
+def _collect_removals(tree: ast.Module, rel: str, func_name: str, param: str,
+                      pos_index: int | None, from_names: set[str],
+                      module_aliases: set[str], plan: RenamePlan
+                      ) -> list[tuple[int, int, int]]:
+    """The intra-line keyword spans to excise in this file; positional passes
+    and line-spanning keywords become blockers, ``**kwargs`` calls warn."""
+    removals: list[tuple[int, int, int]] = []  # (line, col_start, col_end)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        is_ours = (isinstance(f, ast.Name) and f.id in from_names) or (
+            isinstance(f, ast.Attribute) and f.attr == func_name
+            and ast.unparse(f.value) in module_aliases)
+        if not is_ours:
+            continue
+        if pos_index is not None and len(node.args) > pos_index:
+            plan.blockers.append(
+                f"{rel}:{node.lineno}: passes '{param}' POSITIONALLY — "
+                "convert that call to keywords first, then re-run")
+            continue
+        for kw in node.keywords:
+            if kw.arg is None:
+                plan.warnings.append(
+                    f"{rel}:{node.lineno}: {func_name}(**…) may still carry "
+                    f"'{param}' at runtime; check manually")
+            elif kw.arg == param:
+                if kw.lineno != kw.value.end_lineno:
+                    plan.blockers.append(
+                        f"{rel}:{node.lineno}: '{param}=' spans lines — "
+                        "collapse the call first")
+                    continue
+                removals.append((kw.lineno, kw.col_offset,
+                                 kw.value.end_col_offset))
+    return removals
+
+
+def _apply_removals(text: str, rel: str, param: str,
+                    removals: list[tuple[int, int, int]],
+                    plan: RenamePlan) -> str:
+    """Excise each keyword span and one separating comma, bottom-up so column
+    offsets on the same line never invalidate later edits."""
+    lines = text.splitlines(keepends=True)
+    for line_no, start, end in sorted(set(removals), reverse=True):
+        row = lines[line_no - 1]
+        left, right = start, end
+        # Eat ONE separating comma: prefer the one before (mid/last
+        # argument), else the one after (first argument).
+        probe = left - 1
+        while probe >= 0 and row[probe] in " \t":
+            probe -= 1
+        if probe >= 0 and row[probe] == ",":
+            left = probe
+        else:
+            after = right
+            while after < len(row) and row[after] in " \t":
+                after += 1
+            if after < len(row) and row[after] == ",":
+                right = after + 1
+                while right < len(row) and row[right] == " ":
+                    right += 1
+            elif not row[:left].strip():
+                # The keyword stood alone on its line: its separating
+                # comma lives on the line above, out of reach for an
+                # intra-line (numbering-safe) edit. The result stays
+                # valid (trailing comma) — say so instead of hiding it.
+                plan.warnings.append(
+                    f"{rel}:{line_no}: dropped a keyword that stood on "
+                    "its own line — the call stays valid but ragged; "
+                    "run a formatter or tidy by hand")
+        lines[line_no - 1] = row[:left] + row[right:]
+    return "".join(lines)
+
+
+def _prune_call_sites(trees: dict[str, ast.Module], sources: dict[str, str],
+                      defmod: str, dotted: str, func_name: str, param: str,
+                      pos_index: int | None, plan: RenamePlan) -> None:
+    """Project-wide keyword pruning. Intra-line edits keep AST line numbers
+    valid file-wide, so this safely runs before the def rebuild."""
     for rel, tree in trees.items():
         text = sources[rel]
-        from_names: set[str] = {func_name} if rel == defmod else set()
-        module_aliases: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module == dotted:
-                for alias in node.names:
-                    if alias.name == func_name:
-                        from_names.add(alias.asname or func_name)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name == dotted:
-                        module_aliases.add(alias.asname or alias.name)
-
-        removals: list[tuple[int, int, int]] = []  # (line, col_start, col_end)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            f = node.func
-            is_ours = (isinstance(f, ast.Name) and f.id in from_names) or (
-                isinstance(f, ast.Attribute) and f.attr == func_name
-                and ast.unparse(f.value) in module_aliases)
-            if not is_ours:
-                continue
-            if pos_index is not None and len(node.args) > pos_index:
-                plan.blockers.append(
-                    f"{rel}:{node.lineno}: passes '{param}' POSITIONALLY — "
-                    "convert that call to keywords first, then re-run")
-                continue
-            for kw in node.keywords:
-                if kw.arg is None:
-                    plan.warnings.append(
-                        f"{rel}:{node.lineno}: {func_name}(**…) may still carry "
-                        f"'{param}' at runtime; check manually")
-                elif kw.arg == param:
-                    if kw.lineno != kw.value.end_lineno:
-                        plan.blockers.append(
-                            f"{rel}:{node.lineno}: '{param}=' spans lines — "
-                            "collapse the call first")
-                        continue
-                    removals.append((kw.lineno, kw.col_offset,
-                                     kw.value.end_col_offset))
+        from_names, module_aliases = _call_aliases(
+            tree, rel, defmod, dotted, func_name)
+        removals = _collect_removals(
+            tree, rel, func_name, param, pos_index,
+            from_names, module_aliases, plan)
         if plan.blockers:
             continue
         if removals:
-            lines = text.splitlines(keepends=True)
-            for line_no, start, end in sorted(set(removals), reverse=True):
-                row = lines[line_no - 1]
-                left, right = start, end
-                # Eat ONE separating comma: prefer the one before (mid/last
-                # argument), else the one after (first argument).
-                probe = left - 1
-                while probe >= 0 and row[probe] in " \t":
-                    probe -= 1
-                if probe >= 0 and row[probe] == ",":
-                    left = probe
-                else:
-                    after = right
-                    while after < len(row) and row[after] in " \t":
-                        after += 1
-                    if after < len(row) and row[after] == ",":
-                        right = after + 1
-                        while right < len(row) and row[right] == " ":
-                            right += 1
-                    elif not row[:left].strip():
-                        # The keyword stood alone on its line: its separating
-                        # comma lives on the line above, out of reach for an
-                        # intra-line (numbering-safe) edit. The result stays
-                        # valid (trailing comma) — say so instead of hiding it.
-                        plan.warnings.append(
-                            f"{rel}:{line_no}: dropped a keyword that stood on "
-                            "its own line — the call stays valid but ragged; "
-                            "run a formatter or tidy by hand")
-                lines[line_no - 1] = row[:left] + row[right:]
-            text = "".join(lines)
+            text = _apply_removals(text, rel, param, removals, plan)
             plan.originals.setdefault(rel, sources[rel])
             plan.new_contents[rel] = text
             plan.edits_by_file[rel] = plan.edits_by_file.get(rel, 0) + len(removals)
 
-    # Rebuild the def header (single-line parameter list, verbatim segments)
-    # on top of the keyword-pruned text — pruning never changed line counts,
-    # so the header's line indices still hold.
+
+def _rebuild_def(source: str, fn: ast.FunctionDef | ast.AsyncFunctionDef,
+                 defmod: str, param: str, span: tuple[int, int, int, int],
+                 plan: RenamePlan) -> None:
+    """Rebuild the def header (single-line parameter list, verbatim segments)
+    on top of the keyword-pruned text — pruning never changed line counts, so
+    the header's line indices still hold."""
+    sl, sc, el, ec = span
     new_sig = f"({_rebuild_params(source, fn, param)})"
     def_text = plan.new_contents.get(defmod, source)
     def_lines = def_text.splitlines(keepends=True)
@@ -259,6 +304,37 @@ def plan_param_drop(project_root: str | Path, func_name: str,
     plan.originals.setdefault(defmod, source)
     plan.new_contents[defmod] = "".join([*def_lines[:sl - 1], new_def, *def_lines[el:]])
     plan.edits_by_file[defmod] = plan.edits_by_file.get(defmod, 0) + 1
+
+
+def plan_param_drop(project_root: str | Path, func_name: str,
+                    param: str) -> RenamePlan:
+    """Build the project-wide drop plan for an UNUSED parameter."""
+    plan = RenamePlan(old=param, new="")
+    root = Path(project_root)
+    files = _py_files(root)
+    sources = dict(files)
+    trees = _parse_trees(files)
+
+    definition = _resolve_definition(trees, func_name, plan)
+    if definition is None:
+        return plan
+    defmod, fn = definition
+    plan.defined_in = defmod
+    dotted = defmod[:-3].replace("/", ".")
+    source = sources[defmod]
+
+    if not _validate_droppable(fn, func_name, param, plan):
+        return plan
+
+    span = _pin_signature(source, fn, defmod, plan)
+    if span is None:
+        return plan
+
+    pos_index = _positional_index(fn, param)
+
+    _prune_call_sites(trees, sources, defmod, dotted, func_name, param,
+                      pos_index, plan)
+    _rebuild_def(source, fn, defmod, param, span, plan)
 
     if plan.blockers:
         plan.new_contents.clear()
