@@ -55,19 +55,16 @@ def _render_confluence_markdown(entries: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def cmd_ideate(args: argparse.Namespace) -> int:
-    """Generate a permutation tree of development ideas from the codebase."""
-    from app.engine.idea_permutation import (
-        IdeaPermutationEngine,
-        render_markdown,
-        render_mermaid,
-    )
+def _build_ideate_report(args: argparse.Namespace, target: Path):
+    """Build + run the permutation engine, returning ``(engine, report)``.
 
-    target = Path(args.target).resolve() if args.target else _get_project_root()
-
-    # Plugins may contribute extra development operators to the alphabet.
+    Pure mechanical extraction of the engine-construction prologue: plugin
+    operator loading + config assembly + ``run()``. No logic change.
+    """
+    from app.engine.idea_permutation import IdeaPermutationEngine
     from app.plugins.registry import PluginRegistry
 
+    # Plugins may contribute extra development operators to the alphabet.
     plugins = PluginRegistry()
     plugins.load_all()
     extra_operators = plugins.idea_operators()
@@ -86,66 +83,69 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         extra_operators=extra_operators,
     )
     report = engine.run(objective=args.objective or None)
+    return engine, report
 
-    # Outcome-learned ranking: bias the roadmap toward the kinds of fixes that
-    # historically LAND in this repo (and away from ones that get blocked /
-    # rolled back). Best-effort + no-op on a fresh repo with no memory ledger,
-    # so the roadmap is byte-identical until real outcomes accumulate.
-    from app.engine.idea_memory import IdeaMemory
-    _roadmap_memory = IdeaMemory.load(str(target))
 
-    # --roadmap (without --actions): view the prioritized, phase-ordered plan.
-    # With --actions, the roadmap instead drives the *order* of the action plan
-    # below (Stabilize first), so this view-only branch is skipped.
-    if getattr(args, "roadmap", False) and not getattr(args, "actions", False):
-        from app.engine.idea_roadmap import (
-            RoadmapSynthesizer,
-            render_roadmap_markdown,
+def _ideate_roadmap_view(args, report, target, memory) -> int:
+    """Render the view-only ``--roadmap`` plan (incl. ``--diff``/``--save``).
+
+    Reached only when ``--roadmap`` is set without ``--actions``. Returns the
+    process exit code (1 only on the missing-snapshot ``--diff`` guard).
+    """
+    from app.engine.idea_roadmap import RoadmapSynthesizer, render_roadmap_markdown
+
+    roadmap = RoadmapSynthesizer().build(report, memory=memory)
+    snapshot_path = target / ".apex" / "roadmap-snapshot.json"
+
+    # --diff: compare this roadmap against the last saved snapshot.
+    if getattr(args, "diff", False):
+        from app.engine.roadmap_history import (
+            diff_roadmaps,
+            load_snapshot,
+            render_diff_markdown,
         )
 
-        roadmap = RoadmapSynthesizer().build(report, memory=_roadmap_memory)
-        snapshot_path = target / ".apex" / "roadmap-snapshot.json"
-
-        # --diff: compare this roadmap against the last saved snapshot.
-        if getattr(args, "diff", False):
-            from app.engine.roadmap_history import (
-                diff_roadmaps,
-                load_snapshot,
-                render_diff_markdown,
+        previous = load_snapshot(snapshot_path)
+        if previous is None:
+            print(
+                "[ideate] No saved roadmap snapshot to diff against. "
+                "Run with --save first."
             )
-
-            previous = load_snapshot(snapshot_path)
-            if previous is None:
-                print(
-                    "[ideate] No saved roadmap snapshot to diff against. "
-                    "Run with --save first."
-                )
-                return 1
-            diff = diff_roadmaps(previous, roadmap)
-            if args.json:
-                print(json.dumps(diff.to_dict(), indent=2))
-            else:
-                print(render_diff_markdown(diff))
-            return 0
-
-        body = render_roadmap_markdown(roadmap)
+            return 1
+        diff = diff_roadmaps(previous, roadmap)
         if args.json:
-            print(json.dumps(roadmap.to_dict(), indent=2))
+            print(json.dumps(diff.to_dict(), indent=2))
         else:
-            print(body)
-        if args.out:
-            out_path = Path(args.out)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(body, encoding="utf-8")
-            print(f"\n[ideate] Roadmap written to {out_path}")
-        # --save: snapshot for future --diff comparisons.
-        if getattr(args, "save", False):
-            from app.engine.roadmap_history import snapshot_roadmap
-
-            saved = snapshot_roadmap(roadmap, snapshot_path)
-            print(f"\n[ideate] Roadmap snapshot saved to {saved}")
+            print(render_diff_markdown(diff))
         return 0
 
+    body = render_roadmap_markdown(roadmap)
+    if args.json:
+        print(json.dumps(roadmap.to_dict(), indent=2))
+    else:
+        print(body)
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(body, encoding="utf-8")
+        print(f"\n[ideate] Roadmap written to {out_path}")
+    # --save: snapshot for future --diff comparisons.
+    if getattr(args, "save", False):
+        from app.engine.roadmap_history import snapshot_roadmap
+
+        saved = snapshot_roadmap(roadmap, snapshot_path)
+        print(f"\n[ideate] Roadmap snapshot saved to {saved}")
+    return 0
+
+
+def _ideate_analysis_view(args, report, target, memory) -> bool:
+    """Handle the single-output analysis flags, printing if one is selected.
+
+    Covers ``--invest``/``--budget``/``--sequence``/``--pareto``/``--shape``,
+    in their original priority order. Returns ``True`` if a flag matched and
+    output was printed (caller then returns 0), else ``False``. Each branch is
+    a verbatim move; ordering is preserved.
+    """
     # --invest: the impact-vs-effort investment curve + diminishing-returns knee.
     if getattr(args, "invest", False):
         from app.engine.idea_investment import (
@@ -158,7 +158,7 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             print(json.dumps([p.to_dict() for p in points], indent=2))
         else:
             print(render_investment_markdown(points))
-        return 0
+        return True
 
     # --budget: optimal portfolio of ideas for an effort budget (knapsack).
     if getattr(args, "budget", 0.0):
@@ -172,7 +172,7 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             print(json.dumps(portfolio.to_dict(), indent=2))
         else:
             print(render_portfolio_markdown(portfolio))
-        return 0
+        return True
 
     # --sequence: dependency-ordered execution plan (prerequisites first).
     if getattr(args, "sequence", False):
@@ -186,20 +186,20 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             print(json.dumps([s.to_dict() for s in steps], indent=2))
         else:
             print(render_execution_markdown(steps))
-        return 0
+        return True
 
     # --pareto: the efficient frontier of ideas across impact/effort/value.
     if getattr(args, "pareto", False):
         from app.engine.idea_pareto import frontier_from_roadmap, render_pareto_markdown
         from app.engine.idea_roadmap import RoadmapSynthesizer
 
-        roadmap = RoadmapSynthesizer().build(report, memory=_roadmap_memory)
+        roadmap = RoadmapSynthesizer().build(report, memory=memory)
         points = frontier_from_roadmap(roadmap)
         if args.json:
             print(json.dumps([p.to_dict() for p in points], indent=2))
         else:
             print(render_pareto_markdown(points, total_ideas=len(report.ideas)))
-        return 0
+        return True
 
     # --shape: report on the shape/health of the tree the engine just produced.
     if getattr(args, "shape", False):
@@ -213,79 +213,114 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             print(json.dumps(shape.to_dict(), indent=2))
         else:
             print(render_tree_shape_markdown(shape))
-        return 0
+        return True
 
-    # --kind: list only ideas of a given kind (permutation/synthesis/pair),
-    # value-sorted. A focused view onto what the engine surfaced.
-    kind = getattr(args, "kind", "") or ""
-    if kind and kind != "all":
-        selected = sorted(
-            (i for i in report.ideas if i.kind == kind),
-            key=lambda n: n.value,
-            reverse=True,
+    return False
+
+
+def _ideate_kind_view(args, report, target, kind: str) -> None:
+    """Print the value-sorted ``--kind`` focused list (verbatim move)."""
+    selected = sorted(
+        (i for i in report.ideas if i.kind == kind),
+        key=lambda n: n.value,
+        reverse=True,
+    )
+    if args.json:
+        print(json.dumps([i.to_dict() for i in selected], indent=2))
+    else:
+        print(f"# {kind} ideas for `{target}`  ({len(selected)} found)")
+        for i in selected:
+            caveat = f"  ⚠ {i.caveats[0]}" if i.caveats else ""
+            print(f"- `{i.branch_path}` [{i.operator}] {i.title}  (v {i.value}){caveat}")
+
+
+def _ideate_action_plan(args, report, target):
+    """Build the optional action plan + optional apply, returning a pair.
+
+    Returns ``(action_plan, apply_results)`` — both ``None`` unless
+    ``--actions`` (and, for apply, ``--apply``) are set. Verbatim move of the
+    bridge wiring; opt-in semantics unchanged.
+    """
+    from app.engine.idea_action_bridge import IdeaActionBridge
+
+    bridge = IdeaActionBridge()
+    _plan_mode = getattr(args, "mode", None) or "supervised"
+    _draft = getattr(args, "draft", False) or getattr(args, "apply", False)
+    # --prove (default off): attach the proof-carrying patch_preview (exact
+    # diff stat + re-parse verdict + before→after impact) to the top runnable
+    # steps so render_action_markdown emits a visible "proof:" line. Bounded
+    # top-K in the bridge; recommend-only (no writes, no test runs).
+    _prove = getattr(args, "prove", False)
+    if getattr(args, "roadmap", False):
+        # Roadmap-ordered plan: apply Stabilize→Secure→Evolve→Refine, with an
+        # optional --phase filter to act on a single phase.
+        action_plan = bridge.plan_roadmap(
+            report,
+            phase=getattr(args, "phase", None) or None,
+            mode=_plan_mode,
+            top=args.top or None,
+            draft=_draft,
+            project_root=str(target),
+            proof=_prove,
         )
-        if args.json:
-            print(json.dumps([i.to_dict() for i in selected], indent=2))
-        else:
-            print(f"# {kind} ideas for `{target}`  ({len(selected)} found)")
-            for i in selected:
-                caveat = f"  ⚠ {i.caveats[0]}" if i.caveats else ""
-                print(f"- `{i.branch_path}` [{i.operator}] {i.title}  (v {i.value}){caveat}")
-        return 0
-
-    # Optionally bridge ideas into a supervised, never-applied action plan.
-    action_plan = None
+    else:
+        action_plan = bridge.plan_tree(
+            report,
+            mode=_plan_mode,
+            top=args.top or None,
+            draft=_draft,
+            project_root=str(target),
+            proof=_prove,
+        )
     apply_results = None
-    if getattr(args, "actions", False):
-        from app.engine.idea_action_bridge import (
-            IdeaActionBridge,
-            render_action_markdown,
+    # Strictly opt-in apply: only when --apply is passed; gated by mode + safety.
+    if getattr(args, "apply", False):
+        apply_results = bridge.apply_plan(
+            action_plan,
+            str(target),
+            mode=getattr(args, "mode", None) or "supervised",
+            verify=getattr(args, "verify", False),
+            max_apply=(args.max_apply or None) if getattr(args, "max_apply", 0) else None,
+            commit=getattr(args, "commit", False),
         )
+    return action_plan, apply_results
 
-        bridge = IdeaActionBridge()
-        _plan_mode = getattr(args, "mode", None) or "supervised"
-        _draft = getattr(args, "draft", False) or getattr(args, "apply", False)
-        # --prove (default off): attach the proof-carrying patch_preview (exact
-        # diff stat + re-parse verdict + before→after impact) to the top runnable
-        # steps so render_action_markdown emits a visible "proof:" line. Bounded
-        # top-K in the bridge; recommend-only (no writes, no test runs).
-        _prove = getattr(args, "prove", False)
-        if getattr(args, "roadmap", False):
-            # Roadmap-ordered plan: apply Stabilize→Secure→Evolve→Refine, with an
-            # optional --phase filter to act on a single phase.
-            action_plan = bridge.plan_roadmap(
-                report,
-                phase=getattr(args, "phase", None) or None,
-                mode=_plan_mode,
-                top=args.top or None,
-                draft=_draft,
-                project_root=str(target),
-                proof=_prove,
-            )
+
+def _print_apply_results(apply_results) -> None:
+    """Print the maintenance-run summary + per-step lines (verbatim move)."""
+    verify_note = " · verified" if apply_results.get("verify") else ""
+    commit_note = (
+        f" · committed {apply_results.get('committed', 0)}"
+        if apply_results.get("commit") else ""
+    )
+    print(
+        f"\n## Maintenance run (mode: {apply_results.get('mode')}{verify_note}{commit_note})\n"
+        f"applied {apply_results['applied']} · rolled back "
+        f"{apply_results['rolled_back']} · blocked {apply_results['blocked']} "
+        f"of {apply_results['total_executable']} executable steps"
+    )
+    for r in apply_results["results"]:
+        if r.get("rolled_back"):
+            status = "↩️"
+        elif r.get("applied"):
+            status = "✅"
         else:
-            action_plan = bridge.plan_tree(
-                report,
-                mode=_plan_mode,
-                top=args.top or None,
-                draft=_draft,
-                project_root=str(target),
-                proof=_prove,
-            )
-        # Strictly opt-in apply: only when --apply is passed; gated by mode + safety.
-        if getattr(args, "apply", False):
-            apply_results = bridge.apply_plan(
-                action_plan,
-                str(target),
-                mode=getattr(args, "mode", None) or "supervised",
-                verify=getattr(args, "verify", False),
-                max_apply=(args.max_apply or None) if getattr(args, "max_apply", 0) else None,
-                commit=getattr(args, "commit", False),
-            )
+            status = "⛔"
+        detail = r.get("reason") or ", ".join(r.get("changed_files", []))
+        if r.get("verified") is True:
+            detail += "  (tests pass)"
+        if r.get("committed"):
+            detail += f"  [committed {r.get('commit_hash', '')}]"
+        print(f"- {status} `{r['branch']}` {r['action']} — {detail}")
 
-    # Surface signal convergence (the seeder's #1 development target) prominently
-    # in the default ideate view. ADDITIVE and gated: emitted only when the
-    # profile names confluence modules, so the no-confluence path is unchanged.
-    confluence = _confluence_entries(getattr(engine, "last_profile", None))
+
+def _render_ideate(args, report, action_plan, apply_results, confluence) -> None:
+    """Render the default ideate view (JSON / action plan / markdown tree).
+
+    Verbatim move of the terminal render dispatch; the same three mutually
+    exclusive branches in the same order.
+    """
+    from app.engine.idea_permutation import render_markdown, render_mermaid
 
     if args.json:
         payload = report.model_dump()
@@ -297,32 +332,11 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             payload["confluence"] = confluence
         print(json.dumps(payload, indent=2))
     elif action_plan is not None:
+        from app.engine.idea_action_bridge import render_action_markdown
+
         print(render_action_markdown(action_plan))
         if apply_results is not None:
-            verify_note = " · verified" if apply_results.get("verify") else ""
-            commit_note = (
-                f" · committed {apply_results.get('committed', 0)}"
-                if apply_results.get("commit") else ""
-            )
-            print(
-                f"\n## Maintenance run (mode: {apply_results.get('mode')}{verify_note}{commit_note})\n"
-                f"applied {apply_results['applied']} · rolled back "
-                f"{apply_results['rolled_back']} · blocked {apply_results['blocked']} "
-                f"of {apply_results['total_executable']} executable steps"
-            )
-            for r in apply_results["results"]:
-                if r.get("rolled_back"):
-                    status = "↩️"
-                elif r.get("applied"):
-                    status = "✅"
-                else:
-                    status = "⛔"
-                detail = r.get("reason") or ", ".join(r.get("changed_files", []))
-                if r.get("verified") is True:
-                    detail += "  (tests pass)"
-                if r.get("committed"):
-                    detail += f"  [committed {r.get('commit_hash', '')}]"
-                print(f"- {status} `{r['branch']}` {r['action']} — {detail}")
+            _print_apply_results(apply_results)
     else:
         print(render_markdown(report))
         if args.mermaid:
@@ -332,17 +346,69 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             print()
             print(_render_confluence_markdown(confluence))
 
+
+def _ideate_write_out(args, report, action_plan) -> None:
+    """Write the markdown/action body to ``--out`` (verbatim move)."""
+    from app.engine.idea_permutation import render_markdown, render_mermaid
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if action_plan is not None:
+        from app.engine.idea_action_bridge import render_action_markdown
+
+        body = render_action_markdown(action_plan)
+    else:
+        body = render_markdown(report)
+        if args.mermaid:
+            body += "\n\n" + render_mermaid(report)
+    out_path.write_text(body, encoding="utf-8")
+    print(f"\n[ideate] Written to {out_path}")
+
+
+def cmd_ideate(args: argparse.Namespace) -> int:
+    """Generate a permutation tree of development ideas from the codebase."""
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    engine, report = _build_ideate_report(args, target)
+
+    # Outcome-learned ranking: bias the roadmap toward the kinds of fixes that
+    # historically LAND in this repo (and away from ones that get blocked /
+    # rolled back). Best-effort + no-op on a fresh repo with no memory ledger,
+    # so the roadmap is byte-identical until real outcomes accumulate.
+    from app.engine.idea_memory import IdeaMemory
+    _roadmap_memory = IdeaMemory.load(str(target))
+
+    # --roadmap (without --actions): view the prioritized, phase-ordered plan.
+    # With --actions, the roadmap instead drives the *order* of the action plan
+    # below (Stabilize first), so this view-only branch is skipped.
+    if getattr(args, "roadmap", False) and not getattr(args, "actions", False):
+        return _ideate_roadmap_view(args, report, target, _roadmap_memory)
+
+    # Single-output analysis flags (invest/budget/sequence/pareto/shape).
+    if _ideate_analysis_view(args, report, target, _roadmap_memory):
+        return 0
+
+    # --kind: list only ideas of a given kind (permutation/synthesis/pair),
+    # value-sorted. A focused view onto what the engine surfaced.
+    kind = getattr(args, "kind", "") or ""
+    if kind and kind != "all":
+        _ideate_kind_view(args, report, target, kind)
+        return 0
+
+    # Optionally bridge ideas into a supervised, never-applied action plan.
+    action_plan = None
+    apply_results = None
+    if getattr(args, "actions", False):
+        action_plan, apply_results = _ideate_action_plan(args, report, target)
+
+    # Surface signal convergence (the seeder's #1 development target) prominently
+    # in the default ideate view. ADDITIVE and gated: emitted only when the
+    # profile names confluence modules, so the no-confluence path is unchanged.
+    confluence = _confluence_entries(getattr(engine, "last_profile", None))
+
+    _render_ideate(args, report, action_plan, apply_results, confluence)
+
     if args.out:
-        out_path = Path(args.out)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        if action_plan is not None:
-            body = render_action_markdown(action_plan)
-        else:
-            body = render_markdown(report)
-            if args.mermaid:
-                body += "\n\n" + render_mermaid(report)
-        out_path.write_text(body, encoding="utf-8")
-        print(f"\n[ideate] Written to {out_path}")
+        _ideate_write_out(args, report, action_plan)
     return 0
 
 
