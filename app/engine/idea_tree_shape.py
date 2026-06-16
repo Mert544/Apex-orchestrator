@@ -127,47 +127,50 @@ def _measured_loc(report: IdeaTreeReport) -> tuple[str, int, int]:
     return best_path, best_loc, total
 
 
-def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
-    ideas = report.ideas
-    total = len(ideas)
-    heaviest_module, heaviest_loc, total_measured_loc = _measured_loc(report)
-    if total == 0:
-        return TreeShape(
-            total_ideas=0, roots=0, max_depth=0, by_kind={}, depth_distribution={},
-            branching_factor=0.0, distinct_subjects=0, top_subject="",
-            top_subject_share=0.0, facet_penetration=0.0, mean_value=0.0,
-            value_range=0.0, distinct_values=0,
-            heaviest_module=heaviest_module, heaviest_loc=heaviest_loc,
-            total_measured_loc=total_measured_loc,
-            observations=["Empty idea tree — nothing was generated."],
-        )
+def _empty_shape(measured: tuple[str, int, int]) -> TreeShape:
+    """The fixed shape for a tree with no ideas (carries only LOC telemetry)."""
+    heaviest_module, heaviest_loc, total_measured_loc = measured
+    return TreeShape(
+        total_ideas=0, roots=0, max_depth=0, by_kind={}, depth_distribution={},
+        branching_factor=0.0, distinct_subjects=0, top_subject="",
+        top_subject_share=0.0, facet_penetration=0.0, mean_value=0.0,
+        value_range=0.0, distinct_values=0,
+        heaviest_module=heaviest_module, heaviest_loc=heaviest_loc,
+        total_measured_loc=total_measured_loc,
+        observations=["Empty idea tree — nothing was generated."],
+    )
 
-    by_kind = dict(Counter(i.kind for i in ideas))
-    depth_dist = dict(sorted(Counter(i.depth for i in ideas).items()))
+
+def _depth_metrics(ideas: list[Any], total: int) -> dict[str, Any]:
+    """Depth distribution, branching density, leaf frontier and center of mass."""
     max_depth = max(i.depth for i in ideas)
-    roots = sum(1 for i in ideas if i.depth == 0)
-
     # Branching factor: children per node that actually has children.
     child_counts = Counter(i.parent_id for i in ideas if i.parent_id)
     branching_factor = (
         round(sum(child_counts.values()) / len(child_counts), 4) if child_counts else 0.0
     )
-
     # Depth balance: leaves are ideas that are no idea's parent. The set of
     # parents is exactly the keys of child_counts; everything else is terminal.
     parent_ids = set(child_counts)
     leaf_count = sum(1 for i in ideas if i.id not in parent_ids)
-    leaf_ratio = round(leaf_count / total, 4)
-
     # Developmental center of mass: mean idea depth, normalized by max_depth.
     mean_depth = round(sum(i.depth for i in ideas) / total, 4)
-    depth_balance = round(mean_depth / max_depth, 4) if max_depth else 0.0
+    return {
+        "max_depth": max_depth,
+        "roots": sum(1 for i in ideas if i.depth == 0),
+        "depth_distribution": dict(sorted(Counter(i.depth for i in ideas).items())),
+        "branching_factor": branching_factor,
+        "leaf_count": leaf_count,
+        "leaf_ratio": round(leaf_count / total, 4),
+        "mean_depth": mean_depth,
+        "depth_balance": round(mean_depth / max_depth, 4) if max_depth else 0.0,
+    }
 
+
+def _subject_metrics(ideas: list[Any], total: int) -> dict[str, Any]:
+    """Subject breadth, top-subject share and whole-tree concentration."""
     subjects = Counter(i.subject for i in ideas if i.subject)
-    distinct_subjects = len(subjects)
     top_subject, top_count = subjects.most_common(1)[0] if subjects else ("", 0)
-    top_subject_share = round(top_count / total, 4)
-
     # Subject concentration: Herfindahl index over the whole subject
     # distribution (sum of squared shares). Shares are taken over the ideas that
     # carry a subject; an all-blank-subject tree concentrates on nothing (0.0).
@@ -177,26 +180,42 @@ def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
         if labelled
         else 0.0
     )
+    return {
+        "distinct_subjects": len(subjects),
+        "top_subject": top_subject,
+        "top_subject_share": round(top_count / total, 4),
+        "subject_concentration": subject_concentration,
+    }
 
-    facet_penetration = round(by_kind.get("facet", 0) / total, 4)
 
+def _value_metrics(ideas: list[Any], total: int) -> dict[str, Any]:
+    """Scoring spread: mean value, range, and distinct-value count."""
     values = [i.value for i in ideas]
-    mean_value = round(sum(values) / total, 4)
-    value_range = round(max(values) - min(values), 4)
-    distinct_values = len(set(values))
+    return {
+        "mean_value": round(sum(values) / total, 4),
+        "value_range": round(max(values) - min(values), 4),
+        "distinct_values": len(set(values)),
+    }
 
+
+def _grounding_metrics(ideas: list[Any], total: int) -> dict[str, Any]:
+    """Grounding (source facts) and function-grain anchor coverage."""
     grounded_count = sum(1 for i in ideas if i.source_facts)
-    grounding_ratio = round(grounded_count / total, 4)
-
-    # Function-grain specificity: ideas that carry at least one concrete anchor
-    # (a function/line locus within a module) vs. ideas that stay file-level.
     anchored_count = sum(1 for i in ideas if i.anchors)
-    anchor_coverage = round(anchored_count / total, 4)
+    return {
+        "grounded_count": grounded_count,
+        "grounding_ratio": round(grounded_count / total, 4),
+        "anchored_count": anchored_count,
+        "anchor_coverage": round(anchored_count / total, 4),
+    }
 
-    # Lens diversity: distinct operators used + the dominant lens and its share.
-    # Tie-break for the dominant lens is deterministic (count desc, name asc).
+
+def _operator_metrics(ideas: list[Any], total: int) -> dict[str, Any]:
+    """Lens diversity: distinct operators + dominant lens and its share.
+
+    Tie-break for the dominant lens is deterministic (count desc, name asc).
+    """
     operators = Counter(i.operator for i in ideas if i.operator)
-    distinct_operators = len(operators)
     if operators:
         dominant_operator, dominant_count = min(
             operators.items(), key=lambda kv: (-kv[1], kv[0])
@@ -204,37 +223,37 @@ def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
         dominant_operator_share = round(dominant_count / total, 4)
     else:
         dominant_operator, dominant_operator_share = "", 0.0
+    return {
+        "distinct_operators": len(operators),
+        "dominant_operator": dominant_operator,
+        "dominant_operator_share": dominant_operator_share,
+    }
 
-    shape = TreeShape(
-        total_ideas=total,
-        roots=roots,
-        max_depth=max_depth,
-        by_kind=by_kind,
-        depth_distribution=depth_dist,
-        branching_factor=branching_factor,
-        distinct_subjects=distinct_subjects,
-        top_subject=top_subject,
-        top_subject_share=top_subject_share,
-        subject_concentration=subject_concentration,
-        facet_penetration=facet_penetration,
-        mean_value=mean_value,
-        value_range=value_range,
-        distinct_values=distinct_values,
-        grounded_count=grounded_count,
-        grounding_ratio=grounding_ratio,
-        anchored_count=anchored_count,
-        anchor_coverage=anchor_coverage,
-        distinct_operators=distinct_operators,
-        dominant_operator=dominant_operator,
-        dominant_operator_share=dominant_operator_share,
-        leaf_count=leaf_count,
-        leaf_ratio=leaf_ratio,
-        mean_depth=mean_depth,
-        depth_balance=depth_balance,
-        heaviest_module=heaviest_module,
-        heaviest_loc=heaviest_loc,
-        total_measured_loc=total_measured_loc,
-    )
+
+def analyze_tree_shape(report: IdeaTreeReport) -> TreeShape:
+    ideas = report.ideas
+    total = len(ideas)
+    measured = _measured_loc(report)
+    if total == 0:
+        return _empty_shape(measured)
+
+    by_kind = dict(Counter(i.kind for i in ideas))
+    heaviest_module, heaviest_loc, total_measured_loc = measured
+    fields: dict[str, Any] = {
+        "total_ideas": total,
+        "by_kind": by_kind,
+        "facet_penetration": round(by_kind.get("facet", 0) / total, 4),
+        "heaviest_module": heaviest_module,
+        "heaviest_loc": heaviest_loc,
+        "total_measured_loc": total_measured_loc,
+    }
+    fields.update(_depth_metrics(ideas, total))
+    fields.update(_subject_metrics(ideas, total))
+    fields.update(_value_metrics(ideas, total))
+    fields.update(_grounding_metrics(ideas, total))
+    fields.update(_operator_metrics(ideas, total))
+
+    shape = TreeShape(**fields)
     shape.observations = _observe(shape, by_kind)
     return shape
 
