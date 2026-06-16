@@ -176,6 +176,85 @@ def _median(values: list[int]) -> float:
     return (ordered[mid - 1] + ordered[mid]) / 2.0
 
 
+def _relative_path(path: Path, root_path: Path) -> Path:
+    """``path`` made relative to ``root_path``; ``path`` itself when unrelated."""
+    try:
+        return path.relative_to(root_path)
+    except ValueError:
+        return path
+
+
+def _parse_source(path: Path) -> tuple[list[str], ast.Module] | None:
+    """Read and parse ``path``; ``None`` if unreadable/unparsable (skipped)."""
+    try:
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except (OSError, SyntaxError, ValueError):
+        return None
+    return source.splitlines(), tree
+
+
+def _parent_links(tree: ast.Module) -> dict[ast.AST, ast.AST]:
+    """Map each AST node to its parent, for deterministic qualified names."""
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    return parents
+
+
+def _file_entries(
+    tree: ast.Module, file_lines: list[str], module: str
+) -> list[dict]:
+    """Body-LOC ``{module, function, loc}`` records for every function in ``tree``."""
+    parents = _parent_links(tree)
+    entries: list[dict] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        entries.append(
+            {
+                "module": module,
+                "function": _qualified_name(node, parents),
+                "loc": _function_loc(node, file_lines),
+            }
+        )
+    return entries
+
+
+def _scan_root(root_path: Path, max_files: int) -> list[dict]:
+    """Collect function records from every in-scope, non-fixture file under root."""
+    entries: list[dict] = []
+    scanned = 0
+    for path in iter_source_files(root_path):
+        if max_files and scanned >= max_files:
+            break
+        rel = _relative_path(path, root_path)
+        if is_skipped(rel) or _is_fixture_path(rel.as_posix()):
+            continue
+        scanned += 1
+        parsed = _parse_source(path)
+        if parsed is None:
+            continue
+        file_lines, tree = parsed
+        entries.extend(_file_entries(tree, file_lines, _module_name(rel)))
+    return entries
+
+
+def _aggregate(result: FunctionLength, entries: list[dict]) -> None:
+    """Fill ``result`` in place from collected records (no-op when empty)."""
+    locs = [e["loc"] for e in entries]
+    result.total_functions = len(locs)
+    result.max = max(locs)
+    result.mean = round(sum(locs) / len(locs), 2)
+    result.median = _median(locs)
+    result.over_threshold = sum(1 for v in locs if v > result.threshold)
+    for label, lo, hi in _BUCKETS:
+        result.histogram[label] = sum(1 for v in locs if lo <= v < hi)
+    entries.sort(key=lambda e: (-e["loc"], e["module"], e["function"]))
+    result.longest = entries[:_LONGEST_CAP]
+
+
 def analyze_function_length(
     root: str | Path, max_files: int = 500, threshold: int = 50
 ) -> FunctionLength:
@@ -198,62 +277,9 @@ def analyze_function_length(
     if not root_path.exists():
         return result
 
-    locs: list[int] = []
-    entries: list[dict] = []
-
-    scanned = 0
-    for path in iter_source_files(root_path):
-        if max_files and scanned >= max_files:
-            break
-        try:
-            rel = path.relative_to(root_path)
-        except ValueError:
-            rel = path
-        rel_str = rel.as_posix()
-        if is_skipped(rel) or _is_fixture_path(rel_str):
-            continue
-        scanned += 1
-
-        try:
-            source = path.read_text(encoding="utf-8")
-            tree = ast.parse(source)
-        except (OSError, SyntaxError, ValueError):
-            continue
-
-        file_lines = source.splitlines()
-        module = _module_name(rel)
-
-        parents: dict[ast.AST, ast.AST] = {}
-        for parent in ast.walk(tree):
-            for child in ast.iter_child_nodes(parent):
-                parents[child] = parent
-
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            loc = _function_loc(node, file_lines)
-            locs.append(loc)
-            entries.append(
-                {
-                    "module": module,
-                    "function": _qualified_name(node, parents),
-                    "loc": loc,
-                }
-            )
-
-    if not locs:
+    entries = _scan_root(root_path, max_files)
+    if not entries:
         return result
 
-    result.total_functions = len(locs)
-    result.max = max(locs)
-    result.mean = round(sum(locs) / len(locs), 2)
-    result.median = _median(locs)
-    result.over_threshold = sum(1 for v in locs if v > threshold)
-
-    for label, lo, hi in _BUCKETS:
-        result.histogram[label] = sum(1 for v in locs if lo <= v < hi)
-
-    entries.sort(key=lambda e: (-e["loc"], e["module"], e["function"]))
-    result.longest = entries[:_LONGEST_CAP]
-
+    _aggregate(result, entries)
     return result
