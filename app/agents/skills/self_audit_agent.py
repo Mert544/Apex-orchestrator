@@ -23,6 +23,35 @@ class SelfAuditAgent(Agent):
     def _find_python_files(self, root: Path) -> list[Path]:
         return list(iter_source_files(root))
 
+    @staticmethod
+    def _name_call_risk(func: ast.Name) -> tuple[str, str] | None:
+        if func.id == "eval":
+            return "eval()", "critical"
+        if func.id == "exec":
+            return "exec()", "critical"
+        return None
+
+    @staticmethod
+    def _attr_call_risk(func: ast.Attribute) -> tuple[str, str] | None:
+        if isinstance(func.value, ast.Name):
+            if func.attr == "system" and func.value.id == "os":
+                return "os.system()", "high"
+            if func.attr == "loads" and func.value.id == "pickle":
+                return "pickle.loads()", "high"
+        return None
+
+    @classmethod
+    def _node_risk(cls, node: ast.AST) -> tuple[str, str] | None:
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name):
+                return cls._name_call_risk(func)
+            if isinstance(func, ast.Attribute):
+                return cls._attr_call_risk(func)
+        elif isinstance(node, ast.ExceptHandler) and node.type is None:
+            return "bare except", "medium"
+        return None
+
     def _analyze_risks(self, files: list[Path]) -> list[dict[str, Any]]:
         risks = []
         for f in files:
@@ -31,20 +60,10 @@ class SelfAuditAgent(Agent):
             except SyntaxError:
                 continue
             for node in ast.walk(tree):
-                if isinstance(node, ast.Call):
-                    func = node.func
-                    if isinstance(func, ast.Name):
-                        if func.id == "eval":
-                            risks.append({"file": str(f), "line": node.lineno, "risk": "eval()", "severity": "critical"})
-                        elif func.id == "exec":
-                            risks.append({"file": str(f), "line": node.lineno, "risk": "exec()", "severity": "critical"})
-                    elif isinstance(func, ast.Attribute):
-                        if func.attr == "system" and isinstance(func.value, ast.Name) and func.value.id == "os":
-                            risks.append({"file": str(f), "line": node.lineno, "risk": "os.system()", "severity": "high"})
-                        elif func.attr == "loads" and isinstance(func.value, ast.Name) and func.value.id == "pickle":
-                            risks.append({"file": str(f), "line": node.lineno, "risk": "pickle.loads()", "severity": "high"})
-                if (isinstance(node, ast.ExceptHandler)) and (node.type is None):
-                    risks.append({"file": str(f), "line": node.lineno, "risk": "bare except", "severity": "medium"})
+                hit = self._node_risk(node)
+                if hit is not None:
+                    risk, severity = hit
+                    risks.append({"file": str(f), "line": node.lineno, "risk": risk, "severity": severity})
         return risks
 
     def _analyze_docstrings(self, files: list[Path]) -> list[dict[str, Any]]:
