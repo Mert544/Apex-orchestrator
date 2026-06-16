@@ -54,6 +54,19 @@ def _sink_finding(rel_path: str, node: ast.Call, pattern: str, risk_type: str, s
     }
 
 
+def _bare_except_finding(rel_path: str, node: ast.ExceptHandler) -> dict[str, Any]:
+    """Build the finding dict for a bare ``except:`` clause."""
+    line = getattr(node, "lineno", 1)
+    return {
+        "file": rel_path,
+        "line": line,
+        "risk_type": "bare_except",
+        "severity": "medium",
+        "details": f"Bare except clause at line {line}",
+        "suggestion": "Use 'except Exception:' or specific exceptions",
+    }
+
+
 def _sql_injection_findings(rel_path: str, node: ast.Call, func_name: str) -> list[dict[str, Any]]:
     """Findings for f-strings passed to execute()/cursor() SQL calls."""
     findings: list[dict[str, Any]] = []
@@ -184,41 +197,45 @@ class SecurityAgent(Agent):
             if not any(part in skipped for part in p.relative_to(root).parts)
         ]
 
+    def _nested_compile_ids(self, tree: ast.AST) -> set[int]:
+        """ids of ``compile()`` calls passed directly to ``eval()``/``exec()``.
+
+        A compile() that is a direct argument to eval()/exec() is the *same*
+        dynamic-execution risk already reported for the eval/exec — not a
+        second one. Without this, `eval(compile(...))` / `exec(compile(...))`
+        (idiomatic config/startup loading in Flask, etc.) double-counts.
+        """
+        nested: set[int] = set()
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and self._get_call_name(node) in ("eval", "exec")):
+                continue
+            for arg in node.args:
+                if isinstance(arg, ast.Call) and self._get_call_name(arg) == "compile":
+                    nested.add(id(arg))
+        return nested
+
+    def _scan_node(
+        self, rel_path: str, source: str, node: ast.AST, nested_compiles: set[int]
+    ) -> list[dict[str, Any]]:
+        """Findings contributed by a single AST node (call sink or bare except)."""
+        if isinstance(node, ast.Call):
+            if id(node) in nested_compiles:
+                return []
+            return self._check_call(rel_path, node, source)
+        if isinstance(node, ast.ExceptHandler) and node.type is None:
+            return [_bare_except_finding(rel_path, node)]
+        return []
+
     def _scan_ast(self, rel_path: str, source: str) -> list[dict[str, Any]]:
-        findings: list[dict[str, Any]] = []
         try:
             tree = ast.parse(source)
         except SyntaxError:
-            return findings
+            return []
 
-        # A compile() that is a direct argument to eval()/exec() is the *same*
-        # dynamic-execution risk already reported for the eval/exec — not a
-        # second one. Without this, `eval(compile(...))` / `exec(compile(...))`
-        # (idiomatic config/startup loading in Flask, etc.) double-counts.
-        nested_compiles: set[int] = set()
+        nested_compiles = self._nested_compile_ids(tree)
+        findings: list[dict[str, Any]] = []
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and self._get_call_name(node) in ("eval", "exec"):
-                for arg in node.args:
-                    if isinstance(arg, ast.Call) and self._get_call_name(arg) == "compile":
-                        nested_compiles.add(id(arg))
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                if id(node) in nested_compiles:
-                    continue
-                findings.extend(self._check_call(rel_path, node, source))
-            elif isinstance(node, ast.ExceptHandler) and node.type is None:
-                line = getattr(node, "lineno", 1)
-                findings.append(
-                    {
-                        "file": rel_path,
-                        "line": line,
-                        "risk_type": "bare_except",
-                        "severity": "medium",
-                        "details": f"Bare except clause at line {line}",
-                        "suggestion": "Use 'except Exception:' or specific exceptions",
-                    }
-                )
+            findings.extend(self._scan_node(rel_path, source, node, nested_compiles))
         return self._drop_suppressed(findings, source)
 
     def _drop_suppressed(self, findings: list[dict[str, Any]], source: str) -> list[dict[str, Any]]:
