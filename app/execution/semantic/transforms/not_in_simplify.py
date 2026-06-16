@@ -91,6 +91,35 @@ def _semantically_equivalent(n_before: int, after: ast.AST) -> bool:
     return n_before >= 1 and n_after >= n_before
 
 
+def _rewrite_source(tree: ast.AST) -> tuple[str, int] | None:
+    """Rewrite targets in ``tree`` and unparse; ``None`` on no-op or failure."""
+    rewriter = _Rewriter()
+    new_tree = rewriter.visit(tree)
+    if rewriter.count == 0:
+        return None
+    ast.fix_missing_locations(new_tree)
+    try:
+        return ast.unparse(new_tree), rewriter.count
+    except Exception:
+        return None
+
+
+def _validated_output(source: str, new_source: str, n_targets: int) -> str | None:
+    """Confirm the swap is valid/equivalent; restore trailing newline."""
+    if new_source == source:
+        return None
+    try:
+        reparsed = ast.parse(new_source)
+    except SyntaxError:
+        return None
+    if not _semantically_equivalent(n_targets, reparsed):
+        return None
+    # ast.unparse drops a trailing newline; restore one for a clean file.
+    if source.endswith("\n") and not new_source.endswith("\n"):
+        new_source += "\n"
+    return new_source
+
+
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
@@ -103,31 +132,14 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     if n_targets == 0:
         return None
 
-    rewriter = _Rewriter()
-    new_tree = rewriter.visit(tree)
-    if rewriter.count == 0:
+    rewritten = _rewrite_source(tree)
+    if rewritten is None:
         return None
-    ast.fix_missing_locations(new_tree)
+    new_source, count = rewritten
 
-    try:
-        new_source = ast.unparse(new_tree)
-    except Exception:
+    new_source = _validated_output(source, new_source, n_targets)
+    if new_source is None:
         return None
-
-    if new_source == source:
-        return None
-
-    # Re-parse and confirm the output is valid and only the operator changed.
-    try:
-        reparsed = ast.parse(new_source)
-    except SyntaxError:
-        return None
-    if not _semantically_equivalent(n_targets, reparsed):
-        return None
-
-    # ast.unparse drops a trailing newline; restore one for a clean file.
-    if source.endswith("\n") and not new_source.endswith("\n"):
-        new_source += "\n"
 
     return SemanticPatchResult(
         patch_requests=[{
@@ -137,7 +149,7 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
         }],
         transform_type="simplify_not_in",
         rationale=[
-            f"Rewrote {rewriter.count} negated comparison(s) to idiomatic "
+            f"Rewrote {count} negated comparison(s) to idiomatic "
             f"`not in`/`is not` in {rel_path} (semantics-preserving; E713/E714)."
         ],
     )

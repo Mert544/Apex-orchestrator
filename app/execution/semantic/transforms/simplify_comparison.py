@@ -66,41 +66,51 @@ def _corrected_source(node: ast.Compare) -> str:
     return ast.unparse(fixed)
 
 
-def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
+def _splice_node(lines: list[str], node: ast.Compare) -> bool:
+    """Splice one single-line ``Compare`` in place; return ``True`` if applied."""
+    if node.lineno != node.end_lineno:
+        return False  # multi-line — skip to keep the splice exact
+    li = node.lineno - 1
+    if li >= len(lines):
+        return False
+    line = lines[li]
+    start, end = node.col_offset, node.end_col_offset or 0
+    if end <= start or end > len(line):
+        return False
+    lines[li] = line[:start] + _corrected_source(node) + line[end:]
+    return True
+
+
+def _rewrite_lines(source: str, nodes: list[ast.Compare]) -> tuple[list[str], int]:
+    """Apply every splice rightmost-first so earlier columns never shift."""
+    lines = source.splitlines(keepends=True)
+    ordered = sorted(nodes, key=lambda n: (n.lineno, n.col_offset), reverse=True)
+    changed = sum(1 for node in ordered if _splice_node(lines, node))
+    return lines, changed
+
+
+def _parses(source: str) -> bool:
     try:
-        tree = ast.parse(source)
+        ast.parse(source)
     except SyntaxError:
+        return False
+    return True
+
+
+def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
+    if not _parses(source):
         return None
-    nodes = _targets(tree)
+    nodes = _targets(ast.parse(source))
     if not nodes:
         return None
 
-    lines = source.splitlines(keepends=True)
-    changed = 0
-    # Rightmost-first so splicing one node never shifts an earlier node's columns.
-    for node in sorted(nodes, key=lambda n: (n.lineno, n.col_offset), reverse=True):
-        if node.lineno != node.end_lineno:
-            continue  # multi-line — skip to keep the splice exact
-        li = node.lineno - 1
-        if li >= len(lines):
-            continue
-        line = lines[li]
-        start, end = node.col_offset, node.end_col_offset or 0
-        if end <= start or end > len(line):
-            continue
-        lines[li] = line[:start] + _corrected_source(node) + line[end:]
-        changed += 1
-
+    lines, changed = _rewrite_lines(source, nodes)
     if changed == 0:
         return None
 
     new_content = "".join(lines)
     # Never emit something that doesn't parse, and treat a no-op as no result.
-    if new_content == source:
-        return None
-    try:
-        ast.parse(new_content)
-    except SyntaxError:
+    if new_content == source or not _parses(new_content):
         return None
 
     return SemanticPatchResult(
