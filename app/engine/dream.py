@@ -346,6 +346,35 @@ def _materialize_briefs(root: Path, subjects: list[str],
             f"`apex brief {brief.branch_path} --check` ({subject})")
 
 
+def _safe(call) -> None:
+    """Run one review step; a missing/corrupt store must never break the dream."""
+    try:
+        call()
+    except Exception:
+        pass
+
+
+def _run_reviews(root: Path, report: DreamReport, curate: bool) -> None:
+    """The full review sweep, each step isolated so one failure can't abort it."""
+    _safe(lambda: _review_outcome_memory(root, report, curate))
+    _safe(lambda: _review_briefs(root, report, curate))
+    _safe(lambda: _review_proof(root, report))
+    _safe(lambda: _review_pulse(root, report))
+    _safe(lambda: _consolidate(root, report))
+    _safe(lambda: _promote(root, report, curate))
+
+
+def _write_digest(root: Path, report: DreamReport) -> None:
+    """Write the one-page digest, recording its path; an unwritable store is fine."""
+    path = root / ".apex" / "dream-digest.md"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(render_dream_markdown(report), encoding="utf-8")
+        report.digest_path = str(path)
+    except OSError:
+        pass
+
+
 def dream(project_root: str | Path, write_digest: bool = True,
           curate: bool = False) -> DreamReport:
     """Run the full pass; returns what was noticed (and, with ``curate``, tidied).
@@ -356,32 +385,9 @@ def dream(project_root: str | Path, write_digest: bool = True,
     """
     root = Path(project_root)
     report = DreamReport()
-    for review in (_review_outcome_memory, _review_briefs):
-        try:
-            review(root, report, curate)
-        except Exception:  # a missing/corrupt store must never break the dream
-            continue
-    for review in (_review_proof, _review_pulse):
-        try:
-            review(root, report)
-        except Exception:
-            continue
-    try:
-        _consolidate(root, report)
-    except Exception:
-        pass
-    try:
-        _promote(root, report, curate)
-    except Exception:
-        pass
+    _run_reviews(root, report, curate)
     if write_digest:
-        path = root / ".apex" / "dream-digest.md"
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(render_dream_markdown(report), encoding="utf-8")
-            report.digest_path = str(path)
-        except OSError:
-            pass
+        _write_digest(root, report)
     return report
 
 
