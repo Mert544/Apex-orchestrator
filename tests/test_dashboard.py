@@ -250,3 +250,83 @@ def test_findings_table_survives_without_project_root():
 
     html_doc = _findings_section({"security": {"findings_count": 0, "findings": []}})
     assert "No security findings" in html_doc
+
+
+# --- characterization: decoupling dashboard.py must not change a byte ---------
+
+_STAMP_RE = __import__("re").compile(
+    r"generated \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC"
+)
+
+
+def _stub_reasoning(monkeypatch):
+    """Pin the one non-deterministic input (the fractal reasoning pass) so a
+    build is reproducible byte-for-byte. Everything else in the dashboard is
+    already deterministic (no clock outside the single stamp, no randomness)."""
+    import app.reporting.dashboard as dm
+
+    stub = {
+        "mode": "stub",
+        "confidence_map": {"claim a": 0.5, "claim b": 0.25},
+        "main_findings": [],
+        "debug_stats": {
+            "mean_relevance": 0.4,
+            "counterfactuals_generated": 1,
+            "focus_drift_pruned": 0,
+        },
+        "estimated_total_tokens": 0,
+    }
+    monkeypatch.setattr(dm, "_run_reasoning", lambda root, obj: dict(stub))
+
+
+def _norm(html_doc: str) -> str:
+    return _STAMP_RE.sub("generated <STAMP>", html_doc)
+
+
+def test_dashboard_build_is_byte_identical_modulo_timestamp(tmp_path, monkeypatch):
+    """Pin a small fixture build: two builds of the same project are identical
+    byte-for-byte once the single timestamp line is normalized.
+
+    This is the characterization that guards the dashboard.py / dashboard_sections
+    split: the page assembly was decoupled into a sibling module and the section
+    HTML strings bundled into one ``RenderedSections`` arg; none of that may
+    perturb the rendered bytes.
+    """
+    _project(tmp_path)
+    _stub_reasoning(monkeypatch)
+    first = _norm(build_dashboard(str(tmp_path), max_ideas=30, idea_depth=2,
+                                  breadth=3, quality=False))
+    second = _norm(build_dashboard(str(tmp_path), max_ideas=30, idea_depth=2,
+                                   breadth=3, quality=False))
+    assert first == second
+    # The normalized stamp is the only place a clock leaks in.
+    assert "generated <STAMP>" in first
+    assert _STAMP_RE.search(first) is None
+
+
+def test_rendered_sections_is_the_single_bundle(tmp_path):
+    """The param-explosion fix: the pre-rendered fragments are bundled into one
+    small frozen dataclass with the three expected fields, all defaulting to ""."""
+    from app.reporting.dashboard import RenderedSections
+
+    empty = RenderedSections()
+    assert empty.quality_html == ""
+    assert empty.trackrecord_html == ""
+    assert empty.outscope_html == ""
+    bundle = RenderedSections(quality_html="<q>", trackrecord_html="<t>",
+                              outscope_html="<o>")
+    assert (bundle.quality_html, bundle.trackrecord_html, bundle.outscope_html) == (
+        "<q>", "<t>", "<o>")
+
+
+def test_moved_section_renderers_still_importable_from_dashboard():
+    """The cohesive section cluster moved to ``dashboard_sections`` but stays
+    re-exported from ``dashboard`` so existing callers/tests keep working, and
+    the two modules expose the same function objects (a pure move)."""
+    import app.reporting.dashboard as dm
+    import app.reporting.dashboard_sections as ds
+
+    for name in ("_overview", "_findings_section", "_architecture_section",
+                 "_ideas_section", "_profile_section", "_quality_section",
+                 "_proof_section", "_dream_section", "_card", "_chip", "_esc"):
+        assert getattr(dm, name) is getattr(ds, name)

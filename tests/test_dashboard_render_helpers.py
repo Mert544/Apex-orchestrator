@@ -10,6 +10,7 @@ when their section renders.
 from types import SimpleNamespace
 
 from app.reporting import dashboard as d
+from app.reporting.dashboard_sections import RenderedSections
 
 
 def _project(tmp):
@@ -48,7 +49,7 @@ def test_nav_links_gate_with_sections():
         learned=None,
     )
     minimal = d._nav_links(
-        **base, outscope_html="", trackrecord_html="", quality_html="",
+        **base, sections=RenderedSections(),
     )
     # The always-present spine is there...
     for anchor in ("#overview", "#findings", "#architecture", "#ideas",
@@ -71,9 +72,11 @@ def test_nav_links_gate_with_sections():
         pareto=[object()],
         trajectory=[{"ts": "x"}],
         learned={"most_reliable": [{"key": "k"}]},
-        outscope_html="<section id='outscope'></section>",
-        trackrecord_html="<section id='trackrecord'></section>",
-        quality_html="<section id='quality'></section>",
+        sections=RenderedSections(
+            outscope_html="<section id='outscope'></section>",
+            trackrecord_html="<section id='trackrecord'></section>",
+            quality_html="<section id='quality'></section>",
+        ),
     )
     for anchor in ("#quality", "#shape", "#roadmap", "#frontier", "#autonomy",
                    "#trajectory", "#learned", "#trackrecord", "#outscope",
