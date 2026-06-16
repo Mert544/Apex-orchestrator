@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app.execution._draft_document import build_draft_document
+
 
 @dataclass
 class PatchRequestGeneratorResult:
@@ -94,19 +96,4 @@ class PatchRequestGenerator:
         return f"# apex-orchestrator draft: {task_id} | {branch} | {safe_title}"
 
     def _draft_document(self, task_id: str, title: str, branch: str, patch_plan: dict[str, Any]) -> str:
-        lines = [
-            "# Apex Orchestrator Patch Draft",
-            "",
-            f"- task_id: {task_id}",
-            f"- title: {title}",
-            f"- branch: {branch}",
-            "",
-            "## Change strategy",
-        ]
-        for item in patch_plan.get("change_strategy", []) or ["No explicit change strategy captured."]:
-            lines.append(f"- {item}")
-        lines.append("")
-        lines.append("## Verification steps")
-        for item in patch_plan.get("verification_steps", []) or ["Run detected project tests."]:
-            lines.append(f"- {item}")
-        return "\n".join(lines) + "\n"
+        return build_draft_document(task_id=task_id, title=title, branch=branch, patch_plan=patch_plan)

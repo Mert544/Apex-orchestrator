@@ -46,10 +46,9 @@ from app.execution._transform_base import (
     iter_statement_blocks,
 )
 from app.execution._transform_base import (
-    parse_module_source as _parse_module_source,
-    read_module_source as _read_module_source,
     finalize_module_rewrite as _finalize_module_rewrite,
 )
+from app.execution._plan_source import read_and_parse as _read_and_parse
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_simplify_comprehension"]
@@ -237,13 +236,10 @@ def plan_simplify_comprehension(project_root: str | Path,
     shape in the file into ``out = [expr for ... in ...]``; an empty plan means
     nothing matched (a no-op, not a failure)."""
     plan = RenamePlan(old=module_rel, new="simplify-comprehension")
-    source = _read_module_source(plan, project_root, module_rel)
-    if source is None:
+    parsed = _read_and_parse(plan, project_root, module_rel)
+    if parsed is None:
         return plan
-
-    tree = _parse_module_source(plan, module_rel, source)
-    if tree is None:
-        return plan
+    source, tree = parsed
 
     rewrites = _collect_rewrites(tree, source)
     if not rewrites:

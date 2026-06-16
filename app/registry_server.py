@@ -7,11 +7,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+
+from app.plugins._http_json import send_json_response
 
 
 class RegistryHandler(BaseHTTPRequestHandler):
@@ -22,13 +23,7 @@ class RegistryHandler(BaseHTTPRequestHandler):
         pass
 
     def _send_json(self, status: int, data: dict) -> None:
-        body = json.dumps(data, indent=2).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        send_json_response(self, status, data)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)

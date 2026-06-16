@@ -6,6 +6,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
+from app.plugins._http_json import send_json_response
+
 
 class PluginMarketplaceHandler(BaseHTTPRequestHandler):
     """HTTP handler for the Plugin Marketplace Server.
@@ -29,13 +31,7 @@ class PluginMarketplaceHandler(BaseHTTPRequestHandler):
         return getattr(self.server, "index_file", Path("plugins") / "index.json")
 
     def _send_json(self, status: int, data: dict[str, Any]) -> None:
-        body = json.dumps(data, indent=2).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        send_json_response(self, status, data)
 
     def _load_index(self) -> dict[str, Any]:
         if self._index_file.exists():

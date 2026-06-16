@@ -225,6 +225,23 @@ def _apply(lines: list[str], rewrites: list[_Rewrite]) -> str:
     return "".join(out)
 
 
+def _compute_import_rewrites(tree: ast.Module, source: str) -> tuple[list[str], list]:
+    """The shared core: locate every unused-import rewrite for an already-parsed
+    module. Returns ``(lines, rewrites)`` — the ``keepends`` source lines and the
+    line-span rewrites — so both the path-free :func:`strip_unused_imports` and the
+    plan-building :func:`plan_remove_unused_imports` apply one detector."""
+    import_nodes = {
+        id(node) for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+    }
+    used = _used_names(tree, import_nodes)
+    keep = _all_names(tree)
+
+    lines = source.splitlines(keepends=True)
+    rewrites = _collect_rewrites(tree, lines, used, keep)
+    return lines, rewrites
+
+
 def strip_unused_imports(source: str) -> str | None:
     """Return ``source`` with its unused TOP-LEVEL imports removed, or ``None``
     when there is nothing safe to remove.
@@ -245,15 +262,7 @@ def strip_unused_imports(source: str) -> str | None:
     if _has_star_import(tree):
         return None  # too risky — names could be bound via the star (no-op)
 
-    import_nodes = {
-        id(node) for node in tree.body
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-    }
-    used = _used_names(tree, import_nodes)
-    keep = _all_names(tree)
-
-    lines = source.splitlines(keepends=True)
-    rewrites = _collect_rewrites(tree, lines, used, keep)
+    lines, rewrites = _compute_import_rewrites(tree, source)
     if not rewrites:
         return None  # nothing unused
 
@@ -287,15 +296,7 @@ def plan_remove_unused_imports(project_root: str | Path,
     if _has_star_import(tree):
         return plan  # too risky — names could be bound via the star (no-op)
 
-    import_nodes = {
-        id(node) for node in tree.body
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-    }
-    used = _used_names(tree, import_nodes)
-    keep = _all_names(tree)
-
-    lines = source.splitlines(keepends=True)
-    rewrites = _collect_rewrites(tree, lines, used, keep)
+    lines, rewrites = _compute_import_rewrites(tree, source)
     if not rewrites:
         return plan  # nothing to do — empty plan (ok is False, no blockers)
 
