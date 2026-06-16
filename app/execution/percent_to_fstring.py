@@ -45,46 +45,20 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from app.execution._transform_base import ColumnRewrite as _Rewrite
+from app.execution._transform_base import is_simple_arg as _is_simple_arg
+from app.execution._transform_base import literal_inner as _literal_inner
+from app.execution._transform_base import plan_single_module_column_rewrite
 from app.execution.cross_file_rename import RenamePlan
 
 __all__ = ["plan_percent_to_fstring"]
 
-
-def _is_fixture_path(path: str) -> bool:
-    """Example/fixture/test code is excluded as a subject (its repetition is
-    often deliberate boilerplate)."""
-    p = path.replace("\\", "/").lower()
-    return (
-        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
-        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
-        or Path(p).name.startswith("test_")
-    )
-
-
-class _Rewrite:
-    """One located rewrite: replace ``line[col:end_col]`` on a single line
-    (``lineno``, 1-based; cols 0-based) with ``text``."""
-
-    __slots__ = ("lineno", "col", "end_col", "text")
-
-    def __init__(self, lineno: int, col: int, end_col: int, text: str) -> None:
-        self.lineno = lineno
-        self.col = col
-        self.end_col = end_col
-        self.text = text
-
-
-def _is_simple_arg(node: ast.AST) -> bool:
-    """A bare ``{name}`` can fill ``%s`` only for a SIMPLE expression: a Name,
-    an attribute chain of Names, or a Constant. Anything else (calls,
-    subscripts, binops, ...) is rejected so precedence never bites."""
-    if isinstance(node, ast.Constant):
-        return True
-    if isinstance(node, ast.Name):
-        return True
-    if isinstance(node, ast.Attribute):
-        return _is_simple_arg(node.value)
-    return False
+# Shared with fstring-convert via ``app.execution._transform_base``:
+#   _Rewrite       — the located single-line column-splice value (``ColumnRewrite``)
+#   _is_simple_arg — the "bare {name} is safe" predicate (``is_simple_arg``)
+#   _literal_inner — the plain-string-literal (quote, inner) recovery (``literal_inner``)
+# The percent-specific ``%s``/``%%`` parsing, brace-escaping and BinOp matching
+# below stay private — they are NOT the ``.format`` logic and must not be merged.
 
 
 def _split_template(inner: str) -> list[str] | None:
@@ -120,33 +94,6 @@ def _split_template(inner: str) -> list[str] | None:
         i += 1
     segments.append("".join(buf))
     return segments
-
-
-def _literal_inner(literal_src: str) -> tuple[str, str] | None:
-    """From a recovered string-literal source, return ``(quote, inner)`` for a
-    plain unprefixed ``"`` / ``'`` string, else None.
-
-    Rejects any prefix (raw / bytes / f / u), triple-quotes, and any string
-    whose body contains a backslash — keeping the inner text safe to embed
-    verbatim inside an f-string with the same quote char."""
-    if not literal_src:
-        return None
-    quote = literal_src[0]
-    if quote not in ("'", '"'):
-        return None  # has a prefix (r/b/f/u) or isn't a plain string literal
-    if literal_src[-1] != quote:
-        return None
-    # Triple-quoted strings are multi-line in spirit — out of scope.
-    if literal_src[:3] in ("'''", '"""'):
-        return None
-    if len(literal_src) < 2:
-        return None
-    inner = literal_src[1:-1]
-    if "\\" in inner:
-        return None
-    if quote in inner:
-        return None
-    return quote, inner
 
 
 def _try_binop(node: ast.BinOp, source: str) -> _Rewrite | None:
@@ -241,56 +188,18 @@ def _collect_rewrites(tree: ast.Module, source: str) -> list[_Rewrite]:
     return rewrites
 
 
-def _apply(source: str, rewrites: list[_Rewrite]) -> str:
-    """Apply rewrites bottom-up and right-to-left within a line so earlier
-    column offsets stay valid."""
-    lines = source.splitlines(keepends=True)
-    for rw in sorted(rewrites, key=lambda r: (r.lineno, r.col), reverse=True):
-        line = lines[rw.lineno - 1]
-        lines[rw.lineno - 1] = line[:rw.col] + rw.text + line[rw.end_col:]
-    return "".join(lines)
-
-
 def plan_percent_to_fstring(project_root: str | Path,
                             module_rel: str) -> RenamePlan:
     """Build the single-module percent-to-fstring plan, or its blockers.
 
     ``module_rel`` is a project-relative path. The plan rewrites every simple
     string-literal ``"...%s..." % args`` expression into the equivalent
-    f-string. An empty plan means nothing matched (a no-op, not a failure)."""
-    plan = RenamePlan(old=module_rel, new="percent-to-fstring")
-    if _is_fixture_path(module_rel):
-        return plan
+    f-string. An empty plan means nothing matched (a no-op, not a failure).
 
-    root = Path(project_root)
-    path = root / module_rel
-    try:
-        source = path.read_text(encoding="utf-8")
-    except OSError:
-        plan.blockers.append(f"cannot read {module_rel}")
-        return plan
-
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as e:
-        plan.blockers.append(f"{module_rel} doesn't parse: {e}")
-        return plan
-
-    rewrites = _collect_rewrites(tree, source)
-    if not rewrites:
-        return plan  # nothing to do — empty plan (ok is False, no blockers)
-
-    new_source = _apply(source, rewrites)
-    try:
-        ast.parse(new_source)
-    except SyntaxError as e:
-        plan.blockers.append(
-            f"{module_rel}: conversion would not re-parse ({e}) — blocked")
-        return plan
-    if new_source == source:
-        return plan
-
-    plan.originals[module_rel] = source
-    plan.new_contents[module_rel] = new_source
-    plan.edits_by_file[module_rel] = len(rewrites)
-    return plan
+    The read -> parse -> collect -> apply -> re-parse -> build-plan scaffold (and
+    its blocker wording) is the shared
+    :func:`~app.execution._transform_base.plan_single_module_column_rewrite`;
+    only the ``%``-format-specific :func:`_collect_rewrites` is local."""
+    return plan_single_module_column_rewrite(
+        project_root, module_rel,
+        plan_label="percent-to-fstring", collect=_collect_rewrites)
