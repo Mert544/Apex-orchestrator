@@ -178,8 +178,8 @@ def _signal_phrase(signals: list[tuple[str, int]]) -> str:
     )
 
 
-def render_diff_markdown(diff: RoadmapDiff) -> str:
-    """Render a roadmap diff as a readable progress report."""
+def _header_lines(diff: RoadmapDiff) -> list[str]:
+    """The title, optional snapshot reference, and the one-line tally."""
     lines = ["# Roadmap Changes Since Last Run", ""]
     if diff.previous_generated:
         lines.append(f"_compared against snapshot from {diff.previous_generated}_")
@@ -189,42 +189,57 @@ def render_diff_markdown(diff: RoadmapDiff) -> str:
         f"{len(diff.roi_regressed)} ROI↓ · {diff.stable_count} stable"
     )
     lines.append("")
+    return lines
 
-    # Narrate *why* the roadmap changed: which signals produced the new work,
-    # and which stopped firing — the cross-run story, not just the delta.
+
+def _signal_story_lines(diff: RoadmapDiff) -> list[str]:
+    """Narrate *why* the roadmap changed: which signals produced the new work,
+    and which stopped firing — the cross-run story, not just the delta."""
     new_signals = _count_signals(diff.new)
     gone_signals = _count_signals(diff.dropped)
+    lines: list[str] = []
     if new_signals:
         lines.append(f"**Where the new work comes from:** {_signal_phrase(new_signals)}")
     if gone_signals:
         lines.append(f"**Signals that stopped firing:** {_signal_phrase(gone_signals)}")
     if new_signals or gone_signals:
         lines.append("")
+    return lines
 
-    def _section(title: str, items: list[RoadmapChange], fmt) -> None:
-        if not items:
-            return
-        lines.append(f"## {title}")
-        for c in items:
-            lines.append(f"- {fmt(c)}")
-        lines.append("")
 
-    def _new_line(c: RoadmapChange) -> str:
-        base = f"[{c.curr_phase}] {c.title}  (ROI {c.curr_roi})"
-        return f"{base} — grounded in `{c.grounded_in}`" if c.grounded_in else base
+def _section_lines(title: str, items: list[RoadmapChange], fmt) -> list[str]:
+    """A ``## title`` block listing ``fmt(c)`` per change, or nothing if empty."""
+    if not items:
+        return []
+    lines = [f"## {title}"]
+    lines.extend(f"- {fmt(c)}" for c in items)
+    lines.append("")
+    return lines
 
-    def _dropped_line(c: RoadmapChange) -> str:
-        base = f"[{c.prev_phase}] {c.title}  (was ROI {c.prev_roi})"
-        return f"{base} — its `{c.signal}` signal no longer fires" if c.signal else base
 
-    _section("🆕 New ideas", diff.new, _new_line)
-    _section("✅ No longer surfaced (likely addressed)", diff.dropped, _dropped_line)
-    _section("🔀 Moved phase", diff.phase_moved,
-             lambda c: f"{c.title}: {c.prev_phase} → {c.curr_phase}")
-    _section("📈 ROI improved", diff.roi_improved,
-             lambda c: f"{c.title}: {c.prev_roi} → {c.curr_roi}  (+{c.roi_delta})")
-    _section("📉 ROI regressed", diff.roi_regressed,
-             lambda c: f"{c.title}: {c.prev_roi} → {c.curr_roi}  ({c.roi_delta})")
+def _new_line(c: RoadmapChange) -> str:
+    base = f"[{c.curr_phase}] {c.title}  (ROI {c.curr_roi})"
+    return f"{base} — grounded in `{c.grounded_in}`" if c.grounded_in else base
+
+
+def _dropped_line(c: RoadmapChange) -> str:
+    base = f"[{c.prev_phase}] {c.title}  (was ROI {c.prev_roi})"
+    return f"{base} — its `{c.signal}` signal no longer fires" if c.signal else base
+
+
+def render_diff_markdown(diff: RoadmapDiff) -> str:
+    """Render a roadmap diff as a readable progress report."""
+    lines = _header_lines(diff)
+    lines.extend(_signal_story_lines(diff))
+    lines.extend(_section_lines("🆕 New ideas", diff.new, _new_line))
+    lines.extend(_section_lines(
+        "✅ No longer surfaced (likely addressed)", diff.dropped, _dropped_line))
+    lines.extend(_section_lines("🔀 Moved phase", diff.phase_moved,
+                 lambda c: f"{c.title}: {c.prev_phase} → {c.curr_phase}"))
+    lines.extend(_section_lines("📈 ROI improved", diff.roi_improved,
+                 lambda c: f"{c.title}: {c.prev_roi} → {c.curr_roi}  (+{c.roi_delta})"))
+    lines.extend(_section_lines("📉 ROI regressed", diff.roi_regressed,
+                 lambda c: f"{c.title}: {c.prev_roi} → {c.curr_roi}  ({c.roi_delta})"))
     if not (diff.new or diff.dropped or diff.phase_moved or diff.roi_improved or diff.roi_regressed):
         lines.append("_No changes since the last snapshot._")
         lines.append("")
