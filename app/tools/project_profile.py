@@ -747,6 +747,58 @@ class ProjectProfiler(_CodeQualityScansMixin):
     # with flags never match), and either a path separator or a .py suffix.
     _DOC_REF_RE = re.compile(r"`([^`\s]+)`")
     _DOC_PLACEHOLDERS = ("path/to", "your", "<", ">", "{", "}", "*", "...", "$")
+    _DOC_REF_EXTS = frozenset({
+        "py", "md", "json", "yml", "yaml", "toml", "txt",
+        "html", "css", "js", "sh", "cfg", "ini",
+    })
+    _DOC_SKIPPED_ROOTS = frozenset({
+        ".git", "__pycache__", ".apex", ".epistemic", "node_modules",
+        ".venv", "venv", "dist", "build",
+    })
+
+    def _doc_drift_files(self) -> list[Path]:
+        """README + ``docs/*.md`` that exist, capped at 10 (deterministic order)."""
+        candidates = [self.root / "README.md", *sorted((self.root / "docs").glob("*.md"))]
+        return [p for p in candidates if p.exists()][:10]
+
+    @classmethod
+    def _is_doc_file_ref(cls, ref: str) -> bool:
+        """True if ``ref`` is path-like with a known file extension.
+
+        Path-like = has a separator, doesn't start with one (slash-commands),
+        and its final segment carries a real file extension (so
+        ``hashlib.md5/sha1`` never matches).
+        """
+        if "/" not in ref or ref.startswith("/"):
+            return False
+        last = ref.split(":", 1)[0].rsplit("/", 1)[-1]
+        return "." in last and last.rsplit(".", 1)[-1].lower() in cls._DOC_REF_EXTS
+
+    @classmethod
+    def _is_doc_ref_excluded(cls, ref: str, path_part: str) -> bool:
+        """True if a path-like ref is a URL, placeholder, or artifact root."""
+        low = ref.lower()
+        if low.startswith(("http://", "https://")) or any(t in low for t in cls._DOC_PLACEHOLDERS):
+            return True
+        return not path_part or path_part.split("/", 1)[0] in cls._DOC_SKIPPED_ROOTS
+
+    @classmethod
+    def _doc_ref_path_part(cls, ref: str) -> str | None:
+        """The file path a backticked doc token references, or None if not one.
+
+        Pure: normalizes ``./`` prefixes and ``:line`` suffixes, requires a
+        path separator + known file extension, and rejects URLs, placeholders,
+        and runtime-artifact roots so the drift signal stays precise.
+        """
+        ref = ref.strip()
+        while ref.startswith("./"):
+            ref = ref[2:]
+        if not cls._is_doc_file_ref(ref):
+            return None
+        path_part = ref.split(":", 1)[0]  # allow `app/x.py:12`
+        if cls._is_doc_ref_excluded(ref, path_part):
+            return None
+        return path_part
 
     def _scan_doc_drift(self, profile: ProjectProfile) -> None:
         """Backticked file references in README/docs that don't exist on disk.
@@ -757,53 +809,32 @@ class ProjectProfiler(_CodeQualityScansMixin):
         artifact dirs (.apex/…) and placeholder-looking tokens are skipped so
         the signal stays precise.
         """
-        docs = [p for p in [self.root / "README.md", *sorted((self.root / "docs").glob("*.md"))]
-                if p.exists()][:10]
-        skipped_roots = {".git", "__pycache__", ".apex", ".epistemic", "node_modules",
-                         ".venv", "venv", "dist", "build"}
         drift: list[dict] = []
         seen: set[tuple[str, str]] = set()
-        for doc in docs:
+        for doc in self._doc_drift_files():
             rel_doc = doc.relative_to(self.root).as_posix()
-            try:
-                text = doc.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                continue
-            for lineno, line in enumerate(text.splitlines(), start=1):
-                for ref in self._DOC_REF_RE.findall(line):
-                    ref = ref.strip()
-                    while ref.startswith("./"):
-                        ref = ref[2:]
-                    # Path-like = has a separator, doesn't start with one
-                    # (slash-commands), and its final segment carries a real
-                    # file extension (so `hashlib.md5/sha1` never matches).
-                    if "/" not in ref or ref.startswith("/"):
-                        continue
-                    last = ref.split(":", 1)[0].rsplit("/", 1)[-1]
-                    if "." not in last or last.rsplit(".", 1)[-1].lower() not in {
-                        "py", "md", "json", "yml", "yaml", "toml", "txt",
-                        "html", "css", "js", "sh", "cfg", "ini",
-                    }:
-                        continue
-                    low = ref.lower()
-                    if (low.startswith(("http://", "https://"))
-                            or any(t in low for t in self._DOC_PLACEHOLDERS)):
-                        continue
-                    path_part = ref.split(":", 1)[0]  # allow `app/x.py:12`
-                    first_seg = path_part.split("/", 1)[0]
-                    if first_seg in skipped_roots or not path_part:
-                        continue
-                    if (self.root / path_part).exists():
-                        continue
-                    key = (rel_doc, path_part)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    drift.append({"doc": rel_doc, "reference": path_part, "line": lineno})
-                    if len(drift) >= 5:
-                        profile.doc_drift = drift
-                        return
+            for lineno, path_part in self._doc_missing_refs(doc):
+                key = (rel_doc, path_part)
+                if key in seen:
+                    continue
+                seen.add(key)
+                drift.append({"doc": rel_doc, "reference": path_part, "line": lineno})
+                if len(drift) >= 5:
+                    profile.doc_drift = drift
+                    return
         profile.doc_drift = drift
+
+    def _doc_missing_refs(self, doc: Path):
+        """Yield ``(lineno, path_part)`` for each on-disk-missing ref in a doc."""
+        try:
+            text = doc.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for ref in self._DOC_REF_RE.findall(line):
+                path_part = self._doc_ref_path_part(ref)
+                if path_part is not None and not (self.root / path_part).exists():
+                    yield lineno, path_part
 
     def _scan_security_exposure_age(self, profile: ProjectProfile) -> None:
         """How long each flagged module's OLDEST security finding has existed.
@@ -1017,54 +1048,52 @@ class ProjectProfiler(_CodeQualityScansMixin):
         "entrypoints", "config_files",
     )
 
+    # Dict-record signal fields whose entries carry a ``"module"`` key; each is
+    # filtered by dropping any record whose module is a fixture path.
+    _SIGNAL_MODULE_RECORD_FIELDS = (
+        "hotspot_functions", "impure_untested_functions", "hub_untested_modules",
+        "churn_hotspots",
+        # The completeness scan already drops test/example/fixture files, but
+        # filter here too so the fixture predicate is the single source of truth
+        # (a path the scan let through but this predicate flags is still dropped,
+        # keeping fixtures out of every idea).
+        "incomplete_protocols",
+    )
+
+    def _without_fixture_modules(self, records: list[dict]) -> list[dict]:
+        """Records whose ``"module"`` is not a fixture path (order preserved)."""
+        return [r for r in records
+                if not self._is_fixture_path(str(r.get("module", "")))]
+
+    def _drop_fixture_dup_groups(self, groups: list[dict]) -> list[dict]:
+        """Drop fixture modules per group, then groups with < 2 left.
+
+        The near-dup engine already excludes test/example/fixture files, but
+        re-filter here so the fixture predicate stays the single source of
+        truth: a group with fewer than 2 distinct non-fixture modules is no
+        longer a cross-module generalize signal.
+        """
+        filtered: list[dict] = []
+        for dup in groups:
+            mods = [m for m in dup.get("modules", [])
+                    if not self._is_fixture_path(str(m))]
+            if len(mods) >= 2:
+                filtered.append({**dup, "modules": mods})
+        return filtered
+
     def _drop_fixture_signals(self, profile: ProjectProfile) -> None:
         for field_name in self._SIGNAL_LIST_FIELDS:
             vals = getattr(profile, field_name, None)
             if vals:
                 setattr(profile, field_name,
                         [m for m in vals if not self._is_fixture_path(str(m))])
-        if profile.hotspot_functions:
-            profile.hotspot_functions = [
-                f for f in profile.hotspot_functions
-                if not self._is_fixture_path(str(f.get("module", "")))
-            ]
-        if profile.impure_untested_functions:
-            profile.impure_untested_functions = [
-                f for f in profile.impure_untested_functions
-                if not self._is_fixture_path(str(f.get("module", "")))
-            ]
-        if profile.hub_untested_modules:
-            profile.hub_untested_modules = [
-                h for h in profile.hub_untested_modules
-                if not self._is_fixture_path(str(h.get("module", "")))
-            ]
-        if profile.churn_hotspots:
-            profile.churn_hotspots = [
-                c for c in profile.churn_hotspots
-                if not self._is_fixture_path(str(c.get("module", "")))
-            ]
-        if profile.incomplete_protocols:
-            # The completeness scan already drops test/example/fixture files, but
-            # filter here too so the fixture predicate is the single source of
-            # truth (a path the scan let through but this predicate flags is still
-            # dropped, keeping fixtures out of every idea).
-            profile.incomplete_protocols = [
-                p for p in profile.incomplete_protocols
-                if not self._is_fixture_path(str(p.get("module", "")))
-            ]
+        for field_name in self._SIGNAL_MODULE_RECORD_FIELDS:
+            records = getattr(profile, field_name)
+            if records:
+                setattr(profile, field_name, self._without_fixture_modules(records))
         if profile.generalizable_duplications:
-            # The near-dup engine already excludes test/example/fixture files, but
-            # re-filter here so the fixture predicate stays the single source of
-            # truth: drop any module that is a fixture path, then drop the whole
-            # group if fewer than 2 distinct non-fixture modules remain (it is no
-            # longer a cross-module generalize signal).
-            filtered: list[dict] = []
-            for dup in profile.generalizable_duplications:
-                mods = [m for m in dup.get("modules", [])
-                        if not self._is_fixture_path(str(m))]
-                if len(mods) >= 2:
-                    filtered.append({**dup, "modules": mods})
-            profile.generalizable_duplications = filtered
+            profile.generalizable_duplications = self._drop_fixture_dup_groups(
+                profile.generalizable_duplications)
 
     def _count_debt_markers(self, path: Path) -> int:
         """Count ``# TODO/FIXME/XXX/HACK`` comment markers in a Python file.
