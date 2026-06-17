@@ -641,7 +641,6 @@ def test_two_constant_diffs_yield_two_params_exec_equivalent(tmp_path):
     # n + two holes (p0, p1) -> three params total.
     assert len(helper_def.args.args) == 3
 
-    before_a = _exec_module(_TWO_CONST_A)
     after_def = _exec_module(def_src)
     fn = "alpha" if "def alpha" in def_src else "beta"
     src_before = _TWO_CONST_A if fn == "alpha" else _TWO_CONST_B
