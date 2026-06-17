@@ -214,6 +214,17 @@ _CASES = {
         'def f(c):\n    assert (c, "msg")\n',
         "def f():\n    return 1\n",
     ),
+    # Wired this wave: one more on-disk plan_* transform routed through the
+    # plan_to_apply adapter. The match has a PROVABLY-BOOL operand (a Compare),
+    # so `(a < b) == True` -> `(a < b)` is value-preserving; the no-match source
+    # has nothing to simplify. (A bare-name `x == True` is also refused — it is
+    # not provably bool — proven separately in test_bool_comparison_skips_bare_name.)
+    "simplify_bool_comparison": (
+        "bool-comparison",
+        "simplify-bool-comparison",
+        "def f(a, b):\n    return (a < b) == True\n",
+        "def f():\n    return 1\n",
+    ),
 }
 
 
@@ -348,6 +359,8 @@ _NEW = {
     "simplify_bool_return", "simplify_ternary_bool", "simplify_dict_get",
     "dict_comprehension", "simplify_negated_comparison",
     "remove_pointless_pass", "fix_assert_tuple",
+    # One more on-disk plan_* transform wired this wave.
+    "simplify_bool_comparison",
 }
 
 
@@ -461,3 +474,20 @@ def test_new_transforms_report_mode_never_applies(tmp_path: Path) -> None:
         assert out["applied"] is False, action_type
         # Read-only: the file is never modified.
         assert (tmp_path / rel).read_text(encoding="utf-8") == match_src, action_type
+
+
+def test_bool_comparison_skips_bare_name(tmp_path: Path) -> None:
+    """``x == True`` on a BARE name is unsound (``2 == True`` is False but ``2``
+    is truthy), so the transform must REFUSE it — proving the wiring inherits the
+    transform's provably-bool guard and fabricates nothing for the unsafe case."""
+    bridge = IdeaActionBridge()
+    rel = "bare_name_unsound.py"
+    src = "def f(x):\n    return x == True\n"
+    (tmp_path / rel).write_text(src, encoding="utf-8")
+    result = bridge._generate(_step("simplify_bool_comparison", rel), str(tmp_path))
+    assert result is None
+    # And an autonomous apply leaves the file byte-for-byte untouched.
+    out = bridge.apply_step(_step("simplify_bool_comparison", rel), str(tmp_path),
+                            mode="autonomous")
+    assert out["applied"] is False
+    assert (tmp_path / rel).read_text(encoding="utf-8") == src

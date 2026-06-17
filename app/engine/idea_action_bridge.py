@@ -207,6 +207,22 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "assert-tuple": ("fix_assert_tuple",
                      "Fix the always-true `assert (cond, \"msg\")` tuple into "
                      "`assert cond, \"msg\"` in {s}", True),
+    # One more on-disk ``plan_simplify_bool_comparison(root, rel) -> RenamePlan``
+    # rewrite under ``app/execution/``, adapted by the same ``plan_to_apply`` in
+    # ``_simplify_dispatch`` and routed through the IDENTICAL guarded apply path.
+    # It drops a redundant equality/identity comparison against a ``True`` /
+    # ``False`` literal — but ONLY when the OTHER operand is SYNTACTICALLY
+    # guaranteed to evaluate to a real ``bool`` (a ``not ...`` UnaryOp or a
+    # ``Compare``), so the ``(a < b) == True`` -> ``a < b`` rewrite is
+    # value-preserving. A bare name/attr/call/bool-op is NOT provably bool and is
+    # left untouched (``x == True`` -> ``x`` would be unsound for a general ``x``).
+    # Distinct from ``none-compare`` (which rewrites ``== None`` -> ``is None`` and
+    # never touches bool literals) and from every other wired transform; NOT on
+    # the audit's DO-NOT-WIRE list.
+    "bool-comparison": ("simplify_bool_comparison",
+                        "Drop a redundant `== True` / `is False` comparison "
+                        "against a bool literal (provably-bool operand only) "
+                        "in {s}", True),
     # The hands exist (apex signature drop/keywordify) but as supervised CLI
     # muscles, not unattended transforms — the work order carries the command.
     "dead-parameter": ("design_task",
@@ -634,6 +650,11 @@ class IdeaActionBridge:
         "simplify_negated_comparison": ["negated ordering comparison"],
         "remove_pointless_pass": ["remove redundant pass"],
         "fix_assert_tuple": ["fix always-true assert tuple"],
+        # One more on-disk ``plan_*`` simplification, adapted to the in-memory
+        # dispatch by ``plan_to_apply``. Listed here (like the transforms above)
+        # only so ``_step_targets`` recognises the action as a real transform
+        # objective; the actual rewrite is chosen in ``_simplify_dispatch``.
+        "simplify_bool_comparison": ["drop bool-literal comparison"],
     }
 
     # Behaviour-preserving readability simplifications dispatched STRAIGHT to
@@ -735,6 +756,16 @@ class IdeaActionBridge:
                 plan_to_apply(_pt.plan_simplify_negated_comparison),
             "remove_pointless_pass": plan_to_apply(_pt.plan_remove_pointless_pass),
             "fix_assert_tuple": plan_to_apply(_pt.plan_fix_assert_tuple),
+            # One more on-disk ``plan_simplify_bool_comparison(root, rel) ->
+            # RenamePlan`` rewrite, adapted by the SAME ``plan_to_apply``
+            # (materialise source → run real plan → translate the RenamePlan; a
+            # no-op/blocked plan → None) and flowed through the IDENTICAL guarded
+            # apply_step gate. It drops a redundant ``== True`` / ``is False``
+            # comparison against a bool literal ONLY when the other operand is
+            # syntactically provably-bool (a ``not ...`` or a ``Compare``), so the
+            # rewrite is value-preserving; it is distinct from ``simplify_none_compare``
+            # (which never touches bool literals).
+            "simplify_bool_comparison": plan_to_apply(_pt.plan_simplify_bool_comparison),
         }
 
     @staticmethod

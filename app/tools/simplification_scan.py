@@ -228,6 +228,16 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
         ("ordering-negation", plan_to_apply(_pt.plan_simplify_negated_comparison)),
         ("pointless-pass", plan_to_apply(_pt.plan_remove_pointless_pass)),
         ("assert-tuple", plan_to_apply(_pt.plan_fix_assert_tuple)),
+        # One more on-disk ``plan_simplify_bool_comparison(root, rel) ->
+        # RenamePlan`` rewrite under ``app/execution/``, adapted by the SAME
+        # ``plan_to_apply`` so it dry-runs and applies through the IDENTICAL
+        # refuse-on-unsafe, re-parsing, auto-rollback path. It drops a redundant
+        # equality/identity comparison against a ``True``/``False`` literal, but
+        # ONLY when the other operand is SYNTACTICALLY provably-bool (a ``not ...``
+        # or a ``Compare``) — a bare name/call is left untouched, so the scan
+        # never fabricates an unsound opportunity. Distinct from ``none-compare``
+        # (which only handles ``== None``); NOT a DO-NOT-WIRE duplicate.
+        ("bool-comparison", plan_to_apply(_pt.plan_simplify_bool_comparison)),
     ]
 
 
