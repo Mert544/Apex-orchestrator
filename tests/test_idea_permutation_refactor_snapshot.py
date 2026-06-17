@@ -8,6 +8,15 @@ caveats) and every rendered markdown byte must match these digests.
 
 The digests were captured BEFORE the helper-extraction refactor; they must
 stay green AFTER. Determinism (no time/random in scoring) makes them stable.
+
+Re-baselined once intentionally: the develop-engine fix that gives each
+simplification root an additive ``::simplify-<transform>`` subject (so an
+EXECUTABLE behaviour-preserving simplification is no longer deduped away by a
+higher-priority recommend-only idea owning the bare module) surfaces one extra
+root here — ``Apply merge_nested_if to simplify app/auth.py`` — on the fixture's
+nested-if in ``app/auth.py``. Verified to be a clean SUPERSET: every prior idea
+(the security finding included) is preserved in order; only the previously
+shadowed executable simplification is appended.
 """
 
 import hashlib
@@ -49,8 +58,8 @@ _CASES = [
         "basic",
         {"max_total_ideas": 25, "max_idea_depth": 2, "breadth": 3},
         None,
-        "0af96975c1e85a9c4cd4960cc67fa409b1d9cde27475d5968d508dfa2eed7b5e",
-        "f99aee3823cfbf8f0bd71a5dcbc6b94a4b37f0774a85df1f2724737927be29bf",
+        "02ac37097d7ca04d14c8c5c068e6474ea17ae2f0a19a6c678430e785adef4d12",
+        "16965082cdfb75abe1e944789e8d23cee4d3da3846f7d29b851f1f445d45a1fe",
     ),
     (
         "facets",
@@ -64,8 +73,8 @@ _CASES = [
             "adaptive_depth": True,
         },
         None,
-        "f24f252c653b968fa715eb5d27d7cbcefe58ba7f3f5fa1fc95d66c21c0472d47",
-        "207b92b425635e618e9c3f14fcf529fc3ea8f430a23f338ba65ed485257a0c58",
+        "297c65cefb36d08589d904d3aeef2b4c0e5e190d03bc6f729ea027a6de924393",
+        "62b786041d3303e16ef5ed7be29438250db882d49a4b9d8321c870358d167393",
     ),
     (
         "objective",
@@ -76,8 +85,8 @@ _CASES = [
             "min_relevance": 0.3,
         },
         "improve security and harden authentication",
-        "c23dbee805051a1966604ba3ba5101139a6463224c141a8ace7644208376d58d",
-        "4870d35c6abfe0a63d94dbe28e698eeb1f4915118de5b17b07cb025e7a18d9a0",
+        "999021ab3d45344c9909b8aa19a2a5eae13387addf5e4cfcf7e0836d33f84b92",
+        "1c48c290af922c23d5f78cca69dac0c50e10d80b7588b09eb1eb8e8a0b3db4e9",
     ),
 ]
 
