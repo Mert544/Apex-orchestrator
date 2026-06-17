@@ -536,6 +536,11 @@ class IdeaSeeder:
         # competes for a module another seed already owns, and the prior roots
         # stay byte-identical and in the same order.
         self._seed_hot_bus_factor(roots, seen_subjects, profile)
+        # Hot-debt runs LAST (after even bus-factor), on a (hot-debt)-suffixed
+        # subject that no other family can claim, so it is purely ADDITIVE: it
+        # never competes for a module another seed already owns, and every prior
+        # root stays byte-identical and in the same order.
+        self._seed_hot_debt(roots, seen_subjects, profile)
         return roots
 
     def _seed_correctness_bugs(
@@ -1298,6 +1303,61 @@ class IdeaSeeder:
                             f"single-author — the fastest-changing code is also "
                             f"the code one person owns; spread it before the next "
                             f"change)"),
+            )
+            emitted += 1
+
+    def _seed_hot_debt(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
+        # Hot debt (deferred work UNDER active change): a module that is BOTH a
+        # change-frequency hotspot (``churn_hotspots``) AND carries a cluster of
+        # TODO/FIXME/XXX/HACK debt markers (``debt_marker_modules``). Each fact
+        # alone is already seeded (``_seed_churn_hotspots`` / ``_seed_debt_markers``)
+        # — but the INTERSECTION is the debt that is actively decaying: a
+        # parked TODO in a calcified module is easy to ignore, but the same
+        # marker in the code the team touches most is friction every commit pays,
+        # and the longer it waits the more change accretes ON TOP of it. No
+        # single-lens seed names it, and the >=3-family confluence doesn't count
+        # debt-markers as a family, so this intersection would otherwise go
+        # unspoken. The development move is to pay it down NOW, while the module
+        # is already open, before the next change lands on top.
+        #
+        # Grounded purely in already-computed fields (no new scan): churn is
+        # git-derived and debt markers are a content scan, so light/non-git
+        # profiles (no churn) yield nothing here and seeding stays byte-identical.
+        # Deterministic: churn_hotspots is pre-sorted and the debt set/ages are
+        # read from the matching profile fields; capped at 3. The subject carries
+        # a ``(hot-debt)`` suffix so it NEVER collides with the plain churn/
+        # debt-marker module subjects — this seed is a strict additive superset
+        # over the existing roots.
+        debt_modules = set(getattr(profile, "debt_marker_modules", []) or [])
+        if not debt_modules:
+            return
+        debt_ages = getattr(profile, "debt_marker_ages", {}) or {}
+        emitted = 0
+        for spot in (getattr(profile, "churn_hotspots", []) or []):
+            if emitted >= 3:
+                break
+            module = spot.get("module", "")
+            if not module or module not in debt_modules:
+                continue
+            commits = spot.get("commits", 0)
+            age_days = debt_ages.get(module, 0)
+            age_clause = ""
+            if age_days >= 90:
+                months = age_days // 30
+                age_clause = f"; oldest marker waiting ~{months} months"
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Pay down the debt in {module} now — it is both a change "
+                       f"hotspot ({commits} recent commits) and carries clustered "
+                       f"TODO/FIXME markers"),
+                subject=f"{module} (hot-debt)",
+                fact_label="hot-debt",
+                fact_value=(f"{module} ({commits} recent commits AND clustered "
+                            f"TODO/FIXME/XXX/HACK markers{age_clause} — the "
+                            f"fastest-changing code carries deferred work; pay it "
+                            f"down while it is already open)"),
             )
             emitted += 1
 
