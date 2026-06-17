@@ -531,6 +531,11 @@ class IdeaSeeder:
         self._seed_simplifications(roots, seen_subjects, profile)
         self._seed_top_directories(roots, seen_subjects, profile)
         self._seed_missing_ci(roots, seen_subjects, profile)
+        # Bus-factor-under-change runs LAST, on a (bus-factor)-suffixed subject
+        # that no other family can claim, so it is purely ADDITIVE: it never
+        # competes for a module another seed already owns, and the prior roots
+        # stay byte-identical and in the same order.
+        self._seed_hot_bus_factor(roots, seen_subjects, profile)
         return roots
 
     def _seed_correctness_bugs(
@@ -1243,5 +1248,57 @@ class IdeaSeeder:
                 fact_label="missing-ci",
                 fact_value="no CI workflow files detected",
             )
+
+    def _seed_hot_bus_factor(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
+        # Hot bus-factor (knowledge risk UNDER active change): a module that is
+        # BOTH a change-frequency hotspot (``churn_hotspots``) AND knowledge-
+        # concentrated to one author (``knowledge_risks``). Each fact alone is
+        # already seeded — but the INTERSECTION is the most urgent bus-factor
+        # case and no single-lens seed (nor the >=3-family confluence, which
+        # doesn't count knowledge-risk as a family) ever names it: the code only
+        # one person understands is ALSO the code changing fastest, so the moment
+        # they're unavailable the project's most active surface stalls. The
+        # development move is to spread ownership NOW (pairing/docs/joint review)
+        # before the next change lands.
+        #
+        # Grounded purely in two already-computed git-derived fields (no new
+        # scan); both are git-only, so light/non-git profiles yield nothing here
+        # and seeding stays byte-identical. Deterministic: churn_hotspots is
+        # pre-sorted and the share is read from the matching knowledge_risks
+        # entry; capped at 3. The subject carries a ``(bus-factor)`` suffix so it
+        # NEVER collides with the plain churn/knowledge-risk module subjects —
+        # this seed is a strict additive superset over the existing roots.
+        risk_by_module = {
+            kr.get("module", ""): kr
+            for kr in (getattr(profile, "knowledge_risks", []) or [])
+            if kr.get("module")
+        }
+        if not risk_by_module:
+            return
+        emitted = 0
+        for spot in (getattr(profile, "churn_hotspots", []) or []):
+            if emitted >= 3:
+                break
+            module = spot.get("module", "")
+            kr = risk_by_module.get(module)
+            if not module or kr is None:
+                continue
+            commits = spot.get("commits", 0)
+            share = kr.get("share", 0)
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Spread ownership of {module} now — it is both a change "
+                       f"hotspot ({commits} recent commits) and {share}% "
+                       f"single-author"),
+                subject=f"{module} (bus-factor)",
+                fact_label="hot-bus-factor",
+                fact_value=(f"{module} ({commits} recent commits AND {share}% "
+                            f"single-author — the fastest-changing code is also "
+                            f"the code one person owns; spread it before the next "
+                            f"change)"),
+            )
+            emitted += 1
 
 
