@@ -649,19 +649,12 @@ class IdeaActionBridge:
     # self-verifying simplification.
     @classmethod
     def _simplify_dispatch(cls):
-        from app.execution.bool_return import plan_simplify_bool_return
-        from app.execution.comprehension import plan_simplify_comprehension
-        from app.execution.dict_comprehension import plan_dict_comprehension
-        from app.execution.dict_get import plan_simplify_dict_get
-        from app.execution.fix_assert_tuple import plan_fix_assert_tuple
-        from app.execution.nested_with import plan_combine_nested_with
-        from app.execution.remove_pointless_pass import plan_remove_pointless_pass
-        from app.execution.simplify_len_comparison import plan_simplify_len_comparison
-        from app.execution.simplify_negated_comparison import (
-            plan_simplify_negated_comparison,
-        )
-        from app.execution.simplify_ternary_bool import plan_simplify_ternary_bool
-        from app.execution.use_enumerate import plan_use_enumerate
+        # All on-disk ``plan_<name>`` transforms come from the single shared
+        # binding module (``app.execution._plan_transforms``), referenced as
+        # ``_pt.plan_<name>``. This replaces the former per-transform import list
+        # (consolidated here and in ``simplification_scan`` to drain the
+        # duplicate-window metric); the callables are the SAME function objects.
+        from app.execution import _plan_transforms as _pt
         from app.tools.simplification_scan import plan_to_apply
         # One namespace import of the transforms package replaces the former
         # per-transform import list (consolidated here and in
@@ -718,10 +711,10 @@ class IdeaActionBridge:
             # strictly guarded, behaviour-preserving simplifications;
             # ``merge_isinstance`` is excluded as a duplicate of the already-
             # wired ``isinstance-merge`` above.
-            "combine_nested_with": plan_to_apply(plan_combine_nested_with),
-            "simplify_comprehension": plan_to_apply(plan_simplify_comprehension),
-            "use_enumerate": plan_to_apply(plan_use_enumerate),
-            "simplify_len_comparison": plan_to_apply(plan_simplify_len_comparison),
+            "combine_nested_with": plan_to_apply(_pt.plan_combine_nested_with),
+            "simplify_comprehension": plan_to_apply(_pt.plan_simplify_comprehension),
+            "use_enumerate": plan_to_apply(_pt.plan_use_enumerate),
+            "simplify_len_comparison": plan_to_apply(_pt.plan_simplify_len_comparison),
             # Seven more on-disk ``plan_<name>(root, rel) -> RenamePlan``
             # rewrites under ``app/execution/``, each adapted by the SAME
             # ``plan_to_apply`` (materialise source → run real plan → translate
@@ -734,14 +727,14 @@ class IdeaActionBridge:
             # is not a duplicate of double_not / fix_not_in_is);
             # remove_pointless_pass deletes a redundant ``pass``; fix_assert_tuple
             # is a correctness fix for the always-true ``assert (cond, "msg")``.
-            "simplify_bool_return": plan_to_apply(plan_simplify_bool_return),
-            "simplify_ternary_bool": plan_to_apply(plan_simplify_ternary_bool),
-            "simplify_dict_get": plan_to_apply(plan_simplify_dict_get),
-            "dict_comprehension": plan_to_apply(plan_dict_comprehension),
+            "simplify_bool_return": plan_to_apply(_pt.plan_simplify_bool_return),
+            "simplify_ternary_bool": plan_to_apply(_pt.plan_simplify_ternary_bool),
+            "simplify_dict_get": plan_to_apply(_pt.plan_simplify_dict_get),
+            "dict_comprehension": plan_to_apply(_pt.plan_dict_comprehension),
             "simplify_negated_comparison":
-                plan_to_apply(plan_simplify_negated_comparison),
-            "remove_pointless_pass": plan_to_apply(plan_remove_pointless_pass),
-            "fix_assert_tuple": plan_to_apply(plan_fix_assert_tuple),
+                plan_to_apply(_pt.plan_simplify_negated_comparison),
+            "remove_pointless_pass": plan_to_apply(_pt.plan_remove_pointless_pass),
+            "fix_assert_tuple": plan_to_apply(_pt.plan_fix_assert_tuple),
         }
 
     @staticmethod

@@ -129,19 +129,12 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
     executable action — emitting any other spelling would route the seeded idea
     to the generic recommend-only fallback instead of the real transform.
     """
-    from app.execution.bool_return import plan_simplify_bool_return
-    from app.execution.comprehension import plan_simplify_comprehension
-    from app.execution.dict_comprehension import plan_dict_comprehension
-    from app.execution.dict_get import plan_simplify_dict_get
-    from app.execution.fix_assert_tuple import plan_fix_assert_tuple
-    from app.execution.nested_with import plan_combine_nested_with
-    from app.execution.remove_pointless_pass import plan_remove_pointless_pass
-    from app.execution.simplify_len_comparison import plan_simplify_len_comparison
-    from app.execution.simplify_negated_comparison import (
-        plan_simplify_negated_comparison,
-    )
-    from app.execution.simplify_ternary_bool import plan_simplify_ternary_bool
-    from app.execution.use_enumerate import plan_use_enumerate
+    # All on-disk ``plan_<name>`` transforms come from the single shared binding
+    # module (``app.execution._plan_transforms``), referenced as
+    # ``_pt.plan_<name>``. This replaces the former per-transform import list
+    # (consolidated here and in the bridge's ``_simplify_dispatch`` to drain the
+    # duplicate-window metric); the callables are the SAME function objects.
+    from app.execution import _plan_transforms as _pt
     # One namespace import of the transforms package replaces the former
     # per-transform import list (consolidated here and in the bridge's
     # ``_simplify_dispatch`` to drain the duplicate-window metric). The package
@@ -204,10 +197,10 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
         # ``merge_isinstance`` (also a ``plan_*`` transform) is deliberately
         # EXCLUDED here — it is the exact duplicate of the already-wired
         # ``isinstance-merge`` in-memory transform above.
-        ("nested-with", plan_to_apply(plan_combine_nested_with)),
-        ("comprehension", plan_to_apply(plan_simplify_comprehension)),
-        ("use-enumerate", plan_to_apply(plan_use_enumerate)),
-        ("len-comparison", plan_to_apply(plan_simplify_len_comparison)),
+        ("nested-with", plan_to_apply(_pt.plan_combine_nested_with)),
+        ("comprehension", plan_to_apply(_pt.plan_simplify_comprehension)),
+        ("use-enumerate", plan_to_apply(_pt.plan_use_enumerate)),
+        ("len-comparison", plan_to_apply(_pt.plan_simplify_len_comparison)),
         # Seven more on-disk ``plan_<name>(root, rel) -> RenamePlan`` rewrites
         # under ``app/execution/``, each adapted by ``plan_to_apply`` to the same
         # uniform 3-arg dry-run shape as the four above, so they dry-run and
@@ -228,13 +221,13 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
         #     statement of its block;
         #   - assert-tuple is a CORRECTNESS fix: ``assert (cond, "msg")`` (an
         #     always-true tuple) -> ``assert cond, "msg"``.
-        ("simplify-bool-return", plan_to_apply(plan_simplify_bool_return)),
-        ("ternary-bool", plan_to_apply(plan_simplify_ternary_bool)),
-        ("dict-get-ternary", plan_to_apply(plan_simplify_dict_get)),
-        ("dict-comprehension", plan_to_apply(plan_dict_comprehension)),
-        ("ordering-negation", plan_to_apply(plan_simplify_negated_comparison)),
-        ("pointless-pass", plan_to_apply(plan_remove_pointless_pass)),
-        ("assert-tuple", plan_to_apply(plan_fix_assert_tuple)),
+        ("simplify-bool-return", plan_to_apply(_pt.plan_simplify_bool_return)),
+        ("ternary-bool", plan_to_apply(_pt.plan_simplify_ternary_bool)),
+        ("dict-get-ternary", plan_to_apply(_pt.plan_simplify_dict_get)),
+        ("dict-comprehension", plan_to_apply(_pt.plan_dict_comprehension)),
+        ("ordering-negation", plan_to_apply(_pt.plan_simplify_negated_comparison)),
+        ("pointless-pass", plan_to_apply(_pt.plan_remove_pointless_pass)),
+        ("assert-tuple", plan_to_apply(_pt.plan_fix_assert_tuple)),
     ]
 
 
