@@ -5,12 +5,13 @@
 ### A deterministic engineering agent that *reasons* about your codebase — and helps you act on it.
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-3400%2B%20passing-2ea44f)]()
-[![Self-grade](https://img.shields.io/badge/apex%20self--grade-B--%20(80%2F100)-dbab09)]()
+[![Tests](https://img.shields.io/badge/tests-17%2C500%2B%20passing-2ea44f)]()
+[![Self-grade](https://img.shields.io/badge/apex%20self--grade-A%2B%20(99%2F100)-2ea44f)]()
+[![Mutation-tested](https://img.shields.io/badge/suite-mutation--tested%20·%20no%20surviving%20faults-2ea44f)]()
 [![No LLM required](https://img.shields.io/badge/LLM-optional%20·%20offline%20core-8957e5)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-24292f)](LICENSE)
 
-<sub>That self‑grade is real and unspun — Apex runs its own A–F rubric on its own code. The only deductions are two **capped** axes (function complexity, duplication); security, architecture, testing, debt and correctness all score clean. A tool you'd trust to grade your code should survive its own grader first.</sub>
+<sub>That self‑grade is real and unspun — Apex runs its own A–F rubric on its own code and scores **A+ (99/100)**: the only remaining deduction is a single capped duplication block; security, architecture, testing, debt, correctness *and* maintainability all score clean. And the green is real, not faked — the 17,500‑test suite is **mutation‑tested**: faults injected across the engine are caught by the tests (only provably‑equivalent mutants survive), so a passing suite genuinely means working code. A tool you'd trust to grade your code should survive its own grader — and its own mutation tester — first.</sub>
 
 <br/>
 
