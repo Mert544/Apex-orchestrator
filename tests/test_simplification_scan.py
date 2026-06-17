@@ -73,7 +73,9 @@ def test_seed_simplifications_emits_executable_labelled_root():
         {"module": "app/x.py", "transform": "double_not", "fact_label": "double-not"},
     ]
     roots = IdeaSeeder().seed(profile)
-    hit = next(r for r in roots if r.subject == "app/x.py")
+    # Additive ``::simplify-<transform>`` subject (the bridge resolves the file
+    # from the part before ``::``); never deduped by a bare-module owner.
+    hit = next(r for r in roots if r.subject == "app/x.py::simplify-double_not")
     assert hit.depth == 0
     assert hit.operator == "root"
     assert hit.title == "Apply double_not to simplify app/x.py"

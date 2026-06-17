@@ -1030,10 +1030,12 @@ def test_simplification_emits_and_skips_incomplete_opportunities():
     roots = IdeaSeeder().seed(prof)
     simp = [r for r in roots if r.source_facts[0].startswith("none-compare")]
     assert len(simp) == 1
-    assert simp[0].subject == "m.py"
+    # Additive ``::simplify-<transform>`` subject suffix (the bridge resolves the
+    # file from the part before ``::``); never deduped by a bare-module owner.
+    assert simp[0].subject == "m.py::simplify-simplify_none_compare"
     assert simp[0].title == "Apply simplify_none_compare to simplify m.py"
     # The incomplete opportunities never became roots.
-    assert not any(r.subject == "n.py" for r in roots)
+    assert not any(r.subject.startswith("n.py") for r in roots)
 
 
 # ==========================================================================

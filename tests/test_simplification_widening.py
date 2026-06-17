@@ -88,7 +88,10 @@ def test_seeder_emits_executable_root_for_each_new_label() -> None:
              "fact_label": fact_label},
         ]
         roots = IdeaSeeder().seed(profile)
-        hit = next(r for r in roots if r.subject == "app/x.py")
+        # The simplification root carries a ``::simplify-<transform>`` subject
+        # suffix (additive — never deduped by a family owning the bare module),
+        # but the bridge still resolves the file from the part before ``::``.
+        hit = next(r for r in roots if r.subject == f"app/x.py::simplify-{transform}")
         assert hit.operator == "root"
         assert hit.depth == 0
         assert hit.title == f"Apply {transform} to simplify app/x.py"
@@ -124,10 +127,12 @@ def test_planned_idea_for_new_label_is_executable() -> None:
              "fact_label": fact_label},
         ]
         root = next(r for r in IdeaSeeder().seed(profile)
-                    if r.subject == "app/x.py")
+                    if r.subject == f"app/x.py::simplify-{transform}")
         step = IdeaActionBridge().plan_idea(root)
         assert step.executable is True, fact_label
         assert step.action_type == mapped, fact_label
+        # The bridge resolves the target file from the part before ``::``, so the
+        # additive subject suffix does not disturb where the transform applies.
         assert step.target == "app/x.py", fact_label
 
 

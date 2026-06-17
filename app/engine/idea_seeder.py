@@ -1220,10 +1220,20 @@ class IdeaSeeder:
             transform = opp.get("transform", "")
             if not (module and fact_label):
                 continue
+            # Subject carries a ``::simplify-<transform>`` suffix rather than the
+            # bare module. This is purely ADDITIVE — no other family can claim the
+            # suffixed subject, so the EXECUTABLE simplification is never deduped
+            # away by a higher-priority RECOMMEND-ONLY idea (dependency-hub,
+            # docstring, …) that already owns the bare module. The bridge resolves
+            # the target file by splitting the subject on ``::`` (the same
+            # symbol-granular convention as ``mod.py::Class.func``), so the file
+            # still resolves to ``module`` and the transform applies. Distinct
+            # suffixes also let every transform on one module surface (a file with
+            # three safe rewrites yields three executable steps, not one).
             self._append_root(
                 roots, seen_subjects,
                 title=f"Apply {transform} to simplify {module}",
-                subject=module,
+                subject=f"{module}::simplify-{transform}",
                 fact_label=fact_label,
                 fact_value=f"{module} (safe behaviour-preserving simplification: {transform})",
             )
