@@ -70,8 +70,13 @@ def test_suppress_noqa_without_match_keeps_finding():
 def test_suppress_security_requires_s_code_shape():
     # An S-code (S + digits) suppresses a security finding...
     assert security_label("eval(x)  # noqa: S307") is None
+    # A minimal 2-char S-code (one letter + one digit) also suppresses: pins
+    # both the prefix slice `c[:1]` and the suffix slice `c[1:]` boundaries.
+    assert security_label("eval(x)  # noqa: S5") is None
     # ...but a non-S code on the same security finding does not.
     assert security_label("eval(x)  # noqa: E501") == "eval"
+    # A bare 'S' with no digit is not an S-code (suffix must be all digits).
+    assert security_label("eval(x)  # noqa: S") == "eval"
 
 
 def test_suppress_fixkind_noqa_code_maps_bare_except():
@@ -189,6 +194,18 @@ def test_call_attr_rules_each_label():
     assert security_label("import pickle\npickle.loads(b)") == "pickle"
     assert security_label("import yaml\nyaml.load(s)") == "yaml"
     assert security_label("import tempfile\ntempfile.mktemp()") == "tempfile"
+
+
+def test_call_attr_rules_require_both_owner_and_attr():
+    # Each rule is owner==X AND attr==Y. The same owner with a different attr,
+    # or the same attr on a different owner, must NOT match (kills the
+    # per-rule `and` -> `or` flips).
+    assert security_label("import os\nos.path('x')") is None        # os, wrong attr
+    assert security_label("import socket\nsocket.system('x')") is None  # wrong owner
+    assert security_label("import pickle\npickle.dumps(b)") is None  # pickle, wrong attr
+    assert security_label("import other\nother.loads(b)") is None    # wrong owner
+    assert security_label("import yaml\nyaml.safe_load(s)") is None  # yaml, safe attr
+    assert security_label("import tempfile\ntempfile.mkstemp()") is None  # safe attr
 
 
 def test_sql_fstring_flagged_only_with_joinedstr():
@@ -367,6 +384,18 @@ def test_self_comparison_distinct_names_not_flagged():
                    for i in detect("if a < b:\n    pass\n"))
 
 
+def test_self_comparison_uses_adjacent_operand_in_chain():
+    # In a chained compare the self-test compares operand i with operand i+1.
+    # `x < x < y`: the FIRST pair (x, x) is identical -> flagged. If the index
+    # were i-1 instead of i+1, the first op would compare x with the LAST
+    # operand y (different) and miss it. Kills the `i + 1` arithmetic flip.
+    assert any("comparison with itself" in i.message
+               for i in detect("if x < x < y:\n    pass\n"))
+    # `y < x < x`: the SECOND pair (x, x) is identical -> flagged.
+    assert any("comparison with itself" in i.message
+               for i in detect("if y < x < x:\n    pass\n"))
+
+
 # --------------------------------------------------------------------------
 # detectors.py — frozen dataclass mutation + mutable class attribute
 # --------------------------------------------------------------------------
@@ -430,6 +459,31 @@ def test_mutable_class_attribute_shared_state_flagged():
         "        self.items.append(v)\n"
     )
     assert any("mutable class attribute" in i.message for i in detect(src))
+
+
+def test_annotated_mutable_class_attribute_flagged():
+    # An annotated class attribute (items: list = []) that is mutated in place is
+    # the same shared-state bug — exercises the AnnAssign branch.
+    src = (
+        "class C:\n"
+        "    items: list = []\n"
+        "    def add(self, v):\n"
+        "        self.items.append(v)\n"
+    )
+    assert any("mutable class attribute" in i.message for i in detect(src))
+
+
+def test_annotated_non_mutable_value_not_flagged():
+    # items: list = compute() — annotated but the value is NOT a mutable literal,
+    # so it must not be treated as a class-level mutable (kills the AnnAssign
+    # `isinstance(target, Name) and _is_mutable_constructor(value)` -> `or`).
+    src = (
+        "class C:\n"
+        "    items: list = compute()\n"
+        "    def add(self, v):\n"
+        "        self.items.append(v)\n"
+    )
+    assert not any("mutable class attribute" in i.message for i in detect(src))
 
 
 def test_mutable_class_attribute_only_read_not_flagged():
