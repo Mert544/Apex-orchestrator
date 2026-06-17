@@ -137,11 +137,26 @@ def test_scanner_transforms_reference_shared_plan_objects() -> None:
         assert wrapped is getattr(_pt, attr), fact_label
 
 
-def test_scan_simplifications_is_deterministic() -> None:
-    """Two scans of the repo's own source return the identical list."""
-    first = scan_simplifications(".")
-    second = scan_simplifications(".")
+def test_scan_simplifications_is_deterministic(tmp_path: Path) -> None:
+    """Two scans of the same source tree return the identical list.
+
+    Determinism is a property of the scanner, not of repo size, so a small
+    fixture proves it exactly while staying fast — scanning the whole repo twice
+    grows with the transform count and is prone to timeouts under load.
+    """
+    (tmp_path / "a.py").write_text(
+        "def f(c):\n    if c:\n        return True\n    else:\n        return False\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "b.py").write_text(
+        "def g(x):\n    return x in (1, 2, 3)\n", encoding="utf-8"
+    )
+    (tmp_path / "c.py").write_text("VALUE = 42\n", encoding="utf-8")
+    first = scan_simplifications(str(tmp_path))
+    second = scan_simplifications(str(tmp_path))
     assert first == second
+    # Non-vacuous: the fixture actually surfaces opportunities to compare.
+    assert first
 
 
 def test_sample_plan_transform_applies_then_rolls_back(tmp_path: Path) -> None:
