@@ -16,7 +16,12 @@ from dataclasses import dataclass
 import re
 
 # Security labels in descending severity (the bridge's contract relies on this).
-_SECURITY_ORDER = ("eval", "os.system", "pickle", "yaml", "sql", "tempfile", "weak-hash", "bare except", "base-exception")
+# New labels (os.popen, tls-verify, zip-slip, hashlib-new-weak, subprocess-shell-literal)
+# slot in by severity; flag-only labels are skipped by the bridge once their marker
+# comment is present, exactly like pickle/sql/tempfile/weak-hash.
+_SECURITY_ORDER = ("eval", "os.system", "os.popen", "pickle", "subprocess-shell-literal",
+                   "tls-verify", "zip-slip", "yaml", "sql", "tempfile", "weak-hash",
+                   "hashlib-new-weak", "bare except", "base-exception")
 
 # Inline suppression: respect the same comments Bandit/ruff do, so `apex review`
 # and the health grade (both built on this detector) agree with the developer's
@@ -157,10 +162,32 @@ def _detect_call(node: ast.Call, add) -> None:
         add(node.lineno, "bug", "medium",
             "network call without timeout= can hang forever — pass timeout=...", "net-timeout")
     f = node.func
+    if isinstance(f, ast.Attribute) and _is_unguarded_extractall(node, f):
+        add(node.lineno, "security", "high",
+            "archive extractall() without a member-path guard — a malicious "
+            "entry can escape the target dir (Zip-Slip/path traversal); pass "
+            "filter=\"data\" (3.12+) or validate each member path", "zip-slip")
     if isinstance(f, ast.Name):
         _detect_call_name(node, f, add)
     elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
         _detect_call_attr(node, f, add)
+
+
+def _is_unguarded_extractall(node: ast.Call, f: ast.Attribute) -> bool:
+    """True for an ``.extractall(...)`` call with no member-path guard.
+
+    Conservative, high-precision Zip-Slip / path-traversal detection. Fires only
+    on a method literally named ``extractall`` (the tarfile/zipfile API) that
+    does NOT constrain which members are written — i.e. passes neither
+    ``members=`` (an explicit, presumably-validated member list) nor ``filter=``
+    (the 3.12+ extraction-filter guard). A guarded extraction is left alone, so
+    safe code never trips this; a ``**kwargs`` smuggle is treated as guarded.
+    """
+    if f.attr != "extractall":
+        return False
+    if any(kw.arg is None for kw in node.keywords):       # **kwargs may carry a guard
+        return False
+    return not any(kw.arg in ("members", "filter") for kw in node.keywords)
 
 
 def _detect_call_name(node: ast.Call, f: ast.Name, add) -> None:
@@ -200,9 +227,107 @@ def _is_weak_hash_call(node: ast.Call, owner: str, attr: str) -> bool:
     return owner == "hashlib" and attr in ("md5", "sha1") and not _has_usedforsecurity_false(node)
 
 
+# Shell metacharacters that make a command string un-tokenisable by a plain
+# ``shlex.split`` (they have shell meaning: redirection, piping, substitution,
+# chaining, globbing, quoting). A literal containing ANY of these is left as a
+# flag, never rewritten.
+_SHELL_METACHARS = frozenset(";&|`$><()*?[]{}~!#\\\"'\n\t")
+
+
+def _subprocess_runner_attr(attr: str) -> bool:
+    return attr in ("run", "call", "Popen", "check_output", "check_call")
+
+
+def _shell_true_literal_command(node: ast.Call) -> str | None:
+    """The safe literal command of a ``shell=True`` runner call, else None.
+
+    Returns the string only when the FIRST positional argument is a plain string
+    constant containing no shell metacharacters — the one case where switching to
+    ``shell=False`` + ``shlex.split("<literal>")`` is provably behaviour-
+    preserving. Anything dynamic, a list, or a metachar-bearing literal returns
+    None (so it falls through to the generic flag-only shell=True finding).
+    """
+    if not (node.args and isinstance(node.args[0], ast.Constant)):
+        return None
+    value = node.args[0].value
+    if not isinstance(value, str):
+        return None
+    if not value.strip() or any(ch in _SHELL_METACHARS for ch in value):
+        return None
+    return value
+
+
+def _is_shell_true_literal_call(node: ast.Call, owner: str, attr: str) -> bool:
+    """True for a ``subprocess`` runner with ``shell=True`` and a safe literal cmd."""
+    if not (owner == "subprocess" and _subprocess_runner_attr(attr)):
+        return False
+    if not _has_kw_const_true(node, "shell"):
+        return False
+    return _shell_true_literal_command(node) is not None
+
+
+def _has_kw_const_true(node: ast.Call, name: str) -> bool:
+    """True if the call passes ``name=True`` as a constant keyword argument."""
+    return any(kw.arg == name and isinstance(kw.value, ast.Constant)
+               and kw.value.value is True for kw in node.keywords)
+
+
 def _weak_hash_message(node: ast.Call, owner: str, attr: str) -> str:
     return (f"hashlib.{attr}() is weak for security — use sha256, or pass "
             "usedforsecurity=False if non-security")
+
+
+def _is_os_popen_call(node: ast.Call, owner: str, attr: str) -> bool:
+    """True for ``os.popen(...)`` — deprecated, runs a shell, injection-prone."""
+    return owner == "os" and attr == "popen"
+
+
+def _has_kw_const_false(node: ast.Call, name: str) -> bool:
+    """True if the call passes ``name=False`` as a constant keyword argument."""
+    return any(kw.arg == name and isinstance(kw.value, ast.Constant)
+               and kw.value.value is False for kw in node.keywords)
+
+
+# HTTP client modules whose verb calls accept a ``verify=`` TLS toggle.
+_TLS_CLIENTS = frozenset({"requests", "httpx"})
+
+
+def _is_tls_verify_disabled_call(node: ast.Call, owner: str, attr: str) -> bool:
+    """True for an HTTP client call that disables TLS verification.
+
+    Fires only on the unambiguous, high-precision form
+    ``requests.<verb>(..., verify=False)`` / ``httpx.<verb>(..., verify=False)``
+    where the verb is a known network verb and ``verify`` is a literal ``False``.
+    A ``verify=True`` (or any non-literal, or a ``**kwargs`` smuggle) is left
+    alone, so clean code never trips this.
+    """
+    if owner not in _TLS_CLIENTS or attr not in _NET_VERBS:
+        return False
+    return _has_kw_const_false(node, "verify")
+
+
+def _is_hashlib_new_weak_call(node: ast.Call, owner: str, attr: str) -> bool:
+    """True for ``hashlib.new("md5"|"sha1")`` not declared ``usedforsecurity=False``.
+
+    The string-form constructor (``hashlib.new("md5")``) is the sibling of the
+    direct ``hashlib.md5()`` weak-hash finding. Only a constant first argument
+    naming a weak digest is matched; a dynamic name is left alone (no false
+    positive). A call already passing ``usedforsecurity=False`` is safe.
+    """
+    if not (owner == "hashlib" and attr == "new" and node.args):
+        return False
+    first = node.args[0]
+    if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+        return False
+    if first.value.lower() not in ("md5", "sha1"):
+        return False
+    return not _has_usedforsecurity_false(node)
+
+
+def _hashlib_new_weak_message(node: ast.Call, owner: str, attr: str) -> str:
+    name = node.args[0].value
+    return (f'hashlib.new("{name}") is a weak hash for security — use sha256, or '
+            "pass usedforsecurity=False if non-security")
 
 
 # Ordered rule table for an ``owner.attr(...)`` call (``owner`` a plain Name).
@@ -213,14 +338,25 @@ def _weak_hash_message(node: ast.Call, owner: str, attr: str) -> str:
 _CALL_ATTR_RULES = (
     (lambda n, o, a: o == "os" and a == "system",
      "security", "high", "os.system() — prefer subprocess.run()", "os.system"),
+    (_is_os_popen_call,
+     "security", "high", "os.popen() — runs a shell; prefer subprocess.run()", "os.popen"),
     (lambda n, o, a: o == "pickle" and a == "loads",
      "security", "high", "pickle.loads() — unsafe deserialization", "pickle"),
+    (_is_shell_true_literal_call,
+     "security", "high",
+     "subprocess shell=True with a literal command — run shell-free with "
+     "shlex.split() to remove the injection surface", "subprocess-shell-literal"),
+    (_is_tls_verify_disabled_call,
+     "security", "high",
+     "TLS verification disabled (verify=False) — exposes the connection to "
+     "man-in-the-middle attacks", "tls-verify"),
     (lambda n, o, a: o == "yaml" and a == "load",
      "security", "medium", "yaml.load() — prefer yaml.safe_load()", "yaml"),
     (lambda n, o, a: o == "tempfile" and a == "mktemp",
      "security", "medium",
      "tempfile.mktemp() — TOCTOU race; use mkstemp()/NamedTemporaryFile", "tempfile"),
     (_is_weak_hash_call, "security", "medium", _weak_hash_message, "weak-hash"),
+    (_is_hashlib_new_weak_call, "security", "medium", _hashlib_new_weak_message, "hashlib-new-weak"),
     (_is_sql_fstring_call,
      "security", "high", "SQL built from an f-string — injection risk", "sql"),
     (_is_shell_true_call,
@@ -1042,3 +1178,23 @@ def has_open_without_encoding(source: str) -> bool:
 
 def has_network_call_without_timeout(source: str) -> bool:
     return any(i.fix_kind == "net-timeout" for i in detect(source))
+
+
+def has_os_popen(source: str) -> bool:
+    return any(i.fix_kind == "os.popen" for i in detect(source))
+
+
+def has_tls_verify_disabled(source: str) -> bool:
+    return any(i.fix_kind == "tls-verify" for i in detect(source))
+
+
+def has_zip_slip(source: str) -> bool:
+    return any(i.fix_kind == "zip-slip" for i in detect(source))
+
+
+def has_hashlib_new_weak(source: str) -> bool:
+    return any(i.fix_kind == "hashlib-new-weak" for i in detect(source))
+
+
+def has_subprocess_shell_literal(source: str) -> bool:
+    return any(i.fix_kind == "subprocess-shell-literal" for i in detect(source))

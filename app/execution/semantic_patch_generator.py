@@ -210,6 +210,8 @@ class SemanticPatchGenerator:
     _SECURITY_TRANSFORMS = (
         "fix_eval", "fix_os_system", "fix_bare_except", "fix_base_exception",
         "fix_pickle", "fix_sql", "fix_yaml", "fix_tempfile", "fix_weak_hash",
+        "fix_os_popen", "fix_subprocess_shell_literal", "fix_tls_verify",
+        "fix_zip_slip", "fix_hashlib_new_weak",
     )
 
     _TITLE_TRANSFORMS = {

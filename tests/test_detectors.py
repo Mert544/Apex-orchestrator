@@ -86,7 +86,9 @@ def test_detects_hardcoded_secret_conservatively():
 
 
 def test_shell_true_and_secret_not_auto_fixable():
-    for src in ("import subprocess\nsubprocess.run('x', shell=True)\n", "token = 'abcdef123456'\n"):
+    # A DYNAMIC shell=True command stays flag-only (the literal-command case is
+    # separately auto-fixable). The hardcoded secret is never auto-fixable.
+    for src in ("import subprocess\nsubprocess.run(cmd, shell=True)\n", "token = 'abcdef123456'\n"):
         sec = [i for i in detect(src) if i.category == "security"]
         assert sec and all(not i.auto_fixable for i in sec)
 
@@ -1027,8 +1029,15 @@ _CALL_RULES_FINDINGS = [
      'usedforsecurity=False if non-security'),
     (24, 'security', 'high', 'sql', 'SQL built from an f-string — injection risk'),
     (25, 'security', 'high', 'sql', 'SQL built from an f-string — injection risk'),
-    (26, 'security', 'high', '', 'subprocess with shell=True — command injection risk'),
-    (27, 'security', 'high', '', 'subprocess with shell=True — command injection risk'),
+    # A literal, metachar-free command is now safely auto-fixable (shell-free
+    # rewrite via shlex.split), so these route to subprocess-shell-literal
+    # instead of the generic flag-only shell=True finding.
+    (26, 'security', 'high', 'subprocess-shell-literal',
+     'subprocess shell=True with a literal command — run shell-free with '
+     'shlex.split() to remove the injection surface'),
+    (27, 'security', 'high', 'subprocess-shell-literal',
+     'subprocess shell=True with a literal command — run shell-free with '
+     'shlex.split() to remove the injection surface'),
     (29, 'bug', 'medium', 'net-timeout',
      'network call without timeout= can hang forever — pass timeout=...'),
     (31, 'bug', 'medium', 'net-timeout',

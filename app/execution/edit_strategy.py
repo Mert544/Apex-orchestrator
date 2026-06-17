@@ -30,6 +30,15 @@ _PLAN_FLAG_RULES: tuple[tuple[str, str, float, str], ...] = (
 _KEYWORD_RULES: tuple[tuple[tuple[str, ...], str, float, str], ...] = (
     (("eval",), "fix_eval", 0.85, "Keywords suggest an eval() security fix."),
     (("os.system",), "fix_os_system", 0.85, "Keywords suggest an os.system() security fix."),
+    (("os.popen", "popen"), "fix_os_popen", 0.85, "Keywords suggest flagging os.popen()."),
+    (
+        ("subprocess-shell-literal",),
+        "fix_subprocess_shell_literal",
+        0.85,
+        "Keywords suggest a shell-free subprocess rewrite of a literal command.",
+    ),
+    (("tls-verify",), "fix_tls_verify", 0.85, "Keywords suggest flagging disabled TLS verification."),
+    (("zip-slip",), "fix_zip_slip", 0.85, "Keywords suggest flagging an unguarded archive extractall()."),
     (("bare except", "bareexcept"), "fix_bare_except", 0.9, "Keywords suggest a bare-except fix."),
     (
         ("base-exception", "baseexception"),
@@ -45,6 +54,12 @@ _KEYWORD_RULES: tuple[tuple[tuple[str, ...], str, float, str], ...] = (
         "fix_tempfile",
         0.8,
         "Keywords suggest flagging an insecure tempfile.mktemp().",
+    ),
+    (
+        ("hashlib-new-weak",),
+        "fix_hashlib_new_weak",
+        0.8,
+        "Keywords suggest declaring a hashlib.new() weak hash non-security.",
     ),
     (
         ("weak-hash", "hashlib"),

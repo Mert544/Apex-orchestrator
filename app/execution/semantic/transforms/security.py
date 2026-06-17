@@ -73,6 +73,103 @@ def _patch_weak_hash(rel_path: str, source: str, tree: ast.Module) -> SemanticPa
     return None
 
 
+def _walk_attr_calls(tree: ast.Module, attr: str, owner: str | None):
+    """Yield each ``owner.attr(...)`` call node in ``tree``.
+
+    When ``owner`` is None, any ``X.attr(...)`` matches (the receiver is an
+    arbitrary expression, e.g. ``tarfile.open(p).extractall()``); otherwise the
+    receiver must be the plain name ``owner``.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == attr):
+            continue
+        if owner is None:
+            yield node
+        elif isinstance(func.value, ast.Name) and func.value.id == owner:
+            yield node
+
+
+def _patch_os_popen(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
+    """Flag ``os.popen(...)`` with a security warning comment.
+
+    os.popen runs the command through a shell (injection-prone) and returns a
+    file-like object; the safe replacement (subprocess.run/Popen) has a different
+    return contract, so there is no behaviour-preserving drop-in. We annotate the
+    call site, exactly like the pickle/SQL flags.
+    """
+    warning_text = (
+        "Apex: os.popen runs a shell (injection-prone); use subprocess.run() "
+        "with a list of args"
+    )
+    for node in _walk_attr_calls(tree, "popen", "os"):
+        result = _flag_call_site(
+            rel_path, source, node.lineno, "Apex: os.popen", warning_text,
+            "flag_os_popen",
+            f"Flagged os.popen() with a security warning in {rel_path}.")
+        if result is not None:
+            return result
+    return None
+
+
+def _patch_tls_verify(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
+    """Flag an HTTP client call that disables TLS verification (``verify=False``).
+
+    Flipping ``verify`` back to True could break a caller that intentionally
+    talks to a self-signed endpoint, so we annotate rather than rewrite — the
+    correct fix (pin a CA bundle, fix the cert) is contextual.
+    """
+    warning_text = (
+        "Apex: TLS verification disabled (verify=False) enables "
+        "man-in-the-middle attacks; remove it or pin a trusted CA bundle"
+    )
+    for node in ast.walk(tree):
+        if not _is_tls_verify_disabled(node):
+            continue
+        result = _flag_call_site(
+            rel_path, source, node.lineno, "Apex: TLS verification", warning_text,
+            "flag_tls_verify",
+            f"Flagged disabled TLS verification with a security warning in {rel_path}.")
+        if result is not None:
+            return result
+    return None
+
+
+def _is_tls_verify_disabled(node: ast.AST) -> bool:
+    """``requests``/``httpx`` verb call passing a literal ``verify=False``."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return False
+    func = node.func
+    if not (isinstance(func.value, ast.Name) and func.value.id in ("requests", "httpx")):
+        return False
+    return _has_kw_false(node, "verify")
+
+
+def _patch_zip_slip(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
+    """Flag an unguarded ``.extractall(...)`` (Zip-Slip / path traversal).
+
+    A safe rewrite would have to validate every member path against the target
+    directory (or inject ``filter="data"``, which is 3.12-only and changes
+    behaviour on older runtimes), so we annotate the call site instead.
+    """
+    warning_text = (
+        "Apex: Zip-Slip — archive extractall() without a member guard allows "
+        "path traversal; validate each member or pass filter=\"data\" (Python 3.12+)"
+    )
+    for node in _walk_attr_calls(tree, "extractall", None):
+        if any(kw.arg in ("members", "filter") or kw.arg is None for kw in node.keywords):
+            continue  # already guarded (or **kwargs may guard) — mirror the detector
+        result = _flag_call_site(
+            rel_path, source, node.lineno, "Apex: Zip-Slip", warning_text,
+            "flag_zip_slip",
+            f"Flagged unguarded archive extractall() with a security warning in {rel_path}.")
+        if result is not None:
+            return result
+    return None
+
+
 def _flag_call_site(rel_path: str, source: str, lineno: int, marker: str,
                     warning_text: str, transform_type: str,
                     rationale: str) -> SemanticPatchResult | None:
@@ -101,6 +198,69 @@ def _flag_call_site(rel_path: str, source: str, lineno: int, marker: str,
         transform_type=transform_type,
         rationale=[rationale],
     )
+
+
+def _is_hashlib_new_weak_call(node: ast.AST) -> bool:
+    """``hashlib.new("md5"|"sha1")`` not already ``usedforsecurity=False``."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return False
+    func = node.func
+    if not (func.attr == "new" and isinstance(func.value, ast.Name)
+            and func.value.id == "hashlib"):
+        return False
+    if not (node.args and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and node.args[0].value.lower() in ("md5", "sha1")):
+        return False
+    return not _has_kw_false(node, "usedforsecurity")
+
+
+def _replace_call_segment(source: str, node: ast.Call, new_segment: str) -> str | None:
+    """Return ``source`` with ``node``'s exact source segment replaced.
+
+    Single-occurrence, single-line-anchored replacement: the original segment is
+    looked up verbatim via ``ast.get_source_segment`` and swapped once. Returns
+    None when the segment can't be recovered or doesn't appear verbatim (so the
+    caller declines rather than emit a corrupt patch).
+    """
+    old_segment = ast.get_source_segment(source, node)
+    if not old_segment or old_segment not in source:
+        return None
+    return source.replace(old_segment, new_segment, 1)
+
+
+def _patch_hashlib_new_weak(rel_path: str, source: str,
+                            tree: ast.Module) -> SemanticPatchResult | None:
+    """Append ``usedforsecurity=False`` to ``hashlib.new("md5"|"sha1")``.
+
+    This is a provably-safe auto-rewrite: ``usedforsecurity=False`` does not
+    change the digest bytes the call produces (it only declares intent and, on
+    FIPS builds, keeps the construction permitted), so any stored/compared hash
+    stays identical. We only touch the string-form constructor whose first arg is
+    a literal weak-digest name; a dynamic name, or a call already carrying the
+    flag, is left alone — mirroring the detector exactly.
+    """
+    for node in ast.walk(tree):
+        if not _is_hashlib_new_weak_call(node):
+            continue
+        old_segment = ast.get_source_segment(source, node)
+        if not old_segment or not old_segment.endswith(")"):
+            continue
+        new_segment = old_segment[:-1] + ", usedforsecurity=False)"
+        new_content = _replace_call_segment(source, node, new_segment)
+        if new_content is None or new_content == source:
+            continue
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel_path,
+                "new_content": new_content,
+                "expected_old_content": source,
+            }],
+            transform_type="hashlib_new_usedforsecurity_false",
+            rationale=[f"Declared hashlib.new() weak hash non-security with "
+                       f"usedforsecurity=False in {rel_path}."],
+        )
+    return None
 
 
 def _patch_mktemp(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
@@ -274,6 +434,101 @@ def _patch_pickle(rel_path: str, source: str, tree: ast.Module) -> SemanticPatch
             rationale=[f"Flagged unsafe pickle.loads() with a security warning in {rel_path}."],
         )
     return None
+
+
+# Shell metacharacters that make a command un-tokenisable by a plain
+# shlex.split. A literal carrying any of these is NOT rewritten (kept as a flag).
+_SHELL_METACHARS = frozenset(";&|`$><()*?[]{}~!#\\\"'\n\t")
+
+
+def _shell_true_runner(node: ast.AST) -> ast.Call | None:
+    """``node`` if it is a ``subprocess`` runner call passing ``shell=True``."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return None
+    func = node.func
+    runners = ("run", "call", "Popen", "check_output", "check_call")
+    if not (func.attr in runners and isinstance(func.value, ast.Name)
+            and func.value.id == "subprocess"):
+        return None
+    return node if _has_kw_true(node, "shell") else None
+
+
+def _has_kw_true(node: ast.Call, name: str) -> bool:
+    return any(kw.arg == name and isinstance(kw.value, ast.Constant)
+               and kw.value.value is True for kw in node.keywords)
+
+
+def _safe_literal_command(node: ast.Call) -> ast.Constant | None:
+    """The first-arg string literal of a ``shell=True`` call, if rewrite-safe.
+
+    Safe means: a plain ``str`` constant with non-empty content and NO shell
+    metacharacter — the only case where ``shell=True`` + a string equals
+    ``shell=False`` + ``shlex.split("<literal>")``. Otherwise None.
+    """
+    if not (node.args and isinstance(node.args[0], ast.Constant)):
+        return None
+    arg = node.args[0]
+    if not isinstance(arg.value, str) or not arg.value.strip():
+        return None
+    if any(ch in _SHELL_METACHARS for ch in arg.value):
+        return None
+    return arg
+
+
+def _patch_subprocess_shell_literal(rel_path: str, source: str,
+                                    tree: ast.Module) -> SemanticPatchResult | None:
+    """Rewrite ``subprocess.run("<literal>", shell=True)`` to a shell-free call.
+
+    Provably behaviour-preserving ONLY for a metachar-free string literal: with a
+    bare command the shell does nothing but whitespace-tokenise the string, which
+    ``shlex.split`` reproduces exactly, and dropping the shell removes the entire
+    injection surface. The first arg becomes ``shlex.split("<literal>")`` and
+    ``shell=True`` becomes ``shell=False``. A dynamic arg, a list, an empty
+    string, or any shell metacharacter makes the call decline (it stays a flag).
+    """
+    for node in ast.walk(tree):
+        call = _shell_true_runner(node)
+        if call is None:
+            continue
+        literal = _safe_literal_command(call)
+        if literal is None:
+            continue
+        new_content = _rewrite_shell_literal(source, call, literal)
+        if new_content is None or new_content == source:
+            continue
+        new_lines = new_content.splitlines(keepends=True)
+        if "import shlex" not in source:
+            new_lines.insert(import_insert_index(tree), "import shlex\n")
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel_path,
+                "new_content": "".join(new_lines),
+                "expected_old_content": source,
+            }],
+            transform_type="subprocess_shell_literal_to_shlex",
+            rationale=[f"Ran subprocess shell-free with shlex.split() (removed "
+                       f"shell=True) in {rel_path}."],
+        )
+    return None
+
+
+def _rewrite_shell_literal(source: str, call: ast.Call,
+                           literal: ast.Constant) -> str | None:
+    """Replace the call's segment: literal -> shlex.split(literal), shell=True -> False.
+
+    Both replacements are anchored to the call's exact source segment so a
+    matching token elsewhere in the file is never touched. Returns None if the
+    segment can't be recovered verbatim.
+    """
+    seg = ast.get_source_segment(source, call)
+    lit_seg = ast.get_source_segment(source, literal)
+    if not seg or not lit_seg or seg not in source:
+        return None
+    new_seg = seg.replace(lit_seg, f"shlex.split({lit_seg})", 1)
+    new_seg = new_seg.replace("shell=True", "shell=False", 1)
+    if new_seg == seg:
+        return None
+    return source.replace(seg, new_seg, 1)
 
 
 def _eval_arg(node: ast.AST) -> ast.expr | None:
@@ -509,11 +764,18 @@ def _get_arg_source(arg_node: ast.expr, source: str) -> str:
 _DISPATCH = (
     (("eval",), _patch_eval),
     (("os.system",), _patch_os_system),
+    (("os.popen", "popen"), _patch_os_popen),
+    (("subprocess-shell-literal",), _patch_subprocess_shell_literal),
+    (("tls-verify",), _patch_tls_verify),
+    (("zip-slip",), _patch_zip_slip),
     (("bare except", "bareexcept"), _patch_bare_except),
     (("base-exception", "baseexception"), _patch_base_exception),
     (("pickle",), _patch_pickle),
     (("sql", "injection"), _patch_sql_injection),
     (("yaml",), _patch_yaml_load),
     (("tempfile", "mktemp"), _patch_mktemp),
+    # hashlib-new-weak MUST precede weak-hash: "hashlib" is a substring of the
+    # former's label, so the generic weak-hash group would otherwise capture it.
+    (("hashlib-new-weak",), _patch_hashlib_new_weak),
     (("weak-hash", "hashlib"), _patch_weak_hash),
 )

@@ -784,6 +784,9 @@ class IdeaActionBridge:
         "sql": "Apex: SQL injection",
         "tempfile": "Apex: insecure temp file",
         "weak-hash": "Apex: weak hash",
+        "os.popen": "Apex: os.popen",
+        "tls-verify": "Apex: TLS verification",
+        "zip-slip": "Apex: Zip-Slip",
     }
 
     @classmethod
