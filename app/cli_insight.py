@@ -217,6 +217,16 @@ def cmd_fixrisk(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_discoveries(args: argparse.Namespace) -> int:
+    """Ranked discovery leads: anomaly + temporal + rule-synthesis engines fused
+    into one corroboration-ranked stream (deterministic, read-only)."""
+    from app.engine.discovery_synthesis import render_discoveries_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    print(render_discoveries_markdown(str(target)))
+    return 0
+
+
 def cmd_polyglot(args: argparse.Namespace) -> int:
     """Non-Python risk surface: TS/JS/YAML/HTML/shell hotspots + findings."""
     from app.engine.polyglot_findings import scan_polyglot_findings
@@ -929,6 +939,14 @@ def register_parsers(subparsers) -> None:
     )
     fixrisk_parser.add_argument("--target", default="", help="Target project root")
     fixrisk_parser.set_defaults(func=cmd_fixrisk)
+
+    # discoveries — ranked leads fused from the anomaly/temporal/rule engines
+    disc_parser = subparsers.add_parser(
+        "discoveries",
+        help="Ranked discovery leads: anomaly + temporal + rule-synthesis, fused",
+    )
+    disc_parser.add_argument("--target", default="", help="Target project root")
+    disc_parser.set_defaults(func=cmd_discoveries)
 
     # outcomes — grade the project against a user-written rubric (CI gate)
     outcomes_parser = subparsers.add_parser(
