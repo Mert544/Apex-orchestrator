@@ -786,7 +786,9 @@ class IdeaActionBridge:
     def _read(project_root: str, rel_path: str) -> str | None:
         try:
             return (Path(project_root) / rel_path).read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
+            # A non-UTF-8 / near-binary file is unreadable as source, not a
+            # crash: decline (None) so the caller skips it gracefully.
             return None
 
     # Flag-only fixes annotate the call site but leave the pattern in place, so

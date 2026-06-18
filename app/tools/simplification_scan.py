@@ -287,7 +287,10 @@ def scan_simplifications(root: str | Path, max_files: int = 500) -> list[dict]:
         rel = str(path.relative_to(root))
         try:
             source = path.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
+            # A non-UTF-8 / near-binary .py (generated, vendored, mis-encoded)
+            # is unanalysable, not a crash: skip it rather than letting the
+            # decode error abort the whole scan.
             continue
         for fact_label, apply in transforms:
             try:

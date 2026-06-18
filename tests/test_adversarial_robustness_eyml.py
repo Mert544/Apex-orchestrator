@@ -241,19 +241,11 @@ def test_project_profiler_full_survives_gnarly_repo(gnarly_repo: Path):
     assert isinstance(profile, ProjectProfile)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ROBUSTNESS BUG (found by this harness): scan_simplifications "
-        "(app/tools/simplification_scan.py ~L289) reads each candidate with "
-        "read_text(encoding='utf-8') guarded only by `except OSError`. A near-binary "
-        ".py file raises UnicodeDecodeError (a ValueError, NOT an OSError), which "
-        "escapes and crashes the whole scan. Minimal repro: a .py file of bytes "
-        "0x80.. crashes scan_simplifications(root). Orchestrator owns the prod fix "
-        "(widen the guard to also catch UnicodeDecodeError/ValueError and skip the "
-        "file); when fixed, drop this xfail."
-    ),
-)
+# ROBUSTNESS BUG (found by this R&D harness, now FIXED): scan_simplifications read
+# each candidate with read_text(encoding='utf-8') guarded only by `except OSError`,
+# so a near-binary .py raised UnicodeDecodeError (a ValueError, not OSError) and
+# crashed the whole scan. Fixed by widening the guard to (OSError, UnicodeDecodeError)
+# and skipping the file. This now asserts the survival the bug used to break.
 def test_scan_simplifications_survives_gnarly_repo(gnarly_repo: Path):
     result = _guard(
         "scan_simplifications", lambda: scan_simplifications(gnarly_repo)
@@ -323,19 +315,11 @@ def test_bridge_detect_security_issue_survives_each_file(gnarly_repo: Path, fnam
     assert result is None or isinstance(result, str)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ROBUSTNESS BUG (found by this harness): IdeaActionBridge._read "
-        "(app/engine/idea_action_bridge.py ~L788) reads with "
-        "read_text(encoding='utf-8') guarded only by `except OSError`, so a "
-        "near-binary .py file raises UnicodeDecodeError (a ValueError, NOT an "
-        "OSError) that escapes _detect_security_issue. Minimal repro: "
-        "IdeaActionBridge._detect_security_issue(root, 'binary_blob.py') on a file of "
-        "bytes 0x80.. crashes. Orchestrator owns the prod fix (catch "
-        "UnicodeDecodeError/ValueError in _read and return None); drop this xfail then."
-    ),
-)
+# ROBUSTNESS BUG (found by this R&D harness, now FIXED): IdeaActionBridge._read read
+# with read_text(encoding='utf-8') guarded only by `except OSError`, so a near-binary
+# .py raised UnicodeDecodeError (a ValueError, not OSError) that escaped
+# _detect_security_issue. Fixed by catching (OSError, UnicodeDecodeError) and
+# returning None. This now asserts the graceful decline the bug used to break.
 def test_bridge_detect_security_issue_on_near_binary_py(gnarly_repo: Path):
     result = _guard(
         "IdeaActionBridge._detect_security_issue[binary_blob.py]",
