@@ -43,16 +43,12 @@ change; every other idea keeps its exact subject, title, branch_path,
 source_facts[0] and emission order.
 
 Re-baselined a fourth time intentionally: two further reasoning lenses
-(interaction; effort), the hypothesis fact de-doubled to a single
-``hypothesis:`` prefix, and an additive emergent dream-discovery family
-(``discovered-pattern`` roots on ``<module> (discovered)`` subjects, seeded
-LAST). The reasoning lenses are purely additive (they only append facts to an
-existing idea). The dream-discovery family is additive at the SEED level but is a
-new ROOT, so it competes in the bounded idea budget: under the tight 25-cap here
-a high-value discovered root deterministically displaces the lowest-value
-permutation leaves (verified: three v~0.6 ``Extend/Harden/Test`` permutations of
-an atomic ``::simplify`` transform give way to two v0.8 discovered-pattern roots
-and a security-focused test idea — a value-guided trade, not a regression).
+(interaction; effort) plug into the seam and the hypothesis fact is de-doubled
+to a single ``hypothesis:`` prefix. Purely additive — they only append facts
+to the confluence idea; source_facts[0], every prior idea identity, and
+emission order are preserved. (Dream-discovery seeding was evaluated and
+deliberately NOT wired: as competing roots it displaced valuable synthesis
+ideas under the bounded budget.)
 """
 
 import hashlib
@@ -94,8 +90,8 @@ _CASES = [
         "basic",
         {"max_total_ideas": 25, "max_idea_depth": 2, "breadth": 3},
         None,
-        "67caebebc18d721267892b3883d6464146b2b595de6c55f75f1818ba15d18743",
-        "5548629f15693953e6d51b1c6a1e2cb7581e5cb0b06e245e556a72637bd97cfb",
+        "e16c1291d728c6d10d2102f41534f8beaad56a757d60ee07985c1b10e311f0fe",
+        "92ac865cf43a17275a73bac6bb2d98183d789d57f486c9a811e9ede9491e9019",
     ),
     (
         "facets",
@@ -109,8 +105,8 @@ _CASES = [
             "adaptive_depth": True,
         },
         None,
-        "eb875c101e36d25d57072acbd7c1dba868bf14e387d192921f894d41cd3e533f",
-        "aea889a069a2a7c6f17f1658b9b40b78143df69eebd8cd8b883f9e5e7897a8b2",
+        "2cd46f6c9711cb4d80736fc4214e6a384c09a55af8cea14a0ff32de8c37d1ac1",
+        "266546ccaba377ec15352c5b6fd3b99b741f5fdfad9c94ad191a84c403e4f528",
     ),
     (
         "objective",
@@ -121,8 +117,8 @@ _CASES = [
             "min_relevance": 0.3,
         },
         "improve security and harden authentication",
-        "8cc6de6eb6a8f8afd81f8229df1eb71a7d8eb5a4c75b38c677800c864c3e3798",
-        "e76f5521bec0a79366f8228be5c4045d72592f17858ffc3a9040b8e71d48f993",
+        "c433479d757d2c3e12abadc2752071462f3f2acaaeb5bb87e824bd484f156f2d",
+        "17f642bdfb9e6c4dc416a8d2ab994a038a8af9b559989239c7af3a1aab4880c2",
     ),
 ]
 
