@@ -32,10 +32,15 @@ from app.execution.semantic.transforms import merge_nested_if
 from app.tools.project_profile import ProjectProfile, ProjectProfiler
 from app.tools.simplification_scan import scan_simplifications
 
-# Per-call wall-clock budget. Generous (so a slow-but-finite scan on a large fixture
-# is not flaky), but finite — a true hang or quadratic blowup overruns it and FAILS
-# the test loudly rather than wedging the run.
-_BUDGET_SECONDS = 30.0
+# Per-call wall-clock budget. Generous (so a slow-but-finite analysis on the gnarly
+# fixture is not flaky), but finite — a true hang or quadratic blowup overruns it and
+# FAILS the test loudly rather than wedging the run. Sized for the heaviest call
+# (IdeaPermutationEngine.run on the whole gnarly tree ~25s in isolation) PLUS the
+# CPU contention of the green gate's 4 parallel chunks, where a 30s budget tipped
+# over. NB: ~25s for the engine on a gnarly repo is a real PERFORMANCE signal
+# (R&D blind-spot #4 — scalability on large repos), tracked separately; it is not a
+# hang, so this guard only catches genuine non-termination.
+_BUDGET_SECONDS = 90.0
 
 
 def _guard(label: str, fn):
