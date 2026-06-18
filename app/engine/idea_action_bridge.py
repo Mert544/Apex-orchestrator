@@ -159,6 +159,15 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "fstring-no-placeholder": ("fstring_no_placeholder",
                                "Drop the dead `f` prefix from a placeholder-less "
                                "f-string `f\"text\"` -> `\"text\"` in {s}", True),
+    # ``a if a else b`` -> ``a or b`` (the `or`-default idiom), fired ONLY when
+    # the ternary's test and true-branch are the SAME side-effect-free expression
+    # (Name or attribute chain). The rewrite collapses a double evaluation of
+    # ``a`` to a single one, so it is value-identical only for a pure ``a``; the
+    # transform refuses (None) on a call/subscript/bool-op test. Distinct from
+    # ``ternary-bool`` (bool-literal branches) and every other wired transform.
+    "or-default": ("or_default",
+                   "Collapse a self-defaulting ternary `a if a else b` into "
+                   "`a or b` in {s}", True),
     # Four more behaviour-preserving simplifications, each backed by an on-disk
     # ``plan_<name>(root, rel) -> RenamePlan`` rewrite under ``app/execution/``
     # (rather than an in-memory ``apply``). The bridge adapts them to the SAME
@@ -631,6 +640,7 @@ class IdeaActionBridge:
         "augmented_assign": ["combine augmented assignment"],
         "collection_literal": ["empty collection literal"],
         "fstring_no_placeholder": ["drop dead fstring prefix"],
+        "or_default": ["self-defaulting ternary to or"],
         # On-disk ``plan_*`` simplifications, adapted to the in-memory dispatch
         # by ``plan_to_apply``. Listed here (like the transforms above) only so
         # ``_step_targets`` recognises the action as a real transform objective;
@@ -715,6 +725,10 @@ class IdeaActionBridge:
             # string. Both refuse via None on anything they can't act on.
             "collection_literal": _t.collection_literal.apply,
             "fstring_no_placeholder": _t.fstring.apply,
+            # ``a if a else b`` -> ``a or b`` (pure self-defaulting ternary only):
+            # a pure 3-arg ``apply`` that re-parses its own output and refuses via
+            # None on any non-pure test. Same guarded apply_step gate as the rest.
+            "or_default": _t.or_default.apply,
             # ``augmented_assign.apply`` has a 2-arg signature (no ``title``);
             # adapt it so the dispatch stays uniform. Without this the 3-arg
             # call in _simplify_generate would raise TypeError (swallowed to

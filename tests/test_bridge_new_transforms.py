@@ -143,6 +143,12 @@ _CASES = {
         'x = f"hello"\n',
         "def f():\n    return 1\n",
     ),
+    "or_default": (
+        "or-default",
+        "or_default",
+        "def f(a, b):\n    return a if a else b\n",
+        "def f():\n    return 1\n",
+    ),
     # Wired this wave: on-disk plan_* transforms routed through the
     # plan_to_apply adapter, same refuse-on-unsafe / guarded-gate contract.
     "combine_nested_with": (
@@ -353,6 +359,7 @@ _NEW = {
     "tuple_membership", "dict_literal", "double_not", "swap_via_tuple",
     "membership_set", "percent_string_concat", "redundant_lambda",
     "augmented_assign", "collection_literal", "fstring_no_placeholder",
+    "or_default",
     "combine_nested_with", "simplify_comprehension", "use_enumerate",
     "simplify_len_comparison",
     # Seven on-disk plan_* transforms wired this wave.

@@ -48,6 +48,15 @@ _NEW = {
         # A real placeholder -> must be left untouched.
         'msg = f"hi {name}"\n',
     ),
+    "or_default": (
+        "or-default",
+        "or_default",
+        "or_default",
+        "or_default",
+        "def f(a, b):\n    return a if a else b\n",
+        # A non-pure test (a call, evaluated for side effects) -> must be refused.
+        "def f(b):\n    return g() if g() else b\n",
+    ),
 }
 
 

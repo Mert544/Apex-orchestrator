@@ -21,6 +21,7 @@ from app.execution.semantic.transforms import (  # noqa: F401
     merge_nested_if,
     mutable_defaults,
     not_in_simplify,
+    or_default,
     percent_string_concat,
     redundant_else,
     redundant_lambda,

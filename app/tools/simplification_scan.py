@@ -167,6 +167,13 @@ def _transforms() -> list[tuple[str, Callable[[str, str, str], object]]]:
         # the result parses to the same string).
         ("collection-literal", _t.collection_literal.apply),
         ("fstring-no-placeholder", _t.fstring.apply),
+        # ``a if a else b`` -> ``a or b``, but ONLY when the test and the
+        # true-branch are the SAME side-effect-free expression (a Name or an
+        # attribute chain). ``a or b`` evaluates ``a`` once where the ternary
+        # evaluates it twice, so the rewrite is value-identical only for a pure
+        # ``a``; a call/subscript/bool-op test is refused (None). Distinct from
+        # ``ternary-bool`` (which matches ``True if c else False`` bool literals).
+        ("or-default", _t.or_default.apply),
         # A correctness-preserving fix the bridge ALSO makes executable (its
         # ``mutable-default`` fact routes to ``fix_mutable_defaults`` via the
         # same SemanticPatchGenerator + guarded apply_step path). The classic
