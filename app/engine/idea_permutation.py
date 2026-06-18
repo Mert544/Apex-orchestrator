@@ -838,6 +838,12 @@ class IdeaPermutationEngine:
             and n.operator != "root"
             and n.operator in _FACETS
             and n.id not in perm_parents
+            # Executable ``<module>::simplify-<transform>`` ideas are atomic, fully
+            # specified fixes ("apply exactly this rewrite"), not decomposable
+            # development directions — fractally zooming them ("...:: dead code")
+            # is noise, and the extra leaves crowd the best-first facet selection
+            # so the genuine ladder paths no longer reach their deep L3 phrases.
+            and "::simplify-" not in n.subject
         ]
 
     def _select_level_sources(
