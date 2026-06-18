@@ -1133,6 +1133,7 @@ _FACT_EXPECTED = {
     "pointless-pass": ("remove_pointless_pass", True),
     "assert-tuple": ("fix_assert_tuple", True),
     "bool-comparison": ("simplify_bool_comparison", True),
+    "or-default": ("or_default", True),
     "dead-parameter": ("design_task", False),
 }
 
