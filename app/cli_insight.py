@@ -167,6 +167,51 @@ def cmd_intelligence(args: argparse.Namespace) -> int:
     return 0
 
 
+def _render_polyglot_markdown(summary: dict, findings: list) -> str:
+    """Deterministic markdown for the non-Python risk surface."""
+    lines = ["# Polyglot risk (non-Python)", ""]
+    langs = summary.get("languages", []) if isinstance(summary, dict) else []
+    lines.append("## Languages")
+    if langs:
+        for lang in langs:
+            lines.append(f"- **{lang.get('language', '?')}**: "
+                         f"{lang.get('files', 0)} file(s), {lang.get('loc', 0)} LOC")
+    else:
+        lines.append("_No non-Python source found._")
+    lines += ["", "## Hotspots"]
+    hotspots = summary.get("hotspots", []) if isinstance(summary, dict) else []
+    if hotspots:
+        for h in hotspots:
+            lines.append(f"- `{h.get('path', '?')}` (score {h.get('score', 0)}): "
+                         f"{h.get('why', '')}")
+    else:
+        lines.append("_Nothing notable._")
+    lines += ["", "## Findings"]
+    if findings:
+        for f in findings[:20]:
+            lines.append(f"- `{f.get('path', '?')}:{f.get('line', 0)}` "
+                         f"[{f.get('severity', '?')}/{f.get('kind', '?')}] "
+                         f"{f.get('message', '')}")
+    else:
+        lines.append("_No high-confidence findings._")
+    return "\n".join(lines)
+
+
+def cmd_polyglot(args: argparse.Namespace) -> int:
+    """Non-Python risk surface: TS/JS/YAML/HTML/shell hotspots + findings."""
+    from app.engine.polyglot_findings import scan_polyglot_findings
+    from app.engine.polyglot_metrics import polyglot_summary
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    summary = polyglot_summary(str(target))
+    findings = scan_polyglot_findings(str(target))
+    if args.json:
+        print(json.dumps({"summary": summary, "findings": findings}, indent=2))
+    else:
+        print(_render_polyglot_markdown(summary, findings))
+    return 0
+
+
 def cmd_outcomes(args: argparse.Namespace) -> int:
     """Grade the project against YOUR written rubric (per-criterion gaps)."""
     from app.engine.outcomes import (
@@ -839,6 +884,15 @@ def register_parsers(subparsers) -> None:
     )
     intel_parser.add_argument("--target", default="", help="Target project root")
     intel_parser.set_defaults(func=cmd_intelligence)
+
+    # polyglot — non-Python risk surface (TS/JS/YAML/HTML/shell)
+    poly_parser = subparsers.add_parser(
+        "polyglot",
+        help="Non-Python risk: TS/JS/YAML/HTML/shell hotspots + high-confidence findings",
+    )
+    poly_parser.add_argument("--target", default="", help="Target project root")
+    poly_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    poly_parser.set_defaults(func=cmd_polyglot)
 
     # outcomes — grade the project against a user-written rubric (CI gate)
     outcomes_parser = subparsers.add_parser(
