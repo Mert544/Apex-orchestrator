@@ -18,7 +18,12 @@ nights) promote them:
   - **triple** — A and B together almost always bring C: a higher-order rule
     the pairwise view can't see;
   - **confluence** — a module whose signal *fingerprint* is unusually broad is
-    a confluence nobody named, surfaced by breadth not by any one signal.
+    a confluence nobody named, surfaced by breadth not by any one signal;
+  - **clique** — a *bundle* of three or more signals that all travel together
+    across several modules: not one module's breadth (confluence) and not a
+    directional A∧B⇒C (triple), but a recurring signal-set the data binds into
+    a single emergent fingerprint ("wherever any two of these appear, so do the
+    rest"). Surfaced only when the same full bundle recurs on enough modules.
 
 Each discovery carries a **stable key** (independent of the magnitudes that
 drift run to run) so the dream journal can track its persistence, and a
@@ -37,13 +42,15 @@ MIN_CONFIDENCE = 0.75    # …at this directional confidence
 TRIPLE_MIN_SUPPORT = 2
 TRIPLE_MIN_CONFIDENCE = 0.80
 CONFLUENCE_FLOOR = 3     # a confluence carries at least this many distinct signals
+CLIQUE_MIN_SIZE = 3      # a clique bundles at least this many distinct signals
+CLIQUE_MIN_SUPPORT = 2   # …recurring on at least this many modules
 
 
 @dataclass
 class Discovery:
     key: str            # stable identity across runs (magnitude-free)
     text: str           # human display
-    kind: str           # association | triple | confluence
+    kind: str           # association | triple | confluence | clique
     confidence: float   # 0..1
     support: int        # modules backing it
 
@@ -185,6 +192,61 @@ def _confluences(tags: dict[str, set[str]]) -> list[Discovery]:
     return out
 
 
+def _bundle_supports(tags: dict[str, set[str]]) -> dict[frozenset[str], set[str]]:
+    """Modules backing each candidate signal-bundle of size >= CLIQUE_MIN_SIZE.
+
+    A module of breadth b contributes its full tag-set as one candidate bundle;
+    we don't enumerate every subset (that would explode and re-find triples) —
+    a clique is the *whole* recurring fingerprint, so two modules carrying the
+    identical broad set back the same bundle and nothing narrower.
+    """
+    supports: dict[frozenset[str], set[str]] = {}
+    for module, tagset in tags.items():
+        if len(tagset) < CLIQUE_MIN_SIZE:
+            continue
+        supports.setdefault(frozenset(tagset), set()).add(module)
+    return supports
+
+
+def _cliques(tags: dict[str, set[str]]) -> list[Discovery]:
+    """Recurring signal *bundles*: a full fingerprint several modules share.
+
+    Confidence rewards both how tightly the bundle binds (its size) and how
+    often it recurs (its support), staying in [0,1]; the key is the sorted tag
+    set so it is magnitude-free and stable across runs.
+    """
+    out: list[Discovery] = []
+    for bundle, mods in _bundle_supports(tags).items():
+        support = len(mods)
+        if support < CLIQUE_MIN_SUPPORT:
+            continue
+        members = sorted(bundle)
+        size = len(members)
+        conf = min(1.0, (size + support) / (size + support + 2))
+        out.append(Discovery(
+            key=f"clique:{'&'.join(members)}", kind="clique",
+            confidence=conf, support=support,
+            text=(f"signal bundle: `{'`, `'.join(members)}` all travel together "
+                  f"across {support} module(s) — a recurring {size}-signal "
+                  "fingerprint, found not named.")))
+    out.sort(key=lambda d: (-d.support, -d.confidence, d.key))
+    return out[:2]
+
+
+def discover_cliques(profile: Any) -> list[Discovery]:
+    """The clique dimension on its own — recurring multi-signal bundles.
+
+    Kept separate from ``discover_structured`` so the dream digest's existing
+    output is unchanged; callers that want the richer view opt in explicitly
+    (e.g. ``discover_emergent`` or ``discovered_idea_seeds``). Empty profile or
+    fewer than two tagged modules → ``[]``.
+    """
+    tags = _module_tags(profile)
+    if len(tags) < 2:
+        return []
+    return _cliques(tags)
+
+
 def discover_structured(profile: Any) -> list[Discovery]:
     """Scored, stably-keyed discoveries — the form the dream ranks and promotes."""
     tags = _module_tags(profile)
@@ -192,6 +254,21 @@ def discover_structured(profile: Any) -> list[Discovery]:
         return []
     counts = _tag_counts(tags)
     return _associations(tags, counts) + _triples(tags) + _confluences(tags)
+
+
+def discover_emergent(profile: Any, *, include_cliques: bool = True) -> list[Discovery]:
+    """The full discovery view: the classic three plus the clique dimension.
+
+    Purely additive over ``discover_structured`` — when ``include_cliques`` is
+    off (or no bundle recurs) it returns exactly the classic discoveries, so the
+    existing digest surface is never disturbed. Cliques are appended last and
+    carry their own ``clique:`` key namespace, so they never collide with the
+    association/triple/confluence keys the journal already tracks.
+    """
+    base = discover_structured(profile)
+    if not include_cliques:
+        return base
+    return base + discover_cliques(profile)
 
 
 def discover(profile: Any) -> list[str]:
@@ -242,15 +319,54 @@ def _confluence_seed(disc: Discovery, tags: dict[str, set[str]]) -> dict[str, st
     }
 
 
+def _clique_seed(disc: Discovery, tags: dict[str, set[str]]) -> dict[str, str] | None:
+    """Ground a recurring signal bundle in the first module carrying the WHOLE set.
+
+    The clique key is ``clique:t1&t2&…``; the descriptor binds it to the
+    lexicographically-first module whose tag-set is a superset of the bundle, so
+    a project-wide bundle becomes a pointable seed. Returns ``None`` when the key
+    is malformed or no module carries the full bundle.
+    """
+    body = disc.key.split(":", 1)[1]
+    members = [t for t in body.split("&") if t]
+    if len(members) < CLIQUE_MIN_SIZE:
+        return None
+    bundle = set(members)
+    carriers = sorted(m for m, ts in tags.items() if bundle <= ts)
+    if not carriers:
+        return None
+    module = carriers[0]
+    joined = ", ".join(members)
+    return {
+        "module": module,
+        "title": (f"Investigate the recurring {len(members)}-signal bundle in {module}"),
+        "fact_label": "discovered-pattern",
+        "fact_value": (f"{module} ({joined} all travel together here — an emergent "
+                       "signal bundle Apex found, not a pre-named rule)"),
+    }
+
+
+def _seed_for(disc: Discovery, tags: dict[str, set[str]]) -> dict[str, str] | None:
+    """Dispatch a discovery to its descriptor builder; triples carry no module."""
+    if disc.kind == "association":
+        return _assoc_seed(disc, tags)
+    if disc.kind == "confluence":
+        return _confluence_seed(disc, tags)
+    if disc.kind == "clique":
+        return _clique_seed(disc, tags)
+    return None
+
+
 def discovered_idea_seeds(profile: Any) -> list[dict]:
     """The strongest discoveries, shaped as deterministic, module-bound seed descriptors.
 
     Each descriptor is a plain dict carrying exactly the keys the seeder needs —
     ``{"module", "title", "fact_label", "fact_value"}`` — so an open-ended
     discovery ("what travels with what on THIS codebase") becomes an actionable
-    development direction. Reuses ``discover_structured`` (no new analysis):
+    development direction. Reuses ``discover_emergent`` (no new analysis):
     associations are grounded in the concrete module carrying both tags;
-    confluences are named by the module their breadth already points at; triples
+    confluences are named by the module their breadth already points at; cliques
+    are grounded in the first module carrying the whole recurring bundle; triples
     are project-wide so they carry no single module and are skipped here.
 
     Deterministic and purely additive: discoveries arrive pre-sorted by
@@ -262,13 +378,8 @@ def discovered_idea_seeds(profile: Any) -> list[dict]:
     tags = _module_tags(profile)
     seeds: list[dict] = []
     seen: set[str] = set()
-    for disc in discover_structured(profile):
-        if disc.kind == "association":
-            descriptor = _assoc_seed(disc, tags)
-        elif disc.kind == "confluence":
-            descriptor = _confluence_seed(disc, tags)
-        else:
-            descriptor = None
+    for disc in discover_emergent(profile):
+        descriptor = _seed_for(disc, tags)
         if descriptor is None or descriptor["module"] in seen:
             continue
         seen.add(descriptor["module"])
