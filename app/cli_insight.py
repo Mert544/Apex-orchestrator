@@ -207,6 +207,16 @@ def cmd_readiness(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fixrisk(args: argparse.Namespace) -> int:
+    """Learned fix-risk: how likely a planned fix is to roll back, from Apex's
+    own proof history + counterfactual learning (deterministic, read-only)."""
+    from app.engine.fix_risk_model import render_fix_risk_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    print(render_fix_risk_markdown(str(target)))
+    return 0
+
+
 def cmd_polyglot(args: argparse.Namespace) -> int:
     """Non-Python risk surface: TS/JS/YAML/HTML/shell hotspots + findings."""
     from app.engine.polyglot_findings import scan_polyglot_findings
@@ -911,6 +921,14 @@ def register_parsers(subparsers) -> None:
     )
     ready_parser.add_argument("--target", default="", help="Target project root")
     ready_parser.set_defaults(func=cmd_readiness)
+
+    # fix-risk — learned rollback-risk of planned fixes (proof history + counterfactual)
+    fixrisk_parser = subparsers.add_parser(
+        "fix-risk",
+        help="Learned fix-risk: rollback likelihood of planned fixes from proof history",
+    )
+    fixrisk_parser.add_argument("--target", default="", help="Target project root")
+    fixrisk_parser.set_defaults(func=cmd_fixrisk)
 
     # outcomes — grade the project against a user-written rubric (CI gate)
     outcomes_parser = subparsers.add_parser(
