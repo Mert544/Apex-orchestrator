@@ -417,6 +417,8 @@ class IdeaSeeder:
         rationale: str | None = None,
         anchors: list[dict] | None = None,
         quantified: str | None = None,
+        explanation: str | None = None,
+        extra_facts: list[str] | None = None,
     ) -> None:
         """Append a traceable root idea unless its subject was already seeded."""
         if subject in seen_subjects:
@@ -442,6 +444,15 @@ class IdeaSeeder:
         # available for this module, so the rationale is byte-identical to before.
         if quantified:
             base_rationale = f"{base_rationale} {quantified}"
+        # Abductive root-cause explanation rides LAST in the rationale and as an
+        # EXTRA source_fact appended AFTER source_facts[0]. Both are empty by
+        # default, so an idea with no grounded explanation is byte-identical to
+        # before; source_facts[0] (the develop-loop's routing key) is untouched.
+        if explanation:
+            base_rationale = f"{base_rationale} {explanation}"
+        facts = [f"{fact_label}: {fact_value}"]
+        if extra_facts:
+            facts.extend(extra_facts)
         idx = len(roots)
         roots.append(
             IdeaNode(
@@ -453,7 +464,7 @@ class IdeaSeeder:
                 depth=0,
                 operator="root",
                 anchors=anchors,
-                source_facts=[f"{fact_label}: {fact_value}"],
+                source_facts=facts,
             )
         )
 
@@ -601,6 +612,7 @@ class IdeaSeeder:
             count = conv.get("family_count", len(families))
             shown = ", ".join(families)
             untested = "untested" in families
+            explanation, extra_facts = self._abductive_enrichment(families)
             self._append_root(
                 roots, seen_subjects,
                 title=(f"Untangle {module} — {count} independent pressures "
@@ -612,7 +624,31 @@ class IdeaSeeder:
                             + ")"),
                 anchors=self._module_anchors(profile, module),
                 quantified=self._quantified_clause(profile, module, name_targets=True),
+                explanation=explanation,
+                extra_facts=extra_facts,
             )
+
+    @staticmethod
+    def _abductive_enrichment(
+        labels: object,
+    ) -> tuple[str | None, list[str] | None]:
+        """Grounded root-cause clause + extra source_fact for converging signals.
+
+        Runs the abductive reasoner over the converging signal labels. Returns
+        ``(None, None)`` when fewer than 2 labels are mappable, so the idea stays
+        byte-identical; otherwise a one-line ``root cause: ... (confidence c)``
+        clause for the rationale plus a single ``abductive: ...`` source_fact
+        (appended AFTER source_facts[0], never replacing it). Deterministic.
+        """
+        from app.engine.abductive_reasoning import explanation_clause, explain_signals
+
+        result = explain_signals(labels)
+        if result is None:
+            return None, None
+        clause = explanation_clause(result)
+        if not clause:
+            return None, None
+        return clause, [f"abductive: {clause}"]
 
     def _seed_fragile_modules(
         self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile

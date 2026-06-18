@@ -132,3 +132,81 @@ class AbductiveReasoner:
         if "import_count" in observation:
             weight += observation["import_count"] / 10.0
         return min(weight, 3.0)
+
+
+# Deterministic translation from a seeding signal label (a confluence family
+# name or an idea ``fact_label``) to an abductive observation ``type`` in
+# ``AbductiveReasoner.CAUSE_MAP``. Small, explicit, and obviously correct;
+# any label not listed here is simply skipped (no observation, no cause).
+# Several distinct labels legitimately map to the SAME observation type (a hub,
+# a god-class and a symbol-rich module all read as "too many concerns" →
+# ``high_import_count``); the reasoner counts each observation, so two such
+# labels still yield two converging observations.
+SIGNAL_OBSERVATION_MAP: dict[str, str] = {
+    # convergence on a structural "god module" / too-many-concerns cause
+    "hub": "high_import_count",
+    "dependency-hub": "high_import_count",
+    "symbol-hub": "high_import_count",
+    "god-class": "high_import_count",
+    # control-flow depth
+    "deep-nesting": "deep_nesting",
+    # broad exception handling
+    "base-exception": "bare_except",
+    "bare except": "bare_except",
+    # dynamic-eval security risk
+    "eval": "eval_usage",
+    "security-eval": "eval_usage",
+    # oversized / responsibility-heavy functions
+    "complexity-hotspot": "long_function",
+    "complex-function": "long_function",
+    "hotspot-function": "long_function",
+    # python mutable-default gotcha
+    "mutable-default": "mutable_default_arg",
+    # too many parameters / a dead knob every caller carries
+    "dead-parameter": "many_arguments",
+    # documentation gaps
+    "doc-drift": "missing_docstring",
+    "missing-docstring": "missing_docstring",
+    # dead / leftover imports
+    "unused-import": "unused_import",
+    "modernization-imports": "unused_import",
+}
+
+
+def signals_to_observations(labels: Any) -> list[dict[str, Any]]:
+    """Map converging signal labels to abductive observation dicts.
+
+    Deterministic and order-preserving: each mappable label yields one
+    ``{"type": <observation>}`` dict in the order it appears; unmapped labels
+    are skipped. Returns ``[]`` for empty/None input.
+    """
+    return [
+        {"type": SIGNAL_OBSERVATION_MAP[label]}
+        for label in (labels or [])
+        if label in SIGNAL_OBSERVATION_MAP
+    ]
+
+
+def explain_signals(labels: Any) -> AbductionResult | None:
+    """Abductive root-cause explanation for converging signal labels, or None.
+
+    Returns an ``AbductionResult`` only when the labels yield ``>= 2`` mappable
+    observations (a genuine convergence worth explaining); otherwise ``None``,
+    so callers leave the idea byte-identical. Deterministic (no time/random).
+    """
+    observations = signals_to_observations(labels)
+    if len(observations) < 2:
+        return None
+    return AbductiveReasoner().infer(observations)
+
+
+def explanation_clause(result: AbductionResult) -> str:
+    """A one-line ``root cause: <X> (confidence <c>)`` clause for an idea.
+
+    The primary (first) root cause grounds the headline; the confidence rides
+    alongside it. Empty string when there is no root cause to name.
+    """
+    if not result.root_causes:
+        return ""
+    primary = result.root_causes[0]
+    return f"root cause: {primary} (confidence {result.confidence})"

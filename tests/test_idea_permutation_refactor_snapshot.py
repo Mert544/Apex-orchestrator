@@ -17,6 +17,19 @@ root here — ``Apply merge_nested_if to simplify app/auth.py`` — on the fixtu
 nested-if in ``app/auth.py``. Verified to be a clean SUPERSET: every prior idea
 (the security finding included) is preserved in order; only the previously
 shadowed executable simplification is appended.
+
+Re-baselined a second time intentionally: confluence ideas now carry an
+abductive ROOT-CAUSE explanation. The fixture's confluence on ``app/api.py``
+(hub + symbol-hub + untested) maps its converging hub/symbol-hub signals to two
+``high_import_count`` observations, and ``AbductiveReasoner().infer`` attaches
+"root cause: Module is a 'god module' with too many concerns (confidence 0.9)".
+This rides as a PURELY ADDITIVE enrichment: the confluence idea's rationale gains
+the clause and an ``abductive: ...`` source_fact is appended AFTER (never
+replacing) ``source_facts[0]``. Verified to be a clean SUPERSET — only the
+confluence root and its three permutation children (which inherit the parent's
+source_facts) change; every other idea (the security finding included) keeps its
+exact subject, title, branch_path, source_facts[0], and emission order. Ideas
+with < 2 mappable converging signals are byte-identical to before.
 """
 
 import hashlib
@@ -58,8 +71,8 @@ _CASES = [
         "basic",
         {"max_total_ideas": 25, "max_idea_depth": 2, "breadth": 3},
         None,
-        "02ac37097d7ca04d14c8c5c068e6474ea17ae2f0a19a6c678430e785adef4d12",
-        "16965082cdfb75abe1e944789e8d23cee4d3da3846f7d29b851f1f445d45a1fe",
+        "342315848bf5c40af797e04ee1340d94e145f4f84393a7137661a9d34dec1519",
+        "e0a9846a6e3bf11ec08aba72b1a9b54d0058b5bb11dcb0d8765946106ba8a76a",
     ),
     (
         "facets",
@@ -73,8 +86,8 @@ _CASES = [
             "adaptive_depth": True,
         },
         None,
-        "297c65cefb36d08589d904d3aeef2b4c0e5e190d03bc6f729ea027a6de924393",
-        "62b786041d3303e16ef5ed7be29438250db882d49a4b9d8321c870358d167393",
+        "f1deb3ee2af377c055bd3fad7550f343e877f8fc4a6e12964611bc223c5aa839",
+        "e37055deb284e224d475c0a6ac8088d84a00b199ac716f565758a38d9a3916ac",
     ),
     (
         "objective",
@@ -85,8 +98,8 @@ _CASES = [
             "min_relevance": 0.3,
         },
         "improve security and harden authentication",
-        "999021ab3d45344c9909b8aa19a2a5eae13387addf5e4cfcf7e0836d33f84b92",
-        "1c48c290af922c23d5f78cca69dac0c50e10d80b7588b09eb1eb8e8a0b3db4e9",
+        "6d90accb975b41a1897f6c6cb582ae72a47445838702d15bbc01788b9a1d6431",
+        "9a7f56a94e95ae01927e2ab5027b16c2b1d466a54168caca275e192033f93b66",
     ),
 ]
 
