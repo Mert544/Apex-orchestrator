@@ -47,6 +47,42 @@ _MAX_NUDGE = 0.10
 _MIN_SAMPLES = 2
 # Separator for a composition key "operatorA>operatorB" (ASCII, JSON-safe).
 _SEQ_SEP = ">"
+# Separator for a characteristic key "operator@trait" (ASCII, JSON-safe).
+_CHAR_SEP = "@"
+
+# Coarse, deterministic module-characteristic buckets. The trait key is derived
+# from data the recorded outcome ALREADY carries — the seeding ``label`` (which
+# encodes why the module was flagged: hub / untested / security / complexity)
+# and the ``target`` path (a test file vs. app code). No new analysis, no new
+# required inputs: the same lens that lands 9/10 on small leaf modules but rolls
+# back 4/5 on hubs becomes learnable per-trait, not just per-lens.
+#
+# Ordered most-specific first; the FIRST matching substring wins so the bucket
+# is a single deterministic value (a module is read as one coarse trait). A
+# label that matches nothing maps to "" (no trait) and records/consults nothing
+# extra — preserving the opt-in/byte-identical invariant.
+_TRAIT_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("hub", ("hub", "fragile", "confluence", "convergence", "central")),
+    ("security", ("security", "sensitive", "secret", "correctness")),
+    ("untested", ("untested", "coverage", "shallow")),
+    ("complex", ("hotspot", "complex", "churn", "debt")),
+)
+
+
+def _trait_key(label: str, target: str = "") -> str:
+    """A coarse deterministic module-characteristic bucket, or "" for none.
+
+    Derived purely from already-recorded context: the seeding ``label`` (why the
+    module was flagged) and the ``target`` path. No time/random, no new inputs.
+    A test-file target is a stable structural trait even without a label."""
+    low = (label or "").lower()
+    for trait, needles in _TRAIT_RULES:
+        if any(n in low for n in needles):
+            return trait
+    tgt = (target or "").replace("\\", "/").lower()
+    if "/tests/" in tgt or tgt.startswith("tests/") or "/test_" in tgt or "test_" in tgt.rsplit("/", 1)[-1]:
+        return "testfile"
+    return ""
 
 
 @dataclass
@@ -96,6 +132,11 @@ class IdeaMemory:
     # Composition credit: key "A>B" = operator B's outcome when applied right
     # after operator A landed in the same plan. Sequence-level learning.
     by_sequence: dict[str, _Stat] = field(default_factory=dict)
+    # Characteristic credit: key "operator@trait" = a lens's outcome on a coarse
+    # MODULE characteristic (hub / untested / security / complex / testfile). A
+    # finer, additive learning dimension — "harden lands on leaves but rolls
+    # back on hubs" — derived from already-recorded context (label/target).
+    by_characteristic: dict[str, _Stat] = field(default_factory=dict)
 
     # --- persistence ---------------------------------------------------------
 
@@ -113,6 +154,8 @@ class IdeaMemory:
             by_label={k: _Stat(**v) for k, v in (data.get("by_label") or {}).items()},
             # Backward-compatible: an old memory file has no by_sequence key.
             by_sequence={k: _Stat(**v) for k, v in (data.get("by_sequence") or {}).items()},
+            # Backward-compatible: an old file has no by_characteristic key either.
+            by_characteristic={k: _Stat(**v) for k, v in (data.get("by_characteristic") or {}).items()},
         )
 
     def save(self, project_root: str | Path, path: str | Path | None = None) -> Path:
@@ -126,6 +169,7 @@ class IdeaMemory:
             "by_operator": {k: v.to_dict() for k, v in sorted(self.by_operator.items())},
             "by_label": {k: v.to_dict() for k, v in sorted(self.by_label.items())},
             "by_sequence": {k: v.to_dict() for k, v in sorted(self.by_sequence.items())},
+            "by_characteristic": {k: v.to_dict() for k, v in sorted(self.by_characteristic.items())},
         }
 
     # --- recording -----------------------------------------------------------
@@ -148,10 +192,19 @@ class IdeaMemory:
                 self._bump(self.by_operator, op, outcome)
                 if prev_op and prev_applied:
                     self._bump(self.by_sequence, f"{prev_op}{_SEQ_SEP}{op}", outcome)
+                self._record_characteristic(op, label, r.get("target") or "", outcome)
                 prev_op = op
                 prev_applied = outcome == "applied"
             if label:
                 self._bump(self.by_label, label, outcome)
+
+    def _record_characteristic(self, operator: str, label: str, target: str, outcome: str) -> None:
+        """Credit a lens's outcome to the coarse module characteristic it acted
+        on. Records nothing when no trait can be derived, so a run that carries
+        no module context leaves ``by_characteristic`` empty (opt-in)."""
+        trait = _trait_key(label, target)
+        if trait:
+            self._bump(self.by_characteristic, f"{operator}{_CHAR_SEP}{trait}", outcome)
 
     @staticmethod
     def _bump(table: dict[str, _Stat], key: str, outcome: str) -> None:
@@ -160,21 +213,56 @@ class IdeaMemory:
 
     # --- influence on scoring ------------------------------------------------
 
-    def feasibility_factor(self, operator: str, label: str = "") -> float:
+    @staticmethod
+    def _nudge_from(stat: _Stat | None) -> float:
+        """The bounded nudge ``delta`` in [-_MAX_NUDGE, +_MAX_NUDGE] a stat
+        implies (0.0 = neutral). Too few samples → 0.0 (no opinion yet)."""
+        if stat is None or stat.total < _MIN_SAMPLES:
+            return 0.0
+        # success_rate 0.5 → 0; 1.0 → +_MAX_NUDGE; 0.0 → -_MAX_NUDGE.
+        return (stat.success_rate - 0.5) * 2.0 * _MAX_NUDGE
+
+    def feasibility_factor(self, operator: str, label: str = "",
+                           target: str = "", characteristic: str | None = None) -> float:
         """A bounded multiplier in [1-_MAX_NUDGE, 1+_MAX_NUDGE] from track record.
 
         Roots are keyed by their seeding ``label``; other ideas by ``operator``.
-        Keys with too few samples return a neutral 1.0 (no opinion yet).
-        """
-        stat = None
+        Keys with too few samples contribute nothing (no opinion yet).
+
+        Additive finer dimension (opt-in): when a coarse module characteristic
+        can be derived (from ``characteristic`` if given, else from
+        ``label``/``target``) AND the ``operator@trait`` cell has enough samples,
+        its nudge is BLENDED with the lens/label nudge by averaging the two
+        deltas. Averaging keeps the combined nudge inside the SAME bounded
+        ±_MAX_NUDGE range the lens nudge already used, so scores never leave
+        [0,1] and ordering stays stable. With no characteristic cell recorded,
+        the average is over a single delta — byte-identical to before."""
+        base = None
         if operator and operator != "root" and operator in self.by_operator:
-            stat = self.by_operator[operator]
+            base = self.by_operator[operator]
         elif label and label in self.by_label:
-            stat = self.by_label[label]
+            base = self.by_label[label]
+        deltas = [self._nudge_from(base)]
+        char_delta = self._characteristic_nudge(operator, label, target, characteristic)
+        if char_delta is not None:
+            deltas.append(char_delta)
+        combined = sum(deltas) / len(deltas)
+        return round(1.0 + combined, 4)
+
+    def _characteristic_nudge(self, operator: str, label: str, target: str,
+                              characteristic: str | None) -> float | None:
+        """The characteristic cell's bounded delta, or ``None`` when there is no
+        trait to read or its cell lacks samples — so it contributes nothing and
+        the combined nudge collapses to the lens-only behaviour (opt-in)."""
+        if not operator or operator == "root":
+            return None
+        trait = characteristic if characteristic is not None else _trait_key(label, target)
+        if not trait:
+            return None
+        stat = self.by_characteristic.get(f"{operator}{_CHAR_SEP}{trait}")
         if stat is None or stat.total < _MIN_SAMPLES:
-            return 1.0
-        # success_rate 0.5 → neutral; 1.0 → +_MAX_NUDGE; 0.0 → -_MAX_NUDGE.
-        return round(1.0 + (stat.success_rate - 0.5) * 2.0 * _MAX_NUDGE, 4)
+            return None
+        return self._nudge_from(stat)
 
     def sequence_factor(self, prev_operator: str, operator: str) -> float:
         """A bounded multiplier from the track record of running ``operator``
@@ -213,7 +301,7 @@ class IdeaMemory:
         Deterministic ordering: by confidence, then sample count, then key as a
         stable tiebreak. Stdlib-only math; no time/random."""
         tables = {"operator": self.by_operator, "label": self.by_label,
-                  "sequence": self.by_sequence}
+                  "sequence": self.by_sequence, "characteristic": self.by_characteristic}
         src = tables.get(table, self.by_operator)
         seen = [(k, s) for k, s in src.items() if s.total >= _MIN_SAMPLES]
         # Confidence and sample count descend for `best`; key always ascends as a
@@ -237,9 +325,11 @@ class IdeaMemory:
             "operators_tracked": len(self.by_operator),
             "labels_tracked": len(self.by_label),
             "sequences_tracked": len(self.by_sequence),
+            "characteristics_tracked": len(self.by_characteristic),
             "most_reliable": _top(self.by_operator, best=True),
             "least_reliable": _top(self.by_operator, best=False),
             "reliable_sequences": _top(self.by_sequence, best=True),
+            "reliable_characteristics": _top(self.by_characteristic, best=True),
             # Evidence-aware view (Wilson lower bound) — new, additive keys; the
             # raw-rate keys above are unchanged so existing callers/tests hold.
             "most_confident": self.confident_ranking("operator", best=True),
