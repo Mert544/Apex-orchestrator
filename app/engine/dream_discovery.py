@@ -197,3 +197,82 @@ def discover_structured(profile: Any) -> list[Discovery]:
 def discover(profile: Any) -> list[str]:
     """The display strings, for the dream digest."""
     return [d.text for d in discover_structured(profile)]
+
+
+SEED_CAP = 3  # at most this many discoveries graduate into seedable directions
+
+
+def _assoc_seed(disc: Discovery, tags: dict[str, set[str]]) -> dict[str, str] | None:
+    """Ground a pairwise association in the concrete module(s) that carry both tags.
+
+    The association key is ``assoc:src>dst``; the descriptor binds it to the
+    lexicographically-first module carrying BOTH tags, so a project-wide law
+    becomes a pointable seed (``app/x.py`` where ``A`` co-occurs with ``B``).
+    Returns ``None`` when the key is malformed or no module carries both.
+    """
+    body = disc.key.split(":", 1)[1]
+    if ">" not in body:
+        return None
+    src, dst = body.split(">", 1)
+    carriers = sorted(m for m, ts in tags.items() if src in ts and dst in ts)
+    if not carriers:
+        return None
+    module = carriers[0]
+    return {
+        "module": module,
+        "title": (f"Investigate the recurring {src} + {dst} pattern in {module}"),
+        "fact_label": "discovered-pattern",
+        "fact_value": (f"{module} ({src} co-occurs with {dst} here — an emergent "
+                       "pattern Apex found, not a pre-named rule)"),
+    }
+
+
+def _confluence_seed(disc: Discovery, tags: dict[str, set[str]]) -> dict[str, str] | None:
+    """A breadth-named confluence module becomes a 'untangle the convergence' seed."""
+    module = disc.key.split(":", 1)[1]
+    signals = ", ".join(sorted(tags.get(module, set())))
+    if not module or not signals:
+        return None
+    return {
+        "module": module,
+        "title": (f"Investigate the unusually broad signal convergence in {module}"),
+        "fact_label": "discovered-pattern",
+        "fact_value": (f"{module} ({signals} co-occur here — an emergent confluence "
+                       "Apex found by breadth, not a pre-named rule)"),
+    }
+
+
+def discovered_idea_seeds(profile: Any) -> list[dict]:
+    """The strongest discoveries, shaped as deterministic, module-bound seed descriptors.
+
+    Each descriptor is a plain dict carrying exactly the keys the seeder needs —
+    ``{"module", "title", "fact_label", "fact_value"}`` — so an open-ended
+    discovery ("what travels with what on THIS codebase") becomes an actionable
+    development direction. Reuses ``discover_structured`` (no new analysis):
+    associations are grounded in the concrete module carrying both tags;
+    confluences are named by the module their breadth already points at; triples
+    are project-wide so they carry no single module and are skipped here.
+
+    Deterministic and purely additive: discoveries arrive pre-sorted by
+    (confidence, support, key); descriptors are de-duplicated by module (a module
+    surfaced by an association is never re-emitted by a confluence) and capped at
+    ``SEED_CAP``. Returns ``[]`` when nothing is discovered, so a seeder that
+    consumes it adds nothing → byte-identical.
+    """
+    tags = _module_tags(profile)
+    seeds: list[dict] = []
+    seen: set[str] = set()
+    for disc in discover_structured(profile):
+        if disc.kind == "association":
+            descriptor = _assoc_seed(disc, tags)
+        elif disc.kind == "confluence":
+            descriptor = _confluence_seed(disc, tags)
+        else:
+            descriptor = None
+        if descriptor is None or descriptor["module"] in seen:
+            continue
+        seen.add(descriptor["module"])
+        seeds.append(descriptor)
+        if len(seeds) >= SEED_CAP:
+            break
+    return seeds
