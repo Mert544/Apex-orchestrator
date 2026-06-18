@@ -98,17 +98,32 @@ def _maintain_write_proof(args, summary, target) -> None:
         print(f"\n[maintain] Proof-of-fix evidence written to {proof_path}")
 
 
+def _maintain_avoid_signatures(args, target):
+    """OPT-IN: the proof-history failure signatures used to skip predictably-doomed
+    fixes BEFORE a wasted apply+rollback. Returns ``None`` when the flag is OFF
+    (the default), so nothing is loaded and the apply path stays byte-identical."""
+    if not getattr(args, "avoid_learned_failures", False):
+        return None
+    from app.engine.counterfactual_learning import failure_signatures
+    from app.engine.proof_history import load_proof_history
+
+    return failure_signatures(load_proof_history(str(target)))
+
+
 def _maintain_apply(args, engine, bridge, plan, target) -> int:
     """Apply the plan (verified, guarded), then learn, record, report, prove."""
     from app.engine.idea_action_bridge import render_maintenance_markdown
     from app.engine.idea_memory import IdeaMemory
     from app.engine.signal_trends import SignalTrends
 
+    avoid = _maintain_avoid_signatures(args, target)
+    apply_kwargs = {"avoid_signatures": avoid} if avoid is not None else {}
     summary = bridge.apply_plan(
         plan, str(target), mode=args.mode,
         verify=not args.no_verify,
         max_apply=(args.max_apply or None) if args.max_apply else None,
         commit=args.commit,
+        **apply_kwargs,
     )
     IdeaMemory.learn_from(summary, str(target))  # learn from this run's outcomes
     SignalTrends(str(target)).record(engine.last_profile)  # trend baseline
@@ -1296,6 +1311,12 @@ def register_parsers(subparsers) -> None:
     )
     maintain_parser.add_argument("--recipe", default="",
                                  help="Scope the pass to one recipe/composite (see `apex recipes`)")
+    maintain_parser.add_argument(
+        "--avoid-learned-failures", action="store_true",
+        dest="avoid_learned_failures",
+        help="Closed loop (opt-in): skip a fix the proof-of-fix history predicts "
+             "will fail on this module-trait BEFORE wasting an apply+rollback",
+    )
     maintain_parser.add_argument("--json", action="store_true", help="Emit JSON summary")
     maintain_parser.add_argument("--out", default="", help="Write the Markdown report to this path")
     maintain_parser.add_argument(

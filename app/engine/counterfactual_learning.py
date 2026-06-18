@@ -32,6 +32,11 @@ from typing import Any
 # which folds unknown outcomes into ``blocked``).
 _FAILURE_OUTCOMES = ("rolled_back", "blocked")
 _LANDING_OUTCOME = "applied"
+# A fix the closed-loop guard DECLINED before any apply attempt. It is neither a
+# landing nor a failure — it was never tried — so it must not feed the failure
+# stats (counting it would self-confirm the avoidance forever). Excluded from
+# the tally entirely.
+_SKIPPED_OUTCOME = "skipped_learned"
 
 # A signature is worth avoiding only above this failure rate AND with at least
 # this many attempts — both fixed so the verdict is deterministic and a single
@@ -123,6 +128,8 @@ def _tally(history: list[dict] | None) -> dict[str, list[int]]:
     table: dict[str, list[int]] = {}
     for fix in _iter_fixes(history):
         outcome = fix.get("outcome")
+        if outcome == _SKIPPED_OUTCOME:
+            continue  # never attempted -> contributes no evidence either way
         failed = outcome in _FAILURE_OUTCOMES or outcome != _LANDING_OUTCOME
         action = _action_of(fix)
         traits = module_traits(_module_of(fix))

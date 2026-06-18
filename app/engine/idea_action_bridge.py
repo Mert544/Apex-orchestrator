@@ -1485,6 +1485,7 @@ class IdeaActionBridge:
         max_apply: int | None = None,
         commit: bool = False,
         test_first: bool = True,
+        avoid_signatures: dict | None = None,
     ) -> dict:
         """Run a whole maintenance pass: apply each executable step in turn,
         verifying + rolling back individually, and return an aggregate summary.
@@ -1505,12 +1506,13 @@ class IdeaActionBridge:
         GitAutoCommit, so every change is an isolated, revertible commit.
         """
         run = _MaintenancePass(self, project_root, mode=mode, verify=verify,
-                               test_first=test_first, commit=commit)
+                               test_first=test_first, commit=commit,
+                               avoid_signatures=avoid_signatures)
         for step in plan.executable_steps():
             if max_apply is not None and run.applied >= max_apply:
                 break
             run.run_step(step)
-        return {
+        summary = {
             "mode": mode,
             "verify": verify,
             "commit": run.can_commit,
@@ -1521,6 +1523,12 @@ class IdeaActionBridge:
             "committed": run.committed,
             "results": run.results,
         }
+        # Additive + opt-in: the skipped-learned tally appears ONLY when the
+        # guard was armed (a non-empty avoid-map was passed), so an ordinary
+        # run's summary keys are byte-identical to before.
+        if run.avoid_signatures:
+            summary["skipped_learned"] = run.skipped_learned
+        return summary
 
     @staticmethod
     def _confluence_headline(steps: list[ActionStep]) -> list[ActionStep]:
@@ -1698,6 +1706,25 @@ class IdeaActionBridge:
         return plan
 
 
+def _learned_skip_reason(signatures: dict, step: ActionStep) -> str:
+    """The human-readable reason a fix was skipped by the learned-failure guard.
+
+    Cites the worst avoid-flagged signature for this step (the one that drove
+    the skip): its rolled-back-N-of-M tally on that module-trait. Deterministic,
+    never raises — falls back to a generic note if no flagged stat is found."""
+    from app.engine.counterfactual_learning import module_traits, _signature_keys
+
+    for key in _signature_keys(step.action_type or "<unknown>",
+                               module_traits(step.target)):
+        stat = signatures.get(key)
+        if isinstance(stat, dict) and stat.get("avoid"):
+            _, _, trait = key.partition(" | ")
+            return (f"history predicts failure: rolled back "
+                    f"{stat.get('failures', 0)}/{stat.get('attempts', 0)} on "
+                    f"`{trait}` modules for this action")
+    return "history predicts failure for this action on this module-trait"
+
+
 class _MaintenancePass:
     """One ``apply_plan`` run: counters, committer, shield memory, entries.
 
@@ -1707,7 +1734,8 @@ class _MaintenancePass:
     """
 
     def __init__(self, bridge: IdeaActionBridge, project_root: str, *,
-                 mode: str, verify: bool, test_first: bool, commit: bool) -> None:
+                 mode: str, verify: bool, test_first: bool, commit: bool,
+                 avoid_signatures: dict | None = None) -> None:
         from app.policies.mode_policy import ModePolicy, mode_from_string
 
         self.bridge = bridge
@@ -1715,8 +1743,14 @@ class _MaintenancePass:
         self.mode = mode
         self.verify = verify
         self.test_first = test_first
+        # Opt-in closed-loop guard: when non-empty, a fix the proof history
+        # predicts will fail is skipped BEFORE its wasted apply+rollback. An
+        # empty/None map (the default) means the guard never fires, so the run
+        # is byte-identical to one that never learned anything.
+        self.avoid_signatures = avoid_signatures or None
         self.results: list[dict] = []
-        self.applied = self.rolled_back = self.blocked = self.committed = 0
+        self.applied = self.rolled_back = self.blocked = 0
+        self.committed = self.skipped_learned = 0
         self.can_commit = False
         self.committer = None
         if commit:
@@ -1801,9 +1835,34 @@ class _MaintenancePass:
         if extra:
             entry["converged_fixes"] = extra
 
+    def _learned_skip(self, step: ActionStep) -> bool:
+        """OPT-IN closed loop: skip a fix the proof history predicts will fail.
+
+        Returns True (and records a ``skipped_learned`` row) when the avoid-map
+        flags this step's ``(action_type, module-trait)`` signature — saving the
+        wasted apply+rollback. With no avoid-map (default) this is a no-op and
+        always returns False, so the run stays byte-identical."""
+        if not self.avoid_signatures:
+            return False
+        from app.engine.counterfactual_learning import module_traits, should_avoid
+
+        if not should_avoid(self.avoid_signatures, step.action_type,
+                            module_traits(step.target)):
+            return False
+        self.skipped_learned += 1
+        self.results.append({
+            "branch": step.branch_path, "action": step.action_type,
+            "operator": step.operator, "target": step.target,
+            "applied": False, "skipped_learned": True,
+            "reason": _learned_skip_reason(self.avoid_signatures, step),
+        })
+        return True
+
     def run_step(self, step: ActionStep) -> None:
         from app.execution.risk_tiers import tier_for
 
+        if self._learned_skip(step):
+            return
         shield_result = self._shield(step)
         tier = tier_for(step.action_type)
         label = step.source_facts[0].split(":")[0].strip() if step.source_facts else ""
@@ -1958,8 +2017,12 @@ def _result_sections(results: list[dict]) -> list[str]:
         ("## ↩️ Rolled back (tests failed)",
          [r for r in results if r.get("rolled_back")],
          lambda r: f"- `{r['branch']}` **{r['action']}** — {r.get('target', '')}"),
+        ("## ⏭️ Skipped (learned failure)",
+         [r for r in results if r.get("skipped_learned")],
+         lambda r: f"- `{r['branch']}` **{r['action']}** — {r.get('reason', '')}"),
         ("## ⛔ Blocked / not applicable",
-         [r for r in results if not r.get("applied") and not r.get("rolled_back")],
+         [r for r in results if not r.get("applied")
+          and not r.get("rolled_back") and not r.get("skipped_learned")],
          lambda r: f"- `{r['branch']}` **{r['action']}** — {r.get('reason', '')}"),
     )
     lines: list[str] = []

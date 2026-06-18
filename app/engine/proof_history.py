@@ -73,11 +73,16 @@ def _read_proof(path: Path) -> dict | None:
 
 
 def _iter_fixes(history: list[dict]) -> list[dict]:
-    """Flatten the ``fixes`` lists across all proofs, skipping non-dict rows."""
+    """Flatten the ``fixes`` lists across all proofs, skipping non-dict rows.
+
+    A ``skipped_learned`` fix (declined by the opt-in closed loop before any
+    apply attempt) is dropped here: it was never tried, so it must not skew the
+    reliability track record. Such rows only exist when the avoid-guard was
+    armed, so an ordinary history's aggregate is byte-identical."""
     fixes: list[dict] = []
     for proof in history or []:
         for fix in proof.get("fixes") or []:
-            if isinstance(fix, dict):
+            if isinstance(fix, dict) and fix.get("outcome") != "skipped_learned":
                 fixes.append(fix)
     return fixes
 

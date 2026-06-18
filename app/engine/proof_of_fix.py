@@ -82,14 +82,25 @@ def summarize_test_run(summary: Any) -> dict:
     }
 
 
+def _outcome_for(r: dict) -> str:
+    """Classify one ``apply_plan`` result row into a single terminal outcome.
+
+    ``skipped_learned`` (the fix the opt-in closed loop DECLINED before any
+    apply attempt) is its own outcome so it never poisons the learning signal
+    as a fresh "failure"; it is only ever present when the avoid-guard was
+    armed, so default proofs stay byte-identical."""
+    if r.get("skipped_learned"):
+        return "skipped_learned"
+    if r.get("rolled_back"):
+        return "rolled_back"
+    if r.get("applied"):
+        return "applied"
+    return "blocked"
+
+
 def _fix_record(r: dict) -> dict:
     """One per-step evidence record from an ``apply_plan`` result row."""
-    if r.get("rolled_back"):
-        outcome = "rolled_back"
-    elif r.get("applied"):
-        outcome = "applied"
-    else:
-        outcome = "blocked"
+    outcome = _outcome_for(r)
     verification = dict(r.get("test_evidence") or {"performed": False})
     if r.get("verification_strength"):
         # Coverage-aware honesty: a green suite that never references the
