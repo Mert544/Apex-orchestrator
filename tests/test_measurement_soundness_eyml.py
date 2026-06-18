@@ -117,13 +117,13 @@ def test_git_dependent_covering_test_fakes_full_kill(tmp_path):
 
     result = mutation_score(str(tmp_path), rel, max_mutants=10)
 
-    # The artifact: a FALSE 100%. Every mutant "killed", zero survivors — not
-    # because the assertions caught them, but because git errored uniformly.
-    assert result.total > 0
-    assert result.killed == result.total
-    assert result.survived == 0
-    assert result.score == 1.0
-    assert result.survivors == []
+    # FIXED (baseline-green guard): the git-dependent test ERRORS on the
+    # UNMUTATED module too (git show fails in the sandbox copy), so the baseline
+    # is red. mutation_score now detects that and reports baseline_ok=False with
+    # a 0.0 score instead of the old FALSE 100% — the moat-hole is closed.
+    assert result.baseline_ok is False
+    assert result.score == 0.0
+    assert result.killed == 0
 
 
 def test_sound_weak_test_honestly_reports_survivors(tmp_path):
@@ -159,16 +159,12 @@ def test_sound_weak_test_honestly_reports_survivors(tmp_path):
 
 
 def test_baseline_green_is_not_verified_by_mutation_tester(tmp_path):
-    """PIN the root cause of the artifact as a characterization so it cannot
-    silently change: ``mutation_tester`` never runs the covering suite against
-    the UNMUTATED module to confirm it is green. A covering test that fails
-    REGARDLESS of the module (here it asserts ``False`` after importing) is
-    counted as killing every mutant — a baseline-red suite reported as a
-    perfect score.
-
-    If a future change ADDS a baseline-green guard (the sound fix), this
-    characterization will trip and should be updated to assert the guard
-    instead — that is the intended regression signal.
+    """The baseline-green GUARD: ``mutation_tester`` now runs the covering suite
+    against the UNMUTATED module first. A covering test that fails REGARDLESS of
+    the module (here it asserts ``False`` after importing) makes the baseline
+    red, so the measurement is rejected (baseline_ok=False) instead of being
+    read as killing every mutant (the old FALSE 100%). This locks the fix in:
+    if the guard regresses, the false-100% returns and this test fails.
     """
     test_src = (
         "from app.foo import classify\n"
@@ -183,12 +179,14 @@ def test_baseline_green_is_not_verified_by_mutation_tester(tmp_path):
 
     result = mutation_score(str(tmp_path), rel, max_mutants=10)
 
-    # CHARACTERIZATION of the unsound behaviour: a baseline-RED suite is read as
-    # killing every mutant -> a meaningless, FALSE 100%. No baseline check
-    # exists to reject this. (Update this pin when the guard lands.)
+    # GUARD LANDED: the baseline-green check now runs the covering suite against
+    # the UNMUTATED module first. This unconditionally-failing test is red on the
+    # baseline, so mutation_score rejects the measurement (baseline_ok=False,
+    # score 0.0) instead of reporting the old meaningless FALSE 100%.
     assert result.total > 0
-    assert result.killed == result.total
-    assert result.score == 1.0
+    assert result.baseline_ok is False
+    assert result.killed == 0
+    assert result.score == 0.0
 
 
 # ===========================================================================

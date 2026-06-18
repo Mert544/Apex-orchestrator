@@ -150,6 +150,10 @@ class MutationResult:
     score: float
     survivors: list[Mutant] = field(default_factory=list)
     scoped_tests: list[str] = field(default_factory=list)
+    # False when the covering tests did NOT pass on the UNMUTATED module, so the
+    # kill/survive split is meaningless (every mutant looks "killed" against an
+    # already-red baseline). A sound score requires baseline_ok is True.
+    baseline_ok: bool = True
 
     def to_dict(self) -> dict:
         return {
@@ -160,6 +164,7 @@ class MutationResult:
             "score": self.score,
             "survivors": [m.to_dict() for m in self.survivors],
             "scoped_tests": list(self.scoped_tests),
+            "baseline_ok": self.baseline_ok,
         }
 
 
@@ -733,9 +738,25 @@ def mutation_score(project_root, module_rel: str, max_mutants: int = 30,
         )
         pending.append((mutant, mutated_source))
 
+    mutants = [m for m, _ in pending]
+
+    # Baseline-green guard (measurement soundness): a kill/survive split is only
+    # meaningful if the covering tests PASS on the UNMUTATED module. If they
+    # don't — the classic vector is a covering test that reconstructs the source
+    # via `git show HEAD:` and ERRORS uniformly in the sandbox copy (which has no
+    # .git) — then EVERY mutant trivially looks "killed" and the score is a false
+    # 100%. Run the original source through the same harness first; if the suite
+    # is already red, report baseline_ok=False instead of a misleading score.
+    if pending and _verify_killed(root, module_rel, source, verify_timeout,
+                                  covering=covering):
+        return MutationResult(
+            module=module_rel, total=len(mutants), killed=0,
+            survived=len(mutants), score=0.0, survivors=list(mutants),
+            scoped_tests=list(covering), baseline_ok=False,
+        )
+
     killed = 0
     survivors: list[Mutant] = []
-    mutants = [m for m, _ in pending]
     for mutant, mutated_source in pending:
         if _verify_killed(root, module_rel, mutated_source, verify_timeout,
                           covering=covering):

@@ -123,11 +123,14 @@ def test_timeout_counts_mutant_as_killed(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     result = mutation_score(tmp_path, rel, scope_tests=False)
-    # Every mutant's verify run "hangs" -> all counted as killed.
+    # Every run "hangs" — INCLUDING the baseline check on the unmutated module.
+    # The baseline-green guard correctly treats that as not-measurable
+    # (baseline_ok=False, score 0.0) rather than the old misleading FALSE 100%:
+    # a suite that times out even on the original is not a perfect suite.
     assert result.total > 0
-    assert result.killed == result.total
-    assert result.survived == 0
-    assert result.score == 1.0
+    assert result.baseline_ok is False
+    assert result.killed == 0
+    assert result.score == 0.0
 
 
 # --- render_mutation_markdown: the no-survivors and total==0 shapes ---------
