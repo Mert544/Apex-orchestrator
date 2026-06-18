@@ -75,9 +75,13 @@ _HIGH_IMPACT_LABELS = {
 }
 
 # Lens / fact routing for phase assignment. Checked most-specific first.
-_STABILIZE_LABELS = {"untested", "critical-untested", "partial-coverage", "shallow-coverage", "fragile", "missing-ci", "complexity-hotspot", "hotspot-function", "impure-untested", "hub-untested", "convergence", "confluence", "cochange-testgap", "knowledge-risk"}
+_STABILIZE_LABELS = {"untested", "critical-untested", "partial-coverage", "shallow-coverage", "fragile", "complexity-hotspot", "hotspot-function", "impure-untested", "hub-untested", "convergence", "confluence", "cochange-testgap", "knowledge-risk"}
 _SECURE_LABELS = {"sensitive-path", "security-finding", "correctness-bug"}
-_EVOLVE_LABELS = {"dependency-hub", "symbol-hub", "entrypoint", "top-directory", "churn-hotspot", "dream-insight", "polyglot-hotspot", "incomplete-protocol", "generalizable-duplication", "coordinator", "god-class"}
+# ``missing-ci`` is *adding new infrastructure* (a capability), not making the
+# existing code safe to change — so it routes to Evolve, AFTER Secure. Scaffolding
+# a CI workflow must never preempt fixing an actual vulnerability under a tight
+# apply budget: an RCE fix earns the budget before a convenience scaffold does.
+_EVOLVE_LABELS = {"dependency-hub", "symbol-hub", "entrypoint", "top-directory", "churn-hotspot", "dream-insight", "polyglot-hotspot", "incomplete-protocol", "generalizable-duplication", "coordinator", "god-class", "missing-ci"}
 _REFINE_OPS = {"document", "observe", "simplify"}
 _REFINE_LABELS = {"doc-drift", "dead-parameter", "extractable-block", "inlinable-helper", "deep-nesting"}
 _EVOLVE_OPS = {"extend", "generalize", "integrate"}

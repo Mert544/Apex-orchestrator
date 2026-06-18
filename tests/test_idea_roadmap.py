@@ -174,6 +174,18 @@ def test_harden_on_sensitive_path_routes_to_secure():
     assert classify_phase(n) == SECURE
 
 
+def test_missing_ci_routes_to_evolve_after_secure():
+    # Scaffolding CI is *adding new infrastructure* (a capability), so it routes
+    # to Evolve — AFTER Secure. This guards the priority invariant that a real
+    # security fix is never starved out of a tight auto-apply budget by a
+    # convenience CI scaffold (the regression add_ci first introduced).
+    n = _node(operator="root", source_facts=["missing-ci: no CI workflow files detected"])
+    assert classify_phase(n) == EVOLVE
+    # PHASE_ORDER puts Secure strictly before Evolve, so security wins the budget.
+    from app.engine.idea_roadmap import PHASE_ORDER
+    assert PHASE_ORDER.index(SECURE) < PHASE_ORDER.index(EVOLVE)
+
+
 def test_synthesis_routes_to_secure_and_pair_to_evolve():
     assert classify_phase(_node(kind="synthesis", operator="synthesis")) == SECURE
     assert classify_phase(_node(kind="pair", operator="synthesis")) == EVOLVE
