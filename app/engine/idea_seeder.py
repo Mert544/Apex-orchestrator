@@ -632,23 +632,20 @@ class IdeaSeeder:
     def _abductive_enrichment(
         labels: object,
     ) -> tuple[str | None, list[str] | None]:
-        """Grounded root-cause clause + extra source_fact for converging signals.
+        """Grounded reasoning clause + extra source_facts for converging signals.
 
-        Runs the abductive reasoner over the converging signal labels. Returns
-        ``(None, None)`` when fewer than 2 labels are mappable, so the idea stays
-        byte-identical; otherwise a one-line ``root cause: ... (confidence c)``
-        clause for the rationale plus a single ``abductive: ...`` source_fact
-        (appended AFTER source_facts[0], never replacing it). Deterministic.
+        Delegates to the pluggable reasoning-enricher seam
+        (``app.engine.idea_reasoning``), which runs every registered enricher
+        (root-cause/abductive, and any future counterfactual/impact/hypothesis
+        lens) in fixed order and combines their output ADDITIVELY. Returns
+        ``(None, None)`` when nothing fires, so the idea stays byte-identical;
+        with only the abductive enricher registered this is exactly its output
+        (a ``root cause: ... (confidence c)`` clause plus one ``abductive: ...``
+        source_fact appended AFTER source_facts[0]). Deterministic.
         """
-        from app.engine.abductive_reasoning import explanation_clause, explain_signals
+        from app.engine.idea_reasoning import enrich_converging
 
-        result = explain_signals(labels)
-        if result is None:
-            return None, None
-        clause = explanation_clause(result)
-        if not clause:
-            return None, None
-        return clause, [f"abductive: {clause}"]
+        return enrich_converging(labels)
 
     def _seed_fragile_modules(
         self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
