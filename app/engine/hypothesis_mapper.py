@@ -200,3 +200,139 @@ class HypothesisMapper:
         path = Path(source_path)
         name = path.stem
         return f"tests/test_{name}.py"
+
+
+# --- Testable-hypothesis enrichment over converging signal labels -----------
+#
+# A reasoning enricher (same contract as ``app.engine.idea_reasoning``): a pure
+# function over a confluence idea's converging signal labels that reframes the
+# convergence as a FALSIFIABLE hypothesis plus a concrete way to test it. Each
+# mappable label contributes one "probe" — a (risk phrase, test method,
+# falsification condition) triple — and the enricher fires only when >= 2 labels
+# are mappable, so an un-reasoned idea stays byte-identical.
+#
+# Deterministic and order-preserving: no time, no randomness, small explicit
+# basis. Several distinct labels legitimately share a probe (a hub, a symbol-hub
+# and a god-class all read as "concentrates fan-in"); each still counts as one
+# converging label, so two such labels still form a genuine confluence.
+
+# label -> (risk_phrase, test_method, falsification_condition)
+_HYPOTHESIS_PROBES: dict[str, tuple[str, str, str]] = {
+    # missing / shallow coverage on risky code
+    "untested": (
+        "concentrates untested risk",
+        "a characterization test around its hottest path will pin an untested edge case",
+        "branch coverage is already complete",
+    ),
+    "critical-untested": (
+        "concentrates untested risk",
+        "a characterization test around its hottest path will pin an untested edge case",
+        "branch coverage is already complete",
+    ),
+    "impure-untested": (
+        "hides untested side effects",
+        "a test that records its I/O will expose an unasserted side effect",
+        "every effect is already asserted",
+    ),
+    "shallow-coverage": (
+        "is only shallowly covered",
+        "a branch-targeted test will hit a path the current suite skips",
+        "every branch is already exercised",
+    ),
+    "hub-untested": (
+        "is a widely-imported but untested chokepoint",
+        "a regression test here will guard a path many importers depend on",
+        "no importer relies on the untested path",
+    ),
+    # structural concentration of fan-in / responsibilities
+    "hub": (
+        "concentrates fan-in",
+        "isolating one dependency in a seam test will reveal hidden coupling",
+        "the dependency is already injectable",
+    ),
+    "dependency-hub": (
+        "concentrates fan-in",
+        "isolating one dependency in a seam test will reveal hidden coupling",
+        "the dependency is already injectable",
+    ),
+    "symbol-hub": (
+        "concentrates fan-in",
+        "isolating one dependency in a seam test will reveal hidden coupling",
+        "the dependency is already injectable",
+    ),
+    "god-class": (
+        "bundles multiple responsibilities",
+        "a test exercising one responsibility in isolation will need most of the class set up",
+        "each responsibility is already independently constructible",
+    ),
+    # complexity / control-flow risk
+    "complexity-hotspot": (
+        "concentrates branching complexity",
+        "a characterization test around its hottest function will reveal an untested edge case",
+        "branch coverage is already complete",
+    ),
+    "complex-function": (
+        "concentrates branching complexity",
+        "a characterization test around its hottest function will reveal an untested edge case",
+        "branch coverage is already complete",
+    ),
+    "hotspot-function": (
+        "concentrates branching complexity",
+        "a characterization test around its hottest function will reveal an untested edge case",
+        "branch coverage is already complete",
+    ),
+    "deep-nesting": (
+        "buries logic in deep nesting",
+        "an input driving the innermost branch will need an improbably specific setup",
+        "the innermost branch is reachable from a flat input",
+    ),
+    # change-coupling / churn risk
+    "churn-hotspot": (
+        "changes often",
+        "a test pinning current behavior will start failing within a few edits",
+        "behavior stays stable across edits",
+    ),
+    "cochange-testgap": (
+        "co-changes with files it shares no tests with",
+        "a cross-module test will catch a break the per-file suites miss",
+        "the co-change partners never break together",
+    ),
+}
+
+
+def _hypothesis_probes(labels: object) -> list[tuple[str, str, str]]:
+    """Map converging signal labels to hypothesis probes, order-preserving.
+
+    Each mappable label yields its ``(risk, method, falsifier)`` triple in the
+    order it appears; unmapped labels are skipped. ``[]`` for empty/None input.
+    """
+    return [
+        _HYPOTHESIS_PROBES[label]
+        for label in (labels or [])
+        if isinstance(label, str) and label in _HYPOTHESIS_PROBES
+    ]
+
+
+def hypothesis_enrichment(labels: object) -> tuple[str | None, list[str] | None]:
+    """Reframe converging signals as a falsifiable hypothesis + how to test it.
+
+    Returns ``(clause, ["hypothesis: " + clause])`` when ``>= 2`` of the labels
+    map to a probe (a genuine convergence worth testing), else ``(None, None)``
+    so the idea stays byte-identical. The clause names the converging risk, the
+    concrete test that would confirm it, and the condition that would FALSIFY it.
+    Deterministic (no time/random); small explicit basis.
+    """
+    probes = _hypothesis_probes(labels)
+    if len(probes) < 2:
+        return None, None
+
+    risk = probes[0][0]
+    method = probes[0][1]
+    # The second converging probe supplies the falsifier, so the hypothesis is
+    # grounded in the CONFLUENCE rather than a single signal.
+    falsifier = probes[1][2]
+    clause = (
+        f"hypothesis: this code {risk} — {method}; "
+        f"falsified if {falsifier}"
+    )
+    return clause, [f"hypothesis: {clause}"]
