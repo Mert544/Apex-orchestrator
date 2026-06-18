@@ -133,7 +133,7 @@ def test_confluence_idea_carries_root_cause_and_confidence():
     assert "confidence 0.9" in idea.source_facts[1]
     # Every fact after the routing key is an additive reasoning lens.
     assert all(
-        f.split(":", 1)[0] in {"abductive", "counterfactual", "sequence", "hypothesis"}
+        f.split(":", 1)[0] in {"abductive", "interaction", "counterfactual", "sequence", "effort", "hypothesis"}
         for f in idea.source_facts[1:]
     )
     # The rationale surfaces the same grounded clause.
@@ -202,7 +202,7 @@ def test_abductive_abstains_below_threshold_but_identity_intact():
     # and every appended fact is a known reasoning lens.
     assert not any(f.startswith("abductive:") for f in enriched.source_facts)
     assert all(
-        f.split(":", 1)[0] in {"counterfactual", "sequence", "hypothesis"}
+        f.split(":", 1)[0] in {"interaction", "counterfactual", "sequence", "effort", "hypothesis"}
         for f in enriched.source_facts[1:]
     )
 
@@ -214,6 +214,6 @@ def test_enrichment_preserves_first_source_fact_and_order():
     assert idea.source_facts[0].split(":", 1)[0] == "confluence"
     # Everything after index 0 is purely additive reasoning-lens enrichment.
     assert all(
-        f.split(":", 1)[0] in {"abductive", "counterfactual", "sequence", "hypothesis"}
+        f.split(":", 1)[0] in {"abductive", "interaction", "counterfactual", "sequence", "effort", "hypothesis"}
         for f in idea.source_facts[1:]
     )

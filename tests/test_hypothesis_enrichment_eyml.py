@@ -1,9 +1,10 @@
 """Tests for the testable-hypothesis enricher over converging signal labels.
 
 Contract (mirrors the reasoning-enricher seam in app.engine.idea_reasoning):
-``hypothesis_enrichment(labels) -> (clause, ["hypothesis: " + clause])`` when
+``hypothesis_enrichment(labels) -> (clause, [clause])`` when (clause already
 >= 2 labels are mappable, else ``(None, None)`` so an un-reasoned idea stays
-byte-identical. Deterministic; the fact is exactly ``[f"hypothesis: {clause}"]``.
+byte-identical. Deterministic; the fact is exactly ``[clause]`` (clause already
+leads with the ``hypothesis:`` prefix, so no doubling).
 """
 
 from app.engine.hypothesis_mapper import (
@@ -24,7 +25,7 @@ def test_converging_complexity_and_untested_fires():
     assert "characterization test" in clause
     # falsifiable framing
     assert "falsified if" in clause
-    assert facts == [f"hypothesis: {clause}"]
+    assert facts == [clause]
 
 
 def test_falsifier_comes_from_second_converging_probe():
@@ -43,7 +44,7 @@ def test_hub_untested_pair_is_grounded_and_falsifiable():
     assert "chokepoint" in clause
     assert "regression test" in clause
     assert clause.endswith("falsified if every branch is already exercised")
-    assert facts == [f"hypothesis: {clause}"]
+    assert facts == [clause]
 
 
 def test_fewer_than_two_mappable_labels_returns_none():
@@ -66,7 +67,7 @@ def test_unmapped_labels_are_skipped_but_two_mappable_still_fire():
         ("noise", "complexity-hotspot", "junk", "untested")
     )
     assert clause is not None
-    assert facts == [f"hypothesis: {clause}"]
+    assert facts == [clause]
 
 
 def test_non_string_labels_are_ignored():
@@ -87,7 +88,7 @@ def test_deterministic_same_input_same_output():
 
 def test_fact_is_exactly_hypothesis_prefix_plus_clause():
     clause, facts = hypothesis_enrichment(("churn-hotspot", "cochange-testgap"))
-    assert facts == [f"hypothesis: {clause}"]
+    assert facts == [clause]
     assert len(facts) == 1
 
 

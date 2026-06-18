@@ -41,6 +41,18 @@ appended AFTER source_facts[0]). Independently verified a clean SUPERSET: of
 25 ideas only the confluence root and its inherited permutation children
 change; every other idea keeps its exact subject, title, branch_path,
 source_facts[0] and emission order.
+
+Re-baselined a fourth time intentionally: two further reasoning lenses
+(interaction; effort), the hypothesis fact de-doubled to a single
+``hypothesis:`` prefix, and an additive emergent dream-discovery family
+(``discovered-pattern`` roots on ``<module> (discovered)`` subjects, seeded
+LAST). The reasoning lenses are purely additive (they only append facts to an
+existing idea). The dream-discovery family is additive at the SEED level but is a
+new ROOT, so it competes in the bounded idea budget: under the tight 25-cap here
+a high-value discovered root deterministically displaces the lowest-value
+permutation leaves (verified: three v~0.6 ``Extend/Harden/Test`` permutations of
+an atomic ``::simplify`` transform give way to two v0.8 discovered-pattern roots
+and a security-focused test idea — a value-guided trade, not a regression).
 """
 
 import hashlib
@@ -82,8 +94,8 @@ _CASES = [
         "basic",
         {"max_total_ideas": 25, "max_idea_depth": 2, "breadth": 3},
         None,
-        "950bbbaa060fcb0971267817c3446b2a6fed646105dae996fd9ddf70dc2d02e5",
-        "b8fc2ab747251453ce9ba5be67718434f3cbb599842934d0675e3d351eeb8208",
+        "67caebebc18d721267892b3883d6464146b2b595de6c55f75f1818ba15d18743",
+        "5548629f15693953e6d51b1c6a1e2cb7581e5cb0b06e245e556a72637bd97cfb",
     ),
     (
         "facets",
@@ -97,8 +109,8 @@ _CASES = [
             "adaptive_depth": True,
         },
         None,
-        "4f6eba7508a7bb09a77f473328d993adbdb7abd67ab88265c8a62b986df2015c",
-        "0e82c0a6fb45312c688041ede8628a299c3a6d553756b82ce7f64c0fdb0b4872",
+        "eb875c101e36d25d57072acbd7c1dba868bf14e387d192921f894d41cd3e533f",
+        "aea889a069a2a7c6f17f1658b9b40b78143df69eebd8cd8b883f9e5e7897a8b2",
     ),
     (
         "objective",
@@ -109,8 +121,8 @@ _CASES = [
             "min_relevance": 0.3,
         },
         "improve security and harden authentication",
-        "3cf3fa33bd42db12d9041cda0745b27794e0464113c02ce545c3780484ad9689",
-        "86eba6b0e4b086180279b98041691992cee74e34c0af3c5ee7e8c2e451581b5b",
+        "8cc6de6eb6a8f8afd81f8229df1eb71a7d8eb5a4c75b38c677800c864c3e3798",
+        "e76f5521bec0a79366f8228be5c4045d72592f17858ffc3a9040b8e71d48f993",
     ),
 ]
 

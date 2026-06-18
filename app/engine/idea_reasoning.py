@@ -38,6 +38,13 @@ def _abductive(labels: object) -> "tuple[str | None, list[str] | None]":
     return clause, [f"abductive: {clause}"]
 
 
+def _interaction(labels: object) -> "tuple[str | None, list[str] | None]":
+    """Interaction reasoning: HOW the converging concerns compound each other."""
+    from app.engine.interaction_reasoning import interaction_enrichment
+
+    return interaction_enrichment(labels)
+
+
 def _counterfactual(labels: object) -> "tuple[str | None, list[str] | None]":
     """Counterfactual reasoning: the RISK if these concerns stay unaddressed."""
     from app.engine.counterfactual_generator import counterfactual_enrichment
@@ -52,6 +59,13 @@ def _remediation(labels: object) -> "tuple[str | None, list[str] | None]":
     return remediation_enrichment(labels)
 
 
+def _effort(labels: object) -> "tuple[str | None, list[str] | None]":
+    """Effort/ROI reasoning: the COST to fix and the payoff."""
+    from app.engine.effort_reasoning import effort_enrichment
+
+    return effort_enrichment(labels)
+
+
 def _hypothesis(labels: object) -> "tuple[str | None, list[str] | None]":
     """Hypothesis reasoning: a falsifiable claim + how to TEST it."""
     from app.engine.hypothesis_mapper import hypothesis_enrichment
@@ -60,14 +74,17 @@ def _hypothesis(labels: object) -> "tuple[str | None, list[str] | None]":
 
 
 # Fixed-order registry — a coherent reasoning narrative over an idea's converging
-# signals: WHY (root cause) → WHAT IF UNADDRESSED (counterfactual) → IN WHAT ORDER
-# to fix (remediation) → HOW TO VERIFY (hypothesis). The order is the order their
+# signals: WHY (root cause) -> HOW THEY COMPOUND (interaction) -> WHAT IF
+# UNADDRESSED (counterfactual) -> IN WHAT ORDER to fix (remediation) -> AT WHAT
+# COST (effort/ROI) -> HOW TO VERIFY (hypothesis). The order is the order their
 # clauses/facts are concatenated, so it is part of the deterministic contract.
-# New reasoning lenses append their pure enricher (each in its own engine module).
+# New reasoning lenses (each in its own engine module) append their pure enricher.
 REASONING_ENRICHERS: list[Enricher] = [
     _abductive,
+    _interaction,
     _counterfactual,
     _remediation,
+    _effort,
     _hypothesis,
 ]
 

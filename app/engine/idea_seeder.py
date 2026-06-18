@@ -552,6 +552,13 @@ class IdeaSeeder:
         # never competes for a module another seed already owns, and every prior
         # root stays byte-identical and in the same order.
         self._seed_hot_debt(roots, seen_subjects, profile)
+        # Emergent discoveries run LAST, on a (discovered)-suffixed subject no
+        # other family can claim — additive at the SEED level (a prior root is
+        # never dropped or reordered here). Like any root it then competes in the
+        # bounded idea budget downstream, so under a tight cap a high-value
+        # discovered root can deterministically displace the lowest-value
+        # permutation leaves (an intended, value-guided trade, not a regression).
+        self._seed_discovered(roots, seen_subjects, profile)
         return roots
 
     def _seed_correctness_bugs(
@@ -1269,6 +1276,34 @@ class IdeaSeeder:
                 subject=f"{module}::simplify-{transform}",
                 fact_label=fact_label,
                 fact_value=f"{module} (safe behaviour-preserving simplification: {transform})",
+            )
+
+    def _seed_discovered(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
+        # Open-ended emergent patterns (dream discovery): combinations of signals
+        # that co-travel on THIS codebase, which no hand-coded family pre-named.
+        # Each descriptor names a module + a discovered-pattern fact; the subject
+        # carries a ``(discovered)`` suffix so it is purely additive — it never
+        # competes for a module a higher-priority family already owns, and an
+        # empty discovery list seeds nothing (byte-identical).
+        try:
+            from app.engine.dream_discovery import discovered_idea_seeds
+
+            descriptors = discovered_idea_seeds(profile)
+        except Exception:
+            descriptors = []
+        for d in descriptors or []:
+            module = d.get("module", "")
+            fact_label = d.get("fact_label", "")
+            if not (module and fact_label):
+                continue
+            self._append_root(
+                roots, seen_subjects,
+                title=d.get("title", f"Investigate the discovered pattern in {module}"),
+                subject=f"{module} (discovered)",
+                fact_label=fact_label,
+                fact_value=d.get("fact_value", module),
             )
 
     def _seed_top_directories(

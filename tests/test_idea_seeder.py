@@ -749,6 +749,8 @@ def test_seeded_set_matches_frozen_characterization():
         "app/a.py::helper",
         "app/b.py::compute",
         "app/c.py::writer",     # impure-untested function
+        "app/a.py (discovered)",  # emergent dream-discovery patterns, additive, last
+        "app/b.py (discovered)",
     ]
 
     by_subject = {s[1]: s for s in snap}
@@ -766,7 +768,7 @@ def test_seeded_set_matches_frozen_characterization():
         "untested; untested)"
     )
     assert all(
-        f.split(":", 1)[0] in {"abductive", "counterfactual", "sequence", "hypothesis"}
+        f.split(":", 1)[0] in {"abductive", "interaction", "counterfactual", "sequence", "effort", "hypothesis"}
         for f in a[4][1:]
     )
     assert a[9] == (
@@ -942,6 +944,10 @@ _ALL_FAMILIES_ORDER = [
     ("app/mod2.py", "modernization"),
     ("app/ package", "top-directory"),
     ("CI pipeline", "missing-ci"),
+    # Emergent dream-discovery patterns run LAST, on additive (discovered)-suffixed
+    # subjects no other family can claim.
+    ("app/a.py (discovered)", "discovered-pattern"),
+    ("app/b.py (discovered)", "discovered-pattern"),
 ]
 
 

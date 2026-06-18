@@ -316,11 +316,12 @@ def _hypothesis_probes(labels: object) -> list[tuple[str, str, str]]:
 def hypothesis_enrichment(labels: object) -> tuple[str | None, list[str] | None]:
     """Reframe converging signals as a falsifiable hypothesis + how to test it.
 
-    Returns ``(clause, ["hypothesis: " + clause])`` when ``>= 2`` of the labels
-    map to a probe (a genuine convergence worth testing), else ``(None, None)``
-    so the idea stays byte-identical. The clause names the converging risk, the
-    concrete test that would confirm it, and the condition that would FALSIFY it.
-    Deterministic (no time/random); small explicit basis.
+    Returns ``(clause, [clause])`` when ``>= 2`` of the labels map to a probe (a
+    genuine convergence worth testing), else ``(None, None)`` so the idea stays
+    byte-identical. The clause already leads with ``hypothesis:`` (its own lens
+    prefix), so the source_fact is the clause itself — no doubled prefix. The
+    clause names the converging risk, the concrete test that would confirm it,
+    and the condition that would FALSIFY it. Deterministic (no time/random).
     """
     probes = _hypothesis_probes(labels)
     if len(probes) < 2:
@@ -335,4 +336,4 @@ def hypothesis_enrichment(labels: object) -> tuple[str | None, list[str] | None]
         f"hypothesis: this code {risk} — {method}; "
         f"falsified if {falsifier}"
     )
-    return clause, [f"hypothesis: {clause}"]
+    return clause, [clause]
