@@ -223,6 +223,65 @@ _KEYWORD_RULES: list[tuple[Callable[[str, str], bool], list[str]]] = [
 ]
 
 
+# Deterministic translation from a converging signal label (a confluence family
+# name or an idea ``fact_label``) to the concrete CONSEQUENCE of leaving that
+# concern unaddressed — the "what happens if this is NOT fixed?" half of a
+# counterfactual. Small, explicit, and obviously correct; any label not listed
+# here is simply skipped (it contributes no consequence). Several distinct labels
+# legitimately share one consequence (a hub, a dependency-hub and a symbol-hub
+# all blast-radius the same way); the enricher de-duplicates identical fragments
+# so two synonymous labels do not repeat the same clause.
+_SIGNAL_CONSEQUENCE_MAP: dict[str, str] = {
+    # high blast-radius / central coupling — a change ripples outward
+    "hub": "a change here ripples to every dependent",
+    "dependency-hub": "a change here ripples to every dependent",
+    "symbol-hub": "a change here ripples to every dependent",
+    "god-class": "a change here ripples to every dependent",
+    "fragile": "a change here ripples to every dependent",
+    # missing tests — a regression merges and ships unnoticed
+    "untested": "there is no test to catch the regression",
+    "critical-untested": "a safety-critical regression ships with no test to catch it",
+    "shallow-coverage": "the shape-only tests let a real regression slip past unnoticed",
+    # security / sensitive paths — an attacker reaches it unguarded
+    "sensitive-path": "an attacker can reach this path with crafted input",
+    "security-finding": "untrusted input flows into a dangerous call unchecked",
+    "eval": "untrusted input flows into a dynamic-eval call unchecked",
+    "security-eval": "untrusted input flows into a dynamic-eval call unchecked",
+    # complexity — a rare branch stays unexercised and silently wrong
+    "complexity-hotspot": "a rare branch stays unexercised and silently breaks",
+    "complex-function": "a rare branch stays unexercised and silently breaks",
+    # missing automated gate — broken changes merge undetected
+    "missing-ci": "broken changes merge with no automated gate to stop them",
+    # documentation drift — callers act on a stale contract
+    "doc-drift": "callers keep trusting a contract the code no longer honours",
+    "missing-docstring": "callers keep trusting a contract written down nowhere",
+}
+
+
+def counterfactual_enrichment(labels: object) -> "tuple[str | None, list[str] | None]":
+    """Counterfactual ("risk if unaddressed") reasoning over converging labels.
+
+    Maps the converging signal labels to the likely CONSEQUENCE of leaving these
+    concerns unfixed and returns a grounded, deterministic one-line clause plus
+    the matching extra source_fact, mirroring the ``_abductive`` enricher's
+    contract: ``(clause, [f"counterfactual: {clause}"])`` on success, or
+    ``(None, None)`` when fewer than 2 labels are mappable (so an idea without
+    grounded reasoning stays byte-identical). Deterministic — no time/random.
+    """
+    consequences: list[str] = []
+    seen: set[str] = set()
+    for label in labels or []:
+        fragment = _SIGNAL_CONSEQUENCE_MAP.get(label)
+        if fragment is None or fragment in seen:
+            continue
+        seen.add(fragment)
+        consequences.append(fragment)
+    if len(consequences) < 2:
+        return None, None
+    clause = "risk if unaddressed: " + " and ".join(consequences)
+    return clause, [f"counterfactual: {clause}"]
+
+
 @dataclass
 class CounterfactualResult:
     scenarios: list[str] = field(default_factory=list)
