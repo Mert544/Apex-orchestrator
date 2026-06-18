@@ -197,6 +197,16 @@ def _render_polyglot_markdown(summary: dict, findings: list) -> str:
     return "\n".join(lines)
 
 
+def cmd_readiness(args: argparse.Namespace) -> int:
+    """Honest real-world readiness: the fixer-vs-linter actionability ratio
+    (how many planned steps Apex can auto-fix vs only flag) + scope coverage."""
+    from app.engine.readiness_report import render_readiness_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    print(render_readiness_markdown(str(target)))
+    return 0
+
+
 def cmd_polyglot(args: argparse.Namespace) -> int:
     """Non-Python risk surface: TS/JS/YAML/HTML/shell hotspots + findings."""
     from app.engine.polyglot_findings import scan_polyglot_findings
@@ -893,6 +903,14 @@ def register_parsers(subparsers) -> None:
     poly_parser.add_argument("--target", default="", help="Target project root")
     poly_parser.add_argument("--json", action="store_true", help="Emit JSON")
     poly_parser.set_defaults(func=cmd_polyglot)
+
+    # readiness — honest fixer-vs-linter actionability ratio + scope coverage
+    ready_parser = subparsers.add_parser(
+        "readiness",
+        help="Honest real-world readiness: auto-fixable vs flag-only ratio + scope",
+    )
+    ready_parser.add_argument("--target", default="", help="Target project root")
+    ready_parser.set_defaults(func=cmd_readiness)
 
     # outcomes — grade the project against a user-written rubric (CI gate)
     outcomes_parser = subparsers.add_parser(
