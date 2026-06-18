@@ -26,7 +26,7 @@ Enricher = Callable[[object], "tuple[str | None, list[str] | None]"]
 
 
 def _abductive(labels: object) -> "tuple[str | None, list[str] | None]":
-    """Root-cause (abductive) reasoning: why do these signals co-occur?"""
+    """Root-cause (abductive) reasoning: WHY do these signals co-occur?"""
     from app.engine.abductive_reasoning import explain_signals, explanation_clause
 
     result = explain_signals(labels)
@@ -38,10 +38,38 @@ def _abductive(labels: object) -> "tuple[str | None, list[str] | None]":
     return clause, [f"abductive: {clause}"]
 
 
-# Fixed-order registry. New reasoning lenses append their pure enricher here; the
-# order is the order their clauses/facts are concatenated, so it is part of the
-# deterministic contract.
-REASONING_ENRICHERS: list[Enricher] = [_abductive]
+def _counterfactual(labels: object) -> "tuple[str | None, list[str] | None]":
+    """Counterfactual reasoning: the RISK if these concerns stay unaddressed."""
+    from app.engine.counterfactual_generator import counterfactual_enrichment
+
+    return counterfactual_enrichment(labels)
+
+
+def _remediation(labels: object) -> "tuple[str | None, list[str] | None]":
+    """Sequencing reasoning: the safe ORDER to address the converging concerns."""
+    from app.engine.remediation_reasoning import remediation_enrichment
+
+    return remediation_enrichment(labels)
+
+
+def _hypothesis(labels: object) -> "tuple[str | None, list[str] | None]":
+    """Hypothesis reasoning: a falsifiable claim + how to TEST it."""
+    from app.engine.hypothesis_mapper import hypothesis_enrichment
+
+    return hypothesis_enrichment(labels)
+
+
+# Fixed-order registry — a coherent reasoning narrative over an idea's converging
+# signals: WHY (root cause) → WHAT IF UNADDRESSED (counterfactual) → IN WHAT ORDER
+# to fix (remediation) → HOW TO VERIFY (hypothesis). The order is the order their
+# clauses/facts are concatenated, so it is part of the deterministic contract.
+# New reasoning lenses append their pure enricher (each in its own engine module).
+REASONING_ENRICHERS: list[Enricher] = [
+    _abductive,
+    _counterfactual,
+    _remediation,
+    _hypothesis,
+]
 
 
 def enrich_converging(labels: object) -> "tuple[str | None, list[str] | None]":

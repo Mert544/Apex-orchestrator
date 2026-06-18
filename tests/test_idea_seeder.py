@@ -758,9 +758,16 @@ def test_seeded_set_matches_frozen_characterization():
     a = by_subject["app/a.py"]
     assert a[0] == "idea-0"
     assert a[2].startswith("Untangle app/a.py — 3 independent pressures")
-    assert a[4] == (
+    # Routing fact (source_facts[0]) is frozen; reasoning lenses ride additively
+    # after it (high-churn+hub+untested fires counterfactual/remediation/hypothesis;
+    # abductive abstains — only hub is abductive-mappable).
+    assert a[4][0] == (
         "confluence: app/a.py (3 signal families converge: high-churn, hub, "
-        "untested; untested)",
+        "untested; untested)"
+    )
+    assert all(
+        f.split(":", 1)[0] in {"abductive", "counterfactual", "sequence", "hypothesis"}
+        for f in a[4][1:]
     )
     assert a[9] == (
         ("app/a.py", "Klass.run", 30, "cyclomatic 14"),

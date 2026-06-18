@@ -30,6 +30,17 @@ confluence root and its three permutation children (which inherit the parent's
 source_facts) change; every other idea (the security finding included) keeps its
 exact subject, title, branch_path, source_facts[0], and emission order. Ideas
 with < 2 mappable converging signals are byte-identical to before.
+
+Re-baselined a third time intentionally: three further reasoning lenses now
+plug into the enricher seam (``app.engine.idea_reasoning``) — counterfactual
+("risk if unaddressed: ..."), remediation-sequencing ("fix order: ...") and
+hypothesis ("hypothesis: ..."). The fixture's ``app/api.py`` confluence
+(hub + symbol-hub + untested) gains their additional rationale clauses and
+``counterfactual:`` / ``sequence:`` / ``hypothesis:`` source_facts (each
+appended AFTER source_facts[0]). Independently verified a clean SUPERSET: of
+25 ideas only the confluence root and its inherited permutation children
+change; every other idea keeps its exact subject, title, branch_path,
+source_facts[0] and emission order.
 """
 
 import hashlib
@@ -71,8 +82,8 @@ _CASES = [
         "basic",
         {"max_total_ideas": 25, "max_idea_depth": 2, "breadth": 3},
         None,
-        "342315848bf5c40af797e04ee1340d94e145f4f84393a7137661a9d34dec1519",
-        "e0a9846a6e3bf11ec08aba72b1a9b54d0058b5bb11dcb0d8765946106ba8a76a",
+        "950bbbaa060fcb0971267817c3446b2a6fed646105dae996fd9ddf70dc2d02e5",
+        "b8fc2ab747251453ce9ba5be67718434f3cbb599842934d0675e3d351eeb8208",
     ),
     (
         "facets",
@@ -86,8 +97,8 @@ _CASES = [
             "adaptive_depth": True,
         },
         None,
-        "f1deb3ee2af377c055bd3fad7550f343e877f8fc4a6e12964611bc223c5aa839",
-        "e37055deb284e224d475c0a6ac8088d84a00b199ac716f565758a38d9a3916ac",
+        "4f6eba7508a7bb09a77f473328d993adbdb7abd67ab88265c8a62b986df2015c",
+        "0e82c0a6fb45312c688041ede8628a299c3a6d553756b82ce7f64c0fdb0b4872",
     ),
     (
         "objective",
@@ -98,8 +109,8 @@ _CASES = [
             "min_relevance": 0.3,
         },
         "improve security and harden authentication",
-        "6d90accb975b41a1897f6c6cb582ae72a47445838702d15bbc01788b9a1d6431",
-        "9a7f56a94e95ae01927e2ab5027b16c2b1d466a54168caca275e192033f93b66",
+        "3cf3fa33bd42db12d9041cda0745b27794e0464113c02ce545c3780484ad9689",
+        "86eba6b0e4b086180279b98041691992cee74e34c0af3c5ee7e8c2e451581b5b",
     ),
 ]
 

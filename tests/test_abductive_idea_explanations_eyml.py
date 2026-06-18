@@ -126,11 +126,16 @@ def test_confluence_idea_carries_root_cause_and_confidence():
     idea = _confluence_root(_hub_symbolhub_confluence())
     # source_facts[0] (the routing key) is untouched...
     assert idea.source_facts[0].startswith("confluence:")
-    # ...and a NEW abductive fact rides after it.
-    assert len(idea.source_facts) == 2
+    # ...and the abductive fact rides FIRST among the additive reasoning facts
+    # (registry order: abductive before any other lens that also fires).
     assert idea.source_facts[1].startswith("abductive: root cause:")
     assert "god module" in idea.source_facts[1]
     assert "confidence 0.9" in idea.source_facts[1]
+    # Every fact after the routing key is an additive reasoning lens.
+    assert all(
+        f.split(":", 1)[0] in {"abductive", "counterfactual", "sequence", "hypothesis"}
+        for f in idea.source_facts[1:]
+    )
     # The rationale surfaces the same grounded clause.
     assert "root cause:" in idea.rationale
     assert "confidence 0.9" in idea.rationale
@@ -153,14 +158,15 @@ def _seed_without_enrichment(profile: ProjectProfile):
     return seeder.seed(profile)
 
 
-def test_confluence_with_under_two_mappable_signals_is_byte_identical():
-    # families = high-churn + untested + fragile -> ZERO mappable signals, so
-    # the idea must be identical to the un-enriched seed.
+def test_confluence_with_no_mappable_signals_is_byte_identical():
+    # families that NO reasoning lens maps (high-churn / polyglot-hotspot /
+    # knowledge-risk) -> the enriched seed must be byte-identical to the
+    # un-enriched one across EVERY registered lens, not just abductive.
     profile = _profile(
         confluence_modules=[{
             "module": "app/m.py",
             "family_count": 3,
-            "families": ("fragile", "high-churn", "untested"),
+            "families": ("high-churn", "polyglot-hotspot", "knowledge-risk"),
         }],
         ci_files=["ci.yml"],
     )
@@ -169,11 +175,14 @@ def test_confluence_with_under_two_mappable_signals_is_byte_identical():
     assert [i.model_dump() for i in enriched] == [i.model_dump() for i in plain]
     conv = [r for r in enriched
             if r.source_facts and r.source_facts[0].startswith("confluence:")][0]
-    assert len(conv.source_facts) == 1  # no abductive fact appended
+    assert len(conv.source_facts) == 1  # no reasoning fact appended
 
 
-def test_single_mappable_signal_leaves_idea_identity_intact():
-    # hub + untested + high-churn -> exactly 1 mappable (hub) -> no enrichment.
+def test_abductive_abstains_below_threshold_but_identity_intact():
+    # hub + untested + high-churn -> only 1 abductive-mappable signal (hub), so
+    # ABDUCTIVE abstains. Other lenses (counterfactual/remediation/hypothesis) may
+    # still enrich, but the idea's IDENTITY (subject/title/branch_path and the
+    # routing source_facts[0]) is preserved and every addition is purely additive.
     profile = _profile(
         confluence_modules=[{
             "module": "app/h.py",
@@ -188,9 +197,14 @@ def test_single_mappable_signal_leaves_idea_identity_intact():
     assert enriched.subject == plain.subject
     assert enriched.title == plain.title
     assert enriched.branch_path == plain.branch_path
-    assert enriched.source_facts == plain.source_facts
-    assert enriched.rationale == plain.rationale
-    assert len(enriched.source_facts) == 1
+    assert enriched.source_facts[0] == plain.source_facts[0]
+    # Abductive abstained (no root-cause fact), yet the routing key is untouched
+    # and every appended fact is a known reasoning lens.
+    assert not any(f.startswith("abductive:") for f in enriched.source_facts)
+    assert all(
+        f.split(":", 1)[0] in {"counterfactual", "sequence", "hypothesis"}
+        for f in enriched.source_facts[1:]
+    )
 
 
 def test_enrichment_preserves_first_source_fact_and_order():
@@ -198,5 +212,8 @@ def test_enrichment_preserves_first_source_fact_and_order():
     # ever APPEND — never reorder.
     idea = _confluence_root(_hub_symbolhub_confluence())
     assert idea.source_facts[0].split(":", 1)[0] == "confluence"
-    # Everything after index 0 is purely additive enrichment.
-    assert all(f.startswith("abductive:") for f in idea.source_facts[1:])
+    # Everything after index 0 is purely additive reasoning-lens enrichment.
+    assert all(
+        f.split(":", 1)[0] in {"abductive", "counterfactual", "sequence", "hypothesis"}
+        for f in idea.source_facts[1:]
+    )
