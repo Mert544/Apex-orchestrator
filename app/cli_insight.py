@@ -155,6 +155,18 @@ def cmd_dream(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_intelligence(args: argparse.Namespace) -> int:
+    """Unified Apex Intelligence report — anomalies, validated discoveries,
+    emerging hotspots, proposed fix-rules, and self-assessment in one view."""
+    from app.engine.intelligence_report import build_intelligence_report
+    from app.tools.project_profile import ProjectProfiler
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    profile = ProjectProfiler(str(target)).profile(light=False)
+    print(build_intelligence_report(profile, str(target)))
+    return 0
+
+
 def cmd_outcomes(args: argparse.Namespace) -> int:
     """Grade the project against YOUR written rubric (per-criterion gaps)."""
     from app.engine.outcomes import (
@@ -818,6 +830,15 @@ def register_parsers(subparsers) -> None:
                               help="Apply the curation (default only reports; inputs untouched)")
     dream_parser.add_argument("--json", action="store_true", help="Emit JSON")
     dream_parser.set_defaults(func=cmd_dream)
+
+    # intelligence — unified Apex Intelligence report (research organs in one view)
+    intel_parser = subparsers.add_parser(
+        "intelligence",
+        help="Unified Apex Intelligence: anomalies, validated discoveries, "
+             "emerging hotspots, proposed fix-rules, self-assessment",
+    )
+    intel_parser.add_argument("--target", default="", help="Target project root")
+    intel_parser.set_defaults(func=cmd_intelligence)
 
     # outcomes — grade the project against a user-written rubric (CI gate)
     outcomes_parser = subparsers.add_parser(
