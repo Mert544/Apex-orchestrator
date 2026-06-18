@@ -1092,7 +1092,7 @@ _FACT_EXPECTED = {
     "entrypoint": ("design_task", False),
     "dependency-hub": ("design_task", False),
     "symbol-hub": ("design_task", False),
-    "missing-ci": ("add_ci", False),
+    "missing-ci": ("add_ci", True),
     "polyglot-hotspot": ("design_task", False),
     "incomplete-protocol": ("design_task", False),
     "generalizable-duplication": ("design_task", False),

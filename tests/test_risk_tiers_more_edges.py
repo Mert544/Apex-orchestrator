@@ -10,8 +10,16 @@ from app.execution.risk_tiers import TIER_BY_ACTION, tier_for
 
 
 def test_tier0_actions_are_semantics_preserving():
-    for action in ("create_test_stub", "add_docstring", "organize_imports", "modernize_comparisons"):
+    for action in ("create_test_stub", "add_docstring", "organize_imports",
+                   "modernize_comparisons", "add_ci"):
         assert tier_for(action) == 0
+
+
+def test_add_ci_is_tier0_additive():
+    # A scaffolded CI workflow is a brand-new file that touches no existing
+    # source — additive-only, so it earns Tier 0 like a new test file, not the
+    # design-level Tier 2 it was once parked at.
+    assert tier_for("add_ci") == 0
 
 
 def test_tier1_actions_are_behavior_adjacent():
@@ -21,7 +29,6 @@ def test_tier1_actions_are_behavior_adjacent():
 
 def test_tier2_actions_are_design_level():
     assert tier_for("design_task") == 2
-    assert tier_for("add_ci") == 2
 
 
 def test_unknown_action_defaults_to_cautious_tier1():

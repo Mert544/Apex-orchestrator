@@ -43,7 +43,7 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "entrypoint": ("design_task", "Grow capability behind entrypoint {s}", False),
     "dependency-hub": ("design_task", "Plan an evolution of central module {s}", False),
     "symbol-hub": ("design_task", "Generalize the symbol-rich module {s}", False),
-    "missing-ci": ("add_ci", "Add a CI workflow that runs the test suite", False),
+    "missing-ci": ("add_ci", "Add a CI workflow that runs the test suite", True),
     # Polyglot hotspot: a large, active NON-Python file. Apex has NO deterministic
     # transform for non-Python source, so this is strictly recommend-only — it must
     # NOT claim to be executable.
@@ -530,8 +530,22 @@ class IdeaActionBridge:
             "create_test_stub": self._stub_unserviceable,
             "harden_security": self._harden_unserviceable,
             "organize_imports": self._imports_unserviceable,
+            "add_ci": self._ci_unserviceable,
         }.get(action_type)
         return probe(target, project_root) if probe else ""
+
+    @staticmethod
+    def _ci_unserviceable(target: str, project_root: str) -> str:
+        """Why a CI cannot be scaffolded right now — "" when it can."""
+        from app.execution.ci_scaffold import has_ci
+
+        if has_ci(project_root):
+            return "CI already present; nothing to add"
+        from app.execution.ci_scaffold import generate_ci_workflow
+
+        if generate_ci_workflow(project_root) is None:
+            return "not a recognisably Python project; human review"
+        return ""
 
     def _expand_idea(self, idea: IdeaNode, default_phase: str = "",
                      project_root: str = "") -> list[ActionStep]:
@@ -563,6 +577,13 @@ class IdeaActionBridge:
         # the function name stays in the title/description for the test author.
         file_part = idea.subject.split("::", 1)[0]
         target = file_part if "/" in file_part or file_part.endswith(".py") else ""
+        # ``add_ci`` acts on the project, not a source file: its subject is
+        # "CI pipeline" (no path), so give it the fixed workflow path as target
+        # — keeping the step executable (``bool(target)``) while the actual file
+        # is (re)resolved against the real tree in ``_step_targets``.
+        if action_type == "add_ci":
+            from app.execution.ci_scaffold import CI_WORKFLOW_PATH
+            target = CI_WORKFLOW_PATH
         # Test-gap actions get CONCRETE phrasing: when the idea carries
         # function-grain anchors, name the actual function(s) + line(s); else
         # fall back to the module-level template so existing ideas don't shift.
@@ -614,6 +635,11 @@ class IdeaActionBridge:
         "organize_imports": ["organize imports cleanup unused"],
         "harden_security": ["add guard clause input validation security"],
         "create_test_stub": ["test coverage"],
+        # Additive project scaffolding: build a CI gate a project lacks. Like
+        # create_test_stub it writes a brand-new file (resolved in
+        # ``_step_targets``/``_generate``, not from ``step.target``); listed
+        # here so ``_step_targets`` recognises it as a real transform objective.
+        "add_ci": ["scaffold continuous integration"],
         "modernize_comparisons": ["modernize none-comparison"],
         "fix_mutable_defaults": ["mutable default argument"],
         "merge_nested_if": ["merge nested if flatten guard"],
@@ -984,11 +1010,24 @@ class IdeaActionBridge:
         the step has nothing a transform can act on."""
         if not step.executable or step.action_type not in self._ACTION_STRATEGY:
             return None
+        # ``add_ci`` scaffolds a non-``.py`` project file, so it is resolved
+        # before the Python-target guard: the workflow path when the project
+        # can take one, else None (already has CI / not a Python project).
+        if step.action_type == "add_ci":
+            return self._ci_target(project_root)
         if not step.target or not step.target.endswith(".py"):
             return None
         if step.action_type == "create_test_stub":
             return self._stub_target(step, project_root)
         return [step.target]
+
+    @staticmethod
+    def _ci_target(project_root: str) -> list[str] | None:
+        """The CI workflow path to create, or None when none should be added
+        (the project already has CI, or does not look like Python)."""
+        from app.execution.ci_scaffold import CI_WORKFLOW_PATH, generate_ci_workflow
+
+        return [CI_WORKFLOW_PATH] if generate_ci_workflow(project_root) else None
 
     @staticmethod
     def _vet_result(result):
@@ -1009,6 +1048,14 @@ class IdeaActionBridge:
         target_files = self._step_targets(step, project_root)
         if target_files is None:
             return None
+
+        # ``add_ci`` is not an AST rewrite of an existing file — it scaffolds a
+        # new workflow file. Route it to its dedicated additive generator, which
+        # returns into the IDENTICAL guarded apply gate as any other patch.
+        if step.action_type == "add_ci":
+            from app.execution.ci_scaffold import generate_ci_workflow
+
+            return self._vet_result(generate_ci_workflow(project_root))
 
         # Behaviour-preserving simplifications dispatch straight to their AST
         # transform (the generator's EditStrategy doesn't route them), then
