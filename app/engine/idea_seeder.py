@@ -494,8 +494,16 @@ class IdeaSeeder:
             out.append({**it, "subject": subject})
         return out
 
+    # How many fused discovery leads the OPT-IN discovery surface may append.
+    # Small on purpose: discovery roots are recommend-only human-judgment leads
+    # appended AFTER every budgeted seed, so a tight cap keeps them from ever
+    # flooding the idea set (the prior auto-seed attempt displaced budgeted
+    # synthesis precisely because it was uncapped and competed for the cap).
+    _DISCOVERY_CAP = 3
+
     def seed(self, profile: ProjectProfile, objective: str | None = None,
-             accelerating: dict[str, dict] | None = None) -> list[IdeaNode]:
+             accelerating: dict[str, dict] | None = None,
+             *, seed_discoveries: bool = False) -> list[IdeaNode]:
         roots: list[IdeaNode] = []
         seen_subjects: set[str] = set()
         self._accel = accelerating or {}
@@ -557,7 +565,75 @@ class IdeaSeeder:
         # budget, displacing valuable synthesis ideas (e.g. import-cycle pairs) and
         # facet zoom under a saturated cap. The discovery function stays available
         # for a dedicated, non-competing surface (a discoveries report) instead.
+        #
+        # OPT-IN discovery leads (default OFF = byte-identical above): only when
+        # the caller explicitly asks, APPEND the fused cross-engine discovery
+        # leads as recommend-only roots — AFTER every budgeted seed, on a
+        # ``::discovery-<kind>`` subject suffix no other family can claim, capped
+        # at ``_DISCOVERY_CAP``. They are purely additive: every root above stays
+        # byte-identical and in the same order, and these never compete for or
+        # displace the budgeted synthesis (the exact mistake the prior auto-seed
+        # attempt made).
+        if seed_discoveries:
+            self._seed_discoveries(roots, seen_subjects, profile)
         return roots
+
+    def _seed_discoveries(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
+        """Append fused discovery leads as recommend-only roots (OPT-IN).
+
+        Best-effort + deterministic: if ``synthesize_discoveries`` raises or
+        returns ``[]``, nothing is appended and the seeded set is unchanged.
+        Leads are taken in the synthesis layer's own deterministic rank order,
+        re-sorted defensively by ``(-score, kind, subject)`` (a stable, total
+        key), and capped at ``_DISCOVERY_CAP``. Each root carries a distinct
+        ``<subject>::discovery-<kind>`` subject so it NEVER collides with or
+        deduplicates against an existing module subject, and a
+        ``discovery-<kind>`` fact_label that the bridge's fact→action mapping
+        routes to a recommend-only ``design_task`` (these are human-judgment
+        leads, never executable).
+        """
+        root_path = getattr(self, "project_root", "") or getattr(profile, "root", "") or ""
+        if not root_path:
+            return
+        try:
+            from app.engine.discovery_synthesis import synthesize_discoveries
+
+            leads = synthesize_discoveries(str(root_path), profile=profile)
+        except Exception:
+            return
+        if not leads:
+            return
+        ordered = sorted(
+            (lead for lead in leads if lead.get("subject") and lead.get("kind")),
+            key=lambda lead: (
+                -float(lead.get("score", 0.0)),
+                str(lead.get("kind", "")),
+                str(lead.get("subject", "")),
+            ),
+        )
+        for lead in ordered[: self._DISCOVERY_CAP]:
+            subject = str(lead["subject"])
+            kind = str(lead["kind"])
+            score = float(lead.get("score", 0.0))
+            source = str(lead.get("source", ""))
+            evidence = str(lead.get("evidence", "")).rstrip()
+            corroborated = int(lead.get("corroborated_by", 1) or 1)
+            corr_clause = (
+                f", corroborated by {corroborated} engines"
+                if corroborated > 1 else ""
+            )
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Investigate the {kind} discovery lead on {subject} "
+                       f"(score {score:.4f}{corr_clause}) — a recommend-only "
+                       f"cross-engine lead for human judgment"),
+                subject=f"{subject}::discovery-{kind}",
+                fact_label=f"discovery-{kind}",
+                fact_value=(f"{subject} ({kind} lead, score {score:.4f}, "
+                            f"from {source}{corr_clause}: {evidence})"),
+            )
 
     def _seed_correctness_bugs(
         self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile

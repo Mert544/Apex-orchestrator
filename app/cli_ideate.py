@@ -78,6 +78,11 @@ def _build_ideate_report(args: argparse.Namespace, target: Path):
             "fractal_facets": getattr(args, "facets", False),
             "facet_depth": getattr(args, "facet_depth", 1),
             "adaptive_depth": getattr(args, "adaptive", False),
+            # Opt-in (default OFF): append the fused cross-engine DISCOVERY
+            # leads as recommend-only roots AFTER every budgeted seed. The
+            # seeder caps and suffixes them so they never displace budgeted
+            # synthesis; the engine forwards this key to ``IdeaSeeder.seed``.
+            "seed_discoveries": getattr(args, "include_discoveries", False),
         },
         project_root=str(target),
         extra_operators=extra_operators,
@@ -515,6 +520,14 @@ def register_parsers(subparsers) -> None:
         "--roadmap",
         action="store_true",
         help="Sequence ideas into a prioritized roadmap (Stabilize→Secure→Evolve→Refine)",
+    )
+    ideate_parser.add_argument(
+        "--include-discoveries",
+        action="store_true",
+        dest="include_discoveries",
+        help="Opt-in: append the fused cross-engine discovery leads as "
+        "recommend-only ideas (capped, appended after the budgeted seeds — "
+        "never displaces them)",
     )
     ideate_parser.add_argument(
         "--facets",
