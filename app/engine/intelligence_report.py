@@ -59,8 +59,11 @@ _MAX_SOURCE_BYTES = 200_000
 # Empty-state line reused by every section that has nothing to report.
 _NOTHING = "_Nothing notable._"
 
-# The three hypothesis verdicts, in the order they are rendered.
-_VERDICTS = ("confirmed", "weak", "refuted")
+# The hypothesis verdicts, in the order they are rendered. ``candidate`` (a clean
+# rule on a thin 2-4 module population) is surfaced too: dropping it would turn the
+# over-claim suppression into a SILENT under-report — an honest low-support lead
+# must be shown as "candidate", not hidden as "nothing notable".
+_VERDICTS = ("confirmed", "candidate", "weak", "refuted")
 
 
 def _safe(call: Callable[[], Any], default: Any) -> Any:
