@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import ast
 
-import app.tools.simplification_scan as ss
 from app.execution.semantic.transforms import identity_literal as il
 from app.tools.project_profile import (
     _SIMPLIFICATION_SCAN_CAP,
@@ -59,7 +58,11 @@ def _capture_scan_max_files(monkeypatch, max_files: int) -> int:
         captured["max_files"] = max_files
         return []
 
-    monkeypatch.setattr(ss, "scan_simplifications", fake_scan)
+    # Patch by dotted string so monkeypatch re-resolves the module from
+    # sys.modules — robust if another test reloaded simplification_scan (a
+    # module-object patch via ``ss`` would miss the reloaded module and the real
+    # scan would run, which is exactly the cross-test-ordering failure this avoids).
+    monkeypatch.setattr("app.tools.simplification_scan.scan_simplifications", fake_scan)
     prof = ProjectProfiler(".", max_files=max_files)
     profile = ProjectProfile(root=".")
     prof._scan_simplifications(profile)
@@ -113,7 +116,7 @@ def test_scan_simplifications_best_effort_swallows_failure(monkeypatch):
     def boom(root, max_files=_SIMPLIFICATION_SCAN_CAP):
         raise RuntimeError("scan blew up")
 
-    monkeypatch.setattr(ss, "scan_simplifications", boom)
+    monkeypatch.setattr("app.tools.simplification_scan.scan_simplifications", boom)
     prof = ProjectProfiler(".", max_files=2000)
     profile = ProjectProfile(root=".")
     profile.simplification_opportunities = [{"stale": "entry"}]
