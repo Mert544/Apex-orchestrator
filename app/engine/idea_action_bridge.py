@@ -2079,9 +2079,47 @@ class _MaintenancePass:
                 self.committed += 1
         self._record_outcome(step, r, entry)
 
+    @staticmethod
+    def _unverified_behaviour_change(r: dict, tier: int) -> bool:
+        """AUTONOMOUS-COMMIT GATE: should this applied step be withheld from
+        the auto-commit because it is an unverified behaviour change?
+
+        True only when BOTH hold:
+          (a) ``tier >= 1`` — the action is behaviour-adjacent (a Tier-1
+              security rewrite like ``eval`` → ``literal_eval``); Tier-0
+              fixes are semantics-preserving/additive and commit freely.
+          (b) the coverage-aware ``verified`` is False — i.e. no test
+              actually exercises the changed function. A green suite whose
+              only cover is the test-first smoke-import shield reports
+              ``coverage`` in {"none", "module"} and ``verified=False``;
+              a real function-level test reports ``verified=True``.
+
+        Such a step stays APPLIED on disk but is NOT committed: a buyer must
+        never get an unverified behaviour change silently auto-committed.
+        """
+        if tier < 1:
+            return False
+        if r.get("verified") is True:
+            return False
+        return r.get("coverage") in (None, "none", "module")
+
     def _settle_applied(self, step: ActionStep, r: dict, entry: dict) -> None:
         """Bookkeeping for an applied fix: commit, then harden-converge."""
         self.applied += 1
+        tier = entry.get("risk_tier", 0)
+        # Autonomous mode (the only mode where ``committer`` is set) must never
+        # auto-commit an unverified behaviour change. Keep it applied on disk —
+        # supervised/dry-run never reach here with a committer, so their apply
+        # behaviour is unchanged — but withhold the commit and say so.
+        if self.committer is not None and self._unverified_behaviour_change(r, tier):
+            entry["committed"] = False
+            entry["commit_withheld"] = True
+            entry["reason"] = (
+                "applied, NOT committed — unverified behaviour change "
+                "(tier-1 fix covered only by a smoke shield, no function-level "
+                "test); review before committing"
+            )
+            return
         ok, h = self._commit(r, step.action_type)
         entry["committed"] = ok
         if ok:
