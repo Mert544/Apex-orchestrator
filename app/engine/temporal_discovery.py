@@ -4,17 +4,38 @@ a project's git history.
 Apex's other git analyzers (``cross_language_coupling``, ``blast_radius``) read a
 SNAPSHOT of co-change: which files move together across the whole window. This
 module adds the missing *time axis*. The same bounded ``git log --name-only`` pass
-is split into an OLDER half and a RECENT half of the commit window, and the two
-halves are compared, so the questions it answers are about CHANGE OVER TIME:
+is read into a per-commit list and the two ends of the window are compared, so the
+questions it answers are about CHANGE OVER TIME:
 
   - ``file_evolution`` — per-file change frequency plus the co-change groups that
     have formed: files that keep changing TOGETHER, an emergent coupling that
     accretes over the window.
-  - ``emerging_hotspots`` — files whose change-rate is ACCELERATING: more changes
-    in the recent half than the older half. A pattern that is SPREADING, not just
-    present. Each carries a ``trend`` of ``accelerating`` / ``stable`` / ``cooling``.
+  - ``emerging_hotspots`` — files whose change-rate is ACCELERATING: a pattern that
+    is SPREADING, not just present. Each carries a ``trend`` of ``accelerating`` /
+    ``stable`` / ``cooling``.
   - ``spreading_pairs`` — co-change pairs whose coupling STRENGTHENED across the
-    window (more co-changes recently than before): seams that are tightening.
+    window: seams that are tightening.
+
+Acceleration signal — half-split by default, opt-in TIME-DECAY.
+---------------------------------------------------------------
+By default ``emerging_hotspots`` / ``spreading_pairs`` split the window into an
+OLDER half and a RECENT half (newest-first) and compare raw counts — the original,
+unchanged behaviour, so existing callers and idea sets never shift.
+
+That hard boundary is sensitive to data SHAPE: a file whose changes all fall
+inside one contiguous burst, or that sits right on the median commit, can read as
+"stable" even though its activity is plainly clustered toward the recent end —
+real acceleration the split misses (flagged by an intelligence red-team). Passing
+``decay=True`` opts into a TIME-DECAY signal that fixes this: every commit's
+contribution is weighted by its ORDER in the newest-first log (NOT wall-clock
+time, so the verdict stays deterministic and offline): the newest commit weighs
+``_DECAY_BASE**0 == 1``, the next ``_DECAY_BASE**1``, and so on (see
+``_decay_weights``). A subject's acceleration is its weighted activity MINUS the
+weighted activity an evenly-spread subject with the same number of changes would
+earn (``_acceleration``); recent-clustered > 0, evenly-spread ~= 0, old-clustered
+< 0. There is no median boundary to straddle, so a bursty/contiguous history is
+scored on the same smooth curve as any other. The raw recent/older half counts
+are still REPORTED for continuity, plus a rounded ``accel`` field.
 
 Established discipline (matching the sibling git analyzers):
 
@@ -67,6 +88,19 @@ _SOURCE_EXTENSIONS = {
 _TREND_ACCELERATING = "accelerating"
 _TREND_STABLE = "stable"
 _TREND_COOLING = "cooling"
+
+# Time-decay constant. Each commit's contribution to "recent activity" is scaled
+# by ``_DECAY_BASE ** position`` where ``position`` is the commit's 0-based index
+# in the NEWEST-FIRST log (0 == newest). 0.9 gives the newest commit ~2.6x the
+# weight of one 10 commits back and decays smoothly to ~0 over the window, so a
+# file is judged on WHERE in the sequence its changes fall, with no hard boundary
+# to straddle. Fixed (no wall-clock, no random) => deterministic and offline.
+_DECAY_BASE = 0.9
+
+# Acceleration verdicts use a small epsilon so floating-point dust around an
+# evenly-spread file (acceleration ~= 0) reads as "stable" rather than flapping
+# between accelerating/cooling. Fixed => deterministic.
+_ACCEL_EPSILON = 1e-9
 
 
 def _read_git_log(root_path: Path) -> str | None:
@@ -161,6 +195,72 @@ def _split_halves(commits: list[list[str]]) -> tuple[list[list[str]], list[list[
     return recent, older
 
 
+def _decay_weights(n: int) -> list[float]:
+    """Recency weight for each of ``n`` newest-first commits.
+
+    Commit ``i`` (``i == 0`` is the newest) earns ``_DECAY_BASE ** i``, so weight
+    falls off smoothly from 1.0 at the recent end toward 0 at the old end. Returns
+    ``[]`` for ``n <= 0``. Pure and fixed-constant => deterministic.
+    """
+    return [_DECAY_BASE ** i for i in range(max(n, 0))]
+
+
+def _weighted_activity(
+    commits: list[list[str]], weights: list[float],
+) -> dict[str, float]:
+    """Sum each file's recency weights across ``commits`` (newest-first).
+
+    ``commits[i]`` is paired with ``weights[i]``; a file that changes in a recent
+    commit accrues more than the same change made long ago. Pure.
+    """
+    activity: dict[str, float] = {}
+    for files, w in zip(commits, weights):
+        for rel in files:
+            activity[rel] = activity.get(rel, 0.0) + w
+    return activity
+
+
+def _weighted_pair_activity(
+    commits: list[list[str]], weights: list[float],
+) -> dict[tuple[str, str], float]:
+    """Sum each co-change pair's recency weights across ``commits`` (newest-first).
+
+    Each commit's files are pre-sorted, so every ``combinations`` pair is canonical
+    ``(a, b)`` with ``a < b``. Pure.
+    """
+    activity: dict[tuple[str, str], float] = {}
+    for files, w in zip(commits, weights):
+        for pair in combinations(files, 2):
+            activity[pair] = activity.get(pair, 0.0) + w
+    return activity
+
+
+def _acceleration(weighted: float, count: int, mean_weight: float) -> float:
+    """How much a subject's recency-weighted activity beats an even baseline.
+
+    ``count`` changes spread EVENLY across the window would earn
+    ``count * mean_weight`` (the mean per-commit weight). The excess over that
+    baseline is the acceleration: > 0 when changes cluster RECENT, ~= 0 when
+    evenly spread, < 0 when clustered OLD. Independent of any median boundary, so
+    a contiguous burst is scored on the same smooth curve. Pure.
+    """
+    return weighted - count * mean_weight
+
+
+def _accel_trend(accel: float) -> str:
+    """Classify an acceleration value into accelerating / stable / cooling.
+
+    A strictly positive excess (beyond ``_ACCEL_EPSILON`` float dust) is
+    accelerating, strictly negative is cooling, and the even-spread neighbourhood
+    is stable. Pure, fixed-epsilon => deterministic.
+    """
+    if accel > _ACCEL_EPSILON:
+        return _TREND_ACCELERATING
+    if accel < -_ACCEL_EPSILON:
+        return _TREND_COOLING
+    return _TREND_STABLE
+
+
 def _count_files(commits: list[list[str]]) -> dict[str, int]:
     """Per-file change count across ``commits`` (how many commits touched it). Pure."""
     counts: dict[str, int] = {}
@@ -239,20 +339,30 @@ def file_evolution(root: str, max_commits: int = _COMMIT_WINDOW) -> dict:
     }
 
 
-def emerging_hotspots(root: str) -> list[dict]:
+def emerging_hotspots(root: str, decay: bool = False) -> list[dict]:
     """Files whose change-rate is ACCELERATING across the window.
 
-    The commit window is split into a RECENT half and an OLDER half (newest-first).
-    For each file we compare its change count in each half::
+    Two signals, selected by ``decay`` (default OFF so existing callers and idea
+    sets never shift):
 
-        recent > older  -> "accelerating"   (spreading)
-        recent == older -> "stable"
-        recent < older  -> "cooling"
+    * ``decay=False`` — the historical HARD HALF-SPLIT. The window is split into a
+      RECENT half and an OLDER half (newest-first); a file accelerates iff its
+      recent change count strictly exceeds its older count. Each entry is
+      ``{"module", "recent", "older", "trend": "accelerating"}``, sorted by
+      ``(-(recent - older), -recent, module)``.
 
-    Only files that ARE accelerating are returned — patterns that are spreading,
-    not merely present. Each entry is
-    ``{"module", "recent", "older", "trend": "accelerating"}``, sorted by
-    ``(-(recent - older), -recent, module)`` so the fastest-spreading file leads.
+    * ``decay=True`` — the TIME-DECAY signal that is robust to bursty / contiguous
+      histories (the data-shape case the hard split missed). Each commit is
+      weighted by its RECENCY (its order in the newest-first log; see
+      ``_decay_weights``). A file's ``accel`` is its recency-weighted activity
+      minus the activity an evenly-spread file with the same change count would
+      earn (``_acceleration``): positive when its changes cluster toward the RECENT
+      end, ~= 0 when evenly spread, negative when clustered old. There is no median
+      boundary to straddle, so a file whose changes sit inside one contiguous burst
+      near the recent end is still seen as accelerating even when its raw
+      recent/older halves tie. Each entry adds an ``accel`` field and rows sort by
+      ``(-accel, -recent, module)``. ``recent``/``older`` are still the raw
+      half-split counts (reported for continuity).
 
     Pure and total: a non-git / one-commit / shallow repo (no two halves to
     compare) degrades to ``[]`` and never raises; deterministic for a repo state.
@@ -260,37 +370,70 @@ def emerging_hotspots(root: str) -> list[dict]:
     commits = _load_commits(root)
     if not commits:
         return []
-    recent_commits, older_commits = _split_halves(commits)
-    if not recent_commits or not older_commits:
+
+    if not decay:
+        recent_commits, older_commits = _split_halves(commits)
+        if not recent_commits or not older_commits:
+            return []
+        recent = _count_files(recent_commits)
+        older = _count_files(older_commits)
+        rows: list[dict] = []
+        for mod in recent:
+            r = recent[mod]
+            o = older.get(mod, 0)
+            if _trend(r, o) == _TREND_ACCELERATING:
+                rows.append({"module": mod, "recent": r, "older": o,
+                             "trend": _TREND_ACCELERATING})
+        rows.sort(key=lambda row: (-(row["recent"] - row["older"]),
+                                   -row["recent"], row["module"]))
+        return rows
+
+    if len(commits) < 2:
         return []
+    weights = _decay_weights(len(commits))
+    mean_weight = sum(weights) / len(commits)
+    weighted = _weighted_activity(commits, weights)
+    counts = _count_files(commits)
+    recent_half, older_half = _split_halves(commits)
+    recent_counts = _count_files(recent_half)
+    older_counts = _count_files(older_half)
 
-    recent = _count_files(recent_commits)
-    older = _count_files(older_commits)
+    decay_rows: list[dict] = []
+    for mod, w in weighted.items():
+        accel = _acceleration(w, counts[mod], mean_weight)
+        if _accel_trend(accel) == _TREND_ACCELERATING:
+            decay_rows.append({
+                "module": mod,
+                "recent": recent_counts.get(mod, 0),
+                "older": older_counts.get(mod, 0),
+                "accel": round(accel, 6),
+                "trend": _TREND_ACCELERATING,
+            })
+    decay_rows.sort(key=lambda row: (-row["accel"], -row["recent"], row["module"]))
+    return decay_rows
 
-    rows: list[dict] = []
-    for mod in recent:
-        r = recent[mod]
-        o = older.get(mod, 0)
-        if _trend(r, o) == _TREND_ACCELERATING:
-            rows.append({"module": mod, "recent": r, "older": o,
-                         "trend": _TREND_ACCELERATING})
 
-    rows.sort(key=lambda row: (-(row["recent"] - row["older"]),
-                               -row["recent"], row["module"]))
-    return rows
-
-
-def spreading_pairs(root: str, top: int = 5) -> list[dict]:
+def spreading_pairs(root: str, top: int = 5, decay: bool = False) -> list[dict]:
     """Co-change pairs whose coupling STRENGTHENED across the window.
 
-    The window is split into recent / older halves (newest-first). For each pair
-    that co-changes anywhere we compare its co-change count in each half and keep
-    only pairs that strengthened (more co-changes recently than before) AND clear
-    ``_MIN_COCHANGES`` overall — emergent seams that are tightening over time.
+    Two signals, selected by ``decay`` (default OFF so existing callers and idea
+    sets never shift):
 
-    Each entry is ``{"a", "b", "recent", "older", "cochanges",
-    "trend": "accelerating"}``, sorted by ``(-(recent - older), -cochanges, a, b)``
-    and capped at ``top``.
+    * ``decay=False`` — the historical HARD HALF-SPLIT. The window is split into
+      recent / older halves (newest-first); a pair is kept iff it co-changed more
+      recently than before (``recent > older``) AND clears ``_MIN_COCHANGES``
+      total. Each entry is ``{"a", "b", "recent", "older", "cochanges",
+      "trend": "accelerating"}``, sorted by ``(-(recent - older), -cochanges, a,
+      b)`` and capped at ``top``.
+
+    * ``decay=True`` — the TIME-DECAY signal. Each commit is weighted by its
+      RECENCY (see ``_decay_weights``); a pair's ``accel`` is its recency-weighted
+      co-change activity minus the activity an evenly-spread pair with the same
+      total would earn (``_acceleration``): positive when its co-changes cluster
+      toward the RECENT end. Pairs that are accelerating AND clear ``_MIN_COCHANGES``
+      total are kept. No median boundary, so a seam tightening inside one
+      contiguous burst still surfaces. Each entry adds an ``accel`` field and rows
+      sort by ``(-accel, -cochanges, a, b)``, capped at ``top``.
 
     Pure and total: a non-git / one-commit / shallow repo degrades to ``[]`` and
     never raises; deterministic for a given repo state.
@@ -300,21 +443,47 @@ def spreading_pairs(root: str, top: int = 5) -> list[dict]:
     commits = _load_commits(root)
     if not commits:
         return []
-    recent_commits, older_commits = _split_halves(commits)
-    if not recent_commits or not older_commits:
+
+    if not decay:
+        recent_commits, older_commits = _split_halves(commits)
+        if not recent_commits or not older_commits:
+            return []
+        recent = _count_pairs(recent_commits)
+        older = _count_pairs(older_commits)
+        rows: list[dict] = []
+        for pair, r in recent.items():
+            o = older.get(pair, 0)
+            total = r + o
+            if r > o and total >= _MIN_COCHANGES:
+                rows.append({"a": pair[0], "b": pair[1], "recent": r, "older": o,
+                             "cochanges": total, "trend": _TREND_ACCELERATING})
+        rows.sort(key=lambda row: (-(row["recent"] - row["older"]),
+                                   -row["cochanges"], row["a"], row["b"]))
+        return rows[:top]
+
+    if len(commits) < 2:
         return []
+    weights = _decay_weights(len(commits))
+    mean_weight = sum(weights) / len(commits)
+    weighted = _weighted_pair_activity(commits, weights)
+    counts = _count_pairs(commits)
+    recent_half, older_half = _split_halves(commits)
+    recent_counts = _count_pairs(recent_half)
+    older_counts = _count_pairs(older_half)
 
-    recent = _count_pairs(recent_commits)
-    older = _count_pairs(older_commits)
-
-    rows: list[dict] = []
-    for pair, r in recent.items():
-        o = older.get(pair, 0)
-        total = r + o
-        if r > o and total >= _MIN_COCHANGES:
-            rows.append({"a": pair[0], "b": pair[1], "recent": r, "older": o,
-                         "cochanges": total, "trend": _TREND_ACCELERATING})
-
-    rows.sort(key=lambda row: (-(row["recent"] - row["older"]),
-                               -row["cochanges"], row["a"], row["b"]))
-    return rows[:top]
+    decay_rows: list[dict] = []
+    for pair, w in weighted.items():
+        total = counts[pair]
+        accel = _acceleration(w, total, mean_weight)
+        if _accel_trend(accel) == _TREND_ACCELERATING and total >= _MIN_COCHANGES:
+            decay_rows.append({
+                "a": pair[0], "b": pair[1],
+                "recent": recent_counts.get(pair, 0),
+                "older": older_counts.get(pair, 0),
+                "cochanges": total,
+                "accel": round(accel, 6),
+                "trend": _TREND_ACCELERATING,
+            })
+    decay_rows.sort(key=lambda row: (-row["accel"], -row["cochanges"],
+                                     row["a"], row["b"]))
+    return decay_rows[:top]

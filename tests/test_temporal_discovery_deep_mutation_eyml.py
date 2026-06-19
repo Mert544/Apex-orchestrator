@@ -265,7 +265,7 @@ def test_trend_stable_on_exact_tie():
 def test_emerging_hotspots_orders_by_delta_then_recent_then_module(monkeypatch):
     """Two accelerating files with equal (recent - older) delta of 1 must tie-break
     by ``-recent`` (higher recent first), and an equal-recent pair by module name.
-    The sort key is ``(-(recent-older), -recent, module)``.
+    The DEFAULT (half-split) sort key is ``(-(recent-older), -recent, module)``.
     """
     # recent half: 4 commits, older half: 4 commits.
     commits = [
@@ -457,3 +457,104 @@ def test_file_evolution_empty_when_no_commits(monkeypatch):
     assert td.file_evolution("ignored") == {
         "commits": 0, "frequency": [], "cochange_groups": [],
     }
+
+
+# --- opt-in TIME-DECAY branch: helpers + filter/sort/shape, default OFF -----
+
+
+def test_decay_weights_and_acceleration_pin_exact_math():
+    # Weight = _DECAY_BASE ** position, newest (idx 0) == 1.0.
+    assert td._decay_weights(3) == [1.0, 0.9, 0.9 ** 2]
+    assert td._decay_weights(0) == [] and td._decay_weights(-1) == []
+    # Acceleration = weighted - count*mean_weight (kills + / * mutants).
+    assert td._acceleration(1.5, 2, 0.5) == 0.5
+    assert td._acceleration(1.0, 2, 0.5) == 0.0
+    # _accel_trend epsilon tie => stable; strict sign => accel/cool.
+    assert td._accel_trend(1.0) == "accelerating"
+    assert td._accel_trend(-1.0) == "cooling"
+    assert td._accel_trend(0.0) == "stable"
+
+
+def test_emerging_hotspots_decay_off_by_default(monkeypatch):
+    """``decay`` defaults False => half-split rows, NO ``accel`` key. Kills a
+    mutant that flips the default to True."""
+    commits = [
+        ["app/a.py"], ["app/a.py"],   # recent half: a x2
+        ["zzz/x.py"], ["zzz/y.py"],   # older half: a absent
+    ]
+    monkeypatch.setattr(td, "_load_commits", lambda root: commits)
+    rows = td.emerging_hotspots("ignored")  # default
+    assert rows == [{"module": "app/a.py", "recent": 2, "older": 0,
+                     "trend": "accelerating"}]
+    assert all("accel" not in r for r in rows)
+
+
+def test_emerging_hotspots_decay_orders_by_accel_then_recent(monkeypatch):
+    """With ``decay=True`` the sort key is ``(-accel, -recent, module)`` and the
+    fixture is exactly the one the half-split missed: ``small`` is recent==older
+    (the split drops it) but its changes lean recent, so decay flags it — behind
+    ``big`` whose accel is larger."""
+    commits = [
+        ["app/big.py", "app/small.py"],
+        ["app/big.py", "app/small.py"],
+        ["app/big.py", "app/small.py"],
+        ["app/big.py"],
+        ["app/big.py", "app/small.py"],
+        ["app/big.py", "app/small.py"],
+        ["app/small.py"],
+        ["zzz/other.py"],
+    ]
+    monkeypatch.setattr(td, "_load_commits", lambda root: commits)
+    rows = td.emerging_hotspots("ignored", decay=True)
+    assert [r["module"] for r in rows] == ["app/big.py", "app/small.py"]
+    assert rows[0]["accel"] == 0.414094 and rows[0]["recent"] == 4
+    assert rows[1]["accel"] == 0.216535 and rows[1]["recent"] == 3
+    assert rows[0]["accel"] > rows[1]["accel"]
+
+
+def test_emerging_hotspots_decay_needs_two_commits(monkeypatch):
+    monkeypatch.setattr(td, "_load_commits", lambda root: [["app/a.py"]])
+    assert td.emerging_hotspots("ignored", decay=True) == []
+
+
+def test_spreading_pairs_decay_off_by_default(monkeypatch):
+    commits = [
+        ["app/a.py", "app/b.py"], ["app/a.py", "app/b.py"],  # recent: 2
+        ["zzz/x.py"], ["zzz/y.py"],                           # older: 0
+    ]
+    monkeypatch.setattr(td, "_load_commits", lambda root: commits)
+    rows = td.spreading_pairs("ignored")  # default half-split
+    assert rows == [{"a": "app/a.py", "b": "app/b.py", "recent": 2, "older": 0,
+                     "cochanges": 2, "trend": "accelerating"}]
+    assert all("accel" not in r for r in rows)
+
+
+def test_spreading_pairs_decay_filters_min_cochanges_and_sorts(monkeypatch):
+    """``decay=True`` keeps only accelerating pairs clearing ``_MIN_COCHANGES``
+    total, sorted by ``(-accel, -cochanges, a, b)`` and capped at ``top``."""
+    commits = [
+        # newest-first: (a,b) at the recent end (positions 0,1), (c,d) older
+        ["app/a.py", "app/b.py"], ["app/a.py", "app/b.py"],
+        ["zzz/x.py"], ["zzz/y.py"],
+        ["app/c.py", "app/d.py"], ["app/c.py", "app/d.py"],
+        ["app/e.py", "app/f.py"],   # single occurrence -> total 1 < _MIN_COCHANGES
+    ]
+    monkeypatch.setattr(td, "_load_commits", lambda root: commits)
+    rows = td.spreading_pairs("ignored", top=5, decay=True)
+    pairs = [(r["a"], r["b"]) for r in rows]
+    assert ("app/a.py", "app/b.py") in pairs        # recent seam, accelerating
+    assert ("app/e.py", "app/f.py") not in pairs     # below _MIN_COCHANGES total
+    # The accelerating recent pair leads, and every row carries accel + total.
+    assert pairs[0] == ("app/a.py", "app/b.py")
+    assert all(r["cochanges"] >= td._MIN_COCHANGES for r in rows)
+    assert all("accel" in r for r in rows)
+    # top cap truncates the sorted list.
+    assert len(td.spreading_pairs("ignored", top=1, decay=True)) == 1
+
+
+def test_spreading_pairs_decay_top_zero_short_circuits(monkeypatch):
+    def _boom(root):  # pragma: no cover - must never be called
+        raise AssertionError("_load_commits called despite top<=0")
+
+    monkeypatch.setattr(td, "_load_commits", _boom)
+    assert td.spreading_pairs("ignored", top=0, decay=True) == []
