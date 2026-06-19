@@ -1329,6 +1329,10 @@ class IdeaActionBridge:
             return gate_block
 
         snapshot, applied = self._write_patches(project_root, patch_requests)
+        honest_block = self._partial_or_noop_block(
+            project_root, snapshot, applied, patch_requests, result.transform_type, mode)
+        if honest_block is not None:
+            return honest_block
         out = {
             "applied": applied.ok,
             "mode": mode,
@@ -1445,18 +1449,58 @@ class IdeaActionBridge:
             return out
 
         # Tests failed -> restore every changed file to its snapshot.
-        root = Path(project_root)
-        for rel in applied.changed_files:
-            original = snapshot.get(rel)
-            fp = root / rel
-            if original is None:
-                fp.unlink(missing_ok=True)  # file was newly created
-            else:
-                fp.write_text(original, encoding="utf-8")
+        IdeaActionBridge._restore_snapshot(project_root, snapshot, applied.changed_files)
         out["applied"] = False
         out["rolled_back"] = True
         out["reason"] = "tests failed after patch; changes rolled back"
         return out
+
+    @classmethod
+    def _partial_or_noop_block(cls, project_root: str,
+                              snapshot: dict[str, str | None], applied,
+                              patch_requests: list[dict], transform_type: str,
+                              mode: str) -> dict | None:
+        """Honest early-exit for two write outcomes that must NOT count as a fix,
+        else ``None`` (the apply proceeds):
+
+          * PARTIAL — some patches were skipped (an ``expected_old_content``
+            mismatch): a half-applied multi-file state is not a success;
+          * NO-OP — every written file's content equals what was already there:
+            an empty diff is not a fix (mirrors the proof path's empty-diff guard).
+
+        In either case any file we did write is restored to its snapshot first.
+        """
+        reason = ""
+        if applied.skipped_files:
+            reason = "partial apply (expected_old_content mismatch)"
+        else:
+            new_by_path = {pr["path"]: (pr.get("new_content") or "") for pr in patch_requests}
+            no_change = not any((snapshot.get(rel) or "") != new_by_path.get(rel, "")
+                                for rel in applied.changed_files)
+            if applied.ok and no_change:
+                reason = "no change (patch is a no-op)"
+        if not reason:
+            return None
+        cls._restore_snapshot(project_root, snapshot, applied.changed_files)
+        block = {"applied": False, "mode": mode,
+                 "transform_type": transform_type, "reason": reason}
+        if applied.skipped_files:
+            block["skipped_files"] = applied.skipped_files
+        return block
+
+    @staticmethod
+    def _restore_snapshot(project_root: str, snapshot: dict[str, str | None],
+                          changed_files: list[str]) -> None:
+        """Restore each changed file to its pre-patch snapshot (a ``None``
+        snapshot means the file was newly created, so it is removed)."""
+        root = Path(project_root)
+        for rel in changed_files:
+            original = snapshot.get(rel)
+            fp = root / rel
+            if original is None:
+                fp.unlink(missing_ok=True)
+            else:
+                fp.write_text(original, encoding="utf-8")
 
     @staticmethod
     def _evidence_diff(snapshot: dict[str, str | None], patch_requests: list[dict],

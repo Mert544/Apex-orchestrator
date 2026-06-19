@@ -117,8 +117,19 @@ def _alias_unsafe_names(tree: ast.Module) -> set[str]:
     unrelated same-named locals only loses coverage, never correctness).
     Deterministic: pure structural walk, no time/random.
     """
-    # Candidate aug-assign targets: the latest mutation line per name, and the
-    # binop-left Name node ids that are consumed by the rewrite (exempt reads).
+    last_mut, binop_left_ids = _aug_candidates(tree)
+    if not last_mut:
+        return set()
+    in_loop_ids = _loop_member_ids(tree)
+    return (_external_alias_names(tree, last_mut)
+            | _observing_read_names(tree, last_mut, binop_left_ids, in_loop_ids))
+
+
+def _aug_candidates(tree: ast.Module) -> tuple[dict[str, int], set[int]]:
+    """``(name -> latest aug-assign lineno, ids of binop-left Name nodes)``.
+
+    The binop-left reads are consumed by the rewrite, so they are exempt from
+    the alias-read check."""
     last_mut: dict[str, int] = {}
     binop_left_ids: set[int] = set()
     for node in ast.walk(tree):
@@ -128,46 +139,51 @@ def _alias_unsafe_names(tree: ast.Module) -> set[str]:
                 last_mut[target.id] = max(last_mut.get(target.id, 0), node.lineno)
                 assert isinstance(node.value, ast.BinOp)
                 binop_left_ids.add(id(node.value.left))
+    return last_mut, binop_left_ids
 
-    if not last_mut:
-        return set()
 
-    # Nodes whose ancestor chain includes a loop / comprehension: a read here can
-    # interleave with the repeated in-place mutation.
-    _loops = (ast.For, ast.AsyncFor, ast.While,
-              ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
-    in_loop_ids: set[int] = set()
+def _loop_member_ids(tree: ast.Module) -> set[int]:
+    """Ids of nodes whose ancestor chain includes a loop / comprehension — a
+    read there can interleave with the repeated in-place mutation."""
+    loops = (ast.For, ast.AsyncFor, ast.While,
+             ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+    ids: set[int] = set()
 
-    def _descend(node: ast.AST, inside: bool) -> None:
+    def descend(node: ast.AST, inside: bool) -> None:
         for child in ast.iter_child_nodes(node):
-            child_inside = inside or isinstance(node, _loops)
+            child_inside = inside or isinstance(node, loops)
             if child_inside:
-                in_loop_ids.add(id(child))
-            _descend(child, child_inside)
+                ids.add(id(child))
+            descend(child, child_inside)
 
-    _descend(tree, False)
+    descend(tree, False)
+    return ids
 
+
+def _external_alias_names(tree: ast.Module, names: dict[str, int]) -> set[str]:
+    """Candidate names held by an external alias: a parameter / ``*args`` /
+    ``**kwargs``, or a ``global`` / ``nonlocal`` declaration."""
     unsafe: set[str] = set()
-
-    # External-alias holders: parameters and global/nonlocal declarations.
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             args = node.args
-            for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
-                if arg.arg in last_mut:
-                    unsafe.add(arg.arg)
-            if args.vararg and args.vararg.arg in last_mut:
-                unsafe.add(args.vararg.arg)
-            if args.kwarg and args.kwarg.arg in last_mut:
-                unsafe.add(args.kwarg.arg)
+            params = (*args.posonlyargs, *args.args, *args.kwonlyargs)
+            unsafe.update(a.arg for a in params if a.arg in names)
+            for extra in (args.vararg, args.kwarg):
+                if extra is not None and extra.arg in names:
+                    unsafe.add(extra.arg)
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
-            for name in node.names:
-                if name in last_mut:
-                    unsafe.add(name)
+            unsafe.update(n for n in node.names if n in names)
+    return unsafe
 
-    # Reads that could observe an in-place mutation: a Load of a candidate name
-    # that is not the rewrite's own binop-left, and is either inside a loop or
-    # not strictly after that name's last mutation.
+
+def _observing_read_names(tree: ast.Module, last_mut: dict[str, int],
+                          binop_left_ids: set[int],
+                          in_loop_ids: set[int]) -> set[str]:
+    """Candidate names read where the read could observe an in-place mutation: a
+    ``Load`` that is not the rewrite's own binop-left and is either inside a loop
+    or not strictly after that name's last mutation."""
+    unsafe: set[str] = set()
     for node in ast.walk(tree):
         if (isinstance(node, ast.Name)
                 and node.id in last_mut
@@ -175,7 +191,6 @@ def _alias_unsafe_names(tree: ast.Module) -> set[str]:
                 and id(node) not in binop_left_ids
                 and (id(node) in in_loop_ids or node.lineno <= last_mut[node.id])):
             unsafe.add(node.id)
-
     return unsafe
 
 
