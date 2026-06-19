@@ -47,6 +47,12 @@ Detectors (pattern -> why it is near-zero-false-positive):
   HTML
     - an inline ``javascript:`` URL (``href="javascript:..."``).
     - an ``on*=`` event handler whose body calls ``eval(``.
+    - a Jinja ``{{ ... | safe }}`` interpolation — escaping is explicitly bypassed
+      (template XSS); plain ``{{ x }}`` (auto-escaped) does not match. A ``| safe``
+      inside a ``<script>`` / attribute context is reported as the stronger
+      ``jinja-safe-context`` signal.
+    - a ``{% autoescape false %}`` block directive — disables escaping wholesale;
+      ``{% autoescape true %}`` does not match.
 
 Determinism: fixed compiled patterns, no time/random; results sorted by
 ``(path, line, kind)`` and bounded by ``max_files``. Best-effort and total:
@@ -142,6 +148,29 @@ _SH_SECRET_RE = re.compile(
 _HTML_JSURL_RE = re.compile(r"""\b(?:href|src|action)\s*=\s*["']?\s*javascript:""", re.IGNORECASE)
 # on*= handler that calls eval(.
 _HTML_ONEVAL_RE = re.compile(r"""\bon\w+\s*=\s*["'][^"']*\beval\s*\(""", re.IGNORECASE)
+# Jinja ``{{ ... | safe }}`` — an explicitly auto-escape-bypassed interpolation,
+# the classic template-XSS sink. Requires a non-empty interpolation body before
+# the ``| safe`` filter so ``{{ x }}`` (auto-escaped, safe) does not match. The
+# ``[^{}]`` body bound keeps this linear on a minified line (no catastrophic
+# backtracking). ``safe`` may be the last filter in a chain (``| e | safe``) and
+# may carry args (``| safe()``)/trailing whitespace before ``}}``.
+_HTML_JINJA_SAFE_RE = re.compile(
+    r"""\{\{[^{}]*\|\s*safe\b[^{}]*\}\}""", re.IGNORECASE
+)
+# Jinja ``{% autoescape false %}`` — disables HTML escaping for a whole block,
+# turning every ``{{ }}`` inside it into an XSS sink. ``autoescape true`` (the
+# safe re-enable) does not match.
+_HTML_AUTOESCAPE_OFF_RE = re.compile(
+    r"""\{%-?\s*autoescape\s+false\s*-?%\}""", re.IGNORECASE
+)
+# ``| safe`` appearing inside a <script> element or an HTML attribute on the same
+# line — the STRONGEST template-XSS signal (escaping bypassed in a JS/attribute
+# execution context). We require either a ``<script`` earlier on the line or an
+# ``attr="..."``/``attr='...'`` opener before the ``{{ ... | safe }}``.
+_HTML_JINJA_SAFE_CTX_RE = re.compile(
+    r"""(?:<script\b|\b[\w:-]+\s*=\s*["'])[^\n]*\{\{[^{}]*\|\s*safe\b[^{}]*\}\}""",
+    re.IGNORECASE,
+)
 
 
 def _ext_family(name: str) -> str | None:
@@ -238,6 +267,12 @@ def _scan_html(line: str) -> list[tuple[str, str, str]]:
         out.append(("medium", "html-js-url", "Inline javascript: URL"))
     if _HTML_ONEVAL_RE.search(line):
         out.append(("high", "html-on-eval", "Inline event handler calls eval"))
+    if _HTML_AUTOESCAPE_OFF_RE.search(line):
+        out.append(("high", "jinja-autoescape-off", "Jinja autoescape disabled — interpolations are unescaped (XSS)"))
+    if _HTML_JINJA_SAFE_CTX_RE.search(line):
+        out.append(("high", "jinja-safe-context", "Jinja | safe filter in a script/attribute context bypasses escaping (XSS)"))
+    elif _HTML_JINJA_SAFE_RE.search(line):
+        out.append(("high", "jinja-safe", "Jinja | safe filter bypasses HTML auto-escaping (XSS)"))
     return out
 
 

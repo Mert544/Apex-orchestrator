@@ -67,22 +67,129 @@ def _bare_except_finding(rel_path: str, node: ast.ExceptHandler) -> dict[str, An
     }
 
 
-def _sql_injection_findings(rel_path: str, node: ast.Call, func_name: str) -> list[dict[str, Any]]:
-    """Findings for f-strings passed to execute()/cursor() SQL calls."""
+def _joinedstr_has_nonliteral(node: ast.JoinedStr) -> bool:
+    """True if an f-string interpolates a non-constant value (the injection risk).
+
+    ``f"static text"`` (no ``FormattedValue``) is a plain literal and is *not* a
+    SQL-injection risk; only an f-string that splices a runtime expression is.
+    """
+    return any(isinstance(v, ast.FormattedValue) for v in node.values)
+
+
+def _is_string_concat_binop(node: ast.expr) -> bool:
+    """True if ``node`` is a string ``+``/``%`` BinOp that mixes in a non-literal.
+
+    Catches ``"SELECT ... " + user`` and ``"SELECT ... %s" % user`` — the classic
+    pre-f-string injection shapes. A literal-only expression (``"a" + "b"``) is
+    NOT flagged. The operand chain must contain at least one string Constant (so a
+    pure ``a + b`` numeric add does not match) and at least one non-Constant part
+    (the tainted value). Conservative and deterministic.
+    """
+    if not (isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod))):
+        return False
+    has_str_literal = False
+    has_nonliteral = False
+    stack: list[ast.expr] = [node.left, node.right]
+    while stack:
+        part = stack.pop()
+        if isinstance(part, ast.BinOp) and isinstance(part.op, (ast.Add, ast.Mod)):
+            stack.append(part.left)
+            stack.append(part.right)
+        elif isinstance(part, ast.Constant):
+            if isinstance(part.value, str):
+                has_str_literal = True
+        elif isinstance(part, ast.JoinedStr):
+            has_str_literal = True
+            if _joinedstr_has_nonliteral(part):
+                has_nonliteral = True
+        else:
+            has_nonliteral = True
+    return has_str_literal and has_nonliteral
+
+
+def _expr_is_tainted_sql(node: ast.expr) -> bool:
+    """True if an expression building a SQL string carries a non-literal part.
+
+    The unified risk predicate shared by the inline and the variable-resolved
+    paths: an f-string with an interpolation, or a string ``+``/``%`` concat that
+    mixes a literal with a runtime value.
+    """
+    if isinstance(node, ast.JoinedStr):
+        return _joinedstr_has_nonliteral(node)
+    return _is_string_concat_binop(node)
+
+
+def _resolve_sql_assignment(
+    name: str, call_line: int, assignments: dict[str, list[tuple[int, ast.expr]]]
+) -> ast.expr | None:
+    """The nearest prior assignment value for ``name`` before ``call_line``, if any.
+
+    ``assignments[name]`` is a line-sorted list of ``(lineno, value_expr)``. We
+    return the value of the last assignment whose line is < ``call_line`` so a
+    later reassignment does not mask an earlier safe/unsafe binding. ``None`` when
+    the name has no prior binding in scope.
+    """
+    candidates = assignments.get(name)
+    if not candidates:
+        return None
+    chosen: ast.expr | None = None
+    for lineno, value in candidates:
+        if lineno < call_line:
+            chosen = value
+        else:
+            break
+    return chosen
+
+
+def _sql_injection_findings(
+    rel_path: str,
+    node: ast.Call,
+    func_name: str,
+    assignments: dict[str, list[tuple[int, ast.expr]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Findings for unsafe SQL strings passed to execute()/cursor() calls.
+
+    Flags three shapes feeding a SQL-exec sink, all FLAG-ONLY (human review):
+      1. an inline f-string argument with an interpolation,
+      2. an inline string ``+``/``%`` concatenation mixing a literal and a value,
+      3. a ``Name`` argument whose nearest prior in-scope assignment is one of the
+         above (assigned-then-passed).
+
+    A parameterized query (``execute("... ?", (var,))`` — a plain string literal +
+    a params tuple) is never flagged. ``assignments`` maps a variable name to its
+    line-sorted ``(lineno, value)`` bindings in the enclosing module scope.
+    """
     findings: list[dict[str, Any]] = []
+    if not any(sql in func_name for sql in ("execute", "cursor")):
+        return findings
+    assignments = assignments or {}
     for arg in node.args:
-        if isinstance(arg, ast.JoinedStr) and any(sql in func_name for sql in ("execute", "cursor")):
-            line = getattr(arg, "lineno", 1)
-            findings.append(
-                {
-                    "file": rel_path,
-                    "line": line,
-                    "risk_type": "sql_injection",
-                    "severity": "critical",
-                    "details": f"f-string used in SQL query at line {line}",
-                    "suggestion": "Use parameterized queries",
-                }
-            )
+        risk_node: ast.expr | None = None
+        details: str | None = None
+        if isinstance(arg, ast.JoinedStr) and _joinedstr_has_nonliteral(arg):
+            risk_node = arg
+            details = "f-string used in SQL query at line {line}"
+        elif _is_string_concat_binop(arg):
+            risk_node = arg
+            details = "string concatenation/format used in SQL query at line {line}"
+        elif isinstance(arg, ast.Name):
+            resolved = _resolve_sql_assignment(arg.id, getattr(node, "lineno", 1), assignments)
+            if resolved is not None and _expr_is_tainted_sql(resolved):
+                risk_node = arg
+                details = "interpolated/concatenated string variable used in SQL query at line {line}"
+        if risk_node is None or details is None:
+            continue
+        line = getattr(risk_node, "lineno", 1)
+        findings.append(
+            {
+                "file": rel_path,
+                "line": line,
+                "risk_type": "sql_injection",
+                "severity": "critical",
+                "details": details.format(line=line),
+                "suggestion": "Use parameterized queries",
+            }
+        )
     return findings
 
 
@@ -214,14 +321,40 @@ class SecurityAgent(Agent):
                     nested.add(id(arg))
         return nested
 
+    def _collect_assignments(self, tree: ast.AST) -> dict[str, list[tuple[int, ast.expr]]]:
+        """Map each assigned simple name to its line-sorted ``(lineno, value)`` list.
+
+        Powers the assigned-f-string/concat-then-execute SQL-injection shape: when
+        a ``Name`` is the execute() argument we look up its nearest prior binding.
+        Only simple ``x = <expr>`` targets are recorded (no tuple/attr targets);
+        bindings are sorted by line so resolution is deterministic. Scope is the
+        whole module — a deliberate, conservative over-approximation that keeps the
+        detector simple and never silently misses a same-name binding.
+        """
+        assignments: dict[str, list[tuple[int, ast.expr]]] = {}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assignments.setdefault(target.id, []).append((getattr(node, "lineno", 0), node.value))
+        for bindings in assignments.values():
+            bindings.sort(key=lambda b: b[0])
+        return assignments
+
     def _scan_node(
-        self, rel_path: str, source: str, node: ast.AST, nested_compiles: set[int]
+        self,
+        rel_path: str,
+        source: str,
+        node: ast.AST,
+        nested_compiles: set[int],
+        assignments: dict[str, list[tuple[int, ast.expr]]],
     ) -> list[dict[str, Any]]:
         """Findings contributed by a single AST node (call sink or bare except)."""
         if isinstance(node, ast.Call):
             if id(node) in nested_compiles:
                 return []
-            return self._check_call(rel_path, node, source)
+            return self._check_call(rel_path, node, source, assignments)
         if isinstance(node, ast.ExceptHandler) and node.type is None:
             return [_bare_except_finding(rel_path, node)]
         return []
@@ -233,9 +366,10 @@ class SecurityAgent(Agent):
             return []
 
         nested_compiles = self._nested_compile_ids(tree)
+        assignments = self._collect_assignments(tree)
         findings: list[dict[str, Any]] = []
         for node in ast.walk(tree):
-            findings.extend(self._scan_node(rel_path, source, node, nested_compiles))
+            findings.extend(self._scan_node(rel_path, source, node, nested_compiles, assignments))
         return self._drop_suppressed(findings, source)
 
     def _drop_suppressed(self, findings: list[dict[str, Any]], source: str) -> list[dict[str, Any]]:
@@ -249,7 +383,13 @@ class SecurityAgent(Agent):
                 kept.append(f)
         return kept
 
-    def _check_call(self, rel_path: str, node: ast.Call, source: str) -> list[dict[str, Any]]:
+    def _check_call(
+        self,
+        rel_path: str,
+        node: ast.Call,
+        source: str,
+        assignments: dict[str, list[tuple[int, ast.expr]]] | None = None,
+    ) -> list[dict[str, Any]]:
         findings: list[dict[str, Any]] = []
         func_name = self._get_call_name(node)
         if not func_name:
@@ -262,7 +402,7 @@ class SecurityAgent(Agent):
                 continue
             findings.append(_sink_finding(rel_path, node, pattern, risk_type, severity, suggestion))
 
-        findings.extend(_sql_injection_findings(rel_path, node, func_name))
+        findings.extend(_sql_injection_findings(rel_path, node, func_name, assignments))
         return findings
 
     def _docstring_interior_lines(self, source: str) -> set[int]:
