@@ -287,6 +287,35 @@ def _is_os_popen_call(node: ast.Call, owner: str, attr: str) -> bool:
     return owner == "os" and attr == "popen"
 
 
+# Module names that expose pickle's load API (the stdlib name plus the historical
+# ``cPickle`` and the CPython-internal ``_pickle`` accelerator). Loading a pickle
+# from an untrusted source is RCE: the unpickler can execute arbitrary code via
+# ``__reduce__``. This is the norm for ML model files (``*.pkl``, torch.save).
+_PICKLE_MODULES = frozenset({"pickle", "cPickle", "_pickle"})
+
+
+def _is_pickle_load_call(node: ast.Call, owner: str, attr: str) -> bool:
+    """True for ``pickle.load(...)`` / ``pickle.loads(...)`` (incl. cPickle/_pickle).
+
+    Matches the file-stream (``load``) and bytes (``loads``) forms on any of the
+    pickle module names. The existing ``pickle.loads`` rule (which routes to the
+    flag transform) is ordered ahead of this in :data:`_CALL_ATTR_RULES`, so this
+    catch-all only fires for the cases that rule misses: ``pickle.load(f)``, and
+    the ``cPickle``/``_pickle`` aliases of either form.
+    """
+    return owner in _PICKLE_MODULES and attr in ("load", "loads")
+
+
+def _is_marshal_load_call(node: ast.Call, owner: str, attr: str) -> bool:
+    """True for ``marshal.load(...)`` / ``marshal.loads(...)``.
+
+    ``marshal`` is not safe against erroneous or maliciously-constructed data
+    (the docs say so explicitly); deserializing untrusted marshal can crash the
+    interpreter. Flag-only — there is no safe drop-in replacement.
+    """
+    return owner == "marshal" and attr in ("load", "loads")
+
+
 def _has_kw_const_false(node: ast.Call, name: str) -> bool:
     """True if the call passes ``name=False`` as a constant keyword argument."""
     return any(kw.arg == name and isinstance(kw.value, ast.Constant)
@@ -347,6 +376,15 @@ _CALL_ATTR_RULES = (
      "security", "high", "os.popen() — runs a shell; prefer subprocess.run()", "os.popen"),
     (lambda n, o, a: o == "pickle" and a == "loads",
      "security", "high", "pickle.loads() — unsafe deserialization", "pickle"),
+    (_is_pickle_load_call,
+     "security", "high",
+     "pickle.load()/loads() of untrusted input executes arbitrary code on "
+     "deserialization (RCE) — validate the source or use a safe format "
+     "(json/msgpack); no safe drop-in, review manually", ""),
+    (_is_marshal_load_call,
+     "security", "high",
+     "marshal.load()/loads() is unsafe on untrusted input — it can crash the "
+     "interpreter; use a safe format and review manually", ""),
     (_is_shell_true_literal_call,
      "security", "high",
      "subprocess shell=True with a literal command — run shell-free with "
