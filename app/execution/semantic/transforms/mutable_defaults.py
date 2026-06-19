@@ -131,6 +131,28 @@ def _build_guard(indent: str, mutables: list, guard_value: dict) -> str:
     )
 
 
+def _is_docstring(stmt: ast.AST) -> bool:
+    """True if ``stmt`` is a leading docstring (``ast.Expr`` of a ``str`` constant)."""
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Constant)
+        and isinstance(stmt.value.value, str)
+    )
+
+
+def _guard_insert_index(func: ast.AST) -> int:
+    """0-based line index at which to splice the guard block.
+
+    If the function leads with a docstring, the guard goes *after* it so the
+    docstring stays ``body[0]`` (preserving ``func.__doc__``); otherwise it goes
+    above the first statement as before.
+    """
+    first_stmt = func.body[0]
+    if _is_docstring(first_stmt):
+        return first_stmt.end_lineno  # 0-based line right after the docstring
+    return first_stmt.lineno - 1
+
+
 def _patch_one_function(lines: list[str], func: ast.AST, mutables: list, widen_annotations: bool) -> int:
     """Rewrite one function in ``lines``; return the count of defaults fixed."""
     if not func.body:
@@ -139,6 +161,7 @@ def _patch_one_function(lines: list[str], func: ast.AST, mutables: list, widen_a
         return 0
     first_stmt = func.body[0]
     indent = " " * first_stmt.col_offset
+    insert_index = _guard_insert_index(func)
     # Capture each default's *original* source text BEFORE rewriting it, so
     # the guard preserves the real value (e.g. [1, 2], not a generic []).
     guard_value = {
@@ -146,9 +169,36 @@ def _patch_one_function(lines: list[str], func: ast.AST, mutables: list, widen_a
         for _arg, default, _lit, _node in mutables
     }
     _apply_span_edits(lines, _collect_span_edits(lines, mutables, widen_annotations))
-    # Insert guards just before the first body statement, in arg order.
-    lines.insert(first_stmt.lineno - 1, _build_guard(indent, mutables, guard_value))
+    # Insert guards at the first non-docstring body line, in arg order, so a
+    # leading docstring stays the function's docstring.
+    lines.insert(insert_index, _build_guard(indent, mutables, guard_value))
     return len(mutables)
+
+
+def _docstringed_functions(tree: ast.AST) -> int:
+    """Count functions that lead with a docstring (for a preservation check)."""
+    return sum(
+        1
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.body
+        and _is_docstring(node.body[0])
+    )
+
+
+def _validates(new_content: str, original_tree: ast.Module) -> bool:
+    """Re-parse the rewrite and confirm no docstring was demoted.
+
+    The mutable-default fix must be behaviour-preserving: any function that had a
+    docstring before must still expose it as ``body[0]`` afterwards. We compare
+    the docstringed-function count before and after; a regression (guard wedged
+    above a docstring) lowers the count and fails the check.
+    """
+    try:
+        new_tree = ast.parse(new_content)
+    except (SyntaxError, RecursionError, MemoryError):
+        return False
+    return _docstringed_functions(new_tree) >= _docstringed_functions(original_tree)
 
 
 def _patch_mutable_defaults(
@@ -169,10 +219,15 @@ def _patch_mutable_defaults(
 
     if fixed_count == 0:
         return None
+
+    new_content = "".join(lines)
+    if not _validates(new_content, tree):
+        return None  # self-check failed — refuse rather than emit a bad patch
+
     return SemanticPatchResult(
         patch_requests=[{
             "path": rel_path,
-            "new_content": "".join(lines),
+            "new_content": new_content,
             "expected_old_content": source,
         }],
         transform_type="fix_mutable_default",
