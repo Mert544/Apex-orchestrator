@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 from typing import Any
 
@@ -9,6 +10,21 @@ from app.agents.registry import AgentRegistry
 from app.agents.swarm_stability import SwarmStability, GracefulShutdown
 from app.automation.planner import AutonomousPlanner
 from app.intent.parser import IntentParser
+
+
+def _emit_status(message: str) -> None:
+    """Write a ``[swarm]`` progress/status line to STDERR.
+
+    DETERMINISM: these are human-facing progress lines (timing, shutdown,
+    plan echo), not the analytical result. Several of them embed wall-clock
+    durations (``Completed in Xs``), so emitting them on STDOUT would make two
+    runs of ``apex scan`` differ byte-for-byte and break the "same repo state ->
+    same bytes" guarantee that CI diffs. Routing them to STDERR keeps the
+    deterministic findings payload as the sole STDOUT content while preserving
+    the operator-facing trace. The returned ``_results`` list is the only thing
+    a caller should treat as the run's output.
+    """
+    print(message, file=sys.stderr)
 
 
 class SwarmCoordinator:
@@ -320,7 +336,7 @@ class SwarmCoordinator:
         waited = 0.0
         while self._running and waited < total_timeout:
             if self._stability.shutdown_manager.is_shutdown_requested():
-                print(f"[swarm] Shutdown requested after {waited:.1f}s")
+                _emit_status(f"[swarm] Shutdown requested after {waited:.1f}s")
                 break
 
             time.sleep(0.1)
@@ -334,13 +350,14 @@ class SwarmCoordinator:
     def _report_outcome(self, waited: float, total_timeout: float, elapsed: float) -> None:
         """Print the terminal status line and shut down on timeout."""
         if waited >= total_timeout:
-            print(f"[swarm] TIMEOUT after {elapsed:.1f}s")
+            _emit_status(f"[swarm] TIMEOUT after {elapsed:.1f}s")
             self._shutdown()
         elif self._stability.shutdown_manager.is_shutdown_requested():
-            print(f"[swarm] Graceful shutdown after {elapsed:.1f}s")
+            _emit_status(f"[swarm] Graceful shutdown after {elapsed:.1f}s")
         else:
-            print(
-                f"[swarm] Completed in {elapsed:.1f}s with {len(self._results)} result(s)"
+            _emit_status(
+                f"[swarm] Completed in {elapsed:.1f}s "
+                f"with {len(self._results)} result(s)"
             )
 
     def run_autonomous(
@@ -353,14 +370,14 @@ class SwarmCoordinator:
         """Run the full autonomous loop: intent → plan → event-driven execution."""
         # Check for shutdown request
         if self._stability.shutdown_manager.is_shutdown_requested():
-            print("[swarm] Shutdown previously requested, ignoring new run")
+            _emit_status("[swarm] Shutdown previously requested, ignoring new run")
             return []
 
         intent = self.intent_parser.parse(goal, explicit_mode=mode)
         plan = self.planner.build_plan(intent)
 
-        print(f"[swarm] Goal: {intent.goal}")
-        print(
+        _emit_status(f"[swarm] Goal: {intent.goal}")
+        _emit_status(
             f"[swarm] Plan: {plan.plan_name} | Agents: {plan.agents} | Mode: {plan.mode}"
         )
 

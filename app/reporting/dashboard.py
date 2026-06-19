@@ -1,3 +1,16 @@
+"""Human-facing HTML dashboard.
+
+DETERMINISM SCOPE: this module is a *human snapshot*, NOT a byte-determinism
+surface. The rendered page deliberately carries a wall-clock ``generated``
+timestamp and the absolute ``project_root`` host path so a reader knows when and
+where it was built; both vary per render/host by design and are therefore OUT OF
+SCOPE for the "same repo state -> same bytes" guarantee. The single timestamp is
+the only varying line (the path is constant for a given checkout), so CI that
+wants stability normalizes that one line (see the dashboard characterization
+tests). The actual byte-determinism guarantee is upheld by the analytical
+surfaces — e.g. the ``apex scan`` stdout payload — not by this artifact.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -657,6 +670,15 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         project_root, git, debug, roadmap, shape, autonomy, pareto, trajectory,
         learned, sections=rendered,
     )
+    # OUT OF SCOPE for the "same repo state -> same bytes" guarantee: this is a
+    # human snapshot, not a CI byte-determinism surface. The ``generated`` stamp
+    # below is deliberately wall-clock (datetime.now), and ``project_root`` is
+    # rendered as the absolute host path; both vary per render/host by design so
+    # a human reading the page knows *when* and *where* it was built. CI that
+    # needs byte-stability normalizes the single stamp line (see the dashboard
+    # characterization tests) rather than this module guaranteeing it. The
+    # byte-determinism guarantee is upheld by the analytical surfaces (e.g. the
+    # ``apex scan`` stdout payload), not by this presentation artifact.
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     hero_vitals = _hero_vitals(project_root, profile, findings, idea_report, action_plan)
 
