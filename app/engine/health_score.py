@@ -131,10 +131,35 @@ def _is_reliability_debt(issues: list[Any]) -> bool:
     return any(i.fix_kind in ("open-encoding", "net-timeout") for i in issues)
 
 
+def _is_unparseable_bug(issue: Any) -> bool:
+    """True for the detector's SyntaxError marker (an unparseable file).
+
+    A file Apex cannot *parse* (a truncated ``def f(`` or valid newer-grammar
+    syntax — PEP 695 ``def f[T]`` / ``type X = ...`` — on an older runtime) is
+    out of scope, not a logic bug. The detector reports it as a high-severity
+    ``"bug"`` with a ``"SyntaxError: ..."`` message and no fix, but it is the
+    *only* finding it can offer for that file. Counting it as a likely-crash /
+    dead-code bug is a false accusation: there is no logic bug and no fix to
+    point at. We recognise it by the detector's stable message prefix so it can
+    be excluded from the Correctness bucket and its remediation.
+    """
+    return (
+        getattr(issue, "category", None) == "bug"
+        and getattr(issue, "severity", None) == "high"
+        and not getattr(issue, "fix_kind", "")
+        and str(getattr(issue, "message", "")).startswith("SyntaxError:")
+    )
+
+
 def _count_correctness_bugs(issues: list[Any]) -> int:
-    """High-severity logic bugs the detector flags with no auto-fix."""
+    """High-severity logic bugs the detector flags with no auto-fix.
+
+    Pure-SyntaxError findings (unparseable / newer-grammar files) are excluded:
+    an unparseable file is out of scope, not a likely-crash / dead-code bug.
+    """
     return sum(1 for i in issues
-               if i.category == "bug" and i.severity == "high" and not i.fix_kind)
+               if i.category == "bug" and i.severity == "high" and not i.fix_kind
+               and not _is_unparseable_bug(i))
 
 
 def _security_weight(issues: list[Any]) -> tuple[int, int]:
