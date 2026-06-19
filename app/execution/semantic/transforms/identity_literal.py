@@ -28,15 +28,31 @@ def _fix_line(line: str) -> str:
 
 
 def _flagged_lines(tree: ast.Module) -> set[int]:
+    """Lines carrying an ``is``/``is not`` comparison against a literal.
+
+    A line is *unsafe* — and therefore excluded — when it carries MORE than one
+    ``is``/``is not`` operator. The fix is a whole-line regex that rewrites every
+    ``is``/``is not`` followed by a literal-start character, so it cannot tell a
+    real F632 target (``x is 5``) from a sibling identity test that merely opens
+    with a bracket (``y is (z)`` / ``y is [z]``). Rewriting that sibling to
+    ``==`` changes behaviour — e.g. two ``nan`` references compare ``is`` True
+    but ``==`` False. With a single identity operator on the line there is no
+    sibling to corrupt, so the rewrite stays provably safe.
+    """
     from app.engine.detectors import _is_identity_literal
 
-    lines: set[int] = set()
+    flagged: set[int] = set()
+    identity_count: dict[int, int] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Compare) and any(
-            isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops
-        ) and any(_is_identity_literal(x) for x in node.comparators):
-            lines.add(node.lineno)
-    return lines
+        if not (isinstance(node, ast.Compare)
+                and any(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops)):
+            continue
+        n_ident = sum(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops)
+        identity_count[node.lineno] = identity_count.get(node.lineno, 0) + n_ident
+        if any(_is_identity_literal(x) for x in node.comparators):
+            flagged.add(node.lineno)
+    # Keep only lines whose sole identity comparison is the literal target.
+    return {ln for ln in flagged if identity_count.get(ln, 0) == 1}
 
 
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
