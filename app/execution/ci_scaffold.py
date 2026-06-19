@@ -62,7 +62,11 @@ def has_ci(project_root: str) -> bool:
         ):
             return True
     except OSError:
-        return False
+        # An unreadable workflows dir tells us nothing about the OTHER CI
+        # systems below: fall through to the single-file marker check rather
+        # than declaring "no CI" (which would scaffold a SECOND pipeline onto a
+        # repo that already gates via, e.g., a readable ``.gitlab-ci.yml``).
+        pass
     return any((root / marker).exists() for marker in _OTHER_CI_MARKERS)
 
 
