@@ -233,6 +233,12 @@ class ProjectProfile:
     simplification_opportunities: list[dict] = field(default_factory=list)
 
 
+# The whole-tree simplification dry-run is sampled, not exhaustive: it caps its
+# output at a handful of opportunities, so scanning more than this many files
+# only burns time. Matches ``scan_simplifications``'s own default.
+_SIMPLIFICATION_SCAN_CAP = 500
+
+
 class ProjectProfiler(_CodeQualityScansMixin):
     ENTRYPOINT_NAMES = {
         "main.py",
@@ -727,8 +733,14 @@ class ProjectProfiler(_CodeQualityScansMixin):
         try:
             from app.tools.simplification_scan import scan_simplifications
 
+            # This whole-tree dry-run is the single most expensive scan (it runs
+            # ~18 transforms per file) yet yields at most a handful of capped
+            # opportunities the grade never reads — so SAMPLE it: cap at the
+            # scanner's own 500-file default rather than inheriting the profiler's
+            # 2000-file ceiling (which made a 2000-module repo pay ~4x for an
+            # 8-entry result). Smaller repos (≤500 files) are unaffected.
             profile.simplification_opportunities = scan_simplifications(
-                self.root, max_files=self.max_files
+                self.root, max_files=min(self.max_files, _SIMPLIFICATION_SCAN_CAP)
             )
         except Exception:
             profile.simplification_opportunities = []
