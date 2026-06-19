@@ -501,6 +501,19 @@ class IdeaSeeder:
     # synthesis precisely because it was uncapped and competed for the cap).
     _DISCOVERY_CAP = 3
 
+    # Coverage-gradient exposure seed family (DISCOVERY sharpener). A module's
+    # exposure = norm(fan-in) * (1 - coverage_depth) * norm(churn) — peaks only
+    # for a hub that is BOTH thinly covered AND actively churned. The family is
+    # threshold-GATED (mirrors the confluence gate): a lead must clear
+    # ``_EXPOSURE_THRESHOLD`` to seed, so on inputs that don't trip it the seeded
+    # set is byte-IDENTICAL. The threshold sits just below the "all three axes
+    # near their peak" product (0.5*1.0*0.5 = 0.25) so only a genuinely dangerous
+    # confluence of pressures fires, never a single strong axis.
+    _EXPOSURE_THRESHOLD = 0.25
+    # How many exposure leads the family may append (small — a focused "lead with
+    # these" list, not a flood).
+    _EXPOSURE_CAP = 3
+
     def seed(self, profile: ProjectProfile, objective: str | None = None,
              accelerating: dict[str, dict] | None = None,
              *, seed_discoveries: bool = False) -> list[IdeaNode]:
@@ -560,6 +573,13 @@ class IdeaSeeder:
         # never competes for a module another seed already owns, and every prior
         # root stays byte-identical and in the same order.
         self._seed_hot_debt(roots, seen_subjects, profile)
+        # Coverage-gradient exposure runs LAST too, on an ``::exposure``-suffixed
+        # subject no other family can claim, and is threshold-GATED above
+        # ``_EXPOSURE_THRESHOLD``. It is purely ADDITIVE: it appends nothing
+        # unless the fused fan-in x thin-coverage x churn signal clears the gate,
+        # so the seeded set is byte-identical on every input that doesn't trip
+        # the threshold, and even when it fires every prior root is unchanged.
+        self._seed_exposure_gradient(roots, seen_subjects, profile)
         # NOTE: dream-discovery seeds (``discovered_idea_seeds``) are intentionally
         # NOT auto-seeded here. As competing roots they disrupt the bounded idea
         # budget, displacing valuable synthesis ideas (e.g. import-cycle pairs) and
@@ -742,6 +762,52 @@ class IdeaSeeder:
                 fact_value=f"{module} (high in-degree, thin tests)",
                 anchors=self._module_anchors(profile, module),
                 quantified=self._quantified_clause(profile, module, name_targets=False),
+            )
+
+    def _seed_exposure_gradient(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
+        # Coverage-gradient exposure (DISCOVERY sharpener): the modules most
+        # DANGEROUS to change — high fan-in AND thin coverage AND recent churn,
+        # fused by app.engine.exposure_gradient (READ-ONLY; reuses the profile's
+        # already-deterministic fan-in / coverage / churn signals, no new scan).
+        #
+        # ADDITIVE + threshold-gated so the DEFAULT seeded set stays byte-
+        # IDENTICAL unless the signal fires above ``_EXPOSURE_THRESHOLD``:
+        #   * each lead must clear the threshold (mirrors the confluence gate),
+        #     so a quiescent / well-covered / leaf project seeds NOTHING here;
+        #   * the subject carries a ``::exposure`` suffix no other family can
+        #     claim, so even when it fires it never competes for or deduplicates
+        #     against a module an earlier family already owns — every prior root
+        #     stays byte-identical and in the same order.
+        try:
+            from app.engine.exposure_gradient import exposure_gradient
+        except Exception:
+            return
+        try:
+            leads = exposure_gradient(
+                profile, getattr(self, "project_root", "") or None,
+                top=self._EXPOSURE_CAP,
+            )
+        except Exception:
+            return
+        for lead in leads:
+            if lead.get("exposure", 0.0) < self._EXPOSURE_THRESHOLD:
+                continue
+            module = lead["module"]
+            fanin = lead["fanin"]
+            coverage = lead["coverage"]
+            churn = lead["churn"]
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"De-risk {module} before changing it — most exposed "
+                       f"module (fan-in {fanin}, coverage {coverage}, "
+                       f"churn {churn} commits)"),
+                subject=f"{module}::exposure",
+                fact_label="exposure-gradient",
+                fact_value=(f"module {module}: fan-in {fanin}, coverage "
+                            f"{coverage}, churn rising "
+                            f"(exposure {lead['exposure']:.4f})"),
             )
 
     def _seed_rule_families(
