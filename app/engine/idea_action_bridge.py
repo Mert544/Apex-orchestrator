@@ -2047,7 +2047,23 @@ class _MaintenancePass:
         auto-fixable issue in the same file (the detection ladder advances
         as each is fixed). Extra verified fixes don't create new rows —
         they're tracked on the step's entry — so one maintenance pass
-        cleans the file instead of one fix per pass."""
+        cleans the file instead of one fix per pass.
+
+        AUTONOMOUS-COMMIT GATE (per converged fix): each iteration is re-priced
+        and re-gated EXACTLY as the primary step is — the loop must never bypass
+        the moat the first fix enforces. The tier is read from the ACTUAL
+        transform the apply emitted (``_converged_fix_tier``), so the detection
+        ladder advancing fix-to-fix is honoured: a pure-annotation flag
+        (``flag_*`` — a ``# SECURITY``/``# RELIABILITY`` comment) is Tier 0, a
+        behaviour-CHANGING rewrite keeps the action's Tier 1. After applying, the
+        change is routed through the SAME ``_unverified_behaviour_change`` gate:
+        a behaviour-changing converged fix (e.g. ``subprocess shell=True`` ->
+        ``shlex.split``, ``yaml.load`` -> ``safe_load``) on an uncovered module
+        is left APPLIED on disk but WITHHELD from the auto-commit, and
+        convergence STOPS — the file now carries an uncommitted change, so
+        compounding further fixes on top of it is unsafe. A Tier-0 converged
+        fix (another annotation/additive comment) still commits freely,
+        preserving genuinely-safe convergence."""
         extra = 0
         for _ in range(5):
             r2 = self.bridge.apply_step(step, self.project_root,
@@ -2055,11 +2071,44 @@ class _MaintenancePass:
             if not (r2.get("applied") and step.target in (r2.get("changed_files") or [])):
                 break
             extra += 1
+            # Price the fix that ACTUALLY landed (authoritative post-apply), then
+            # apply the same withhold semantics as ``_settle_applied``: never
+            # auto-commit an unverified behaviour change. Leave it on disk, record
+            # the withheld reason, and stop converging on an uncommitted file.
+            tier2 = self._converged_fix_tier(r2, step.action_type)
+            if (self.committer is not None
+                    and self._unverified_behaviour_change(r2, tier2)):
+                entry["converged_withheld"] = True
+                entry["reason"] = (
+                    "converged fix applied, NOT committed — unverified "
+                    "behaviour change (tier-1 rewrite on a module with no "
+                    "covering test); review before committing"
+                )
+                break
             ok2, _h2 = self._commit(r2, step.action_type)
             if ok2:
                 self.committed += 1
         if extra:
             entry["converged_fixes"] = extra
+
+    @staticmethod
+    def _converged_fix_tier(r: dict, action_type: str) -> int:
+        """The risk tier of the fix a convergence pass ACTUALLY emitted.
+
+        Read from the result's concrete ``transform_type`` (authoritative after
+        the apply, where ``_prospective_transform_type`` — a pre-apply, security-
+        only probe — cannot see the advanced ladder). Every ``flag_*`` transform
+        is a pure-annotation comment (``# SECURITY``/``# RELIABILITY``): it leaves
+        the runnable AST byte-identical, so it is Tier 0 / additive exactly like
+        the three registered annotation security flags. Any other transform falls
+        back to ``tier_for_transform`` — so a behaviour-CHANGING rewrite keeps the
+        carrying action's Tier 1 and its coverage gate."""
+        from app.execution.risk_tiers import tier_for_transform
+
+        transform_type = r.get("transform_type")
+        if isinstance(transform_type, str) and transform_type.startswith("flag_"):
+            return 0
+        return tier_for_transform(transform_type, action_type)
 
     def _learned_skip(self, step: ActionStep) -> bool:
         """OPT-IN closed loop: skip a fix the proof history predicts will fail.
