@@ -855,6 +855,18 @@ class IdeaActionBridge:
         "zip-slip": "Apex: Zip-Slip",
     }
 
+    # The three pure-ANNOTATION security findings (security label -> the
+    # comment-only transform_type the harden ladder emits for it). Each only
+    # inserts a ``# SECURITY`` comment and leaves the dangerous call intact, so
+    # the fix is Tier 0 (see ``risk_tiers.ANNOTATION_FLAG_TRANSFORMS``). The tier
+    # gate reads this to give a comment-only harden the additive treatment while
+    # a behaviour-CHANGING harden (eval/yaml) on the same action stays Tier 1.
+    _ANNOTATION_FLAG_BY_LABEL = {
+        "tls-verify": "flag_tls_verify",
+        "pickle": "flag_pickle_loads",
+        "sql": "flag_sql_injection",
+    }
+
     @classmethod
     def _detect_security_issue(cls, project_root: str, rel_path: str) -> str | None:
         """The concrete security pattern to fix next in a file, most severe first.
@@ -883,6 +895,24 @@ class IdeaActionBridge:
                 continue  # transform declines this one — try the next real issue
             return label
         return None
+
+    @classmethod
+    def _prospective_transform_type(cls, project_root: str,
+                                    step: ActionStep) -> str | None:
+        """The concrete transform_type a ``harden_security`` step will emit next,
+        when that fix is a pure-annotation security flag (else None).
+
+        Lets the tier gate price a comment-only harden (``flag_tls_verify`` /
+        ``flag_pickle_loads`` / ``flag_sql_injection``) as the Tier-0 additive
+        change it is — WITHOUT running the apply. A behaviour-changing harden
+        (eval/yaml) resolves to None here and keeps its Tier-1 coverage gate.
+        Cheap and read-only: it reuses ``_detect_security_issue`` (which already
+        runs as part of strategy selection) and a static label map.
+        """
+        if step.action_type != "harden_security" or not step.target.endswith(".py"):
+            return None
+        label = cls._detect_security_issue(project_root, step.target)
+        return cls._ANNOTATION_FLAG_BY_LABEL.get(label or "")
 
     @classmethod
     def _has_mutable_default(cls, project_root: str, rel_path: str) -> bool:
@@ -2054,13 +2084,28 @@ class _MaintenancePass:
         })
         return True
 
-    def run_step(self, step: ActionStep) -> None:
-        from app.execution.risk_tiers import tier_for
+    def _effective_tier(self, step: ActionStep) -> int:
+        """The risk tier of the fix this step will actually emit.
 
+        For a ``harden_security`` step whose next fix is a pure-annotation flag,
+        this is Tier 0 (a ``# SECURITY`` comment changes no behaviour); every
+        other fix keeps its action's tier — so a behaviour-changing harden stays
+        Tier 1 with its coverage gate intact."""
+        from app.execution.risk_tiers import tier_for_transform
+
+        transform_type = self.bridge._prospective_transform_type(
+            self.project_root, step)
+        return tier_for_transform(transform_type, step.action_type)
+
+    def run_step(self, step: ActionStep) -> None:
         if self._learned_skip(step):
             return
-        shield_result = self._shield(step)
-        tier = tier_for(step.action_type)
+        tier = self._effective_tier(step)
+        # A Tier-0 (additive / comment-only) fix needs no characterization
+        # shield: it changes no executable code, so there is nothing for a
+        # network-calling contract test to protect — generating one would only
+        # fail and roll the comment back. Shield only the behaviour-adjacent fixes.
+        shield_result = self._shield(step) if tier >= 1 else None
         label = step.source_facts[0].split(":")[0].strip() if step.source_facts else ""
         if self._tier_blocked(step, tier, label, shield_result):
             return
