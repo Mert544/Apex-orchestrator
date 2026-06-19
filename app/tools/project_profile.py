@@ -46,6 +46,11 @@ class ProjectProfile:
     module_fanout: dict[str, list[str]] = field(default_factory=dict)
     untested_modules: list[str] = field(default_factory=list)
     critical_untested_modules: list[str] = field(default_factory=list)
+    # TRUE totals, kept separate from the (capped-at-5) display lists above so the
+    # grade penalty reflects every untested module — not the truncated offender
+    # preview consumers display. Set to the full counts before truncation.
+    untested_count: int = 0
+    critical_untested_count: int = 0
     module_to_tests: dict[str, list[str]] = field(default_factory=dict)
     dependency_edges: list[tuple[str, str]] = field(default_factory=list)
     fragile_modules: list[str] = field(default_factory=list)
@@ -414,7 +419,11 @@ class ProjectProfiler(_CodeQualityScansMixin):
         correctness_bug_modules: list[str] = []
 
         scanned = 0
-        for path in self.root.rglob("*"):
+        # Iterate in sorted order BEFORE the max_files cap: rglob's raw order is
+        # filesystem-dependent, so an uncapped sort (which runs per-list later)
+        # can't rescue a lossy sample. Sorting here makes the sampled subset the
+        # same SORTED-order prefix on every machine — deterministic grade inputs.
+        for path in sorted(self.root.rglob("*")):
             if scanned >= self.max_files:
                 break
             if not path.is_file():
@@ -1224,6 +1233,12 @@ class ProjectProfiler(_CodeQualityScansMixin):
         linker = TestLinker(self.root)
         coverage = linker.analyze(critical_modules=profile.dependency_hubs)
         profile.module_to_tests = coverage.module_to_tests
+        # Capture the TRUE totals before truncating: the display/offender lists
+        # stay capped at 5 (consumers like the seeder/idea-gen read those), but
+        # the grade penalty must use these full counts so under-tested repos
+        # aren't silently scored as if only 5 modules were untested.
+        profile.untested_count = len(coverage.untested_modules)
+        profile.critical_untested_count = len(coverage.critical_untested_modules)
         profile.untested_modules = coverage.untested_modules[:5]
         profile.critical_untested_modules = coverage.critical_untested_modules[:5]
 

@@ -264,6 +264,21 @@ def _arch_top_offenders(profile: Any) -> list[str]:
     return [str(m) for m in arch_top]
 
 
+def _untested_penalty_count(profile: Any) -> int:
+    """The TRUE untested-module count for the grade penalty.
+
+    The profile's ``untested_modules`` list is truncated to 5 offenders for
+    DISPLAY (consumed by the seeder / idea-gen / dashboards), so its ``len`` is
+    not the real total. ``untested_count`` carries the full pre-truncation count;
+    prefer it, falling back to the (capped) list length only when the field is
+    absent (e.g. older/partial profiles).
+    """
+    count = getattr(profile, "untested_count", None)
+    if count:
+        return int(count)
+    return len(getattr(profile, "untested_modules", []) or [])
+
+
 def _collect_metrics(project_root: str | Path, profile: Any) -> _GradeMetrics:
     """Project the profile + detect/dedup scans into the scorers' input metrics."""
     debt_modules = _modernization_debt_modules(profile)
@@ -282,7 +297,7 @@ def _collect_metrics(project_root: str | Path, profile: Any) -> _GradeMetrics:
     return _GradeMetrics(
         cycles=len(getattr(profile, "import_cycles", []) or []),
         fragile=len(getattr(profile, "fragile_modules", []) or []),
-        untested=len(getattr(profile, "untested_modules", []) or []),
+        untested=_untested_penalty_count(profile),
         shallow=len(getattr(profile, "shallow_tested_modules", []) or []),
         total_modules=max(1, len(getattr(profile, "module_to_tests", {}) or {})),
         arch_top=_arch_top_offenders(profile),
