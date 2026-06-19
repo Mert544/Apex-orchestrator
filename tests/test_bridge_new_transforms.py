@@ -128,7 +128,10 @@ _CASES = {
     "augmented_assign": (
         "augmented-assign",
         "augmented_assign",
-        "def f(x):\n    x = x + 1\n    return x\n",
+        # A bare LOCAL accumulator (not a parameter): rewriting it to ``+=`` is
+        # behaviour-preserving. A parameter target is refused by the alias guard
+        # (a mutable arg the caller holds would diverge under in-place mutation).
+        "def f():\n    x = 0\n    x = x + 1\n    return x\n",
         "def f():\n    return 1\n",
     ),
     "collection_literal": (

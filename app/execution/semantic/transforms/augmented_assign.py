@@ -180,9 +180,13 @@ def _alias_unsafe_names(tree: ast.Module) -> set[str]:
 
 
 class _AugAssignTransformer(ast.NodeTransformer):
-    def __init__(self, blocked: set[str]) -> None:
+    def __init__(self, blocked: set[str] | None = None) -> None:
+        # ``blocked`` is the alias-unsafe name set computed by ``apply`` (the
+        # public entry point always passes it); it defaults to empty only so the
+        # transformer can be constructed standalone in unit tests of the shared
+        # rewrite helper — the safety guard is never bypassed in real use.
         self.changed = False
-        self._blocked = blocked
+        self._blocked = blocked or set()
 
     def visit_Assign(self, node: ast.Assign) -> ast.AST:
         target = _candidate_target(node)
