@@ -10,10 +10,34 @@ sites stay behavior-identical. Deterministic, stdlib-only, offline.
 from __future__ import annotations
 
 import ast
+import io
+import tokenize
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+def source_has_comment(source: str) -> bool:
+    """True when ``source`` contains a ``#`` comment token (incl. pragmas).
+
+    ``ast.unparse`` reconstructs code from the AST, which carries no comments, so
+    any whole-module unparse silently deletes every ``#`` comment -- including
+    ``# type: ignore`` / ``# noqa`` pragmas that are load-bearing. We detect
+    comments via ``tokenize`` (robust against ``#`` inside strings, which is *not*
+    a comment) so the rewrite driver can refuse rather than destroy them.
+
+    Tokenization that fails (e.g. on a syntax error) is treated conservatively as
+    "has a comment" so we never rewrite a file we could not fully inspect.
+    """
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        for tok in tokens:
+            if tok.type == tokenize.COMMENT:
+                return True
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        return True
+    return False
 
 
 def node_offset(source: str, node: ast.AST) -> int | None:
@@ -63,9 +87,21 @@ def run_rewrite_transformer(
     guarantee the result is syntactically valid, restore a trailing newline, and
     refuse a no-op. The caller constructs its own ``transformer`` and builds the
     patch result; only the identical middle stays here.
+
+    Because the emit goes through ``ast.unparse`` -- which reconstructs the whole
+    module from an AST that carries no comments -- it would silently delete every
+    ``#`` comment (including ``# type: ignore`` / ``# noqa`` pragmas), flip quote
+    styles, and collapse blank lines. A transform advertised as a one-line edit
+    must not reformat the whole file, so when the source contains *any* comment we
+    refuse the rewrite (return ``None``) rather than destroy it. Comment-free
+    files are unaffected and rewrite exactly as before.
     """
     new_tree = transformer.visit(tree)
     if not transformer.changed:  # type: ignore[attr-defined]
+        return None
+
+    # Whole-module unparse drops comments; refuse instead of silently deleting.
+    if source_has_comment(source):
         return None
 
     ast.fix_missing_locations(new_tree)
