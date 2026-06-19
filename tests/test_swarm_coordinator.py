@@ -354,7 +354,8 @@ class TestRunAutonomousTriggers:
         sec = FakeSecurityAgent()
         coord.register_agents([sec])
         results = coord.run_autonomous("security audit", target=".", mode="report")
-        out = capsys.readouterr().out
+        # `[swarm] ...` status lines are routed to STDERR for stdout determinism.
+        out = capsys.readouterr().err
         assert "[swarm] Completed" in out
         assert isinstance(results, list)
 
@@ -380,7 +381,7 @@ class TestRunAutonomousLoopExits:
         # Make each loop iteration instant and deterministic.
         monkeypatch.setattr(mod.time, "sleep", lambda s: None)
         results = coord.run_autonomous("security audit", target=".", mode="report", timeout=0.05)
-        out = capsys.readouterr().out
+        out = capsys.readouterr().err
         assert "[swarm] TIMEOUT" in out
         # The timeout branch requests shutdown.
         assert coord._stability.shutdown_manager.is_shutdown_requested() is True
@@ -399,6 +400,6 @@ class TestRunAutonomousLoopExits:
 
         monkeypatch.setattr(mod.time, "sleep", shutdown_then_noop)
         coord.run_autonomous("security audit", target=".", mode="report", timeout=10.0)
-        out = capsys.readouterr().out
+        out = capsys.readouterr().err
         assert "[swarm] Shutdown requested after" in out
         assert "[swarm] Graceful shutdown" in out

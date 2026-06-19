@@ -13,7 +13,7 @@ deterministic, so the digests are stable across runs and machines.
 from __future__ import annotations
 
 import io
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr
 
 import app.agents.swarm_coordinator as mod
 from app.agents.base import Agent, AgentState
@@ -79,8 +79,11 @@ def _run(monkeypatch, coord, goal, timeout=None, sleep_hook=None):
 
     monkeypatch.setattr(mod.time, "sleep", fake_sleep)
     monkeypatch.setattr(mod.time, "time", lambda: clock["t"])
+    # `[swarm] ...` progress/status lines are emitted to STDERR (the deterministic
+    # findings/result are the only thing on STDOUT), so capture stderr for the
+    # assertions that read `out`.
     buf = io.StringIO()
-    with redirect_stdout(buf):
+    with redirect_stderr(buf):
         ret = coord.run_autonomous(goal, target="/t", mode="report", timeout=timeout)
     return buf.getvalue(), ret
 

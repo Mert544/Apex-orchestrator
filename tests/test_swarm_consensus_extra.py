@@ -421,7 +421,8 @@ def test_run_autonomous_docstring_trigger(capsys):
     coord.register_agents([doc])
     results = coord.run_autonomous("add docstrings", target=".", mode="report")
     assert isinstance(results, list)
-    out = capsys.readouterr().out
+    # `[swarm] ...` status lines are routed to STDERR for stdout determinism.
+    out = capsys.readouterr().err
     assert "[swarm]" in out
 
 
@@ -493,7 +494,7 @@ def test_run_autonomous_timeout_path(monkeypatch, capsys):
     coord.register_agents([StuckAgent("stuck-1")])
     monkeypatch.setattr("app.agents.swarm_coordinator.time.sleep", lambda s: None)
     coord.run_autonomous("security audit", target=".", mode="report", timeout=0.2)
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "TIMEOUT" in out
     assert coord._graceful_shutdown.is_shutdown_requested()
 
@@ -512,7 +513,7 @@ def test_run_autonomous_graceful_shutdown_in_loop(monkeypatch, capsys):
 
     monkeypatch.setattr("app.agents.swarm_coordinator.time.sleep", fake_sleep)
     coord.run_autonomous("security audit", target=".", mode="report", timeout=10.0)
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "Shutdown requested after" in out
 
 
@@ -534,5 +535,5 @@ def test_run_autonomous_shutdown_during_loop(capsys):
     coord.register_agents([agent])
     results = coord.run_autonomous("security audit", target=".", mode="report")
     assert isinstance(results, list)
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "Shutdown" in out or "shutdown" in out

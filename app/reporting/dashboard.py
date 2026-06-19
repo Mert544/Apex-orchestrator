@@ -1,3 +1,14 @@
+"""HTML dashboard renderer (human-readable snapshot).
+
+OUT OF SCOPE for the "same repo state -> same bytes" determinism guarantee that
+covers `apex scan` STDOUT. This module intentionally embeds a wall-clock
+`datetime.now()` "generated at" stamp and the absolute `project_root` path so the
+rendered page reads as a point-in-time snapshot for a human. Those values vary
+run-to-run by design; the dashboard is never diffed in deterministic CI. Do not
+"fix" the timestamp/path away — the byte-identical guarantee lives in F2 (swarm
+progress lines routed to STDERR), not here.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -657,6 +668,8 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         project_root, git, debug, roadmap, shape, autonomy, pareto, trajectory,
         learned, sections=rendered,
     )
+    # Non-deterministic by design: this is a human-snapshot stamp, OUT OF SCOPE
+    # for the byte-identical scan guarantee (see module docstring).
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     hero_vitals = _hero_vitals(project_root, profile, findings, idea_report, action_plan)
 
