@@ -34,7 +34,6 @@ the head of that chain.
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -59,10 +58,11 @@ def plan_to_apply(plan_fn: Callable[..., object]):
     ``_simplify_dispatch`` apply path as the ``semantic/transforms/`` rewrites.
 
     Those ``plan_*`` transforms read their input from disk (they take a
-    project root and a relative path, not a source string), so the adapter
-    materialises ``source`` into a throwaway temp directory at ``rel_path``,
-    runs the real ``plan_fn`` against it, and translates the resulting
-    ``RenamePlan`` back into a :class:`SemanticPatchResult`:
+    project root and a relative path, not a source string), so the adapter feeds
+    ``source`` to the real ``plan_fn`` IN MEMORY via
+    ``_plan_transforms.plan_from_source`` (no temp dir, no disk write, no
+    re-read), and translates the resulting ``RenamePlan`` back into a
+    :class:`SemanticPatchResult`:
 
       - a plan with no rewrite (``not plan.ok`` — empty ``new_contents`` or a
         recorded blocker) → ``None``, the exact refuse-on-unsafe contract the
@@ -73,26 +73,26 @@ def plan_to_apply(plan_fn: Callable[..., object]):
         guarded ``apply_step`` gate (snapshot → write → verify → auto-rollback)
         treats it identically.
 
-    Pure and deterministic: the temp directory name never influences the
-    result (the transform keys off ``rel_path`` + source only), nothing under
-    the real project tree is read or written, and the temp dir is removed
-    before returning. Never raises — a transform that errors on exotic input is
-    treated as "would not safely act" (``None``), matching the scan's own
-    guard.
+    Pure and deterministic: the transform keys off ``rel_path`` + source only,
+    nothing under the real project tree is read or written, and no filesystem is
+    touched at all (the source is supplied in memory). Never raises — a transform
+    that errors on exotic input is treated as "would not safely act" (``None``),
+    matching the scan's own guard.
     """
 
     def _apply(rel_path: str, source: str, _title: str):
+        from app.execution._plan_transforms import plan_from_source
         from app.execution.semantic.result import SemanticPatchResult
 
-        # Normalise to a forward-slash relative path and mirror it under a
-        # throwaway root so the on-disk ``plan_*`` transform can read it.
+        # Normalise to a forward-slash relative path — the exact ``module_rel``
+        # spelling the on-disk ``plan_*`` transform keys ``is_fixture_path`` and
+        # its file-keyed plan mappings off — then run the transform against the
+        # in-memory source (no temp dir, no disk write, no re-read). The result
+        # is byte-identical to mirroring ``source`` to a temp ``droot / rel`` and
+        # running ``plan_fn(droot, rel)`` against it.
         rel = Path(rel_path).as_posix()
         try:
-            with tempfile.TemporaryDirectory() as droot:
-                fpath = Path(droot) / rel
-                fpath.parent.mkdir(parents=True, exist_ok=True)
-                fpath.write_text(source, encoding="utf-8")
-                plan = plan_fn(droot, rel)
+            plan = plan_from_source(plan_fn, rel, source)
         except Exception:
             return None
         if not getattr(plan, "ok", False):

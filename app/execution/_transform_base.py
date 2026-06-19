@@ -32,7 +32,9 @@ Deterministic and stdlib-only — no time, no randomness.
 from __future__ import annotations
 
 import ast
+import threading
 from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from app.execution.cross_file_rename import RenamePlan
@@ -63,7 +65,54 @@ __all__ = [
     "apply_comprehension_rewrites",
     "single_name_assign_rhs",
     "accumulator_seed",
+    "IN_MEMORY_ROOT",
+    "source_override",
 ]
+
+
+# Sentinel ``project_root`` value handed to an on-disk ``plan_<name>(root, rel)``
+# transform when its source is being supplied IN MEMORY (no filesystem read).
+# A caller that wants to dry-run a transform against a source string it already
+# holds (the simplification scanner) opens a :func:`source_override` block, then
+# calls the unmodified ``plan_<name>(IN_MEMORY_ROOT, rel)``; ``read_module_source``
+# returns the registered source instead of touching disk. The value is a path that
+# can never exist on a real tree, so an accidental fall-through to a disk read
+# fails closed (records a "cannot read" blocker) rather than reading a stray file.
+IN_MEMORY_ROOT = "<apex-in-memory>"
+
+# Thread-local registry of ``module_rel -> source`` overrides active for the
+# current thread. Thread-local (not a module global) so a concurrent caller in
+# another thread never sees this thread's injected sources — the override is a
+# strictly scoped, single-thread construct used only inside a ``with
+# source_override(...)`` block. Determinism is preserved: the same source in →
+# the same plan out, with no filesystem, clock, or randomness involved.
+_SOURCE_OVERRIDES = threading.local()
+
+
+def _active_source_overrides() -> dict[str, str] | None:
+    """The override map registered for the current thread, or ``None`` when no
+    :func:`source_override` block is active."""
+    return getattr(_SOURCE_OVERRIDES, "stack", None)
+
+
+@contextmanager
+def source_override(sources: dict[str, str]):
+    """Register ``module_rel -> source`` overrides for the duration of the block.
+
+    Inside the block, any :func:`read_module_source` call whose ``module_rel`` is
+    a key of ``sources`` returns the provided string verbatim instead of reading
+    ``project_root / module_rel`` from disk — letting an on-disk
+    ``plan_<name>(IN_MEMORY_ROOT, rel)`` transform run on an in-memory source with
+    no filesystem write or re-read. The previous override map (if any) is restored
+    on exit, so nested blocks compose. Keys are forward-slash relative paths, the
+    exact spelling the transforms key ``is_fixture_path`` and the plan mappings
+    off, so the resulting plan is byte-identical to the on-disk dry-run."""
+    previous = getattr(_SOURCE_OVERRIDES, "stack", None)
+    _SOURCE_OVERRIDES.stack = sources
+    try:
+        yield
+    finally:
+        _SOURCE_OVERRIDES.stack = previous
 
 
 def read_module_source(
@@ -77,7 +126,16 @@ def read_module_source(
     (bool-return, chain-comparison, dict-get, merge-isinstance, set-literal,
     redundant-else, ...) each carried verbatim. ``plan`` only needs a ``blockers``
     list, so this stays decoupled from any concrete plan type and keeps
-    ``_transform_base`` free of a back-import on the transforms."""
+    ``_transform_base`` free of a back-import on the transforms.
+
+    If a :func:`source_override` block is active and ``module_rel`` is one of its
+    keys, the registered source string is returned verbatim and the filesystem is
+    never touched — the in-memory dry-run path used by the simplification scanner.
+    The returned string is byte-identical to what the on-disk read would have
+    produced, so the resulting plan is unchanged."""
+    overrides = _active_source_overrides()
+    if overrides is not None and module_rel in overrides:
+        return overrides[module_rel]
     path = Path(project_root) / module_rel
     try:
         return path.read_text(encoding="utf-8")

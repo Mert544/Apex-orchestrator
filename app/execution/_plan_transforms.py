@@ -20,6 +20,7 @@ imports only from the ``app.execution.*`` transform modules and never from the
 bridge or the scanner, so no import cycle is possible.
 """
 
+from app.execution._transform_base import IN_MEMORY_ROOT, source_override
 from app.execution.bool_return import plan_simplify_bool_return
 from app.execution.comprehension import plan_simplify_comprehension
 from app.execution.dict_comprehension import plan_dict_comprehension
@@ -57,6 +58,25 @@ PLAN_TRANSFORMS = {
     "plan_use_enumerate": plan_use_enumerate,
 }
 
+def plan_from_source(plan_fn, module_rel, source):
+    """Run an on-disk ``plan_<name>(root, rel) -> RenamePlan`` transform against a
+    source string IN MEMORY — no temp dir, no disk write, no re-read.
+
+    Every ``plan_<name>`` here reads its subject through
+    ``_transform_base.read_module_source(plan, root, rel)``. This helper opens a
+    ``source_override`` block mapping ``module_rel -> source`` and calls
+    ``plan_fn(IN_MEMORY_ROOT, module_rel)``, so that read returns ``source``
+    verbatim and the transform runs its IDENTICAL collect → apply → re-parse →
+    build-plan path on the in-memory text. The returned :class:`RenamePlan` is
+    byte-identical to ``plan_fn(droot, module_rel)`` after writing ``source`` to
+    ``droot / module_rel`` and reading it back — same ``module_rel`` (so
+    ``is_fixture_path`` and the plan's file-keyed mappings match), same source
+    bytes, same parse. Pure and deterministic: no filesystem, clock, or
+    randomness."""
+    with source_override({module_rel: source}):
+        return plan_fn(IN_MEMORY_ROOT, module_rel)
+
+
 # Public surface = the pinned map's plans PLUS the attribute-only additions that
 # the consumers reference directly (kept out of the pinned map above).
-__all__ = [*PLAN_TRANSFORMS, "plan_simplify_bool_comparison"]
+__all__ = [*PLAN_TRANSFORMS, "plan_simplify_bool_comparison", "plan_from_source"]
