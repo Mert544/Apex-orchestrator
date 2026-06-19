@@ -154,13 +154,33 @@ class ProjectProfile:
     #     keyed by normalised language name (unmapped extensions → "other"),
     #     sorted for stable rendering;
     #   - analyzed_ratio: python_file_count / source_file_count, in [0,1]
-    #     (empty/all-Python repo → 1.0);
+    #     (empty/all-Python repo → 1.0). This is the LANGUAGE ratio: every ``.py``
+    #     file counts, even one that failed to parse. Kept for consumers that want
+    #     "how much of the repo is in Apex's language", NOT "how much was truly
+    #     analysed" — for the latter use ``analyzed_ratio_honest`` below;
     #   - out_of_scope_ratio: 1 - analyzed_ratio.
     source_file_count: int = 0
     python_file_count: int = 0
     language_breakdown: dict[str, int] = field(default_factory=dict)
     analyzed_ratio: float = 1.0
     out_of_scope_ratio: float = 0.0
+    # PARSE-AWARE honesty: in-language ``.py`` files Apex SAW but did NOT actually
+    # analyse — they failed ``ast.parse`` (syntax error) or could not be read, so
+    # PythonStructureAnalyzer dropped them from the structure graph / security /
+    # cycle scans. Threaded straight off that analyzer's single parse pass (no
+    # second walk/reparse). Without this a broken ``.py`` hides for free: it still
+    # counts in ``python_file_count`` so the language ratio claims it was analysed.
+    #   - unparsed_files: sorted, root-relative paths of those dropped files
+    #     (deterministic; the scope report names a bounded prefix of them);
+    #   - unparsed_count: TRUE total before any display truncation;
+    #   - analyzed_ratio_honest: (python_file_count - unparsed_count) /
+    #     source_file_count, in [0,1] — the fraction TRULY analysed. Equals
+    #     ``analyzed_ratio`` exactly when nothing was dropped (so an all-parseable
+    #     repo's scope output is byte-identical to today). The SCOPE REPORT reads
+    #     this, never the raw language ratio.
+    unparsed_files: list[str] = field(default_factory=list)
+    unparsed_count: int = 0
+    analyzed_ratio_honest: float = 1.0
     # Polyglot hotspots: the biggest / most-churned NON-Python source files —
     # named (not deep-analysed) so the idea engine can recommend attention on the
     # largest active surface outside Apex's Python analysis scope. Populated from
@@ -713,6 +733,17 @@ class ProjectProfiler(_CodeQualityScansMixin):
         ratio = 1.0 if source_total == 0 else python_total / source_total
         profile.analyzed_ratio = ratio
         profile.out_of_scope_ratio = 1.0 - ratio
+        # PARSE-AWARE honest ratio: subtract the in-language ``.py`` files that
+        # were dropped (failed ``ast.parse`` / unreadable, set by
+        # ``_populate_python_structure``, which runs before this scan) from the
+        # analysed numerator. ``analyzed`` is floored at 0 in case the two walks
+        # (rglob here vs iter_source_files there) ever disagree, so the ratio
+        # never goes negative. When nothing was dropped this EQUALS
+        # ``analyzed_ratio`` exactly, so an all-parseable repo is byte-identical.
+        analyzed = max(0, python_total - profile.unparsed_count)
+        profile.analyzed_ratio_honest = (
+            1.0 if source_total == 0 else analyzed / source_total
+        )
 
     def _scan_polyglot_hotspots(self, profile: ProjectProfile) -> None:
         """Name the biggest / most-churned NON-Python source files.
@@ -1234,6 +1265,13 @@ class ProjectProfiler(_CodeQualityScansMixin):
     def _populate_python_structure(self, profile: ProjectProfile) -> None:
         analyzer = PythonStructureAnalyzer(self.root)
         modules = analyzer.analyze()
+        # Capture the in-language ``.py`` files that failed to parse/read BEFORE
+        # the early return: a repo of all-broken Python yields no modules yet must
+        # still report those drops honestly. Read off the analyzer's single parse
+        # pass (no reparse). ``_scan_analysis_scope`` turns this into the honest
+        # ratio; sorted already, copied so the field owns its list.
+        profile.unparsed_files = list(analyzer.unparsed_files)
+        profile.unparsed_count = len(analyzer.unparsed_files)
         if not modules:
             return
 

@@ -605,6 +605,8 @@ _SCOPE_EMPTY_REPORT = {
     "out_of_scope_pct": 0,
     "all_python": True,
     "language_breakdown": [],
+    "unparsed_count": 0,
+    "unparsed_files": [],
     "files": [],
 }
 
@@ -684,18 +686,47 @@ def _scope_report(root: Path) -> dict:
         # the honest answer is still "all of what little there is".
         return dict(_SCOPE_EMPTY_REPORT)
 
-    all_python = not (profile.out_of_scope_ratio > 0 and profile.language_breakdown)
     breakdown = [
         {"language": lang, "files": count}
         for lang, count in profile.language_breakdown.items()
     ]
+    unparsed_count = int(getattr(profile, "unparsed_count", 0) or 0)
+    # Bounded, sorted (the profile already sorts) preview of the dropped files —
+    # capped like the other report sections so a repo with hundreds of broken
+    # files doesn't dump them all. The count carries the TRUE total.
+    unparsed_files = list(getattr(profile, "unparsed_files", []) or [])[:5]
+    # The reassuring "100% (all Python)" path is honest ONLY when nothing was
+    # dropped. A repo that is all-Python yet has a file that failed to parse must
+    # NOT take it — there is a real gap to disclose, so fall to the detailed shape.
+    all_python = (
+        not (profile.out_of_scope_ratio > 0 and profile.language_breakdown)
+        and unparsed_count == 0
+    )
+    # The SCOPE report speaks for what was TRULY analysed. When NOTHING was
+    # dropped, the percentages are computed EXACTLY as before (the original
+    # ``round(analyzed_ratio * 100)`` / ``round(out_of_scope_ratio * 100)``), so
+    # the common all-parseable case is byte-identical down to float rounding —
+    # deriving them any other way risks a ``1.0 - x`` rounding shift on a repo
+    # like 99.5%. ONLY when files were dropped do we switch to the parse-aware
+    # honest ratio (which the raw language ratio cannot express), and there we
+    # derive out-of-scope as ``100 - analyzed_pct`` so the two always sum to 100.
+    if unparsed_count <= 0:
+        analyzed_pct = round(profile.analyzed_ratio * 100)
+        out_of_scope_pct = round(profile.out_of_scope_ratio * 100)
+    else:
+        honest_ratio = getattr(profile, "analyzed_ratio_honest",
+                               profile.analyzed_ratio)
+        analyzed_pct = round(honest_ratio * 100)
+        out_of_scope_pct = 100 - analyzed_pct
     return {
         "source_file_count": profile.source_file_count,
         "python_file_count": profile.python_file_count,
-        "analyzed_pct": round(profile.analyzed_ratio * 100),
-        "out_of_scope_pct": round(profile.out_of_scope_ratio * 100),
+        "analyzed_pct": analyzed_pct,
+        "out_of_scope_pct": out_of_scope_pct,
         "all_python": all_python,
         "language_breakdown": breakdown,
+        "unparsed_count": unparsed_count,
+        "unparsed_files": unparsed_files,
         "files": _scope_files(root, profile),
         "cross_links": _scope_cross_links(root),
     }
@@ -712,12 +743,58 @@ def _scope_all_python_lines() -> list[str]:
 
 
 def _scope_headline_lines(rep: dict) -> list[str]:
-    """The polyglot header + analysed/out-of-scope ratio sentence."""
-    return [
-        "# Apex analysis scope", "",
+    """The header + analysed/out-of-scope ratio sentence.
+
+    Parse-aware: when in-language ``.py`` files were DROPPED because they failed
+    to parse, the headline names that gap inline (turning a silent omission into
+    a disclosed strength) rather than pretending the percentage is purely a
+    language boundary. With no dropped files the clause is absent, so the polyglot
+    headline is byte-identical to before.
+    """
+    sentence = (
         f"Apex analyses {rep['analyzed_pct']}% of this repo (Python). "
-        f"{rep['out_of_scope_pct']}% is outside its analysis scope.", "",
+        f"{rep['out_of_scope_pct']}% is outside its analysis scope."
+    )
+    n = int(rep.get("unparsed_count", 0) or 0)
+    if n > 0:
+        f_word = "file" if n == 1 else "files"
+        was_word = "was" if n == 1 else "were"
+        sentence += (
+            f" {n} Python {f_word} could not be parsed and {was_word} excluded "
+            "from analysis."
+        )
+    return ["# Apex analysis scope", "", sentence, ""]
+
+
+def _scope_unparsed_lines(rep: dict) -> list[str]:
+    """The "could not be parsed" section naming the dropped files ([] when none).
+
+    Bounded (the report already caps the preview) and sorted, like every other
+    section. Discloses exactly which in-language files Apex saw but could not
+    analyse — so a broken or maliciously-mangled ``.py`` can never hide behind a
+    "100% analysed" claim. Additive: empty unless real drops occurred.
+    """
+    n = int(rep.get("unparsed_count", 0) or 0)
+    if n <= 0:
+        return []
+    names = rep.get("unparsed_files") or []
+    f_word = "file" if n == 1 else "files"
+    lines = [
+        "## Could not be parsed (excluded from analysis)", "",
+        f"{n} Python {f_word} failed to parse (syntax error or unreadable "
+        "encoding) and {pron} excluded from the structure graph, security scan, "
+        "and cycle detection — so the percentage above never counts {pron2} as "
+        "analysed:".format(
+            pron="was" if n == 1 else "were",
+            pron2="it" if n == 1 else "them",
+        ),
+        "",
     ]
+    lines += [f"- `{name}`" for name in names]
+    if n > len(names):
+        lines.append(f"- … and {n - len(names)} more")
+    lines.append("")
+    return lines
 
 
 def _scope_breakdown_lines(breakdown: list) -> list[str]:
@@ -787,6 +864,7 @@ def render_scope_markdown(rep: dict) -> str:
         return "\n".join(_scope_all_python_lines())
 
     lines = _scope_headline_lines(rep)
+    lines += _scope_unparsed_lines(rep)
     lines += _scope_breakdown_lines(rep["language_breakdown"])
     lines += _scope_files_lines(rep["files"])
     lines += _scope_cross_lines(rep.get("cross_links") or [])

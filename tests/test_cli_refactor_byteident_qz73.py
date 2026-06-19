@@ -43,12 +43,29 @@ ORIG_IDEATE = _load_original("cli_ideate.py", "_orig_cli_ideate_qz73")
 # _scope_report
 # --------------------------------------------------------------------------- #
 
+# Parse-aware scope-honesty keys added to ``_scope_report``'s output AFTER this
+# HEAD snapshot (``fix(scope): parse-aware honest analyzed-ratio``). They are
+# ADDITIVE — the HEAD blob cannot emit them — so they are stripped from BOTH
+# sides before the byte-identity comparison. This test's contract is that the
+# refactor produced identical output for every PRE-EXISTING field; the new
+# parse-aware behaviour has its own suite (test_scope_parse_aware_eyml.py).
+_POST_SNAPSHOT_SCOPE_KEYS = ("unparsed_count", "unparsed_files")
+
+
 def _run_scope(fn, root):
-    """Return ``("ok", result)`` or ``("err", repr(exc))`` for fn(root)."""
+    """Return ``("ok", result)`` or ``("err", repr(exc))`` for fn(root).
+
+    Additive post-snapshot scope keys are dropped from the ``ok`` result so the
+    comparison stays anchored on the fields the snapshot actually pins.
+    """
     try:
-        return ("ok", fn(root))
+        result = fn(root)
     except Exception as exc:  # pragma: no cover - parity recorded either way
         return ("err", repr(exc))
+    if isinstance(result, dict):
+        result = {k: v for k, v in result.items()
+                  if k not in _POST_SNAPSHOT_SCOPE_KEYS}
+    return ("ok", result)
 
 
 # Repos that exercise: empty/missing, all-Python, polyglot with breakdown,
@@ -113,7 +130,11 @@ def test_scope_empty_shape_is_fresh_dict():
     missing = Path("/nonexistent_qz73_path_for_scope")
     r1 = live_insight._scope_report(missing)
     r2 = live_insight._scope_report(missing)
-    assert r1 == r2 == ORIG_INSIGHT._scope_report(missing)
+    # Strip the additive post-snapshot keys (see _run_scope) before comparing the
+    # empty-shape dict to the HEAD blob's empty literal.
+    strip = lambda d: {k: v for k, v in d.items()  # noqa: E731
+                       if k not in _POST_SNAPSHOT_SCOPE_KEYS}
+    assert strip(r1) == strip(r2) == strip(ORIG_INSIGHT._scope_report(missing))
     assert r1 is not r2  # fresh copy each call, like the original literal
 
 

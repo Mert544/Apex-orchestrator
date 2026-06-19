@@ -60,12 +60,23 @@ class PythonStructureAnalyzer:
     def __init__(self, root: str | Path, max_files: int = 500) -> None:
         self.root = Path(root)
         self.max_files = max_files
+        # Root-relative paths of the in-scope ``.py`` files this analyzer SAW but
+        # could NOT analyse — they failed ``ast.parse`` (syntax error) or could
+        # not be read/encoded, so ``_analyze_file`` returned ``None`` and the file
+        # was silently dropped from the structure graph / security / cycle scans.
+        # Populated by ``analyze()`` in the SAME single parse pass (no second
+        # walk/reparse) so a caller can report scope HONESTLY — an unparsed file
+        # is in-language but NOT actually analysed. Sorted because the walk is
+        # sorted; reset each ``analyze()`` call so re-running is deterministic.
+        self.unparsed_files: list[str] = []
 
     def analyze(self) -> list[ModuleStructure]:
+        self.unparsed_files = []
         if not self.root.exists():
             return []
 
         results: list[ModuleStructure] = []
+        unparsed: list[str] = []
         scanned = 0
         # iter_source_files is sorted AND prunes excluded/worktree dirs, so the
         # max_files cap below is applied AFTER filtering: deterministic across
@@ -79,6 +90,14 @@ class PythonStructureAnalyzer:
             structure = self._analyze_file(path)
             if structure is not None:
                 results.append(structure)
+            else:
+                # A ``.py`` file iter_source_files yielded but that did NOT
+                # parse/read — record it (root-relative) so the truth of the
+                # drop is visible to scope accounting. Same single parse pass.
+                unparsed.append(str(path.relative_to(self.root)))
+        # Already sorted (iter_source_files yields sorted paths), but make the
+        # invariant explicit so the field never depends on walk order.
+        self.unparsed_files = sorted(unparsed)
         return results
 
     def _analyze_file(self, path: Path) -> ModuleStructure | None:

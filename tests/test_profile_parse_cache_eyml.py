@@ -91,12 +91,26 @@ def _load_original_profiler():
 _OriginalProfiler = _load_original_profiler()
 
 
+# Parse-aware scope-honesty fields added AFTER this HEAD snapshot was taken
+# (``fix(scope): parse-aware honest analyzed-ratio``). They are ADDITIVE: the
+# HEAD-snapshot profiler does not set them, so the live profiler's dict carries
+# three extra keys it cannot. This test's contract is that the parse-CACHE
+# routing produced byte-identical output for every pre-existing field, NOT that
+# no field is ever added later, so these additive keys are dropped from BOTH
+# sides before the comparison. (The parse-aware behaviour has its own dedicated
+# suite: ``tests/test_scope_parse_aware_eyml.py``.)
+_POST_SNAPSHOT_FIELDS = ("unparsed_files", "unparsed_count", "analyzed_ratio_honest")
+
+
 def _profile_dict(profiler_cls, root: Path) -> dict:
     # A fresh per-build cache for every profile, exactly as a new process would
     # see -- the cache must never leak state (or mtime keys) across builds.
     ps._PARSE_CACHE.clear()
     ps._TREE_CACHE.clear()
-    return dict(profiler_cls(str(root)).profile(light=False).__dict__)
+    d = dict(profiler_cls(str(root)).profile(light=False).__dict__)
+    for key in _POST_SNAPSHOT_FIELDS:
+        d.pop(key, None)
+    return d
 
 
 # --- representative trees ---------------------------------------------------
