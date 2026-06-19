@@ -26,7 +26,7 @@ _EMPTY_CALLS = {"list": "[]", "dict": "{}", "set": "set()"}
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
     return _patch_mutable_defaults(rel_path, source, tree)
 

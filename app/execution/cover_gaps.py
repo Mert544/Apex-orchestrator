@@ -77,7 +77,7 @@ def plan_cover_gaps(project_root: str | Path, module_rel: str) -> RenamePlan:
 
     try:
         ast.parse(shield.content)
-    except SyntaxError as e:
+    except (SyntaxError, RecursionError, MemoryError) as e:
         plan.blockers.append(
             f"{module_rel}: generated test would not parse ({e}) — blocked")
         return plan

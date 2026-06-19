@@ -252,7 +252,7 @@ def _scan_source(
     offenders: list[dict[str, Any]] = []
     try:
         tree = ast.parse(source)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return counts, offenders
 
     def record(line: int, kind: str) -> None:

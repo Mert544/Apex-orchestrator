@@ -134,7 +134,7 @@ def _parse_module(path: Path) -> ast.Module | None:
     try:
         source = path.read_text(encoding="utf-8")
         return ast.parse(source)
-    except (OSError, SyntaxError, ValueError):
+    except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
         return None
 
 

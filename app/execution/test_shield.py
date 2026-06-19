@@ -309,7 +309,7 @@ def _captured_oracle(repr_text: str, value: object) -> str | None:
     """
     try:
         round_tripped = ast.literal_eval(repr_text)
-    except (ValueError, SyntaxError):
+    except (ValueError, SyntaxError, RecursionError, MemoryError):
         return None
     try:
         if round_tripped == value:
@@ -343,7 +343,7 @@ def _capture_one_oracle(module: object, name: str, call_args: str) -> str | None
     """
     try:
         args, kwargs = _eval_call_args(call_args)
-    except (ValueError, SyntaxError):
+    except (ValueError, SyntaxError, RecursionError, MemoryError):
         return None  # a synthesized arg is not a plain literal -> no oracle
     fn = getattr(module, name, None)
     if not callable(fn):
@@ -562,7 +562,7 @@ def generate_characterization_test(
     source = root / rel
     try:
         tree = ast.parse(source.read_text(encoding="utf-8", errors="ignore"))
-    except (OSError, SyntaxError):
+    except (OSError, SyntaxError, RecursionError, MemoryError):
         return None
 
     test_path = f"tests/test_{module_stem}.py"

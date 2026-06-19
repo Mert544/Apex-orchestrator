@@ -335,7 +335,7 @@ def _parse_project(
     for rel, text in files:
         try:
             trees[rel] = ast.parse(text)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             continue
     return sources, trees
 
@@ -504,7 +504,7 @@ def _verify_parses(plan: RenamePlan) -> None:
     for rel, content in plan.new_contents.items():
         try:
             ast.parse(content)
-        except SyntaxError as e:
+        except (SyntaxError, RecursionError, MemoryError) as e:
             plan.blockers.append(
                 f"inlining would not parse ({e}) in {rel} — refusing to write")
             plan.new_contents.clear()
@@ -560,7 +560,7 @@ def _suggest_trees(
     for rel, text in _py_files(Path(project_root)):
         try:
             parsed[rel] = ast.parse(text)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             continue
     return parsed
 

@@ -19,7 +19,7 @@ def count_test_functions(root: str | Path, test_files: list[str]) -> int:
     for rel in test_files:
         try:
             tree = ast.parse((root / rel).read_text(encoding="utf-8", errors="ignore"))
-        except (OSError, SyntaxError):
+        except (OSError, SyntaxError, RecursionError, MemoryError):
             continue
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):

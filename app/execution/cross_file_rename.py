@@ -153,7 +153,7 @@ def _parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
     for rel, text in files:
         try:
             trees[rel] = ast.parse(text)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             continue
     return trees
 

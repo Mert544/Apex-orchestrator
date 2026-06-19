@@ -46,7 +46,7 @@ def parse_or_none(source: str) -> ast.Module | None:
     """
     try:
         return ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
 
@@ -77,7 +77,7 @@ def run_rewrite_transformer(
     # Re-parse to guarantee the rewrite is syntactically valid before emitting.
     try:
         ast.parse(new_source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     if source.endswith("\n") and not new_source.endswith("\n"):

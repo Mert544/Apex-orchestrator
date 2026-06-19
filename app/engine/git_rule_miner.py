@@ -18,7 +18,7 @@ def _is_expr(text: str) -> bool:
     """True if ``text`` parses as a standalone Python expression."""
     try:
         ast.parse(text, mode="eval")
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return False
     return True
 
@@ -44,7 +44,7 @@ def _unwrap_statement(stripped: str) -> str | None:
     """Unwrap a single-line statement to the source text of its value node."""
     try:
         tree = ast.parse(stripped, mode="exec")
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
     if len(tree.body) != 1:
         return None

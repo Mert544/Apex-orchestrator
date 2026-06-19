@@ -87,7 +87,7 @@ def _build_result(rel_path: str, source: str,
 def apply(rel_path: str, source: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     used_names = _collect_used_names(tree)

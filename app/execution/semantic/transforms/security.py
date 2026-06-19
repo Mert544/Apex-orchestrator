@@ -21,7 +21,7 @@ def _select_patcher(issue: str):
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     patcher = _select_patcher(title.lower())
@@ -552,7 +552,7 @@ def _eval_arg_rewritable(arg_node: ast.expr) -> bool:
     if isinstance(arg_node, ast.Constant) and isinstance(arg_node.value, str):
         try:
             ast.literal_eval(arg_node.value)
-        except (ValueError, SyntaxError, TypeError):
+        except (ValueError, SyntaxError, TypeError, RecursionError, MemoryError):
             return False
     return True
 

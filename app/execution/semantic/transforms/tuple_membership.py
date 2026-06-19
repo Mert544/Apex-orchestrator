@@ -77,7 +77,7 @@ class _MembershipTransformer(ast.NodeTransformer):
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     transformer = _MembershipTransformer()
@@ -94,7 +94,7 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     # Re-parse to guarantee the rewrite is well-formed.
     try:
         ast.parse(new_content)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     if new_content == source:

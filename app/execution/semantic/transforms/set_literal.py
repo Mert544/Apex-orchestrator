@@ -48,7 +48,7 @@ def _find_call(tree: ast.AST) -> ast.Call | None:
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     call = _find_call(tree)
@@ -88,7 +88,7 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     # Re-parse to validate; refuse anything that does not round-trip cleanly.
     try:
         ast.parse(new_source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     return SemanticPatchResult(

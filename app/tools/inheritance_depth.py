@@ -118,7 +118,7 @@ def _collect_classes(root: Path, max_files: int) -> list[dict]:
         try:
             source = path.read_text(encoding="utf-8")
             tree = ast.parse(source)
-        except (OSError, SyntaxError, ValueError):
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
             continue
         count += 1
         module = _module_name(path, root)

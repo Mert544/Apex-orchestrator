@@ -76,7 +76,7 @@ class SourceIndex:
                 continue
             try:
                 tree: ast.Module | None = ast.parse(source)
-            except (SyntaxError, ValueError):
+            except (SyntaxError, ValueError, RecursionError, MemoryError):
                 tree = None
             modules.append(IndexedModule(rel=rel, source=source, tree=tree))
         modules.sort(key=lambda m: m.rel)

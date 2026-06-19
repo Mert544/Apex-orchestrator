@@ -49,7 +49,7 @@ def apply(
         return None
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     transformer = RenameTransformer(target_function, old_name, new_name)

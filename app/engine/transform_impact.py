@@ -88,7 +88,7 @@ def _line_count(source: str) -> int:
 def _parses(source: str) -> bool:
     try:
         ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return False
     return True
 
@@ -98,7 +98,7 @@ def _scope_function(source: str, function: str) -> str | None:
     in isolation. Returns None when the function isn't present/parseable."""
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     def find(body: list[ast.stmt], prefix: str) -> ast.AST | None:
@@ -129,7 +129,7 @@ def _nesting_metric(source: str) -> int | None:
     """Max nesting for a source string, or None if it won't parse."""
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
     return _max_nesting(tree)
 

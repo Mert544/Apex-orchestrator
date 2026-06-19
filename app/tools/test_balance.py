@@ -76,7 +76,7 @@ def _function_count(source: str, *, tests_only: bool) -> int:
     """
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return 0
     total = 0
     for node in ast.walk(tree):

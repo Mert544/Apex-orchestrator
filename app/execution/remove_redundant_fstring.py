@@ -106,7 +106,7 @@ def _single_string_token(segment: str) -> str | None:
                 continue
             else:
                 return None  # an unexpected token — not a lone literal
-    except (tokenize.TokenError, IndentationError, SyntaxError):
+    except (tokenize.TokenError, IndentationError, SyntaxError, RecursionError, MemoryError):
         return None
     if len(strings) != 1:
         return None  # zero or implicit-concatenation — skip

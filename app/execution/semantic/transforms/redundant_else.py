@@ -196,7 +196,7 @@ def _dedent_else(lines: list[str], if_node: ast.If) -> list[str] | None:
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     if_node = _candidate(tree)
@@ -215,7 +215,7 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     # Never emit a patch we cannot prove re-parses.
     try:
         ast.parse(new_content)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     return SemanticPatchResult(

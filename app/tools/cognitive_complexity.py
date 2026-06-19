@@ -135,7 +135,7 @@ def function_cognitive_complexities(source: str) -> list[tuple[str, int, int]]:
     (methods qualified as ``Class.method``). Unparsable source yields []."""
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return []
     return _function_cognitive_complexities_tree(tree)
 

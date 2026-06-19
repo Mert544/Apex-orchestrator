@@ -10,7 +10,7 @@ from ..result import SemanticPatchResult
 def apply(rel_path: str, source: str, repair: dict[str, Any]) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     lines = source.splitlines(keepends=True)

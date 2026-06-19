@@ -126,7 +126,7 @@ def _parse_tree(path: Path) -> ast.Module | None:
     try:
         source = path.read_text(encoding="utf-8", errors="ignore")
         return ast.parse(source)
-    except (SyntaxError, OSError, ValueError):
+    except (SyntaxError, OSError, ValueError, RecursionError, MemoryError):
         return None
 
 
@@ -208,6 +208,6 @@ def _parse_source(path: Path) -> tuple[list[str], list[str]] | None:
     try:
         source = path.read_text(encoding="utf-8", errors="ignore")
         tree = ast.parse(source)
-    except (SyntaxError, OSError, ValueError):
+    except (SyntaxError, OSError, ValueError, RecursionError, MemoryError):
         return None
     return _extract_graph(tree)

@@ -98,7 +98,7 @@ def parse_module_source(
     from any concrete plan type."""
     try:
         return ast.parse(source)
-    except SyntaxError as e:
+    except (SyntaxError, RecursionError, MemoryError) as e:
         plan.blockers.append(f"{module_rel} doesn't parse: {e}")
         return None
 
@@ -143,7 +143,7 @@ def finalize_module_rewrite(
     plan type."""
     try:
         ast.parse(new_source)
-    except SyntaxError as e:
+    except (SyntaxError, RecursionError, MemoryError) as e:
         plan.blockers.append(
             f"{module_rel}: {reparse_phrase} would not re-parse ({e}) — blocked")
         return plan
@@ -211,7 +211,7 @@ def parse_trees(files: list[tuple[str, str]]) -> dict[str, ast.Module]:
     for rel, text in files:
         try:
             trees[rel] = ast.parse(text)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             continue
     return trees
 
@@ -400,7 +400,7 @@ def text_is_valid(text: str, count: int) -> bool:
     (fstring-convert, percent-to-fstring) each carried privately."""
     try:
         expr = ast.parse(text, mode="eval").body
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return False
     if not isinstance(expr, ast.JoinedStr):
         return False
@@ -455,7 +455,7 @@ def plan_single_module_column_rewrite(
 
     try:
         tree = ast.parse(source)
-    except SyntaxError as e:
+    except (SyntaxError, RecursionError, MemoryError) as e:
         plan.blockers.append(f"{module_rel} doesn't parse: {e}")
         return plan
 
@@ -469,7 +469,7 @@ def plan_single_module_column_rewrite(
     )
     try:
         ast.parse(new_source)
-    except SyntaxError as e:
+    except (SyntaxError, RecursionError, MemoryError) as e:
         plan.blockers.append(
             f"{module_rel}: conversion would not re-parse ({e}) — blocked")
         return plan

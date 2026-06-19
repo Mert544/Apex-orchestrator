@@ -50,7 +50,7 @@ class AdvancedRefactoringEngine:
             interface_name = f"I{class_name}"
         try:
             tree = ast.parse(source_code)
-        except SyntaxError as e:
+        except (SyntaxError, RecursionError, MemoryError) as e:
             return AdvancedRefactorResult(False, f"Parse error: {e}")
 
         target_class = None
@@ -98,7 +98,7 @@ class AdvancedRefactoringEngine:
         """
         try:
             tree = ast.parse(source_code)
-        except SyntaxError as e:
+        except (SyntaxError, RecursionError, MemoryError) as e:
             return AdvancedRefactorResult(False, f"Parse error: {e}")
 
         target_func = AdvancedRefactoringEngine._find_function(tree, function_name)

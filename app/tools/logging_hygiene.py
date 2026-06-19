@@ -276,7 +276,7 @@ def analyze_logging_hygiene(
             try:
                 source = path.read_text(encoding="utf-8", errors="ignore")
                 tree = ast.parse(source)
-            except (SyntaxError, OSError, ValueError):
+            except (SyntaxError, OSError, ValueError, RecursionError, MemoryError):
                 continue
             scanned += 1
             visitor = _ModuleVisitor(rel)

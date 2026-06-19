@@ -42,7 +42,7 @@ def changed_functions(old: str, new: str) -> list[str]:
         out: dict[str, str] = {}
         try:
             tree = ast.parse(src)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             return out
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -83,7 +83,7 @@ def _imported_modules(text: str) -> set[str] | None:
     regex over import lines)."""
     try:
         tree = ast.parse(text)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
     mods: set[str] = set()
     for node in ast.walk(tree):

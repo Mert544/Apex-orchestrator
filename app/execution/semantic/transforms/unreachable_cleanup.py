@@ -34,7 +34,7 @@ _TERMINATORS = (ast.Return, ast.Raise, ast.Break, ast.Continue)
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     # Map every source line to True if a comment token starts on it. Lexical, so
@@ -59,7 +59,7 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
 
     try:
         ast.parse(new_content)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None  # never hand back something that won't parse
 
     return SemanticPatchResult(
@@ -83,7 +83,7 @@ def _comment_lines(source: str) -> set[int] | None:
         for tok in tokenize.generate_tokens(StringIO(source).readline):
             if tok.type == tokenize.COMMENT:
                 out.add(tok.start[0])
-    except (tokenize.TokenError, IndentationError, SyntaxError):
+    except (tokenize.TokenError, IndentationError, SyntaxError, RecursionError, MemoryError):
         return None
     return out
 

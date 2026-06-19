@@ -78,7 +78,7 @@ def _accumulate(sources: dict[str, str]) -> dict[str, list[str]]:
     for path in sorted(sources):
         try:
             tree = ast.parse(sources[path])
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             continue
         for node in ast.walk(tree):
             if not _is_mined(node):

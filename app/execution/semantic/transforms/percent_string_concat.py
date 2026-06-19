@@ -109,7 +109,7 @@ def _verified_literal(node: ast.BinOp, quote: str, folded_inner: str) -> str | N
     # of the two originals. If not, refuse this splice entirely.
     try:
         new_value = ast.literal_eval(new_literal)
-    except (ValueError, SyntaxError):
+    except (ValueError, SyntaxError, RecursionError, MemoryError):
         return None
     assert isinstance(node.left, ast.Constant)
     assert isinstance(node.right, ast.Constant)
@@ -151,7 +151,7 @@ def _splice_all(lines: list[str], nodes: list[tuple[ast.BinOp, str, str]]) -> in
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
     nodes = _targets(tree, source)
     if not nodes:
@@ -168,7 +168,7 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     # Never corrupt the file: a spliced result that won't parse is discarded.
     try:
         ast.parse(new_content)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     return SemanticPatchResult(

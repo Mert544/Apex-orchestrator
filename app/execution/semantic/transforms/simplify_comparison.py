@@ -92,7 +92,7 @@ def _rewrite_lines(source: str, nodes: list[ast.Compare]) -> tuple[list[str], in
 def _parses(source: str) -> bool:
     try:
         ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return False
     return True
 

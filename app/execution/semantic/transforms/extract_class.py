@@ -75,7 +75,7 @@ def apply(
         return None
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     target_class = _find_first_class(tree)

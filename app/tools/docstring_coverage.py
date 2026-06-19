@@ -181,7 +181,7 @@ def analyze_docstring_coverage(
             try:
                 source = path.read_text(encoding="utf-8", errors="ignore")
                 tree = ast.parse(source)
-            except (SyntaxError, OSError, ValueError):
+            except (SyntaxError, OSError, ValueError, RecursionError, MemoryError):
                 continue
             scanned += 1
             _analyze_module(rel, tree, counts, undocumented)

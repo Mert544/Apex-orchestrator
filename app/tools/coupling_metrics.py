@@ -206,7 +206,7 @@ def analyze_coupling(root: str | Path, max_files: int = 500) -> CouplingMetrics:
         try:
             text = (root / rel).read_text(encoding="utf-8")
             tree = ast.parse(text)
-        except (OSError, SyntaxError, ValueError):
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
             # Unreadable / unparseable file contributes no edges but stays a node.
             continue
         for group in _candidate_groups(tree, source):

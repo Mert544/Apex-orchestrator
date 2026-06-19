@@ -86,7 +86,7 @@ def _check_inputs(plan: RenamePlan, param: str, default: str) -> bool:
         return False
     try:
         ast.parse(default, mode="eval")
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         plan.blockers.append(f"default {default!r} is not a valid expression")
         return False
     return True

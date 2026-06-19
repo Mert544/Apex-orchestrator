@@ -65,7 +65,7 @@ def _find_compare(tree: ast.AST) -> ast.Compare | None:
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     compare = _find_compare(tree)
@@ -105,7 +105,7 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     # Re-parse to validate; refuse anything that does not round-trip cleanly.
     try:
         ast.parse(new_source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     return SemanticPatchResult(

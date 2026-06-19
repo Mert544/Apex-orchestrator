@@ -458,7 +458,7 @@ def _splice(source_lines: list[str], site: _Site) -> str | None:
     mutated_source = "".join(mutated_lines)
     try:
         ast.parse(mutated_source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
     return mutated_source
 
@@ -540,7 +540,7 @@ def covering_test_files(project_root, module_rel: str) -> list[str]:
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError, ValueError):
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
             continue
         imported = _imported_names(tree)
         if imported & targets:
@@ -711,7 +711,7 @@ def mutation_score(project_root, module_rel: str, max_mutants: int = 30,
     try:
         source = module_path.read_text(encoding="utf-8")
         tree = ast.parse(source)
-    except (OSError, SyntaxError):
+    except (OSError, SyntaxError, RecursionError, MemoryError):
         return MutationResult(module=module_rel, total=0, killed=0,
                               survived=0, score=0.0, survivors=[],
                               scoped_tests=[])

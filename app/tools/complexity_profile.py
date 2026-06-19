@@ -146,7 +146,7 @@ def function_cyclomatic_complexities(source: str) -> list[tuple[str, int, int]]:
     """
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return []
     return _function_cyclomatic_complexities_tree(tree)
 

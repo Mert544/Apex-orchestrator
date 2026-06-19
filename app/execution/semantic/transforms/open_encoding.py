@@ -96,7 +96,7 @@ def _rewrite_open_line(node: ast.Call, line: str) -> str | None:
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     calls = _open_calls(tree)

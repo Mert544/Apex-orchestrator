@@ -328,7 +328,7 @@ def _read_modules(root: Path, rels: list[str]
             return sources, trees, f"cannot read {rel}"
         try:
             trees[rel] = ast.parse(text)
-        except SyntaxError as e:
+        except (SyntaxError, RecursionError, MemoryError) as e:
             return sources, trees, f"{rel} doesn't parse: {e}"
         sources[rel] = text
     return sources, trees, None
@@ -442,7 +442,7 @@ def _emit_file(rel: str, occs: list[_Occurrence], sources: dict, trees: dict,
     new_source = "".join(lines)
     try:
         ast.parse(new_source)
-    except SyntaxError as e:
+    except (SyntaxError, RecursionError, MemoryError) as e:
         return None, f"{rel}: extraction would not parse ({e})"
 
     # Gate-clean: lifting the block out can strand the imports it used,

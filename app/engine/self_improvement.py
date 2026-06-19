@@ -72,7 +72,7 @@ class SelfImprovementEngine:
         for path in iter_source_files(self.project_root):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
-            except (SyntaxError, OSError, UnicodeDecodeError):
+            except (SyntaxError, OSError, UnicodeDecodeError, RecursionError, MemoryError):
                 continue
             for node in ast.walk(tree):
                 if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))) and (not ast.get_docstring(node)):

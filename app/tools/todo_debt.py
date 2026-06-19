@@ -88,7 +88,7 @@ def _iter_marker_hits(source: str):
     try:
         tokens = tokenize.generate_tokens(io.StringIO(source).readline)
         token_list = list(tokens)
-    except (tokenize.TokenError, IndentationError, SyntaxError):
+    except (tokenize.TokenError, IndentationError, SyntaxError, RecursionError, MemoryError):
         return
     for tok in token_list:
         if tok.type not in (tokenize.COMMENT, tokenize.STRING):

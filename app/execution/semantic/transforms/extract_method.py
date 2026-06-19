@@ -31,7 +31,7 @@ def _detect_return_var(normalized_block: list[str]) -> str:
         for node in ast.walk(block_tree):
             if (isinstance(node, ast.Assign)) and (node.targets and isinstance(node.targets[0], ast.Name)):
                 return_var = node.targets[0].id
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         pass
     return return_var
 
@@ -70,7 +70,7 @@ def _resolve_target(source: str, lines: list[str], start_line: int,
         return None
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
     return _find_target_node(tree, target_function)
 

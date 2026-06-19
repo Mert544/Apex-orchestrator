@@ -35,7 +35,7 @@ def _read_source(target: Path, root: Path) -> str | None:
 def _parse_tree(source: str) -> ast.AST | None:
     try:
         return ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
 

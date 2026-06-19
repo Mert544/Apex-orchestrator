@@ -51,7 +51,7 @@ def apply(rel_path: str, source: str, var_name: str, target_function: str) -> Se
         return None
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     transformer = InlineTransformer(target_function, var_name)

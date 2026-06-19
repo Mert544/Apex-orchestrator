@@ -11,7 +11,7 @@ def apply(rel_path: str, source: str, class_name: str, new_module: str) -> Seman
         return None
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     class_nodes = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == class_name]

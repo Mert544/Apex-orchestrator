@@ -123,7 +123,7 @@ def _try_binop(node: ast.BinOp, source: str) -> _Rewrite | None:
     try:
         if ast.literal_eval(text) != folded:
             return None
-    except (ValueError, SyntaxError):
+    except (ValueError, SyntaxError, RecursionError, MemoryError):
         return None
 
     return _Rewrite(node.lineno, node.col_offset, node.end_col_offset, text)

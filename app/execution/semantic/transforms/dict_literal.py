@@ -99,7 +99,7 @@ def _splice(source: str, replacements: list[tuple[int, int, str]]) -> str:
 def apply(rel_path: str, source: str, title: str = "") -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     replacements = _collect_replacements(tree, source)
@@ -113,7 +113,7 @@ def apply(rel_path: str, source: str, title: str = "") -> SemanticPatchResult | 
     # Re-parse: never emit content we cannot parse back.
     try:
         ast.parse(new_source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     return SemanticPatchResult(

@@ -176,6 +176,11 @@ class LSPServer:
             tree = ast.parse(text)
         except SyntaxError as exc:
             return [self._syntax_diagnostic(exc)]
+        except (RecursionError, MemoryError):
+            # A pathological source the parser can't handle (deeply-nested
+            # expression / enormous file): report it at the top of the file
+            # rather than crashing the language server.
+            return [self._diagnostic(0, 0, 0, 1, "unparseable: file too complex")]
 
         diagnostics: list[dict[str, Any]] = []
         for node in ast.walk(tree):
@@ -206,7 +211,7 @@ class LSPServer:
         symbols: list[dict[str, Any]] = []
         try:
             tree = ast.parse(text)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             return symbols
 
         for node in ast.walk(tree):

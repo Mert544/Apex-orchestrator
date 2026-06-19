@@ -154,7 +154,7 @@ def _parses_as_code(body: str) -> bool:
         candidate = body + " pass"
     try:
         tree = ast.parse(candidate, mode="exec")
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return False
     return len(tree.body) == 1
 
@@ -221,7 +221,7 @@ def _analyze_source(source: str) -> tuple[list[tuple[int, str]], int, int]:
                 tokenize.COMMENT,
             ):
                 code_rows.add(tok.start[0])
-    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError, RecursionError, MemoryError):
         # Partial results from a malformed file are still useful and deterministic.
         pass
     return hits, len(comment_rows), len(code_rows)

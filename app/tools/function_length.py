@@ -189,7 +189,7 @@ def _parse_source(path: Path) -> tuple[list[str], ast.Module] | None:
     try:
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source)
-    except (OSError, SyntaxError, ValueError):
+    except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
         return None
     return source.splitlines(), tree
 

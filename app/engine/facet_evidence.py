@@ -62,7 +62,7 @@ def _long_signatures(source: str) -> list[tuple[int, str]]:
     out = []
     try:
         tree = _ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return out
     for node in _ast.walk(tree):
         if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
@@ -80,7 +80,7 @@ def _long_functions(source: str) -> list[tuple[int, str]]:
     out = []
     try:
         tree = _ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return out
     for node in _ast.walk(tree):
         if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):

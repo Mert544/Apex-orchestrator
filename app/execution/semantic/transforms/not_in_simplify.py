@@ -110,7 +110,7 @@ def _validated_output(source: str, new_source: str, n_targets: int) -> str | Non
         return None
     try:
         reparsed = ast.parse(new_source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
     if not _semantically_equivalent(n_targets, reparsed):
         return None
@@ -123,7 +123,7 @@ def _validated_output(source: str, new_source: str, n_targets: int) -> str | Non
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     # Count targets up front: the NodeTransformer mutates ``tree`` in place,

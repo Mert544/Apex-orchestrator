@@ -92,6 +92,11 @@ def detect(source: str) -> list[Issue]:
         tree = ast.parse(source)
     except SyntaxError as exc:
         return [Issue(exc.lineno or 1, "bug", "high", f"SyntaxError: {exc.msg}", "")]
+    except (RecursionError, MemoryError):
+        # A pathological file (deeply-nested expression / enormous source) that
+        # blows the parser is not analyzable — skip it like a syntax error
+        # rather than crashing the whole scan.
+        return []
 
     out: list[Issue] = []
 
@@ -1036,7 +1041,7 @@ def security_label(source: str) -> str | None:
     """
     try:
         ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         for needle, label in (
             ("eval(", "eval"), ("os.system(", "os.system"), ("pickle.loads(", "pickle"),
             ("yaml.load(", "yaml"), ("except:", "bare except"),
@@ -1061,7 +1066,7 @@ def security_labels(source: str) -> list[str]:
     """
     try:
         ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         top = security_label(source)
         return [top] if top else []
     labels = {i.fix_kind for i in detect(source) if i.category == "security" and i.fix_kind}
@@ -1071,7 +1076,7 @@ def security_labels(source: str) -> list[str]:
 def has_mutable_default(source: str) -> bool:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return False
     return any(
         isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and _has_mutable_default(n)
@@ -1164,7 +1169,7 @@ def test_has_substantive_assertions(source: str) -> bool:
     """
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return False
     return any(
         isinstance(n, ast.Assert) and _assert_is_substantive(n.test)

@@ -225,7 +225,7 @@ def try_create_stub(root: Path, rel_path: str, title: str, task_id: str) -> Sema
         return _skip_stub(rel_path, module_name, title, task_id)
     try:
         tree = ast.parse(source.read_text(encoding="utf-8", errors="ignore"))
-    except (OSError, SyntaxError):
+    except (OSError, SyntaxError, RecursionError, MemoryError):
         return _skip_stub(rel_path, module_name, title, task_id)
 
     dotted = _dotted_name(root, source)

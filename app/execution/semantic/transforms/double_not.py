@@ -42,7 +42,7 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     """
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     # A double-not that is itself the operand of an enclosing `not` is the inner
@@ -74,7 +74,7 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
         # Never corrupt the file: the result must still parse.
         try:
             ast.parse(new_source)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             continue
 
         return SemanticPatchResult(

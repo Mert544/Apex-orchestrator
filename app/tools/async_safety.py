@@ -187,7 +187,7 @@ def analyze_async_safety(root: str | Path, max_files: int = 500) -> AsyncSafety:
         try:
             source = path.read_text(encoding="utf-8")
             tree = ast.parse(source)
-        except (OSError, SyntaxError, ValueError):
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
             continue
 
         module = _module_name(path, root)

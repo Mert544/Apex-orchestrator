@@ -55,7 +55,7 @@ def _enclosing_function(source: str, line: int) -> str:
     """The innermost function containing ``line`` ('' = module level)."""
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return ""
     best = ""
     best_span = None

@@ -17,7 +17,7 @@ from ..result import SemanticPatchResult
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     for handler in ast.walk(tree):

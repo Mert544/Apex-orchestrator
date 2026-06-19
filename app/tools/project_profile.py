@@ -506,8 +506,14 @@ class ProjectProfiler(_CodeQualityScansMixin):
                              security_finding_modules: list[str],
                              correctness_bug_modules: list[str]) -> None:
         """Sort/dedup/cap the accumulated base-walk lists onto the profile."""
-        profile.extension_counts = dict(ext_counter.most_common())
-        profile.top_directories = [name for name, _count in dir_counter.most_common(5)]
+        # Sort by (-count, name) so EQUAL-count ties break on the name, not on
+        # ``Counter.most_common``'s insertion order (= unsorted ``rglob`` walk
+        # order) — otherwise the same repo state yields different bytes across
+        # machines/filesystems, breaking the determinism the grade relies on.
+        _by_count = lambda kv: (-kv[1], kv[0])  # noqa: E731
+        profile.extension_counts = dict(sorted(ext_counter.items(), key=_by_count))
+        profile.top_directories = [
+            name for name, _count in sorted(dir_counter.items(), key=_by_count)[:5]]
         profile.entrypoints = sorted(dict.fromkeys(profile.entrypoints))
         profile.test_files = sorted(dict.fromkeys(profile.test_files))
         profile.ci_files = sorted(dict.fromkeys(profile.ci_files))
@@ -1364,7 +1370,7 @@ class ProjectProfiler(_CodeQualityScansMixin):
         refs_by_func: dict[str, set[str]] = {}
         try:
             tree = ast.parse(source)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             return {}
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1464,7 +1470,7 @@ class ProjectProfiler(_CodeQualityScansMixin):
             return None
         try:
             fns = analyzer.analyze_file(path)
-        except (OSError, SyntaxError):
+        except (OSError, SyntaxError, RecursionError, MemoryError):
             return None
         if not fns:
             return None
@@ -1743,7 +1749,7 @@ class ProjectProfiler(_CodeQualityScansMixin):
         try:
             source = (root / src).read_text(encoding="utf-8", errors="ignore")
             tree = ast.parse(source)
-        except (OSError, SyntaxError, ValueError):
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
             return []
         found: set[str] = set()
         for node in ast.walk(tree):
@@ -1859,7 +1865,7 @@ class ProjectProfiler(_CodeQualityScansMixin):
         for m in modules:
             try:
                 tree = ast.parse((self.root / m.path).read_text(encoding="utf-8", errors="ignore"))
-            except (OSError, SyntaxError):
+            except (OSError, SyntaxError, RecursionError, MemoryError):
                 continue
             if self._tree_has_mutable_default(tree):
                 out.append(m.path)
@@ -1873,7 +1879,7 @@ class ProjectProfiler(_CodeQualityScansMixin):
         for m in modules:
             try:
                 tree = ast.parse((self.root / m.path).read_text(encoding="utf-8", errors="ignore"))
-            except (OSError, SyntaxError):
+            except (OSError, SyntaxError, RecursionError, MemoryError):
                 continue
             for node in ast.walk(tree):
                 if isinstance(node, ast.Compare) and any(

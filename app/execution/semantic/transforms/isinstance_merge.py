@@ -162,7 +162,7 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     # Never emit something that does not parse.
     try:
         ast.parse(new_content)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     return SemanticPatchResult(

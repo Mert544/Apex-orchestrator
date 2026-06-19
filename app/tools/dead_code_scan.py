@@ -279,7 +279,7 @@ def _gather_facts(root: Path, max_files: int) -> list[_ModuleFacts]:
         try:
             source = path.read_text(encoding="utf-8", errors="ignore")
             tree = ast.parse(source)
-        except (OSError, SyntaxError, ValueError):
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
             continue
         rel = path.relative_to(root).as_posix()
         facts.append(_collect_module_facts(rel, tree))

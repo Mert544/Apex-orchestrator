@@ -105,7 +105,7 @@ def plan_remove_dead_code(
 
     try:
         tree = ast.parse(source)
-    except SyntaxError as exc:
+    except (SyntaxError, RecursionError, MemoryError) as exc:
         plan.blockers.append(f"{module_rel}: cannot parse module ({exc})")
         return plan
 
@@ -120,7 +120,7 @@ def plan_remove_dead_code(
     # Never emit code that won't re-parse — a broken slice is a blocker, not output.
     try:
         ast.parse(new)
-    except SyntaxError as exc:
+    except (SyntaxError, RecursionError, MemoryError) as exc:
         plan.blockers.append(
             f"{module_rel}: removal produced unparseable source ({exc})")
         plan.new_contents.clear()

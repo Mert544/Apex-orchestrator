@@ -394,7 +394,7 @@ def _change_impacts(project_root: str, changes: dict[str, set[int]],
             continue
         try:
             tree = ast.parse(source)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             continue
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

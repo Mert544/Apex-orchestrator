@@ -387,7 +387,7 @@ def _reparses_as_fstring(text: str, field_count: int) -> bool:
     ``FormattedValue`` fields — the crucial safety check before any rewrite."""
     try:
         expr = ast.parse(text, mode="eval").body
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return False
     if not isinstance(expr, ast.JoinedStr):
         return False

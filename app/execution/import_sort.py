@@ -192,7 +192,7 @@ def plan_sort_imports(project_root: str | Path, module_rel: str) -> RenamePlan:
 
     try:
         tree = ast.parse(source)
-    except SyntaxError as e:
+    except (SyntaxError, RecursionError, MemoryError) as e:
         plan.blockers.append(f"{module_rel} doesn't parse: {e}")
         return plan
 
@@ -221,7 +221,7 @@ def plan_sort_imports(project_root: str | Path, module_rel: str) -> RenamePlan:
     new_source = _splice(source, lo, hi, new_block)
     try:
         ast.parse(new_source)
-    except SyntaxError as e:
+    except (SyntaxError, RecursionError, MemoryError) as e:
         plan.blockers.append(
             f"{module_rel}: import sort would not re-parse ({e}) — blocked")
         return plan

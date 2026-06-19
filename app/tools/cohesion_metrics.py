@@ -222,7 +222,7 @@ def analyze_cohesion(root: str | Path, max_files: int = 500) -> CohesionMetrics:
         try:
             source = path.read_text(encoding="utf-8")
             tree = ast.parse(source)
-        except (OSError, SyntaxError, UnicodeDecodeError, ValueError):
+        except (OSError, SyntaxError, UnicodeDecodeError, ValueError, RecursionError, MemoryError):
             continue
         files_analyzed += 1
         module = _module_name_from_path(path)

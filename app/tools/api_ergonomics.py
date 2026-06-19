@@ -276,7 +276,7 @@ def analyze_api_ergonomics(
         try:
             source = path.read_text(encoding="utf-8", errors="ignore")
             tree = ast.parse(source)
-        except (OSError, SyntaxError, ValueError):
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
             continue
         report.files_analyzed += 1
         module = _module_name(path, root)

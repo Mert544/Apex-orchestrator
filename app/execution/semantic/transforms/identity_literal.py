@@ -42,7 +42,7 @@ def _flagged_lines(tree: ast.Module) -> set[int]:
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
     flagged = _flagged_lines(tree)
     if not flagged:

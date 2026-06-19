@@ -195,7 +195,7 @@ def incomplete_protocols(root: str) -> list[dict]:
             continue
         try:
             tree = ast.parse(text)
-        except (SyntaxError, ValueError):
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
             continue
         rel_norm = rel.replace("\\", "/")
         for cls in _iter_classdefs(tree):

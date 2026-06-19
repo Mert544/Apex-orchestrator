@@ -229,7 +229,7 @@ class SecurityAgent(Agent):
     def _scan_ast(self, rel_path: str, source: str) -> list[dict[str, Any]]:
         try:
             tree = ast.parse(source)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             return []
 
         nested_compiles = self._nested_compile_ids(tree)
@@ -277,7 +277,7 @@ class SecurityAgent(Agent):
         interior: set[int] = set()
         try:
             tree = ast.parse(source)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             return interior
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):

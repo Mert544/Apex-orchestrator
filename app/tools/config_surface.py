@@ -180,7 +180,7 @@ def _iter_reads(source: str):
     """
     try:
         tree = ast.parse(source)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return
 
     getenv_names, environ_names = _os_import_names(tree)

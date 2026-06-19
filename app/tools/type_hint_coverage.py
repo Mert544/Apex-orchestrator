@@ -126,7 +126,7 @@ def _module_counts(source: str) -> tuple[int, int]:
     than crashing the whole project scan."""
     try:
         tree = ast.parse(source)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return (0, 0)
     total = 0
     annotated = 0

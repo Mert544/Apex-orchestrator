@@ -298,7 +298,7 @@ def _read_and_parse(path: Path, file_rel: str, helper_name: str,
         return None, None, f"`{helper_name}` is not a valid function name"
     try:
         tree = ast.parse(source)
-    except SyntaxError as e:
+    except (SyntaxError, RecursionError, MemoryError) as e:
         return None, None, f"{file_rel} doesn't parse: {e}"
     if start_line > end_line:
         return None, None, "start line must be <= end line"
@@ -397,7 +397,7 @@ def plan_extract(project_root: str | Path, file_rel: str,
     # not a silent corrupt write).
     try:
         ast.parse(new_source)
-    except SyntaxError as e:
+    except (SyntaxError, RecursionError, MemoryError) as e:
         plan.blockers.append(f"extraction would not parse ({e}) — range may "
                              "split a statement; adjust the line range")
         return plan
@@ -591,7 +591,7 @@ def suggest_extractions(source: str, tree: ast.Module | None = None) -> list[dic
     if tree is None:
         try:
             tree = ast.parse(source)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             return []
     out: list[dict] = []
     for fn, _container in _iter_closure_free_functions(tree):

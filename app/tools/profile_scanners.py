@@ -175,7 +175,7 @@ class _CodeQualityScansMixin:
                 continue
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
-            except (OSError, SyntaxError):
+            except (OSError, SyntaxError, RecursionError, MemoryError):
                 continue
             scanned += 1
             found.extend(self._god_classes_in_tree(tree, rel_str))
@@ -228,7 +228,7 @@ class _CodeQualityScansMixin:
                 continue
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
-            except (OSError, SyntaxError):
+            except (OSError, SyntaxError, RecursionError, MemoryError):
                 continue
             scanned += 1
             for fn in tree.body:
@@ -496,7 +496,7 @@ class _CodeQualityScansMixin:
                 continue
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
-            except (OSError, SyntaxError):
+            except (OSError, SyntaxError, RecursionError, MemoryError):
                 continue
             scanned += 1
             object_refs |= self._module_object_refs(tree)

@@ -147,7 +147,7 @@ def _parse_project(root: Path) -> tuple[dict[str, ast.Module], set[str], set[str
     for f in _iter_py(root):
         try:
             tree = ast.parse(f.read_text(encoding="utf-8", errors="ignore"))
-        except (OSError, SyntaxError):
+        except (OSError, SyntaxError, RecursionError, MemoryError):
             continue
         parsed[f.relative_to(root).as_posix()] = tree
         refs, exports = _collect_references(tree)

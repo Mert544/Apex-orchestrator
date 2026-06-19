@@ -62,7 +62,7 @@ class DependencyAgent(Agent):
         edges: list[dict[str, Any]] = []
         try:
             tree = ast.parse(source)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             return edges
 
         for node in ast.walk(tree):

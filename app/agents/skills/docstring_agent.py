@@ -69,7 +69,7 @@ class DocstringAgent(Agent):
         total = 0
         try:
             tree = ast.parse(source)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             return gaps, total
 
         for node in ast.walk(tree):
@@ -100,7 +100,7 @@ class DocstringAgent(Agent):
     def _patch_file(self, rel_path: str, source: str) -> str:
         try:
             tree = ast.parse(source)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             return source
 
         lines = source.splitlines(keepends=True)

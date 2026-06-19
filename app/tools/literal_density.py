@@ -239,7 +239,7 @@ def _module_literals(source: str) -> tuple[list[str], int]:
     )
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return [], code_lines
 
     excluded = (

@@ -124,7 +124,7 @@ def _verify_candidate(candidate: str, outer_hdr_idx: int,
     # Re-parse: never emit anything that does not compile.
     try:
         new_tree = ast.parse(candidate)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return False
 
     # Structural verification: the merged `if` must match the intended flatten.
@@ -204,7 +204,7 @@ def _accept_candidate(candidate: str, source: str, outer_hdr_idx: int,
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     lines = source.splitlines(keepends=True)

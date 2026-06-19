@@ -57,7 +57,7 @@ class SelfAuditAgent(Agent):
         for f in files:
             try:
                 tree = ast.parse(f.read_text(encoding="utf-8"))
-            except SyntaxError:
+            except (SyntaxError, RecursionError, MemoryError):
                 continue
             for node in ast.walk(tree):
                 hit = self._node_risk(node)
@@ -71,7 +71,7 @@ class SelfAuditAgent(Agent):
         for f in files:
             try:
                 tree = ast.parse(f.read_text(encoding="utf-8"))
-            except SyntaxError:
+            except (SyntaxError, RecursionError, MemoryError):
                 continue
             for node in ast.walk(tree):
                 if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))) and (not ast.get_docstring(node)):
@@ -83,7 +83,7 @@ class SelfAuditAgent(Agent):
         for f in files:
             try:
                 tree = ast.parse(f.read_text(encoding="utf-8"))
-            except SyntaxError:
+            except (SyntaxError, RecursionError, MemoryError):
                 continue
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

@@ -145,7 +145,7 @@ def _find_swap(tree: ast.Module) -> tuple[ast.stmt, ast.stmt, ast.stmt] | None:
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     found = _find_swap(tree)
@@ -185,7 +185,7 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     # Never emit a patch we cannot prove re-parses.
     try:
         ast.parse(new_content)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     return SemanticPatchResult(

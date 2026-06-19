@@ -1172,7 +1172,7 @@ class IdeaActionBridge:
 
         try:
             ast.parse(new)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             return False, ""
         return True, summarize(measure_impact(old, new))
 

@@ -122,7 +122,7 @@ def _parse_examples(examples, rule: LearnedRule):
         try:
             befores.append(ast.parse(b, mode="eval").body)
             afters.append(ast.parse(a, mode="eval").body)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             rule.blockers.append(f"example {i} is not a pair of valid expressions")
             return None
     return befores, afters
@@ -186,7 +186,7 @@ def _reproduces(replacement: str, after: str, bindings: dict[str, str]) -> bool:
     try:
         return ast.dump(ast.parse(produced, mode="eval")) == ast.dump(
             ast.parse(after, mode="eval"))
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return False
 
 

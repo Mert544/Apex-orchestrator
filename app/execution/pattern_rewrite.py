@@ -43,7 +43,7 @@ def _encode_metavars(text: str) -> str:
 def _parse_expr(text: str, what: str, plan: RenamePlan) -> ast.expr | None:
     try:
         return ast.parse(_encode_metavars(text), mode="eval").body
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         plan.blockers.append(f"the {what} is not a valid Python expression: {text!r}")
         return None
 
@@ -121,7 +121,7 @@ def compile_pattern(pattern: str) -> ast.expr | None:
     every expression). Shared by the planner and the diff reviewer."""
     try:
         tree = ast.parse(_encode_metavars(pattern), mode="eval").body
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
     return None if _metavar(tree) is not None else tree
 
@@ -132,7 +132,7 @@ def match_lines(source: str, pattern_tree: ast.expr) -> list[int]:
     rule's violations without touching the tree."""
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return []
     consumed: list[tuple[int, int, int]] = []
     out: list[int] = []
@@ -237,7 +237,7 @@ def plan_pattern_rewrite(project_root: str | Path, pattern: str,
     for rel, source in _py_files(Path(project_root)):
         try:
             tree = ast.parse(source)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             continue
         lines = source.splitlines(keepends=True)
         edits = _collect_edits(tree, p_tree, source, rel, lines, plan, replacement)

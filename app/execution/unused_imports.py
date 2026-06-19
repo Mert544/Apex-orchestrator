@@ -256,7 +256,7 @@ def strip_unused_imports(source: str) -> str | None:
     """
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     if _has_star_import(tree):
@@ -269,7 +269,7 @@ def strip_unused_imports(source: str) -> str | None:
     new_source = _apply(lines, rewrites)
     try:
         ast.parse(new_source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None  # never emit broken source
     if new_source == source:
         return None

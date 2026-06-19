@@ -47,7 +47,7 @@ class FunctionFractalAnalyzer:
         try:
             source = path.read_text(encoding="utf-8")
             tree = ast.parse(source)
-        except (SyntaxError, OSError):
+        except (SyntaxError, OSError, RecursionError, MemoryError):
             return None
 
         self._file_cache[path_str] = (mtime, tree, source)

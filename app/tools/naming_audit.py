@@ -256,7 +256,7 @@ def _analyze_source(module: str, source: str) -> _Collector | None:
     source returns ``None`` (the file is skipped, not counted)."""
     try:
         tree = ast.parse(source)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return None
     collector = _Collector(module)
     collector.generic_visit(tree)

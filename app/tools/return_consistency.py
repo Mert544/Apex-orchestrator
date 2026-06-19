@@ -222,7 +222,7 @@ def _module_offenders(source: str, module: str) -> list[dict[str, Any]]:
     """Offender dicts for one module's source. Unparseable source yields ``[]``."""
     try:
         tree = ast.parse(source)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return []
     offenders: list[dict[str, Any]] = []
     for fn in _iter_functions(tree):

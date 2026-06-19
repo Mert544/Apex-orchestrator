@@ -237,7 +237,7 @@ def _read_modules(root: Path, parsed, plan: RenamePlan):
             return None
         try:
             trees[rel] = ast.parse(text)
-        except SyntaxError as e:
+        except (SyntaxError, RecursionError, MemoryError) as e:
             plan.blockers.append(f"{rel} doesn't parse: {e}")
             return None
         sources[rel] = text
@@ -449,7 +449,7 @@ def _finalize_source(lines: list[str], rel: str,
     new_source = "".join(lines)
     try:
         ast.parse(new_source)
-    except SyntaxError as e:
+    except (SyntaxError, RecursionError, MemoryError) as e:
         plan.blockers.append(f"{rel}: extraction would not parse ({e})")
         return None
     cleaned = strip_unused_imports(new_source)

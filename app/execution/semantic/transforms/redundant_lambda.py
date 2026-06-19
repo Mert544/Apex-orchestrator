@@ -88,7 +88,7 @@ def _parse(source: str) -> ast.Module | None:
     """Parse ``source``; return the module, or ``None`` if it does not parse."""
     try:
         return ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
 

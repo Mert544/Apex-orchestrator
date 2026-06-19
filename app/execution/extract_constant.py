@@ -274,7 +274,7 @@ def _module_tree(
         return None
     try:
         return ast.parse(source), source
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         plan.blockers.append(f"{rel}: module does not parse")
         return None
 
@@ -293,7 +293,7 @@ def _reparses(plan: RenamePlan, rel: str, new_content: str) -> bool:
     """True if ``new_content`` re-parses; else append the abort blocker."""
     try:
         ast.parse(new_content)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         plan.blockers.append(f"{rel}: result does not re-parse — aborting")
         return False
     return True
@@ -333,7 +333,7 @@ def _splice_occurrences(
         segment = row[start:end]
         try:
             parsed = ast.literal_eval(segment)
-        except (ValueError, SyntaxError):
+        except (ValueError, SyntaxError, RecursionError, MemoryError):
             plan.blockers.append(
                 f"{rel}:{line_no}: span is not a re-readable literal")
             return False

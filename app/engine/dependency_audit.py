@@ -236,7 +236,7 @@ def _collect_third_party_imports(root: Path) -> set[str]:
     for path in _iter_py_files(root):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError, ValueError):
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
             continue
         for mod in _top_level_imports(tree):
             low = mod.lower()

@@ -54,7 +54,7 @@ class CallGraph:
             scanned += 1
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
-            except SyntaxError:
+            except (SyntaxError, RecursionError, MemoryError):
                 continue
             g._index_module(rel, tree)
         return g

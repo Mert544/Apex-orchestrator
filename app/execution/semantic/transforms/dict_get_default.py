@@ -222,7 +222,7 @@ def _validated_rewrite(node: ast.If, lines: list[str]) -> str | None:
         return None
     try:
         new_tree = ast.parse(new_content)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
     if not _is_expected_get(_statement_at(new_tree, node.lineno)):
         return None
@@ -232,7 +232,7 @@ def _validated_rewrite(node: ast.If, lines: list[str]) -> str | None:
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
 
     lines = source.splitlines(keepends=True)

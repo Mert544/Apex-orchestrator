@@ -74,7 +74,7 @@ class TestStubAgent(Agent):
                     for node in ast.walk(tree):
                         if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                             self._existing_tests.add(node.name)
-                except (SyntaxError, OSError):
+                except (SyntaxError, OSError, RecursionError, MemoryError):
                     continue
 
     def _discover_source_files(self, root: Path) -> list[str]:
@@ -90,7 +90,7 @@ class TestStubAgent(Agent):
         tested = 0
         try:
             tree = ast.parse(source)
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError):
             return gaps, total, tested
 
         module_name = Path(rel_path).stem

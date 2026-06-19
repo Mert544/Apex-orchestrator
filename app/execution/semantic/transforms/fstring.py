@@ -51,7 +51,7 @@ def _depluralized(seg: str, runtime_value: str) -> str | None:
         return None  # nothing actually changed
     try:
         parsed = ast.parse(candidate, mode="eval").body
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
     if (isinstance(parsed, ast.Constant) and isinstance(parsed.value, str)
             and parsed.value == runtime_value):
@@ -62,7 +62,7 @@ def _depluralized(seg: str, runtime_value: str) -> str | None:
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError):
         return None
     nodes = _placeholderless_fstrings(tree)
     if not nodes:

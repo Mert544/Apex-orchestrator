@@ -231,7 +231,7 @@ class IdeaSeeder:
             return 0
         try:
             tree = ast.parse((Path(root) / module).read_text(encoding="utf-8", errors="ignore"))
-        except (OSError, SyntaxError, ValueError):
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
             return 0
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
