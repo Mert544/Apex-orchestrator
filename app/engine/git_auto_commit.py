@@ -61,22 +61,28 @@ class GitAutoCommit:
         if code != 0:
             return GitCommitResult(success=False, error="Not a git repository")
 
-        # Stage files
+        # Stage files (explicit pathspec — never touch the rest of the index).
         for f in changed_files:
-            self._run_git(["add", f])
+            self._run_git(["add", "--", f])
 
-        # Check if there are staged changes
-        code, diff, _ = self._run_git(["diff", "--cached", "--stat"])
+        # Check THESE files have staged changes (scoped — a secret the user
+        # pre-staged elsewhere must not make us think we have something to commit).
+        code, diff, _ = self._run_git(["diff", "--cached", "--stat", "--", *changed_files])
         if code != 0 or not diff:
             return GitCommitResult(success=False, error="No staged changes to commit")
 
         # Create commit message
         msg = self._build_message(finding, action, changed_files)
 
-        # Commit. Disable GPG signing for machine-generated commits: agents
-        # cannot satisfy an interactive/required signing key, and a repo (or
-        # sandbox) that mandates signing would otherwise block auto-commit.
-        code, stdout, stderr = self._run_git(["-c", "commit.gpgsign=false", "commit", "-m", msg])
+        # Commit ONLY our changed files via an explicit pathspec. A bare commit
+        # would sweep the WHOLE index — silently absorbing a user's pre-staged
+        # work (a secret, unrelated WIP) into Apex's commit and mislabelling it
+        # as the fix. The pathspec form commits exactly what Apex changed and
+        # leaves everything else the user staged untouched.
+        # GPG signing disabled: machine-generated commits cannot satisfy an
+        # interactive/required signing key (a signing-mandated repo would block).
+        code, stdout, stderr = self._run_git(
+            ["-c", "commit.gpgsign=false", "commit", "-m", msg, "--", *changed_files])
         if code != 0:
             return GitCommitResult(success=False, error=stderr)
 
