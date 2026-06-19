@@ -138,8 +138,34 @@ def _weaker(current: str, candidate: str) -> str:
     return candidate if _RANK[candidate] < _RANK[current] else current
 
 
+def _code_identifiers(text: str) -> set[str] | None:
+    """Identifiers that appear in CODE positions of ``text`` — every ``Name`` id
+    and ``Attribute`` attr — excluding names mentioned only in comments or string
+    literals. ``None`` when the text can't be parsed (caller falls back)."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, RecursionError, MemoryError):
+        return None
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+    return names
+
+
 def _names_changed_function(text: str, funcs: list[str]) -> bool:
-    """Does ``text`` mention (as a whole word) any of these function names?"""
+    """Does ``text`` REFERENCE (in code, not just a comment/string) any of these
+    changed function names?
+
+    AST-exact — mirrors the rigor of :func:`_references_module`: a function name
+    that appears only in a comment of an already-importing test must NOT upgrade
+    coverage from ``module`` to ``function`` (it proves nothing about the change).
+    Falls back to a whole-word text match only when the test can't be parsed."""
+    ids = _code_identifiers(text)
+    if ids is not None:
+        return any(name in ids for name in funcs)
     return any(re.search(rf"\b{re.escape(name)}\b", text) for name in funcs)
 
 
