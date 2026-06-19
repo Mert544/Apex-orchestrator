@@ -175,11 +175,118 @@ def build_proof(summary: dict, project_root: str, objective: str = "") -> dict:
     }
 
 
+# Archived proofs live beside the latest pointer, directly under ``.apex/`` so
+# ``proof_history.load_proof_history`` (a non-recursive ``glob("*.json")``)
+# discovers them with no reader change. The name carries the content hash so two
+# runs that produce the SAME proof collapse to one archive file (no
+# multiplication), and the set stays deterministically nameable + sortable.
+_ARCHIVE_PREFIX = "proof-"
+_ARCHIVE_KEEP = 50  # cap so the archive can't grow unbounded; deterministic prune.
+
+
+def _archive_name(proof: dict) -> str:
+    """A filesystem-safe, deterministic archive filename for ``proof``.
+
+    Derived from the proof's own audited content hash (``proof_hash``), so the
+    same recorded fixes always map to the same file and never multiply. Distinct
+    from the latest pointer (``proof-of-fix.json``) since a sha256 hex is never
+    ``of-fix``."""
+    digest = proof_hash(proof).split(":", 1)[-1]
+    return f"{_ARCHIVE_PREFIX}{digest}.json"
+
+
+def _archive_sort_key(path: Path) -> tuple[str, str]:
+    """Deterministic recency key for an archive file: its recorded
+    ``generated_at`` then its name. Unreadable/malformed files sort first
+    (empty timestamp) so they are pruned before real evidence."""
+    ts = ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            ts = str(data.get("generated_at") or "")
+    except (OSError, ValueError):
+        ts = ""
+    return (ts, path.name)
+
+
+def _prune_archive(apex_dir: Path, keep: int) -> None:
+    """Keep only the ``keep`` most-recent archive files (deterministic order);
+    delete the rest. Best-effort — any filesystem error is swallowed so pruning
+    never breaks a write."""
+    try:
+        archives = [
+            p for p in apex_dir.glob(f"{_ARCHIVE_PREFIX}*.json")
+            if p.name != "proof-of-fix.json"
+        ]
+    except OSError:
+        return
+    if len(archives) <= keep:
+        return
+    archives.sort(key=_archive_sort_key)
+    for stale in archives[:-keep]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
+def _archive_proof(apex_dir: Path, proof: dict) -> None:
+    """Best-effort: persist ``proof`` as a content-addressed archive so the proof
+    history accumulates across runs, then prune to the cap.
+
+    The latest pointer (``proof-of-fix.json``) already carries the freshest
+    proof's content; if an archive with that SAME content hash exists it would be
+    double-counted by the reader, so it is removed here. Net effect: archives
+    hold every DISTINCT historical proof content EXCEPT the one currently in the
+    pointer — together a content-deduped, accumulating track record. Any failure
+    leaves the primary write untouched (never raises)."""
+    try:
+        # Drop any archive whose content the pointer now represents, so the
+        # latest run is counted exactly once (no duplicate via the pointer).
+        dup = apex_dir / _archive_name(proof)
+        if dup.exists():
+            dup.unlink()
+        _prune_archive(apex_dir, _ARCHIVE_KEEP)
+    except Exception:
+        pass
+
+
 def write_proof(proof: dict, project_root: str, out: str | Path | None = None) -> Path:
-    """Write the artifact (default: ``.apex/proof-of-fix.json``) and return its path."""
+    """Write the artifact (default: ``.apex/proof-of-fix.json``) and return its path.
+
+    Additive: before overwriting the latest pointer, the PREVIOUS pointer's
+    proof is archived under a content-addressed ``.apex/proof-<hash>.json`` so
+    ``proof_history`` accumulates evidence across maintenance runs instead of
+    seeing only the last. The latest pointer itself is written byte-identically
+    to before, so every existing consumer is unaffected. Archiving is
+    best-effort and can never break the primary write."""
     path = Path(out) if out else Path(project_root) / ".apex" / "proof-of-fix.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(proof, indent=2) + "\n", encoding="utf-8")
+
+    # Snapshot the PREVIOUS pointer (the run we are about to supersede) into a
+    # content-addressed archive, so its evidence survives this overwrite.
+    if not out:
+        try:
+            apex_dir = path.parent
+            if path.exists():
+                prev = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(prev, dict) and prev.get("schema") == SCHEMA:
+                    archive = apex_dir / _archive_name(prev)
+                    if not archive.exists():
+                        archive.write_text(
+                            json.dumps(prev, indent=2) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    new_text = json.dumps(proof, indent=2) + "\n"
+    path.write_text(new_text, encoding="utf-8")
+
+    # Keep the archive content-deduped against the new pointer + capped.
+    if not out and isinstance(proof, dict) and proof.get("schema") == SCHEMA:
+        try:
+            _archive_proof(path.parent, proof)
+        except Exception:
+            pass
     return path
 
 
