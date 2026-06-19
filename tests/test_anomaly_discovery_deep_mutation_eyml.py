@@ -6,11 +6,15 @@ suite (``test_anomaly_discovery_eyml.py``) leaves exposed to surviving AST
 mutants. Each fixture is hand-computed so a single arithmetic / comparison /
 boundary / constant mutation makes at least one assertion fail:
 
-* the blend constants ``RARITY_WEIGHT=0.6`` / ``BREADTH_WEIGHT=0.4`` and the
-  ``DEVIATION_FLOOR=0.15`` strict ``<`` cutoff (exact deviation values);
+* the three blend constants ``RARITY_WEIGHT=0.4`` / ``BREADTH_WEIGHT=0.2`` /
+  ``SEVERITY_WEIGHT=0.4`` (summing to 1) and the ``DEVIATION_FLOOR=0.15`` strict
+  ``<`` cutoff (exact deviation values);
 * ``_rarity_score`` ``1 - freq/modules`` averaged over tags (empty -> 0.0);
-* ``_breadth_score`` symmetric ``|size-median|/max_gap`` capped at 1.0, and its
-  ``max_gap <= 0`` flat-codebase short circuit;
+* ``_severity_score`` rarity-gated per-tag severity averaged over tags (a
+  ubiquitous tag contributes 0, a rare risk tag dominates; empty -> 0.0);
+* ``_breadth_score`` ASYMMETRIC ``max(0, size-median)/max_gap`` capped at 1.0 (a
+  narrow fingerprint scores 0), and its ``max_gap <= 0`` flat-codebase short
+  circuit;
 * ``_median`` odd vs even (true float average, not int);
 * ``_rare_tags`` ``freq*2 <= modules`` minority test and ``(freq, name)`` order;
 * ``dominant_pattern`` ``n*2 > count`` strict-majority "typical" set;
@@ -29,10 +33,12 @@ from app.engine.anomaly_discovery import (
     DEVIATION_FLOOR,
     MIN_MODULES,
     RARITY_WEIGHT,
+    SEVERITY_WEIGHT,
     _breadth_score,
     _median,
     _rare_tags,
     _rarity_score,
+    _severity_score,
     _why,
     dominant_pattern,
     find_anomalies,
@@ -45,11 +51,12 @@ from app.tools.project_profile import ProjectProfile
 # Blend constants are exactly 0.6 / 0.4 and sum to 1 (score stays in [0, 1]).
 # --------------------------------------------------------------------------- #
 def test_blend_weights_are_exact_and_normalised():
-    """The two grounded parts blend with fixed weights summing to one; if either
+    """The three grounded parts blend with fixed weights summing to one; if any
     drifts the deviation bound and every computed score below shift."""
-    assert RARITY_WEIGHT == 0.6
-    assert BREADTH_WEIGHT == 0.4
-    assert RARITY_WEIGHT + BREADTH_WEIGHT == 1.0
+    assert RARITY_WEIGHT == 0.4
+    assert BREADTH_WEIGHT == 0.2
+    assert SEVERITY_WEIGHT == 0.4
+    assert RARITY_WEIGHT + BREADTH_WEIGHT + SEVERITY_WEIGHT == 1.0
     assert DEVIATION_FLOOR == 0.15
     assert MIN_MODULES == 3
 
@@ -70,51 +77,69 @@ def _graded_profile() -> ProjectProfile:
 
 
 def test_top_anomaly_deviation_is_exact():
-    """``d`` carries {debt, fragile, security, untested}:
-    rarity = ((1-1/4)+(1-2/4)+(1-3/4)+(1-4/4))/4 = 1.5/4 = 0.375;
-    breadth = |4-2.5|/1.5 = 1.0;
-    deviation = 0.6*0.375 + 0.4*1.0 = 0.625. Any weight/term mutation moves it."""
+    """``d`` carries {debt, fragile, security, untested} (severity 0.7/0.8/1.0/0.5):
+    rarity   = ((1-1/4)+(1-2/4)+(1-3/4)+(1-4/4))/4 = 1.5/4 = 0.375;
+    severity = (0.7*0.75 + 0.8*0.5 + 1.0*0.25 + 0.5*0)/4 = 1.175/4 = 0.29375;
+    breadth  = max(0, 4-2.5)/1.5 = 1.0 (asymmetric over-breadth, max_gap 1.5);
+    deviation = 0.4*0.375 + 0.2*1.0 + 0.4*0.29375 = 0.4675 -> 0.468. Any weight,
+    severity-weight or term mutation moves it."""
     anomalies = find_anomalies(_graded_profile(), top=99)
     top = anomalies[0]
     assert top["module"] == "d"
     assert top["rarity"] == 0.375
-    assert top["deviation"] == 0.625
+    assert top["severity"] == 0.294
+    assert top["deviation"] == 0.468
 
 
 def test_full_ranking_values_and_order_are_exact():
-    """Every record's deviation/rarity is pinned, and the descending-deviation
-    order is exact — catching sign flips in the sort key and the blend math."""
+    """Every surviving record's deviation/rarity/severity is pinned and the
+    descending-deviation order is exact — catching sign flips in the sort key,
+    the asymmetric-breadth math and the severity blend.
+
+    Under ASYMMETRIC breadth only modules broader than the median 2.5 score a
+    breadth part, so the narrow modules ``a`` (breadth 1) and ``b`` (breadth 2)
+    get breadth 0; their low rarity+severity then lands them BELOW the floor and
+    they drop out entirely. Only the over-broad ``d`` and ``c`` survive:
+      d: rarity 0.375, severity 0.29375, breadth 1.0
+         -> 0.4*0.375 + 0.2*1.0 + 0.4*0.29375 = 0.4675 -> 0.468
+      c={fragile, security, untested}: rarity (0.5+0.25+0)/3 = 0.25,
+         severity (0.8*0.5 + 1.0*0.25 + 0.5*0)/3 = 0.65/3 = 0.21667,
+         breadth (3-2.5)/1.5 = 0.3333
+         -> 0.4*0.25 + 0.2*0.3333 + 0.4*0.21667 = 0.25333 -> 0.253
+    """
     anomalies = find_anomalies(_graded_profile(), top=99)
-    got = [(a["module"], a["deviation"], a["rarity"]) for a in anomalies]
-    # a={untested}: rarity 0, breadth |1-2.5|/1.5=1.0 -> dev 0.4
-    # c: rarity ((1-2/4)+(1-3/4)+(1-4/4))/3=0.25, breadth |3-2.5|/1.5=0.3333 ->
-    #    0.6*0.25+0.4*0.3333=0.2833 -> round 0.283
-    # b: rarity ((1-3/4)+(1-4/4))/2=0.125, breadth |2-2.5|/1.5=0.3333 ->
-    #    0.6*0.125+0.4*0.3333=0.2083 -> round 0.208
+    got = [(a["module"], a["deviation"], a["rarity"], a["severity"])
+           for a in anomalies]
     assert got == [
-        ("d", 0.625, 0.375),
-        ("a", 0.4, 0.0),
-        ("c", 0.283, 0.25),
-        ("b", 0.208, 0.125),
+        ("d", 0.468, 0.375, 0.294),
+        ("c", 0.253, 0.25, 0.217),
     ]
 
 
 def test_why_names_rare_breadth_and_missing_for_top():
-    """``d`` names its two rare signals (debt before fragile, rarest first),
-    the broad-breadth branch with the ``:g`` median (2.5), and no missing
-    typical signal (it carries both). Pins all three ``_why`` clauses."""
+    """``d`` names its two rare signals MOST-SEVERE first (fragile sev 0.8 before
+    debt sev 0.7), the broad-breadth branch with the ``:g`` median (2.5), and no
+    missing typical signal (it carries both). Pins the severity-ordered rare
+    clause and the broad branch."""
     top = find_anomalies(_graded_profile(), top=99)[0]
     assert top["why"] == (
-        "carries rare signal(s) `debt`, `fragile`; "
+        "carries rare signal(s) `fragile`, `debt`; "
         "unusually broad (4 signals vs median 2.5)."
     )
 
 
 def test_why_narrow_branch_and_missing_typical():
-    """``a`` is below the median (narrow branch) and lacks the typical signal
-    ``security`` it does not carry — the elif and the missing clause both fire."""
-    records = {a["module"]: a for a in find_anomalies(_graded_profile(), top=99)}
-    assert records["a"]["why"] == (
+    """The narrow ``_why`` branch (elif ``size < median``) and the missing-typical
+    clause both fire.
+
+    Under asymmetric breadth a narrow module gets breadth 0 and usually drops
+    below the floor, so we exercise ``_why`` directly: a module of breadth 1 with
+    a single rare ``debt`` signal, below the median 2.5, that lacks the typical
+    ``security``. The elif and the missing clause both fire."""
+    norm = {"median_breadth": 2.5, "typical": {"security"},
+            "frequency": {"debt": 1, "security": 3}, "modules": 4}
+    assert _why({"debt"}, norm, 1, ["debt"]) == (
+        "carries rare signal(s) `debt`; "
         "unusually narrow (1 signals vs median 2.5); "
         "lacks the typical signal(s) `security`."
     )
@@ -124,14 +149,18 @@ def test_why_narrow_branch_and_missing_typical():
 # The DEVIATION_FLOOR cutoff is a STRICT < : a module exactly at 0.15 is kept.
 # --------------------------------------------------------------------------- #
 def test_module_exactly_at_floor_is_kept():
-    """Four breadth-1 modules: three carry ``security`` (freq 3), one ``debt``.
-    Flat breadth -> max_gap 0 -> breadth part 0 everywhere. A ``security``
-    module's rarity is 1-3/4 = 0.25, deviation 0.6*0.25 = 0.15 == FLOOR. Since
-    the cutoff is ``deviation < FLOOR`` (strict) it is RETAINED, not dropped —
-    a ``<`` -> ``<=`` mutant would drop these three."""
+    """Four breadth-1 modules: three carry ``untested`` (freq 3, severity 0.5),
+    one ``debt`` (freq 1, severity 0.7).
+
+    Flat breadth -> max_gap 0 -> breadth part 0 everywhere (and the narrow branch
+    is moot). An ``untested`` module's rarity is 1-3/4 = 0.25 and its severity is
+    0.5*0.25 = 0.125, so deviation = 0.4*0.25 + 0.4*0.125 = 0.15 == FLOOR exactly.
+    Since the cutoff is ``deviation < FLOOR`` (strict) it is RETAINED, not dropped
+    — a ``<`` -> ``<=`` mutant would drop these three. ``untested`` is on a strict
+    majority (3 of 4) so it is the typical signal the ``debt`` module lacks."""
     profile = ProjectProfile(
         root=".",
-        security_finding_modules=["a", "b", "c"],
+        untested_modules=["a", "b", "c"],
         debt_marker_modules=["d"],
     )
     anomalies = find_anomalies(profile, top=99)
@@ -140,18 +169,20 @@ def test_module_exactly_at_floor_is_kept():
     for m in ("a", "b", "c"):
         assert by_mod[m]["deviation"] == 0.15
         assert by_mod[m]["why"] == "an off-pattern fingerprint."
-    # debt is the sole rarest -> rarity 1-1/4=0.75, deviation 0.45, ranks first.
+    # debt is the sole rarest -> rarity 0.75, severity 0.7*0.75=0.525,
+    # deviation 0.4*0.75 + 0.4*0.525 = 0.51, ranks first.
     assert anomalies[0]["module"] == "d"
-    assert by_mod["d"]["deviation"] == 0.45
+    assert by_mod["d"]["deviation"] == 0.51
     assert by_mod["d"]["rarity"] == 0.75
+    assert by_mod["d"]["severity"] == 0.525
 
 
 def test_ties_break_by_module_name_ascending():
-    """The three floor-level modules share deviation 0.15 and rarity 0.25, so
-    the final tie-break is the module name ascending: a, b, c."""
+    """The three floor-level modules share deviation 0.15, severity 0.125 and
+    rarity 0.25, so the final tie-break is the module name ascending: a, b, c."""
     profile = ProjectProfile(
         root=".",
-        security_finding_modules=["a", "b", "c"],
+        untested_modules=["a", "b", "c"],
         debt_marker_modules=["d"],
     )
     names = [a["module"] for a in find_anomalies(profile, top=99)]
@@ -177,14 +208,74 @@ def test_rarity_score_empty_tagset_is_zero():
 
 
 # --------------------------------------------------------------------------- #
-# _breadth_score: symmetric, capped at 1.0, flat codebase -> 0.0.
+# _severity_score: rarity-gated per-tag severity, averaged; empty -> 0.0.
 # --------------------------------------------------------------------------- #
-def test_breadth_score_is_symmetric_distance_over_gap():
-    """|3 - 2.5| / 1.5 = 0.3333... — both above and below the median deviate."""
+def test_severity_score_is_rarity_gated_per_tag_weight():
+    """A rare ``security`` tag (severity 1.0) on 1 of 4 modules contributes
+    1.0 * (1 - 1/4) = 0.75; averaged over its single tag -> 0.75 exactly. Pins
+    the ``severity_weight(tag) * rarity(tag)`` product and the averaging."""
+    assert _severity_score({"security"}, {"security": 1}, 4) == 0.75
+
+
+def test_severity_score_ubiquitous_tag_contributes_zero():
+    """A tag on EVERY module has rarity 0, so its severity contribution is 0 no
+    matter how risky its kind — this is the rarity gate that preserves the
+    "uniform profile -> []" invariant. A ubiquitous ``security`` -> 0.0."""
+    assert _severity_score({"security"}, {"security": 5}, 5) == 0.0
+
+
+def test_severity_score_risk_tag_dominates_structural_tag():
+    """At equal rarity a risk tag (``security`` 1.0) scores far above a structural
+    tag (``symbol-hub`` 0.2): both rare on 1 of 4, 0.75 vs 0.15. Pins the per-tag
+    severity weighting (a flat weight map would make these equal)."""
+    risk = _severity_score({"security"}, {"security": 1}, 4)
+    structural = _severity_score({"symbol-hub"}, {"symbol-hub": 1}, 4)
+    assert risk == 0.75
+    assert round(structural, 4) == 0.15
+    assert risk > structural
+
+
+def test_severity_score_unknown_tag_uses_low_default():
+    """An unmapped tag falls back to the low default (0.2), so a new structural
+    signal never inflates the score until deliberately classified: rare unknown
+    on 1 of 4 -> 0.2 * 0.75 = 0.15."""
+    assert round(_severity_score({"brand-new"}, {"brand-new": 1}, 4), 4) == 0.15
+
+
+def test_severity_score_empty_tagset_is_zero():
+    """An untagged module has severity exactly 0.0 (no ZeroDivision)."""
+    assert _severity_score(set(), {}, 4) == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# _rare_tags severity ordering: most-severe rare tag leads the human "why".
+# --------------------------------------------------------------------------- #
+def test_rare_tags_lead_with_most_severe_signal():
+    """Among equally-rare tags the MOST SEVERE leads (then frequency, then name).
+    ``security`` (1.0) outranks ``symbol-hub`` (0.2) even though both are rare on
+    the same count — so the human sees the risk signal first."""
+    freq = {"security": 1, "symbol-hub": 1}
+    assert _rare_tags({"security", "symbol-hub"}, freq, 4) == [
+        "security", "symbol-hub",
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# _breadth_score: ASYMMETRIC (only over-breadth scores), capped at 1.0,
+# flat codebase -> 0.0.
+# --------------------------------------------------------------------------- #
+def test_breadth_score_is_asymmetric_over_breadth_over_gap():
+    """``(size - median) / max_gap`` only when size is ABOVE the median.
+
+    A breadth of 3 (above the median 2.5) scores |3-2.5|/1.5 = 0.3333; a breadth
+    of 2 (BELOW the median) scores 0.0 — asymmetry is the whole point, so narrow
+    structural noise can't rank as anomalous as a genuinely over-broad module.
+    Pins both the ``max(0, ...)`` / ``over <= 0`` guard and the ``/ max_gap``."""
     above = _breadth_score(3, 2.5, 1.5)
     below = _breadth_score(2, 2.5, 1.5)
-    assert above == below
     assert round(above, 4) == 0.3333
+    assert below == 0.0
+    assert above != below
 
 
 def test_breadth_score_caps_at_one():

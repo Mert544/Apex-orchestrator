@@ -16,17 +16,37 @@ Three deterministic moves, no LLM, stdlib only:
     median fingerprint breadth, and the *typical* fingerprint (the signals a
     plurality of modules carry). This is the baseline every deviation measures
     against;
-  - **find_anomalies** — rank modules by a bounded DEVIATION SCORE built from two
-    grounded parts: how RARE the signals a module carries are (rare signals, and
-    rare combinations of them, weigh more), and how far its breadth sits from the
-    codebase median (unusually many OR unusually few signals). Each anomaly names
-    the unusual trait(s) in human text.
+  - **find_anomalies** — rank modules by a bounded DEVIATION SCORE built from
+    three grounded parts: how RARE the signals a module carries are (rare
+    signals, and rare combinations of them, weigh more), how unusually MANY
+    signals it carries (asymmetric breadth — only an over-broad fingerprint
+    deviates), and how SEVERE its rare signals are (a rare ``security`` /
+    ``correctness-bug`` / ``sensitive-path`` / ``critical-untested`` tag dwarfs a
+    rare ``symbol-hub`` / ``hub`` / ``co-change`` one). Each anomaly names the
+    unusual trait(s) in human text and reports its ``severity``.
 
-Deviation is in [0, 1]; the score is a fixed blend of two [0, 1] parts so it can
-never exceed its bound. Deterministic: median/frequency over the fixed tag data,
-every ranking broken by the module name — same profile → same anomalies. A
-uniform profile (every module carries the same fingerprint) has nothing rare and
-no breadth spread, so it yields no anomalies; an empty profile yields ``[]``.
+SEVERITY-AWARE, ASYMMETRIC ranking (the whole point of this organ): noise — an
+empty ``__init__.py`` or a clean structural hub — must NOT outrank a module
+carrying ``pickle.loads`` / SQL-injection / ``eval``. Two grounded fixes make
+that hold deterministically:
+
+  - **asymmetric breadth**: only an UNUSUALLY BROAD fingerprint raises the score
+    (``max(0, size - median)``); a narrow module (a trivial ``__init__``) gets 0
+    from breadth, so it can no longer score "as anomalous as" an over-broad one;
+  - **per-tag severity**: each rare tag is weighted by how risky it is. A rare
+    risk tag (security/correctness-bug/sensitive-path/critical-untested/fragile/
+    debt) dominates; a rare structural tag (symbol-hub/hub/co-change) or an
+    unknown tag contributes little. Severity is RARITY-GATED — a ubiquitous tag
+    contributes 0 no matter how risky its kind — so the "uniform profile → []"
+    invariant is preserved.
+
+Deviation is the weighted blend of three [0, 1] parts (weights summing to 1) so
+it can never exceed its bound. Deterministic: median/frequency over the fixed
+tag data, every ranking broken by the module name — same profile → same
+anomalies. A uniform profile (every module carries the same fingerprint) has
+nothing rare, no over-breadth and no rarity-gated severity, so it yields no
+anomalies; an empty profile yields ``[]``. Trivial ``__init__.py`` modules
+carrying at most one signal are floored out of the ranking entirely.
 """
 
 from __future__ import annotations
@@ -36,11 +56,50 @@ from typing import Any
 # A module needs a real codebase to deviate *from*: with fewer than this many
 # tagged modules "rare" is meaningless (everything is unique), so we abstain.
 MIN_MODULES = 3
-# Blend weights for the two grounded deviation parts (sum to 1 → score in [0,1]).
-RARITY_WEIGHT = 0.6
-BREADTH_WEIGHT = 0.4
+# Blend weights for the three grounded deviation parts (sum to 1 → score in
+# [0, 1]). Rarity and severity together carry the risk signal; breadth is a
+# lighter structural nudge so an over-broad fingerprint still registers without
+# letting raw signal-count drown out a rare risk tag.
+RARITY_WEIGHT = 0.4
+BREADTH_WEIGHT = 0.2
+SEVERITY_WEIGHT = 0.4
 # Only surface modules that actually stand out past this deviation floor.
 DEVIATION_FLOOR = 0.15
+
+# Per-tag severity weight in [0, 1]: how much a RARE instance of this signal
+# should pull a module up the ranking. Risk-bearing signals (the ones a human
+# must look at first — code execution, SQL injection, sensitive paths, untested
+# critical code, latent bugs, accumulating debt) weigh high; purely structural
+# signals (a module being a symbol/dependency hub, or co-changing) weigh low; an
+# unknown/unmapped tag defaults low so a new structural signal never inflates a
+# score until it is deliberately classified.
+_SEVERITY_WEIGHTS = {
+    "security": 1.0,
+    "correctness-bug": 1.0,
+    "sensitive-path": 1.0,
+    "critical-untested": 1.0,
+    "fragile": 0.8,
+    "debt": 0.7,
+    "complexity": 0.6,
+    "complex-function": 0.6,
+    "mutable-defaults": 0.6,
+    "untested": 0.5,
+    "shallow-tests": 0.5,
+    "modernizable": 0.4,
+    "high-churn": 0.4,
+    "single-author": 0.4,
+    "co-change": 0.2,
+    "hub": 0.2,
+    "symbol-hub": 0.2,
+}
+# Severity for a tag not named above (a future / structural signal): low.
+_DEFAULT_SEVERITY = 0.2
+
+# A trivial module (an empty/near-empty ``__init__.py``) carries at most this
+# many signals: it is structurally uninteresting and must never rank as an
+# anomaly, so it is floored out before scoring.
+TRIVIAL_BREADTH = 1
+_TRIVIAL_SUFFIX = "__init__.py"
 
 
 def _add(tags: dict[str, set[str]], module: str, tag: str) -> None:
@@ -71,6 +130,11 @@ _ROW_FIELDS = {
     "knowledge_risks": "single-author",
     "hotspot_functions": "complex-function",
 }
+
+
+def _severity_weight(tag: str) -> float:
+    """How risky a RARE instance of ``tag`` is, in [0, 1] (unknown → low)."""
+    return _SEVERITY_WEIGHTS.get(tag, _DEFAULT_SEVERITY)
 
 
 def module_profiles(profile: Any) -> dict[str, set[str]]:
@@ -132,6 +196,11 @@ def dominant_pattern(profiles: dict[str, set[str]]) -> dict[str, Any]:
     }
 
 
+def _rarity(tag: str, freq: dict[str, int], modules: int) -> float:
+    """How rare ``tag`` is, in [0, 1]: ``1 - frequency/modules`` (ubiquitous → 0)."""
+    return 1.0 - freq.get(tag, 0) / modules
+
+
 def _rarity_score(tagset: set[str], freq: dict[str, int], modules: int) -> float:
     """How rare this fingerprint's signals are, in [0, 1].
 
@@ -142,26 +211,56 @@ def _rarity_score(tagset: set[str], freq: dict[str, int], modules: int) -> float
     """
     if not tagset:
         return 0.0
-    total = sum(1.0 - freq.get(tag, 0) / modules for tag in tagset)
+    total = sum(_rarity(tag, freq, modules) for tag in tagset)
+    return total / len(tagset)
+
+
+def _severity_score(tagset: set[str], freq: dict[str, int], modules: int) -> float:
+    """How SEVERE this fingerprint's rare signals are, in [0, 1].
+
+    Each tag contributes ``severity_weight(tag) * rarity(tag)`` — its risk class
+    scaled by how unusual it is on this codebase — averaged over the tags. The
+    rarity gate is the load-bearing part: a ubiquitous tag has rarity 0, so it
+    contributes 0 no matter how risky its kind, which keeps the "uniform profile
+    → []" invariant intact. A rare risk tag (severity 1.0) therefore dominates a
+    rare structural tag (severity 0.2). An untagged module → 0.
+    """
+    if not tagset:
+        return 0.0
+    total = sum(
+        _severity_weight(tag) * _rarity(tag, freq, modules) for tag in tagset
+    )
     return total / len(tagset)
 
 
 def _breadth_score(size: int, median_breadth: float, max_gap: float) -> float:
-    """How far this fingerprint's breadth sits from the median, in [0, 1].
+    """How far ABOVE the median this fingerprint's breadth sits, in [0, 1].
 
-    Symmetric: unusually MANY or unusually FEW signals both deviate. Normalized
-    by the largest breadth gap on the codebase so the part stays bounded; a flat
-    codebase (every module the same breadth) has ``max_gap == 0`` → 0.
+    ASYMMETRIC: only an unusually BROAD fingerprint deviates — a narrow module
+    (fewer signals than the median, e.g. a trivial ``__init__``) scores 0, so it
+    can never rank as anomalous as a genuinely over-broad module. Normalized by
+    the largest *over-breadth* gap on the codebase so the part stays bounded; a
+    flat codebase (no module broader than the median) has ``max_gap == 0`` → 0.
     """
     if max_gap <= 0:
         return 0.0
-    return min(1.0, abs(size - median_breadth) / max_gap)
+    over = size - median_breadth
+    if over <= 0:
+        return 0.0
+    return min(1.0, over / max_gap)
 
 
 def _rare_tags(tagset: set[str], freq: dict[str, int], modules: int) -> list[str]:
-    """The tags this module carries that a minority of modules carry, rarest first."""
+    """The tags this module carries that a minority of modules carry, rarest first.
+
+    Ordered so the rarest, MOST SEVERE tags lead the human-facing ``why``: by
+    descending severity, then ascending frequency (rarer first), then name.
+    """
     rare = [t for t in tagset if freq.get(t, 0) * 2 <= modules]
-    return sorted(rare, key=lambda t: (freq.get(t, 0), t))
+    return sorted(
+        rare,
+        key=lambda t: (-_severity_weight(t), freq.get(t, 0), t),
+    )
 
 
 def _why(tagset: set[str], norm: dict[str, Any], size: int,
@@ -185,13 +284,29 @@ def _why(tagset: set[str], norm: dict[str, Any], size: int,
     return "; ".join(parts) + "."
 
 
+def _is_trivial(module: str, tagset: set[str]) -> bool:
+    """A near-empty ``__init__.py`` (≤ TRIVIAL_BREADTH signals): never an anomaly."""
+    return module.endswith(_TRIVIAL_SUFFIX) and len(tagset) <= TRIVIAL_BREADTH
+
+
 def _score_module(module: str, tagset: set[str], norm: dict[str, Any],
                   max_gap: float) -> dict[str, Any] | None:
-    """Build one anomaly record for a module, or ``None`` if it sits on the norm."""
+    """Build one anomaly record for a module, or ``None`` if it sits on the norm.
+
+    Trivial ``__init__.py`` modules (≤ TRIVIAL_BREADTH signals) are floored out
+    before scoring so structural noise never crowds out real risk.
+    """
+    if _is_trivial(module, tagset):
+        return None
     freq, modules = norm["frequency"], norm["modules"]
     rarity = _rarity_score(tagset, freq, modules)
+    severity = _severity_score(tagset, freq, modules)
     breadth = _breadth_score(len(tagset), norm["median_breadth"], max_gap)
-    deviation = RARITY_WEIGHT * rarity + BREADTH_WEIGHT * breadth
+    deviation = (
+        RARITY_WEIGHT * rarity
+        + BREADTH_WEIGHT * breadth
+        + SEVERITY_WEIGHT * severity
+    )
     if deviation < DEVIATION_FLOOR:
         return None
     rare = _rare_tags(tagset, freq, modules)
@@ -199,6 +314,7 @@ def _score_module(module: str, tagset: set[str], norm: dict[str, Any],
         "module": module,
         "deviation": round(deviation, 3),
         "rarity": round(rarity, 3),
+        "severity": round(severity, 3),
         "why": _why(tagset, norm, len(tagset), rare),
     }
 
@@ -206,9 +322,13 @@ def _score_module(module: str, tagset: set[str], norm: dict[str, Any],
 def find_anomalies(profile: Any, top: int = 5) -> list[dict[str, Any]]:
     """Rank modules by deviation from the codebase norm — the outliers, bounded.
 
-    Deviation is ``0.6 * rarity + 0.4 * breadth-deviation``, both parts in
-    [0, 1], so the score is bounded in [0, 1]. Modules at or below
-    ``DEVIATION_FLOOR`` (on-pattern) are dropped. Sorted by deviation desc, then
+    Deviation is ``0.4 * rarity + 0.2 * over-breadth + 0.4 * severity``, all three
+    parts in [0, 1], so the score is bounded in [0, 1]. Over-breadth is ASYMMETRIC
+    (only an unusually broad fingerprint raises it) and severity is RARITY-GATED
+    (a ubiquitous tag contributes 0), so a rare risk tag dominates and structural
+    noise — including trivial ``__init__.py`` modules, which are dropped before
+    scoring — cannot outrank it. Modules at or below ``DEVIATION_FLOOR``
+    (on-pattern) are dropped. Sorted by deviation desc, then severity desc, then
     rarity desc, then module name for a fully deterministic order, and capped at
     ``top``. Empty/too-small/uniform profile → ``[]`` (never raises).
     """
@@ -219,11 +339,14 @@ def find_anomalies(profile: Any, top: int = 5) -> list[dict[str, Any]]:
         return []
     norm = dominant_pattern(profiles)
     breadths = [len(ts) for ts in profiles.values()]
-    max_gap = max(abs(b - norm["median_breadth"]) for b in breadths)
+    # Asymmetric: normalize over-breadth by the largest OVER-median gap only.
+    max_gap = max(b - norm["median_breadth"] for b in breadths)
     anomalies: list[dict[str, Any]] = []
     for module in sorted(profiles):
         record = _score_module(module, profiles[module], norm, max_gap)
         if record is not None:
             anomalies.append(record)
-    anomalies.sort(key=lambda a: (-a["deviation"], -a["rarity"], a["module"]))
+    anomalies.sort(
+        key=lambda a: (-a["deviation"], -a["severity"], -a["rarity"], a["module"])
+    )
     return anomalies[:top]

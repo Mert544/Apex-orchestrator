@@ -18,13 +18,15 @@ from app.engine.idea_permutation import IdeaPermutationEngine
 
 
 def _project(tmp_path: Path) -> Path:
-    # Eight near-identical modules + one structural outlier so the anomaly engine
-    # (via discovery_synthesis) produces at least one lead.
+    # Eight near-identical CLEAN modules + one RISK-BEARING outlier so the
+    # severity-aware anomaly engine (via discovery_synthesis) produces at least
+    # one lead. Under the new ranking a narrow/structural file no longer surfaces,
+    # so the outlier must carry a real rare risk signal: ``pickle.loads`` is a
+    # security finding the eight clean modules lack, which dominates the ranking.
     for i in range(8):
         (tmp_path / f"m{i}.py").write_text("def f():\n    return None\n", encoding="utf-8")
     (tmp_path / "odd.py").write_text(
-        "import os\nimport sys\nclass Big:\n"
-        + "".join(f"    def m{j}(self):\n        return {j}\n" for j in range(8)),
+        "import pickle\n\n\ndef load(blob):\n    return pickle.loads(blob)\n",
         encoding="utf-8")
     return tmp_path
 

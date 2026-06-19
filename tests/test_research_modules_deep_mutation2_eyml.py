@@ -187,10 +187,14 @@ def test_module_profiles_reads_row_fields_and_change_coupling():
 
 
 def test_why_names_at_most_four_rare_signals():
-    """``_why`` lists at most the four rarest signals (``rare[:4]``).
+    """``_why`` lists at most the four MOST SEVERE rare signals (``rare[:4]``).
 
     A module carrying six distinct rare signals must mention exactly four — the
-    two rarest-by-tiebreak omitted. Pins L172 ``[:4]`` (5 would leak a fifth).
+    two lowest-severity omitted. ``_rare_tags`` orders by severity desc, so the
+    named four are sensitive-path (1.0), fragile (0.8), debt (0.7) and
+    mutable-defaults (0.6); the dropped two are modernizable (0.4) and symbol-hub
+    (0.2). Pins both the ``rare[:4]`` slice (5 would leak a fifth) and the
+    severity ordering (a name-only order would drop different tags).
     """
     profile = ProjectProfile(
         root=".",
@@ -209,9 +213,11 @@ def test_why_names_at_most_four_rare_signals():
     # Exactly four backticked rare signals are named in the "rare signal(s)" clause.
     rare_clause = why.split(";")[0]
     assert rare_clause.count("`") == 8  # four `tag` pairs
-    # The two highest-sorting names are dropped (symbol-hub, sensitive-path).
+    # The two lowest-severity rare signals are dropped (modernizable, symbol-hub).
+    assert "`modernizable`" not in rare_clause
     assert "`symbol-hub`" not in rare_clause
-    assert "`sensitive-path`" not in rare_clause
+    # The highest-severity rare signal leads the clause.
+    assert "`sensitive-path`" in rare_clause
 
 
 def test_why_breadth_equal_to_median_is_neither_broad_nor_narrow():
@@ -280,16 +286,17 @@ def test_module_at_exactly_the_floor_is_kept():
 
     The guard is ``deviation < DEVIATION_FLOOR`` (strictly below is dropped), so
     a module sitting precisely ON the floor survives. Three modules each carrying
-    only the shared ``security`` signal (rarity 0.25, breadth 0) land on
-    deviation == 0.15 == DEVIATION_FLOOR. Pins L195 boundary < -> <= (which would
-    drop the on-floor modules).
+    only the shared ``untested`` signal (freq 3 of 4, severity 0.5) have
+    rarity 0.25, breadth 0 and severity 0.5*0.25 = 0.125, landing on
+    deviation = 0.4*0.25 + 0.4*0.125 = 0.15 == DEVIATION_FLOOR. Pins L195 boundary
+    < -> <= (which would drop the on-floor modules) under the severity blend.
     """
     from app.engine.anomaly_discovery import DEVIATION_FLOOR
     assert DEVIATION_FLOOR == 0.15
     profile = ProjectProfile(
         root=".",
-        security_finding_modules=["a", "b", "c"],
-        untested_modules=["d"],
+        untested_modules=["a", "b", "c"],
+        debt_marker_modules=["d"],
     )
     anomalies = find_anomalies(profile, top=99)
     surfaced = {a["module"]: a["deviation"] for a in anomalies}
@@ -299,13 +306,19 @@ def test_module_at_exactly_the_floor_is_kept():
 
 
 def test_deviation_and_rarity_rounded_to_three_places():
-    """Deviation and rarity are rounded to exactly THREE decimals.
+    """Deviation, rarity and severity are rounded to exactly THREE decimals.
 
-    The wide module's underlying rarity is 0.5625 and deviation 0.7375; rounded
-    to 3 places they are 0.562 and 0.738 — distinct from a 4-place rounding
-    (0.5625 / 0.7375). Pins L200/L201 ``round(..., 3)`` (4 would expose a fourth
-    digit) AND L222 ``abs(b - median)`` (+ would inflate max_gap and shrink the
-    breadth part, moving deviation off 0.738).
+    The wide module carries {untested(freq4), security, fragile, debt}; breadths
+    are [1,1,1,4] so the median is 1 and the over-breadth max_gap is 4-1 = 3:
+      rarity   = (0 + 0.75*3)/4 = 0.5625 -> 0.562;
+      severity = (0.5*0 + 1.0*0.75 + 0.8*0.75 + 0.7*0.75)/4 = 1.875/4 = 0.46875
+                 -> 0.469;
+      breadth  = (4-1)/3 = 1.0;
+      deviation = 0.4*0.5625 + 0.2*1.0 + 0.4*0.46875 = 0.6125 -> 0.613.
+    The three-place rounding distinguishes these from a four-place rounding
+    (0.5625 / 0.46875 / 0.6125). Pins ``round(..., 3)`` on all three keys AND the
+    asymmetric ``max(b - median)`` max_gap (a ``+`` mutant would inflate the gap
+    and move deviation off 0.613).
     """
     profile = ProjectProfile(
         root=".",
@@ -317,7 +330,8 @@ def test_deviation_and_rarity_rounded_to_three_places():
     wide = [a for a in find_anomalies(profile)
             if a["module"] == "app/wide.py"][0]
     assert wide["rarity"] == 0.562
-    assert wide["deviation"] == 0.738
+    assert wide["severity"] == 0.469
+    assert wide["deviation"] == 0.613
 
 
 def test_default_top_caps_at_five():
