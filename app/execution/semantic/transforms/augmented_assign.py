@@ -201,10 +201,6 @@ class _AugAssignTransformer(ast.NodeTransformer):
         # transformer can be constructed standalone in unit tests of the shared
         # rewrite helper — the safety guard is never bypassed in real use.
         self.changed = False
-        # Records ``(original_node, replacement_node)`` pairs so the shared
-        # driver can splice each rewrite into the original source surgically,
-        # preserving comments/formatting outside the changed construct.
-        self.replacements: list[tuple[ast.AST, ast.AST]] = []
         self._blocked = blocked or set()
 
     def visit_Assign(self, node: ast.Assign) -> ast.AST:
@@ -215,7 +211,6 @@ class _AugAssignTransformer(ast.NodeTransformer):
         if rewritten is None:
             return node
         self.changed = True
-        self.replacements.append((node, rewritten))
         return ast.copy_location(rewritten, node)
 
 

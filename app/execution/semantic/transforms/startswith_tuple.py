@@ -67,10 +67,6 @@ def _flatten_or(node: ast.BoolOp) -> list[ast.expr]:
 class _StartswithTupleTransformer(ast.NodeTransformer):
     def __init__(self) -> None:
         self.changed = False
-        # ``(original_node, replacement_node)`` pairs for surgical splicing by
-        # the shared driver, so comments/formatting outside each merged call
-        # survive (no whole-file unparse).
-        self.replacements: list[tuple[ast.AST, ast.AST]] = []
 
     def visit_BoolOp(self, node: ast.BoolOp) -> ast.AST:
         # Recurse first so nested rewrites still happen.
@@ -103,7 +99,6 @@ class _StartswithTupleTransformer(ast.NodeTransformer):
             keywords=[],
         )
         self.changed = True
-        self.replacements.append((node, new_call))
         return ast.copy_location(new_call, node)
 
 

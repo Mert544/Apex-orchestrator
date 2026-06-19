@@ -145,10 +145,6 @@ def _merge_boolop(node: ast.BoolOp) -> ast.Compare | None:
 class _ChainTransformer(ast.NodeTransformer):
     def __init__(self) -> None:
         self.changed = False
-        # ``(original_node, replacement_node)`` pairs for surgical splicing by
-        # the shared driver, so comments/formatting outside each merged
-        # comparison survive (no whole-file unparse).
-        self.replacements: list[tuple[ast.AST, ast.AST]] = []
 
     def visit_BoolOp(self, node: ast.BoolOp) -> ast.AST:
         # Recurse first so nested BoolOps inside operands are handled too.
@@ -156,7 +152,6 @@ class _ChainTransformer(ast.NodeTransformer):
         merged = _merge_boolop(node)
         if merged is not None:
             self.changed = True
-            self.replacements.append((node, merged))
             return merged
         return node
 
