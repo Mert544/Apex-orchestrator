@@ -518,6 +518,23 @@ class IdeaActionBridge:
             or oi.apply(target, text) is not None)
         return "" if servable else "imports already tidy; human review"
 
+    def _docstring_unserviceable(self, target: str, project_root: str) -> str:
+        # Probe the exact transform _generate would run: add_docstring only acts
+        # on a parseable Python file that has an UNdocumented function/class/
+        # method. A non-.py target, an unparseable file, or a module where every
+        # symbol is already documented yields no patch — that is human-review
+        # territory, so block it UP FRONT instead of at apply time. Best-effort:
+        # an unreadable/odd target (None text) is treated as serviceable rather
+        # than crashing or over-blocking.
+        from app.execution.semantic.transforms import docstring as ds
+
+        text = self._read(project_root, target)
+        if text is None:
+            return ""
+        if ds.apply(target, text, "Document this symbol") is not None:
+            return ""
+        return "no undocumented Python symbol to document; human review"
+
     def _unserviceable_reason(self, action_type: str, target: str,
                               project_root: str) -> str:
         """Why an executable step can't be served right now — "" when it can.
@@ -530,6 +547,7 @@ class IdeaActionBridge:
             "create_test_stub": self._stub_unserviceable,
             "harden_security": self._harden_unserviceable,
             "organize_imports": self._imports_unserviceable,
+            "add_docstring": self._docstring_unserviceable,
             "add_ci": self._ci_unserviceable,
         }.get(action_type)
         return probe(target, project_root) if probe else ""
