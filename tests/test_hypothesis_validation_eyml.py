@@ -31,7 +31,14 @@ _HYP_KEYS = {"claim", "antecedent", "consequent", "kind"}
 def _holds_profile() -> ProjectProfile:
     # Every `security` module is also `untested` (and vice-versa): the
     # association the dream finds is a law that holds on the WHOLE population.
-    mods = ["app/a.py", "app/b.py", "app/c.py"]
+    # FIVE modules, not three: the honesty fix raised the "confirmed" support
+    # floor to CONFIRM_ANTECEDENT (5) so a single-digit handful reads as a
+    # "candidate (low support)", not a confirmed project-wide law. This profile
+    # pins the WELL-SUPPORTED confirm path, so it now clears that floor; the
+    # thin-population path is pinned separately below
+    # (test_thin_population_below_min_antecedent_is_refuted) and the
+    # candidate-band path in tests/test_hypothesis_no_tautology_eyml.py.
+    mods = ["app/a.py", "app/b.py", "app/c.py", "app/d.py", "app/e.py"]
     return ProjectProfile(
         root=".",
         security_finding_modules=list(mods),
@@ -120,7 +127,10 @@ def test_holding_hypothesis_is_confirmed_with_full_support():
     assert result["confidence"] == 1.0
     assert result["counter_examples"] == 0
     assert result["evidence"] == []
-    assert result["support"] == 3
+    # Five supporting modules — clears the raised CONFIRM_ANTECEDENT floor so the
+    # well-supported law still confirms (the honesty fix downgrades only the
+    # thin, single-digit-support readings to "candidate").
+    assert result["support"] == 5
 
 
 def test_counter_example_makes_it_weak_and_is_listed_as_evidence():
@@ -197,7 +207,9 @@ def test_validation_is_deterministic():
 def test_results_are_ranked_confirmed_before_refuted():
     profile = _holds_profile()
     results = validate_discoveries(profile, top=20)
-    order = {"confirmed": 0, "weak": 1, "refuted": 2}
+    # `candidate` (clean but low-support) ranks between confirmed and weak after
+    # the honesty fix, so it joins the verdict order the ranking must respect.
+    order = {"confirmed": 0, "candidate": 1, "weak": 2, "refuted": 3}
     keys = [order[r["verdict"]] for r in results]
     assert keys == sorted(keys)
 

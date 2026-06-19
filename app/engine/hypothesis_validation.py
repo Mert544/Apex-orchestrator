@@ -29,6 +29,22 @@ Three deterministic moves per hypothesis:
   - **verdict** — a fixed-threshold reading of confidence and support, so the same
     profile always yields the same confirmed/weak/refuted call.
 
+Two honesty guards keep a "validated discovery" from over-claiming:
+
+  - **structural tautologies are not findings.** Some tags are SUPERSETS of others
+    *by construction* — ``critical-untested`` is, by how ``project_profile`` /
+    ``test_linker`` build the lists, a SUBSET of ``untested`` (a critical-untested
+    module is exactly "an untested module that is also a dependency hub", see
+    ``TestLinker.analyze``: ``critical_untested = [m for m in critical if m in
+    untested]``). So "every ``critical-untested`` module is also ``untested``" is
+    TRUE BY DEFINITION, not a law the codebase decided — a confirmed-at-1.0 reading
+    of it would be dressing up an identity as empirical science. Such hypotheses
+    (antecedent ⊆ consequent is STRUCTURAL) are SUPPRESSED entirely, never emitted.
+  - **low support is a candidate, not a confirmation.** A clean directional rule
+    that holds on only a handful of modules is a *candidate pattern* worth a look,
+    not a project-wide law; it is labelled ``candidate`` (low support) rather than
+    ``confirmed`` until enough modules stand behind it.
+
 Deterministic: sorted iteration, fixed thresholds, no time/random. Consumes
 ``discover_emergent`` only — ``dream_discovery``'s public surface is untouched.
 """
@@ -44,8 +60,33 @@ from app.engine.dream_discovery import _module_tags, discover_emergent
 # anything between is WEAK (supported but with live counter-examples).
 CONFIRM_CONFIDENCE = 0.90
 WEAK_CONFIDENCE = 0.60
-MIN_ANTECEDENT = 2        # below this the population is too thin to confirm
+# A directional rule may HOLD on a thin population, but a single-digit handful of
+# modules is a candidate to watch, not a project-wide law we stamp "confirmed".
+# Below MIN_ANTECEDENT the population is too thin to read at all (refuted); a
+# population that clears MIN_ANTECEDENT but stays under CONFIRM_ANTECEDENT can only
+# rise to "candidate" — never "confirmed", no matter how clean the confidence.
+MIN_ANTECEDENT = 2        # below this the population is too thin to read
+CONFIRM_ANTECEDENT = 5    # …and below THIS, "confirmed" is downgraded to "candidate"
 MAX_EVIDENCE = 5          # at most this many counter-example modules are listed
+
+# STRUCTURAL superset map: consequent tag -> the set of tags that are its SUBSET
+# *by construction* (every module carrying the subset tag carries the superset tag
+# because of how ``project_profile`` builds the lists, NOT because of any property
+# of this codebase). A hypothesis whose ``antecedent ⊆ consequent`` is structural is
+# a definitional tautology, not a discovery, and is suppressed.
+#
+#   - ``critical-untested`` ⊆ ``untested`` — ``TestLinker.analyze`` builds
+#     ``critical_untested = [m for m in critical_modules if m in untested]``: a
+#     critical-untested module is by definition an untested one.
+#   - ``hub-untested`` / ``impure-untested`` ⊆ ``untested`` — same "X-AND-untested"
+#     construction in ``project_profile`` (``hub_untested_modules`` /
+#     ``impure_untested_functions`` are the untested subset of hubs / impure fns).
+#     Listed for completeness/future-proofing; these tags are not currently emitted
+#     into the discovery tag-set, so they never reach a hypothesis today, but if a
+#     row is ever added to ``_module_tags`` for them the guard already covers it.
+_STRUCTURAL_SUPERSETS: dict[str, frozenset[str]] = {
+    "untested": frozenset({"critical-untested", "hub-untested", "impure-untested"}),
+}
 
 
 def _split_key(key: str) -> tuple[str, str]:
@@ -144,12 +185,41 @@ def _consequent_holds(tags: set[str], consequent: list[str]) -> bool:
     return all(t in tags for t in consequent)
 
 
+def _is_structural_tautology(hypothesis: dict[str, Any]) -> bool:
+    """True if ``antecedent ⊆ consequent`` holds BY CONSTRUCTION (a tautology).
+
+    A hypothesis whose every consequent tag is a known structural superset of
+    every antecedent tag asserts a definitional identity, not a property this
+    codebase happens to have — confirming it would over-claim. Clique hypotheses
+    (``antecedent_any``) are bidirectional bundle claims, never a one-directional
+    subset, so they are never treated as structural tautologies.
+    """
+    if hypothesis.get("antecedent_any"):
+        return False
+    antecedent = hypothesis.get("antecedent", [])
+    consequent = hypothesis.get("consequent", [])
+    if not antecedent or not consequent:
+        return False
+    # Every consequent tag must be a by-construction superset of every antecedent
+    # tag for the WHOLE implication to be a tautology.
+    for cons in consequent:
+        subsets = _STRUCTURAL_SUPERSETS.get(cons, frozenset())
+        if not all(ant in subsets for ant in antecedent):
+            return False
+    return True
+
+
 def _verdict(confidence: float, antecedent_n: int) -> str:
-    """Fixed-threshold reading: confirmed / weak / refuted (never time/random)."""
+    """Fixed-threshold reading: confirmed / candidate / weak / refuted (no time/random).
+
+    ``candidate`` is a clean rule (confidence at the confirm bar) that simply does
+    not yet have enough modules behind it (``< CONFIRM_ANTECEDENT``) to be called a
+    project-wide law — an honest "low support" label, not a confirmation.
+    """
     if antecedent_n < MIN_ANTECEDENT or confidence < WEAK_CONFIDENCE:
         return "refuted"
     if confidence >= CONFIRM_CONFIDENCE:
-        return "confirmed"
+        return "confirmed" if antecedent_n >= CONFIRM_ANTECEDENT else "candidate"
     return "weak"
 
 
@@ -162,11 +232,15 @@ def validate_hypothesis(hypothesis: dict[str, Any], profile: Any) -> dict[str, A
     and reads a fixed-threshold verdict. Up to ``MAX_EVIDENCE`` counter-example
     modules are listed, sorted, as concrete evidence. A hypothesis no module's
     antecedent matches is ``refuted`` with confidence ``0.0`` (vacuous, untestable
-    here), never an exception.
+    here), never an exception. A STRUCTURAL tautology (``antecedent ⊆ consequent``
+    by construction) is reported with verdict ``tautology`` and never "confirmed",
+    so even a direct caller (not just ``validate_discoveries``, which drops it)
+    cannot mistake a definitional identity for a validated discovery.
     """
     antecedent = list(hypothesis.get("antecedent", []))
     consequent = list(hypothesis.get("consequent", []))
     any_mode = bool(hypothesis.get("antecedent_any", False))
+    tautology = _is_structural_tautology(hypothesis)
     tags = _module_tags(profile)
 
     supporters: list[str] = []
@@ -190,16 +264,21 @@ def validate_hypothesis(hypothesis: dict[str, Any], profile: Any) -> dict[str, A
         "antecedent_modules": antecedent_n,
         "counter_examples": len(counter),
         "confidence": round(confidence, 3),
-        "verdict": _verdict(confidence, antecedent_n),
+        "verdict": "tautology" if tautology else _verdict(confidence, antecedent_n),
+        "tautology": tautology,
         "evidence": counter[:MAX_EVIDENCE],
     }
 
 
 def _rank_key(result: dict[str, Any]) -> tuple[int, float, int, str]:
-    """Rank: confirmed first, then by confidence, then by support, then stable key."""
-    order = {"confirmed": 0, "weak": 1, "refuted": 2}
+    """Rank: confirmed first, then by confidence, then by support, then stable key.
+
+    A ``candidate`` (clean but low-support) ranks below ``confirmed`` and above the
+    counter-exampled ``weak``: it is a clean rule, just thinly supported.
+    """
+    order = {"confirmed": 0, "candidate": 1, "weak": 2, "refuted": 3}
     return (
-        order.get(result["verdict"], 3),
+        order.get(result["verdict"], 4),
         -float(result["confidence"]),
         -int(result["support"]),
         str(result["key"]),
@@ -212,8 +291,11 @@ def validate_discoveries(profile: Any, top: int = 5) -> list[dict[str, Any]]:
     Runs ``discover_emergent`` once, turns each directional discovery into a
     hypothesis (confluences carry no if/then and are skipped), validates each
     against the full module population, and returns the ``top`` strongest results
-    ranked confirmed-before-weak-before-refuted. Empty or pattern-free profile ->
-    ``[]`` (never raises); ``top <= 0`` -> ``[]``.
+    ranked confirmed-before-candidate-before-weak-before-refuted. STRUCTURAL
+    tautologies (``antecedent ⊆ consequent`` by construction, e.g.
+    ``critical-untested ⇒ untested``) are dropped entirely — they are definitional,
+    not discoveries. Empty or pattern-free profile -> ``[]`` (never raises);
+    ``top <= 0`` -> ``[]``.
     """
     if top <= 0:
         return []
@@ -221,6 +303,8 @@ def validate_discoveries(profile: Any, top: int = 5) -> list[dict[str, Any]]:
     for discovery in discover_emergent(profile):
         hypothesis = discovery_to_hypothesis(discovery)
         if hypothesis is None:
+            continue
+        if _is_structural_tautology(hypothesis):
             continue
         results.append(validate_hypothesis(hypothesis, profile))
     results.sort(key=_rank_key)

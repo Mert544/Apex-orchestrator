@@ -423,10 +423,18 @@ def test_clique_full_bundle_module_is_a_supporter():
     assert result["evidence"] == ["part.py"]
 
 
-def test_verdict_confirmed_at_exactly_min_antecedent():
-    # A law holding at confidence 1.0 on exactly MIN_ANTECEDENT (2) modules is
-    # "confirmed" — kills the `antecedent_n < MIN_ANTECEDENT`->`<=` boundary flip
-    # and the `MIN_ANTECEDENT = 2`->`3` number flip.
+def test_verdict_candidate_at_exactly_min_antecedent():
+    # Updated for the honesty fix: a clean (1.0) law on exactly MIN_ANTECEDENT (2)
+    # modules clears the READ floor (so it is NOT "refuted") but stays under the
+    # raised CONFIRM_ANTECEDENT (5) support floor, so it reads as "candidate" (low
+    # support), NOT "confirmed" — a 2-module association is no longer over-claimed
+    # as a validated discovery. Still kills the `antecedent_n < MIN_ANTECEDENT`->
+    # `<=` boundary flip (at exactly 2 it must NOT be refuted) and the
+    # `MIN_ANTECEDENT = 2`->`3` number flip (at 2 it must read, at 1 below it must
+    # refute — see the assertion below).
+    from app.engine.hypothesis_validation import MIN_ANTECEDENT
+
+    assert MIN_ANTECEDENT == 2
     profile = ProjectProfile(
         root=".",
         security_finding_modules=["a.py", "b.py"],
@@ -436,7 +444,10 @@ def test_verdict_confirmed_at_exactly_min_antecedent():
     result = validate_hypothesis(hyp, profile)
     assert result["antecedent_modules"] == 2
     assert result["confidence"] == 1.0
-    assert result["verdict"] == "confirmed"
+    assert result["verdict"] == "candidate"      # not over-claimed as confirmed
+    # One module below the floor is refuted (pins the `< MIN_ANTECEDENT` boundary).
+    assert _hyp_verdict(1.0, MIN_ANTECEDENT - 1) == "refuted"
+    assert _hyp_verdict(1.0, MIN_ANTECEDENT) == "candidate"
 
 
 def test_verdict_weak_at_exactly_weak_confidence_floor():
