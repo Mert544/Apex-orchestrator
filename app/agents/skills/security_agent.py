@@ -9,7 +9,115 @@ from typing import Any
 
 from app.agents.base import Agent
 from app.agents.learning import AgentLearning
+from app.engine import detectors
 from app.engine.skip_dirs import iter_source_files
+
+
+# Maps a detect() security Issue's fix_kind (the rich engine's routing label) to
+# the risk_type slug surfaced in the agent's finding dict, so `scan` reads in the
+# agent's own vocabulary. fix_kinds absent here (or empty, e.g. exec/marshal) fall
+# back to a slug derived from the label — never dropped, so scan stays a superset.
+_DETECT_RISK_TYPE = {
+    "eval": "eval_usage",
+    "os.system": "os_system_shell_injection",
+    "os.popen": "os_popen_shell_injection",
+    "pickle": "pickle_deserialization",
+    "subprocess-shell-literal": "subprocess_shell_injection",
+    "tls-verify": "tls_verification_disabled",
+    "zip-slip": "path_traversal",
+    "yaml": "yaml_unsafe_load",
+    "sql": "sql_injection",
+    "tempfile": "insecure_tempfile",
+    "weak-hash": "weak_hash",
+    "hashlib-new-weak": "weak_hash",
+    "bare except": "bare_except",
+    "base-exception": "broad_exception",
+}
+
+# Canonical risk token for de-duplication. Both a legacy finding's risk_type and a
+# mapped detect finding's risk_type collapse to one of these tokens so the SAME
+# logical risk on the SAME line, flagged by both engines, is reported only once.
+# Order matters: the first substring that matches wins.
+_RISK_CANON = (
+    ("sql", "sql"),
+    ("eval", "eval"),
+    ("exec", "exec"),
+    ("compile", "exec"),
+    ("os_system", "os.system"),
+    ("os.system", "os.system"),
+    ("os_popen", "os.popen"),
+    ("os.popen", "os.popen"),
+    ("pickle", "pickle"),
+    ("yaml", "yaml"),
+    ("tls", "tls"),
+    ("traversal", "zip-slip"),
+    ("zip", "zip-slip"),
+    ("tempfile", "tempfile"),
+    ("weak_hash", "weak-hash"),
+    ("hash", "weak-hash"),
+    ("subprocess", "subprocess"),
+    ("bare_except", "bare-except"),
+    ("broad_exception", "base-exception"),
+    ("hardcoded", "secret"),
+    ("secret", "secret"),
+    ("connection", "secret"),
+    ("password", "secret"),
+)
+
+# detect()'s severities are high|medium|low; the agent additionally uses
+# "critical" for its top tier. The mapping below keeps detect findings inside the
+# agent's existing severity vocabulary so _calc_score weights them unchanged.
+_DETECT_SEVERITY = {"high": "high", "medium": "medium", "low": "low"}
+
+# Some security Issues carry no fix_kind (exec, pickle.load catch-all, marshal,
+# shell=True, hardcoded secret). Derive their risk_type from a message substring
+# so they canonicalise alongside the legacy findings and never produce a stray
+# second finding for the same risk on the same line. First match wins.
+_DETECT_MESSAGE_RISK = (
+    ("exec()", "exec_usage"),
+    ("pickle.load", "pickle_deserialization"),
+    ("marshal.load", "unsafe_deserialization"),
+    ("shell=True", "subprocess_shell_injection"),
+    ("hardcoded secret", "hardcoded_secret"),
+)
+
+
+def _canonical_risk(risk_type: str) -> str:
+    """A coarse risk token for dedup; falls back to the raw risk_type."""
+    rt = risk_type.lower()
+    for needle, token in _RISK_CANON:
+        if needle in rt:
+            return token
+    return rt
+
+
+def _detect_finding(rel_path: str, issue: detectors.Issue) -> dict[str, Any]:
+    """Map a detect() security Issue into the agent's existing finding schema.
+
+    Preserves the dict shape every downstream consumer reads (file/line/risk_type/
+    severity/details/suggestion). The detect message is carried verbatim in
+    ``details`` so the finding stays traceable to the rich engine.
+    """
+    risk_type = _DETECT_RISK_TYPE.get(issue.fix_kind)
+    if risk_type is None and issue.fix_kind:
+        risk_type = issue.fix_kind.replace("-", "_").replace(".", "_")
+    if risk_type is None:
+        # No fix_kind: derive a risk_type from the message so the finding still
+        # canonicalises alongside the legacy ones (no stray same-line duplicate).
+        for needle, slug in _DETECT_MESSAGE_RISK:
+            if needle in issue.message:
+                risk_type = slug
+                break
+    if risk_type is None:
+        risk_type = "security_issue"
+    return {
+        "file": rel_path,
+        "line": issue.line,
+        "risk_type": risk_type,
+        "severity": _DETECT_SEVERITY.get(issue.severity, "low"),
+        "details": issue.message,
+        "suggestion": issue.message,
+    }
 
 
 def _has_shell_true(node: ast.Call) -> bool:
@@ -279,8 +387,8 @@ class SecurityAgent(Agent):
                 source = full.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            findings.extend(self._scan_ast(rel_path, source))
-            findings.extend(self._scan_regex(rel_path, source))
+            legacy = self._scan_ast(rel_path, source) + self._scan_regex(rel_path, source)
+            findings.extend(self._merge_detect(rel_path, source, legacy))
 
         self.send(
             topic="security.scan.complete",
@@ -295,6 +403,47 @@ class SecurityAgent(Agent):
             "risk_score": self._calc_score(findings),
             "findings": findings,
         }
+
+    def _merge_detect(
+        self, rel_path: str, source: str, legacy: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Legacy findings PLUS the rich detect() engine's security issues.
+
+        Makes the per-file scan a SUPERSET of today's legacy scan and consistent
+        with ``grade``/``maintain`` (which both read ``detectors.detect``). Each
+        ``category=="security"`` Issue is mapped into the agent's finding schema
+        and merged, de-duplicated so the SAME risk on the SAME line — flagged by
+        both engines — is reported only once (by ``(line, canonical-risk)``), and
+        identical detect findings collapse by ``(line, details)``. The result is
+        sorted by ``(line, details)`` for determinism.
+
+        Best-effort: if ``detect`` raises on this file we fall back to the legacy
+        findings for it, never crashing the scan.
+        """
+        try:
+            issues = detectors.detect(source)
+        except Exception:
+            return list(legacy)
+
+        # Lines+risks already covered by a legacy finding: a detect finding for
+        # the same (line, canonical risk) is the same issue, not a second one.
+        legacy_keys = {(f["line"], _canonical_risk(str(f.get("risk_type", "")))) for f in legacy}
+        merged = list(legacy)
+        seen_detail: set[tuple[int, str]] = {(f["line"], f.get("details", "")) for f in legacy}
+        for issue in issues:
+            if issue.category != "security":
+                continue
+            finding = _detect_finding(rel_path, issue)
+            key = (finding["line"], _canonical_risk(finding["risk_type"]))
+            if key in legacy_keys:
+                continue
+            detail_key = (finding["line"], finding["details"])
+            if detail_key in seen_detail:
+                continue
+            seen_detail.add(detail_key)
+            merged.append(finding)
+        merged.sort(key=lambda f: (f["line"], str(f.get("details", ""))))
+        return merged
 
     def _discover_files(self, root: Path) -> list[str]:
         skipped = {"tests", "test", "validation"}
