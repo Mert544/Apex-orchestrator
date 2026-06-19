@@ -9,7 +9,7 @@ from pathlib import Path
 from app.engine.skip_dirs import is_skipped
 from app.tools.dependency_graph import DependencyGraphBuilder
 from app.tools.profile_scanners import _CodeQualityScansMixin
-from app.tools.python_structure import PythonStructureAnalyzer
+from app.tools.python_structure import PythonStructureAnalyzer, parse_cached
 from app.tools.test_linker import TestLinker
 
 
@@ -492,18 +492,25 @@ class ProjectProfiler(_CodeQualityScansMixin):
         """
         if ext != ".py" or self._is_base_test_path(path.name.lower(), rel_str.lower()):
             return
-        count = self._count_debt_markers(path)
+        # Read the file's source EXACTLY ONCE for all three folded-in detections
+        # instead of three separate ``read_text`` calls. Same encoding/errors as
+        # before; an unreadable file yields ``None``, which maps to every helper's
+        # original OSError branch (0 markers / no finding / no bug). Priming the
+        # shared parse cache here means the (non-light) mixin AST scanners reuse
+        # this file's tree rather than re-reading + re-parsing it.
+        source = self._cached_source(path)
+        count = self._count_debt_markers(source)
         if count:
             debt_counts[rel_str] = count
         # Content-based security findings (eval/os.system/pickle/...), so the
         # idea engine can point at the *actual* dangerous file — not only files
         # whose name matches a sensitive hint.
-        if self._has_security_finding(path):
+        if self._has_security_finding(source):
             security_finding_modules.append(rel_str)
         # High-severity logic bugs (frozen-dataclass mutation, return in finally,
         # unreachable except, ...) — likely/guaranteed crashes the idea engine
         # should surface as a top fix, not just the grade.
-        if self._has_correctness_bug(path):
+        if self._has_correctness_bug(source):
             correctness_bug_modules.append(rel_str)
 
     def _finalize_base_lists(self, profile: ProjectProfile,
@@ -1133,43 +1140,69 @@ class ProjectProfiler(_CodeQualityScansMixin):
             profile.generalizable_duplications = self._drop_fixture_dup_groups(
                 profile.generalizable_duplications)
 
-    def _count_debt_markers(self, path: Path) -> int:
-        """Count ``# TODO/FIXME/XXX/HACK`` comment markers in a Python file.
+    def _cached_source(self, path: Path) -> str | None:
+        """Read ``path``'s source ONCE for the base walk's folded-in detections,
+        priming the shared per-build parse cache so the later (non-light) AST
+        mixin scanners reuse this file's tree instead of re-reading + re-parsing.
 
-        Matches only the comment form (anchored to ``#``) so the bare word
-        appearing in a string literal or identifier is never counted.
+        Returns ``None`` for an unreadable file — the value every base-walk
+        detector treats as "no source", matching its original per-call OSError
+        branch (0 markers / no finding / no bug). Same ``utf-8``/``errors=ignore``
+        decode as the original three ``read_text`` calls, so behaviour and bytes
+        are unchanged; the file is just read once instead of three times.
+
+        Priming the cache is best-effort: ``parse_cached`` already swallows
+        unreadable/unparseable files (returning ``None``), and a source we could
+        read but that does not parse still flows to the detectors exactly as
+        before (``detect``/``security_labels`` re-parse and handle it).
         """
         try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            source = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
-            return 0
-        return len(self.DEBT_MARKER_RE.findall(text))
+            return None
+        # Prime the shared tree cache (keyed by path+mtime) so the non-light AST
+        # scanners that visit this same file later parse it zero extra times. The
+        # parse result is irrelevant here; we only want the cache populated.
+        parse_cached(path)
+        return source
 
-    def _has_security_finding(self, path: Path) -> bool:
-        """True if the content detector flags a real security issue in this file.
+    def _count_debt_markers(self, source: str | None) -> int:
+        """Count ``# TODO/FIXME/XXX/HACK`` comment markers in a Python source.
+
+        Matches only the comment form (anchored to ``#``) so the bare word
+        appearing in a string literal or identifier is never counted. ``None``
+        source (unreadable file) yields 0, matching the old OSError branch.
+        """
+        if source is None:
+            return 0
+        return len(self.DEBT_MARKER_RE.findall(source))
+
+    def _has_security_finding(self, source: str | None) -> bool:
+        """True if the content detector flags a real security issue in this source.
 
         Uses the same canonical detector as ``apex review`` and the grade, so the
         idea engine agrees with them on *where* the danger is — not just files
-        whose name happens to match a sensitive hint.
+        whose name happens to match a sensitive hint. ``None`` source (unreadable
+        file) yields ``False``, matching the old OSError branch.
         """
+        if source is None:
+            return False
         from app.engine.detectors import security_labels
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            return False
-        return bool(security_labels(text))
+        return bool(security_labels(source))
 
-    def _has_correctness_bug(self, path: Path) -> bool:
-        """True if the detector finds a high-severity logic bug (likely crash)."""
-        from app.engine.detectors import detect
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
+    def _has_correctness_bug(self, source: str | None) -> bool:
+        """True if the detector finds a high-severity logic bug (likely crash).
+
+        ``None`` source (unreadable file) yields ``False``, matching the old
+        OSError branch.
+        """
+        if source is None:
             return False
+        from app.engine.detectors import detect
         return any(
             i.category == "bug" and i.severity == "high"
             and not i.message.startswith("SyntaxError")
-            for i in detect(text)
+            for i in detect(source)
         )
 
     def _populate_python_structure(self, profile: ProjectProfile) -> None:

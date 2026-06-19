@@ -21,6 +21,7 @@ import ast
 from typing import TYPE_CHECKING
 
 from app.engine.skip_dirs import iter_source_files
+from app.tools.python_structure import parse_cached
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type hints
     from app.tools.project_profile import ProjectProfile
@@ -173,9 +174,13 @@ class _CodeQualityScansMixin:
             rel_str = path.relative_to(self.root).as_posix()
             if self._is_fixture_path(rel_str):
                 continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
-            except (OSError, SyntaxError, RecursionError, MemoryError):
+            # Route through the shared per-build parse cache so a file read +
+            # parsed by an earlier scanner (or the base walk) is not re-read /
+            # re-parsed here. ``parse_cached`` returns ``None`` for an
+            # unreadable/unparseable file — the SAME "skip, do not count" path
+            # the inline ``ast.parse`` except-clause took, so output is unchanged.
+            tree = parse_cached(path)
+            if tree is None:
                 continue
             scanned += 1
             found.extend(self._god_classes_in_tree(tree, rel_str))
@@ -226,9 +231,11 @@ class _CodeQualityScansMixin:
             rel_str = path.relative_to(self.root).as_posix()
             if self._is_fixture_path(rel_str):
                 continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
-            except (OSError, SyntaxError, RecursionError, MemoryError):
+            # Shared per-build parse cache (see ``_scan_god_classes``): ``None``
+            # means unreadable/unparseable -> skip without counting, identical to
+            # the old inline ``ast.parse`` except-clause.
+            tree = parse_cached(path)
+            if tree is None:
                 continue
             scanned += 1
             for fn in tree.body:
@@ -494,9 +501,11 @@ class _CodeQualityScansMixin:
             rel_str = path.relative_to(self.root).as_posix()
             if self._is_fixture_path(rel_str):
                 continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
-            except (OSError, SyntaxError, RecursionError, MemoryError):
+            # Shared per-build parse cache (see ``_scan_god_classes``): ``None``
+            # means unreadable/unparseable -> skip without counting, identical to
+            # the old inline ``ast.parse`` except-clause.
+            tree = parse_cached(path)
+            if tree is None:
                 continue
             scanned += 1
             object_refs |= self._module_object_refs(tree)
