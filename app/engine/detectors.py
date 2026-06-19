@@ -109,6 +109,13 @@ def detect(source: str) -> list[Issue]:
     for node in ast.walk(tree):
         _dispatch_node(node, add)
 
+    # Broadened SQL-injection detection (new sinks / format-taint / concat /
+    # assigned-then-passed) needs whole-module context — the assignment map — so
+    # it runs as its own pass after the per-node walk. It deliberately skips the
+    # historical inline-f-string-on-classic-sink shape, which the per-node rule
+    # in _CALL_ATTR_RULES already emits, so no finding is duplicated.
+    _detect_sql_injection(tree, add)
+
     # Drop findings the developer explicitly suppressed inline (noqa / nosec).
     lines = source.splitlines()
     kept = [
@@ -213,10 +220,95 @@ def _detect_call_name(node: ast.Call, f: ast.Name, add) -> None:
             f"use a literal `{lit}` instead of `{f.id}()`", "collection-literal")
 
 
+# DB-API sinks that take a raw SQL string as their first argument. The classic
+# DB-API 2.0 cursor verbs (``execute``/``executemany``/``cursor``) plus the
+# realistic async/driver fetch verbs (asyncpg / ``databases``:
+# ``fetch``/``fetchrow``/``fetchval``/``fetchmany``). A tainted string
+# (f-string / ``str.format()`` / concat) reaching any of these is an injection
+# risk.
+_SQL_CLASSIC_SINKS = frozenset({"execute", "executemany", "cursor"})
+_SQL_FETCH_SINKS = frozenset({"fetch", "fetchrow", "fetchval", "fetchmany"})
+_SQL_SINKS = _SQL_CLASSIC_SINKS | _SQL_FETCH_SINKS
+
+# Tokens that mark a string as SQL. Used to keep the broadened detection
+# (the generically-named ``fetch*`` sinks and the ``.format()`` taint) precise:
+# we only flag those when the string literally reads like SQL, so a non-DB
+# ``queue.fetch(f"{job}")`` or a ``"{}".format(name)`` greeting is never flagged.
+_SQL_KEYWORDS = (
+    "select ", "insert ", "update ", "delete ", "from ", "where ", " join ",
+    " into ", "values ", "create table", "drop table", "alter table",
+    "union ", "order by", "group by",
+)
+
+
+def _looks_like_sql(text: str) -> bool:
+    """True if ``text`` reads like a SQL statement (case-insensitive keyword)."""
+    low = text.lower()
+    return any(kw in low for kw in _SQL_KEYWORDS)
+
+
+def _joinedstr_static_text(node: ast.JoinedStr) -> str:
+    """The literal (non-interpolated) text of an f-string, joined."""
+    return "".join(
+        v.value for v in node.values
+        if isinstance(v, ast.Constant) and isinstance(v.value, str)
+    )
+
+
+def _format_call_template(node: ast.Call) -> str | None:
+    """The constant template of a ``"...".format(...)`` call with a TAINTED arg.
+
+    Returns the template string only when the receiver is a string literal and
+    at least one ``format()`` argument is non-literal (a name/call/attribute —
+    i.e. user-controlled), which is the injection-prone shape. A pure-literal
+    ``"a={}".format("b")`` is constant and returns None.
+    """
+    f = node.func
+    if not (isinstance(f, ast.Attribute) and f.attr == "format"):
+        return None
+    recv = f.value
+    if not (isinstance(recv, ast.Constant) and isinstance(recv.value, str)):
+        return None
+    args = [*node.args, *(kw.value for kw in node.keywords)]
+    if not any(not isinstance(a, ast.Constant) for a in args):
+        return None
+    return recv.value
+
+
+def _is_tainted_sql_string(arg: ast.expr) -> str | None:
+    """The literal SQL text of a tainted query expression, else None.
+
+    Recognizes the three interpolation shapes that build SQL from non-constants:
+    an f-string with a placeholder, a ``str.format()`` with a non-literal arg,
+    and a ``"..." + var`` style concat with a string-literal side. Returns the
+    static portion of the text (for the SQL-look guard); a fully-constant string
+    or an unrecognized shape returns None.
+    """
+    if isinstance(arg, ast.JoinedStr):
+        if not any(isinstance(v, ast.FormattedValue) for v in arg.values):
+            return None  # f-string with no placeholder is constant
+        return _joinedstr_static_text(arg)
+    if isinstance(arg, ast.Call):
+        return _format_call_template(arg)
+    if isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add):
+        for side in (arg.left, arg.right):
+            if isinstance(side, ast.Constant) and isinstance(side.value, str):
+                return side.value
+    return None
+
+
 def _is_sql_fstring_call(node: ast.Call, owner: str, attr: str) -> bool:
     """True for a DB-cursor ``execute``/``executemany``/``cursor`` call whose
-    args include an f-string (SQL built via interpolation — injection risk)."""
-    return attr in ("execute", "executemany", "cursor") and any(
+    args include an f-string (SQL built via interpolation — injection risk).
+
+    Unchanged classic-sink rule used by :data:`_CALL_ATTR_RULES`: it fires on the
+    historical inline-f-string-on-``execute``/``executemany``/``cursor`` shape so
+    the byte-for-byte finding contract is preserved. The broadened detection
+    (the ``fetch*`` sinks, ``str.format()``/concat taint, and the
+    assigned-then-passed resolver) lives in :func:`_detect_sql_injection`, which
+    deliberately skips this exact shape to avoid a duplicate finding.
+    """
+    return attr in _SQL_CLASSIC_SINKS and any(
         isinstance(a, ast.JoinedStr) for a in node.args)
 
 
@@ -421,10 +513,132 @@ def _detect_call_attr(node: ast.Call, f: ast.Attribute, add) -> None:
             return
 
 
+# Message/routing reused for every SQL-injection shape, so security_label /
+# security_labels (which key on the "sql" fix_kind) keep working unchanged.
+_SQL_INJECTION_MSG = "SQL built from an f-string — injection risk"
+
+
+def _collect_assignments(tree: ast.AST) -> dict[str, ast.expr]:
+    """Map ``name -> value`` for every simple ``name = <expr>`` assignment.
+
+    Conservative single-assignment resolver used to follow a query built on one
+    line and passed to a sink on the next (``q = f"..."; conn.fetch(q)``). A name
+    assigned more than once is dropped (ambiguous), so we never resolve a value
+    that may have been overwritten. Module- and function-level assignments share
+    one flat map — good enough for the local ``q = ...; sink(q)`` idiom and never
+    a false positive (an unresolved name is simply not flagged).
+    """
+    seen: dict[str, ast.expr] = {}
+    multiple: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    if t.id in seen:
+                        multiple.add(t.id)
+                    seen[t.id] = node.value
+    return {k: v for k, v in seen.items() if k not in multiple}
+
+
+def _sink_attr(node: ast.Call) -> str | None:
+    """The SQL-sink method name this call targets, else None."""
+    f = node.func
+    if isinstance(f, ast.Attribute) and f.attr in _SQL_SINKS:
+        return f.attr
+    return None
+
+
+def _tainted_sql_for_sink(arg: ast.expr, attr: str,
+                          assigns: dict[str, ast.expr]) -> bool:
+    """True if ``arg`` (possibly resolved through one assignment) is tainted SQL
+    feeding a sink ``attr``, for a shape NOT already covered by the classic
+    inline-f-string rule.
+
+    A bare ``Name`` is resolved once through ``assigns``. Classic sinks skip the
+    inline-f-string case (the per-node rule owns it, avoiding a duplicate);
+    every other tainted shape on a classic sink, and ALL tainted shapes on the
+    generically-named ``fetch*`` sinks, must additionally LOOK like SQL so a
+    non-DB ``q.fetch(...)`` or a ``"{}".format(x)`` greeting is never flagged.
+    """
+    resolved = arg
+    if isinstance(arg, ast.Name):
+        resolved = assigns.get(arg.id)
+        if resolved is None:
+            return False
+    classic_inline_fstring = (
+        attr in _SQL_CLASSIC_SINKS and arg is resolved
+        and isinstance(resolved, ast.JoinedStr)
+    )
+    if classic_inline_fstring:
+        return False  # already emitted by the per-node _is_sql_fstring_call rule
+    static = _is_tainted_sql_string(resolved)
+    if static is None:
+        return False
+    # Classic sink + inline f-string resolved via a variable is unambiguous SQL
+    # already (a cursor sink); everything else must read like SQL to stay precise.
+    if attr in _SQL_CLASSIC_SINKS and isinstance(resolved, ast.JoinedStr):
+        return True
+    return _looks_like_sql(static)
+
+
+def _detect_sql_injection(tree: ast.AST, add) -> None:
+    """Flag tainted SQL reaching a recognized DB sink (the cases the per-node
+    inline-f-string rule misses): the async ``fetch*`` sinks, ``str.format()`` /
+    concat taint, and a query assigned on one line then passed on the next.
+
+    Reuses the ``"sql"`` fix_kind and message (flag-only — SQL rewrites need
+    human review), so existing consumers keyed on that label are unaffected.
+    """
+    assigns = _collect_assignments(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        attr = _sink_attr(node)
+        if attr is None or not node.args:
+            continue
+        if _tainted_sql_for_sink(node.args[0], attr, assigns):
+            add(node.lineno, "security", "high", _SQL_INJECTION_MSG, "sql")
+
+
+# Module/class-level config names whose hardcoded-True is a production-debug
+# footgun (Django/Flask DEBUG, generic debug flags). Detected by exact name.
+_DEBUG_FLAG_NAMES = frozenset({"DEBUG", "debug"})
+
+_DEBUG_FLAG_MSG = (
+    "debug flag hardcoded to True — turn off debug mode in production "
+    "(load it from the environment / config)"
+)
+
+
 def _detect_assignment(node, add) -> None:
-    """Flag a non-trivial string literal assigned to a secret-looking name."""
+    """Flag a non-trivial string literal assigned to a secret-looking name, and a
+    hardcoded ``DEBUG = True`` / ``debug = True`` production-debug flag."""
     if _is_hardcoded_secret(node):
         add(node.lineno, "security", "high", "possible hardcoded secret — load it from the environment", "")
+    _detect_debug_flag(node, add)
+
+
+def _detect_debug_flag(node, add) -> None:
+    """Flag a hardcoded ``DEBUG = True`` / ``debug = True`` (production-debug).
+
+    Fires only when the value is the literal ``True`` (``ast.Constant`` whose
+    value ``is True``) assigned to a bare ``DEBUG``/``debug`` name. ``= False``
+    is the safe production setting, and ``debug = <call>`` / ``debug = cfg.x``
+    are config-driven (not hardcoded), so neither is flagged. Low severity,
+    flag-only (the fix — read it from the environment — is contextual).
+    """
+    if isinstance(node, ast.AnnAssign):
+        targets: list[ast.expr] = [node.target]
+        value = node.value
+    else:
+        targets = list(node.targets)
+        value = node.value
+    if not (isinstance(value, ast.Constant) and value.value is True):
+        return
+    for t in targets:
+        if isinstance(t, ast.Name) and t.id in _DEBUG_FLAG_NAMES:
+            add(node.lineno, "bug", "low", _DEBUG_FLAG_MSG, "debug-flag")
+            return
 
 
 def _detect_except_handler(node: ast.ExceptHandler, add) -> None:
@@ -1241,3 +1455,8 @@ def has_hashlib_new_weak(source: str) -> bool:
 
 def has_subprocess_shell_literal(source: str) -> bool:
     return any(i.fix_kind == "subprocess-shell-literal" for i in detect(source))
+
+
+def has_debug_flag(source: str) -> bool:
+    """True if a hardcoded ``DEBUG = True`` / ``debug = True`` flag is present."""
+    return any(i.fix_kind == "debug-flag" for i in detect(source))
