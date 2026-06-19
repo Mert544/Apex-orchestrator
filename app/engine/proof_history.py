@@ -134,6 +134,66 @@ def _reliability(tally: dict[str, int]) -> float:
     return round(tally["applied"] / total, 4)
 
 
+# Rank-based generational forgetting factor for ``learned_reliability_decayed``.
+# Each proof, ordered oldest→newest by the loader's deterministic key, gets a
+# weight ``_DECAY ** (n-1-i)`` so the newest proof weighs 1.0 and each step back
+# in generations discounts by this constant. 0.85 keeps roughly the last ~5
+# generations materially in play (0.85**5 ≈ 0.44) while letting a fix family that
+# stopped rolling back several runs ago climb out from under ancient failures —
+# the "çağ atlatma" learning leap — without erasing history outright. Pure rank
+# arithmetic: NO wall-clock is read at scoring time, so the score stays
+# byte-deterministic for identical proof content.
+_DECAY = 0.85
+
+
+def _reliability_weighted(applied: float, total: float) -> float:
+    """Recency-weighted landing share — Σ(w·applied) / Σ(w·total), in [0, 1].
+
+    A pure analogue of :func:`_reliability` over already-weighted sums: the
+    weights are the rank-based decay factors assigned per proof generation, not
+    raw counts. Zero (or non-positive) weighted total is a neutral ``0.0`` (no
+    evidence), never a division error, and the result is rounded to match the
+    flat ratio's precision so the two views compare cleanly."""
+    if total <= 0:
+        return 0.0
+    return round(applied / total, 4)
+
+
+def learned_reliability_decayed(history: list[dict]) -> dict[str, float]:
+    """Recency-weighted reliability per action type — generational forgetting.
+
+    The additive, opt-in companion to :func:`learned_reliability`. Where that
+    weighs every recorded outcome equally for all time, this orders the proofs by
+    the loader's EXISTING deterministic key (``generated_at`` then filename, the
+    same order :func:`load_proof_history` establishes) and gives proof position
+    ``i`` (``0`` = oldest) a rank-based weight ``_DECAY ** (n-1-i)`` — so the
+    newest generation weighs ``1.0`` and older ones decay geometrically. Each
+    action's score is ``Σ(w·applied) / Σ(w·total)`` over its fixes, letting a fix
+    family that stopped rolling back several runs ago outgrow ancient failures.
+
+    The placeholder bucket for action-less fixes is omitted (mirroring
+    :func:`learned_reliability`). The arithmetic is pure rank — no wall-clock is
+    read here — so identical proof content yields an identical mapping. Empty or
+    missing history → ``{}``; never raises."""
+    proofs = history or []
+    n = len(proofs)
+    applied: dict[str, float] = {}
+    total: dict[str, float] = {}
+    for i, proof in enumerate(proofs):
+        weight = _DECAY ** (n - 1 - i)
+        for fix in _iter_fixes([proof]):
+            action = _action_of(fix)
+            if action == _UNKNOWN:
+                continue
+            total[action] = total.get(action, 0.0) + weight
+            if _outcome_of(fix) == "applied":
+                applied[action] = applied.get(action, 0.0) + weight
+    return {
+        action: _reliability_weighted(applied.get(action, 0.0), total[action])
+        for action in sorted(total)
+    }
+
+
 def _bump(table: dict[str, dict[str, int]], key: str, outcome: str) -> None:
     """Increment ``table[key][outcome]``, creating the tally on first sight."""
     table.setdefault(key, _blank_tally())[outcome] += 1

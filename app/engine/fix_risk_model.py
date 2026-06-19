@@ -58,6 +58,7 @@ from app.engine.counterfactual_learning import (
 )
 from app.engine.proof_history import (
     learned_reliability,
+    learned_reliability_decayed,
     load_proof_history,
     summarise_fix_track_record,
 )
@@ -160,16 +161,29 @@ def _score(
     }
 
 
-def fix_risk(root: str | Path, action_type: str, module: str) -> float:
+def fix_risk(
+    root: str | Path, action_type: str, module: str, recency: bool = False
+) -> float:
     """Forward-looking rollback risk for a proposed fix, in ``[0.0, 1.0]``.
 
     ``0`` = the proof history says this kind of fix lands cleanly here; ``1`` =
     it predictably rolls back. Fuses the per-action ``learned_reliability``, the
     (action, module) track record, and the counterfactual avoid-guard as
     documented in the module docstring. Empty/missing history → the neutral
-    baseline ``0.5``. Pure and deterministic; never raises."""
+    baseline ``0.5``. Pure and deterministic; never raises.
+
+    ``recency`` is an OPT-IN switch (default ``False``) that swaps the flat
+    lifetime reliability signal for the rank-decayed
+    :func:`learned_reliability_decayed`, so a fix family that stopped rolling
+    back several runs ago is no longer dragged down by ancient failures. When
+    ``False`` the score is byte-identical to the historical behaviour; the other
+    two signals (track record, avoid-guard) are unchanged in both modes."""
     history = load_proof_history(root)
-    reliabilities = learned_reliability(history)
+    reliabilities = (
+        learned_reliability_decayed(history)
+        if recency
+        else learned_reliability(history)
+    )
     summary = summarise_fix_track_record(history)
     signatures = failure_signatures(history)
     return _score(
