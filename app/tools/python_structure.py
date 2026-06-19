@@ -174,12 +174,43 @@ def _type_only_import_ids(tree: ast.Module) -> set[int]:
 
 
 def _import_names(node: ast.AST) -> list[str]:
-    """Import edge name(s) for a single node; ``[]`` for non-import nodes."""
+    """Import edge name(s) for a single node; ``[]`` for non-import nodes.
+
+    For ``from pkg import sub`` we emit the SUBMODULE-qualified candidate
+    ``pkg.sub`` (one per imported name), NOT the bare package ``pkg``. The
+    dependency-graph resolver walks a candidate down its dotted parts and falls
+    back to the package, so a name that IS a real submodule file resolves to
+    ``pkg/sub.py`` while a name that is only a symbol (``from pkg import func``)
+    still resolves to ``pkg/__init__.py`` via that pop-to-package fallback. The
+    old code emitted only the bare package, collapsing every ``from pkg import
+    submodule`` edge onto ``__init__.py`` and silently hiding real cycles/hubs.
+
+    Emitting ONLY the qualified candidate (and relying on the resolver's
+    fallback for the bare package) is deliberate: emitting BOTH ``pkg.sub`` and
+    ``pkg`` would create two edges to two different files whenever ``pkg/sub.py``
+    exists, double-counting one import as two structural dependencies.
+
+    Relative imports (``node.level > 0``) keep producing the same candidates as
+    before — the qualified form only ADDS a more-specific option the resolver
+    tries first, with the original bare-module target preserved as the fallback,
+    so relative-import resolution is never made worse.
+    """
     if isinstance(node, ast.Import):
         return [alias.name for alias in node.names]
     if isinstance(node, ast.ImportFrom):
         module = node.module or ""
-        return [module] if module else []
+        if not module:
+            # ``from . import x`` (no module): nothing the resolver can key on
+            # beyond today's behavior, so emit nothing — unchanged.
+            return []
+        qualified = [
+            f"{module}.{alias.name}"
+            for alias in node.names
+            if alias.name != "*"
+        ]
+        # A bare ``from pkg import *`` (or any node with only star) still needs
+        # the package edge; the qualified list carries the fallback otherwise.
+        return sorted(set(qualified)) if qualified else [module]
     return []
 
 

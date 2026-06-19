@@ -10,7 +10,11 @@ from pathlib import Path
 
 from app.tools.python_structure import _extract_graph, _parse_source
 
-# --- Frozen reference implementation (verbatim copy of the original body) ----
+# --- Reference implementation, kept in lockstep with `_import_names` ----------
+# Mirrors the FIXED extraction: `from pkg import sub` records the submodule-
+# qualified edge `pkg.sub` (one per imported name), not the bare package, so the
+# dependency resolver can reach a real submodule file and stops collapsing every
+# `from`-style edge onto `__init__.py`. Star/no-module imports keep the package.
 
 
 def _is_type_checking_test_ref(test: ast.expr) -> bool:
@@ -47,7 +51,12 @@ def _parse_source_ref(source: str) -> tuple[list[str], list[str]] | None:
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             if module:
-                imports.append(module)
+                qualified = [
+                    f"{module}.{alias.name}"
+                    for alias in node.names
+                    if alias.name != "*"
+                ]
+                imports.extend(qualified if qualified else [module])
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             symbols.append(node.name)
 
@@ -162,4 +171,4 @@ def test_type_checking_imports_are_skipped(tmp_path: Path):
     imports, _symbols = _parse_source(f)  # type: ignore[misc]
     assert "typed_only" not in imports
     assert "real_one" in imports
-    assert "typing" in imports
+    assert "typing.TYPE_CHECKING" in imports

@@ -23,7 +23,10 @@ def test_python_structure_analyzer_extracts_imports_and_symbols(tmp_path: Path):
     module = results[0]
     assert module.path == "service.py"
     assert "os" in module.imports
-    assert "pathlib" in module.imports
+    # `from pathlib import Path` records the submodule-qualified edge so the
+    # resolver can reach a real `pathlib/Path` target, falling back to the
+    # package only when the name is a bare symbol (the import-style fix).
+    assert "pathlib.Path" in module.imports
     assert "Service" in module.symbols
     assert "build_path" in module.symbols
 
@@ -104,8 +107,12 @@ def test_type_checking_else_arm_is_still_counted(tmp_path: Path):
     )
     structure = PythonStructureAnalyzer(tmp_path)._analyze_file(source)
     assert structure is not None
-    assert "b" in structure.imports
+    # The runtime `else`-arm edge is submodule-qualified (`from b import
+    # RealRuntimeDep` → `b.RealRuntimeDep`); the TYPE_CHECKING-only `a` edge is
+    # still dropped entirely.
+    assert "b.RealRuntimeDep" in structure.imports
     assert "a" not in structure.imports
+    assert "a.OnlyForTypes" not in structure.imports
 
 
 def _write_multi_file_project(root: Path) -> None:
