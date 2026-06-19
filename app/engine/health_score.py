@@ -43,6 +43,11 @@ class HealthScore:
         return {
             "score": self.score, "letter": self.letter,
             "components": [c.to_dict() for c in self.components], "fixes": self.fixes,
+            # Carry the same honest scope disclosure the markdown renders, so a
+            # scripted/JSON consumer (CI gate, dashboard, buyer) is never shown a
+            # bare A+/100 on a repo Apex only partly analysed. Empty for an
+            # all-Python repo, so the JSON is unchanged there.
+            "scope_line": self.scope_line,
         }
 
 

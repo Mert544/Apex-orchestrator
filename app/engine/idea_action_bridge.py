@@ -573,6 +573,12 @@ class IdeaActionBridge:
             action_type, desc_tmpl, executable = _OPERATOR_ACTIONS.get(
                 idea.operator, ("design_task", "Develop {s}", False)
             )
+        # Discovery leads are HEURISTIC structural observations, not concrete
+        # fixable findings — keep them recommend-only end-to-end so a permuted
+        # harden/test operator can never make a structural anomaly masquerade as a
+        # real security/coverage fix. The ``::discovery-`` subject suffix marks them.
+        if "::discovery-" in idea.subject:
+            action_type, executable = "design_task", False
         # Symbol-granular subjects ("mod.py::Class.func") act on the module file;
         # the function name stays in the title/description for the test author.
         file_part = idea.subject.split("::", 1)[0]

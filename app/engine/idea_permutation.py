@@ -136,6 +136,9 @@ class IdeaPermutationEngine:
         self.budget = BudgetController(max_total_nodes=int(cfg.get("max_total_ideas", 40)))
         # When False, skip the security scan (e.g. tests/perf); weighting stays static.
         self.security_aware = bool(cfg.get("security_aware", True))
+        # Opt-in: append fused cross-engine discovery leads as recommend-only
+        # roots (default off = byte-identical seeding). Forwarded to the seeder.
+        self.seed_discoveries = bool(cfg.get("seed_discoveries", False))
         self._security_pressure = 1.0
         self._has_objective = False
 
@@ -243,7 +246,8 @@ class IdeaPermutationEngine:
         """Emit the seeder's root ideas (scored, deduped against the graph,
         budgeted) and return them as the initial ``emitted`` list."""
         emitted: list[IdeaNode] = []
-        for root in self.seeder.seed(profile, objective, accelerating=self._accelerating):
+        for root in self.seeder.seed(profile, objective, accelerating=self._accelerating,
+                                     seed_discoveries=self.seed_discoveries):
             if self.budget.exhausted:
                 break
             self._score(root, relevance)
