@@ -1406,6 +1406,12 @@ class IdeaActionBridge:
         out["verification_strength"] = assess_strength(
             project_root, applied.changed_files, snapshot, new_by_path
         )
+        # Honest, coverage-aware signals (additive). ``suite_green`` is the raw
+        # suite result; ``coverage`` is what that green suite actually exercised
+        # ("none" = no test references the change), so a consumer can tell a
+        # truly-verified change from one applied blind without re-deriving it.
+        out["suite_green"] = bool(summary.ok)
+        out["coverage"] = out["verification_strength"].get("level", "none")
         if summary.ok or not summary.commands:
             # Pass (or no test command detected -> nothing to verify against).
             out["rolled_back"] = False

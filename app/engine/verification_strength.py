@@ -74,14 +74,53 @@ def _test_files(root: Path) -> list[tuple[str, str]]:
     return out
 
 
+def _imported_modules(text: str) -> set[str] | None:
+    """Dotted module paths actually IMPORTED by ``text`` (AST-exact).
+
+    Walks ``Import`` / ``ImportFrom`` nodes only, so a module named in a comment
+    or a string literal is NOT reported — those prove nothing about a change to
+    it. Returns ``None`` when the text does not parse (caller falls back to a
+    regex over import lines)."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    mods: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                mods.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if base:
+                mods.add(base)
+            for alias in node.names:
+                mods.add(f"{base}.{alias.name}" if base else alias.name)
+    return mods
+
+
 def _references_module(text: str, rel_path: str) -> bool:
-    """Does this test text import/reference the module at ``rel_path``?"""
-    dotted = rel_path[:-3].replace("\\", "/").replace("/", ".") if rel_path.endswith(".py") else ""
-    if dotted and dotted in text:
-        return True
+    """Does this test text actually IMPORT the module at ``rel_path``?
+
+    AST-exact: a bare mention of the module in a comment or a string literal
+    does NOT count as coverage — a green suite that only *names* the module in a
+    comment proves nothing about a change to it (the over-counting a substring
+    match used to allow). Falls back to an import-line regex only when the test
+    text cannot be parsed."""
+    if not rel_path.endswith(".py"):
+        return False
+    dotted = rel_path[:-3].replace("\\", "/").replace("/", ".")
     stem = Path(rel_path).stem
-    # `import x` / `from pkg.x import` — the stem as a module token, not a
-    # bare word match (function names like `run` would flood otherwise).
+    mods = _imported_modules(text)
+    if mods is not None:
+        if dotted in mods:
+            return True
+        # The module's own name as a clean dotted component of a real import
+        # (``from pkg import danger`` / ``import a.danger``) — covers layouts
+        # whose project-root-relative dotted path differs from the test's root.
+        return any(stem == part for m in mods for part in m.split("."))
+    # Unparsable test text: match the stem only in an import position, not a
+    # bare-word match (function names like ``run`` would otherwise flood).
     return bool(re.search(rf"(?:^|\n)\s*(?:from|import)\s+[\w.]*\b{re.escape(stem)}\b", text))
 
 
