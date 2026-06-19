@@ -1345,8 +1345,10 @@ class IdeaActionBridge:
                 out["impact"] = impact
         if not (verify and applied.ok and applied.changed_files):
             return out
+        from app.execution.risk_tiers import tier_for
         return self._verify_or_rollback(project_root, out, snapshot,
-                                        patch_requests, applied)
+                                        patch_requests, applied,
+                                        tier_for(step.action_type))
 
     @staticmethod
     def _safety_gate_block(perms, patch_requests: list[dict], project_root: str,
@@ -1389,16 +1391,36 @@ class IdeaActionBridge:
         return snapshot, ApplyPatchSkill().run(project_root, patches)
 
     @staticmethod
+    def _coverage_verifies(tier: int, coverage: str) -> bool:
+        """Does ``coverage`` let a green suite actually VOUCH for a tier-``tier``
+        change? A green run only verifies what it exercised:
+
+          * ``test-change`` — only test files changed (they ARE the suite);
+          * Tier 0 (semantics-preserving / additive) — a test that references
+            the module (``module``) or names the change (``function``) suffices;
+          * Tier 1+ (behaviour-adjacent) — require ``function``: a mere import
+            (a smoke-import shield) is NOT a test of the changed behaviour and
+            must never green-light it.
+
+        ``none`` (no test references the change at all) never verifies anything.
+        """
+        if coverage == "test-change":
+            return True
+        if tier <= 0:
+            return coverage in ("function", "module")
+        return coverage == "function"
+
+    @staticmethod
     def _verify_or_rollback(project_root: str, out: dict,
                             snapshot: dict[str, str | None],
-                            patch_requests: list[dict], applied) -> dict:
+                            patch_requests: list[dict], applied,
+                            tier: int = 0) -> dict:
         """Run the suite; on red, restore every changed file to its snapshot."""
         from app.engine.proof_of_fix import summarize_test_run
         from app.engine.verification_strength import assess_strength
         from app.skills.execution.run_tests import RunTestsSkill
 
         summary = RunTestsSkill().run(project_root)
-        out["verified"] = bool(summary.ok)
         out["test_commands"] = summary.commands
         out["test_evidence"] = summarize_test_run(summary)
         # How strongly does that green suite vouch for THESE changes?
@@ -1406,12 +1428,17 @@ class IdeaActionBridge:
         out["verification_strength"] = assess_strength(
             project_root, applied.changed_files, snapshot, new_by_path
         )
-        # Honest, coverage-aware signals (additive). ``suite_green`` is the raw
-        # suite result; ``coverage`` is what that green suite actually exercised
-        # ("none" = no test references the change), so a consumer can tell a
-        # truly-verified change from one applied blind without re-deriving it.
+        # Coverage-aware honesty. ``suite_green`` is the raw suite result;
+        # ``coverage`` is what that green suite actually exercised. ``verified``
+        # is True ONLY when a green suite genuinely vouches for the change at a
+        # level appropriate to its risk tier — never when the suite passed but
+        # never looked at what changed (which is how a smoke-import shield used
+        # to fake a green on a real behaviour change).
         out["suite_green"] = bool(summary.ok)
-        out["coverage"] = out["verification_strength"].get("level", "none")
+        coverage = out["verification_strength"].get("level", "none")
+        out["coverage"] = coverage
+        out["verified"] = (bool(summary.ok)
+                           and IdeaActionBridge._coverage_verifies(tier, coverage))
         if summary.ok or not summary.commands:
             # Pass (or no test command detected -> nothing to verify against).
             out["rolled_back"] = False

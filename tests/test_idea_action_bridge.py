@@ -285,8 +285,12 @@ def test_verify_keeps_patch_when_tests_pass(tmp_path):
     step = IdeaActionBridge().plan_idea(idea)
     res = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised", verify=True)
     if res["applied"]:
-        assert res["verified"] is True
+        # Kept because the suite stayed green; honestly unverified because the
+        # trivial suite never imports the changed module (coverage-aware proof).
         assert res.get("rolled_back") is False
+        assert res.get("suite_green") is True
+        assert res.get("verified") is False
+        assert res.get("coverage") == "none"
         assert '"""' in src.read_text()
 
 

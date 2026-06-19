@@ -153,7 +153,12 @@ def test_each_applies_through_real_gate_and_keeps_on_green(tmp_path: Path) -> No
                                 verify=True, run_tests=False)
         assert out["applied"] is True, fact_label
         assert out.get("rolled_back") is False, fact_label
-        assert out.get("verified") is True, fact_label
+        # Kept on a green suite, but honestly unverified: the trivial suite never
+        # imports the changed module, so coverage-aware proof reports no green it
+        # didn't earn (suite_green True, verified False, coverage "none").
+        assert out.get("suite_green") is True, fact_label
+        assert out.get("verified") is False, fact_label
+        assert out.get("coverage") == "none", fact_label
         written = (root / rel).read_text(encoding="utf-8")
         assert written != match_src, fact_label
         ast.parse(written)

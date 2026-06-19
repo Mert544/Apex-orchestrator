@@ -425,7 +425,12 @@ def test_new_transforms_verify_and_keep_on_green(tmp_path: Path) -> None:
                             mode="autonomous", verify=True, run_tests=False)
     assert out["applied"] is True
     assert out.get("rolled_back") is False
-    assert out.get("verified") is True
+    # The green suite never imports the changed module, so the apply is KEPT
+    # (semantics-preserving, suite stayed green) but honestly reported as NOT
+    # verified — coverage-aware proof never fakes a green it didn't earn.
+    assert out.get("suite_green") is True
+    assert out.get("verified") is False
+    assert out.get("coverage") == "none"
     # File stays changed (kept), not restored to its pre-patch snapshot.
     assert (tmp_path / rel).read_text(encoding="utf-8") != match_src
 

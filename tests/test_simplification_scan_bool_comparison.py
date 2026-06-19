@@ -107,7 +107,11 @@ def test_apply_keeps_on_green(tmp_path: Path) -> None:
                             mode="autonomous", verify=True, run_tests=False)
     assert out["applied"] is True
     assert out.get("rolled_back") is False
-    assert out.get("verified") is True
+    # Kept on a green suite, but honestly unverified: the suite never imports the
+    # changed module (coverage-aware proof never fakes a green it didn't earn).
+    assert out.get("suite_green") is True
+    assert out.get("verified") is False
+    assert out.get("coverage") == "none"
     assert (tmp_path / rel).read_text(encoding="utf-8") != _MATCH
 
 
