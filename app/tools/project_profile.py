@@ -51,6 +51,19 @@ class ProjectProfile:
     # preview consumers display. Set to the full counts before truncation.
     untested_count: int = 0
     critical_untested_count: int = 0
+    # TRUE total of shallow-tested modules (full count before the ``[:5]`` display
+    # truncation below). The Testing grade penalty must read this — not
+    # ``len(shallow_tested_modules)`` — so a repo with 40 import-smoke-only tests
+    # isn't scored as if only the 5 displayed offenders were shallow.
+    shallow_tested_count: int = 0
+    # TRUE total of fragile (high-blast-radius, weakly-covered) modules, before the
+    # ``[:3]`` display truncation. The Architecture penalty reads this so 10 fragile
+    # modules aren't under-penalised as if only the 3 displayed ones existed.
+    fragile_count: int = 0
+    # TRUE total of Python security-finding modules, before the ``[:5]`` display
+    # truncation. The readiness headline reads this so 20 eval() modules aren't
+    # reported as only "5 high-confidence findings".
+    security_finding_count: int = 0
     module_to_tests: dict[str, list[str]] = field(default_factory=dict)
     dependency_edges: list[tuple[str, str]] = field(default_factory=list)
     fragile_modules: list[str] = field(default_factory=list)
@@ -541,7 +554,11 @@ class ProjectProfiler(_CodeQualityScansMixin):
         profile.ci_files = sorted(dict.fromkeys(profile.ci_files))
         profile.config_files = sorted(dict.fromkeys(profile.config_files))
         profile.sensitive_paths = sorted(dict.fromkeys(profile.sensitive_paths))
-        profile.security_finding_modules = sorted(dict.fromkeys(security_finding_modules))[:5]
+        _security_deduped = sorted(dict.fromkeys(security_finding_modules))
+        # TRUE total for the readiness headline; the profile list keeps the top-5
+        # module names for display only.
+        profile.security_finding_count = len(_security_deduped)
+        profile.security_finding_modules = _security_deduped[:5]
         profile.correctness_bug_modules = sorted(dict.fromkeys(correctness_bug_modules))[:5]
 
         # Modules with a meaningful cluster of debt markers, ranked by count
@@ -1245,7 +1262,12 @@ class ProjectProfiler(_CodeQualityScansMixin):
         # Shallow coverage: a module whose only linked tests are characterization
         # stubs (import-smoke + isinstance contracts) — "covered" but not verified
         # correct. Surfaced so the grade/engine don't mistake linkage for depth.
-        profile.shallow_tested_modules = self._scan_shallow_tests(profile.module_to_tests)
+        # Scan once at full depth: ``shallow_tested_count`` carries the TRUE total
+        # for the grade penalty, the profile list keeps only the top-5 for display,
+        # and the fragility scan below reuses the same full set (no rescan).
+        shallow_full = self._scan_shallow_tests(profile.module_to_tests, limit=None)
+        profile.shallow_tested_count = len(shallow_full)
+        profile.shallow_tested_modules = shallow_full[:5]
 
         # Fragility: many modules depend on it (high in-degree) but it has
         # weak coverage — a high-blast-radius risk worth surfacing. Coverage
@@ -1275,12 +1297,15 @@ class ProjectProfiler(_CodeQualityScansMixin):
             for node in graph.values() if node.imports
         }
         thin = set(profile.untested_modules)
-        thin |= set(self._scan_shallow_tests(profile.module_to_tests, limit=None))
+        thin |= set(shallow_full)
         fragile = sorted(
             (n for n in graph.values() if n.in_degree >= 2 and n.path in thin),
             key=lambda n: (n.in_degree, n.path),
             reverse=True,
         )
+        # ``fragile_count`` carries the TRUE total for the Architecture penalty;
+        # the profile list keeps only the top-3 fragile hubs for display.
+        profile.fragile_count = len(fragile)
         profile.fragile_modules = [n.path for n in fragile][:3]
 
         # Modernization debt: modules with behavior-preserving cleanups available
@@ -1318,7 +1343,7 @@ class ProjectProfiler(_CodeQualityScansMixin):
         # module is untested when it has no linked tests) and the shallow set —
         # no new scan. Deduped against the more-severe module-level signals
         # (fragile/hotspot), which frame such a module first.
-        shallow = set(self._scan_shallow_tests(profile.module_to_tests, limit=None))
+        shallow = set(shallow_full)
         # Defined-symbol count per module (top-level functions/classes), read off
         # the structure analysis already done above — no new scan. Lets the hub
         # coverage scan drop an essentially-empty hub (a thin package

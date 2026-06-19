@@ -167,14 +167,22 @@ def _findings_section(profile, polyglot: list[dict]) -> dict[str, Any]:
     """High-confidence findings: Python security modules + polyglot findings."""
     py_security = sorted(getattr(profile, "security_finding_modules", []) or []) \
         if profile is not None else []
+    # ``security_finding_modules`` is truncated to 5 module names for DISPLAY, so
+    # its ``len`` understates the real total. ``security_finding_count`` carries
+    # the full pre-truncation count; the headline (``python_security_count`` /
+    # ``high_confidence_total``) must reflect every finding, not just the 5 shown.
+    py_security_count = int(getattr(profile, "security_finding_count", 0) or 0) \
+        if profile is not None else 0
+    if not py_security_count:
+        py_security_count = len(py_security)
     poly_kinds: Counter[str] = Counter(
         f.get("kind", "<unknown>") for f in polyglot)
     return {
         "python_security_modules": py_security,
-        "python_security_count": len(py_security),
+        "python_security_count": py_security_count,
         "polyglot_findings_count": len(polyglot),
         "polyglot_findings_by_kind": dict(sorted(poly_kinds.items())),
-        "high_confidence_total": len(py_security) + len(polyglot),
+        "high_confidence_total": py_security_count + len(polyglot),
     }
 
 

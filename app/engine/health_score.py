@@ -279,6 +279,33 @@ def _untested_penalty_count(profile: Any) -> int:
     return len(getattr(profile, "untested_modules", []) or [])
 
 
+def _shallow_penalty_count(profile: Any) -> int:
+    """The TRUE shallow-tested count for the Testing grade penalty.
+
+    ``shallow_tested_modules`` is truncated to 5 offenders for DISPLAY, so its
+    ``len`` understates the real total. ``shallow_tested_count`` carries the full
+    pre-truncation count; prefer it, falling back to the capped list length only
+    when the field is absent (older/partial profiles).
+    """
+    count = getattr(profile, "shallow_tested_count", None)
+    if count:
+        return int(count)
+    return len(getattr(profile, "shallow_tested_modules", []) or [])
+
+
+def _fragile_penalty_count(profile: Any) -> int:
+    """The TRUE fragile-module count for the Architecture grade penalty.
+
+    ``fragile_modules`` is truncated to 3 offenders for DISPLAY; ``fragile_count``
+    carries the full pre-truncation count. Prefer it, falling back to the capped
+    list length only when the field is absent.
+    """
+    count = getattr(profile, "fragile_count", None)
+    if count:
+        return int(count)
+    return len(getattr(profile, "fragile_modules", []) or [])
+
+
 def _collect_metrics(project_root: str | Path, profile: Any) -> _GradeMetrics:
     """Project the profile + detect/dedup scans into the scorers' input metrics."""
     debt_modules = _modernization_debt_modules(profile)
@@ -296,9 +323,9 @@ def _collect_metrics(project_root: str | Path, profile: Any) -> _GradeMetrics:
 
     return _GradeMetrics(
         cycles=len(getattr(profile, "import_cycles", []) or []),
-        fragile=len(getattr(profile, "fragile_modules", []) or []),
+        fragile=_fragile_penalty_count(profile),
         untested=_untested_penalty_count(profile),
-        shallow=len(getattr(profile, "shallow_tested_modules", []) or []),
+        shallow=_shallow_penalty_count(profile),
         total_modules=max(1, len(getattr(profile, "module_to_tests", {}) or {})),
         arch_top=_arch_top_offenders(profile),
         untested_list=[str(m) for m in
