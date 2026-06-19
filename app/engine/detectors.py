@@ -78,16 +78,44 @@ class Issue:
         return bool(self.fix_kind)
 
 
+# Per-source memo: the grade / readiness / dashboard pipeline re-invokes
+# detect() on the SAME module text repeatedly within one build. Keying on the
+# exact source string makes a repeat call a dict lookup instead of a re-parse +
+# four AST passes, and CANNOT change output (identical input → identical, frozen
+# Issues). Bounded so a huge multi-build process can't grow without limit; a
+# fresh list copy is returned so a caller mutating the result never poisons the
+# cache (Issue is frozen, so the shallow copy is safe).
+_DETECT_CACHE: dict[str, list[Issue]] = {}
+_DETECT_CACHE_MAX = 4096
+
+
 def detect(source: str) -> list[Issue]:
     """All detectable issues in a source string (line-level).
 
-    Thin dispatcher: a single :func:`ast.walk` routes each node to the cohesive
+    Thin dispatcher: a single :func:`ast.walk` is materialized once and shared by
+    every logical pass (unreachable-code, the per-node handler dispatch, and the
+    whole-module SQL-injection scan), which routes each node to the cohesive
     per-node-type handler below (``_detect_call``, ``_detect_except_handler``,
     ...). Each handler emits the exact same findings, in the same order, as the
     original monolithic loop did; only the grouping changed. The ``elif`` chain
     here preserves the historical dispatch order, which the suppression filter
     and the byte-for-byte finding contract both depend on.
+
+    Results are memoized on the exact source string (a build re-detects the same
+    module many times); the cache is output-preserving by construction.
     """
+    cached = _DETECT_CACHE.get(source)
+    if cached is not None:
+        return list(cached)
+    result = _detect_uncached(source)
+    if len(_DETECT_CACHE) >= _DETECT_CACHE_MAX:
+        _DETECT_CACHE.clear()
+    _DETECT_CACHE[source] = result
+    return list(result)
+
+
+def _detect_uncached(source: str) -> list[Issue]:
+    """The actual detection work for :func:`detect` (see its docstring)."""
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
@@ -103,10 +131,18 @@ def detect(source: str) -> list[Issue]:
     def add(line: int, cat: str, sev: str, msg: str, fix: str) -> None:
         out.append(Issue(line, cat, sev, msg, fix))
 
-    for lineno in _unreachable_code_lines(tree):
+    # Materialize the whole-tree walk ONCE and share it across the logical passes
+    # below. The detector used to re-walk the tree from scratch 4× per file
+    # (unreachable-code, the per-node dispatch, the SQL assignment map, and the
+    # SQL sink scan); on a 1200-module repo that dominated the dashboard build.
+    # Each pass still iterates in the same ast.walk (BFS) order, so the emitted
+    # findings and their order are byte-for-byte identical.
+    nodes = list(ast.walk(tree))
+
+    for lineno in _unreachable_code_lines(nodes):
         add(lineno, "bug", "medium", _UNREACHABLE_CODE_MSG, "")
 
-    for node in ast.walk(tree):
+    for node in nodes:
         _dispatch_node(node, add)
 
     # Broadened SQL-injection detection (new sinks / format-taint / concat /
@@ -114,7 +150,7 @@ def detect(source: str) -> list[Issue]:
     # it runs as its own pass after the per-node walk. It deliberately skips the
     # historical inline-f-string-on-classic-sink shape, which the per-node rule
     # in _CALL_ATTR_RULES already emits, so no finding is duplicated.
-    _detect_sql_injection(tree, add)
+    _detect_sql_injection(nodes, add)
 
     # Drop findings the developer explicitly suppressed inline (noqa / nosec).
     lines = source.splitlines()
@@ -518,7 +554,7 @@ def _detect_call_attr(node: ast.Call, f: ast.Attribute, add) -> None:
 _SQL_INJECTION_MSG = "SQL built from an f-string — injection risk"
 
 
-def _collect_assignments(tree: ast.AST) -> dict[str, ast.expr]:
+def _collect_assignments(nodes: list[ast.AST]) -> dict[str, ast.expr]:
     """Map ``name -> value`` for every simple ``name = <expr>`` assignment.
 
     Conservative single-assignment resolver used to follow a query built on one
@@ -530,7 +566,7 @@ def _collect_assignments(tree: ast.AST) -> dict[str, ast.expr]:
     """
     seen: dict[str, ast.expr] = {}
     multiple: set[str] = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Assign):
             for t in node.targets:
                 if isinstance(t, ast.Name):
@@ -581,7 +617,7 @@ def _tainted_sql_for_sink(arg: ast.expr, attr: str,
     return _looks_like_sql(static)
 
 
-def _detect_sql_injection(tree: ast.AST, add) -> None:
+def _detect_sql_injection(nodes: list[ast.AST], add) -> None:
     """Flag tainted SQL reaching a recognized DB sink (the cases the per-node
     inline-f-string rule misses): the async ``fetch*`` sinks, ``str.format()`` /
     concat taint, and a query assigned on one line then passed on the next.
@@ -589,8 +625,8 @@ def _detect_sql_injection(tree: ast.AST, add) -> None:
     Reuses the ``"sql"`` fix_kind and message (flag-only — SQL rewrites need
     human review), so existing consumers keyed on that label are unaffected.
     """
-    assigns = _collect_assignments(tree)
-    for node in ast.walk(tree):
+    assigns = _collect_assignments(nodes)
+    for node in nodes:
         if not isinstance(node, ast.Call):
             continue
         attr = _sink_attr(node)
@@ -1098,7 +1134,7 @@ _BLOCK_FIELDS = ("body", "orelse", "finalbody")
 _TERMINALS = (ast.Return, ast.Raise, ast.Break, ast.Continue)
 
 
-def _unreachable_code_lines(tree: ast.AST) -> list[int]:
+def _unreachable_code_lines(nodes: list[ast.AST]) -> list[int]:
     """Lines of the first dead statement in each block that has one.
 
     For every executable statement list — a function body, both branches of an
@@ -1120,7 +1156,7 @@ def _unreachable_code_lines(tree: ast.AST) -> list[int]:
                 found.append(block[i + 1].lineno)
                 break  # one finding per block
 
-    for node in ast.walk(tree):
+    for node in nodes:
         # ExceptHandler owns a ``body`` but isn't covered by _BLOCK_FIELDS' use of
         # generic getattr on the same set; handle every block-bearing node here.
         for field in _BLOCK_FIELDS:
