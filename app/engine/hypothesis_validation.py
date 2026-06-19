@@ -78,14 +78,26 @@ MAX_EVIDENCE = 5          # at most this many counter-example modules are listed
 #   - ``critical-untested`` ⊆ ``untested`` — ``TestLinker.analyze`` builds
 #     ``critical_untested = [m for m in critical_modules if m in untested]``: a
 #     critical-untested module is by definition an untested one.
+#   - ``critical-untested`` ⊆ ``hub`` — and that SAME ``critical_modules`` argument
+#     is fed ``profile.dependency_hubs`` (``project_profile`` ~line 1251), so the
+#     ``[m for m in critical_modules if m in untested]`` list is also a SUBSET of
+#     the hubs: a critical-untested module is by definition a dependency hub too.
+#     The map registered only the ``untested`` superset before, so
+#     ``critical-untested ⇒ hub`` (and the triple forms that lean on it) slipped
+#     through as a "confirmed" empirical law — a definitional identity over-claimed.
 #   - ``hub-untested`` / ``impure-untested`` ⊆ ``untested`` — same "X-AND-untested"
 #     construction in ``project_profile`` (``hub_untested_modules`` /
 #     ``impure_untested_functions`` are the untested subset of hubs / impure fns).
 #     Listed for completeness/future-proofing; these tags are not currently emitted
 #     into the discovery tag-set, so they never reach a hypothesis today, but if a
 #     row is ever added to ``_module_tags`` for them the guard already covers it.
+#
+# Only TRUE by-construction subsets belong here — a content detector that happens to
+# co-occur with coverage (e.g. ``security`` ⇒ ``untested``) is an EMPIRICAL law the
+# codebase decided and must NOT be suppressed.
 _STRUCTURAL_SUPERSETS: dict[str, frozenset[str]] = {
     "untested": frozenset({"critical-untested", "hub-untested", "impure-untested"}),
+    "hub": frozenset({"critical-untested"}),
 }
 
 
@@ -185,14 +197,36 @@ def _consequent_holds(tags: set[str], consequent: list[str]) -> bool:
     return all(t in tags for t in consequent)
 
 
-def _is_structural_tautology(hypothesis: dict[str, Any]) -> bool:
-    """True if ``antecedent ⊆ consequent`` holds BY CONSTRUCTION (a tautology).
+def _consequent_is_definitional(antecedent: list[str], consequent: list[str]) -> bool:
+    """True if some antecedent tag BY CONSTRUCTION carries every consequent tag.
 
-    A hypothesis whose every consequent tag is a known structural superset of
-    every antecedent tag asserts a definitional identity, not a property this
-    codebase happens to have — confirming it would over-claim. Clique hypotheses
-    (``antecedent_any``) are bidirectional bundle claims, never a one-directional
-    subset, so they are never treated as structural tautologies.
+    A single antecedent tag that is a structural subset of *every* consequent tag
+    already guarantees the consequent for every module the antecedent matches: the
+    implication then holds by construction, not because the codebase decided it.
+    This is the predicate both the simple pair and the higher-arity triple lean on
+    — a triple ``critical-untested ∧ hub ⇒ untested`` is just as definitional as
+    the pair ``critical-untested ⇒ untested`` because ``critical-untested`` alone
+    forces ``untested`` regardless of the extra ``hub`` conjunct.
+    """
+    for ant in antecedent:
+        if all(ant in _STRUCTURAL_SUPERSETS.get(cons, frozenset()) for cons in consequent):
+            return True
+    return False
+
+
+def _is_structural_tautology(hypothesis: dict[str, Any]) -> bool:
+    """True if the implication holds BY CONSTRUCTION (a definitional tautology).
+
+    A hypothesis is a structural tautology when at least one antecedent tag is, by
+    how ``project_profile`` / ``test_linker`` build the lists, a SUBSET of every
+    consequent tag — that lone tag already drags the consequent along, so the rule
+    asserts a definitional identity, not a property this codebase happens to have,
+    and confirming it would over-claim. This catches both the simple pair
+    (``critical-untested ⇒ untested``) and the derived TRIPLE forms
+    (``critical-untested ∧ hub ⇒ untested``, ``critical-untested ∧ untested ⇒ hub``)
+    that lean on the same construction. Clique hypotheses (``antecedent_any``) are
+    bidirectional bundle claims, never a one-directional subset, so they are never
+    treated as structural tautologies.
     """
     if hypothesis.get("antecedent_any"):
         return False
@@ -200,13 +234,7 @@ def _is_structural_tautology(hypothesis: dict[str, Any]) -> bool:
     consequent = hypothesis.get("consequent", [])
     if not antecedent or not consequent:
         return False
-    # Every consequent tag must be a by-construction superset of every antecedent
-    # tag for the WHOLE implication to be a tautology.
-    for cons in consequent:
-        subsets = _STRUCTURAL_SUPERSETS.get(cons, frozenset())
-        if not all(ant in subsets for ant in antecedent):
-            return False
-    return True
+    return _consequent_is_definitional(antecedent, consequent)
 
 
 def _verdict(confidence: float, antecedent_n: int) -> str:
