@@ -48,14 +48,26 @@ def _build_plan(root: str):
     ``apply_plan`` would consume in dry-run), or ``None`` if plan-building
     fails — keeping callers best-effort.
     """
+    return _build_plan_with_profile(root)[0]
+
+
+def _build_plan_with_profile(root: str):
+    """The ideate plan AND the full profile the engine already built for it.
+
+    The engine profiles the tree once during ``run()`` and stashes it on
+    ``last_profile``; returning it lets :func:`readiness_summary` reuse that
+    profile for its scope/findings sections instead of profiling a SECOND time.
+    Returns ``(plan, profile)`` — ``(None, None)`` on failure (best-effort)."""
     try:
         from app.engine.idea_action_bridge import IdeaActionBridge
         from app.engine.idea_permutation import IdeaPermutationEngine
 
-        report = IdeaPermutationEngine(project_root=root).run()
-        return IdeaActionBridge().plan_tree(report, project_root=root)
+        engine = IdeaPermutationEngine(project_root=root)
+        report = engine.run()
+        plan = IdeaActionBridge().plan_tree(report, project_root=root)
+        return plan, getattr(engine, "last_profile", None)
     except Exception:
-        return None
+        return None, None
 
 
 def _profile(root: str):
@@ -99,7 +111,14 @@ def fix_actionability(root: str) -> dict[str, Any]:
     Best-effort: a project with no plan / no steps yields all-zero counts and
     ``actionability == 0.0`` (never raises).
     """
-    plan = _build_plan(root)
+    return _actionability_from_plan(_build_plan(root))
+
+
+def _actionability_from_plan(plan) -> dict[str, Any]:
+    """The fixer-vs-linter split for an ALREADY-built plan (``None`` -> zeros).
+
+    Split out so :func:`readiness_summary` can reuse a single plan/profile build
+    instead of building the (expensive) ideate plan a second time."""
     steps = list(plan.steps) if plan is not None else []
     total = len(steps)
     executable = sum(1 for s in steps if s.executable)
@@ -173,11 +192,15 @@ def readiness_summary(root: str) -> dict[str, Any]:
     Deterministic; best-effort (a failing sub-analysis contributes its
     empty/zero section, never raises).
     """
-    profile = _profile(root)
+    # Build the plan and reuse the engine's profile in ONE pass (the plan build
+    # already profiled the tree) instead of profiling again for scope/findings.
+    plan, profile = _build_plan_with_profile(root)
+    if profile is None:
+        profile = _profile(root)  # plan build failed — fall back to a fresh profile
     polyglot = _polyglot_findings(root)
     return {
         "root": str(root),
-        "actionability": fix_actionability(root),
+        "actionability": _actionability_from_plan(plan),
         "scope": _scope_section(profile),
         "findings": _findings_section(profile, polyglot),
     }
