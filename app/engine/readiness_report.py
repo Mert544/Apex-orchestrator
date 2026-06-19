@@ -198,10 +198,18 @@ def readiness_summary(root: str) -> dict[str, Any]:
     if profile is None:
         profile = _profile(root)  # plan build failed — fall back to a fresh profile
     polyglot = _polyglot_findings(root)
+    scope = _scope_section(profile)
+    # Honesty marker: when the profiler failed ENTIRELY there is no scope to
+    # report. The all-zero section would otherwise read as a *confident* "0%
+    # analyzed · 0% out of scope" — logically inconsistent. Flag it so the
+    # renderer can say "unknown — analysis unavailable" instead of two zeros.
+    # The flag is purely additive (the profile-present path is unchanged), and
+    # ``_scope_section`` itself keeps its pinned, profile-driven dict shape.
+    scope["analyzable"] = profile is not None
     return {
         "root": str(root),
         "actionability": _actionability_from_plan(plan),
-        "scope": _scope_section(profile),
+        "scope": scope,
         "findings": _findings_section(profile, polyglot),
     }
 
@@ -238,17 +246,28 @@ def _actionability_lines(act: dict[str, Any]) -> list[str]:
 
 
 def _scope_lines(scope: dict[str, Any]) -> list[str]:
-    """Render the analyzability/coverage block."""
-    analyzed_pct = int(round(scope["analyzed_ratio"] * 100))
-    out_pct = int(round(scope["out_of_scope_ratio"] * 100))
+    """Render the analyzability/coverage block.
+
+    When ``analyzable`` is present and False (the profiler failed entirely),
+    the coverage percentages are unknown — reporting "0% analyzed · 0% out of
+    scope" would be a confident-looking lie, so we render an explicit
+    "unknown — analysis unavailable" line instead. The profile-present path
+    (``analyzable`` absent or True) is byte-identical to before.
+    """
     lines = [
         "## Repo Coverage",
         "",
         f"- **Source files:** {scope['source_files']} "
         f"({scope['python_files']} Python)",
-        f"- **Analyzed (Python):** {analyzed_pct}% · "
-        f"**out of scope:** {out_pct}%",
     ]
+    if not scope.get("analyzable", True):
+        lines.append("- **Analyzed (Python):** unknown — analysis unavailable")
+    else:
+        analyzed_pct = int(round(scope["analyzed_ratio"] * 100))
+        out_pct = int(round(scope["out_of_scope_ratio"] * 100))
+        lines.append(
+            f"- **Analyzed (Python):** {analyzed_pct}% · "
+            f"**out of scope:** {out_pct}%")
     breakdown = scope["language_breakdown"]
     if breakdown:
         langs = ", ".join(f"{lang} {n}" for lang, n in breakdown.items())
