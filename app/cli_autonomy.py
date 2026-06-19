@@ -118,6 +118,13 @@ def _maintain_apply(args, engine, bridge, plan, target) -> int:
 
     avoid = _maintain_avoid_signatures(args, target)
     apply_kwargs = {"avoid_signatures": avoid} if avoid is not None else {}
+    # Opt-in (default off, so the default apply order is byte-identical): when
+    # set, the executable steps are stably re-ranked low-fix-risk-first before
+    # the apply loop, so a --max-apply budget spends on the historically most
+    # reliable fixes. Passed only when on, keeping the kwargs identical to today
+    # on a default run.
+    if getattr(args, "prefer_reliable", False):
+        apply_kwargs["prefer_reliable"] = True
     summary = bridge.apply_plan(
         plan, str(target), mode=args.mode,
         verify=not args.no_verify,
@@ -1316,6 +1323,12 @@ def register_parsers(subparsers) -> None:
         dest="avoid_learned_failures",
         help="Closed loop (opt-in): skip a fix the proof-of-fix history predicts "
              "will fail on this module-trait BEFORE wasting an apply+rollback",
+    )
+    maintain_parser.add_argument(
+        "--prefer-reliable", action="store_true", dest="prefer_reliable",
+        help="Closed loop (opt-in): stably re-rank the apply order by ascending "
+             "fix-risk (from the proof-of-fix history) so a --max-apply budget "
+             "spends on the historically most reliable fixes first",
     )
     maintain_parser.add_argument("--json", action="store_true", help="Emit JSON summary")
     maintain_parser.add_argument("--out", default="", help="Write the Markdown report to this path")

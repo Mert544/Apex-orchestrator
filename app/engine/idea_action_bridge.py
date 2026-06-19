@@ -1602,6 +1602,40 @@ class IdeaActionBridge:
             "results": previews,
         }
 
+    @staticmethod
+    def _rerank_by_fix_risk(
+        steps: list[ActionStep], project_root: str
+    ) -> list[ActionStep]:
+        """Stably re-order executable steps by ascending fix-risk (opt-in).
+
+        Reads each step's forward-looking rollback risk from the proof history
+        (``fix_risk(root, action_type, target)``) and sorts low-risk-first with
+        a STABLE sort, so steps that tie on risk keep their incoming roadmap
+        order. Pure reorder: the returned list is a permutation of ``steps``
+        with nothing added or dropped. Best-effort and deterministic — if the
+        model raises or has no data, the original order is returned unchanged
+        (and an empty history scores every step the neutral baseline, leaving
+        the order identical anyway), so a reliability pass never crashes a
+        maintain run."""
+        if len(steps) < 2:
+            return list(steps)
+        try:
+            from app.engine.fix_risk_model import fix_risk
+
+            risks = [
+                float(fix_risk(project_root, step.action_type, step.target))
+                for step in steps
+            ]
+        except Exception:
+            return list(steps)
+        # Stable ascending sort on risk alone; Python's sort is stable, so
+        # equal-risk steps keep their existing (phase/value-ordered) position.
+        return [
+            step for _, step in sorted(
+                enumerate(steps), key=lambda iv: risks[iv[0]]
+            )
+        ]
+
     def apply_plan(
         self,
         plan: ActionPlan,
@@ -1612,6 +1646,7 @@ class IdeaActionBridge:
         commit: bool = False,
         test_first: bool = True,
         avoid_signatures: dict | None = None,
+        prefer_reliable: bool = False,
     ) -> dict:
         """Run a whole maintenance pass: apply each executable step in turn,
         verifying + rolling back individually, and return an aggregate summary.
@@ -1619,6 +1654,14 @@ class IdeaActionBridge:
         Steps are processed in plan order (already value-sorted). Each step is
         independent — a rolled-back step does not abort the run. Honors the
         same gating as apply_step (mode + safety + verify).
+
+        RELIABILITY RE-RANK (opt-in, default off): when ``prefer_reliable`` is
+        set, the executable steps are stably re-ordered by ascending fix-risk
+        (read from the proof history via ``fix_risk``) BEFORE the apply loop, so
+        a ``max_apply`` budget spends on the historically-most-reliable fixes
+        first. It is purely a reorder — never adds/drops a step — and on a
+        project with no proof history every step scores the neutral baseline, so
+        the order (and thus the applied set) is byte-identical to the default.
 
         TEST-FIRST SHIELD: when ``verify`` and ``test_first`` are on and a
         code fix targets a module NO test references, the pass first generates
@@ -1634,7 +1677,10 @@ class IdeaActionBridge:
         run = _MaintenancePass(self, project_root, mode=mode, verify=verify,
                                test_first=test_first, commit=commit,
                                avoid_signatures=avoid_signatures)
-        for step in plan.executable_steps():
+        steps = plan.executable_steps()
+        if prefer_reliable:
+            steps = self._rerank_by_fix_risk(steps, project_root)
+        for step in steps:
             if max_apply is not None and run.applied >= max_apply:
                 break
             run.run_step(step)
