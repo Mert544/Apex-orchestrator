@@ -36,6 +36,12 @@ TIER_BY_ACTION: dict[str, int] = {
     # Tier 1 — behavior-adjacent rewrites
     "harden_security": 1,
     "fix_mutable_defaults": 1,
+    # Wrapping a static raw-SQL literal in SQLAlchemy text() makes the call the
+    # API actually accepts — behaviour-adjacent, so it earns the coverage gate
+    # (needs a covering test via the shield; withheld when uncovered, never
+    # auto-applied blind). Dynamic SQL is refused by the transform and stays a
+    # flag, so this never lands an unprovable fix.
+    "sql_text_wrap": 1,
     # Tier 2 — design-level (not auto-applied anyway; recorded for honesty)
     "design_task": 2,
 }

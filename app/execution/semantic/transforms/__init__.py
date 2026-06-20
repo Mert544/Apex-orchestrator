@@ -27,6 +27,7 @@ from app.execution.semantic.transforms import (  # noqa: F401
     redundant_lambda,
     set_literal,
     simplify_comparison,
+    sql_text_wrap,
     startswith_tuple,
     swap_via_tuple,
     tuple_membership,
