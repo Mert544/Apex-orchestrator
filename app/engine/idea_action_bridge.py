@@ -1701,6 +1701,9 @@ class IdeaActionBridge:
         test_first: bool = True,
         avoid_signatures: dict | None = None,
         prefer_reliable: bool = False,
+        drain: bool = False,
+        max_rounds: int = 8,
+        replan=None,
     ) -> dict:
         """Run a whole maintenance pass: apply each executable step in turn,
         verifying + rolling back individually, and return an aggregate summary.
@@ -1708,6 +1711,22 @@ class IdeaActionBridge:
         Steps are processed in plan order (already value-sorted). Each step is
         independent — a rolled-back step does not abort the run. Honors the
         same gating as apply_step (mode + safety + verify).
+
+        CASCADE-DRAIN (opt-in, default off): when ``drain`` is set, the single
+        apply pass is wrapped in a bounded re-detect → re-plan → apply OUTER loop,
+        so the loop becomes detect → fix → RE-DETECT → prove and converges to a
+        true fixpoint — landing fix A then re-examining only the files it changed
+        to catch a fix B that A exposed but the single pass never re-looked at.
+        Each round re-detects over ONLY the sorted set of files earlier fixes
+        touched (via ``replan(changed_files)`` — defaults to re-running the idea
+        engine on the project, filtered to that set), de-dups against every
+        already-attempted ``(action, target)`` signature (so a withheld/fenced
+        fix is NEVER re-attempted — no infinite loop), and draws from the SAME
+        ``max_apply`` budget (never reset per round, so total applied across all
+        rounds can't exceed it). It stops when a round applies zero new fixes or
+        ``max_rounds`` is reached; the round count is recorded additively under
+        ``drain_rounds``/``converged``. ``drain=False`` -> the apply path is
+        byte-identical to today (single pass, same results/counters/keys).
 
         RELIABILITY RE-RANK (opt-in, default off): when ``prefer_reliable`` is
         set, the executable steps are stably re-ordered by ascending fix-risk
@@ -1734,10 +1753,15 @@ class IdeaActionBridge:
         steps = plan.executable_steps()
         if prefer_reliable:
             steps = self._rerank_by_fix_risk(steps, project_root)
-        for step in steps:
-            if max_apply is not None and run.applied >= max_apply:
-                break
-            run.run_step(step)
+        run._apply_steps(steps, max_apply)
+        # CASCADE-DRAIN outer loop (opt-in): re-detect over only the changed set
+        # and re-apply to a fixpoint. The first pass above already ran exactly as
+        # before; this only ADDS further rounds, sharing the same budget/counters.
+        drain_rounds = 0
+        if drain:
+            rp = replan if replan is not None else self._default_replan(
+                project_root, mode)
+            drain_rounds = run._drain_rounds(rp, max_apply, max(0, max_rounds))
         summary = {
             "mode": mode,
             "verify": verify,
@@ -1754,7 +1778,41 @@ class IdeaActionBridge:
         # run's summary keys are byte-identical to before.
         if run.avoid_signatures:
             summary["skipped_learned"] = run.skipped_learned
+        # Additive + opt-in: the convergence proof appears ONLY when the drain was
+        # armed, so a default run's summary keys are byte-identical to before.
+        if drain:
+            summary["drain_rounds"] = drain_rounds
+            summary["converged"] = drain_rounds < max(0, max_rounds)
         return summary
+
+    def _default_replan(self, project_root: str, mode: str):
+        """The default re-detection used by the cascade-drain when no ``replan``
+        is supplied: re-run the idea engine on ``project_root`` and rebuild a
+        plan, narrowed to the steps whose target is in the changed set.
+
+        Returns a callable ``changed -> ActionPlan`` so re-detection re-runs the
+        SAME deterministic seed → permute → plan pipeline that produced the first
+        plan, then keeps only the steps that touch a file an earlier fix changed
+        (re-detection over the sorted changed set). Pure of clock/random; offline
+        by default (the engine's security scan is local), so the drain stays
+        deterministic and offline."""
+        def _replan(changed: list[str]) -> ActionPlan:
+            from app.engine.idea_permutation import IdeaPermutationEngine
+
+            report = IdeaPermutationEngine(project_root=project_root).run()
+            plan = self.plan_tree(report, mode=mode, project_root=project_root)
+            wanted = {self._norm_changed(c) for c in changed}
+            plan.steps = [
+                s for s in plan.steps
+                if s.executable and self._norm_changed(s.target) in wanted
+            ]
+            return plan
+        return _replan
+
+    @staticmethod
+    def _norm_changed(path: str) -> str:
+        """Normalize a path for changed-set membership (POSIX, deterministic)."""
+        return Path(path).as_posix() if path else ""
 
     @staticmethod
     def _confluence_headline(steps: list[ActionStep]) -> list[ActionStep]:
@@ -2001,6 +2059,19 @@ class _MaintenancePass:
         # the still-on-disk withheld hunk into git via whole-file staging. The
         # fence is keyed on normalized paths so membership is byte-deterministic.
         self._fenced_files: set[str] = set()
+        # CASCADE-DRAIN bookkeeping (only consulted when ``apply_plan`` runs the
+        # outer drain loop; for an ordinary single pass these stay empty/None and
+        # change nothing). ``_handled`` is the dedup skip-set of already-attempted
+        # ``(action_type, target)`` signatures — a withheld/fenced fix lands here
+        # too, so the next drain round NEVER re-attempts it (no infinite loop on a
+        # withheld fix). ``_changed_files`` accumulates every file a fix actually
+        # touched, so re-detection re-runs over ONLY the sorted changed set.
+        self._handled: set[tuple[str, str]] = set()
+        self._changed_files: set[str] = set()
+        # When the drain is armed, ``run_step`` honours ``_handled`` so a re-built
+        # plan that re-surfaces an already-attempted step is skipped silently
+        # (no row, no counter) — off by default so a single pass is byte-identical.
+        self._drain_active = False
 
     @staticmethod
     def _norm_path(path: str) -> str:
@@ -2249,6 +2320,14 @@ class _MaintenancePass:
         return tier_for_transform(transform_type, step.action_type)
 
     def run_step(self, step: ActionStep) -> None:
+        # CASCADE-DRAIN dedup: when the outer drain loop is active, a step whose
+        # ``(action, target)`` signature was already attempted in an earlier round
+        # (applied, withheld, fenced, or blocked) is skipped silently — no row, no
+        # counter, no re-apply. This is what stops the drain from looping forever
+        # re-attempting a withheld/fenced fix. Default single pass never arms the
+        # flag, so this guard is inert and the path stays byte-identical.
+        if self._drain_active and self._signature(step) in self._handled:
+            return
         if self._learned_skip(step):
             return
         # ONE-TIME baseline pre-flight: probe (and cache) whether the suite was
@@ -2385,6 +2464,16 @@ class _MaintenancePass:
         if step.action_type == "harden_security" and real_fix:
             self._converge_harden(step, entry)
 
+    @staticmethod
+    def _signature(step: ActionStep) -> tuple[str, str]:
+        """The dedup key for the cascade-drain skip-set: ``(action, target)``.
+
+        Deterministic and pure (no clock/random) — two steps that propose the
+        same action on the same module collapse to one handled signature, so a
+        re-built plan never re-attempts a fix an earlier round already settled
+        (applied, withheld, fenced, or blocked)."""
+        return (step.action_type, step.target)
+
     def _record_outcome(self, step: ActionStep, r: dict, entry: dict) -> None:
         """Classify the apply result into exactly one counter + result row."""
         if r.get("rolled_back"):
@@ -2393,7 +2482,73 @@ class _MaintenancePass:
             self._settle_applied(step, r, entry)
         else:
             self.blocked += 1
+        # CASCADE-DRAIN: mark this signature handled (whatever the outcome) and
+        # remember every file the fix actually touched, so a later drain round
+        # re-detects over only the changed set and never re-attempts this step.
+        # Inert in a single pass (the sets are never read), so byte-identical.
+        self._handled.add(self._signature(step))
+        for f in (r.get("changed_files") or []):
+            if f:
+                self._changed_files.add(self._norm_path(f))
         self.results.append(entry)
+
+    def _apply_steps(self, steps, max_apply: int | None) -> None:
+        """Apply a list of executable steps under the SHARED ``max_apply``
+        budget. The budget is read from the live ``self.applied`` counter, so it
+        is never reset between drain rounds — total applied across ALL rounds can
+        never exceed ``max_apply``."""
+        for step in steps:
+            if max_apply is not None and self.applied >= max_apply:
+                break
+            self.run_step(step)
+
+    def _drain_rounds(self, replan, max_apply: int | None,
+                      max_rounds: int) -> int:
+        """OUTER convergence loop: re-detect → re-plan → apply, until a round
+        applies ZERO new fixes or ``max_rounds`` is reached.
+
+        Runs AFTER the first (single) pass has applied its steps. Each round:
+          1. snapshot the sorted changed set + the applied count;
+          2. call ``replan(changed_files)`` for a freshly-detected plan over only
+             those files (re-detection sees fixes that earlier fixes exposed);
+          3. apply its executable steps — ``run_step`` drops any signature already
+             in ``_handled`` (so a withheld/fenced fix is never re-attempted), and
+             the SHARED ``max_apply`` budget is honoured across rounds;
+          4. stop when no NEW signature applied a real change this round, or the
+             cap is hit, or the budget is exhausted, or ``replan`` yields nothing.
+
+        Determinism: the changed set is sorted before re-plan; rounds are capped;
+        no clock/random. Returns the number of extra rounds executed (0 when the
+        first pass already converged)."""
+        self._drain_active = True
+        rounds = 0
+        while rounds < max_rounds:
+            if max_apply is not None and self.applied >= max_apply:
+                break
+            changed = sorted(self._changed_files)
+            if not changed:
+                break
+            before_applied = self.applied
+            before_handled = len(self._handled)
+            try:
+                plan = replan(changed)
+            except Exception:
+                # A re-plan that raises ends the drain cleanly — the single-pass
+                # results already recorded stand; the drain never crashes a run.
+                break
+            steps = list(plan.executable_steps()) if plan is not None else []
+            steps = [s for s in steps if self._signature(s) not in self._handled]
+            if not steps:
+                break
+            self._apply_steps(steps, max_apply)
+            rounds += 1
+            # Progress = a NEW signature actually APPLIED a fix this round. A round
+            # that only re-surfaced already-handled steps, or whose new steps all
+            # blocked/withheld without applying, makes no progress -> converged.
+            if self.applied <= before_applied or len(self._handled) <= before_handled:
+                break
+        self._drain_active = False
+        return rounds
 
 
 def _proof_affordance(step: ActionStep) -> str:
