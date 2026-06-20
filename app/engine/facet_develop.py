@@ -204,6 +204,14 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # simplify-bool-comparison transform drops the redundant literal comparison
     # (only when the operand is provably a bool, so it stays value-preserving).
     "compare to true/false directly": "simplify-bool-comparison",
+
+    # Missing type hints: the constructive "naming and types" aspect names the
+    # precise type/annotation a parameter or return ought to carry. The
+    # infer-type-hints objective LANDS exactly that — a ``-> T`` / ``param: T``
+    # provable from the AST (agreeing literal returns, non-None literal defaults),
+    # never a guess. So the type-annotation facet becomes the campaign that
+    # raises the project's type-hint coverage.
+    "the precise type or annotation": "infer-type-hints",
 }
 
 
