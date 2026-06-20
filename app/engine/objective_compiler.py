@@ -886,6 +886,18 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
         return blocked  # type: ignore[return-value]  # set whenever name is None
     objective = objective_name
 
+    # Effective gate scope = the caller's explicit ``scope_verify`` OR the
+    # RESOLVED objective's own spec flag. The stub-FILLING objectives
+    # (implement-stub, tdd-implement) opt into impact-scoped gating so a correct
+    # per-module fill is not vetoed by an UNRELATED still-red module on a
+    # multi-module project (the cross-module apply deadlock) — their baseline
+    # suite is legitimately RED. The cheap tidy objectives leave the spec flag
+    # False and keep full-suite gating. A maintain-only objective isn't in
+    # ``registered_specs()`` (spec is None) → the passed param stands, unchanged.
+    from app.engine.develop_registry import registered_specs
+    spec = registered_specs().get(objective)
+    effective_scope = scope_verify or bool(getattr(spec, "scope_verify", False))
+
     fitness, generate = objectives[objective]
     root = str(project_root)
 
@@ -930,7 +942,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
         if not moves:
             break
         progressed, current, last_operator = _run_pass(
-            result, moves, root, current, max_steps, verify, scope_verify,
+            result, moves, root, current, max_steps, verify, effective_scope,
             last_operator)
         if not progressed:
             break

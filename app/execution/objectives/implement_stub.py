@@ -298,5 +298,13 @@ def moves(project_root: str | Path) -> list:
 # Synthesis runs the project's tests once per candidate template, so the fitness
 # scan is heavyweight — flag it expensive so the fast plan/ascend board skips it
 # (it stays runnable explicitly via `apex develop --objective implement-stub`).
+# scope_verify=True: gate each fill against the IMPACTED tests, not the full
+# suite. On a multi-module project where several modules each hold an
+# unimplemented stub, the baseline suite is legitimately RED (every stub fails its
+# own tests). Filling module A's stub correctly makes A's importing tests pass,
+# but a full-suite gate would still see module B's pre-existing redness and roll
+# A's correct change back — every module vetoed by every other. Impact-scoping
+# runs only A's real importing tests (honestly verifying the fill); the full suite
+# stays the commit-time backstop.
 register(ObjectiveSpec(name="implement-stub", fitness=fitness, moves=moves,
-                       expensive=True))
+                       expensive=True, scope_verify=True))

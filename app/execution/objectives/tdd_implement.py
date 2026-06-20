@@ -430,5 +430,11 @@ def moves(project_root: str | Path) -> list:
 # fixed templates per candidate — heavyweight — so flag it expensive: the fast
 # plan/ascend board skips the scan, but it stays runnable explicitly via
 # `apex develop --objective tdd-implement`.
+# scope_verify=True: gate each synthesized function against the IMPACTED tests,
+# not the full suite. On a multi-module project several modules can each have a
+# RED test demanding a not-yet-written function, so the baseline suite is
+# legitimately RED; making module A's RED test green must not be vetoed (rolled
+# back) by an unrelated module B's still-RED test. Impact-scoping runs only A's
+# real importing tests; the full suite stays the commit-time backstop.
 register(ObjectiveSpec(name="tdd-implement", fitness=fitness, moves=moves,
-                       expensive=True))
+                       expensive=True, scope_verify=True))

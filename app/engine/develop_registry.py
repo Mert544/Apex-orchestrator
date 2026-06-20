@@ -60,6 +60,20 @@ class ObjectiveSpec:
     # skips these so the autonomous loop stays fast; they remain runnable
     # explicitly via `apex develop --objective <name>`.
     expensive: bool = False
+    # When True, ``compile_objective`` gates each move against the IMPACTED tests
+    # (those that import the changed module / its package) rather than the FULL
+    # suite. Required for the stub-FILLING objectives (``implement-stub``,
+    # ``tdd-implement``): their baseline suite is legitimately RED on a
+    # multi-module project — every still-unimplemented stub fails its own tests —
+    # so a correct per-module fill, gated by the whole suite, would be vetoed by an
+    # unrelated still-red module and rolled back (the cross-module apply deadlock).
+    # Impact-scoping runs the filled module's REAL importing tests (which genuinely
+    # pass after the fill, so the "verified" stamp stays honest) and skips the
+    # unrelated red ones, whose redness is pre-existing and not caused by this move.
+    # The full suite remains the commit-time backstop (``scripts/verify.py``).
+    # Default False: the cheap "tidy" objectives keep full-suite gating, so
+    # existing idea/objective behaviour is unchanged.
+    scope_verify: bool = False
 
 
 _REGISTRY: dict[str, ObjectiveSpec] = {}
