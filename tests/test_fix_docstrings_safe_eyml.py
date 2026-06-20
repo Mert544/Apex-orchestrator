@@ -209,10 +209,20 @@ def test_cli_lands_valid_docstring_in_place(tmp_path: Path, capsys):
     assert "Files patched: 1" in capsys.readouterr().out
 
 
-def test_cli_rolls_back_broken_multiline_write(tmp_path: Path, capsys):
-    # The destructive repro: a multi-line signature the agent mishandles. The
-    # CLI must detect the broken/phantom write and ROLL BACK — never destroy the
-    # file or the tests that import it.
+def test_cli_lands_docstrings_on_multiline_signature(tmp_path: Path, capsys):
+    # Previously the destructive repro: a multi-line signature the agent
+    # mishandled (it inserted at ``def.lineno + 1``, landing a detached
+    # module-level string the CLI soundness gate then rolled back, so add_many
+    # never got a docstring). The agent now routes through the body-accurate
+    # transform helper, so BOTH the single-line and the multi-line function get a
+    # valid docstring as their first body statement — the write is sound and is
+    # KEPT (no longer rolled back), and the file still parses and imports.
+    #
+    # JUSTIFICATION for changing this characterization: the old assertions
+    # ("Files patched: 0", byte-identical rollback) pinned the *limitation* —
+    # a correct multi-line write being discarded — which is exactly the behaviour
+    # this wave fixes. The safety assertions (result parses; documented file is
+    # never left broken) are preserved and strengthened (it now also LANDS).
     original = (
         "def subtract(a, b):\n"
         "    return a - b\n"
@@ -239,10 +249,16 @@ def test_cli_rolls_back_broken_multiline_write(tmp_path: Path, capsys):
     )
 
     assert rc == 0
-    # Rolled back to byte-identical original; the file still parses and imports.
-    assert src.read_text(encoding="utf-8") == original
-    ast.parse(src.read_text(encoding="utf-8"))
-    assert "Files patched: 0" in capsys.readouterr().out
+    patched = src.read_text(encoding="utf-8")
+    ast.parse(patched)  # valid Python — never a detached/phantom string
+    docs = _docs(patched)
+    # BOTH functions are now documented; nothing left undocumented.
+    assert docs["subtract"] == "subtract implementation."
+    assert docs["add_many"] == "add_many implementation."
+    assert _undocumented(patched) == []
+    # Both calc.py and the helper test_calc.py have undocumented functions, so
+    # both are patched; the point is calc.py (with the multi-line def) is KEPT.
+    assert "Files patched: 2" in capsys.readouterr().out
 
 
 def test_cli_dry_run_never_writes(tmp_path: Path, capsys):
