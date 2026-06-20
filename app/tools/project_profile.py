@@ -67,7 +67,16 @@ class ProjectProfile:
     # assertable surface (non-shallow -> shallow, but still tested) can't newly flag
     # it as fragile and RAISE the penalty. Shallow-but-tested hubs stay in
     # ``fragile_count``/``fragile_modules`` (discovery) and keep costing TESTING.
-    fragile_untested_count: int = 0
+    #
+    # Default ``None`` is the "not computed" sentinel — it is the FULL profiler
+    # (which builds the import graph) that fills this in; a light/manual/legacy
+    # profile that never ran the fragility scan leaves it ``None``. The grade's
+    # ``_fragile_penalty_count`` keys off exactly that: ``None`` means fall back to
+    # ``fragile_count``/``fragile_modules`` (the pre-fix behaviour), while a
+    # computed ``0`` is honoured verbatim (``is not None``, not truthiness). A
+    # default of ``0`` would defeat that distinction — every profile would look
+    # "computed 0" and the fallback path could never run.
+    fragile_untested_count: int | None = None
     # TRUE total of Python security-finding modules, before the ``[:5]`` display
     # truncation. The readiness headline reads this so 20 eval() modules aren't
     # reported as only "5 high-confidence findings".
