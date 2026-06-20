@@ -998,3 +998,118 @@ def test_ambiguity_guard_does_not_break_clear_arithmetic(tmp_path: Path):
         encoding="utf-8")
     body = plan_implement_stub(str(tmp_path), "app/t.py").new_contents.get("app/t.py")
     assert body is not None and "return n * 3" in body
+
+
+# --- DEFECT 3: a no-positional-param METHOD is NOT a genuine no-arg function ---
+
+def test_zero_param_method_single_example_refuses_constant(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # The field-test P0: a METHOD with no positional params (``self`` dropped, so
+    # ``params == ()``) whose result depends on instance state. ONE example
+    # ``Record(1, "abcd").width() == 4`` must NOT pin ``return 4`` — a second
+    # instance ``Record(2, "hello world!!").width()`` would expect 13. The no-arg
+    # constant exemption (one empty tuple IS the whole input space) is for a
+    # GENUINE module-level no-arg function only; a method's output varies with
+    # ``self``, and the positional templates cannot read it, so REFUSE.
+    _suite_project(tmp_path)
+    original = (
+        "class Record:\n"
+        "    def __init__(self, id, payload):\n"
+        "        self.id = id\n"
+        "        self.payload = payload\n\n"
+        "    def width(self):\n        raise NotImplementedError\n")
+    (tmp_path / "app" / "r.py").write_text(original, encoding="utf-8")
+    (tmp_path / "tests" / "test_r.py").write_text(
+        "from app.r import Record\n"
+        "def test_w():\n    assert Record(1, 'abcd').width() == 4\n", encoding="utf-8")
+    plan = plan_implement_stub(str(tmp_path), "app/r.py")
+    body = plan.new_contents.get("app/r.py")
+    assert body is None  # refused: one example can't pin a self-dependent constant
+    assert "return 4" not in (tmp_path / "app" / "r.py").read_text()
+    assert (tmp_path / "app" / "r.py").read_text() == original  # untouched
+    assert not plan.blockers  # an honest no-op, not a failure
+
+
+def test_zero_param_method_single_example_refused_end_to_end(tmp_path: Path):
+    from app.engine.objective_compiler import compile_objective
+
+    # End-to-end proof the self-state overfit never lands: even though the suite
+    # (one example) would go green on ``return 4``, the objective refuses outright.
+    _suite_project(tmp_path)
+    original = (
+        "class Record:\n"
+        "    def __init__(self, id, payload):\n"
+        "        self.id = id\n"
+        "        self.payload = payload\n\n"
+        "    def width(self):\n        raise NotImplementedError\n")
+    (tmp_path / "app" / "r.py").write_text(original, encoding="utf-8")
+    (tmp_path / "tests" / "test_r.py").write_text(
+        "from app.r import Record\n"
+        "def test_w():\n    assert Record(1, 'abcd').width() == 4\n", encoding="utf-8")
+    result = compile_objective(str(tmp_path), objective="implement-stub",
+                               apply=True, verify=True)
+    assert not result.steps  # nothing landed
+    assert (tmp_path / "app" / "r.py").read_text() == original  # untouched
+
+
+def test_expected_constant_gates_method_on_is_method(tmp_path: Path):
+    from app.execution.stub_synthesis import StubFunction, _expected_constant
+
+    # Direct check on the gate: a METHOD (``is_method=True``) with no positional
+    # params and ONE witness yields no constant — the >=2-distinct-tuples floor
+    # still applies because ``self`` makes a method NOT a genuine no-arg function.
+    _write(tmp_path, "tests/test_r.py",
+           "from app.r import Record\n"
+           "def test_w():\n    assert Record(1, 'abcd').width() == 4\n")
+    method = StubFunction("width", (), 1, 2, "    ", True)
+    assert _expected_constant(tmp_path, ["tests/test_r.py"], method) is None
+
+
+def test_no_arg_module_function_keeps_single_example_exemption(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # The exemption survives for a GENUINE module-level no-arg function: its single
+    # empty-tuple call IS the whole input space (no ``self``, no args to vary), so
+    # ``answer() == 42`` still legitimately lands ``return 42``. The fix must not
+    # regress this honest single-example landing.
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "ans.py").write_text(
+        "def answer():\n    ...\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_ans.py").write_text(
+        "from app.ans import answer\n"
+        "def test_a():\n    assert answer() == 42\n", encoding="utf-8")
+    body = plan_implement_stub(str(tmp_path), "app/ans.py").new_contents.get("app/ans.py")
+    assert body is not None and "return 42" in body
+
+
+def test_expected_constant_module_no_arg_single_example_lands(tmp_path: Path):
+    from app.execution.stub_synthesis import StubFunction, _expected_constant
+
+    # The gate's other side: a module no-arg function (``is_method=False``,
+    # ``params=()``) with one witness DOES yield the constant — the exemption.
+    _write(tmp_path, "tests/test_ans.py",
+           "from app.ans import answer\n"
+           "def test_a():\n    assert answer() == 42\n")
+    fn = StubFunction("answer", (), 1, 2, "", False)
+    assert _expected_constant(tmp_path, ["tests/test_ans.py"], fn) == "42"
+
+
+def test_zero_param_method_constant_gating_is_deterministic(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # Same method + single example twice -> identically refused (no constant). The
+    # gate adds no time/random; the refusal is stable across runs.
+    _suite_project(tmp_path)
+    original = (
+        "class Record:\n"
+        "    def __init__(self, id, payload):\n"
+        "        self.payload = payload\n\n"
+        "    def width(self):\n        raise NotImplementedError\n")
+    (tmp_path / "app" / "r.py").write_text(original, encoding="utf-8")
+    (tmp_path / "tests" / "test_r.py").write_text(
+        "from app.r import Record\n"
+        "def test_w():\n    assert Record(1, 'abcd').width() == 4\n", encoding="utf-8")
+    a = plan_implement_stub(str(tmp_path), "app/r.py").new_contents.get("app/r.py")
+    b = plan_implement_stub(str(tmp_path), "app/r.py").new_contents.get("app/r.py")
+    assert a is None and b is None and a == b

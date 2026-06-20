@@ -657,9 +657,15 @@ def _expected_constant(root: Path, test_files: list[str], stub: StubFunction) ->
     The two-distinct-tuples floor is what stops a single example overfitting: one
     ``add(3, 4) == 7`` must NOT become ``return 7`` — a single tuple cannot tell
     "the answer is always 7" from "the answer happens to be 7 here", so a bare
-    constant is refused until two distinct inputs agree on it (a no-arg ``k()``
-    counts: its single empty tuple genuinely IS the whole input space).
-    Conservative: any disagreement or a non-literal RHS yields ``None``."""
+    constant is refused until two distinct inputs agree on it (a no-arg MODULE
+    function ``k()`` is exempt: its single empty tuple genuinely IS the whole
+    input space). A METHOD with no positional params is NOT exempt: ``self`` is
+    dropped from ``params`` so ``def width(self)`` reads ``params == ()`` even
+    though its result depends on instance state, and the positional templates
+    cannot read ``self``. One ``Record(1, "abcd").width() == 4`` must not pin
+    ``return 4`` (a second instance ``Record(2, "hello").width()`` would expect a
+    different value), so the floor still applies. Conservative: any disagreement
+    or a non-literal RHS yields ``None``."""
     literals: set[str] = set()
     arg_tuples: set[str] = set()
     call_eq = re.compile(
@@ -682,10 +688,13 @@ def _expected_constant(root: Path, test_files: list[str], stub: StubFunction) ->
             arg_tuples.add(m.group(1).strip())
     if len(literals) != 1:
         return None
-    # A no-arg function has one empty tuple that fully determines its result; any
-    # other function needs >=2 distinct argument tuples agreeing before a bare
-    # constant is trustworthy (one example is not enough to claim "always this").
-    if stub.params and len(arg_tuples) < 2:
+    # A genuine no-arg MODULE function has one empty tuple that fully determines
+    # its result, so a single witness legitimately pins the constant. Every other
+    # function — including a METHOD whose dropped ``self`` makes ``params`` empty
+    # while its output still depends on instance state — needs >=2 distinct
+    # argument tuples agreeing before a bare constant is trustworthy (one example
+    # is not enough to claim "always this", and the templates cannot read self).
+    if (stub.params or stub.is_method) and len(arg_tuples) < 2:
         return None
     return next(iter(literals))
 
