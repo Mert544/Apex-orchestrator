@@ -58,22 +58,102 @@ def _maintain_scope_recipe(args, plan) -> bool:
 
 
 def _maintain_dry_run(args, bridge, plan, target) -> None:
-    """Dry-run: preview the diffs without touching anything."""
+    """Dry-run: preview the diffs without touching anything.
+
+    The console output (markdown or --json) is byte-identical to before. When
+    ``--out`` and/or ``--proof`` are ALSO passed, those flags are honored — as a
+    clearly-marked PREVIEW, never a real proof: --dry-run applies nothing and
+    verifies nothing, so the artifacts are stamped ``mode: dry-run-preview`` with
+    ``applied: false`` / ``verified: false`` on every record. They can never be
+    mistaken for an applied+verified proof-of-fix. With neither flag set nothing
+    extra is written, so a bare dry-run stays exactly as it was."""
     preview = bridge.dry_run_plan(plan, str(target))
     if args.json:
         print(json.dumps(preview, indent=2))
+    else:
+        print(f"# Apex Maintenance — dry run for `{target}`")
+        print(f"\n{preview['applicable']} of {preview['total_executable']} "
+              f"executable steps would change files (nothing applied).\n")
+        for p in preview["results"]:
+            if not p["applicable"]:
+                continue
+            print(f"## `{p['branch']}` {p['action']} → {p['transform_type']} "
+                  f"({', '.join(f for f in p['files'] if f)})")
+            print("```diff")
+            print(p["diff"].rstrip())
+            print("```\n")
+    _maintain_write_dry_run_preview(args, preview, target)
+
+
+def _dry_run_preview_record(p: dict) -> dict:
+    """One planned-change record for the dry-run preview artifact, stamped so it
+    is unmistakably NOT an applied+verified fix."""
+    return {
+        "branch": p.get("branch", ""),
+        "action": p.get("action", ""),
+        "target": p.get("target", ""),
+        "applicable": bool(p.get("applicable")),
+        "transform_type": p.get("transform_type", ""),
+        "files": [f for f in (p.get("files") or []) if f],
+        "diff": p.get("diff", ""),
+        # The never-mistaken-for-a-proof markers, on EVERY record:
+        "applied": False,
+        "verified": False,
+    }
+
+
+def _build_dry_run_preview(args, preview: dict, target) -> dict:
+    """Assemble the clearly-marked dry-run preview artifact from the diffs the
+    dry-run already computed. Deterministic: no clock/random — the content is a
+    pure function of the planned changes."""
+    return {
+        "schema": "apex.maintain.dry-run-preview/v1",
+        "mode": "dry-run-preview",
+        "applied": False,
+        "verified": False,
+        "note": ("PREVIEW ONLY — these are the changes `apex maintain` WOULD "
+                 "make. Nothing was applied and nothing was verified; this is "
+                 "NOT a proof-of-fix. Re-run without --dry-run to apply, verify, "
+                 "and produce a real proof."),
+        "project_root": str(target),
+        "objective": args.objective or "",
+        "totals": {
+            "executable": preview.get("total_executable", 0),
+            "applicable": preview.get("applicable", 0),
+            "applied": 0,
+            "verified": 0,
+        },
+        "planned_changes": [
+            _dry_run_preview_record(p) for p in preview.get("results", [])
+        ],
+    }
+
+
+def _maintain_write_dry_run_preview(args, preview: dict, target) -> None:
+    """Honor --out / --proof under --dry-run by emitting a clearly-marked PREVIEW
+    artifact (never silently dropped). With neither flag set, write nothing — a
+    bare dry-run stays byte-identical to before."""
+    out = getattr(args, "out", "") or ""
+    proof = getattr(args, "proof", "") or ""
+    if not out and not proof:
         return
-    print(f"# Apex Maintenance — dry run for `{target}`")
-    print(f"\n{preview['applicable']} of {preview['total_executable']} "
-          f"executable steps would change files (nothing applied).\n")
-    for p in preview["results"]:
-        if not p["applicable"]:
-            continue
-        print(f"## `{p['branch']}` {p['action']} → {p['transform_type']} "
-              f"({', '.join(f for f in p['files'] if f)})")
-        print("```diff")
-        print(p["diff"].rstrip())
-        print("```\n")
+    artifact = _build_dry_run_preview(args, preview, target)
+    text = json.dumps(artifact, indent=2)
+    if out:
+        out_path = Path(out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(text + "\n", encoding="utf-8")
+        if not args.json:
+            print(f"\n[maintain] Dry-run PREVIEW (not applied, not verified) "
+                  f"written to {out_path}")
+    if proof:
+        proof_path = Path(proof)
+        proof_path.parent.mkdir(parents=True, exist_ok=True)
+        proof_path.write_text(text + "\n", encoding="utf-8")
+        if not args.json:
+            print(f"\n[maintain] --proof is a PREVIEW under --dry-run: writing "
+                  f"planned changes to {proof_path} (not applied, not verified "
+                  f"— NOT a proof-of-fix).")
 
 
 def _maintain_write_out(args, md) -> None:
