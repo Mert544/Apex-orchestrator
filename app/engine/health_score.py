@@ -249,16 +249,24 @@ def _count_unimplemented_stubs(tree: ast.AST, subclassed: set[str]) -> int:
     """Count NON-abstract, unimplemented (NotImplementedError/``...``) stubs.
 
     Excluded (legitimate, not debt): ``@abstractmethod`` methods; any method whose
-    enclosing class is an ABC/Protocol, declares any base (an override of an
-    inherited interface), or is itself subclassed in the project (a template
-    base). Module-level function stubs and stubs on concrete leaf classes count.
+    enclosing class is a genuine ABC/Protocol interface, or is itself subclassed in
+    the project (a template base whose stub methods are intended override points the
+    subclasses fill). Module-level function stubs and stubs on concrete leaf classes
+    count.
+
+    A class is exempt ONLY when it is a real interface/ABC OR is subclassed
+    in-project. Merely HAVING a base class does NOT exempt it: a concrete subclass
+    (``class Impl(Base):`` that is itself instantiated, never abstract, never
+    subclassed) whose own body is ``raise NotImplementedError`` is real, unfinished,
+    implementable debt — exactly the work ``implement-stub`` exists to land — so it
+    MUST count, otherwise the grade under-reports debt and hides those contributions.
     """
     debt = 0
     in_class: set[int] = set()
     for cls in ast.walk(tree):
         if not isinstance(cls, ast.ClassDef):
             continue
-        interface = _class_is_interface(cls) or bool(cls.bases) or cls.name in subclassed
+        interface = _class_is_interface(cls) or cls.name in subclassed
         for item in cls.body:
             if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
