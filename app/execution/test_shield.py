@@ -313,22 +313,78 @@ def _is_simple_literal(value: object) -> bool:
     return False
 
 
+def _canonical_set_repr(value: object) -> str:
+    """A deterministic source literal for a ``set`` — order-stable, never seed-
+
+    dependent. The empty set MUST render as ``set()`` (because ``{}`` is a dict),
+    and non-empty sets render their elements sorted by their OWN canonical repr,
+    a total string order that is robust to mixed / unorderable element types.
+    """
+    if not value:  # type: ignore[truthy-bool]
+        return "set()"
+    rendered = sorted(_canonical_repr(item) for item in value)  # type: ignore[union-attr]
+    return "{" + ", ".join(rendered) + "}"
+
+
+def _canonical_repr(value: object) -> str:
+    """A DETERMINISTIC, order-stable source literal for ``value``.
+
+    ``repr`` of a ``set`` of strings is ``PYTHONHASHSEED``-dependent (str hashing
+    is randomized), so emitting it into LANDED test code makes two CI runs land
+    different git diffs for the same project. This renders every container with a
+    deterministic element order — sets sorted by canonical element repr, while
+    ``list``/``tuple``/``dict`` preserve their (already deterministic) insertion
+    order — recursing so nested sets are canonicalized too. Scalars and anything
+    we do not specially handle delegate to ``repr`` (already deterministic).
+    """
+    t = type(value)
+    if t in _LITERAL_SCALARS:
+        return repr(value)
+    if t is list:
+        return "[" + ", ".join(_canonical_repr(v) for v in value) + "]"  # type: ignore[union-attr]
+    if t is tuple:
+        items = list(value)  # type: ignore[arg-type]
+        if len(items) == 1:
+            return "(" + _canonical_repr(items[0]) + ",)"
+        return "(" + ", ".join(_canonical_repr(v) for v in items) + ")"
+    if t is dict:
+        pairs = (
+            f"{_canonical_repr(k)}: {_canonical_repr(v)}"
+            for k, v in value.items()  # type: ignore[union-attr]
+        )
+        return "{" + ", ".join(pairs) + "}"
+    if t is set:
+        return _canonical_set_repr(value)
+    return repr(value)
+
+
 def _captured_oracle(repr_text: str, value: object) -> str | None:
-    """A re-importable literal ``repr`` of ``value``, or ``None`` for no oracle.
+    """A re-importable, DETERMINISTIC source literal of ``value``, or ``None``.
 
     Belt-and-suspenders: even for a value that passed :func:`_is_simple_literal`,
     we re-parse its ``repr`` with :func:`ast.literal_eval` and require the
-    round-tripped value to compare equal. A ``repr`` that does not faithfully
-    round-trip (or whose evaluation raises) yields ``None`` — the emitted oracle
-    is only ever a literal we have proven reproduces the captured value.
+    round-tripped value to compare equal — this rejects a ``frozenset`` (whose
+    ``repr`` ``ast.literal_eval`` refuses) and any non-round-tripping ``repr``,
+    preserving today's decline behaviour. We then EMIT :func:`_canonical_repr`,
+    re-validated the same way, so the landed literal is byte-stable across hash
+    seeds; if canonical rendering ever fails to round-trip equal we return
+    ``None`` (smoke fallback) — never a wrong oracle.
     """
     try:
         round_tripped = ast.literal_eval(repr_text)
     except (ValueError, SyntaxError, RecursionError, MemoryError):
         return None
     try:
-        if round_tripped == value:
-            return repr_text
+        if round_tripped != value:
+            return None
+    except Exception:
+        return None
+    canon = _canonical_repr(value)
+    try:
+        if ast.literal_eval(canon) == value:
+            return canon
+    except (ValueError, SyntaxError, RecursionError, MemoryError):
+        return None
     except Exception:
         return None
     return None
