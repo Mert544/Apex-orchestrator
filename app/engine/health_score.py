@@ -436,12 +436,24 @@ def _shallow_penalty_count(profile: Any) -> int:
 
 
 def _fragile_penalty_count(profile: Any) -> int:
-    """The TRUE fragile-module count for the Architecture grade penalty.
+    """The fragile-module count for the Architecture grade penalty.
 
-    ``fragile_modules`` is truncated to 3 offenders for DISPLAY; ``fragile_count``
-    carries the full pre-truncation count. Prefer it, falling back to the capped
-    list length only when the field is absent.
+    The Architecture penalty counts ONLY the UNTESTED fragile hubs, not the shallow
+    ones. A clean develop improvement (e.g. ``dataclassify``) can shrink a module's
+    assertable surface so it flips non-shallow -> shallow; if the penalty counted
+    shallow hubs, that verified improvement would newly flag the module as fragile
+    and RAISE the fragility penalty (the field-test A-91 -> B+87 regression). So we
+    prefer ``fragile_untested_count`` — and honor an explicit ``0`` (the common
+    case) via ``is not None``, NOT truthiness. Shallow-but-tested hubs stay in
+    ``fragile_count``/``fragile_modules`` (discovery) and keep costing TESTING.
+
+    Older/partial profiles without the untested-only field fall back to the
+    pre-fix behaviour: ``fragile_count`` (truncated-to-3 ``fragile_modules`` carries
+    only the display offenders), then the capped list length.
     """
+    count = getattr(profile, "fragile_untested_count", None)
+    if count is not None:  # honor an explicit 0 (the common case)
+        return int(count)
     count = getattr(profile, "fragile_count", None)
     if count:
         return int(count)

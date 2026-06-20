@@ -161,6 +161,10 @@ def test_profiler_sets_true_shallow_and_fragile_counts(tmp_path: Path):
     # TRUE totals exceed the display caps...
     assert profile.shallow_tested_count == 7
     assert profile.fragile_count == 7
+    # ...but every hub here is shallow-but-tested (linked test), NOT untested, so
+    # the UNTESTED-only Architecture-penalty count is 0: these 7 cost TESTING, not
+    # ARCHITECTURE (the field-test A-91 -> B+87 regression this fix prevents).
+    assert profile.fragile_untested_count == 0
     # ...while the display lists stay capped (other consumers' contract).
     assert len(profile.shallow_tested_modules) == 5
     assert len(profile.fragile_modules) == 3

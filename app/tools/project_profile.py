@@ -57,9 +57,17 @@ class ProjectProfile:
     # isn't scored as if only the 5 displayed offenders were shallow.
     shallow_tested_count: int = 0
     # TRUE total of fragile (high-blast-radius, weakly-covered) modules, before the
-    # ``[:3]`` display truncation. The Architecture penalty reads this so 10 fragile
-    # modules aren't under-penalised as if only the 3 displayed ones existed.
+    # ``[:3]`` display truncation. The DISCOVERY surface (seeders/dashboards) reads
+    # this so 10 fragile modules aren't under-counted as if only the 3 displayed
+    # ones existed.
     fragile_count: int = 0
+    # The UNTESTED-only subset of the fragile set: high-fan-in hubs that are fragile
+    # because they have NO linked test (not merely shallow). The Architecture grade
+    # penalty reads this so a clean develop improvement that only shrinks a module's
+    # assertable surface (non-shallow -> shallow, but still tested) can't newly flag
+    # it as fragile and RAISE the penalty. Shallow-but-tested hubs stay in
+    # ``fragile_count``/``fragile_modules`` (discovery) and keep costing TESTING.
+    fragile_untested_count: int = 0
     # TRUE total of Python security-finding modules, before the ``[:5]`` display
     # truncation. The readiness headline reads this so 20 eval() modules aren't
     # reported as only "5 high-confidence findings".
@@ -1411,10 +1419,18 @@ class ProjectProfiler(_CodeQualityScansMixin):
             key=lambda n: (n.in_degree, n.path),
             reverse=True,
         )
-        # ``fragile_count`` carries the TRUE total for the Architecture penalty;
-        # the profile list keeps only the top-3 fragile hubs for display.
+        # ``fragile_count`` carries the TRUE total for the DISCOVERY surface
+        # (seeders/dashboards/anomaly_discovery want shallow hubs flagged); the
+        # profile list keeps only the top-3 fragile hubs for display.
         profile.fragile_count = len(fragile)
         profile.fragile_modules = [n.path for n in fragile][:3]
+        # The UNTESTED-only subset, from the SAME graph (no rescan): the Architecture
+        # grade penalty reads this so a clean develop improvement that flips a hub
+        # non-shallow -> shallow (still tested) can't newly enter the penalty and
+        # RAISE the grade. Shallow-but-tested hubs stay in the discovery set above
+        # and keep costing TESTING via ``shallow_tested_count`` — not ARCHITECTURE.
+        fragile_untested = [n for n in fragile if n.path in set(profile.untested_modules)]
+        profile.fragile_untested_count = len(fragile_untested)
 
         # Modernization debt: modules with behavior-preserving cleanups available
         # (currently `== None`/`!= None`), so the engine can propose safe fixes.
