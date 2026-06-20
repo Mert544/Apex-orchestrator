@@ -185,6 +185,16 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     "ordering independence": "cover-gaps",
     "idempotence": "cover-gaps",
 
+    # Surviving mutant: where cover-gaps writes the FIRST test for an UNTESTED
+    # module, strengthen-tests STRENGTHENS an existing-but-thin test — the "a
+    # surviving mutant the tests miss" sub-aspect names a seeded fault the suite
+    # still passes on (a real test blind spot). The strengthen-tests objective
+    # LANDS exactly the fix: a double-gated assertion (passes on real code, fails
+    # against that mutant) that kills it. So the surviving-mutant facet becomes the
+    # campaign that closes the blind spot. Its phrasing is not a substring of any
+    # cover-gaps key above, so order versus them is free.
+    "a surviving mutant the tests miss": "strengthen-tests",
+
     # Redundant control flow: equivalence-preserving tidies the ``simplify`` lens
     # now zooms into (the "redundant control flow" aspect's L3 sub-aspects in
     # idea_facets). Each phrase names one provably-equivalent-but-noisier shape and

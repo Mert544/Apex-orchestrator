@@ -77,7 +77,11 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     # test
     "edge cases": ["empty input", "single element", "maximum size"],
     "failure modes": ["dependency unavailable", "partial or interrupted operation", "timeout"],
-    "property invariants": ["idempotence", "ordering independence", "round-trip stability"],
+    "property invariants": ["idempotence", "ordering independence", "round-trip stability",
+                            # added: a seeded fault the suite still passes on — a
+                            # real blind spot the strengthen-tests objective closes
+                            # with a double-gated mutant-killing assertion.
+                            "a surviving mutant the tests miss"],
     # simplify
     "dead code": ["unreferenced symbols", "unreachable branches", "redundant guards"],
     "duplicated logic": ["extract a shared helper", "parameterize the variants", "single source of truth"],
