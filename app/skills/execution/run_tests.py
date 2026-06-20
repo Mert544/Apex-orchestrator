@@ -65,7 +65,12 @@ class RunTestsSkill:
         return sys.executable
 
     def _detect_commands(self, root: Path) -> list[list[str]]:
-        if (root / "pytest.ini").exists() or (root / "tests").exists() or (root / "pyproject.toml").exists():
+        if (
+            (root / "pytest.ini").exists()
+            or (root / "tests").exists()
+            or (root / "pyproject.toml").exists()
+            or self._has_flat_pytest_suite(root)
+        ):
             # Run pytest via the target's own venv interpreter when present (so its
             # deps resolve), else the current interpreter — never a bare `pytest`
             # console script (which can resolve to a different Python without the
@@ -74,6 +79,45 @@ class RunTestsSkill:
         if (root / "package.json").exists():
             return [["npm", "test", "--", "--runInBand"]]
         return []
+
+    def _has_flat_pytest_suite(self, root: Path) -> bool:
+        """True when the rootdir holds pytest-discoverable tests but no config.
+
+        The most common student/flat-repo shape is `calc.py` + `test_calc.py`
+        at the root with no `pyproject.toml`/`pytest.ini`/`tests/` — which
+        `pytest` collects fine via its own default discovery, yet the existing
+        config-only triggers miss, so the develop loop wrongly sees NO suite and
+        marks every landed change `no-suite`. Mirror pytest's default discovery
+        (`test_*.py` / `*_test.py`, plus a root `conftest.py`) at the rootdir and
+        the obvious top-level package dirs.
+
+        Bounded + deterministic: only the root and its immediate first-level
+        subdirectories are scanned (no unbounded deep walk), via sorted globs so
+        the same filesystem always yields the same verdict. Hidden dirs and the
+        target's own virtualenv are skipped so a dependency's bundled tests can't
+        false-trigger a suite for a repo that has none of its own.
+        """
+        if self._dir_has_pytest_files(root):
+            return True
+        skip = {".venv", "venv", ".git", "__pycache__", ".tox", "node_modules"}
+        try:
+            children = sorted(p for p in root.iterdir() if p.is_dir())
+        except OSError:
+            return False
+        for child in children:
+            if child.name in skip or child.name.startswith("."):
+                continue
+            if self._dir_has_pytest_files(child):
+                return True
+        return False
+
+    @staticmethod
+    def _dir_has_pytest_files(directory: Path) -> bool:
+        """Whether `directory` directly contains a pytest-discoverable file."""
+        for pattern in ("test_*.py", "*_test.py", "conftest.py"):
+            if any(directory.glob(pattern)):
+                return True
+        return False
 
     def _result_to_dict(self, result: CommandResult) -> dict:
         return {
