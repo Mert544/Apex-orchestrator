@@ -32,22 +32,57 @@ def _undocumented_count(tree: ast.AST) -> int:
     )
 
 
+def _body_insertion(node: ast.AST, lines: list[str]) -> tuple[int, str] | None:
+    """Where a docstring becomes ``node``'s first body statement.
+
+    Returns ``(insert_at, body_indent)`` where ``insert_at`` is the 0-based line
+    index the docstring line is spliced *before* (so it lands as the first body
+    statement, after the full — possibly multi-line — ``def ...:`` / ``class
+    ...:`` header) and ``body_indent`` is the leading whitespace each body
+    statement carries. Returns ``None`` when the node has no body or its
+    positions point past the source.
+
+    The body's true start is taken from the AST: the first body statement's
+    ``lineno``/``col_offset``. That is robust to multi-line signatures,
+    decorators, a header spanning several lines, and blank-line gaps between the
+    header and the first statement — none of which a ``node.lineno + 1`` heuristic
+    handles. The docstring is inserted on its own line *before* that first
+    statement, at the statement's own indentation, so the body reads
+    ``header:`` → docstring → original first statement.
+    """
+    body = getattr(node, "body", None)
+    if not body:
+        return None
+    first = body[0]
+    first_lineno = getattr(first, "lineno", None)
+    if first_lineno is None or first_lineno - 1 >= len(lines):
+        return None
+    first_line = lines[first_lineno - 1]
+    col = getattr(first, "col_offset", None)
+    # Prefer the actual indentation of the first body statement's line; fall back
+    # to col_offset (a byte offset, but body indent is ASCII whitespace).
+    indent = _get_indent(first_line)
+    if not indent and isinstance(col, int) and col > 0:
+        indent = first_line[:col]
+    return first_lineno - 1, indent
+
+
 def _collect_targets(tree: ast.AST, lines: list[str]) -> list[ast.AST]:
     """Every undocumented symbol that can be safely annotated in this pass.
 
-    Skips a symbol whose next line already opens with a string literal (treated
-    as documented) — mirrors the original guard — and any node whose line index
-    is out of range for the source.
+    A node is skipped when it has no usable body insertion point, or when the
+    first body statement is already a string-literal expression on its own line
+    (belt-and-braces with ``ast.get_docstring``; keeps the pass idempotent).
     """
     targets: list[ast.AST] = []
     for node in ast.walk(tree):
         if not isinstance(node, _DEF) or ast.get_docstring(node) is not None:
             continue
-        lineno = node.lineno - 1
-        if lineno >= len(lines):
+        spot = _body_insertion(node, lines)
+        if spot is None:
             continue
-        insert_at = lineno + 1
-        if insert_at < len(lines) and lines[insert_at].strip().startswith('"""'):
+        insert_at, _indent = spot
+        if lines[insert_at].strip().startswith(('"""', "'''", 'r"""', "r'''")):
             continue
         targets.append(node)
     return targets
@@ -56,22 +91,31 @@ def _collect_targets(tree: ast.AST, lines: list[str]) -> list[ast.AST]:
 def _insert_docstrings(
     lines: list[str], targets: list[ast.AST], title: str,
 ) -> tuple[str, list[str]]:
-    """Insert one docstring per target, bottom-up, returning content + names.
+    """Insert one docstring per target as its first body statement, bottom-up.
 
-    Processing highest line number first means every insertion leaves earlier
-    line indices valid, so the whole file is documented in a single pass.
+    For each target we splice the docstring line *before* the first body
+    statement (computed from the AST, so multi-line signatures / decorators /
+    blank-line gaps are handled correctly) at that statement's indentation.
+    Processing the highest insertion line first keeps earlier line indices valid,
+    so the whole file is documented in one pass.
     """
     new_lines = list(lines)
-    names: list[str] = []
     multiple = len(targets) > 1
-    for node in sorted(targets, key=lambda n: n.lineno, reverse=True):
-        lineno = node.lineno - 1
-        body_indent = _get_indent(new_lines[lineno]) + "    "
-        docstring = f'{body_indent}"""{_doc_text(node, title, multiple)}"""\n'
-        insert_at = lineno + 1
-        new_lines = new_lines[:insert_at] + [docstring] + new_lines[insert_at:]
-        names.append(getattr(node, "name", "<symbol>"))
-    names.reverse()  # report in source order
+    placements: list[tuple[int, str, str]] = []  # (insert_at, doc_line, name)
+    for node in targets:
+        spot = _body_insertion(node, lines)
+        if spot is None:
+            continue
+        insert_at, body_indent = spot
+        doc = f'{body_indent}"""{_doc_text(node, title, multiple)}"""\n'
+        placements.append((insert_at, doc, getattr(node, "name", "<symbol>")))
+
+    names = [name for _at, _doc, name in sorted(placements, key=lambda p: p[0])]
+    # Splice from the bottom of the file upward so earlier indices stay valid.
+    for insert_at, doc, _name in sorted(
+        placements, key=lambda p: p[0], reverse=True
+    ):
+        new_lines = new_lines[:insert_at] + [doc] + new_lines[insert_at:]
     return "".join(new_lines), names
 
 

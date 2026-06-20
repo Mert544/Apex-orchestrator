@@ -225,22 +225,137 @@ def cmd_self_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _docstring_write_is_sound(original: str, patched: str) -> bool:
+    """True if a docstring patch is both syntactically and semantically sound.
+
+    A bare ``ast.parse`` gate is necessary but NOT sufficient: a docstring
+    mis-inserted *before* a multi-line ``def`` can land a detached module-level
+    string that still parses, yet leaves the target undocumented and the file
+    semantically wrong (and, with the wrong indentation, an ``IndentationError``).
+    So we require, in addition to a clean parse, that the edit only ADDED
+    docstrings: documented def/class count did not drop, undocumented count did
+    not rise, and NO new detached (phantom) string statement appeared. A broken
+    write fails one of these and is rolled back.
+    """
+    import ast
+
+    def _analyze(text: str) -> tuple[int, int, int] | None:
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, RecursionError, MemoryError, ValueError):
+            return None
+        documented = undocumented = 0
+        docstring_ids: set[int] = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if (
+                    body
+                    and isinstance(body[0], ast.Expr)
+                    and isinstance(getattr(body[0], "value", None), ast.Constant)
+                    and isinstance(body[0].value.value, str)
+                ):
+                    docstring_ids.add(id(body[0]))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if ast.get_docstring(node) is None:
+                    undocumented += 1
+                else:
+                    documented += 1
+        phantom = sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Expr)
+            and isinstance(getattr(node, "value", None), ast.Constant)
+            and isinstance(node.value.value, str)
+            and id(node) not in docstring_ids
+        )
+        return documented, undocumented, phantom
+
+    before = _analyze(original)
+    after = _analyze(patched)
+    if before is None or after is None:
+        return False
+    doc_b, undoc_b, phantom_b = before
+    doc_a, undoc_a, phantom_a = after
+    return doc_a >= doc_b and undoc_a <= undoc_b and phantom_a <= phantom_b
+
+
+def _rollback_broken_docstring_writes(
+    target: Path, snapshots: dict[Path, str], patched: list[str],
+) -> list[str]:
+    """Revert any docstring patch that is syntactically or semantically broken.
+
+    The CLI's :class:`DocstringAgent` writes in place without a soundness gate, so
+    a mishandled (e.g. multi-line) signature could land broken Python — even
+    Python that still parses but detaches the docstring and corrupts the body. We
+    snapshot each gap file's original bytes *before* patching, then after the run
+    roll back (restore) any patched file whose new content is not a sound
+    docstring-only addition (see :func:`_docstring_write_is_sound`). Returns the
+    files that survived validation, so the report never claims a write that was
+    reverted. Files with no snapshot / not on disk (e.g. a faked agent in tests)
+    are left untouched.
+    """
+    survived: list[str] = []
+    for rel in patched:
+        full = (target / rel).resolve()
+        original = snapshots.get(full)
+        if original is None or not full.exists():
+            survived.append(rel)
+            continue
+        try:
+            current = full.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            survived.append(rel)
+            continue
+        if _docstring_write_is_sound(original, current):
+            survived.append(rel)
+            continue
+        # Broken write — roll back to the pre-patch snapshot.
+        try:
+            full.write_text(original, encoding="utf-8")
+        except OSError:
+            pass
+    return survived
+
+
 def cmd_fix_docstrings(args: argparse.Namespace) -> int:
     from app.agents.skills import DocstringAgent
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
     agent = DocstringAgent()
-    result = agent.run(project_root=str(target), patch=not args.dry_run)
-    print(f"Symbols scanned: {result['total_symbols']}")
-    print(f"Gaps found: {result['gaps_found']}")
-    if not args.dry_run:
-        print(f"Files patched: {len(result['patched_files'])}")
-        for f in result['patched_files']:
-            print(f"  patched: {f}")
-    else:
+
+    if args.dry_run:
+        result = agent.run(project_root=str(target), patch=False)
+        print(f"Symbols scanned: {result['total_symbols']}")
+        print(f"Gaps found: {result['gaps_found']}")
         print("(Dry run — no files modified)")
         for gap in result.get('gaps', [])[:20]:
             print(f"  {gap['file']}:{gap['line']} {gap['symbol_type']} '{gap['name']}'")
+        return 0
+
+    # Snapshot every gap file BEFORE the in-place patch so a broken write can be
+    # rolled back. The agent's writer is not syntax-gated, so we validate after.
+    scan = agent.run(project_root=str(target), patch=False)
+    snapshots: dict[Path, str] = {}
+    for gap in scan.get('gaps', []):
+        full = (target / gap['file']).resolve()
+        if full in snapshots or not full.exists():
+            continue
+        try:
+            snapshots[full] = full.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+
+    result = agent.run(project_root=str(target), patch=True)
+    patched = _rollback_broken_docstring_writes(
+        target, snapshots, list(result['patched_files']),
+    )
+
+    print(f"Symbols scanned: {result['total_symbols']}")
+    print(f"Gaps found: {result['gaps_found']}")
+    print(f"Files patched: {len(patched)}")
+    for f in patched:
+        print(f"  patched: {f}")
     return 0
 
 
