@@ -781,3 +781,220 @@ def test_wider_space_is_deterministic(tmp_path: Path):
             "from app.s import slugify\n"
             "def test():\n    assert slugify('Hello World') == 'hello-world'\n")
     assert body1 == body2 and body1 is not None
+
+
+# --- DEFECT 1: xfail/skip witnesses pin NO enforceable contract --------------
+
+def test_xfail_only_contract_is_refused(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # The field-test P0: slugify's ONLY test is @pytest.mark.xfail. An xfail
+    # assertion is ALLOWED to fail, so it pins no enforceable contract — the
+    # suite stays green for ANY body. The old path landed `return text`
+    # (identity, WRONG) and stamped it "verified". With xfail witnesses excluded
+    # and the enforceable-contract floor, we REFUSE: land nothing.
+    _suite_project(tmp_path)
+    original = "def slugify(text):\n    raise NotImplementedError\n"
+    (tmp_path / "app" / "slug.py").write_text(original, encoding="utf-8")
+    (tmp_path / "tests" / "test_slug.py").write_text(
+        "import pytest\nfrom app.slug import slugify\n"
+        "@pytest.mark.xfail\n"
+        "def test_slug():\n    assert slugify('Hello World') == 'hello-world'\n",
+        encoding="utf-8")
+    plan = plan_implement_stub(str(tmp_path), "app/slug.py")
+    assert not plan.new_contents and not plan.blockers  # refused, nothing landed
+    assert (tmp_path / "app" / "slug.py").read_text() == original  # untouched
+
+
+def test_xfail_only_contract_refused_end_to_end(tmp_path: Path):
+    from app.engine.objective_compiler import compile_objective
+
+    # End-to-end proof the identity body never lands: even though `return text`
+    # would keep the (xfail) suite green, the objective refuses outright.
+    _suite_project(tmp_path)
+    original = "def slugify(text):\n    raise NotImplementedError\n"
+    (tmp_path / "app" / "slug.py").write_text(original, encoding="utf-8")
+    (tmp_path / "tests" / "test_slug.py").write_text(
+        "import pytest\nfrom app.slug import slugify\n"
+        "@pytest.mark.xfail\n"
+        "def test_slug():\n    assert slugify('Hello World') == 'hello-world'\n",
+        encoding="utf-8")
+    result = compile_objective(str(tmp_path), objective="implement-stub",
+                               apply=True, verify=True)
+    assert not result.steps  # nothing landed
+    assert (tmp_path / "app" / "slug.py").read_text() == original  # untouched
+
+
+def test_skip_only_contract_is_refused(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # @pytest.mark.skip never runs, so it enforces nothing either — refuse.
+    _suite_project(tmp_path)
+    original = "def double(n):\n    raise NotImplementedError\n"
+    (tmp_path / "app" / "d.py").write_text(original, encoding="utf-8")
+    (tmp_path / "tests" / "test_d.py").write_text(
+        "import pytest\nfrom app.d import double\n"
+        "@pytest.mark.skip\n"
+        "def test_d():\n    assert double(3) == 6\n    assert double(4) == 8\n",
+        encoding="utf-8")
+    plan = plan_implement_stub(str(tmp_path), "app/d.py")
+    assert not plan.new_contents and not plan.blockers
+
+
+def test_skipif_only_contract_is_refused(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # @pytest.mark.skipif likewise may not run — no enforced contract.
+    _suite_project(tmp_path)
+    original = "def double(n):\n    raise NotImplementedError\n"
+    (tmp_path / "app" / "d.py").write_text(original, encoding="utf-8")
+    (tmp_path / "tests" / "test_d.py").write_text(
+        "import pytest\nfrom app.d import double\n"
+        "@pytest.mark.skipif(True, reason='x')\n"
+        "def test_d():\n    assert double(3) == 6\n    assert double(4) == 8\n",
+        encoding="utf-8")
+    plan = plan_implement_stub(str(tmp_path), "app/d.py")
+    assert not plan.new_contents and not plan.blockers
+
+
+def test_xfail_witness_excluded_real_test_still_lands(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # A poison xfail assertion (double(0)==999, deliberately wrong) sits beside a
+    # REAL enforcing test. The xfail witness must be EXCLUDED (so it can't break
+    # synthesis), and the real contract must still land `n * 2`.
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "d.py").write_text(
+        "def double(n):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_d.py").write_text(
+        "import pytest\nfrom app.d import double\n"
+        "@pytest.mark.xfail\n"
+        "def test_future():\n    assert double(0) == 999\n"
+        "def test_real():\n    assert double(3) == 6\n    assert double(4) == 8\n",
+        encoding="utf-8")
+    body = plan_implement_stub(str(tmp_path), "app/d.py").new_contents.get("app/d.py")
+    assert body is not None
+    assert "return n * 2" in body or "return n + n" in body
+    assert "999" not in body  # the xfail's bogus literal never reaches synthesis
+
+
+def test_function_witnesses_exclude_xfail(tmp_path: Path):
+    from app.execution.stub_synthesis import StubFunction, _function_witnesses
+
+    # Direct check on the extractor: only the enforced witness is mined.
+    _write(tmp_path, "tests/test_w.py",
+           "import pytest\n"
+           "@pytest.mark.xfail\n"
+           "def test_a():\n    assert f(1) == 99\n"
+           "def test_b():\n    assert f(2) == 4\n")
+    stub = StubFunction("f", ("n",), 1, 2, "", False)
+    wits = _function_witnesses(tmp_path, ["tests/test_w.py"], stub)
+    assert wits == [("2", "4")]  # the xfail witness (1, 99) is dropped
+
+
+# --- DEFECT 2: ambiguity guard + value-free-after-derived reorder ------------
+
+def test_thin_ambiguous_contract_is_refused(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # The red-team repro: is_big intent is `n >= 100`, but the only witnesses are
+    # is_big(5)==False and is_big(200)==True. BOTH `n % 2 == 0` (parity) and a
+    # threshold (`n >= 200` / `n > 5`) pass those two points yet DISAGREE on
+    # is_big(50)/is_big(99). The witnesses don't determine intent, so REFUSE
+    # rather than stamp an arbitrary body verified.
+    _suite_project(tmp_path)
+    original = "def is_big(n):\n    raise NotImplementedError\n"
+    (tmp_path / "app" / "b.py").write_text(original, encoding="utf-8")
+    (tmp_path / "tests" / "test_b.py").write_text(
+        "from app.b import is_big\n"
+        "def test():\n    assert is_big(5) == False\n    assert is_big(200) == True\n",
+        encoding="utf-8")
+    plan = plan_implement_stub(str(tmp_path), "app/b.py")
+    assert not plan.new_contents and not plan.blockers  # ambiguity -> honest no-op
+    assert (tmp_path / "app" / "b.py").read_text() == original
+
+
+def test_ambiguous_contract_refused_end_to_end(tmp_path: Path):
+    from app.engine.objective_compiler import compile_objective
+
+    # End-to-end: the parity body `n % 2 == 0` (wrong for is_big(50)) must NOT
+    # land even though it passes the two thin witnesses — the guard refuses.
+    _suite_project(tmp_path)
+    original = "def is_big(n):\n    raise NotImplementedError\n"
+    (tmp_path / "app" / "b.py").write_text(original, encoding="utf-8")
+    (tmp_path / "tests" / "test_b.py").write_text(
+        "from app.b import is_big\n"
+        "def test():\n    assert is_big(5) == False\n    assert is_big(200) == True\n",
+        encoding="utf-8")
+    result = compile_objective(str(tmp_path), objective="implement-stub",
+                               apply=True, verify=True)
+    assert not result.steps
+    assert (tmp_path / "app" / "b.py").read_text() == original
+
+
+def test_unambiguous_parity_still_lands(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # A GENUINE parity contract: is_even(2)==True, is_even(3)==False,
+    # is_even(4)==True. No `n OP k` comparison can produce True,False,True (a
+    # comparison is monotonic), so parity is the ONLY shape that fits — not
+    # ambiguous — and `n % 2 == 0` still lands.
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "e.py").write_text(
+        "def is_even(n):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_e.py").write_text(
+        "from app.e import is_even\n"
+        "def test():\n"
+        "    assert is_even(2) == True\n"
+        "    assert is_even(3) == False\n"
+        "    assert is_even(4) == True\n", encoding="utf-8")
+    body = plan_implement_stub(str(tmp_path), "app/e.py").new_contents.get("app/e.py")
+    assert body is not None and "return n % 2 == 0" in body
+
+
+def test_equivalent_shapes_are_not_ambiguous(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # `n * 2` and `n + n` both pass double(3)==6, double(4)==8 but compute the
+    # SAME function everywhere — that is NOT a harmful ambiguity, so the guard
+    # must NOT refuse. A doubling body still lands.
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "d.py").write_text(
+        "def double(n):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_d.py").write_text(
+        "from app.d import double\n"
+        "def test():\n    assert double(3) == 6\n    assert double(4) == 8\n",
+        encoding="utf-8")
+    body = plan_implement_stub(str(tmp_path), "app/d.py").new_contents.get("app/d.py")
+    assert body is not None
+    assert "return n * 2" in body or "return n + n" in body
+
+
+def test_witness_derived_comparison_ordered_before_parity():
+    from app.execution.stub_synthesis import StubFunction, candidate_bodies
+
+    # DEFECT-2 reorder: when a numeric constant is inferable, the witness-derived
+    # comparison/arithmetic shapes (`n>=k`, `n==k`, `n*k`...) must precede the
+    # value-free parity / `n*2` so an intent-shaped body wins when both fit.
+    stub = StubFunction("f", ("n",), 1, 2, "", False)
+    witnesses = [("5", "1"), ("200", "1")]  # ints present -> k in {1, 5, 200}
+    labels = [lbl for lbl, _ in candidate_bodies(stub, witnesses)]
+    assert "even" in labels and "n>=5" in labels
+    assert labels.index("n>=5") < labels.index("even")   # derived before parity
+    assert labels.index("n*5") < labels.index("n*2")     # derived before n*2
+
+
+def test_ambiguity_guard_does_not_break_clear_arithmetic(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # triple(2)==6, triple(5)==15: only `n * 3` fits (n*2/n+n give 4,10), so it is
+    # unambiguous and lands — the guard must not over-refuse a determined intent.
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "t.py").write_text(
+        "def triple(n):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_t.py").write_text(
+        "from app.t import triple\n"
+        "def test():\n    assert triple(2) == 6\n    assert triple(5) == 15\n",
+        encoding="utf-8")
+    body = plan_implement_stub(str(tmp_path), "app/t.py").new_contents.get("app/t.py")
+    assert body is not None and "return n * 3" in body

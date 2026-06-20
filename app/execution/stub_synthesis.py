@@ -336,37 +336,46 @@ def _recursion_allowed(witnesses: list[tuple[str, str]]) -> bool:
 
 
 def _scalar_arith_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """Scalar arithmetic on one arg: the value-free ``n * 2`` / ``n + n`` plus,
-    for each numeric constant ``k`` inferable from the witnesses, ``n * k`` /
-    ``n + k`` / ``n - k`` / ``n // k`` / ``n % k``. Constants are tried in fixed
-    (sorted) order so synthesis stays deterministic."""
-    out: list[tuple[str, str]] = [
-        ("n*2", f"{a} * 2"),
-        ("n+n", f"{a} + {a}"),
-    ]
+    """Scalar arithmetic on one arg. The witness-DERIVED shapes (``n * k`` /
+    ``n + k`` / ``n - k`` / ``n // k`` / ``n % k`` for each constant ``k`` inferred
+    from the witnesses) come FIRST; the value-free ``n * 2`` / ``n + n`` come
+    AFTER. The order matters: when both an intent-shaped derived body and a
+    value-free body fit the thin witnesses, the witness-derived one must win
+    (``triple(2)==6,triple(5)==15`` lands ``n * 3``, not a coincidental
+    value-free shape). Constants are tried in fixed (sorted) order so synthesis
+    stays deterministic; the ambiguity guard still refuses if two DIFFERENT
+    shapes both fit."""
+    out: list[tuple[str, str]] = []
     for k in _numeric_constants(witnesses):
         out.append((f"n*{k}", f"{a} * {k}"))
         out.append((f"n+{k}", f"{a} + {k}"))
         out.append((f"n-{k}", f"{a} - {k}"))
         out.append((f"n//{k}", f"{a} // {k}"))
         out.append((f"n%{k}", f"{a} % {k}"))
+    out.append(("n*2", f"{a} * 2"))
+    out.append(("n+n", f"{a} + {a}"))
     return out
 
 
 def _parity_compare_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """Boolean shapes on one arg: parity (``n % 2 == 0`` / ``== 1``) and, for each
-    numeric constant ``k`` from the witnesses, comparison-to-constant (``n == k``,
-    ``n < k``, ``n <= k``, ``n > k``, ``n >= k``)."""
-    out: list[tuple[str, str]] = [
-        ("even", f"{a} % 2 == 0"),
-        ("odd", f"{a} % 2 == 1"),
-    ]
+    """Boolean shapes on one arg. The witness-DERIVED comparison-to-constant
+    shapes (``n == k``, ``n < k``, ``n <= k``, ``n > k``, ``n >= k`` for each
+    ``k`` from the witnesses) come FIRST; the value-free parity (``n % 2 == 0`` /
+    ``== 1``) comes AFTER. This is the DEFECT-2 reorder: a thin contract like
+    ``is_big(5)==False,is_big(200)==True`` must prefer the intent-shaped ``n >= k``
+    over the coincidental parity ``n % 2 == 0`` — and where BOTH still fit, the
+    ambiguity guard refuses. A genuine parity contract (``is_even(2)==True,
+    is_even(3)==False,is_even(4)==True``) pins no comparison ``k`` that fits, so
+    parity remains the only match and still lands."""
+    out: list[tuple[str, str]] = []
     for k in _numeric_constants(witnesses):
         out.append((f"n=={k}", f"{a} == {k}"))
         out.append((f"n<{k}", f"{a} < {k}"))
         out.append((f"n<={k}", f"{a} <= {k}"))
         out.append((f"n>{k}", f"{a} > {k}"))
         out.append((f"n>={k}", f"{a} >= {k}"))
+    out.append(("even", f"{a} % 2 == 0"))
+    out.append(("odd", f"{a} % 2 == 1"))
     return out
 
 
@@ -522,10 +531,15 @@ def _ordered_string_pairs(strings: list[str]) -> list[tuple[str, str]]:
 
 def _function_witnesses(root: Path, test_files: list[str],
                         stub: StubFunction) -> list[tuple[str, str]]:
-    """The ``(args_text, expected_text)`` pairs the pinned tests assert for
-    ``stub`` — every ``func(<args>) == <expected>`` in the test files. Used only
-    to PROPOSE value-dependent template constants; acceptance is still gated by
-    running the tests. Deterministic: source order within each sorted file."""
+    """The ``(args_text, expected_text)`` pairs the pinned tests ENFORCEABLY
+    assert for ``stub`` — every ``func(<args>) == <expected>`` in the test files
+    that does NOT live inside a test function marked ``@pytest.mark.xfail`` /
+    ``xfail`` / ``@pytest.mark.skip`` / ``skipif`` / ``@unittest.skip``. An
+    xfail/skip assertion pins NO enforceable contract (its failure is allowed or
+    it never runs), so it must not be mined for witnesses — otherwise a wrong body
+    that fails only an xfail assertion gets stamped "verified" while the suite
+    stays green. Used to PROPOSE value-dependent template constants and to gate
+    in-process synthesis. Deterministic: source order within each sorted file."""
     call_eq = re.compile(
         r"(?<![A-Za-z0-9_])" + re.escape(stub.name)
         + r"\s*\(([^()]*)\)\s*==\s*([^\n#]+)")
@@ -535,9 +549,101 @@ def _function_witnesses(root: Path, test_files: list[str],
             text = (root / rel).read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+        excluded = _unenforced_line_ranges(text)
         for m in call_eq.finditer(text):
+            line = text.count("\n", 0, m.start()) + 1
+            if _line_in_ranges(line, excluded):
+                continue  # assertion lives in an xfail/skip test — not a contract
             out.append((m.group(1).strip(), m.group(2).strip()))
     return out
+
+
+def _unenforced_line_ranges(text: str) -> list[tuple[int, int]]:
+    """The 1-based ``(start, end)`` line spans of every test function in ``text``
+    decorated to NOT enforce its assertions: ``@pytest.mark.xfail`` (and bare
+    ``@xfail``), ``@pytest.mark.skip`` / ``skipif``, and ``@unittest.skip*``. An
+    assertion inside such a function pins no contract — its failure is allowed
+    (xfail) or it never runs (skip). Deterministic; ``[]`` on a syntax error so a
+    parse failure never silently drops a real contract."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return []
+    out: list[tuple[int, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if any(_is_unenforced_decorator(d) for d in node.decorator_list):
+            out.append((node.lineno, node.end_lineno or node.lineno))
+    return out
+
+
+def _is_unenforced_decorator(dec: ast.expr) -> bool:
+    """True for a decorator that suspends a test's assertions: ``xfail`` / ``skip``
+    / ``skipif`` in any form (``@pytest.mark.xfail``, ``@xfail``,
+    ``pytest.mark.xfail(...)``, ``@unittest.skip(...)``, ``@skipUnless`` ...). We
+    match on the trailing attribute/name token so import-alias spellings still
+    count; ``skipUnless``/``skipIf`` (unittest) are included."""
+    if isinstance(dec, ast.Call):
+        dec = dec.func
+    name = None
+    if isinstance(dec, ast.Attribute):
+        name = dec.attr
+    elif isinstance(dec, ast.Name):
+        name = dec.id
+    if name is None:
+        return False
+    lowered = name.lower()
+    return lowered in {"xfail", "skip", "skipif", "skipunless"}
+
+
+def _line_in_ranges(line: int, ranges: list[tuple[int, int]]) -> bool:
+    """True when 1-based ``line`` falls within any ``(start, end)`` span."""
+    return any(start <= line <= end for start, end in ranges)
+
+
+def _has_enforceable_contract(root: Path, test_files: list[str],
+                              stub: StubFunction) -> bool:
+    """True when at least one ENFORCED test references ``stub.name`` — a test
+    function that is NOT decorated ``xfail`` / ``skip`` / ``skipif`` and so whose
+    assertions the suite actually enforces.
+
+    This is the never-fake-green floor for the pytest-gated path: when EVERY test
+    touching the stub is xfail/skip, the pinned-test gate is meaningless (an
+    xfail test stays "green" no matter what body we land, a skip never runs), so
+    synthesising a body against it would stamp an unenforced contract "verified".
+    We refuse instead. A non-stub reference inside an enforced test is enough — we
+    err toward "enforceable" only when a real, running test names the function.
+    Deterministic; on a parse failure we conservatively report ``True`` so a
+    parse hiccup never suppresses a genuine contract (the run gate still
+    decides)."""
+    name_re = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(stub.name)
+                         + r"(?![A-Za-z0-9_])")
+    saw_reference = False
+    for rel in sorted(test_files):
+        try:
+            text = (root / rel).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            if name_re.search(text):
+                return True  # can't analyse — assume the reference is enforced
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            seg = ast.get_source_segment(text, node) or ""
+            if not name_re.search(seg):
+                continue
+            saw_reference = True
+            if not any(_is_unenforced_decorator(d) for d in node.decorator_list):
+                return True  # an enforced test names the stub — real contract
+    # If no test referenced the stub at all, leave the decision to the caller
+    # (no-pinned-tests is handled separately as a no-op refusal). Only when EVERY
+    # referencing test was unenforced do we positively report "no contract".
+    return not saw_reference
 
 
 # --- synthesis (the gated search) --------------------------------------------
@@ -564,7 +670,11 @@ def _expected_constant(root: Path, test_files: list[str], stub: StubFunction) ->
             text = (root / rel).read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+        excluded = _unenforced_line_ranges(text)
         for m in call_eq.finditer(text):
+            line = text.count("\n", 0, m.start()) + 1
+            if _line_in_ranges(line, excluded):
+                continue  # xfail/skip assertion pins no enforceable literal
             lit = _leading_literal(m.group(2))
             if lit is None:
                 return None
@@ -704,9 +814,22 @@ def synthesize_stub_body(root: Path, module_rel: str, stub: StubFunction,
     the tests agree on one literal across >=2 distinct argument tuples). The
     FIRST candidate whose pinned tests all pass wins, so a parameter template
     beats a bare constant. With no pinned tests there is no spec to satisfy —
-    refuse immediately."""
+    refuse immediately.
+
+    Two never-fake-green floors precede the search:
+
+    * **enforceable-contract floor** — if EVERY pinned test touching the stub is
+      ``xfail`` / ``skip``, the gate is meaningless (an xfail test stays green for
+      any body), so we refuse rather than stamp an unenforced contract verified;
+    * **ambiguity floor** — if >=2 fixed templates of DIFFERENT shape both satisfy
+      ALL the enforceable witnesses, the witnesses don't determine intent, so we
+      refuse (mirror ``cross_file_rename``'s conservatism on an ambiguous spec)."""
     if not test_files:
         return None
+    if not _has_enforceable_contract(root, test_files, stub):
+        return None  # only xfail/skip tests pin this stub — no real contract
+    if _is_ambiguous(root, test_files, stub):
+        return None  # witnesses fit >=2 different-shape templates — under-specified
     runner = runner or RunTestsSkill()
     source = (root / module_rel).read_text(encoding="utf-8")
 
@@ -743,13 +866,23 @@ def synthesize_expr_from_witnesses(root: Path, test_files: list[str],
     a witness like ``double(3) == 6`` is checked by binding ``n = 3`` and
     comparing ``eval('n * 2')`` to ``6``. A candidate is accepted ONLY when it
     matches EVERY witness — never a guess. The composed module is still gated by
-    the real suite afterwards (never-fake-green)."""
+    the real suite afterwards (never-fake-green).
+
+    Two never-fake-green floors precede acceptance, the same the pytest-gated
+    path applies: an ``xfail``/``skip``-only contract is unenforceable (its
+    witnesses are already dropped by :func:`_function_witnesses`, and an all-xfail
+    test set is refused outright), and a contract that fits >=2 different-shape
+    templates is ambiguous, so we refuse rather than land an arbitrary first."""
+    if not _has_enforceable_contract(root, test_files, stub):
+        return None  # only xfail/skip tests pin this stub — no real contract
     witnesses = _function_witnesses(root, test_files, stub)
     if not witnesses:
         return None
     evaluable = _evaluable_witnesses(witnesses, stub)
     if evaluable is None:
         return None
+    if _is_ambiguous(root, test_files, stub):
+        return None  # witnesses fit >=2 different-shape templates — under-specified
     for _label, expr in _ordered_candidates(root, test_files, stub):
         if _expr_matches_all(expr, stub, evaluable):
             return expr
@@ -833,6 +966,97 @@ def _expr_matches_all(expr: str, stub: StubFunction,
         if type(value) is not type(expected) or value != expected:
             return False
     return True
+
+
+def _is_ambiguous(root: Path, test_files: list[str], stub: StubFunction) -> bool:
+    """True when the stub's ENFORCEABLE witnesses are satisfied by >=2 templates
+    that DISAGREE on some untested input — the witnesses don't determine intent,
+    so any single pick would be an arbitrary guess stamped "verified".
+
+    Two templates that both pass every witness but compute DIFFERENT functions
+    (they differ on a canary input outside the witness set) are the harmful
+    ambiguity: the thin contract ``is_big(5)==False``, ``is_big(200)==True`` is
+    matched by BOTH ``n % 2 == 0`` (parity) and ``n >= 200`` (threshold), which
+    disagree on ``is_big(50)`` — neither is trustworthy, so we land nothing
+    (mirroring ``cross_file_rename``'s refusal on an ambiguous target). Templates
+    that agree EVERYWHERE (``n * 2`` and ``n + n`` both double) are NOT ambiguous —
+    they are the same intent spelled two ways, so they never trip the guard.
+
+    The disagreement is detected by evaluating each witness-passing template on a
+    fixed canary input set derived deterministically from the witnesses; if two
+    of them ever produce different results, the contract is ambiguous. Recursion
+    bodies (``__apex_self__``) can't be eval'd here, and the constant last resort
+    is excluded — only the genuine competing intents are weighed. With no
+    evaluable witnesses there is nothing to disambiguate, so it returns
+    ``False``."""
+    witnesses = _function_witnesses(root, test_files, stub)
+    evaluable = _evaluable_witnesses(witnesses, stub) if witnesses else None
+    if not evaluable:
+        return False
+    matching: list[str] = []
+    for label, expr in _ordered_candidates(root, test_files, stub):
+        if label == "constant" or "__apex_self__" in expr:
+            continue
+        if _expr_matches_all(expr, stub, evaluable):
+            matching.append(expr)
+    if len(matching) < 2:
+        return False
+    canaries = _canary_inputs(evaluable)
+    fingerprints: set[tuple] = set()
+    for expr in matching:
+        fingerprints.add(_expr_fingerprint(expr, stub, canaries))
+        if len(fingerprints) >= 2:
+            return True  # two passing templates disagree off-witness — ambiguous
+    return False
+
+
+def _canary_inputs(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
+    """A fixed, deterministic set of off-witness probe inputs for the ambiguity
+    check, built from the witnessed argument tuples. For a single int argument we
+    probe small neighbours of the witnessed values (``v-1``, ``v+1``, plus a few
+    fixed anchors) so two bodies that agree on the witnesses but diverge nearby
+    (parity vs threshold) are caught. The witnessed tuples themselves are always
+    included. Multi-arg / non-int args fall back to the witnessed tuples alone —
+    two bodies that disagree there already disagree on a witness, which the gate
+    catches anyway, so the guard stays conservative (never over-refuses)."""
+    probes: list[tuple] = [args for args, _expected in witnesses]
+    arity = len(probes[0]) if probes else 0
+    if arity == 1 and all(isinstance(args[0], int) and not isinstance(args[0], bool)
+                          for args, _e in witnesses):
+        extra: set[int] = set()
+        for args, _e in witnesses:
+            v = args[0]
+            extra.update({v - 1, v + 1})
+        extra.update({0, 1, 2, 3, 50, 99, 100, -1})
+        for v in sorted(extra):
+            probes.append((v,))
+    # De-duplicate while preserving deterministic order.
+    seen: set[tuple] = set()
+    ordered: list[tuple] = []
+    for p in probes:
+        if p not in seen:
+            seen.add(p)
+            ordered.append(p)
+    return ordered
+
+
+def _expr_fingerprint(expr: str, stub: StubFunction, canaries: list[tuple]) -> tuple:
+    """The tuple of ``(repr(value) or '<err>')`` ``expr`` yields on each canary
+    input — a deterministic signature of the FUNCTION the template computes.
+    Two templates with equal fingerprints compute the same function on the probe
+    set (same intent); differing fingerprints mean they disagree off-witness.
+    Evaluation errors are folded into a stable ``'<err>'`` token so a body that
+    raises on a canary still produces a comparable signature."""
+    env_globals = {"__builtins__": _SAFE_BUILTINS}
+    out: list[str] = []
+    for args in canaries:
+        local = dict(zip(stub.params, args))
+        try:
+            value = eval(expr, env_globals, local)  # noqa: S307 - fixed templates only
+            out.append(f"{type(value).__name__}:{value!r}")
+        except Exception:
+            out.append("<err>")
+    return tuple(out)
 
 
 def fill_stub_body(source: str, stub: StubFunction, return_expr: str) -> str | None:
