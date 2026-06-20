@@ -43,6 +43,7 @@ treats one as the subject to mutate). Deterministic, stdlib-only, zero-token.
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib.util
 import shutil
 import sys
@@ -221,16 +222,23 @@ def _probe_combinations(arity: int):
         yield combo
 
 
-def _killing_assertion(real_module: object, mutant_module: object, dotted: str,
+def _killing_assertion(real_module: object, mutant_module: object, call_target: str,
                        fn_name: str, arity: int) -> str | None:
-    """A double-gated ``fn(args) == <captured>`` assertion line, or ``None``.
+    """A double-gated ``call_target(args) == <captured>`` assertion line, or ``None``.
+
+    ``call_target`` is the exact callable expression the rendered test will use
+    (e.g. ``_apex_mod.classify``, ``alias.classify`` reusing an existing import,
+    or bare ``classify`` for a ``from pkg.mod import classify``). The double gate
+    itself runs ``module.fn_name(*args)`` in-process, so it is independent of how
+    the assertion ADDRESSES the function — ``call_target`` only shapes the emitted
+    line, ``fn_name`` drives the gate.
 
     Searches the deterministic probe combinations in fixed order for the FIRST
     input tuple where BOTH gates hold:
 
     * gate (a) — the REAL function returns a simple, reproducible literal whose
-      ``repr`` round-trips, so ``assert fn(args) == <repr>`` passes on real code
-      by construction;
+      ``repr`` round-trips, so ``assert call_target(args) == <repr>`` passes on
+      real code by construction;
     * gate (b) — the SAME call against the mutated source diverges, so the
       assertion fails on the mutant (it provably kills it).
 
@@ -251,26 +259,130 @@ def _killing_assertion(real_module: object, mutant_module: object, dotted: str,
         if not _diverges(real_value, mutant_module, fn_name, values):
             continue  # mutant agrees on these inputs -> not a kill, keep searching
         call_args = ", ".join(combo)
-        return f"assert {dotted}.{fn_name}({call_args}) == {oracle}"
+        return f"assert {call_target}({call_args}) == {oracle}"
     return None
 
 
+def _alias_for(fn_name: str) -> str:
+    """A stable, private import alias for ``fn_name`` — deterministic, no clock.
+
+    The alias is derived solely from the function name, so two runs over the same
+    module emit the identical ``from pkg.mod import fn as _apex_fn_<name>`` import.
+    The ``_apex_fn_`` prefix keeps it private (it can never collide with a public
+    name the test already uses) and unmistakably Apex-owned."""
+    return f"_apex_fn_{fn_name}"
+
+
+def _existing_bindings(existing: str | None,
+                       dotted: str) -> tuple[list[str], dict[str, str]]:
+    """How the EXISTING test file already addresses ``dotted`` — reuse what works.
+
+    Returns ``(module_prefixes, fn_bindings)``:
+
+    * ``module_prefixes`` — names bound to the module itself by an
+      ``import pkg.mod`` (binds the dotted path) or ``import pkg.mod as alias``
+      (binds ``alias``), usable as ``prefix.fn(...)`` for ANY function in it;
+    * ``fn_bindings`` — ``{function_name: bound_name}`` from
+      ``from pkg.mod import fn`` / ``... as bound``, usable as a BARE call.
+
+    Reusing a binding the file already imports is the most robust fix: it is, by
+    definition, an addressing form that already resolves in that test. A file we
+    cannot read/parse yields empty maps, so the caller falls back to an alias
+    import that is guaranteed to resolve. The relative ``from . import`` /
+    ``from .mod import`` forms are ignored (their package anchor is the test
+    file's location, which is not the module's dotted path)."""
+    module_prefixes: list[str] = []
+    fn_bindings: dict[str, str] = {}
+    if existing is None:
+        return module_prefixes, fn_bindings
+    try:
+        tree = ast.parse(existing)
+    except (SyntaxError, RecursionError, MemoryError):
+        return module_prefixes, fn_bindings
+    for node in ast.walk(tree):
+        _collect_binding(node, dotted, module_prefixes, fn_bindings)
+    return module_prefixes, fn_bindings
+
+
+def _collect_binding(node: ast.AST, dotted: str, module_prefixes: list[str],
+                     fn_bindings: dict[str, str]) -> None:
+    """Record any binding ``node`` (an ``import``/``from``-import) gives ``dotted``.
+
+    ``import pkg.mod`` / ``import pkg.mod as a`` adds the dotted path / alias as a
+    MODULE prefix; ``from pkg.mod import fn`` / ``... as bound`` maps ``fn ->
+    bound`` (a star import binds names we cannot enumerate, so it is skipped).
+    Relative imports (``node.level > 0``) anchor at the test file, not ``dotted``,
+    so they are ignored."""
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            if alias.name == dotted:
+                module_prefixes.append(alias.asname or alias.name)
+    elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == dotted:
+        for alias in node.names:
+            if alias.name != "*":  # a star import binds names we cannot enumerate
+                fn_bindings[alias.name] = alias.asname or alias.name
+
+
+def _binding_for(fn_name: str, dotted: str, module_prefixes: list[str],
+                 fn_bindings: dict[str, str]) -> tuple[str | None, str, str]:
+    """``(emit_import, verify_import, call_target)`` for calling ``fn_name``.
+
+    Resolution order (most robust first):
+
+    1. the EXISTING test already does ``from pkg.mod import fn`` — call the bound
+       name BARE; nothing new to EMIT (``emit_import`` is ``None``), and the
+       binding is VERIFIED with the equivalent ``from pkg.mod import fn as bound``;
+    2. the existing test already does ``import pkg.mod`` / ``... as alias`` — call
+       ``prefix.fn``; nothing new to emit, verified with ``import pkg.mod`` (the
+       ``prefix`` is that import's own binding);
+    3. otherwise EMIT (and verify with) an UNAMBIGUOUS alias import,
+       ``from pkg.mod import fn as _apex_fn_<name>``, and call the alias.
+
+    ``emit_import`` is what the rendered test will ADD; ``verify_import`` is the
+    import that makes ``call_target`` resolve when run standalone (a reused
+    binding emits nothing but still has an import that backs it). The alias
+    fallback is a ``from``-import of the SUBMODULE's own namespace, so it binds
+    the function directly and is immune to a same-named function a package
+    ``__init__`` re-exports (which would shadow ``pkg.mod`` as an attribute).
+    Determinism: a fixed resolution order and a name-derived alias."""
+    if fn_name in fn_bindings:
+        bound = fn_bindings[fn_name]
+        return None, f"from {dotted} import {fn_name} as {bound}", bound
+    if module_prefixes:
+        prefix = module_prefixes[0]
+        # The prefix is either the dotted path (plain `import pkg.mod`) or an
+        # alias (`import pkg.mod as alias`); reconstruct that exact import to
+        # verify the `prefix.fn` call resolves.
+        verify = f"import {dotted}" if prefix == dotted else f"import {dotted} as {prefix}"
+        return None, verify, f"{prefix}.{fn_name}"
+    alias = _alias_for(fn_name)
+    line = f"from {dotted} import {fn_name} as {alias}"
+    return line, line, alias
+
+
 def _survivor_assertions(root: Path, module_rel: str, source: str,
-                         tree: ast.Module, survivors: list[Mutant]) -> list[str]:
-    """The double-gated killing assertions for ``survivors`` (sorted, unique).
+                         tree: ast.Module, survivors: list[Mutant],
+                         existing: str | None) -> tuple[list[str], list[str]]:
+    """``(assertions, imports)`` — double-gated killers + the imports they need.
 
     For each survivor (in the mutation engine's deterministic document order) we
     locate the containing top-level public function, rebuild the exact mutated
     source for that survivor via the engine's own ``_splice``, synthesize a blind
     call with test_shield's ``_safe_call``, and keep the assertion only if it is
-    double-gated. Duplicate assertions (two survivors in the same function killed
-    by the same call) are collapsed; the result is sorted for a stable file."""
+    double-gated. The call is ADDRESSED through a binding guaranteed to resolve:
+    the one the ``existing`` test already uses, else a private alias import
+    (returned in ``imports``). Each emitted assertion is then re-validated to
+    actually run via the in-process oracle, so a binding that does not resolve is
+    never landed. Duplicate assertions are collapsed; both lists are sorted for a
+    stable file."""
     dotted = _dotted_name(module_rel)
     real_module = _load_module_from_source(source, dotted)
     if real_module is None:
-        return []
+        return [], []
+    module_prefixes, fn_bindings = _existing_bindings(existing, dotted)
     source_lines = source.splitlines(keepends=True)
     assertions: set[str] = set()
+    imports: set[str] = set()
     for mutant in survivors:
         fn = _function_for_line(tree, mutant.line)
         if fn is None:
@@ -288,11 +400,93 @@ def _survivor_assertions(root: Path, module_rel: str, source: str,
         mutant_module = _load_module_from_source(mutated_source, dotted)
         if mutant_module is None:
             continue  # mutated source won't import -> cannot prove the kill
+        emit_import, verify_import, call_target = _binding_for(
+            fn_name, dotted, module_prefixes, fn_bindings)
         line = _killing_assertion(
-            real_module, mutant_module, dotted, fn_name, arity)
-        if line is not None:
-            assertions.add(line)
-    return sorted(assertions)
+            real_module, mutant_module, call_target, fn_name, arity)
+        if line is None:
+            continue
+        if not _import_call_resolves(root, dotted, verify_import, line):
+            continue  # the import+call must actually run against the project
+        assertions.add(line)
+        if emit_import is not None:
+            imports.add(emit_import)
+    return sorted(assertions), sorted(imports)
+
+
+@contextlib.contextmanager
+def _hermetic_modules(dotted: str):
+    """Run a block with ``sys.modules`` snapshotted, the target package EVICTED on
+    entry, and the snapshot restored on exit.
+
+    The resolution probe imports the real project's package. Two cache hazards are
+    neutralised: (1) a STALE cache — a same-named package from an earlier probe or
+    a different project — would make the probe resolve against the wrong files, so
+    every component of ``dotted`` (``pkg``, ``pkg.mod``) is evicted on entry,
+    forcing a fresh on-disk import; (2) a LEAKED cache — the freshly imported
+    package would otherwise persist, perturbing later probes — so the original
+    ``sys.modules`` is restored exactly on exit (additions dropped, originals put
+    back). Deterministic and side-effect-free by construction: same files in,
+    same answer out, no trace left behind."""
+    saved = dict(sys.modules)
+    parts = dotted.split(".")
+    for i in range(len(parts)):
+        sys.modules.pop(".".join(parts[: i + 1]), None)
+    try:
+        yield
+    finally:
+        for name in list(sys.modules):
+            if name not in saved:
+                del sys.modules[name]
+        # Restore any module object the probe may have overwritten in place.
+        for name, module in saved.items():
+            sys.modules[name] = module
+
+
+def _import_call_resolves(root: Path, dotted: str, import_line: str | None,
+                          assertion: str) -> bool:
+    """Does the EMITTED ``import_line`` + ``assertion`` actually run against the
+    real project? The final guard before a binding is trusted to LAND.
+
+    We load exactly what the test file will contain — the (optional) import then
+    the bare assertion — as a throwaway module with ``root`` on ``sys.path``,
+    through the same sanctioned ``spec.loader.exec_module`` discipline the double
+    gate uses (no bytecode, restored path, no bare ``exec`` surface). The target
+    package ``dotted`` is freshly imported under :func:`_hermetic_modules` so a
+    stale/leaked cache never skews the answer. A binding that fails to resolve (an
+    ``ImportError``/``NameError``/``AttributeError`` from a shadowed re-export)
+    makes this ``False`` and the assertion is dropped, so a non-resolving import
+    is never landed. The assertion is the double-gated one, so it passes on the
+    real code by construction; this confirms it RESOLVES, closing the field-test
+    gap where a correct assertion failed only on import."""
+    snippet = (import_line + "\n" + assertion + "\n") if import_line else assertion + "\n"
+    root_str = str(root)
+    added = root_str not in sys.path
+    if added:
+        sys.path.insert(0, root_str)
+    prev_dont_write = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    tmpdir = tempfile.mkdtemp(prefix="_apex_strengthen_resolve_")
+    with _hermetic_modules(dotted):
+        try:
+            path = Path(tmpdir) / "probe.py"
+            path.write_text(snippet, encoding="utf-8")
+            name = f"_apex_strengthen_resolve_{abs(hash(snippet)):x}"
+            spec = importlib.util.spec_from_file_location(name, path)
+            if spec is None or spec.loader is None:
+                return False
+            spec.loader.exec_module(importlib.util.module_from_spec(spec))
+            return True
+        except Exception:
+            return False
+        finally:
+            sys.dont_write_bytecode = prev_dont_write
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            if added:
+                try:
+                    sys.path.remove(root_str)
+                except ValueError:
+                    pass
 
 
 def _site_of(mutant: Mutant, source_lines: list[str]):
@@ -314,16 +508,55 @@ def _site_of(mutant: Mutant, source_lines: list[str]):
 
 
 def _render_appended(dotted: str, module_stem: str, assertions: list[str],
-                     existing: str | None) -> str:
+                     imports: list[str], existing: str | None) -> str:
     """The test-file text after appending the new mutant-killing assertions.
+
+    ``imports`` are the alias-import lines the assertions need (empty when every
+    call reuses a binding the existing test already provides). They are emitted on
+    BOTH paths: prepended to the fresh-file header, and — critically — inside the
+    appended test function on the EXISTING-file path, so an appended assertion's
+    call always has a name that resolves (the field-test bug was the missing
+    import here). Module-level imports are placed inside the function body so the
+    append never edits the file's existing top-of-file imports.
 
     When the module already has a ``tests/test_<stem>.py`` (``existing`` is its
     text) the killing assertions are APPENDED as one new test function so the
-    file's existing tests are untouched. When there is none, a fresh file with an
-    ``import <dotted>`` header is created. Deterministic: a fixed function body,
-    assertions in sorted order, a single trailing newline."""
-    body = [f"    {line}" for line in assertions]
-    func = [
+    file's existing tests are untouched — and any alias imports go INSIDE that
+    function (the field-test bug was the missing import here). When there is none,
+    a fresh file is created with the alias imports at top level (falling back to
+    ``import <dotted>`` when there are none). Deterministic: imports and
+    assertions in sorted order, a fixed function body, a single trailing
+    newline."""
+    if existing is not None:
+        inner = [f"    {line}" for line in imports]
+        if imports:
+            inner.append("")
+        inner += [f"    {line}" for line in assertions]
+        func = _killing_func(module_stem, inner)
+        text = existing if existing.endswith("\n") else existing + "\n"
+        return text + "\n".join(func) + "\n"
+    func = _killing_func(module_stem, [f"    {line}" for line in assertions])
+    header = [
+        "# Generated by Apex Orchestrator - mutant-killing assertions",
+        f"# module: {dotted}",
+        "#",
+        "# Each assertion below pins behaviour a surviving mutant exposed as a test",
+        "# blind spot: it passes on the real code and fails against that mutant",
+        "# (double-gated, never-fake-green). Regenerate, do not hand-tune.",
+        "",
+        # On a fresh file the imports live at top level; with no alias import to
+        # reuse we still pull the module in so a bare-binding reuse stays valid.
+        *(imports if imports else [f"import {dotted}"]),
+    ]
+    return "\n".join(header + func) + "\n"
+
+
+def _killing_func(module_stem: str, body_lines: list[str]) -> list[str]:
+    """The ``def test_<stem>_kills_surviving_mutants`` block with ``body_lines``.
+
+    A fixed header/docstring with the (already-indented) ``body_lines`` appended,
+    so both the fresh-file and append paths share one deterministic shape."""
+    return [
         "",
         "",
         f"def test_{module_stem}_kills_surviving_mutants():",
@@ -334,22 +567,8 @@ def _render_appended(dotted: str, module_stem: str, assertions: list[str],
         "    double-gated (it passes on the real code AND fails against the specific",
         "    surviving mutant it kills). Regenerate, do not hand-tune.",
         '    """',
-        *body,
+        *body_lines,
     ]
-    if existing is not None:
-        text = existing if existing.endswith("\n") else existing + "\n"
-        return text + "\n".join(func) + "\n"
-    header = [
-        "# Generated by Apex Orchestrator - mutant-killing assertions",
-        f"# module: {dotted}",
-        "#",
-        "# Each assertion below pins behaviour a surviving mutant exposed as a test",
-        "# blind spot: it passes on the real code and fails against that mutant",
-        "# (double-gated, never-fake-green). Regenerate, do not hand-tune.",
-        "",
-        f"import {dotted}",
-    ]
-    return "\n".join(header + func) + "\n"
 
 
 def plan_strengthen_tests(project_root: str | Path, module_rel: str) -> RenamePlan:
@@ -368,18 +587,36 @@ def plan_strengthen_tests(project_root: str | Path, module_rel: str) -> RenamePl
     rel = module_rel.replace("\\", "/")
     if not rel.endswith(".py") or _is_fixture_path(rel):
         return plan  # never treat a test/fixture (or non-module) as the subject
-    assertions = _module_killing_assertions(Path(project_root), rel)
-    if not assertions:
+    root = Path(project_root)
+    existing = _read_existing_test(root, rel)
+    killers = _module_killing_assertions(root, rel, existing)
+    if killers is None:
         return plan  # nothing to land (no survivors / unkillable / unreadable)
-    return _attach_test_write(plan, Path(project_root), rel, assertions)
+    assertions, imports = killers
+    return _attach_test_write(plan, root, rel, assertions, imports, existing)
 
 
-def _module_killing_assertions(root: Path, rel: str) -> list | None:
-    """The double-gated mutant-killing assertions for one module, or ``None``.
+def _read_existing_test(root: Path, rel: str) -> str | None:
+    """The text of the module's ``tests/test_<stem>.py`` if it exists and reads,
+    else ``None`` — both the binding source and the file we extend."""
+    target = root / f"tests/test_{Path(rel).stem}.py"
+    if not target.exists():
+        return None
+    try:
+        return target.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
-    ``None`` (a no-op) for: a packaging module (``__init__``/``__main__``), an
+
+def _module_killing_assertions(root: Path, rel: str,
+                               existing: str | None) -> tuple[list, list] | None:
+    """``(assertions, imports)`` for one module, or ``None`` (a no-op).
+
+    ``None`` for: a packaging module (``__init__``/``__main__``), an
     unreadable/unparseable source, an unsound (red) or already-saturated mutation
-    baseline, or a survivor set from which nothing could be killed honestly."""
+    baseline, or a survivor set from which nothing could be killed honestly.
+    ``existing`` (the current test file, if any) seeds the import-binding reuse so
+    appended assertions address the function the way that file already does."""
     module_stem = Path(rel).stem
     if module_stem.startswith("__"):  # __init__/__main__ are packaging, not behaviour
         return None
@@ -392,25 +629,23 @@ def _module_killing_assertions(root: Path, rel: str) -> list | None:
     # A red baseline makes the kill/survive split meaningless; refuse to act on it.
     if not result.baseline_ok or not result.survivors:
         return None
-    return _survivor_assertions(root, rel, source, tree, result.survivors) or None
+    assertions, imports = _survivor_assertions(
+        root, rel, source, tree, result.survivors, existing)
+    if not assertions:
+        return None
+    return assertions, imports
 
 
-def _attach_test_write(plan: RenamePlan, root: Path, rel: str, assertions: list) -> RenamePlan:
+def _attach_test_write(plan: RenamePlan, root: Path, rel: str, assertions: list,
+                       imports: list, existing: str | None) -> RenamePlan:
     """Render the killing assertions into ``tests/test_<stem>.py`` on ``plan``.
 
     Extends an existing test file (recording the original for rollback) or creates
-    a new one. A degenerate render that does not re-parse, or an unreadable
-    existing file, leaves the plan empty (a no-op)."""
+    a new one, emitting ``imports`` on whichever path applies. A degenerate render
+    that does not re-parse leaves the plan empty (a no-op)."""
     module_stem = Path(rel).stem
     test_path = f"tests/test_{module_stem}.py"
-    target = root / test_path
-    existing: str | None = None
-    if target.exists():
-        try:
-            existing = target.read_text(encoding="utf-8")
-        except OSError:
-            return plan  # can't read the file to extend it -> no-op
-    content = _render_appended(_dotted_name(rel), module_stem, assertions, existing)
+    content = _render_appended(_dotted_name(rel), module_stem, assertions, imports, existing)
     try:
         ast.parse(content)
     except (SyntaxError, RecursionError, MemoryError):
