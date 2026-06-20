@@ -505,6 +505,24 @@ def _exc_type_name(exc_msg: str) -> str | None:
     return head
 
 
+def _want_is_bare_exception(want: str) -> bool:
+    """``True`` when ``want`` is a traceback whose final line is a BARE type.
+
+    A doctest exception example with no detail message -- the traceback's last
+    line is just ``TypeError`` (not ``TypeError: some message``). doctest's
+    strict exception matcher will NOT match such a bare-type ``want`` against a
+    real traceback (which always carries the runtime message), so a code path
+    that raises EXACTLY the documented type would be mis-scored as failing. We
+    detect this shape so it can be re-run under ``IGNORE_EXCEPTION_DETAIL``,
+    where doctest matches on the exception TYPE alone (deterministic, offline).
+    """
+    lines = [ln for ln in want.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    last = lines[-1].strip()
+    return ":" not in last and _exc_type_name(last) is not None
+
+
 def _example_passes(source: str, want: str, ns: dict) -> bool:
     """Run ONE doctest example against namespace ``ns``; ``True`` iff it passes.
 
@@ -514,11 +532,19 @@ def _example_passes(source: str, want: str, ns: dict) -> bool:
     pass/fail decision is exactly doctest's own (deterministic, offline). Output
     is discarded. Any failure to even build/run the example counts as "does not
     pass" (-> honest xfail), never as a false green.
+
+    A bare-type exception ``want`` (``TypeError`` with no ``: message``) is run
+    under :data:`doctest.IGNORE_EXCEPTION_DETAIL`, so a code path that raises
+    exactly the documented type is honestly scored as PASSING (doctest's strict
+    matcher would otherwise reject the message-less form and fake a red).
     """
+    optionflags = 0
+    if _want_is_bare_exception(want):
+        optionflags = doctest.IGNORE_EXCEPTION_DETAIL
     block = f">>> {source}\n{want}"
     try:
         test = doctest.DocTestParser().get_doctest(block, dict(ns), "<mined>", None, 0)
-        runner = doctest.DocTestRunner(verbose=False)
+        runner = doctest.DocTestRunner(verbose=False, optionflags=optionflags)
         sink = io.StringIO()
         result = runner.run(test, out=sink.write, clear_globs=True)
     except Exception:

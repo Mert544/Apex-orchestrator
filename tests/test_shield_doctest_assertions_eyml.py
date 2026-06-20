@@ -176,6 +176,72 @@ def test_documented_exception_becomes_pytest_raises(tmp_path):
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+def test_bare_type_exception_becomes_passing_pytest_raises(tmp_path):
+    # A message-LESS traceback: the want's last line is a BARE exception type
+    # (``TypeError``, no ``: message``). doctest's strict exception matcher would
+    # reject this form even when the code raises EXACTLY that type, which would
+    # mis-score a SATISFIED contract as unmet and emit a strict-xfail that XPASSes
+    # at runtime -> a RED suite on CORRECT code (a fake-red honesty bug). The code
+    # really does raise TypeError, so this must be a PASSING pytest.raises.
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/baretype.py",
+        '''
+        def f(x):
+            """Add one to x.
+
+            Examples:
+                >>> f(None)
+                Traceback (most recent call last):
+                TypeError
+            """
+            return x + 1
+        ''',
+    )
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    assert "with pytest.raises(TypeError):" in shield.content
+    assert "f(None)" in shield.content
+    # The code really does raise TypeError -> PASSING assertion, never a strict-xfail.
+    assert "xfail" not in shield.content
+    ast.parse(shield.content)
+    # And the generated suite is GREEN (no [XPASS(strict)] on correct code).
+    path = write_shield_test(tmp_path, shield)
+    proc = _run_generated(tmp_path, path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "XPASS" not in proc.stdout
+
+
+def test_bare_type_exception_not_raised_becomes_xfail(tmp_path):
+    # Same message-less bare-type form, but the code does NOT raise it -> the
+    # documented contract is unmet, so it must stay an HONEST xfail (never a fake
+    # green). This guards that the bare-type fix did not blanket-pass everything.
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/barenoraise.py",
+        '''
+        def g(x):
+            """Return zero.
+
+            Examples:
+                >>> g(None)
+                Traceback (most recent call last):
+                TypeError
+            """
+            return 0  # never raises -> the documented contract is unmet
+        ''',
+    )
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    assert "@pytest.mark.xfail(strict=True" in shield.content
+    assert "with pytest.raises(TypeError):" in shield.content
+    ast.parse(shield.content)
+    path = write_shield_test(tmp_path, shield)
+    proc = _run_generated(tmp_path, path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "xfailed" in proc.stdout
+
+
 def test_documented_exception_not_raised_becomes_xfail(tmp_path):
     rel = _make_pkg(
         tmp_path,
