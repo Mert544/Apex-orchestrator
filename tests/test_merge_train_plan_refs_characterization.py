@@ -14,8 +14,33 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 LIVE_PATH = ROOT / "scripts" / "merge_train.py"
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_modules():
+    """Snapshot ``sys.modules`` and restore it exactly after each test.
+
+    ``_load_module`` and ``_install_fakes`` inject scratch modules plus fake
+    ``app`` / ``app.engine`` / ``app.engine.work_partition`` entries into the
+    global import table. Without teardown those fakes (which lack the real
+    module's symbols/``__file__``) leak into later tests that resolve
+    ``app.engine.work_partition`` freshly, causing order-dependent failures.
+    Saving and restoring the table keeps the test hermetic.
+    """
+    saved = dict(sys.modules)
+    try:
+        yield
+    finally:
+        # Drop anything this test added.
+        for name in set(sys.modules) - set(saved):
+            del sys.modules[name]
+        # Restore anything this test replaced or removed.
+        for name, mod in saved.items():
+            sys.modules[name] = mod
 
 
 def _load_module(name: str, source: str) -> types.ModuleType:
