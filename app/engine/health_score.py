@@ -9,6 +9,7 @@ ways to climb. Deterministic; built from the ProjectProfile + a security scan.
 
 from __future__ import annotations
 
+import ast
 from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
@@ -169,6 +170,112 @@ def _security_weight(issues: list[Any]) -> tuple[int, int]:
     return len(security), w
 
 
+# --- unimplemented-stub debt -------------------------------------------------
+# An unimplemented function body (``raise NotImplementedError`` / a bare ``...``)
+# is real DEVELOPMENT debt: code the project has SIGNALLED it still owes. The
+# grade must see it — otherwise a project of stubs can read A+/100 and the grade
+# can neither flag the work to do nor show the gain once `apex develop` lands it.
+# Folded into the existing Correctness bucket (no new component), so a project
+# with no such stubs grades byte-identically to before.
+#
+# We reuse the develop loop's own detector (`stub_synthesis._is_stub_body`) so
+# "stub" means exactly what `apex develop` would try to implement, then narrow to
+# the EXPLICIT unfinished markers only — a bare ``pass`` body is too often a
+# legitimate no-op (plugin hooks, silenced overrides, base defaults) to charge as
+# debt. Abstract / interface / override stubs are excluded by `_is_debt_stub`.
+
+_ABSTRACT_BASES = {"ABC", "Protocol", "ABCMeta"}
+
+
+def _is_explicit_unimpl(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when ``node``'s body is an EXPLICIT unimplemented marker.
+
+    A lone ``raise NotImplementedError`` / ``raise NotImplementedError(...)`` or a
+    bare ``...`` (a leading docstring is ignored). A bare ``pass`` is NOT explicit
+    here — it is too often a legitimate no-op to charge as development debt.
+    """
+    body = list(node.body)
+    if (body and isinstance(body[0], ast.Expr)
+            and isinstance(getattr(body[0], "value", None), ast.Constant)
+            and isinstance(body[0].value.value, str)):
+        body = body[1:]
+    if len(body) != 1:
+        return False
+    stmt = body[0]
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+        return stmt.value.value is Ellipsis
+    if isinstance(stmt, ast.Raise):
+        exc = stmt.exc
+        if isinstance(exc, ast.Call):
+            exc = exc.func
+        return isinstance(exc, ast.Name) and exc.id == "NotImplementedError"
+    return False
+
+
+def _is_abstract_decorated(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when any decorator is named ``*abstractmethod`` (abc/typing)."""
+    return any("abstractmethod" in ast.unparse(d) for d in node.decorator_list)
+
+
+def _class_is_interface(cls: ast.ClassDef) -> bool:
+    """True when ``cls`` declares an ABC / Protocol / ABCMeta base or metaclass."""
+    for base in cls.bases:
+        if ast.unparse(base).split(".")[-1] in _ABSTRACT_BASES:
+            return True
+    for kw in cls.keywords:
+        if kw.arg == "metaclass" and ast.unparse(kw.value).split(".")[-1] in _ABSTRACT_BASES:
+            return True
+    return False
+
+
+def _subclassed_base_names(trees: list[ast.AST]) -> set[str]:
+    """Every class name used as a base anywhere in the scanned project.
+
+    A stub method on such a base class is a template / interface hook a subclass
+    fills (e.g. ``Agent._execute``), not unfinished concrete work — so it is
+    excluded from stub debt. Project-wide so a base and its subclass may live in
+    different modules. Pure function of the file set, so it stays deterministic.
+    """
+    names: set[str] = set()
+    for tree in trees:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for base in node.bases:
+                    names.add(ast.unparse(base).split(".")[-1])
+    return names
+
+
+def _count_unimplemented_stubs(tree: ast.AST, subclassed: set[str]) -> int:
+    """Count NON-abstract, unimplemented (NotImplementedError/``...``) stubs.
+
+    Excluded (legitimate, not debt): ``@abstractmethod`` methods; any method whose
+    enclosing class is an ABC/Protocol, declares any base (an override of an
+    inherited interface), or is itself subclassed in the project (a template
+    base). Module-level function stubs and stubs on concrete leaf classes count.
+    """
+    debt = 0
+    in_class: set[int] = set()
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        interface = _class_is_interface(cls) or bool(cls.bases) or cls.name in subclassed
+        for item in cls.body:
+            if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            in_class.add(id(item))
+            if interface or _is_abstract_decorated(item):
+                continue
+            if _is_explicit_unimpl(item):
+                debt += 1
+    for item in getattr(tree, "body", []):
+        if (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and id(item) not in in_class
+                and not _is_abstract_decorated(item)
+                and _is_explicit_unimpl(item)):
+            debt += 1
+    return debt
+
+
 def _scan_own_modules(
     project_root: str | Path, profile: Any,
 ) -> tuple[set[str], int, int, int, list[str], list[str]]:
@@ -202,6 +309,36 @@ def _scan_own_modules(
         sec_weight += w
     top_sec = [f for f, _ in sorted(sec_by_file.items(), key=lambda kv: -kv[1])[:3]]
     return reliability, bugs, sec_count, sec_weight, top_sec, bug_files[:3]
+
+
+def _scan_stub_debt(project_root: str | Path, profile: Any) -> tuple[int, list[str]]:
+    """The project's NON-abstract unimplemented-stub debt (folded into Correctness).
+
+    Returns ``(total_stub_count, top_stub_files)`` — the up-to-3 own modules with
+    the most unimplemented stubs. A separate pass from :func:`_scan_own_modules`
+    so that function's byte-behaviour is unchanged; called only on the grade path.
+    Abstract / interface / override stubs and bare ``pass`` bodies are excluded
+    (see :func:`_count_unimplemented_stubs`), so a legitimate ABC isn't charged
+    and a project with no real stubs scores byte-identically to before.
+    """
+    trees: dict[str, ast.AST] = {}
+    for m, text in _own_modules(project_root, profile):
+        if m.endswith(".pyi"):
+            continue  # type-stub file: every body is an intentional stub
+        try:
+            trees[m] = ast.parse(text)
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            continue
+    subclassed = _subclassed_base_names(list(trees.values()))
+    total = 0
+    by_file: dict[str, int] = {}
+    for m, tree in trees.items():
+        stubs = _count_unimplemented_stubs(tree, subclassed)
+        if stubs:
+            by_file[m] = stubs
+            total += stubs
+    top = [f for f, _ in sorted(by_file.items(), key=lambda kv: (-kv[1], kv[0]))[:3]]
+    return total, top
 
 
 def _letter(score: int) -> str:
@@ -243,6 +380,11 @@ class _GradeMetrics:
     maint_top: list[str]
     dup_block_count: int
     dup_top: list[str]
+    # Unimplemented-stub debt, folded into the Correctness bucket. Defaulted and
+    # placed LAST so existing _GradeMetrics(...) callers/tests that omit it keep
+    # working and a no-stub project scores byte-identically to before the fix.
+    stub_debt: int = 0
+    top_stub_files: list[str] = field(default_factory=list)
 
 
 def _modernization_debt_modules(profile: Any) -> set[str]:
@@ -317,6 +459,10 @@ def _collect_metrics(project_root: str | Path, profile: Any) -> _GradeMetrics:
     (reliability_modules, correctness_bugs, findings,
      weighted_findings, top_sec_files, top_bug_files) = _scan_own_modules(project_root, profile)
     debt_modules |= reliability_modules
+    # Unimplemented-stub debt (NotImplementedError / ``...`` bodies the project
+    # still owes), also folded into the Correctness bucket. A separate pass, so a
+    # no-stub project (stub_debt == 0) is byte-identical to the pre-fix grade.
+    stub_debt, top_stub_files = _scan_stub_debt(project_root, profile)
 
     over_complex, maint_top = _scan_maintainability(project_root, profile)
     dup_block_count, dup_top = _scan_duplication(project_root)
@@ -332,10 +478,12 @@ def _collect_metrics(project_root: str | Path, profile: Any) -> _GradeMetrics:
                        sorted(getattr(profile, "untested_modules", []) or [])[:3]],
         debt_modules=debt_modules,
         correctness_bugs=correctness_bugs,
+        stub_debt=stub_debt,
         findings=findings,
         weighted_findings=weighted_findings,
         top_sec_files=top_sec_files,
         top_bug_files=top_bug_files,
+        top_stub_files=top_stub_files,
         over_complex=over_complex,
         maint_top=maint_top,
         dup_block_count=dup_block_count,
@@ -416,14 +564,29 @@ def _score_code_debt(m: _GradeMetrics) -> _Bucket:
 def _score_correctness(m: _GradeMetrics) -> _Bucket:
     # High-severity logic bugs (likely/guaranteed crashes or dead code) the
     # detector finds but that no other component reflected — so a real bug now
-    # visibly costs the grade, not just a review note.
-    lost = min(20, m.correctness_bugs * 5)
+    # visibly costs the grade, not just a review note. Folded in alongside is
+    # unimplemented-STUB debt (NotImplementedError / ``...`` bodies a project
+    # still owes): a stub is invalid-behaviour-in-waiting, so it belongs in
+    # Correctness, and now a project of stubs can no longer read A+/100 — the
+    # grade flags the develop work to do and rises once `apex develop` lands it.
+    # Each stub costs 3 points (a bug costs 5), both inside the same 20-cap.
+    lost = min(20, m.correctness_bugs * 5 + m.stub_debt * 3)
+    # When there are no stubs the detail/top_files/fix are byte-identical to the
+    # pre-stub-debt grade, so a stub-free project's snapshot is unchanged.
+    if m.stub_debt:
+        detail = (f"{m.correctness_bugs} likely-crash / dead-code bug(s), "
+                  f"{m.stub_debt} unimplemented stub(s)")
+        top_files = list(dict.fromkeys(list(m.top_bug_files) + list(m.top_stub_files)))[:3]
+        fix = ("implement the unimplemented stubs (`apex develop`) and fix the logic "
+               "bugs flagged by `apex review`")
+    else:
+        detail = f"{m.correctness_bugs} likely-crash / dead-code bug(s)"
+        top_files = list(m.top_bug_files)
+        fix = ("fix the logic bugs flagged by `apex review` (frozen-dataclass mutation, "
+               "return-in-finally, unreachable except, ...)")
     return (
-        Component("Correctness", lost,
-                  f"{m.correctness_bugs} likely-crash / dead-code bug(s)",
-                  list(m.top_bug_files)),
-        ("fix the logic bugs flagged by `apex review` (frozen-dataclass mutation, "
-         "return-in-finally, unreachable except, ...)") if lost else None,
+        Component("Correctness", lost, detail, top_files),
+        fix if lost else None,
     )
 
 

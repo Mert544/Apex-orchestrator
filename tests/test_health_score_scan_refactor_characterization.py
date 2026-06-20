@@ -121,7 +121,13 @@ def test_collect_metrics_identical_vs_head(tmp_path, builder):
     m_orig = orig._collect_metrics(proj, prof_orig)
     from dataclasses import asdict
 
-    assert asdict(m_cur) == asdict(m_orig)
+    cur = asdict(m_cur)
+    # _GradeMetrics gained stub-debt fields (folded into Correctness). On these
+    # no-stub fixtures they are the INERT defaults, so the grade is byte-identical
+    # to HEAD; every pre-existing metric must still match HEAD exactly.
+    assert cur.pop("stub_debt") == 0
+    assert cur.pop("top_stub_files") == []
+    assert cur == asdict(m_orig)
 
 
 @pytest.mark.parametrize("builder", [_build_clean, _build_lossy, _build_empty])
