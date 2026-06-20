@@ -160,7 +160,33 @@ def _fix_record(r: dict) -> dict:
         record["converged_fixes"] = r["converged_fixes"]
     if outcome == "blocked" and r.get("reason"):
         record["blocked_reason"] = r["reason"]
+    _disclose_withhold(record, r)
     return record
+
+
+def _disclose_withhold(record: dict, r: dict) -> None:
+    """Surface the result row's commit-disposition onto a WITHHELD record.
+
+    WITHHELD-DISPOSITION honesty (additive — mutates ``record`` ONLY when a commit
+    gate withheld this applied fix, so a committed/supervised record is
+    byte-identical to before): the behaviour change is applied on disk but was NOT
+    committed to git, pending human review. Without this a buyer auditing the
+    machine-readable proof would see an applied behaviour-change diff and no
+    ``commit_hash`` and could not tell a withheld-for-review fix apart from a
+    supervised one that simply doesn't commit. Surface the explicit disposition +
+    which gate fired (fence / baseline-red) + the human reason, mirroring the
+    maintain markdown report. The fields come straight from the result row's
+    commit-disposition — deterministic facts, no clock/random."""
+    if not r.get("commit_withheld"):
+        return
+    record["committed"] = False
+    record["commit_withheld"] = True
+    if r.get("fenced"):
+        record["fenced"] = True
+    if r.get("baseline_red"):
+        record["baseline_red"] = True
+    if r.get("reason"):
+        record["withheld_reason"] = r["reason"]
 
 
 def build_proof(summary: dict, project_root: str, objective: str = "") -> dict:
@@ -348,7 +374,8 @@ def _hashable_record(rec: dict) -> dict:
         "rollback": rec.get("rollback", {}),
     }
     for opt in ("impact", "commit_hash", "shield_test", "converged_fixes",
-                "blocked_reason"):
+                "blocked_reason", "committed", "commit_withheld", "fenced",
+                "baseline_red", "withheld_reason"):
         if opt in rec:
             out[opt] = rec[opt]
     return _round_floats(out)
@@ -394,6 +421,7 @@ def proof_manifest(artifact_or_records: Any) -> dict:
     by_outcome = {"applied": 0, "rolled_back": 0, "blocked": 0,
                   "skipped_learned": 0}
     by_coverage = {level: 0 for level in _COVERAGE_LEVELS}
+    withheld = 0
     for rec in records:
         outcome = rec.get("outcome", "")
         by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
@@ -402,31 +430,48 @@ def proof_manifest(artifact_or_records: Any) -> dict:
             # ``baseline-red`` is added to the tally only when it occurs, so a
             # green-baseline manifest keeps its original ``by_coverage`` keys.
             by_coverage[level] = by_coverage.get(level, 0) + 1
+            # An applied-but-WITHHELD fix is on disk for review, NOT committed —
+            # it must not be tallied as silently "auto-fixed & recorded".
+            if rec.get("commit_withheld"):
+                withheld += 1
 
     total = len(records)
-    auto_fixed = by_outcome["applied"]
-    # "flagged" = everything that did NOT land as an applied fix: a human still
-    # owns it (rolled back, blocked, or declined).
+    applied = by_outcome["applied"]
+    # "auto_fixed" = the fixes that actually landed (applied AND committed);
+    # a withheld fix is applied on disk but not committed, so it is NOT auto-fixed.
+    auto_fixed = applied - withheld
+    # "flagged" = everything a human still owns: rolled back, blocked, declined,
+    # OR applied-but-withheld-for-review.
     flagged = total - auto_fixed
-    return {
+    manifest = {
         "records": total,
         "by_outcome": by_outcome,
         "by_coverage": by_coverage,
         "auto_fixed": auto_fixed,
         "flagged": flagged,
-        "verdict": _verdict(auto_fixed, flagged, by_outcome["rolled_back"]),
+        "verdict": _verdict(auto_fixed, flagged, by_outcome["rolled_back"],
+                            withheld),
     }
+    # Additive: the withheld tally appears ONLY when a fix was actually withheld,
+    # so a run with no withholds keeps its original manifest keys byte-identical.
+    if withheld:
+        manifest["withheld"] = withheld
+    return manifest
 
 
-def _verdict(auto_fixed: int, flagged: int, rolled_back: int) -> str:
+def _verdict(auto_fixed: int, flagged: int, rolled_back: int,
+             withheld: int = 0) -> str:
     """One honest line a buyer can read at a glance."""
     if auto_fixed == 0 and flagged == 0:
         return "no fixes recorded"
+    # A withheld clause is appended ONLY when a fix was withheld, so a no-withhold
+    # run's verdict string is byte-identical to before.
+    wh = f", {withheld} applied & withheld for review" if withheld else ""
     if auto_fixed == 0:
-        return f"0 auto-fixed, {flagged} flagged for review"
+        return f"0 auto-fixed, {flagged} flagged for review{wh}"
     tail = f", {flagged} flagged for review" if flagged else ""
     rb = f" ({rolled_back} rolled back)" if rolled_back else ""
-    return f"{auto_fixed} auto-fixed & recorded{tail}{rb}"
+    return f"{auto_fixed} auto-fixed & recorded{tail}{rb}{wh}"
 
 
 def proof_bundle(artifact_or_records: Any) -> dict:
