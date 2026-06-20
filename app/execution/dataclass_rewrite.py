@@ -119,6 +119,9 @@ def is_boilerplate_init(cls: ast.ClassDef) -> bool:
     if not params:
         return False  # no convertible params (or an unrepresentable signature)
 
+    if not _class_body_is_field_safe(cls, init, {p.arg for p in params}):
+        return False
+
     body = list(init.body)
     if body and isinstance(body[0], ast.Expr) and isinstance(
         getattr(body[0], "value", None), ast.Constant
@@ -130,6 +133,43 @@ def is_boilerplate_init(cls: ast.ClassDef) -> bool:
     for stmt, param in zip(body, params):
         if not _is_pure_param_copy(stmt, param.arg):
             return False
+    return True
+
+
+def _class_body_names(stmt: ast.stmt) -> list[str]:
+    """The top-level class-body names a single statement BINDS — assignment
+    targets and the target of an annotated assignment. Used to detect a
+    class-level attribute that would collide with an ``__init__`` parameter."""
+    names: list[str] = []
+    if isinstance(stmt, ast.Assign):
+        for target in stmt.targets:
+            if isinstance(target, ast.Name):
+                names.append(target.id)
+    elif isinstance(stmt, ast.AnnAssign):
+        if isinstance(stmt.target, ast.Name):
+            names.append(stmt.target.id)
+    return names
+
+
+def _class_body_is_field_safe(
+    cls: ast.ClassDef, init: ast.FunctionDef, param_names: set[str]
+) -> bool:
+    """True when no NON-``__init__`` top-level class-body statement would change
+    dataclass semantics. Refuses when:
+
+      - a class-level attribute binds a name equal to an ``__init__`` parameter —
+        ``@dataclass`` would read that binding as the field's DEFAULT, turning a
+        required parameter into an optional one (a behaviour change);
+      - ``__slots__`` is declared — ``@dataclass`` + slots changes semantics
+        (the generated default would clash with the slot descriptor)."""
+    for stmt in cls.body:
+        if stmt is init:
+            continue
+        bound = _class_body_names(stmt)
+        if "__slots__" in bound:
+            return False  # dataclass + __slots__ — out of scope
+        if any(name in param_names for name in bound):
+            return False  # class attr collides with a param → becomes a default
     return True
 
 

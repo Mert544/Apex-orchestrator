@@ -29,7 +29,7 @@ from pathlib import Path
 
 from app.engine.develop_registry import ObjectiveSpec, register
 from app.execution.cross_file_rename import RenamePlan
-from app.execution.export_wiring import plan_init_text
+from app.execution.export_wiring import plan_init_text, rendered_all_names
 from app.execution.import_oracle import exports_resolve
 
 
@@ -49,19 +49,24 @@ def plan_wire_exports(project_root: str | Path, init_rel: str) -> RenamePlan:
     if candidate is None:
         return plan  # refused, or already fully exported (idempotent no-op)
 
-    expected = sorted(wire.exports)
+    try:
+        original = (root / init_rel).read_text(encoding="utf-8")
+    except OSError:
+        original = ""
+
+    # Oracle the FULL emitted ``__all__`` — the newly-wired exports AND any
+    # existing binding folded into ``__all__`` — not just the new names. A folded
+    # name that does not resolve (a ``del``'d symbol, a failing import) would
+    # otherwise land an ``__all__`` that breaks ``from pkg import *``.
+    expected = rendered_all_names(wire, original)
     if not expected:
         return plan  # nothing public to export
     if not exports_resolve(root, init_rel, candidate, expected):
         return plan  # the import oracle refused — land nothing
 
-    try:
-        original = (root / init_rel).read_text(encoding="utf-8")
-    except OSError:
-        original = ""
     plan.originals[init_rel] = original
     plan.new_contents[init_rel] = candidate
-    plan.edits_by_file[init_rel] = len(expected)
+    plan.edits_by_file[init_rel] = len(wire.exports)
     return plan
 
 

@@ -104,6 +104,67 @@ def test_skips_none_default_param():
     assert out is None
 
 
+def test_skips_fall_through_value_return():
+    # `status_code(False)` reaches the end -> returns None, so the true type is
+    # `int | None`, NOT `int`. A bare `-> int` would be a WRONG landing that no
+    # runtime test catches (annotations change no values) -> refuse.
+    src = "def status_code(ok):\n    if ok:\n        return 200\n"
+    out = infer_annotations(src)
+    assert out is None or "-> int" not in out
+
+
+def test_skips_value_return_in_for_loop():
+    # A `for` may run zero times -> falls through to an implicit `return None`.
+    # The return is a LITERAL (so only the fall-through guard can refuse it).
+    src = "def first(xs):\n    for x in xs:\n        return 1\n"
+    out = infer_annotations(src)
+    assert out is None or "-> int" not in out
+
+
+def test_skips_value_return_in_while_loop():
+    # A non-`while True` loop can complete normally -> fall-through.
+    src = "def f(n):\n    while n:\n        return 1\n"
+    out = infer_annotations(src)
+    assert out is None or "-> int" not in out
+
+
+def test_infers_when_if_else_both_terminate():
+    # Every path returns a literal of the SAME type and the body provably can NOT
+    # fall through (the `else` returns too) -> the inference is sound.
+    src = "def f(c):\n    if c:\n        return 1\n    else:\n        return 2\n"
+    out = infer_annotations(src)
+    assert out is not None and "-> int:" in out
+
+
+def test_infers_when_value_return_is_unconditional_tail():
+    # The value return is the last statement and always reached -> sound.
+    out = infer_annotations("def f(x):\n    x += 1\n    return 1\n")
+    assert out is not None and "-> int:" in out
+
+
+def test_infers_when_while_true_with_no_break_returns():
+    # `while True:` with no `break` never completes normally -> the inner return
+    # always fires; the body provably terminates.
+    src = "def f():\n    while True:\n        return 1\n"
+    out = infer_annotations(src)
+    assert out is not None and "-> int:" in out
+
+
+def test_skips_while_true_with_break_then_value_return():
+    # A reachable `break` lets the loop complete -> the trailing path may be a
+    # fall-through, so the bare value-return is no longer guaranteed-reached.
+    src = (
+        "def f():\n"
+        "    while True:\n"
+        "        if cond():\n"
+        "            break\n"
+        "    return 1\n"
+    )
+    # The tail `return 1` is reached, so this one IS sound -> may infer int.
+    out = infer_annotations(src)
+    assert out is None or "-> int:" in out
+
+
 def test_skips_generator():
     assert infer_annotations("def f():\n    yield 1\n") is None
 

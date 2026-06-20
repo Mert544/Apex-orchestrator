@@ -157,6 +157,77 @@ def _has_own_yield(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return found
 
 
+def _body_terminates(body: list[ast.stmt]) -> bool:
+    """True when control provably CANNOT fall off the end of ``body`` — every
+    path ends in a ``return``/``raise`` (or an infinite ``while True`` with no
+    break, or an ``if``/``try``/``with`` whose every branch terminates).
+
+    Conservative by design: anything not provably terminating returns ``False``
+    (treated as "may fall through", i.e. an implicit ``return None``). A loop
+    that can complete normally, a ``for`` (it may run zero times), or a bare
+    statement at the tail all count as non-terminating."""
+    if not body:
+        return False
+    last = body[-1]
+    if isinstance(last, (ast.Return, ast.Raise)):
+        return True
+    if isinstance(last, ast.If):
+        return _if_terminates(last)
+    if isinstance(last, ast.With):
+        return _body_terminates(last.body)
+    if isinstance(last, ast.While):
+        return _while_terminates(last)
+    if isinstance(last, ast.Try):
+        return _try_terminates(last)
+    return False
+
+
+def _if_terminates(node: ast.If) -> bool:
+    """Both arms must terminate; a missing ``else`` falls through."""
+    if not node.orelse:
+        return False
+    return _body_terminates(node.body) and _body_terminates(node.orelse)
+
+
+def _while_terminates(node: ast.While) -> bool:
+    """A ``while True:`` with no reachable ``break`` never completes normally, so
+    the loop body always runs to a ``return``/``raise`` (or loops forever)."""
+    test = node.test
+    if not (isinstance(test, ast.Constant) and bool(test.value)):
+        return False
+    return not _has_own_break(node.body)
+
+
+def _try_terminates(node: ast.Try) -> bool:
+    """A ``finally`` that terminates dominates everything. Otherwise the body (or
+    ``else`` if present) and EVERY ``except`` handler must each terminate."""
+    if node.finalbody and _body_terminates(node.finalbody):
+        return True
+    if not all(_body_terminates(h.body) for h in node.handlers):
+        return False
+    tail = node.orelse or node.body
+    return _body_terminates(tail)
+
+
+def _has_own_break(body: list[ast.stmt]) -> bool:
+    """True when ``body`` contains a ``break`` that belongs to its own innermost
+    loop — i.e. not nested inside a deeper ``for``/``while`` (whose break is its
+    own) and not inside a nested function. Used to prove ``while True`` cannot
+    complete normally."""
+    for stmt in body:
+        if isinstance(stmt, (ast.For, ast.While, ast.FunctionDef,
+                             ast.AsyncFunctionDef, ast.Lambda)):
+            continue  # a deeper loop's / nested scope's break is not ours
+        if isinstance(stmt, ast.Break):
+            return True
+        for child in ast.iter_child_nodes(stmt):
+            if isinstance(child, ast.stmt) and _has_own_break([child]):
+                return True
+            if isinstance(child, ast.excepthandler) and _has_own_break(child.body):
+                return True
+    return False
+
+
 def _infer_return_type(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
     """The provable return type for ``fn``, or ``None`` if not provable.
 
@@ -165,7 +236,11 @@ def _infer_return_type(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None
       return at all) — a pure procedure.
     - Otherwise every value return must be a literal of the SAME concrete type;
       a bare ``return`` mixed with value returns, or differing literal types, or
-      any non-literal return, is ambiguous → ``None`` (skip)."""
+      any non-literal return, is ambiguous → ``None`` (skip).
+    - And the body must PROVABLY terminate (cannot fall off the end): a function
+      that can reach the end without an explicit ``return`` implicitly returns
+      ``None``, so its true type is ``T | None``. Rather than guess the union we
+      REFUSE (return ``None``) — the honest under-claim this module promises."""
     if fn.returns is not None:
         return None  # already annotated — never overwrite
     if _has_own_yield(fn):
@@ -181,6 +256,11 @@ def _infer_return_type(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None
 
     if has_bare:
         # Mixes ``return`` (=> None) with ``return <expr>`` — ambiguous union.
+        return None
+
+    if not _body_terminates(fn.body):
+        # Can fall off the end → implicit ``return None`` → true type is
+        # ``T | None``. Refuse rather than land a wrong bare ``-> T``.
         return None
 
     types: set[str] = set()

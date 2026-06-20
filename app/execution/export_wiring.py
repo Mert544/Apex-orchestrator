@@ -33,8 +33,22 @@ __all__ = [
     "public_symbols_of_module",
     "collect_package_exports",
     "render_init_source",
+    "rendered_all_names",
     "plan_init_text",
 ]
+
+# Protocol / runtime dunders that may be top-level bindings in an existing
+# ``__init__`` but must NEVER be folded into ``__all__`` — they are import
+# machinery, not re-exportable attributes, and ``from pkg import *`` would fail
+# trying to resolve them as names.
+_PROTOCOL_DUNDERS = frozenset({
+    "__getattr__",
+    "__dir__",
+    "__all__",
+    "__path__",
+    "__getattribute__",
+    "__setattr__",
+})
 
 
 @dataclass
@@ -171,8 +185,7 @@ def render_init_source(plan: WirePlan, existing_init: str) -> str | None:
     nothing to add (no new exports AND the existing init already declares
     ``__all__``) — the caller treats that as a no-op."""
     new_names = sorted(plan.exports)
-    existing_names = sorted(_existing_init_bindings(existing_init))
-    all_names = sorted(set(new_names) | set(existing_names))
+    all_names = rendered_all_names(plan, existing_init)
     if not all_names:
         return None
 
@@ -197,6 +210,20 @@ def render_init_source(plan: WirePlan, existing_init: str) -> str | None:
         lines.append(f'    "{name}",')
     lines.append("]")
     return "\n".join(lines) + "\n"
+
+
+def rendered_all_names(plan: WirePlan, existing_init: str) -> list[str]:
+    """The exact sorted ``__all__`` :func:`render_init_source` would emit: the
+    newly-wired exports UNION the existing top-level bindings, with protocol
+    dunders (``__getattr__``/``__dir__``/…) excluded — those are import machinery,
+    not re-exportable attributes. The objective feeds THIS full list to the import
+    oracle so a folded-in name that does not resolve is caught, never landed."""
+    new_names = set(plan.exports)
+    folded = {
+        name for name in _existing_init_bindings(existing_init)
+        if name not in _PROTOCOL_DUNDERS
+    }
+    return sorted(new_names | folded)
 
 
 def _existing_all(init_source: str) -> list[str] | None:

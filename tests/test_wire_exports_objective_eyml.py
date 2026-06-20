@@ -19,6 +19,7 @@ from app.execution.export_wiring import (
     plan_init_text,
     public_symbols_of_module,
     render_init_source,
+    rendered_all_names,
 )
 from app.execution.import_oracle import exports_resolve, package_dotted_name
 from app.execution.objectives.wire_exports import plan_wire_exports
@@ -220,6 +221,46 @@ def test_oracle_refuses_an_unresolvable_export(tmp_path: Path):
     assert ok is False
     # side-effect-free: the original empty __init__ is restored.
     assert (tmp_path / "pkg" / "__init__.py").read_text() == ""
+
+
+def test_rendered_all_excludes_protocol_dunders(tmp_path: Path):
+    # A `__getattr__` bound in the existing __init__ is import machinery, not a
+    # re-exportable attribute — it must NOT be folded into __all__ (where
+    # `from pkg import *` would try and fail to resolve it).
+    pkg = _pkg(tmp_path, {"aaa.py": "def alpha():\n    return 1\n"},
+               init="def __getattr__(name):\n    raise AttributeError(name)\n")
+    plan = collect_package_exports(pkg, "def __getattr__(name):\n    raise AttributeError(name)\n")
+    names = rendered_all_names(plan, "def __getattr__(name):\n    raise AttributeError(name)\n")
+    assert "alpha" in names
+    assert "__getattr__" not in names  # protocol dunder excluded
+
+
+def test_oracle_checks_folded_existing_binding(tmp_path: Path):
+    # The defect: an existing top-level binding (here a name `del`'d after it was
+    # imported, so it does NOT resolve as a package attribute) is folded into
+    # __all__ but, when only the NEW exports are oracled, never checked. The plan
+    # must feed the FULL emitted __all__ to the oracle -> it refuses, landing
+    # nothing rather than an __all__ whose `Removed` breaks `from pkg import *`.
+    init = (
+        "from .gone import Removed\n"
+        "del Removed\n"
+    )
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "aaa.py").write_text("def fresh():\n    return 1\n", encoding="utf-8")
+    # `gone.py` defines Removed so the import line itself succeeds; the `del`
+    # then unbinds it, so the package has no `Removed` attribute.
+    (pkg / "gone.py").write_text("Removed = object()\n", encoding="utf-8")
+    (pkg / "__init__.py").write_text(init, encoding="utf-8")
+
+    # `Removed` is a binding folded into __all__, but it does not resolve.
+    plan = collect_package_exports(pkg, init)
+    all_names = rendered_all_names(plan, init)
+    assert "Removed" in all_names  # folded in (a top-level binding)
+
+    result = plan_wire_exports(str(tmp_path), "pkg/__init__.py")
+    assert not result.new_contents  # the oracle caught the unresolvable folded name
+    assert (pkg / "__init__.py").read_text() == init  # untouched
 
 
 def test_oracle_passes_for_a_real_surface(tmp_path: Path):

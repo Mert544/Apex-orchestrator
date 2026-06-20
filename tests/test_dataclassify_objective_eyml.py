@@ -253,6 +253,63 @@ def test_refuses_existing_decorator():
     assert rewrite_dataclasses(src) is None
 
 
+def test_refuses_class_attr_colliding_with_param():
+    # A class-level attribute whose name equals an __init__ parameter would be
+    # read by @dataclass as that field's DEFAULT -> `Config()` would newly
+    # succeed (was a TypeError for the missing required arg). Behaviour change
+    # that a test asserting only `Config(5).timeout == 5` never catches -> refuse.
+    src = (
+        "class Config:\n"
+        "    timeout = 30\n"
+        "    def __init__(self, timeout):\n"
+        "        self.timeout = timeout\n"
+    )
+    assert is_boilerplate_init(_cls(src)) is False
+    assert rewrite_dataclasses(src) is None
+
+
+def test_refuses_annotated_class_attr_colliding_with_param():
+    # The collision via an annotated class-body assignment (`timeout: int = 30`).
+    src = (
+        "class Config:\n"
+        "    timeout: int = 30\n"
+        "    def __init__(self, timeout):\n"
+        "        self.timeout = timeout\n"
+    )
+    assert is_boilerplate_init(_cls(src)) is False
+    assert rewrite_dataclasses(src) is None
+
+
+def test_refuses_slots():
+    # @dataclass + __slots__ changes semantics (the generated field default
+    # clashes with the slot descriptor) -> out of scope, refuse.
+    src = (
+        "class P:\n"
+        "    __slots__ = ('x',)\n"
+        "    def __init__(self, x):\n"
+        "        self.x = x\n"
+    )
+    assert is_boilerplate_init(_cls(src)) is False
+    assert rewrite_dataclasses(src) is None
+
+
+def test_non_colliding_class_attr_still_converts():
+    # A class-level constant that does NOT collide with any param is fine — it
+    # is preserved and the boilerplate __init__ is still converted.
+    src = (
+        "class C:\n"
+        "    VERSION = 1\n"
+        "    def __init__(self, x):\n"
+        "        self.x = x\n"
+    )
+    assert is_boilerplate_init(_cls(src)) is True
+    out = rewrite_dataclasses(src)
+    assert out is not None and "@dataclass" in out
+    ns: dict = {}
+    exec(out, ns)
+    assert ns["C"](5).x == 5 and ns["C"].VERSION == 1
+
+
 def test_already_dataclass_is_untouched_idempotent():
     src = (
         "from dataclasses import dataclass\n"
