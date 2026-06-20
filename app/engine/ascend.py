@@ -188,7 +188,8 @@ def land_factors(project_root: str | Path) -> dict[str, float]:
 
 
 def rank_objectives(project_root: str | Path,
-                    objectives: list[str] | None = None) -> list[GoalRanking]:
+                    objectives: list[str] | None = None,
+                    *, include_expensive: bool = False) -> list[GoalRanking]:
     """Every objective ranked by pending fixable debt AMPLIFIED by learned
     payoff, worst-and-most-profitable first.
 
@@ -208,8 +209,10 @@ def rank_objectives(project_root: str | Path,
         names = objectives
     else:
         # The default board skips EXPENSIVE objectives (e.g. the whole-project
-        # near-dup scan) so plan/ascend stay fast; they're run explicitly.
-        skip = expensive_names()
+        # near-dup scan, and the high-value concrete moves implement-stub /
+        # wire-exports / strengthen-tests) so plan/ascend stay fast; they're run
+        # explicitly or opted into via include_expensive (the --concrete flag).
+        skip = set() if include_expensive else expensive_names()
         names = [n for n in available_objectives() if n not in skip]
     order = {name: i for i, name in enumerate(available_objectives())}
     rankings: list[GoalRanking] = []
@@ -241,7 +244,7 @@ def _goal_objectives(goal: str) -> list[str] | None:
 def ascend(project_root: str | Path, max_rounds: int = 4,
            target_score: int | None = None, apply: bool = True,
            verify: bool = True, goal: str = "", max_steps: int = 25,
-           scope_verify: bool = False) -> AscendReport:
+           scope_verify: bool = False, include_expensive: bool = False) -> AscendReport:
     """Climb the project's health by repeatedly developing its worst fixable
     debt, each round suite-gated and grade-proven, to a fixpoint.
 
@@ -256,12 +259,16 @@ def ascend(project_root: str | Path, max_rounds: int = 4,
     report = AscendReport(applied=apply, target_score=target_score)
 
     if not apply:
-        report.preview = [r for r in rank_objectives(project_root, restrict) if r.pending > 0]
+        report.preview = [r for r in rank_objectives(project_root, restrict,
+                                                      include_expensive=include_expensive)
+                          if r.pending > 0]
         return report
 
     report.grade_start = _grade(project_root)
     for n in range(1, max_rounds + 1):
-        ranked = [r for r in rank_objectives(project_root, restrict) if r.pending > 0]
+        ranked = [r for r in rank_objectives(project_root, restrict,
+                                              include_expensive=include_expensive)
+                  if r.pending > 0]
         if not ranked:
             report.fixpoint = True
             break

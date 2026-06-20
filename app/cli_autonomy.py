@@ -1191,7 +1191,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
     if goal:
         from app.engine.fractal_develop import resolve_goal
         restrict = resolve_goal(goal)
-    rankings = rank_objectives(str(target), restrict)
+    rankings = rank_objectives(str(target), restrict,
+                               include_expensive=getattr(args, "concrete", False))
     if args.json:
         print(json.dumps([r.to_dict() for r in rankings], indent=2))
     else:
@@ -1212,7 +1213,8 @@ def cmd_ascend(args: argparse.Namespace) -> int:
         verify=not getattr(args, "no_verify", False),
         goal=getattr(args, "goal", "") or "",
         max_steps=getattr(args, "max_steps", 25),
-        scope_verify=getattr(args, "fast", False))
+        scope_verify=getattr(args, "fast", False),
+        include_expensive=getattr(args, "concrete", False))
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
     else:
@@ -1233,6 +1235,11 @@ def register_parsers(subparsers) -> None:
     plan_parser.add_argument("--target", default="", help="Target project root")
     plan_parser.add_argument("--goal", default="",
                              help="Restrict the board to one fractal goal's objectives")
+    plan_parser.add_argument(
+        "--concrete", action="store_true",
+        help="Include the EXPENSIVE concrete objectives (implement-stub, "
+             "wire-exports, strengthen-tests) in the climb — the highest-value "
+             "develop moves, off the fast default board")
     plan_parser.add_argument("--json", action="store_true", help="Emit JSON")
     plan_parser.set_defaults(func=cmd_plan)
 
@@ -1259,6 +1266,11 @@ def register_parsers(subparsers) -> None:
                                help="Stop once the health grade reaches this (e.g. 90 or A-)")
     ascend_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
                                help="Skip the per-move suite gate (faster, unsafe)")
+    ascend_parser.add_argument(
+        "--concrete", action="store_true",
+        help="Include the EXPENSIVE concrete objectives (implement-stub, "
+             "wire-exports, strengthen-tests) in the climb — the highest-value "
+             "develop moves, off the fast default board")
     ascend_parser.add_argument("--json", action="store_true", help="Emit JSON")
     ascend_parser.set_defaults(func=cmd_ascend)
 

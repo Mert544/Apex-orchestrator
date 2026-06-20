@@ -275,3 +275,139 @@ def test_dream_aware_rank_demotes_a_proven_blocker(tmp_path, monkeypatch):
     # it (10*0.15=1.5) below modernize (5*1.0=5) — the organism avoids the blocker.
     assert ranked[0].objective == "modernize"
     assert ranked[0].reliability == 1.0
+
+
+# --- ascend --concrete: opt into the EXPENSIVE high-value concrete objectives ---
+
+def test_rank_objectives_default_excludes_expensive(tmp_path):
+    # The fast default board skips the expensive concrete objectives (implement-stub,
+    # wire-exports, strengthen-tests, ...) so plan/ascend stay fast.
+    _clean_project(tmp_path)
+    from app.engine.develop_registry import expensive_names
+
+    board = {r.objective for r in rank_objectives(str(tmp_path))}
+    skipped = expensive_names()
+    assert skipped  # the registry really flags some objectives expensive
+    assert board.isdisjoint(skipped)
+    # The named flagship concrete moves are among the skipped set.
+    assert {"implement-stub", "wire-exports"} <= skipped
+
+
+def test_rank_objectives_include_expensive_adds_them(tmp_path):
+    # --concrete widens the board to include the expensive objectives.
+    _clean_project(tmp_path)
+    from app.engine.develop_registry import expensive_names
+
+    board = {r.objective for r in rank_objectives(str(tmp_path), include_expensive=True)}
+    skipped = expensive_names()
+    # Track the real flag, not a hardcoded list: every expensive objective is now on
+    # the board.
+    assert skipped <= board
+    assert {"implement-stub", "wire-exports"} <= board
+
+
+def test_include_expensive_board_is_superset_of_default(tmp_path):
+    # The widened board is a strict superset of the fast default board.
+    _clean_project(tmp_path)
+    from app.engine.develop_registry import expensive_names
+
+    default = {r.objective for r in rank_objectives(str(tmp_path))}
+    wide = {r.objective for r in rank_objectives(str(tmp_path), include_expensive=True)}
+    assert default <= wide
+    assert (wide - default) == expensive_names()
+
+
+def test_explicit_objectives_ignore_include_expensive(tmp_path):
+    # The explicit-objectives path is unchanged by the flag: an expensive name
+    # passed explicitly is ranked regardless, and a non-expensive explicit list is
+    # never widened.
+    _clean_project(tmp_path)
+    explicit = rank_objectives(str(tmp_path), ["implement-stub"])
+    assert {r.objective for r in explicit} == {"implement-stub"}
+    explicit_flagged = rank_objectives(str(tmp_path), ["modernize"], include_expensive=True)
+    assert {r.objective for r in explicit_flagged} == {"modernize"}
+
+
+def test_cmd_ascend_concrete_preview_includes_expensive(tmp_path, capsys, monkeypatch):
+    import argparse
+
+    from app.cli_autonomy import cmd_ascend
+
+    _clean_project(tmp_path)
+    # Force one expensive objective to carry pending debt so it must surface on the
+    # preview board (the real fitness of a clean tmp project may be 0 for all).
+    from app.engine.objective_compiler import _objectives_map as _real_objectives_map
+
+    def fake_map():
+        table = dict(_real_objectives_map())
+        table["implement-stub"] = (lambda r: 3.0, lambda r: [])
+        return table
+    monkeypatch.setattr("app.engine.objective_compiler._objectives_map", fake_map)
+
+    rc = cmd_ascend(argparse.Namespace(
+        target=str(tmp_path), goal="", apply=False, max_rounds=4, max_steps=25,
+        until="", no_verify=True, fast=False, concrete=True, json=True))
+    assert rc == 0
+    import json as _json
+    report = _json.loads(capsys.readouterr().out)
+    previewed = {r["objective"] for r in report["preview"]}
+    assert "implement-stub" in previewed
+
+
+def test_cmd_ascend_default_preview_excludes_expensive(tmp_path, capsys, monkeypatch):
+    # Without --concrete the same pending expensive debt never reaches the board.
+    import argparse
+
+    from app.cli_autonomy import cmd_ascend
+    from app.engine.objective_compiler import _objectives_map as _real_objectives_map
+
+    _clean_project(tmp_path)
+
+    def fake_map():
+        table = dict(_real_objectives_map())
+        table["implement-stub"] = (lambda r: 3.0, lambda r: [])
+        return table
+    monkeypatch.setattr("app.engine.objective_compiler._objectives_map", fake_map)
+
+    rc = cmd_ascend(argparse.Namespace(
+        target=str(tmp_path), goal="", apply=False, max_rounds=4, max_steps=25,
+        until="", no_verify=True, fast=False, concrete=False, json=True))
+    assert rc == 0
+    import json as _json
+    report = _json.loads(capsys.readouterr().out)
+    previewed = {r["objective"] for r in report["preview"]}
+    assert "implement-stub" not in previewed
+
+
+def test_expensive_objective_landing_is_recorded_with_zero_delta(tmp_path, monkeypatch):
+    # An expensive concrete objective that LANDS code is recorded as a round even
+    # when the grade delta is 0 (landing code may not move the health grade — that
+    # is not a regression; record_run keeps the round).
+    import app.engine.ascend as asc
+
+    _clean_project(tmp_path)
+
+    monkeypatch.setattr(asc, "payoff_weights", lambda r: {})
+    monkeypatch.setattr(asc, "land_factors", lambda r: {})
+    monkeypatch.setattr(asc, "available_objectives", lambda: ["implement-stub"])
+    monkeypatch.setattr(asc, "_grade", lambda r: 90)  # constant grade → delta 0
+
+    def fake_map():
+        return {"implement-stub": (lambda r: 1.0, lambda r: [])}
+    monkeypatch.setattr("app.engine.objective_compiler._objectives_map", fake_map)
+
+    class _Campaign:
+        steps = [object()]  # one landed move
+
+    monkeypatch.setattr(asc, "compile_objective",
+                        lambda *a, **k: _Campaign())
+
+    report = asc.ascend(str(tmp_path), apply=True, verify=False, max_rounds=1,
+                        include_expensive=True)
+    assert len(report.rounds) == 1
+    landed = report.rounds[0]
+    assert landed.objective == "implement-stub"
+    assert landed.grade_after - landed.grade_before == 0  # zero delta, still a round
+    from app.engine.dev_history import DevHistory
+    runs = DevHistory.load(str(tmp_path)).entries()
+    assert any(r.objective == "ascend:implement-stub" for r in runs)
