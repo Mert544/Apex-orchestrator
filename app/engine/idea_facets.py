@@ -60,6 +60,10 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                                      "the documentation of the new option"],
     "the missing operation on the contract": ["the operation signature",
                                               "the default or stub implementation",
+                                              # the TDD case: the function a RED
+                                              # test already calls but that does
+                                              # not exist yet (tdd-implement).
+                                              "the function the red test calls",
                                               "the consumers to update"],
     "the new return shape": ["the additive field or variant",
                              "the empty and error result",
@@ -262,7 +266,8 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "extract a shared helper": ["naming the concept", "the parameter surface", "where it lives",
                                 "a fully-returning duplicate block"],
     "parameterize the variants": ["the varying dimension", "flag versus strategy", "the default variant"],
-    "single source of truth": ["which copy wins", "derivation direction", "drift detection"],
+    "single source of truth": ["which copy wins", "derivation direction", "drift detection",
+                               "two sibling functions to merge"],
     "early returns": ["precondition exits", "error exits first", "happy path last"],
     # The "guard clauses" sub-aspect splits into the two distinct guard shapes:
     # the leading precondition (handled by extract-guard-clause, reached via the

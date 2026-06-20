@@ -214,6 +214,21 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # the unfinished function.
     "the default or stub implementation": "implement-stub",
 
+    # Test-driven creation: the "missing operation on the contract" aspect also
+    # names the function that does NOT EXIST YET but that a RED test already
+    # calls (the TDD inner loop: the test is written, the code is not). Where
+    # implement-stub FILLS an existing stub, the tdd-implement objective CREATES
+    # the absent function — it attributes a missing-symbol failure
+    # (AttributeError/NameError/ImportError, or an arity TypeError) to one target
+    # module, infers the signature from the RED test's call sites, inserts a
+    # stub, and delegates the body to the same overfit-guarded synthesiser, so
+    # the RED test flips RED->GREEN under the full-suite gate (refusing when no
+    # template proves it). So the "function the red test calls" facet becomes the
+    # campaign that writes the not-yet-written function. Listed AFTER the
+    # stub-implementation key it shares an aspect with; neither phrase is a
+    # substring of the other, so their relative order is free.
+    "the function the red test calls": "tdd-implement",
+
     # Missing type hints: the constructive "naming and types" aspect names the
     # precise type/annotation a parameter or return ought to carry. The
     # infer-type-hints objective LANDS exactly that — a ``-> T`` / ``param: T``
