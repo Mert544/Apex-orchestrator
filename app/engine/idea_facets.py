@@ -309,7 +309,13 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                                         "set from a list literal",
                                         "dict built by a loop",
                                         "implicitly concatenated literals",
-                                        "a magic literal worth naming"],
+                                        "a magic literal worth naming",
+                                        # added: a boilerplate __init__ that does
+                                        # nothing but copy params onto self — the
+                                        # dataclassify objective collapses it to a
+                                        # @dataclass (behaviour-equivalent). Appended,
+                                        # so the originals still lead and emit first.
+                                        "a boilerplate constructor to make a dataclass"],
     # document ladder
     "signatures and types": ["parameter meanings", "return type and None", "raised exceptions list",
                              # added: the package's public re-export surface — the

@@ -230,6 +230,15 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # resolve) and the suite. So the "re-export surface" facet becomes the
     # campaign that makes ``from pkg import X`` work.
     "the public re-export surface to wire": "wire-exports",
+
+    # Boilerplate constructor: the "unreachable or no-op statements" simplify
+    # sub-aspect names a hand-written ``__init__`` that does nothing but copy its
+    # parameters onto ``self`` — pure ceremony. The dataclassify objective LANDS
+    # exactly that tidy: it adds ``@dataclass`` + fields (order/annotation/default
+    # preserved, mutable defaults via ``field(default_factory=...)``) and deletes
+    # the redundant ``__init__``, behaviour-equivalent and suite-gated. So the
+    # "boilerplate constructor" facet becomes the campaign that modernizes it.
+    "a boilerplate constructor to make a dataclass": "dataclassify",
 }
 
 
