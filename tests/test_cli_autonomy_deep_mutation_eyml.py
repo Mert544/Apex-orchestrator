@@ -896,7 +896,8 @@ def _patch_ascend(monkeypatch, seen):
             return {"rounds": 1}
 
     def _ascend(target, max_rounds=4, target_score=None, apply=True,
-                verify=True, goal="", max_steps=25, scope_verify=False):
+                verify=True, goal="", max_steps=25, scope_verify=False,
+                include_expensive=False, **_kw):
         seen.update(max_rounds=max_rounds, target_score=target_score,
                     apply=apply, verify=verify, goal=goal, max_steps=max_steps,
                     scope_verify=scope_verify)
@@ -961,7 +962,7 @@ def test_cmd_plan_json_indent_no_goal(tmp_path, capsys, monkeypatch):
         def to_dict(self):
             return {"objective": "x"}
     monkeypatch.setattr("app.engine.ascend.rank_objectives",
-                        lambda root, restrict: [_Rank()])
+                        lambda root, restrict, **_kw: [_Rank()])
     monkeypatch.setattr("app.engine.ascend.render_plan_markdown",
                         lambda rankings: "# PLAN")
     rc = m.cmd_plan(_ns(target=str(tmp_path), goal="", json=True))
@@ -977,7 +978,7 @@ def test_cmd_plan_goal_resolves_restrict(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr("app.engine.fractal_develop.resolve_goal",
                         lambda goal: ["dead-params"])
 
-    def _rank(root, restrict):
+    def _rank(root, restrict, **_kw):
         seen["restrict"] = restrict
         return []
     monkeypatch.setattr("app.engine.ascend.rank_objectives", _rank)
@@ -990,7 +991,7 @@ def test_cmd_plan_goal_resolves_restrict(tmp_path, capsys, monkeypatch):
 def test_cmd_plan_no_goal_restrict_is_none(tmp_path, capsys, monkeypatch):
     seen = {}
 
-    def _rank(root, restrict):
+    def _rank(root, restrict, **_kw):
         seen["restrict"] = restrict
         return []
     monkeypatch.setattr("app.engine.ascend.rank_objectives", _rank)
