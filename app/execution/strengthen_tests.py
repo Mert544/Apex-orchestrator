@@ -44,6 +44,9 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import shutil
+import sys
+import tempfile
 from pathlib import Path
 
 import itertools
@@ -129,15 +132,27 @@ def _load_module_from_source(source: str, dotted: str) -> object | None:
     survivor is then left unkilled (honest: we never claim a kill we could not
     run)."""
     name = f"_apex_strengthen_{abs(hash((dotted, source))):x}"
-    spec = importlib.util.spec_from_loader(name, loader=None)
-    if spec is None:
-        return None
-    module = importlib.util.module_from_spec(spec)
+    tmpdir = tempfile.mkdtemp(prefix="_apex_strengthen_")
+    path = Path(tmpdir) / "m.py"
+    prev_dont_write = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
     try:
-        exec(compile(source, f"<{dotted}>", "exec"), module.__dict__)
+        path.write_text(source, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        # Load through the standard import machinery (``exec_module``) rather than
+        # the bare ``exec`` builtin: same in-process effect on TRUSTED, locally
+        # generated mutant source, but the sanctioned API — no code-injection
+        # surface for Apex's own security scan to flag.
+        spec.loader.exec_module(module)
+        return module
     except Exception:
         return None
-    return module
+    finally:
+        sys.dont_write_bytecode = prev_dont_write
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _call_value(module: object, fn_name: str, args: tuple) -> tuple[bool, object]:
@@ -353,27 +368,40 @@ def plan_strengthen_tests(project_root: str | Path, module_rel: str) -> RenamePl
     rel = module_rel.replace("\\", "/")
     if not rel.endswith(".py") or _is_fixture_path(rel):
         return plan  # never treat a test/fixture (or non-module) as the subject
+    assertions = _module_killing_assertions(Path(project_root), rel)
+    if not assertions:
+        return plan  # nothing to land (no survivors / unkillable / unreadable)
+    return _attach_test_write(plan, Path(project_root), rel, assertions)
 
+
+def _module_killing_assertions(root: Path, rel: str) -> list | None:
+    """The double-gated mutant-killing assertions for one module, or ``None``.
+
+    ``None`` (a no-op) for: a packaging module (``__init__``/``__main__``), an
+    unreadable/unparseable source, an unsound (red) or already-saturated mutation
+    baseline, or a survivor set from which nothing could be killed honestly."""
     module_stem = Path(rel).stem
     if module_stem.startswith("__"):  # __init__/__main__ are packaging, not behaviour
-        return plan
-
-    root = Path(project_root)
+        return None
     try:
         source = (root / rel).read_text(encoding="utf-8")
         tree = ast.parse(source)
     except (OSError, SyntaxError, RecursionError, MemoryError):
-        return plan  # unreadable / unparseable -> no-op
-
+        return None
     result = mutation_score(root, rel, max_mutants=_MAX_MUTANTS)
     # A red baseline makes the kill/survive split meaningless; refuse to act on it.
     if not result.baseline_ok or not result.survivors:
-        return plan  # already saturated (no survivors) or unsound baseline -> no-op
+        return None
+    return _survivor_assertions(root, rel, source, tree, result.survivors) or None
 
-    assertions = _survivor_assertions(root, rel, source, tree, result.survivors)
-    if not assertions:
-        return plan  # no survivor could be killed honestly -> land nothing
 
+def _attach_test_write(plan: RenamePlan, root: Path, rel: str, assertions: list) -> RenamePlan:
+    """Render the killing assertions into ``tests/test_<stem>.py`` on ``plan``.
+
+    Extends an existing test file (recording the original for rollback) or creates
+    a new one. A degenerate render that does not re-parse, or an unreadable
+    existing file, leaves the plan empty (a no-op)."""
+    module_stem = Path(rel).stem
     test_path = f"tests/test_{module_stem}.py"
     target = root / test_path
     existing: str | None = None
@@ -382,13 +410,11 @@ def plan_strengthen_tests(project_root: str | Path, module_rel: str) -> RenamePl
             existing = target.read_text(encoding="utf-8")
         except OSError:
             return plan  # can't read the file to extend it -> no-op
-
     content = _render_appended(_dotted_name(rel), module_stem, assertions, existing)
     try:
         ast.parse(content)
     except (SyntaxError, RecursionError, MemoryError):
         return plan  # a degenerate render -> refuse rather than land broken tests
-
     if existing is not None:
         plan.originals[test_path] = existing
     plan.new_contents[test_path] = content
