@@ -99,7 +99,14 @@ _OriginalProfiler = _load_original_profiler()
 # no field is ever added later, so these additive keys are dropped from BOTH
 # sides before the comparison. (The parse-aware behaviour has its own dedicated
 # suite: ``tests/test_scope_parse_aware_eyml.py``.)
-_POST_SNAPSHOT_FIELDS = ("unparsed_files", "unparsed_count", "analyzed_ratio_honest")
+_POST_SNAPSHOT_FIELDS = (
+    "unparsed_files", "unparsed_count", "analyzed_ratio_honest",
+    # COMPLETE single-sourced unanalysed accounting (parse-failures + ``.pyi`` +
+    # over-cap), added AFTER this HEAD snapshot. Additive, same contract as the
+    # ``unparsed_*`` keys above — the snapshot profiler cannot set them. Dedicated
+    # suite: ``tests/test_scope_honesty_complete_eyml.py``.
+    "unanalyzed_files", "unanalyzed_count",
+)
 
 
 def _profile_dict(profiler_cls, root: Path) -> dict:

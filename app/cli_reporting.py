@@ -240,6 +240,29 @@ def _pulse_grade(root: Path) -> dict:
         return {"letter": "", "score": None, "scope_line": ""}
 
 
+def _honest_unanalyzed_count(profile) -> int:
+    """COMPLETE count of in-language files counted but NOT analysed, read straight
+    off the profile (the SINGLE SOURCE OF TRUTH). Prefers the canonical
+    ``unanalyzed_count``, falls back to its back-compat alias ``unparsed_count``;
+    any missing/None attribute reads as 0. Inlined (not imported) so the pulse
+    snapshot's lazy ``project_profile`` stub-injection can't shadow it."""
+    n = getattr(profile, "unanalyzed_count", None)
+    if n is None:
+        n = getattr(profile, "unparsed_count", 0)
+    return int(n or 0)
+
+
+def _honest_analyzed_ratio(profile) -> float:
+    """The HONEST analysed fraction (analysed-count / source-total) read off the
+    profile's ``analyzed_ratio_honest``; falls back to the raw language
+    ``analyzed_ratio`` only if absent. Equals the language ratio when nothing was
+    dropped, so the common case is byte-identical."""
+    honest = getattr(profile, "analyzed_ratio_honest", None)
+    if honest is None:
+        honest = getattr(profile, "analyzed_ratio", 1.0)
+    return float(honest if honest is not None else 1.0)
+
+
 def _pulse_scope(root: Path) -> dict:
     """Honest analysis-coverage: analysed% (Python) vs out-of-scope%, plus the
     1-2 biggest out-of-scope files. Grounded in the profile's scope-accounting
@@ -258,21 +281,54 @@ def _pulse_scope(root: Path) -> dict:
 
     out_ratio = getattr(profile, "out_of_scope_ratio", 0.0) or 0.0
     breakdown = getattr(profile, "language_breakdown", {}) or {}
-    all_python = not (out_ratio > 0 and breakdown)
-    files: list[dict] = []
-    if not all_python:
-        try:
-            facts = scan_polyglot_facts(str(root), limit=_PULSE_OUT_OF_SCOPE_FILES)
-        except Exception:
-            facts = []
-        files = [{"path": f.path, "language": f.language, "loc": f.loc} for f in facts]
-
+    unanalyzed_count = _honest_unanalyzed_count(profile)
+    # "all Python" (the reassuring 100% footer) is honest ONLY when the grade
+    # truly speaks for the whole repo: no out-of-scope languages AND no in-language
+    # file that was counted but not analysed. Same gate as ``_scope_report``.
+    all_python = not (out_ratio > 0 and breakdown) and unanalyzed_count == 0
+    # The biggest out-of-scope files come from the polyglot scan (NON-Python),
+    # populated only when a polyglot remainder genuinely exists.
+    files = _pulse_scope_files(root, scan_polyglot_facts) if (
+        out_ratio > 0 and breakdown) else []
+    analyzed_pct, out_of_scope_pct = _pulse_scope_pcts(
+        profile, out_ratio, unanalyzed_count)
     return {
         "all_python": all_python,
-        "analyzed_pct": round((getattr(profile, "analyzed_ratio", 1.0) or 1.0) * 100),
-        "out_of_scope_pct": round(out_ratio * 100),
+        "analyzed_pct": analyzed_pct,
+        "out_of_scope_pct": out_of_scope_pct,
         "files": files,
     }
+
+
+def _pulse_scope_files(root: Path, scan_polyglot_facts) -> list[dict]:
+    """The biggest / most-active NON-Python files for the pulse scope footer.
+
+    Defensive: any scan failure yields [] so the snapshot never crashes. Split out
+    to keep ``_pulse_scope`` simple."""
+    try:
+        facts = scan_polyglot_facts(str(root), limit=_PULSE_OUT_OF_SCOPE_FILES)
+    except Exception:
+        facts = []
+    return [{"path": f.path, "language": f.language, "loc": f.loc} for f in facts]
+
+
+def _pulse_scope_pcts(profile, out_ratio: float, unanalyzed_count: int) -> tuple[int, int]:
+    """``(analyzed_pct, out_of_scope_pct)`` for the pulse scope footer.
+
+    Byte-identity: with NOTHING dropped, derive the percentages EXACTLY as before
+    (raw language ratio, independent round of each), so the common case is
+    unchanged down to float rounding. ONLY when files were dropped do we switch to
+    the honest ratio (clamped at 99 so a real drop can never round UP to a false
+    100%) and derive out-of-scope as ``100 - analyzed`` so the two sum to 100 —
+    mirroring ``cli_insight._scope_report``.
+    """
+    if unanalyzed_count <= 0:
+        return (
+            round((getattr(profile, "analyzed_ratio", 1.0) or 1.0) * 100),
+            round(out_ratio * 100),
+        )
+    analyzed_pct = min(round(_honest_analyzed_ratio(profile) * 100), 99)
+    return analyzed_pct, 100 - analyzed_pct
 
 
 def _pulse_moves(root: Path) -> list[dict]:

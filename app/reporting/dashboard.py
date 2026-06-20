@@ -463,8 +463,23 @@ def _hero_security_count(findings) -> int:
 
 
 def _hero_scope_pct(profile) -> int:
-    """Analyzed-scope percentage from the project profile (``0`` when absent)."""
-    return int(round(float(getattr(profile, "analyzed_ratio", 1.0) or 0.0) * 100))
+    """Analyzed-scope percentage from the project profile (``0`` when absent).
+
+    Reads the HONEST analysed ratio (single-sourced) so the hero tile reports the
+    SAME number as scope/pulse/readiness. Equals the raw language ratio when
+    nothing was dropped, so an all-analysed repo's tile is byte-identical. When a
+    file WAS dropped the percentage is clamped below 100 (a real gap can never
+    round UP to a false 100%), matching the other surfaces.
+    """
+    from app.tools.project_profile import (
+        honest_analyzed_ratio,
+        honest_unanalyzed_count,
+    )
+
+    pct = round(honest_analyzed_ratio(profile) * 100)
+    if honest_unanalyzed_count(profile) > 0:
+        pct = min(pct, 99)
+    return int(pct)
 
 
 def _hero_top_move(action_plan) -> str:

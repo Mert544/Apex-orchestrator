@@ -690,11 +690,21 @@ def _scope_report(root: Path) -> dict:
         {"language": lang, "files": count}
         for lang, count in profile.language_breakdown.items()
     ]
-    unparsed_count = int(getattr(profile, "unparsed_count", 0) or 0)
+    # The COMPLETE unanalysed accounting (parse-failures + ``.pyi`` stubs +
+    # over-cap files), single-sourced from the profiler. ``unanalyzed_*`` is the
+    # canonical name; ``unparsed_*`` is its back-compat alias (same set).
+    unparsed_count = int(
+        getattr(profile, "unanalyzed_count", None)
+        if getattr(profile, "unanalyzed_count", None) is not None
+        else getattr(profile, "unparsed_count", 0) or 0
+    )
     # Bounded, sorted (the profile already sorts) preview of the dropped files —
     # capped like the other report sections so a repo with hundreds of broken
     # files doesn't dump them all. The count carries the TRUE total.
-    unparsed_files = list(getattr(profile, "unparsed_files", []) or [])[:5]
+    unparsed_files = list(
+        getattr(profile, "unanalyzed_files", None)
+        or getattr(profile, "unparsed_files", []) or []
+    )[:5]
     # The reassuring "100% (all Python)" path is honest ONLY when nothing was
     # dropped. A repo that is all-Python yet has a file that failed to parse must
     # NOT take it — there is a real gap to disclose, so fall to the detailed shape.
@@ -716,7 +726,11 @@ def _scope_report(root: Path) -> dict:
     else:
         honest_ratio = getattr(profile, "analyzed_ratio_honest",
                                profile.analyzed_ratio)
-        analyzed_pct = round(honest_ratio * 100)
+        # A real drop exists, so the honest answer is NEVER 100%: one broken file
+        # in a 601-file repo is 99.83%, which would round UP to 100 and re-hide
+        # the gap. Clamp at 99 when anything was dropped so the disclosed
+        # percentage can never silently claim full coverage.
+        analyzed_pct = min(round(honest_ratio * 100), 99)
         out_of_scope_pct = 100 - analyzed_pct
     return {
         "source_file_count": profile.source_file_count,

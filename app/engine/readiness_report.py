@@ -153,11 +153,37 @@ def _scope_section(profile) -> dict[str, Any]:
             "out_of_scope_ratio": 0.0,
             "language_breakdown": {},
         }
+    # The HONEST analysed ratio (analysed-count / source-total), single-sourced so
+    # readiness reports the SAME number as scope/pulse/dashboard. When nothing was
+    # dropped this EQUALS the raw language ratio, so the rounded field is
+    # byte-identical to before; only repos with unanalysed files change. Out-of-
+    # scope is derived as ``1 - analyzed`` so the two always reconcile.
+    #
+    # The honest field is preferred ONLY when actually present; a profile missing
+    # it falls back to the raw language ``analyzed_ratio`` with its original 0.0
+    # default, so a bare/defensive profile is unchanged (the ``out_of_scope_ratio``
+    # default likewise stays 0.0 — derived from the same fallback ratio).
+    honest = getattr(profile, "analyzed_ratio_honest", None)
+    if honest is None:
+        analyzed = float(getattr(profile, "analyzed_ratio", 0.0) or 0.0)
+        out_of_scope = float(getattr(profile, "out_of_scope_ratio", 0.0) or 0.0)
+    else:
+        analyzed = float(honest)
+        # A real drop means coverage is NEVER full: clamp at 0.99 so a 99.83%
+        # honest ratio (one broken file in a 601-file repo) cannot round UP to a
+        # false 100% — the same clamp scope/pulse/dashboard apply, so all four
+        # surfaces report the SAME number.
+        unanalyzed = getattr(profile, "unanalyzed_count", None)
+        if unanalyzed is None:
+            unanalyzed = getattr(profile, "unparsed_count", 0)
+        if int(unanalyzed or 0) > 0:
+            analyzed = min(analyzed, 0.99)
+        out_of_scope = 1.0 - analyzed
     return {
         "source_files": int(getattr(profile, "source_file_count", 0)),
         "python_files": int(getattr(profile, "python_file_count", 0)),
-        "analyzed_ratio": round(float(getattr(profile, "analyzed_ratio", 0.0)), 4),
-        "out_of_scope_ratio": round(float(getattr(profile, "out_of_scope_ratio", 0.0)), 4),
+        "analyzed_ratio": round(analyzed, 4),
+        "out_of_scope_ratio": round(out_of_scope, 4),
         "language_breakdown": dict(sorted(
             (getattr(profile, "language_breakdown", {}) or {}).items())),
     }

@@ -367,8 +367,20 @@ def _scope_composition(p: ProjectProfile) -> str:
     (``out_of_scope_ratio > 0``). An all-Python repo (ratio 0) is omitted, so
     its page stays byte-identical to before this feature existed.
     """
+    from app.tools.project_profile import (
+        honest_analyzed_ratio,
+        honest_unanalyzed_count,
+    )
+
     out_ratio = getattr(p, "out_of_scope_ratio", 0.0)
-    if not isinstance(out_ratio, (int, float)) or out_ratio <= 0.0:
+    if not isinstance(out_ratio, (int, float)):
+        return ""
+    # Render whenever a genuine analysed-vs-rest split exists: a polyglot
+    # remainder (out-of-scope languages) OR in-language files that were counted
+    # but NOT analysed (parse-failures / ``.pyi`` / over-cap). An all-analysed
+    # all-Python repo (both zero) is omitted, so its page stays byte-identical.
+    unanalyzed = honest_unanalyzed_count(p)
+    if out_ratio <= 0.0 and unanalyzed <= 0:
         return ""
     analyzed = getattr(p, "analyzed_ratio", None)
     if not isinstance(analyzed, (int, float)):
@@ -376,9 +388,15 @@ def _scope_composition(p: ProjectProfile) -> str:
 
     from app.reporting.dashboard_charts import stacked_bar
 
+    # The HONEST analysed fraction (single-sourced), so the bar reports the SAME
+    # split as scope/pulse/readiness. The remainder is everything NOT truly
+    # analysed (out-of-scope languages + unanalysed in-language files), derived as
+    # ``1 - honest`` so the two segments always sum to 1. Equals the language
+    # ratio when nothing was dropped, so the polyglot common case is unchanged.
+    honest = honest_analyzed_ratio(p)
     segments = [
-        ("Analysed (Python)", float(analyzed)),
-        ("Out of scope", float(out_ratio)),
+        ("Analysed (Python)", float(honest)),
+        ("Out of scope", float(1.0 - honest)),
     ]
     return (
         "<div class='scopecomp'><h4 style='margin:12px 0 4px'>"
