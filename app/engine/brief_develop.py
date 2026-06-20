@@ -29,6 +29,7 @@ from app.engine.objective_compiler import CompileResult, compile_objective
 __all__ = [
     "BriefDevelopResult", "concern_phrases", "objectives_for_brief",
     "develop_brief", "render_brief_develop_markdown", "_loci_from_report",
+    "develop_readiness_section",
 ]
 
 
@@ -268,6 +269,30 @@ def _locus_lines(loci: list[dict]) -> list[str]:
     if rationale:
         line += f" — {rationale}"
     return ["", line]
+
+
+def develop_readiness_section(project_root: str | Path,
+                              weight_by_reliability: bool = False) -> str:
+    """An ADDITIVE develop-readiness section for a brief — what Apex can land here.
+
+    Opt-in companion to :func:`render_brief_develop_markdown`: a brief that wants
+    to lead with honesty about its landing share calls this and appends the result
+    itself. The base brief render is left byte-identical (this is never folded into
+    it), so existing callers and their pinned output are unaffected.
+
+    Best-effort and READ-ONLY: delegates to :mod:`app.engine.develop_readiness`,
+    which scans without writing and never raises. Any failure yields ``""`` so the
+    caller appends nothing.
+    """
+    try:
+        from app.engine.develop_readiness import (
+            develop_readiness, render_develop_readiness_markdown,
+        )
+        result = develop_readiness(
+            root=str(project_root), weight_by_reliability=weight_by_reliability)
+        return render_develop_readiness_markdown(result)
+    except Exception:
+        return ""
 
 
 def render_brief_develop_markdown(result: BriefDevelopResult) -> str:
