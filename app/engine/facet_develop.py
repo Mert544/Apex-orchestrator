@@ -221,6 +221,15 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # never a guess. So the type-annotation facet becomes the campaign that
     # raises the project's type-hint coverage.
     "the precise type or annotation": "infer-type-hints",
+
+    # Unwired public surface: the document lens's "signatures and types" aspect
+    # names the package's public re-export surface. The wire-exports objective
+    # LANDS exactly that — it populates an empty ``__init__.py`` with
+    # ``from .module import Name`` re-exports + a complete ``__all__`` for every
+    # public top-level symbol, gated by an import oracle (every export must
+    # resolve) and the suite. So the "re-export surface" facet becomes the
+    # campaign that makes ``from pkg import X`` work.
+    "the public re-export surface to wire": "wire-exports",
 }
 
 

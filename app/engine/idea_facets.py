@@ -311,7 +311,12 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                                         "implicitly concatenated literals",
                                         "a magic literal worth naming"],
     # document ladder
-    "signatures and types": ["parameter meanings", "return type and None", "raised exceptions list"],
+    "signatures and types": ["parameter meanings", "return type and None", "raised exceptions list",
+                             # added: the package's public re-export surface — the
+                             # wire-exports develop objective wires it (`__init__`
+                             # re-exports + `__all__`). Appended, so the originals
+                             # still lead and emit in their existing order.
+                             "the public re-export surface to wire"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
     "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown"],
     "raised exceptions": ["which type when", "recoverable versus fatal", "error message contract"],
