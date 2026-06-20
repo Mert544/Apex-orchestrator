@@ -4,7 +4,7 @@ import ast
 
 from ..result import SemanticPatchResult
 from ._apply_helpers import parse_or_none as _parse_or_none
-from ._apply_helpers import run_rewrite_transformer as _run_rewrite_transformer
+from ._apply_helpers import run_splice_rewrite as _run_splice_rewrite
 
 
 def _pure_expr(node: ast.expr) -> bool:
@@ -58,7 +58,7 @@ def apply(rel_path: str, source: str, title: str = "") -> SemanticPatchResult | 
         return None
 
     transformer = _OrDefaultTransformer()
-    new_source = _run_rewrite_transformer(tree, transformer, source)
+    new_source = _run_splice_rewrite(tree, transformer, source)
     if new_source is None:
         return None
 

@@ -1,14 +1,19 @@
-"""Guard: ``run_rewrite_transformer`` refuses when unparse would drop comments.
+"""Guard: the shared rewrite driver never destroys a comment.
 
 ``ast.unparse`` rebuilds the whole module from an AST that carries no comments,
-so a transform advertised as a one-line edit would silently delete every ``#``
-comment (incl. ``# type: ignore`` / ``# noqa`` pragmas), flip quotes, and
-collapse blank lines. The shared driver now refuses (returns ``None``) when the
-source contains any comment. These tests pin, for EVERY consumer of
-``run_rewrite_transformer``, that:
+so the *whole-module* emit path would silently delete every ``#`` comment (incl.
+``# type: ignore`` / ``# noqa`` pragmas), flip quotes, and collapse blank lines.
 
-  * a convertible file WITH a comment -> ``apply`` returns ``None`` (refused),
-  * the SAME file with the comment removed -> still rewrites identically,
+Consumers now route through ``run_splice_rewrite``: comment-free files keep the
+exact whole-module ``ast.unparse`` path (byte-identical to before), while a file
+WITH a comment is rewritten by splicing ONLY the changed statement's line span,
+so comments OUTSIDE that span survive byte-exact. A comment INSIDE the rewritten
+span (which the local unparse would destroy) still refuses. These tests pin, for
+EVERY consumer, that:
+
+  * a convertible file WITH a trailing/unrelated comment -> the fix LANDS and the
+    comment survives byte-exact,
+  * the SAME file with the comment removed -> rewrites identically,
 
 so no comment is ever destroyed and no comment-free behaviour regresses.
 """
@@ -53,77 +58,94 @@ def test_source_has_comment_conservative_on_unparseable():
     assert helpers.source_has_comment("def f(:\n") is True
 
 
-# --- run_rewrite_transformer refuses on comment loss ------------------------
+# --- driver: refuse only on comment loss, splice-preserve otherwise ---------
 
 
-def test_driver_refuses_when_source_has_comment():
+def test_driver_splices_when_source_has_comment():
+    # A trailing comment is OUTSIDE the statement span -> the fix lands and the
+    # comment survives byte-exact (no longer a blanket refusal).
     src = "x = x + 1  # keep me\n"
     tree = ast.parse(src)
-    assert helpers.run_rewrite_transformer(tree, aug._AugAssignTransformer(), src) is None
+    assert helpers.run_splice_rewrite(tree, aug._AugAssignTransformer(), src) == "x += 1  # keep me\n"
 
 
 def test_driver_rewrites_when_no_comment():
     src = "x = x + 1\n"
     tree = ast.parse(src)
-    assert helpers.run_rewrite_transformer(tree, aug._AugAssignTransformer(), src) == "x += 1\n"
+    assert helpers.run_splice_rewrite(tree, aug._AugAssignTransformer(), src) == "x += 1\n"
 
 
-# --- per-consumer: refuse on comment, rewrite identically without -----------
+# --- per-consumer: land WITH a comment (preserved), rewrite identically without
 
 
-def test_augmented_assign_refuses_with_comment_rewrites_without():
+def test_augmented_assign_lands_with_comment_rewrites_without():
     with_comment = "x = x + 1  # tally\n"
     without = "x = x + 1\n"
-    assert aug.apply(REL, with_comment) is None
+    res_c = aug.apply(REL, with_comment)
+    assert res_c is not None
+    assert res_c.patch_requests[0]["new_content"] == "x += 1  # tally\n"
     res = aug.apply(REL, without)
     assert res is not None
     assert res.patch_requests[0]["new_content"] == "x += 1\n"
 
 
-def test_augmented_assign_refuses_type_ignore_pragma():
+def test_augmented_assign_preserves_type_ignore_pragma():
     src = "x = x + 1  # type: ignore[assignment]\n"
-    assert aug.apply(REL, src) is None
+    res = aug.apply(REL, src)
+    assert res is not None
+    assert res.patch_requests[0]["new_content"] == "x += 1  # type: ignore[assignment]\n"
 
 
-def test_chained_comparison_refuses_with_comment_rewrites_without():
+def test_chained_comparison_lands_with_comment_rewrites_without():
     with_comment = "y = a < b and b < c  # range check\n"
     without = "y = a < b and b < c\n"
-    assert chain.apply(REL, with_comment, "t") is None
+    res_c = chain.apply(REL, with_comment, "t")
+    assert res_c is not None
+    assert res_c.patch_requests[0]["new_content"] == "y = a < b < c  # range check\n"
     res = chain.apply(REL, without, "t")
     assert res is not None
     assert res.patch_requests[0]["new_content"] == "y = a < b < c\n"
 
 
-def test_startswith_tuple_refuses_with_comment_rewrites_without():
+def test_startswith_tuple_lands_with_comment_rewrites_without():
     with_comment = "z = s.startswith('a') or s.startswith('b')  # noqa\n"
     without = "z = s.startswith('a') or s.startswith('b')\n"
-    assert sw.apply(REL, with_comment, "t") is None
+    res_c = sw.apply(REL, with_comment, "t")
+    assert res_c is not None
+    assert res_c.patch_requests[0]["new_content"] == "z = s.startswith(('a', 'b'))  # noqa\n"
     res = sw.apply(REL, without, "t")
     assert res is not None
     assert res.patch_requests[0]["new_content"] == "z = s.startswith(('a', 'b'))\n"
 
 
-def test_or_default_refuses_with_comment_rewrites_without():
+def test_or_default_lands_with_comment_rewrites_without():
     with_comment = "v = a if a else b  # default\n"
     without = "v = a if a else b\n"
-    assert ordef.apply(REL, with_comment) is None
+    res_c = ordef.apply(REL, with_comment)
+    assert res_c is not None
+    assert res_c.patch_requests[0]["new_content"] == "v = a or b  # default\n"
     res = ordef.apply(REL, without)
     assert res is not None
     assert res.patch_requests[0]["new_content"] == "v = a or b\n"
 
 
-# --- a comment elsewhere in the file (not on the edited line) also refuses ---
+# --- a comment on an unrelated line survives (the edit splices only its stmt) -
 
 
-def test_refuses_comment_on_unrelated_line():
+def test_comment_on_unrelated_line_survives():
     src = "# module header\nx = x + 1\n"
-    assert aug.apply(REL, src) is None
+    res = aug.apply(REL, src)
+    assert res is not None
+    assert res.patch_requests[0]["new_content"] == "# module header\nx += 1\n"
 
 
 # --- determinism ------------------------------------------------------------
 
 
-def test_refusal_is_deterministic():
+def test_splice_is_deterministic():
     src = "x = x + 1  # c\n"
-    assert aug.apply(REL, src) is None
-    assert aug.apply(REL, src) is None
+    first = aug.apply(REL, src)
+    second = aug.apply(REL, src)
+    assert first is not None and second is not None
+    assert (first.patch_requests[0]["new_content"]
+            == second.patch_requests[0]["new_content"] == "x += 1  # c\n")

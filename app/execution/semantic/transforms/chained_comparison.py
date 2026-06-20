@@ -25,7 +25,7 @@ import ast
 
 from ..result import SemanticPatchResult
 from ._apply_helpers import parse_or_none as _parse_or_none
-from ._apply_helpers import run_rewrite_transformer as _run_rewrite_transformer
+from ._apply_helpers import run_splice_rewrite as _run_splice_rewrite
 
 # Operators that may legally chain together. The middle term is evaluated once
 # in the chain, so we only merge when both arms point the same way (or are both
@@ -162,7 +162,7 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
         return None
 
     transformer = _ChainTransformer()
-    new_source = _run_rewrite_transformer(tree, transformer, source)
+    new_source = _run_splice_rewrite(tree, transformer, source)
     if new_source is None:
         return None
 

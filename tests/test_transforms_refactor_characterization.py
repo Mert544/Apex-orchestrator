@@ -121,7 +121,12 @@ _CHAINED_CASES = [
     "a < b and b < c and c < d\n",  # three-arm and
     "def broken(:\n",  # syntax error -> None
     "(n := 1) < b and b < c\n",  # walrus -> refuse
-    "a < b and b < c  # trailing\n",
+    # NOTE: a commented case (e.g. "a < b and b < c  # trailing") is intentionally
+    # NOT pinned here: the pre-splice HEAD refused (returned None) on any comment,
+    # whereas the current driver routes through ``run_splice_rewrite`` and LANDS
+    # the fix while preserving the comment. That deliberate behavioural change is
+    # characterized in tests/test_comment_preserving_splice_eyml.py instead. The
+    # comment-FREE equivalence pinned here still holds byte-for-byte.
 ]
 
 

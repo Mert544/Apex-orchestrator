@@ -4,7 +4,7 @@ import ast
 
 from ..result import SemanticPatchResult
 from ._apply_helpers import parse_or_none as _parse_or_none
-from ._apply_helpers import run_rewrite_transformer as _run_rewrite_transformer
+from ._apply_helpers import run_splice_rewrite as _run_splice_rewrite
 
 # Binary operators that have a corresponding in-place (augmented) form.
 _AUG_OPS: tuple[type[ast.operator], ...] = (
@@ -221,7 +221,7 @@ def apply(rel_path: str, source: str) -> SemanticPatchResult | None:
 
     blocked = _alias_unsafe_names(tree)
     transformer = _AugAssignTransformer(blocked)
-    new_source = _run_rewrite_transformer(tree, transformer, source)
+    new_source = _run_splice_rewrite(tree, transformer, source)
     if new_source is None:
         return None
 
