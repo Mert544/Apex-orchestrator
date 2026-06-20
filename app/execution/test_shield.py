@@ -40,6 +40,19 @@ callable and runs", not "it returns X". If nothing is safely exercisable
 (neither a function nor a class), the generator falls back to a pure
 import-smoke test.
 
+Beyond pinning CURRENT behaviour, the generator also mines DOCUMENTED-correct
+behaviour out of docstrings: it parses doctest-style ``>>> expr`` / expected
+pairs with the stdlib :mod:`doctest` parser (deterministic, offline, zero-token)
+and emits REAL assertions of the documented answer — ``assert repr(expr) ==
+<want>`` for a value example, ``pytest.raises(<Type>)`` for a documented
+exception. Honesty is preserved by RUNNING each mined example against the real
+code at generation time: an example the current code already satisfies becomes a
+normal passing assertion (a real correctness pin, not just a current-behaviour
+pin); an example the code does NOT satisfy (a real bug or an unfinished stub)
+becomes an honest ``@pytest.mark.xfail(strict=True)`` so the suite stays green
+AND the discrepancy is surfaced — never hidden, never falsely green, never
+silently dropped.
+
 The generator only PROPOSES a :class:`ShieldTest`; the caller decides to write
 it (``write_shield_test``). An existing ``tests/test_<stem>.py`` is never
 clobbered (the generator returns ``None``). Deterministic, stdlib-only: stable
@@ -49,7 +62,9 @@ document order, no time/random.
 from __future__ import annotations
 
 import ast
+import doctest
 import importlib
+import io
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -421,6 +436,206 @@ def _capture_oracles(
         _restore_modules(saved_modules)
 
 
+# --- doctest mining ---------------------------------------------------------
+#
+# Beyond the current-behaviour value oracles above, Apex also mines the
+# DOCUMENTED-correct behaviour straight out of docstrings. A ``>>> expr`` /
+# expected-output pair in a docstring is a contract the author wrote down; the
+# stdlib ``doctest`` parser turns it into an example deterministically (no LLM,
+# offline). For each mined example we emit a REAL assertion of the documented
+# answer — but honestly: an example the CURRENT code already satisfies becomes a
+# normal passing assertion (a real correctness pin), while an example the code
+# does NOT satisfy (the docstring says one thing, the code does another -> a real
+# bug or an unfinished stub) becomes an honest ``xfail(strict=True)`` so the
+# suite stays green AND the discrepancy is surfaced, never hidden, never falsely
+# green, never silently dropped.
+
+
+@dataclass(frozen=True)
+class DocExample:
+    """A single mined doctest example and its honest disposition.
+
+    ``source`` is the ``>>> `` expression (exactly one expression, newline
+    stripped); ``want`` is the documented expected ``repr`` text (for a value
+    example) and ``exc_type`` the documented exception type name (for a raises
+    example) -- exactly one of the two is set. ``passes`` records whether the
+    CURRENT code already satisfies the example (captured by actually running the
+    example against the imported module at generation time): ``True`` -> emit a
+    passing assertion, ``False`` -> emit an honest ``xfail``.
+    """
+
+    qualname: str
+    source: str
+    want: str
+    exc_type: str
+    passes: bool
+
+
+def _example_is_simple_expr(source: str) -> bool:
+    """``True`` when ``source`` is exactly one evaluatable expression.
+
+    We only emit assertions for a single ``>>> expr`` (no assignment, no import,
+    no multi-statement block) so the generated ``assert repr(expr) == want`` /
+    ``pytest.raises(...)`` is valid Python and faithfully mirrors doctest's own
+    comparison. Anything else is declined (no test emitted for that example).
+    """
+    text = source.strip()
+    if not text or "\n" in text:
+        return False
+    try:
+        parsed = ast.parse(text, mode="eval")
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+    return isinstance(parsed, ast.Expression)
+
+
+def _exc_type_name(exc_msg: str) -> str | None:
+    """The documented exception TYPE NAME from a doctest ``exc_msg``, or ``None``.
+
+    doctest stores the traceback's final ``Type: message`` line as ``exc_msg``;
+    the leading token up to the first ``:`` (or the whole line) is the type. We
+    only accept a bare dotted identifier (``ValueError``, ``a.B``) so the emitted
+    ``pytest.raises(<name>)`` references a real, importable-in-namespace name.
+    """
+    head = exc_msg.split(":", 1)[0].strip()
+    if not head:
+        return None
+    if not all(part.isidentifier() for part in head.split(".")):
+        return None
+    return head
+
+
+def _example_passes(source: str, want: str, ns: dict) -> bool:
+    """Run ONE doctest example against namespace ``ns``; ``True`` iff it passes.
+
+    ``want`` is the doctest expected block exactly as parsed (the expected
+    ``repr`` for a value example, or the full ``Traceback ...`` block for an
+    exception example). Uses the stdlib :class:`doctest.DocTestRunner` so the
+    pass/fail decision is exactly doctest's own (deterministic, offline). Output
+    is discarded. Any failure to even build/run the example counts as "does not
+    pass" (-> honest xfail), never as a false green.
+    """
+    block = f">>> {source}\n{want}"
+    try:
+        test = doctest.DocTestParser().get_doctest(block, dict(ns), "<mined>", None, 0)
+        runner = doctest.DocTestRunner(verbose=False)
+        sink = io.StringIO()
+        result = runner.run(test, out=sink.write, clear_globs=True)
+    except Exception:
+        return False
+    return result.attempted >= 1 and result.failed == 0
+
+
+def _mine_examples_from(qualname: str, docstring: str | None, ns: dict) -> list[DocExample]:
+    """All mined :class:`DocExample`s for one ``docstring`` (document order).
+
+    Parses with :class:`doctest.DocTestParser` (deterministic, offline). Keeps
+    only single-expression value examples (``>>> expr`` then expected ``repr``)
+    and single-expression exception examples (``>>> expr`` then a traceback whose
+    final line is a bare exception type). Each kept example is run against ``ns``
+    to record its honest disposition (passes on current code or not).
+    """
+    if not docstring:
+        return []
+    try:
+        raw = doctest.DocTestParser().get_examples(docstring)
+    except (ValueError, RecursionError, MemoryError):
+        return []
+    out: list[DocExample] = []
+    for ex in raw:
+        source = ex.source.strip()
+        if not _example_is_simple_expr(source):
+            continue
+        if ex.exc_msg is not None:
+            exc_type = _exc_type_name(ex.exc_msg)
+            if exc_type is None:
+                continue
+            passes = _example_passes(source, ex.want, ns)
+            out.append(DocExample(qualname, source, "", exc_type, passes))
+            continue
+        want = ex.want.strip()
+        if not want or "\n" in want:
+            continue  # only single-line value examples get a faithful oracle
+        passes = _example_passes(source, ex.want, ns)
+        out.append(DocExample(qualname, source, want, "", passes))
+    return out
+
+
+def _doc_targets(tree: ast.Module) -> list[tuple[str, str | None]]:
+    """``(qualname, docstring)`` for the module and every public function/method.
+
+    Document order, deterministic. Includes the module docstring (qualname
+    ``"<module>"``), each top-level public function, each public class, and each
+    public method of a public class (``Class.method``). Private names (leading
+    ``_``, except ``__init__``) are skipped -- their examples are not part of the
+    public contract.
+    """
+    targets: list[tuple[str, str | None]] = [("<module>", ast.get_docstring(tree))]
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name.startswith("_"):
+                continue
+            targets.append((node.name, ast.get_docstring(node)))
+        elif isinstance(node, ast.ClassDef):
+            if node.name.startswith("_"):
+                continue
+            targets.append((node.name, ast.get_docstring(node)))
+            for item in node.body:
+                if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if item.name.startswith("_") and item.name != "__init__":
+                    continue
+                targets.append((f"{node.name}.{item.name}", ast.get_docstring(item)))
+    return targets
+
+
+def _collect_doc_examples(module: object, tree: ast.Module) -> list[DocExample]:
+    """All mined doctest examples for ``tree``, run against the imported ``module``.
+
+    Pure given an already-imported ``module``: the example expressions are
+    evaluated in the module's own namespace (so ``factorial(5)`` resolves to the
+    module's ``factorial``). Returns examples in document order; empty when the
+    module has no minable examples.
+    """
+    ns = dict(getattr(module, "__dict__", {}))
+    examples: list[DocExample] = []
+    for qualname, docstring in _doc_targets(tree):
+        examples.extend(_mine_examples_from(qualname, docstring, ns))
+    return examples
+
+
+def _capture_doc_examples(
+    project_root: Path, dotted: str, tree: ast.Module
+) -> list[DocExample]:
+    """Mine + honestly disposition every docstring example for ``dotted``.
+
+    Imports the target under a controlled ``sys.path``/``sys.modules`` snapshot
+    (identical discipline to :func:`_capture_oracles`) so each mined example can
+    be RUN against the real code to decide passing-assertion vs honest-xfail.
+    Any failure to import yields no examples (the docstrings still parse, but we
+    will not claim a disposition we could not verify). Deterministic.
+    """
+    root_str = str(project_root)
+    saved_modules = dict(sys.modules)
+    # Force the target's package chain to bind under THIS root for the duration
+    # of the import (insert at position 0 so a stale same-named package cached
+    # from another root cannot win), then restore sys.path/sys.modules exactly.
+    sys.path.insert(0, root_str)
+    try:
+        for mod_name in _stale_module_names(dotted, list(sys.modules)):
+            del sys.modules[mod_name]
+        importlib.invalidate_caches()
+        try:
+            module = importlib.import_module(dotted)
+        except Exception:
+            return []
+        return _collect_doc_examples(module, tree)
+    finally:
+        if sys.path and sys.path[0] == root_str:
+            sys.path.pop(0)
+        _restore_modules(saved_modules)
+
+
 def _eval_call_args(call_args: str) -> tuple[tuple[object, ...], dict[str, object]]:
     """Parse the synthesized ``call_args`` string into ``(args, kwargs)`` of plain
     literals, via :func:`ast.literal_eval` (no code execution).
@@ -443,12 +658,78 @@ def _eval_call_args(call_args: str) -> tuple[tuple[object, ...], dict[str, objec
     return args, kwargs
 
 
+def _doc_test_name(module_stem: str, index: int) -> str:
+    """Deterministic, unique test name for the ``index``-th mined doc example."""
+    return f"test_{module_stem}_docexample_{index}"
+
+
+def _render_doc_examples(
+    module_stem: str, dotted: str, examples: list[DocExample]
+) -> list[str]:
+    """Emitted test source lines for the mined docstring examples (document order).
+
+    A passing example (current code already satisfies the documented contract)
+    becomes a normal assertion -- a REAL correctness pin of the documented answer.
+    An unsatisfied example becomes an ``@pytest.mark.xfail(strict=True)`` test:
+    the suite stays green, but the documented-vs-actual discrepancy is surfaced
+    honestly (a real bug / unfinished stub), never hidden, never a false green.
+    A value example emits ``assert repr(<expr>) == <want>`` (mirroring doctest's
+    own comparison); an exception example emits ``pytest.raises(<Type>)``. The
+    docstring's own names (``factorial`` ...) are bound via ``from <dotted>
+    import *`` so each mined expression resolves exactly as it did in the docstring.
+    """
+    if not examples:
+        return []
+    lines: list[str] = [
+        "",
+        "",
+        "import pytest  # noqa: E402",
+        f"from {dotted} import *  # noqa: E402,F401,F403",
+    ]
+    for index, ex in enumerate(examples):
+        name = _doc_test_name(module_stem, index)
+        if ex.exc_type:
+            body = [
+                f"    with pytest.raises({ex.exc_type}):",
+                f"        {ex.source}",
+            ]
+            summary = f"{ex.source} raises {ex.exc_type}"
+        else:
+            body = [f"    assert repr({ex.source}) == {ex.want!r}"]
+            summary = f"{ex.source} == {ex.want}"
+        if ex.passes:
+            lines += [
+                "",
+                "",
+                f"def {name}():",
+                f'    """Documented behaviour of {ex.qualname}: {summary} (from its docstring)."""',
+                *body,
+            ]
+        else:
+            reason = f"docstring example not yet satisfied: {ex.qualname}: {summary}"
+            lines += [
+                "",
+                "",
+                f"@pytest.mark.xfail(strict=True, reason={reason!r})",
+                f"def {name}():",
+                f'    """Documented-but-unmet behaviour of {ex.qualname}: {summary}.',
+                "",
+                "    The docstring documents this, but the current code does NOT satisfy",
+                "    it (a real bug or an unfinished stub). Marked xfail(strict) so the",
+                "    suite stays green AND the discrepancy is surfaced honestly, not hidden.",
+                '    """',
+                *body,
+            ]
+    return lines
+
+
 def _render(
     module_stem: str,
     dotted: str,
     specs: list[tuple[str, str]],
     class_specs: list[tuple[str, str, list[tuple[str, str]]]],
     oracles: dict[str, str] | None = None,
+    doc_examples: list[DocExample] | None = None,
 ) -> str:
     """The deterministic test source for ``dotted`` exercising ``specs`` (public
     functions) and ``class_specs`` (safely-constructible public classes).
@@ -532,6 +813,7 @@ def _render(
                 "        # 'it is callable and runs' is what we pin, not a value.",
                 "        pass",
             ]
+    lines += _render_doc_examples(module_stem, dotted, doc_examples or [])
     return "\n".join(lines) + "\n"
 
 
@@ -573,7 +855,8 @@ def generate_characterization_test(
     specs = _safe_functions(tree)
     class_specs = _safe_classes(tree)
     oracles = _capture_oracles(root, dotted, specs)
-    content = _render(module_stem, dotted, specs, class_specs, oracles)
+    doc_examples = _capture_doc_examples(root, dotted, tree)
+    content = _render(module_stem, dotted, specs, class_specs, oracles, doc_examples)
 
     exercised = [name for name, _args in specs]
     for cname, _init_args, methods in class_specs:
