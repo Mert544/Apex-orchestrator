@@ -322,15 +322,31 @@ def run_develop_session(
     return report
 
 
+def _headline_lines(report: SessionReport) -> list[str]:
+    """The title + one-line headline. Pure function of ``report``.
+
+    Applied mode reports the real landed counts (files/lines from the diff).
+    Report-only mode has NO dry-run diff, so files/lines are structurally 0 and
+    rendering them reads as broken — point at ``--apply`` instead; the
+    per-objective breakdown already lists each candidate move."""
+    head = ["# Develop session — concrete objectives, one motion", ""]
+    if report.applied:
+        head += [
+            f"**Apex landed {report.total_moves} contribution(s)** across "
+            f"{len(report.files_changed)} file(s) "
+            f"(+{report.lines_added} / -{report.lines_removed} lines).", "",
+        ]
+    else:
+        head += [
+            f"**Apex found {report.total_moves} contribution(s) ready to land.** "
+            "Run again with `--apply` to write them to your tree.", "",
+        ]
+    return head
+
+
 def _render_summary(report: SessionReport) -> list[str]:
     """The headline + per-objective breakdown lines (no diff)."""
-    verb = "landed" if report.applied else "would land"
-    lines = [
-        "# Develop session — concrete objectives, one motion", "",
-        f"**Apex {verb} {report.total_moves} contribution(s)** across "
-        f"{len(report.files_changed)} file(s) "
-        f"(+{report.lines_added} / -{report.lines_removed} lines).", "",
-    ]
+    lines = _headline_lines(report)
     if report.applied:
         parts = [f"**{report.verified_moves} verified** "
                  f"(a test exercises the change)"]
@@ -372,7 +388,21 @@ def _render_summary(report: SessionReport) -> list[str]:
                 TIER_NO_SUITE: "⚠️ no-suite",
             }.get(mv.tier, "⚠️ no-suite")
             lines.append(f"{i}. {mv.description} — {tag}")
+    lines += _tier_footnote(report)
     return lines
+
+
+def _tier_footnote(report: SessionReport) -> list[str]:
+    """Explain the non-verified tiers — ONLY when a move carries one, so a
+    fully-verified report stays byte-identical (honesty, not a defect)."""
+    if not (report.weak_moves or report.no_suite_moves):
+        return []
+    note = ["", "Tiers:"]
+    if report.weak_moves:
+        note.append("- `weak` = applied and the suite is green, but NO test exercises this code, so Apex won't claim it's test-verified; add a test (or `apex shield`) to upgrade it.")
+    if report.no_suite_moves:
+        note.append("- `no-suite` = applied but no test suite exists to verify this code, so Apex won't claim it's test-verified; add a test (or `apex shield`) to upgrade it.")
+    return note
 
 
 def render_session_markdown(report: SessionReport) -> str:

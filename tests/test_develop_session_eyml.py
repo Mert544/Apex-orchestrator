@@ -185,6 +185,8 @@ def test_no_suite_move_is_labelled_no_suite(tmp_path: Path):
     md = render_session_markdown(report)
     assert "no-suite" in md
     assert "no test suite detected" in md
+    # The no-suite tier is explained by the conditional footnote.
+    assert "won't claim it's test-verified" in md
 
 
 # --- a move that fails verification is rolled back + reported refused ----------
@@ -271,3 +273,7 @@ def test_dry_run_lists_moves_without_writing(tmp_path: Path):
     assert report.diff == ""
     assert (tmp_path / "widgets" / "mathlib.py").read_text().count(
         "raise NotImplementedError") == 1
+    # Report-only headline points at --apply, never the misleading 0-file/line counts.
+    md = render_session_markdown(report)
+    assert "ready to land" in md
+    assert "0 file(s)" not in md
