@@ -15,6 +15,13 @@ from app.tools.python_structure import _extract_graph, _parse_source
 # qualified edge `pkg.sub` (one per imported name), not the bare package, so the
 # dependency resolver can reach a real submodule file and stops collapsing every
 # `from`-style edge onto `__init__.py`. Star/no-module imports keep the package.
+#
+# RELATIVE imports now preserve `node.level` as a leading-dot prefix (one dot
+# per level): `from . import x` -> `.x` (sibling MODULE candidate, no longer
+# dropped) and `from .rel import y` -> `.rel.y` (anchored to the importer's
+# package by the resolver, so it can't mis-pop to a top-level `rel`). The dotted
+# prefix is path-agnostic here on purpose; absolutization happens in
+# `dependency_graph._resolve_internal_import` where the importing file is known.
 
 
 def _is_type_checking_test_ref(test: ast.expr) -> bool:
@@ -49,14 +56,32 @@ def _parse_source_ref(source: str) -> tuple[list[str], list[str]] | None:
             for alias in node.names:
                 imports.append(alias.name)
         elif isinstance(node, ast.ImportFrom):
+            level = node.level
             module = node.module or ""
-            if module:
-                qualified = [
-                    f"{module}.{alias.name}"
-                    for alias in node.names
-                    if alias.name != "*"
-                ]
-                imports.extend(qualified if qualified else [module])
+            if level == 0:
+                if module:
+                    qualified = [
+                        f"{module}.{alias.name}"
+                        for alias in node.names
+                        if alias.name != "*"
+                    ]
+                    imports.extend(qualified if qualified else [module])
+            else:
+                prefix = "." * level
+                if module:
+                    qualified = [
+                        f"{prefix}{module}.{alias.name}"
+                        for alias in node.names
+                        if alias.name != "*"
+                    ]
+                    imports.extend(qualified if qualified else [f"{prefix}{module}"])
+                else:
+                    names = [
+                        f"{prefix}{alias.name}"
+                        for alias in node.names
+                        if alias.name != "*"
+                    ]
+                    imports.extend(names if names else [prefix])
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             symbols.append(node.name)
 

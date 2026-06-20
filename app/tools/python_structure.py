@@ -209,28 +209,53 @@ def _import_names(node: ast.AST) -> list[str]:
     ``pkg`` would create two edges to two different files whenever ``pkg/sub.py``
     exists, double-counting one import as two structural dependencies.
 
-    Relative imports (``node.level > 0``) keep producing the same candidates as
-    before — the qualified form only ADDS a more-specific option the resolver
-    tries first, with the original bare-module target preserved as the fallback,
-    so relative-import resolution is never made worse.
+    Relative imports (``node.level > 0``) are emitted with a LEADING-DOT prefix
+    that preserves ``node.level`` (one dot per level), e.g. ``from .b import x``
+    -> ``.b.x`` and ``from . import b`` -> ``.b``. The dotted prefix is path-
+    AGNOSTIC on purpose: this function does not know the importing file's
+    location, so it cannot turn a relative import into an absolute target. It
+    encodes the level faithfully and defers the absolute resolution to
+    :func:`dependency_graph._resolve_internal_import`, where the importing file
+    IS known. The old code dropped ``node.level`` entirely — emitting ``[]`` for
+    ``from . import b`` (silently dropping the sibling edge) and ``b.x`` for
+    ``from .b import x`` (which the resolver then mis-popped to a TOP-LEVEL
+    ``b``, fabricating a phantom edge). Encoding the level fixes both.
+
+    Absolute imports (``node.level == 0``) are byte-identical to before: no
+    leading dot, so the resolver path for them is unchanged.
     """
     if isinstance(node, ast.Import):
         return [alias.name for alias in node.names]
     if isinstance(node, ast.ImportFrom):
-        module = node.module or ""
-        if not module:
-            # ``from . import x`` (no module): nothing the resolver can key on
-            # beyond today's behavior, so emit nothing — unchanged.
-            return []
-        qualified = [
-            f"{module}.{alias.name}"
-            for alias in node.names
-            if alias.name != "*"
-        ]
-        # A bare ``from pkg import *`` (or any node with only star) still needs
-        # the package edge; the qualified list carries the fallback otherwise.
-        return sorted(set(qualified)) if qualified else [module]
+        return _import_from_names(node)
     return []
+
+
+def _import_from_names(node: ast.ImportFrom) -> list[str]:
+    """Candidate edge name(s) for a single ``from ... import ...`` node.
+
+    Split out of :func:`_import_names` so each function stays simple. ``prefix``
+    is ``""`` for an absolute import (``node.level == 0``) and one dot per level
+    for a relative import — that single difference carries the level through to
+    the resolver without branching the rest of the logic. ``*`` aliases are
+    dropped (they import names, not a module). The fallback for a node with no
+    qualified candidate is the bare module / package marker (``prefix + module``,
+    or just ``prefix`` for ``from . import *``)."""
+    prefix = "." * node.level
+    module = node.module or ""
+
+    if not module:
+        # ``from . import a, b`` (relative, no module): each name is a sibling
+        # MODULE candidate ``level`` levels up. An absolute ``from`` with no
+        # module is impossible (``node.level == 0`` here means ``prefix == ""``),
+        # so an empty candidate list collapses to ``[]`` -> nothing emitted.
+        names = [f"{prefix}{a.name}" for a in node.names if a.name != "*"]
+        if names:
+            return sorted(set(names))
+        return [prefix] if prefix else []
+
+    qualified = [f"{prefix}{module}.{a.name}" for a in node.names if a.name != "*"]
+    return sorted(set(qualified)) if qualified else [f"{prefix}{module}"]
 
 
 def _is_symbol(node: ast.AST) -> bool:

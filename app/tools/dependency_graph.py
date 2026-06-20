@@ -63,7 +63,7 @@ class DependencyGraphBuilder:
         for structure in structures:
             source = structure.path
             for import_name in structure.imports:
-                target = self._resolve_internal_import(import_name, module_map)
+                target = self._resolve_internal_import(import_name, module_map, source)
                 # ``module_map`` is built from every .py on disk, but the graph's
                 # nodes come from the structure analyzer, which can legitimately
                 # exclude a file (e.g. one that fails to parse). When an import
@@ -131,7 +131,9 @@ class DependencyGraphBuilder:
 
         for structure in structures:
             for import_name in structure.imports:
-                target = self._resolve_internal_import(import_name, module_map)
+                target = self._resolve_internal_import(
+                    import_name, module_map, structure.path
+                )
                 if target is None or target == structure.path:
                     continue
                 edges.append(
@@ -173,7 +175,25 @@ class DependencyGraphBuilder:
         self._module_map_cache = mapping
         return mapping
 
-    def _resolve_internal_import(self, import_name: str, module_map: dict[str, str]) -> str | None:
+    def _resolve_internal_import(
+        self,
+        import_name: str,
+        module_map: dict[str, str],
+        source_path: str | None = None,
+    ) -> str | None:
+        # Relative imports carry a leading-dot prefix (one dot per ``node.level``)
+        # emitted by ``python_structure._import_names``. They are path-DEPENDENT:
+        # the same ``.b`` means a different module from each importing file, so
+        # they must be anchored to ``source_path``'s package BEFORE resolution.
+        # Absolute imports (no leading dot) fall straight through to the frozen
+        # pop-to-package walk below, byte-identical to today.
+        if import_name.startswith("."):
+            import_name = self._absolutize_relative(import_name, source_path)
+            if import_name is None:
+                # Level escaped the project root (or no source context): there is
+                # no internal module to point at, so DON'T fabricate an edge.
+                return None
+
         if import_name in module_map:
             return module_map[import_name]
 
@@ -184,3 +204,46 @@ class DependencyGraphBuilder:
                 return module_map[candidate]
             parts.pop()
         return None
+
+    @staticmethod
+    def _absolutize_relative(import_name: str, source_path: str | None) -> str | None:
+        """Turn a leading-dot relative candidate into an absolute dotted module.
+
+        ``import_name`` is ``"." * level + tail`` (``tail`` possibly empty, e.g.
+        ``"."`` for ``from . import *``). It is resolved against the importing
+        file's PACKAGE — the file's dotted path with its final component dropped
+        (``proj/sub/c.py`` -> package ``proj.sub``). ``level`` dots pop that many
+        components off the package; a ``tail`` (``b`` / ``b.fb``) is then appended.
+
+        Returns the absolute dotted module, or ``None`` when there is no source
+        context or the level pops ABOVE the project root (an import that escapes
+        the analyzed tree has no internal target — we must not invent one).
+        Deterministic: pure string arithmetic, no I/O, no clock/random.
+        """
+        if not source_path:
+            return None
+        level = len(import_name) - len(import_name.lstrip("."))
+        tail = import_name[level:]
+
+        # Package of the importing file = its dotted path minus the file name.
+        # ``__init__.py`` IS its package, so it is its own anchor (drop only the
+        # ``__init__`` leaf); a normal module drops its own leaf too.
+        rel = Path(source_path).with_suffix("")
+        pkg_parts = list(rel.parts)
+        if pkg_parts and pkg_parts[-1] == "__init__":
+            pkg_parts.pop()
+        # A normal module ``proj/sub/c.py`` lives IN package ``proj.sub``: drop
+        # the module's own name to get its package.
+        elif pkg_parts:
+            pkg_parts.pop()
+
+        # ``level`` dots: level 1 == "current package" (no further pop); each
+        # extra dot pops one more package component.
+        pops = level - 1
+        if pops > len(pkg_parts):
+            # Escapes the project root — no internal module exists for it.
+            return None
+        base = pkg_parts[: len(pkg_parts) - pops] if pops else pkg_parts
+
+        absolute_parts = base + (tail.split(".") if tail else [])
+        return ".".join(absolute_parts)
