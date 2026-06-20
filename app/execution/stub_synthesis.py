@@ -48,6 +48,7 @@ __all__ = [
     "pinned_test_files",
     "candidate_bodies",
     "ordered_candidate_exprs",
+    "synthesize_expr_from_witnesses",
     "fill_stub_body",
     "synthesize_stub_body",
 ]
@@ -219,47 +220,323 @@ def pinned_test_files(root: Path, module_rel: str, func_name: str) -> list[str]:
 
 # --- candidate body templates ------------------------------------------------
 
-def candidate_bodies(stub: StubFunction) -> list[tuple[str, str]]:
+def candidate_bodies(stub: StubFunction,
+                     witnesses: list[tuple[str, str]] | None = None) -> list[tuple[str, str]]:
     """The fixed, ordered template space for ``stub`` as ``(label, body_expr)``
     pairs, where ``body_expr`` is the single ``return``-ed expression. The order
     is FIXED and independent of any input value, so synthesis is deterministic.
 
     Pure expression text only — the caller wraps it as ``return <expr>``. A
     constant-return template is contributed by the caller as a LAST resort (it
-    needs the tests' expected literal), so this covers passthrough / binary /
-    recursion / reduction — the parameter-shaped templates that take priority."""
+    needs the tests' expected literal), so this covers passthrough / scalar
+    arithmetic / string / comparison / binary / recursion / reduction — the
+    parameter-shaped templates that take priority.
+
+    ``witnesses`` are the ``(args_text, expected_text)`` pairs parsed from the
+    pinned tests; they only let value-dependent templates PROPOSE a constant ``k``
+    (``n * k``, ``s.replace(a, b)``). Inference never decides acceptance — a
+    proposed body is still gated against ALL pinned tests by the caller, so a
+    wrong ``k`` is rejected, never landed (never-fake-green). With no witnesses,
+    only the value-free templates are offered."""
     params = stub.params
     out: list[tuple[str, str]] = []
     if len(params) == 1:
-        out.extend(_one_arg_templates(params[0]))
+        out.extend(_one_arg_templates(params[0], witnesses or []))
     elif len(params) >= 2:
         out.extend(_two_arg_templates(params[0], params[1]))
     return out
 
 
-def _one_arg_templates(a: str) -> list[tuple[str, str]]:
-    """One-arg templates: passthrough, iterable reductions, and the two bounded
-    recursion shapes (factorial, fibonacci)."""
-    return [
-        ("passthrough", a),
-        ("len", f"len({a})"),
-        ("min", f"min({a})"),
-        ("max", f"max({a})"),
-        ("sorted", f"sorted({a})"),
-        ("sum", f"sum({a})"),
-        ("factorial", f"1 if {a} <= 1 else {a} * __apex_self__({a} - 1)"),
-        ("fibonacci",
-         f"{a} if {a} < 2 else __apex_self__({a} - 1) + __apex_self__({a} - 2)"),
+def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """One-arg templates in FIXED order: scalar arithmetic on one arg with an
+    inferred constant, parity/comparison-to-constant, abs/round, string-method
+    chains, iterable reductions, and the two bounded recursion shapes. Recursion
+    is LAST among the value-free shapes so a simpler parameter body wins first.
+
+    Value-dependent shapes (``n * k`` etc., ``s.replace(a, b)``) only appear when
+    a constant is inferable from ``witnesses``; the inference merely PROPOSES the
+    body, which the caller still gates against every pinned test.
+
+    Templates whose shape cannot possibly match the witnesses' ARGUMENT type are
+    pruned (string methods are skipped for an int argument; scalar arithmetic and
+    recursion are skipped for a string argument), so the candidate list stays
+    small and the gate runs few probes. With no witnesses (the pure structural
+    view) every shape is offered."""
+    kind = _arg_kind(witnesses)
+    out: list[tuple[str, str]] = [("passthrough", a)]
+    if kind in (None, "int", "float", "iterable"):
+        out.extend(_scalar_arith_templates(a, witnesses))
+        out.extend(_parity_compare_templates(a, witnesses))
+        out.extend([
+            ("abs", f"abs({a})"),
+            ("round", f"round({a})"),
+        ])
+    out.append(("len", f"len({a})"))
+    if kind in (None, "str"):
+        out.extend(_string_templates(a, witnesses))
+    if kind in (None, "iterable"):
+        out.extend([
+            ("min", f"min({a})"),
+            ("max", f"max({a})"),
+            ("sorted", f"sorted({a})"),
+            ("sum", f"sum({a})"),
+            ("mean", f"sum({a}) / len({a})"),
+        ])
+    if kind in (None, "int") and _recursion_allowed(witnesses):
+        out.extend([
+            ("factorial", f"1 if {a} <= 1 else {a} * __apex_self__({a} - 1)"),
+            ("fibonacci",
+             f"{a} if {a} < 2 else __apex_self__({a} - 1) + __apex_self__({a} - 2)"),
+        ])
+    return out
+
+
+def _arg_kind(witnesses: list[tuple[str, str]]) -> str | None:
+    """The single argument's type across the witnesses — ``"int"`` / ``"float"`` /
+    ``"str"`` / ``"iterable"`` — or ``None`` when there are no witnesses or the
+    type is mixed/unknown (then every template is offered and the gate decides).
+    Used only to prune impossible templates, never to accept one."""
+    if not witnesses:
+        return None
+    kinds: set[str] = set()
+    for args_text, _expected in witnesses:
+        value = _literal_tuple(args_text)
+        if value is None or len(value) != 1:
+            return None
+        kinds.add(_value_kind(value[0]))
+    return next(iter(kinds)) if len(kinds) == 1 else None
+
+
+def _value_kind(value: object) -> str:
+    """Classify a literal argument value into a template-shape bucket."""
+    if isinstance(value, bool):
+        return "int"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, (list, tuple, set, frozenset, dict)):
+        return "iterable"
+    return "other"
+
+
+def _recursion_allowed(witnesses: list[tuple[str, str]]) -> bool:
+    """True when the recursion shapes (factorial/fibonacci) may be OFFERED — only
+    once at least TWO DISTINCT argument tuples witness the contract, the same
+    overfit floor the constant template uses. A single witness (``double(3) == 6``)
+    must NOT be allowed to land a factorial body, so with <2 distinct tuples
+    recursion is withheld. With NO witness list at all (the pure structural view
+    used by callers that gate elsewhere) the shapes are still offered."""
+    if not witnesses:
+        return True
+    distinct = {args for args, _expected in witnesses}
+    return len(distinct) >= 2
+
+
+def _scalar_arith_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Scalar arithmetic on one arg: the value-free ``n * 2`` / ``n + n`` plus,
+    for each numeric constant ``k`` inferable from the witnesses, ``n * k`` /
+    ``n + k`` / ``n - k`` / ``n // k`` / ``n % k``. Constants are tried in fixed
+    (sorted) order so synthesis stays deterministic."""
+    out: list[tuple[str, str]] = [
+        ("n*2", f"{a} * 2"),
+        ("n+n", f"{a} + {a}"),
     ]
+    for k in _numeric_constants(witnesses):
+        out.append((f"n*{k}", f"{a} * {k}"))
+        out.append((f"n+{k}", f"{a} + {k}"))
+        out.append((f"n-{k}", f"{a} - {k}"))
+        out.append((f"n//{k}", f"{a} // {k}"))
+        out.append((f"n%{k}", f"{a} % {k}"))
+    return out
+
+
+def _parity_compare_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Boolean shapes on one arg: parity (``n % 2 == 0`` / ``== 1``) and, for each
+    numeric constant ``k`` from the witnesses, comparison-to-constant (``n == k``,
+    ``n < k``, ``n <= k``, ``n > k``, ``n >= k``)."""
+    out: list[tuple[str, str]] = [
+        ("even", f"{a} % 2 == 0"),
+        ("odd", f"{a} % 2 == 1"),
+    ]
+    for k in _numeric_constants(witnesses):
+        out.append((f"n=={k}", f"{a} == {k}"))
+        out.append((f"n<{k}", f"{a} < {k}"))
+        out.append((f"n<={k}", f"{a} <= {k}"))
+        out.append((f"n>{k}", f"{a} > {k}"))
+        out.append((f"n>={k}", f"{a} >= {k}"))
+    return out
+
+
+def _string_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """String-method shapes on one arg: the value-free chains (``s.lower()``,
+    ``s.upper()``, ``s.strip()``, ``s.title()``, ``s.lower().strip()``) plus, for
+    each ordered pair / single string constant inferable from the witnesses,
+    ``s.replace(a, b)`` and ``s.split(sep)``. Constants come from the EXPECTED and
+    ARGUMENT text of the witnesses so common slug/clean shapes are reachable."""
+    out: list[tuple[str, str]] = [
+        ("lower", f"{a}.lower()"),
+        ("upper", f"{a}.upper()"),
+        ("strip", f"{a}.strip()"),
+        ("title", f"{a}.title()"),
+        ("lower.strip", f"{a}.lower().strip()"),
+    ]
+    strings = _string_constants(witnesses)
+    for old, new in _ordered_string_pairs(strings):
+        out.append((f"replace({old},{new})", f"{a}.replace({old}, {new})"))
+        out.append((f"lower.replace({old},{new})",
+                    f"{a}.lower().replace({old}, {new})"))
+    for sep in strings:
+        out.append((f"split({sep})", f"{a}.split({sep})"))
+    return out
 
 
 def _two_arg_templates(a: str, b: str) -> list[tuple[str, str]]:
     """Two-arg binary templates in a fixed order. Covers numeric arithmetic and,
-    via ``+``, string/list concatenation as well as boolean ``and``/``or``."""
+    via ``+``, string/list concatenation; boolean ``and``/``or``; comparison;
+    and ``a.join(b)`` for the ``sep.join(xs)`` shape."""
     ops = ["+", "-", "*", "//", "%", "/"]
     out = [(op, f"{a} {op} {b}") for op in ops]
     out.append(("and", f"{a} and {b}"))
     out.append(("or", f"{a} or {b}"))
+    out.append(("<", f"{a} < {b}"))
+    out.append(("<=", f"{a} <= {b}"))
+    out.append(("==", f"{a} == {b}"))
+    out.append(("join", f"{a}.join({b})"))
+    return out
+
+
+# --- witness extraction (for value-dependent templates) ----------------------
+
+def _numeric_constants(witnesses: list[tuple[str, str]]) -> list[str]:
+    """Small integer constants to try in scalar/comparison templates, inferred
+    from the witnesses. Two sources, both deterministic (sorted, capped):
+
+    * **literal-present** ints — any int written in an arg or expected fragment.
+      These are structurally in the spec, so they need no overfit floor (the run
+      gate still rejects a non-matching one).
+    * **arithmetically-derived** ints — ``expected - arg`` / ``expected // arg``
+      from single-arg witnesses (so ``double(3) == 6`` proposes ``k = 2``). A
+      derived constant can OVERFIT a lone example (``f(2) == 5`` would yield
+      ``n + 3``), so it is offered ONLY when at least TWO DISTINCT argument tuples
+      witness the contract AND the derived ``k`` is CONSISTENT across them — the
+      same >=2-witness floor recursion and the constant template use."""
+    seen: set[int] = set()
+    for args, expected in witnesses:
+        for text in (args, expected):
+            for value in _int_literals(text):
+                seen.add(value)
+    seen.update(_derived_constants(witnesses))
+    ordered = sorted(v for v in seen if -64 <= v <= 64)
+    return [str(v) for v in ordered]
+
+
+def _derived_constants(witnesses: list[tuple[str, str]]) -> set[int]:
+    """The arithmetically-derived constants (``expected - arg``, ``expected //
+    arg``) that are CONSISTENT across at least TWO DISTINCT single-arg witnesses.
+    A constant derived from a single example is withheld (it would overfit); one
+    that disagrees between witnesses is dropped. This is the overfit floor applied
+    to value-dependent scalar templates."""
+    diffs: list[int] = []
+    quots: list[int] = []
+    tuples: set[tuple[int, ...]] = set()
+    for args, expected in witnesses:
+        ai = _int_literals(args)
+        ei = _int_literals(expected)
+        if len(ai) == 1 and len(ei) == 1:
+            tuples.add((ai[0],))
+            diffs.append(ei[0] - ai[0])
+            if ai[0] != 0 and ei[0] % ai[0] == 0:
+                quots.append(ei[0] // ai[0])
+    if len(tuples) < 2:
+        return set()  # floor: a single example cannot pin a derived constant
+    out: set[int] = set()
+    if len(diffs) == len(tuples) and len(set(diffs)) == 1:
+        out.add(diffs[0])  # one consistent offset across >=2 distinct inputs
+    if len(quots) == len(tuples) and len(set(quots)) == 1:
+        out.add(quots[0])  # one consistent multiplier across >=2 distinct inputs
+    return out
+
+
+def _int_literals(text: str) -> list[int]:
+    """Every integer literal appearing as a constant in ``text`` (a test fragment),
+    source-ordered. Non-parseable fragments yield ``[]``."""
+    out: list[int] = []
+    try:
+        tree = ast.parse(text.strip(), mode="eval")
+    except (SyntaxError, ValueError):
+        return out
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, int) \
+                and not isinstance(node.value, bool):
+            out.append(node.value)
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) \
+                and isinstance(node.operand, ast.Constant) \
+                and isinstance(node.operand.value, int):
+            out.append(-node.operand.value)
+    return out
+
+
+def _string_constants(witnesses: list[tuple[str, str]]) -> list[str]:
+    """Every string literal seen in the witnesses' arguments and expected values,
+    plus the single-character separators implied by an expected slug (the chars
+    that appear in the expected but not the argument). Deterministic: sorted,
+    de-duplicated, each rendered as canonical ``repr`` source."""
+    seen: set[str] = set()
+    for args, expected in witnesses:
+        for text in (args, expected):
+            for value in _str_literals(text):
+                seen.add(value)
+    # Common single-character separators so slug/clean shapes are reachable even
+    # when only one side names them (e.g. " " and "-" for "Hello World"->"hello-world").
+    seen.update({" ", "-", "_", ",", ".", "/", ""})
+    return [repr(s) for s in sorted(seen)]
+
+
+def _str_literals(text: str) -> list[str]:
+    """Every string literal appearing as a constant in ``text``, source-ordered."""
+    out: list[str] = []
+    try:
+        tree = ast.parse(text.strip(), mode="eval")
+    except (SyntaxError, ValueError):
+        return out
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            out.append(node.value)
+    return out
+
+
+def _ordered_string_pairs(strings: list[str]) -> list[tuple[str, str]]:
+    """All ordered (old, new) pairs of distinct string constants for ``replace``.
+    Deterministic: the input order (already sorted) is preserved; a constant is
+    never paired with itself."""
+    out: list[tuple[str, str]] = []
+    for old in strings:
+        for new in strings:
+            if old != new:
+                out.append((old, new))
+    return out
+
+
+def _function_witnesses(root: Path, test_files: list[str],
+                        stub: StubFunction) -> list[tuple[str, str]]:
+    """The ``(args_text, expected_text)`` pairs the pinned tests assert for
+    ``stub`` — every ``func(<args>) == <expected>`` in the test files. Used only
+    to PROPOSE value-dependent template constants; acceptance is still gated by
+    running the tests. Deterministic: source order within each sorted file."""
+    call_eq = re.compile(
+        r"(?<![A-Za-z0-9_])" + re.escape(stub.name)
+        + r"\s*\(([^()]*)\)\s*==\s*([^\n#]+)")
+    out: list[tuple[str, str]] = []
+    for rel in sorted(test_files):
+        try:
+            text = (root / rel).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for m in call_eq.finditer(text):
+            out.append((m.group(1).strip(), m.group(2).strip()))
     return out
 
 
@@ -452,6 +729,112 @@ def ordered_candidate_exprs(root: Path, test_files: list[str],
     return _ordered_candidates(root, test_files, stub)
 
 
+def synthesize_expr_from_witnesses(root: Path, test_files: list[str],
+                                   stub: StubFunction) -> str | None:
+    """The FIRST fixed-order candidate expr that satisfies ``stub``'s OWN pinned
+    witnesses, evaluated in-process — or ``None`` when none does. This is the
+    INDEPENDENT per-stub synthesis the mutual-stub planner relies on: a stub's
+    body is determined by its own ``func(args) == expected`` assertions alone,
+    without running the shared test file (which stays red until every sibling is
+    filled too). Deterministic, offline, stdlib-only.
+
+    Evaluation is sandboxed: the candidate is a pure expression over the stub's
+    positional parameters with no name access beyond a fixed safe builtin set, so
+    a witness like ``double(3) == 6`` is checked by binding ``n = 3`` and
+    comparing ``eval('n * 2')`` to ``6``. A candidate is accepted ONLY when it
+    matches EVERY witness — never a guess. The composed module is still gated by
+    the real suite afterwards (never-fake-green)."""
+    witnesses = _function_witnesses(root, test_files, stub)
+    if not witnesses:
+        return None
+    evaluable = _evaluable_witnesses(witnesses, stub)
+    if evaluable is None:
+        return None
+    for _label, expr in _ordered_candidates(root, test_files, stub):
+        if _expr_matches_all(expr, stub, evaluable):
+            return expr
+    return None
+
+
+def _evaluable_witnesses(witnesses: list[tuple[str, str]],
+                         stub: StubFunction) -> list[tuple[tuple, object]] | None:
+    """Parse the witnesses into ``(arg_values, expected_value)`` pairs of real
+    Python objects, or ``None`` if any witness's args/expected are not literal
+    (a non-literal call site cannot be checked in-process). Each arg tuple must
+    have one value per positional parameter."""
+    out: list[tuple[tuple, object]] = []
+    for args_text, expected_text in witnesses:
+        args = _literal_tuple(args_text)
+        expected = _literal_value(expected_text)
+        if args is None or expected is _NO_LITERAL:
+            return None
+        if len(args) != len(stub.params):
+            return None
+        out.append((args, expected))
+    return out or None
+
+
+_NO_LITERAL = object()
+
+
+def _literal_tuple(args_text: str) -> tuple | None:
+    """Evaluate a comma-separated argument fragment to a tuple of literal values,
+    or ``None`` when any argument is not a literal."""
+    text = args_text.strip()
+    if not text:
+        return ()
+    try:
+        node = ast.parse(text, mode="eval").body
+    except (SyntaxError, ValueError):
+        return None
+    elements = node.elts if isinstance(node, ast.Tuple) else [node]
+    out: list[object] = []
+    for el in elements:
+        try:
+            out.append(ast.literal_eval(el))
+        except (ValueError, SyntaxError, TypeError):
+            return None
+    return tuple(out)
+
+
+def _literal_value(expected_text: str) -> object:
+    """Evaluate an expected-value fragment (the RHS of ``==``) to a literal, or the
+    sentinel ``_NO_LITERAL`` when it is not a literal."""
+    text = expected_text.strip().split("#")[0].strip()
+    try:
+        return ast.literal_eval(text)
+    except (ValueError, SyntaxError, TypeError):
+        return _NO_LITERAL
+
+
+_SAFE_BUILTINS = {
+    "len": len, "min": min, "max": max, "sorted": sorted, "sum": sum,
+    "abs": abs, "round": round, "str": str, "int": int, "float": float,
+    "bool": bool, "list": list, "tuple": tuple,
+}
+
+
+def _expr_matches_all(expr: str, stub: StubFunction,
+                      witnesses: list[tuple[tuple, object]]) -> bool:
+    """True when ``expr`` (over the stub's parameter names) yields the expected
+    value for EVERY witness, evaluated in a sandbox with only safe builtins.
+    Recursion templates (``__apex_self__``) cannot be evaluated in-process, so
+    they never match here and are left to the real suite gate — keeping this
+    helper a strict, no-guess check."""
+    if "__apex_self__" in expr:
+        return False
+    env_globals = {"__builtins__": _SAFE_BUILTINS}
+    for args, expected in witnesses:
+        local = dict(zip(stub.params, args))
+        try:
+            value = eval(expr, env_globals, local)  # noqa: S307 - fixed templates only
+        except Exception:
+            return False
+        if type(value) is not type(expected) or value != expected:
+            return False
+    return True
+
+
 def fill_stub_body(source: str, stub: StubFunction, return_expr: str) -> str | None:
     """Public view of the body rewrite: replace ``stub``'s body with ``return
     <return_expr>`` (resolving the ``__apex_self__`` recursion marker) and return
@@ -471,8 +854,13 @@ def _ordered_candidates(root: Path, test_files: list[str],
     tests WINS over a bare literal: ``add(3, 4) == 7`` lands ``a + b`` (intent),
     not ``return 7`` (overfit). A constant only fires when no parameter template
     fits AND the literal is witnessed by >=2 distinct inputs (or the function
-    takes no args)."""
-    out: list[tuple[str, str]] = list(candidate_bodies(stub))
+    takes no args).
+
+    Value-dependent templates (``n * k``, ``s.replace(a, b)``) are seeded from the
+    witnesses parsed from the pinned tests; they only PROPOSE bodies — every one
+    is still gated against the tests before it lands."""
+    witnesses = _function_witnesses(root, test_files, stub)
+    out: list[tuple[str, str]] = list(candidate_bodies(stub, witnesses))
     const = _expected_constant(root, test_files, stub)
     if const is not None:
         out.append(("constant", const))

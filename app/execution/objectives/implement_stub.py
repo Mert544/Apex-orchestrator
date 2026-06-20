@@ -32,8 +32,8 @@ from app.execution.stub_synthesis import (
     _purge_pyc,
     fill_stub_body,
     find_stub_functions,
-    ordered_candidate_exprs,
     pinned_test_files,
+    synthesize_expr_from_witnesses,
     synthesize_stub_body,
 )
 from app.skills.execution.run_tests import RunTestsSkill
@@ -93,22 +93,37 @@ def _fill_all_stubs(root: Path, module_rel: str, original: str) -> str | None:
     became satisfiable now (a freshly-filled sibling can unblock a shared test
     file on the next pass), stopping when a pass lands nothing more.
 
-    When the cheap pass stalls with stubs still pending (the MUTUAL case: one
-    test file asserts both ``add`` and ``mul``, so neither file goes green until
-    BOTH are filled), a coordinate-descent fallback composes a tentative source
-    with every pending stub filled and refines each one's body until the union of
-    all pinned tests passes together.
+    Two passes, fast first:
+
+    1. **Independent in-process synthesis** determines each stub's body from ITS
+       OWN ``func(args) == expected`` witnesses, evaluated in-process with no
+       pytest, composes them all, and verifies the UNION of pinned tests passes
+       ONCE. This resolves the MUTUAL case (one test file asserts both ``add`` and
+       ``mul``, so neither file greens until BOTH are filled) with a single suite
+       run instead of a per-candidate probe storm — and never coordinate-descends
+       from a passthrough seed, which deadlocked when two stubs needed different
+       bodies. Only stubs whose own witnesses a template matches in-process land
+       here; the union is the honesty gate (never-fake-green).
+
+    2. **pytest-gated fixpoint** for whatever the in-process pass could not
+       determine (recursion bodies that can't be eval'd in-process, or witnesses
+       that aren't simple literals): each remaining stub is synthesized against
+       the *current* (partially-filled) source, iterating to a fixpoint so a
+       freshly-filled sibling can unblock a shared file on the next pass.
 
     The on-disk file is always restored to ``original`` before returning, so the
     scan leaves the tree byte-for-byte unchanged (the verified-apply engine, not
-    this planner, performs the real write). Deterministic: within each pass stubs
-    are taken in the fixed source order :func:`find_stub_functions` returns,
-    re-derived after each fill so shifted line spans stay correct."""
+    this planner, performs the real write). Deterministic: stubs are taken in the
+    fixed source order :func:`find_stub_functions` returns, re-derived after each
+    fill so shifted line spans stay correct."""
     target = root / module_rel
     runner = RunTestsSkill()
     current = original
     filled: set[str] = set()
     try:
+        # Pass 1 (fast): independent per-witness synthesis + one union verify.
+        current = _resolve_mutual_stubs(root, module_rel, current, filled, runner)
+        # Pass 2: pytest-gated fixpoint for stubs in-process eval can't determine.
         progress = True
         while progress:
             progress = False
@@ -128,9 +143,6 @@ def _fill_all_stubs(root: Path, module_rel: str, original: str) -> str | None:
                 filled.add(stub.name)
                 progress = True
                 break  # re-derive: this fill shifted later stubs' line spans
-        # Mutual deadlock: stubs whose shared test file can't go green until the
-        # others are filled too. Resolve them together via coordinate descent.
-        current = _resolve_mutual_stubs(root, module_rel, current, filled, runner)
     finally:
         target.write_text(original, encoding="utf-8")
     return current if filled else None
@@ -141,21 +153,23 @@ def _resolve_mutual_stubs(root: Path, module_rel: str, current: str,
     """Fill the stubs the cheap fixpoint left pending because their pinned tests
     share a file and so stay red until every sibling is filled too.
 
-    Each pending stub is seeded with its first parameter-shaped candidate, then
-    coordinate descent refines one stub at a time — picking the first candidate
-    (fixed order) that makes the UNION of all pending pinned tests pass given the
-    current sibling assignments — until a full pass changes nothing. A combined
-    source is accepted ONLY when that union is green, so nothing unverified lands
-    (never-fake-green); otherwise ``current`` is returned unchanged and those
-    stubs are left as-is. ``filled`` is updated in place for the stubs that land."""
-    candidates, union_tests = _resolvable_candidates(root, module_rel, current, filled)
-    if not candidates or not union_tests:
+    Each pending stub's body is synthesized INDEPENDENTLY from its OWN pinned
+    witnesses — ``func(args) == expected`` assertions evaluated in-process, with
+    no coordination from a passthrough seed. (Coordinate descent deadlocked here:
+    when two stubs need DIFFERENT bodies, no single move greens the shared file,
+    so it never left the seed.) The independently-determined bodies are composed
+    and the UNION of all pinned tests is verified ONCE: only when that union is
+    green do they land (never-fake-green). A stub whose own witnesses no template
+    satisfies is dropped — the others still land. ``filled`` is updated in place."""
+    assignment = _independent_assignment(root, module_rel, current, filled)
+    if not assignment:
         return current
 
-    tests = sorted(union_tests)
-    assignment = _descend(root, module_rel, current, candidates, tests, runner)
     composed = _compose(current, assignment)
     if composed is None:
+        return current
+    tests = _union_test_files(root, module_rel, assignment)
+    if not tests:
         return current
     if not _union_passes(root, module_rel, composed, tests, runner):
         return current  # union not green — refuse, land nothing for these stubs
@@ -163,63 +177,34 @@ def _resolve_mutual_stubs(root: Path, module_rel: str, current: str,
     return composed
 
 
-def _resolvable_candidates(root: Path, module_rel: str, current: str,
-                           filled: set[str]) -> tuple[dict[str, list[tuple[str, str]]], set[str]]:
-    """For each still-pending stub, its fixed-order candidate exprs and the union
-    of pinned test files. A stub with no spec or no template is dropped (it can't
-    be resolved); the rest are the coordinate-descent search space."""
-    candidates: dict[str, list[tuple[str, str]]] = {}
-    union_tests: set[str] = set()
+def _independent_assignment(root: Path, module_rel: str, current: str,
+                            filled: set[str]) -> dict[str, str]:
+    """For each still-pending stub, the body its OWN witnesses determine (the
+    first fixed-order candidate that matches every ``func(args) == expected``
+    assertion in-process), or nothing when no template fits. Deterministic: the
+    stubs are taken in source order, each synthesized from its own assertions
+    independently of the others."""
+    assignment: dict[str, str] = {}
     for stub in find_stub_functions(current):
         if stub.name in filled:
             continue
         tests = pinned_test_files(root, module_rel, stub.name)
-        exprs = ordered_candidate_exprs(root, tests, stub) if tests else []
-        if not tests or not exprs:
-            continue  # no spec or no template — cannot resolve this one
-        candidates[stub.name] = exprs
-        union_tests.update(tests)
-    return candidates, union_tests
-
-
-def _descend(root: Path, module_rel: str, current: str,
-             candidates: dict[str, list[tuple[str, str]]],
-             union_tests: list[str], runner: RunTestsSkill) -> dict[str, str]:
-    """Coordinate descent over the pending stubs: seed each with its first
-    candidate, then repeatedly pick, for one stub at a time, the first candidate
-    (fixed order) that makes the union of pinned tests pass with the others held
-    fixed. Stops at a fixpoint (a full pass that changes nothing) or after a
-    bounded number of passes. Returns the final ``name -> return_expr`` map."""
-    assignment = {name: exprs[0][1] for name, exprs in candidates.items()}
-    for _ in range(len(candidates) + 1):
-        changed = False
-        for name, exprs in candidates.items():
-            best = _best_candidate(root, module_rel, current, assignment, name,
-                                   exprs, union_tests, runner)
-            if best is not None and best != assignment[name]:
-                assignment[name] = best
-                changed = True
-        if not changed:
-            break
+        if not tests:
+            continue  # no spec — leave as-is
+        expr = synthesize_expr_from_witnesses(root, tests, stub)
+        if expr is not None:
+            assignment[stub.name] = expr
     return assignment
 
 
-def _best_candidate(root: Path, module_rel: str, current: str,
-                    assignment: dict[str, str], target_name: str,
-                    exprs: list[tuple[str, str]], union_tests: list[str],
-                    runner: RunTestsSkill) -> str | None:
-    """The first candidate expr (fixed order) for ``target_name`` that makes the
-    union of pinned tests pass with all OTHER stubs held at their current
-    assignment, or ``None`` when none does this round."""
-    trial = dict(assignment)
-    for _label, expr in exprs:
-        trial[target_name] = expr
-        composed = _compose(current, trial)
-        if composed is None:
-            continue
-        if _union_passes(root, module_rel, composed, union_tests, runner):
-            return expr
-    return None
+def _union_test_files(root: Path, module_rel: str,
+                      assignment: dict[str, str]) -> list[str]:
+    """The sorted union of pinned test files across the stubs being landed — the
+    suite the composed source is verified against once before it lands."""
+    union: set[str] = set()
+    for name in assignment:
+        union.update(pinned_test_files(root, module_rel, name))
+    return sorted(union)
 
 
 def _compose(current: str, assignment: dict[str, str]) -> str | None:

@@ -527,3 +527,257 @@ def test_synthesis_is_deterministic(tmp_path: Path):
     a = plan_implement_stub(str(tmp_path), "app/calc.py").new_contents.get("app/calc.py")
     b = plan_implement_stub(str(tmp_path), "app/calc.py").new_contents.get("app/calc.py")
     assert a == b and a is not None and "return a + b" in a
+
+
+# --- WIDENED TEMPLATE SPACE: scalar / string / composite (GAP 1) -------------
+
+def _plan_body(tmp_path: Path, module: str, src: str, test_src: str) -> str | None:
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    _suite_project(tmp_path)
+    (tmp_path / "app" / module).write_text(src, encoding="utf-8")
+    (tmp_path / "tests" / f"test_{module}").write_text(test_src, encoding="utf-8")
+    rel = f"app/{module}"
+    return plan_implement_stub(str(tmp_path), rel).new_contents.get(rel)
+
+
+def test_double_lands_scalar_multiply(tmp_path: Path):
+    # The headline gap the field-tests hit: `double(n) -> n*2`. TWO witnesses
+    # (3->6 AND 4->8) so it is no overfit; the value-free `n * 2` (or `n + n`)
+    # template lands real working code where the old space honestly refused.
+    body = _plan_body(
+        tmp_path, "d.py",
+        "def double(n):\n    raise NotImplementedError\n",
+        "from app.d import double\n"
+        "def test():\n    assert double(3) == 6\n    assert double(4) == 8\n")
+    assert body is not None
+    assert "return n * 2" in body or "return n + n" in body
+
+
+def test_scale_lands_inferred_constant(tmp_path: Path):
+    # `triple(n) -> n*3`: the multiplier k=3 is DERIVED from two consistent
+    # witnesses (2->6, 5->15) and only then offered. The run gate still confirms.
+    body = _plan_body(
+        tmp_path, "t.py",
+        "def triple(n):\n    raise NotImplementedError\n",
+        "from app.t import triple\n"
+        "def test():\n    assert triple(2) == 6\n    assert triple(5) == 15\n")
+    assert body is not None and "return n * 3" in body
+
+
+def test_is_even_lands_parity(tmp_path: Path):
+    # `is_even(n) -> n % 2 == 0` from two boolean witnesses.
+    body = _plan_body(
+        tmp_path, "e.py",
+        "def is_even(n):\n    raise NotImplementedError\n",
+        "from app.e import is_even\n"
+        "def test():\n    assert is_even(2) is True\n    assert is_even(3) is False\n")
+    assert body is not None and "return n % 2 == 0" in body
+
+
+def test_lower_lands_string_method(tmp_path: Path):
+    # `shout_down(s) -> s.lower()` from a single string witness — string-method
+    # chains carry no derived arithmetic, so one example is enough (gate-verified).
+    body = _plan_body(
+        tmp_path, "low.py",
+        "def shout_down(s):\n    raise NotImplementedError\n",
+        "from app.low import shout_down\n"
+        "def test():\n    assert shout_down('HELLO') == 'hello'\n")
+    assert body is not None and "return s.lower()" in body
+
+
+def test_slugify_lands_lower_replace(tmp_path: Path):
+    # The buyer moment: `slugify(s) -> s.lower().replace(' ', '-')`. The ' ' and
+    # '-' constants are structurally present in the witness, so one example lands.
+    body = _plan_body(
+        tmp_path, "slug.py",
+        "def slugify(s):\n    raise NotImplementedError\n",
+        "from app.slug import slugify\n"
+        "def test():\n    assert slugify('Hello World') == 'hello-world'\n")
+    assert body is not None
+    assert ".lower().replace(' ', '-')" in body
+
+
+def test_mean_lands_composite(tmp_path: Path):
+    # `mean(xs) -> sum(xs) / len(xs)` — a composite reduction the old space could
+    # not express. Two witnesses keep it honest.
+    body = _plan_body(
+        tmp_path, "avg.py",
+        "def mean(xs):\n    raise NotImplementedError\n",
+        "from app.avg import mean\n"
+        "def test():\n    assert mean([1, 2, 3]) == 2\n    assert mean([2, 4]) == 3\n")
+    assert body is not None and "return sum(xs) / len(xs)" in body
+
+
+def test_join_lands_two_arg(tmp_path: Path):
+    # `join_with(sep, xs) -> sep.join(xs)` — the new two-arg `a.join(b)` shape.
+    body = _plan_body(
+        tmp_path, "j.py",
+        "def join_with(sep, xs):\n    raise NotImplementedError\n",
+        "from app.j import join_with\n"
+        "def test():\n    assert join_with('-', ['a', 'b']) == 'a-b'\n")
+    assert body is not None and "return sep.join(xs)" in body
+
+
+def test_less_than_lands_comparison(tmp_path: Path):
+    # `lt(a, b) -> a < b` — the new two-arg comparison shape.
+    body = _plan_body(
+        tmp_path, "lt.py",
+        "def lt(a, b):\n    raise NotImplementedError\n",
+        "from app.lt import lt\n"
+        "def test():\n    assert lt(1, 2) is True\n    assert lt(5, 3) is False\n")
+    assert body is not None and "return a < b" in body
+
+
+def test_abs_lands_for_negative(tmp_path: Path):
+    # `mag(n) -> abs(n)`: passthrough fails (-3 != 3), abs is reached and lands.
+    body = _plan_body(
+        tmp_path, "ab.py",
+        "def mag(n):\n    raise NotImplementedError\n",
+        "from app.ab import mag\n"
+        "def test():\n    assert mag(-3) == 3\n    assert mag(4) == 4\n")
+    assert body is not None and "return abs(n)" in body
+
+
+# --- GAP 1 honesty: recursion needs >=2 distinct witnesses -------------------
+
+def test_single_witness_does_not_land_recursion(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # The red-team case: `double(3) == 6` as a LONE witness. factorial(3) == 6
+    # too, so the old space could land a factorial body off one example. The
+    # >=2-witness floor forbids recursion here; a value-free shape (`n * 2`) that
+    # also passes may land, but NEVER the overfit factorial/fibonacci recursion.
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "d.py").write_text(
+        "def double(n):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_d.py").write_text(
+        "from app.d import double\n"
+        "def test():\n    assert double(3) == 6\n", encoding="utf-8")
+    body = plan_implement_stub(str(tmp_path), "app/d.py").new_contents.get("app/d.py")
+    # Whatever lands (or nothing), it must not be a recursion body.
+    if body is not None:
+        assert "double(n - 1)" not in body and "double(n - 2)" not in body
+
+
+def test_recursion_offered_only_with_two_witnesses():
+    from app.execution.stub_synthesis import StubFunction, candidate_bodies
+
+    stub = StubFunction("f", ("n",), 1, 2, "", False)
+    one = [("3", "6")]
+    two = [("0", "1"), ("5", "120")]
+    labels_one = [lbl for lbl, _ in candidate_bodies(stub, one)]
+    labels_two = [lbl for lbl, _ in candidate_bodies(stub, two)]
+    assert "factorial" not in labels_one  # a single witness withholds recursion
+    assert "factorial" in labels_two      # two distinct witnesses allow it
+
+
+def test_derived_constant_needs_two_consistent_witnesses():
+    from app.execution.stub_synthesis import _numeric_constants
+
+    # One example f(2)==5 must NOT derive k=3 (it would overfit to n+3)...
+    assert "3" not in _numeric_constants([("2", "5")])
+    # ...but two consistent examples (n+3) legitimately derive k=3.
+    assert "3" in _numeric_constants([("2", "5"), ("10", "13")])
+    # An inconsistent pair (5-2=3 but 99-10=89) derives no offset.
+    assert "3" not in _numeric_constants([("2", "5"), ("10", "99")])
+
+
+# --- GAP 2: mutual stubs land via INDEPENDENT per-witness synthesis -----------
+
+def test_total_and_maximum_shared_file_both_land(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # The field-test P0: total + maximum share ONE test file, needing DIFFERENT
+    # bodies. The old coordinate-descent-from-passthrough deadlocked (no single
+    # move greens the shared file); independent per-witness synthesis lands BOTH.
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "agg.py").write_text(
+        "def total(xs):\n    raise NotImplementedError\n\n\n"
+        "def maximum(xs):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_agg.py").write_text(
+        "from app.agg import total, maximum\n"
+        "def test_total():\n    assert total([1, 2, 3]) == 6\n    assert total([4]) == 4\n"
+        "def test_max():\n    assert maximum([1, 5, 2]) == 5\n    assert maximum([7, 3]) == 7\n",
+        encoding="utf-8")
+
+    body = plan_implement_stub(str(tmp_path), "app/agg.py").new_contents.get("app/agg.py")
+    assert body is not None
+    assert "return sum(xs)" in body and "return max(xs)" in body  # BOTH landed
+
+
+def test_total_and_maximum_shared_file_end_to_end(tmp_path: Path):
+    from app.engine.objective_compiler import compile_objective
+
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "agg.py").write_text(
+        "def total(xs):\n    raise NotImplementedError\n\n\n"
+        "def maximum(xs):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_agg.py").write_text(
+        "from app.agg import total, maximum\n"
+        "def test_total():\n    assert total([1, 2, 3]) == 6\n    assert total([4]) == 4\n"
+        "def test_max():\n    assert maximum([1, 5, 2]) == 5\n    assert maximum([7, 3]) == 7\n",
+        encoding="utf-8")
+
+    result = compile_objective(str(tmp_path), objective="implement-stub",
+                               apply=True, verify=True)
+    assert result.steps and result.steps[0].verified is True
+    text = (tmp_path / "app" / "agg.py").read_text()
+    assert "raise NotImplementedError" not in text
+    assert "return sum(xs)" in text and "return max(xs)" in text
+
+
+def test_add_and_mul_shared_file_independent_synthesis(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # add + mul share one file and need a + b vs a * b — the canonical mutual case
+    # the independent synthesis must resolve (the union passes only when BOTH are
+    # filled with their own bodies).
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "arith.py").write_text(
+        "def add(a, b):\n    raise NotImplementedError\n\n\n"
+        "def mul(a, b):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_arith.py").write_text(
+        "from app.arith import add, mul\n"
+        "def test_add():\n    assert add(2, 3) == 5\n    assert add(10, 1) == 11\n"
+        "def test_mul():\n    assert mul(2, 3) == 6\n    assert mul(4, 5) == 20\n",
+        encoding="utf-8")
+
+    body = plan_implement_stub(str(tmp_path), "app/arith.py").new_contents.get("app/arith.py")
+    assert body is not None
+    assert "return a + b" in body and "return a * b" in body
+
+
+# --- refusal cases held under the wider space --------------------------------
+
+def test_contradictory_witnesses_refuse(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # double(3)==6 but double(4)==99: no scalar/parity/comparison/recursion shape
+    # fits both, and the literals disagree so no constant. REFUSE (honest no-op).
+    _suite_project(tmp_path)
+    original = "def f(n):\n    raise NotImplementedError\n"
+    (tmp_path / "app" / "c.py").write_text(original, encoding="utf-8")
+    (tmp_path / "tests" / "test_c.py").write_text(
+        "from app.c import f\n"
+        "def test():\n    assert f(3) == 6\n    assert f(4) == 99\n", encoding="utf-8")
+    plan = plan_implement_stub(str(tmp_path), "app/c.py")
+    assert not plan.new_contents and not plan.blockers
+
+
+def test_wider_space_is_deterministic(tmp_path: Path):
+    body1 = _plan_body(
+        tmp_path, "s.py",
+        "def slugify(s):\n    raise NotImplementedError\n",
+        "from app.s import slugify\n"
+        "def test():\n    assert slugify('Hello World') == 'hello-world'\n")
+    # Second independent project, identical inputs -> identical body.
+    import tempfile
+    from pathlib import Path as _P
+    with tempfile.TemporaryDirectory() as d:
+        body2 = _plan_body(
+            _P(d), "s.py",
+            "def slugify(s):\n    raise NotImplementedError\n",
+            "from app.s import slugify\n"
+            "def test():\n    assert slugify('Hello World') == 'hello-world'\n")
+    assert body1 == body2 and body1 is not None
