@@ -62,6 +62,26 @@ def _is_public(name: str) -> bool:
     return bool(name) and not name.startswith("_")
 
 
+def _node_export_names(node: ast.stmt) -> list[str]:
+    """Candidate export names a single top-level node defines, in source order.
+
+    A pre-filter only: ``def``/``async def``/``class`` contribute their name;
+    a plain assignment its ``Store`` targets; an annotated assignment WITH a value
+    its target. ``_``-prefix / ``__all__`` / dedup filtering happens in the caller.
+    """
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, ast.Assign):
+        return [
+            t.id for t in node.targets
+            if isinstance(t, ast.Name) and isinstance(t.ctx, ast.Store)
+        ]
+    if isinstance(node, ast.AnnAssign):
+        if isinstance(node.target, ast.Name) and node.value is not None:
+            return [node.target.id]
+    return []
+
+
 def public_symbols_of_module(source: str) -> list[str]:
     """Public top-level symbols defined by one module's source, in source order.
 
@@ -75,23 +95,11 @@ def public_symbols_of_module(source: str) -> list[str]:
         return []
     out: list[str] = []
     seen: set[str] = set()
-
-    def _add(name: str) -> None:
-        if name == "__all__" or not _is_public(name) or name in seen:
-            return
-        seen.add(name)
-        out.append(name)
-
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            _add(node.name)
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and isinstance(target.ctx, ast.Store):
-                    _add(target.id)
-        elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name) and node.value is not None:
-                _add(node.target.id)
+        for name in _node_export_names(node):
+            if name != "__all__" and _is_public(name) and name not in seen:
+                seen.add(name)
+                out.append(name)
     return out
 
 
