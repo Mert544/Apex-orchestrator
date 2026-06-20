@@ -205,6 +205,15 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # (only when the operand is provably a bool, so it stays value-preserving).
     "compare to true/false directly": "simplify-bool-comparison",
 
+    # Unfinished code: the "missing operation on the contract" aspect names the
+    # stub implementation that still has to be written. The implement-stub
+    # objective LANDS exactly that — it synthesises a body for a stub
+    # (NotImplementedError / `...` / TODO) whose contract is already pinned by
+    # tests, deterministically, and refuses when no fixed template satisfies the
+    # tests. So the "implement the stub" facet becomes the campaign that finishes
+    # the unfinished function.
+    "the default or stub implementation": "implement-stub",
+
     # Missing type hints: the constructive "naming and types" aspect names the
     # precise type/annotation a parameter or return ought to carry. The
     # infer-type-hints objective LANDS exactly that — a ``-> T`` / ``param: T``
