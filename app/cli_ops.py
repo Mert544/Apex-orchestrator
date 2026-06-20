@@ -8,6 +8,7 @@ target (central dependency hub × high churn). Pure mechanical move:
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 from pathlib import Path
@@ -225,6 +226,47 @@ def cmd_self_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _is_string_expr(stmt: ast.AST) -> bool:
+    """True if ``stmt`` is a bare string-literal expression statement (docstring-shaped)."""
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(getattr(stmt, "value", None), ast.Constant)
+        and isinstance(stmt.value.value, str)
+    )
+
+
+def _docstring_soundness_metrics(text: str) -> tuple[int, int, int] | None:
+    """``(documented, undocumented, phantom-string)`` counts for ``text``, or ``None``.
+
+    ``None`` when the source does not parse. ``documented``/``undocumented`` count
+    def/class nodes by whether they carry a docstring; ``phantom`` counts bare
+    string-literal statements that are NOT a node's docstring (a detached string
+    that a mis-inserted docstring would create).
+    """
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, RecursionError, MemoryError, ValueError):
+        return None
+    documented = undocumented = 0
+    docstring_ids: set[int] = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if body and _is_string_expr(body[0]):
+                docstring_ids.add(id(body[0]))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if ast.get_docstring(node) is None:
+                undocumented += 1
+            else:
+                documented += 1
+    phantom = sum(
+        1
+        for node in ast.walk(tree)
+        if _is_string_expr(node) and id(node) not in docstring_ids
+    )
+    return documented, undocumented, phantom
+
+
 def _docstring_write_is_sound(original: str, patched: str) -> bool:
     """True if a docstring patch is both syntactically and semantically sound.
 
@@ -237,42 +279,8 @@ def _docstring_write_is_sound(original: str, patched: str) -> bool:
     not rise, and NO new detached (phantom) string statement appeared. A broken
     write fails one of these and is rolled back.
     """
-    import ast
-
-    def _analyze(text: str) -> tuple[int, int, int] | None:
-        try:
-            tree = ast.parse(text)
-        except (SyntaxError, RecursionError, MemoryError, ValueError):
-            return None
-        documented = undocumented = 0
-        docstring_ids: set[int] = set()
-        for node in ast.walk(tree):
-            body = getattr(node, "body", None)
-            if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                if (
-                    body
-                    and isinstance(body[0], ast.Expr)
-                    and isinstance(getattr(body[0], "value", None), ast.Constant)
-                    and isinstance(body[0].value.value, str)
-                ):
-                    docstring_ids.add(id(body[0]))
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                if ast.get_docstring(node) is None:
-                    undocumented += 1
-                else:
-                    documented += 1
-        phantom = sum(
-            1
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Expr)
-            and isinstance(getattr(node, "value", None), ast.Constant)
-            and isinstance(node.value.value, str)
-            and id(node) not in docstring_ids
-        )
-        return documented, undocumented, phantom
-
-    before = _analyze(original)
-    after = _analyze(patched)
+    before = _docstring_soundness_metrics(original)
+    after = _docstring_soundness_metrics(patched)
     if before is None or after is None:
         return False
     doc_b, undoc_b, phantom_b = before
