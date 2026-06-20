@@ -1987,6 +1987,28 @@ class _MaintenancePass:
 
                 self.committer = GitAutoCommit(project_root)
         self._shield_attempted: set[str] = set()
+        # WITHHELD-CHANGE FENCE: files carrying an uncommitted, withheld
+        # behaviour change (left applied-on-disk for review). Once a file is
+        # fenced, NO later auto-commit in this pass may touch it — a sibling
+        # step (e.g. a Tier-0 ``add_docstring`` on the SAME file) must not sweep
+        # the still-on-disk withheld hunk into git via whole-file staging. The
+        # fence is keyed on normalized paths so membership is byte-deterministic.
+        self._fenced_files: set[str] = set()
+
+    @staticmethod
+    def _norm_path(path: str) -> str:
+        """Normalize a changed-file path for fence membership (deterministic,
+        no clock/random — pure string normalization)."""
+        return Path(path).as_posix()
+
+    def _fence_files(self, *paths: str) -> None:
+        """Add the given file path(s) to the withheld-change fence."""
+        for p in paths:
+            if p:
+                self._fenced_files.add(self._norm_path(p))
+
+    def _is_fenced(self, path: str) -> bool:
+        return bool(path) and self._norm_path(path) in self._fenced_files
 
     def _commit(self, r: dict, action_label: str) -> tuple[bool, str | None]:
         if self.committer is None or not r.get("changed_files"):
@@ -2084,6 +2106,14 @@ class _MaintenancePass:
                     "behaviour change (tier-1 rewrite on a module with no "
                     "covering test); review before committing"
                 )
+                # Fence the file: the withheld converged hunk stays on disk, so
+                # no later same-file step may commit it.
+                self._fence_files(*(r2.get("changed_files") or []), step.target)
+                break
+            # A fenced file (an earlier withheld change still on disk) must not
+            # be auto-committed even by a safe converged fix — whole-file
+            # staging would sweep the withheld hunk into git.
+            if self.committer is not None and self._is_fenced(step.target):
                 break
             ok2, _h2 = self._commit(r2, step.action_type)
             if ok2:
@@ -2212,6 +2242,23 @@ class _MaintenancePass:
                 "applied, NOT committed — unverified behaviour change "
                 "(tier-1 fix covered only by a smoke shield, no function-level "
                 "test); review before committing"
+            )
+            # Fence every file this withheld change touched: a later same-file
+            # step must not sweep the still-on-disk hunk into git.
+            self._fence_files(*(r.get("changed_files") or []), step.target)
+            return
+        # FENCE GATE: even a genuinely-safe (Tier-0) fix must NOT auto-commit a
+        # file that already carries an earlier, unreviewed withheld change —
+        # whole-file staging would sweep that hunk into git unreviewed. Leave
+        # this fix applied-on-disk too, record it as fenced, and do not commit.
+        if self.committer is not None and self._is_fenced(step.target):
+            entry["committed"] = False
+            entry["commit_withheld"] = True
+            entry["fenced"] = True
+            entry["reason"] = (
+                "not committed — file carries an unreviewed withheld change "
+                "from an earlier fix in this pass; review the file before "
+                "committing"
             )
             return
         ok, h = self._commit(r, step.action_type)
