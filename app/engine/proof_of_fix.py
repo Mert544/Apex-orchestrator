@@ -38,6 +38,11 @@ _COVERAGE_LEVELS = ("function", "module", "test-change", "none")
 # manifest ONLY when it actually occurs (added dynamically), so a green-baseline
 # manifest's ``by_coverage`` keys are byte-identical to before.
 _BASELINE_RED_LEVEL = "baseline-red"
+# The honest no-suite tier — no test command was detected, so NOTHING ran and
+# auto-rollback could not protect the change. Surfaced verbatim (never collapsed
+# to ``none``, which would imply a green suite ran but referenced nothing) and
+# tallied ONLY when it occurs, so a with-suite manifest stays byte-identical.
+_NO_SUITE_LEVEL = "no-suite"
 
 _PASSED = re.compile(r"(\d+) passed")
 _FAILED = re.compile(r"(\d+) failed")
@@ -401,12 +406,14 @@ def proof_hash(artifact_or_records: Any) -> str:
 def _coverage_of(rec: dict) -> str:
     """The recorded coverage level of a record's verification.
 
-    A ``baseline-red`` level (the suite was already failing before the fix) is
-    surfaced verbatim — it is honest evidence the fix is inconclusive, not a
-    ``none`` coverage. Any other unrecognized level collapses to ``none``."""
+    A ``baseline-red`` level (the suite was already failing before the fix) and a
+    ``no-suite`` level (no test command was detected, so nothing ran) are each
+    surfaced verbatim — they are honest evidence the fix is inconclusive /
+    unverified, not a ``none`` coverage (which would imply a green suite ran).
+    Any other unrecognized level collapses to ``none``."""
     strength = (rec.get("verification") or {}).get("strength") or {}
     level = strength.get("level")
-    if level in _COVERAGE_LEVELS or level == _BASELINE_RED_LEVEL:
+    if level in _COVERAGE_LEVELS or level in (_BASELINE_RED_LEVEL, _NO_SUITE_LEVEL):
         return level
     return "none"
 

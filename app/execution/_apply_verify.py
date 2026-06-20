@@ -20,7 +20,43 @@ from __future__ import annotations
 
 from pathlib import Path
 
-__all__ = ["run_full_suite_verification", "suite_baseline_green"]
+__all__ = [
+    "NO_SUITE",
+    "mark_no_suite",
+    "run_full_suite_verification",
+    "suite_baseline_green",
+]
+
+# HONEST no-suite tier. When no test command can be detected, a change is applied
+# WITHOUT running anything and WITHOUT any rollback safety net — the auto-rollback
+# guarantee silently lapses. This sentinel makes that absence a distinct, loud,
+# unmistakable state (mirroring how ``baseline-red`` was added as the weakest
+# verification tier) so a suite-less apply can never be blended with one a green
+# suite genuinely vouched for. A deterministic fact: it is emitted purely from
+# ``summary.commands`` being empty — no clock, no randomness.
+NO_SUITE = "no-suite"
+
+
+def mark_no_suite(out: dict) -> None:
+    """Stamp the explicit "no test suite was detected to run" disclosure onto
+    ``out`` (additive — touched ONLY on the suite-less path, so a project WITH a
+    detectable suite produces a byte-identical result).
+
+    A change kept on a suite-less project was NOT verified and could NOT have been
+    protected by auto-rollback. ``out["verified"]`` already reads False there, but
+    a plain ``verified: False`` is ambiguous — it looks identical to a fix that
+    ran against a green suite the tests just never referenced. These fields say,
+    loudly and unmistakably, that no run happened at all:
+
+      * ``suite_available`` -> ``False`` (a deterministic fact: no command found);
+      * ``verification_strength.level`` -> ``"no-suite"`` (the proof artifact and
+        report read this and label the change unverified-for-lack-of-suite).
+    """
+    out["suite_available"] = False
+    strength = dict(out.get("verification_strength") or {})
+    strength["level"] = NO_SUITE
+    strength["suite_available"] = False
+    out["verification_strength"] = strength
 
 
 def suite_baseline_green(root: Path) -> bool:
@@ -61,7 +97,14 @@ def run_full_suite_verification(root: Path, out: dict) -> bool:
     summary = RunTestsSkill().run(str(root))
     out["verified"] = bool(summary.ok)
     out["test_evidence"] = summarize_test_run(summary)
-    if summary.ok or not summary.commands:
+    if not summary.commands:
+        # No test command was detected, so NOTHING ran: the change is kept, but it
+        # is NOT verified and auto-rollback could not have protected it. Make that
+        # absence explicit and loud rather than an ambiguous ``verified: False``.
+        mark_no_suite(out)
+        out["rolled_back"] = False
+        return True
+    if summary.ok:
         out["rolled_back"] = False
         return True
     return False

@@ -1497,8 +1497,19 @@ class IdeaActionBridge:
         out["coverage"] = coverage
         out["verified"] = (bool(summary.ok)
                            and IdeaActionBridge._coverage_verifies(tier, coverage))
-        if summary.ok or not summary.commands:
-            # Pass (or no test command detected -> nothing to verify against).
+        if not summary.commands:
+            # No test command detected -> NOTHING ran. The change is kept (many
+            # legitimate develop objectives apply pure/additive changes on
+            # suite-less projects), but it is NOT verified and auto-rollback could
+            # not have protected it. Mark that absence loudly and unmistakably
+            # rather than leaving an ambiguous ``verified: False`` that looks like
+            # a run happened. Additive: a project WITH a suite is byte-identical.
+            from app.execution._apply_verify import mark_no_suite
+            mark_no_suite(out)
+            out["rolled_back"] = False
+            return out
+        if summary.ok:
+            # Suite ran and passed -> nothing to roll back.
             out["rolled_back"] = False
             return out
 
@@ -2716,6 +2727,12 @@ def _applied_fix_line(r: dict) -> str:
             "none": " (tests pass — ⚠️ no test references this module)",
             "test-change": " (tests pass)",
         }.get(level, " (tests pass)")
+    elif r.get("suite_available") is False:
+        # HONEST no-suite disclosure: the change was kept but NOTHING ran — no
+        # test command was detected, so it is NOT verified and auto-rollback
+        # could not have protected it. Never blend this with a verified fix.
+        extra += (" (⚠️ NOT verified — no test suite detected to run; "
+                  "auto-rollback could not protect this change)")
     if r.get("impact"):
         # Proof-of-value: the measured before→after structural win.
         extra += f" — {r['impact']}"
