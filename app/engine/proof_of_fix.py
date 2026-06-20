@@ -34,6 +34,10 @@ BUNDLE_VERSION = "1.0"
 # The coverage levels a verified record can carry (see verification_strength);
 # fixed order so the manifest's by-coverage tally is deterministic even at zero.
 _COVERAGE_LEVELS = ("function", "module", "test-change", "none")
+# The weakest tier — the suite was already RED before the fix. Tallied in the
+# manifest ONLY when it actually occurs (added dynamically), so a green-baseline
+# manifest's ``by_coverage`` keys are byte-identical to before.
+_BASELINE_RED_LEVEL = "baseline-red"
 
 _PASSED = re.compile(r"(\d+) passed")
 _FAILED = re.compile(r"(\d+) failed")
@@ -117,6 +121,12 @@ def _fix_record(r: dict) -> dict:
         # Coverage-aware honesty: a green suite that never references the
         # changed module is recorded as exactly that.
         verification["strength"] = r["verification_strength"]
+    if r.get("baseline_green") is False:
+        # BASELINE-RED honesty (additive — present ONLY when the pass recorded a
+        # non-green pre-flight, so a green-baseline proof is byte-identical): the
+        # suite was already failing before this fix, so its verification is
+        # INCONCLUSIVE — a green-after can't be attributed to the fix.
+        verification["baseline_green"] = False
     record = {
         "finding": {
             "label": r.get("label", ""),
@@ -362,10 +372,16 @@ def proof_hash(artifact_or_records: Any) -> str:
 
 
 def _coverage_of(rec: dict) -> str:
-    """The recorded coverage level of a record's verification, or ``none``."""
+    """The recorded coverage level of a record's verification.
+
+    A ``baseline-red`` level (the suite was already failing before the fix) is
+    surfaced verbatim — it is honest evidence the fix is inconclusive, not a
+    ``none`` coverage. Any other unrecognized level collapses to ``none``."""
     strength = (rec.get("verification") or {}).get("strength") or {}
     level = strength.get("level")
-    return level if level in _COVERAGE_LEVELS else "none"
+    if level in _COVERAGE_LEVELS or level == _BASELINE_RED_LEVEL:
+        return level
+    return "none"
 
 
 def proof_manifest(artifact_or_records: Any) -> dict:
@@ -382,7 +398,10 @@ def proof_manifest(artifact_or_records: Any) -> dict:
         outcome = rec.get("outcome", "")
         by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
         if outcome == "applied":
-            by_coverage[_coverage_of(rec)] += 1
+            level = _coverage_of(rec)
+            # ``baseline-red`` is added to the tally only when it occurs, so a
+            # green-baseline manifest keeps its original ``by_coverage`` keys.
+            by_coverage[level] = by_coverage.get(level, 0) + 1
 
     total = len(records)
     auto_fixed = by_outcome["applied"]

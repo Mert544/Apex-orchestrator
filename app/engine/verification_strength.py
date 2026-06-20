@@ -12,6 +12,15 @@ Levels (weakest link across the changed files):
   - ``module``     — tests import/reference the module, none name the change
   - ``none``       — no test references the module at all (applied blind)
   - ``test-change``— only test files changed (they ARE the suite)
+  - ``baseline-red``— the suite was ALREADY failing before any fix, so a
+                      green-after (or a still-red that didn't worsen) cannot be
+                      attributed to THIS fix; the weakest tier of all (it proves
+                      strictly less than ``none`` — even a blind apply at least
+                      ran against a green suite). A fix recorded ``baseline-red``
+                      is INCONCLUSIVE, never verified, and is withheld from
+                      auto-commit. Set externally by the maintenance pass once it
+                      records a non-green pre-flight; ``assess_strength`` itself
+                      (a static, no-execution grader) never emits it.
 
 Deterministic, stdlib-only, no execution — it inspects the test files' text.
 """
@@ -23,7 +32,13 @@ import re
 from pathlib import Path
 
 from app.engine.skip_dirs import SKIPPED_DIRS as _SKIPPED_DIRS
-_RANK = {"none": 0, "module": 1, "function": 2}
+
+# The weakest verification tier: the suite was red BEFORE the fix, so its result
+# proves nothing about the fix. Ranked below ``none`` so any "weakest link"
+# comparison treats it as the floor.
+BASELINE_RED = "baseline-red"
+
+_RANK = {BASELINE_RED: -1, "none": 0, "module": 1, "function": 2}
 _MAX_TEST_FILE_BYTES = 400_000  # don't slurp generated monsters
 
 

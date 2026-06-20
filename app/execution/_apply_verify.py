@@ -20,7 +20,27 @@ from __future__ import annotations
 
 from pathlib import Path
 
-__all__ = ["run_full_suite_verification"]
+__all__ = ["run_full_suite_verification", "suite_baseline_green"]
+
+
+def suite_baseline_green(root: Path) -> bool:
+    """One-time BASELINE pre-flight: was the suite ALREADY green before any fix?
+
+    Run the project's full test suite ONCE — with no patch applied — and report
+    whether it passes. A maintenance pass calls this exactly once, before its
+    first apply, and caches the bool: a fix verified against an already-RED
+    baseline cannot attribute a green-after to itself, so it must be recorded
+    inconclusive rather than verified.
+
+    "No test command to run" counts as a GREEN baseline (the same convention
+    :func:`run_full_suite_verification` uses for an empty ``commands`` list — a
+    project with no suite is not a *failing* suite). Deterministic and
+    stdlib-only — the runner is imported lazily, exactly as the verification
+    tail does, so this never forms an import cycle with the transforms."""
+    from app.skills.execution.run_tests import RunTestsSkill
+
+    summary = RunTestsSkill().run(str(root))
+    return bool(summary.ok) or not summary.commands
 
 
 def run_full_suite_verification(root: Path, out: dict) -> bool:

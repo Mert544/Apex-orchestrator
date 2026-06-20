@@ -1987,6 +1987,13 @@ class _MaintenancePass:
 
                 self.committer = GitAutoCommit(project_root)
         self._shield_attempted: set[str] = set()
+        # BASELINE-RED pre-flight (lazy, computed ONCE before the first apply and
+        # cached for the whole pass — never re-run per step). ``None`` means "not
+        # yet probed"; once probed it is a bool: ``True`` when the suite was green
+        # before any fix (the common case — behaviour is byte-identical), ``False``
+        # when the suite was ALREADY failing, in which case every applied fix's
+        # verification is downgraded to ``baseline-red`` and withheld from commit.
+        self._baseline_green: bool | None = None
         # WITHHELD-CHANGE FENCE: files carrying an uncommitted, withheld
         # behaviour change (left applied-on-disk for review). Once a file is
         # fenced, NO later auto-commit in this pass may touch it — a sibling
@@ -2009,6 +2016,52 @@ class _MaintenancePass:
 
     def _is_fenced(self, path: str) -> bool:
         return bool(path) and self._norm_path(path) in self._fenced_files
+
+    def _ensure_baseline(self) -> bool:
+        """ONE-TIME baseline pre-flight, cached for the whole pass.
+
+        Runs the verification command ONCE, before the first apply, to record
+        whether the suite was already green. The result is cached on the pass, so
+        later steps read the bool and NEVER re-run the suite — there is exactly
+        one extra full-suite run for the pre-flight, regardless of step count.
+
+        Only meaningful when ``self.verify`` is on (no verify -> nothing to
+        verify against, so no baseline is probed and the run is byte-identical to
+        today). Returns the cached ``baseline_green`` bool."""
+        if self._baseline_green is None:
+            from app.execution._apply_verify import suite_baseline_green
+
+            self._baseline_green = suite_baseline_green(Path(self.project_root))
+        return self._baseline_green
+
+    def _apply_baseline_red(self, r: dict) -> None:
+        """Downgrade an applied step's verification because the suite was already
+        RED before any fix (cached ``_baseline_green is False``).
+
+        A fix can't claim a green-after when the suite was failing first: the
+        post-apply suite result — green or still-red — cannot be attributed to
+        THIS fix. So the step is recorded INCONCLUSIVE, not verified:
+          * ``verified`` -> False (the autonomous-commit gate then WITHHOLDS it);
+          * ``coverage``/``verification_strength.level`` -> ``baseline-red`` (the
+            weakest tier), so the proof manifest tallies it honestly;
+          * ``baseline_green`` -> False on the result, carried into the proof.
+
+        Mutates ``r`` in place. A no-op when ``r`` did not apply/verify (a
+        rolled-back or blocked row carries no verification claim to downgrade).
+        The raw ``suite_green`` / ``test_evidence`` are left untouched — they
+        record what the post-apply run actually observed; only the *attribution*
+        (``verified``/``coverage``) is corrected."""
+        from app.engine.verification_strength import BASELINE_RED
+
+        r["baseline_green"] = False
+        if not r.get("applied"):
+            return
+        if "verified" in r or "verification_strength" in r:
+            r["verified"] = False
+            r["coverage"] = BASELINE_RED
+            strength = dict(r.get("verification_strength") or {})
+            strength["level"] = BASELINE_RED
+            r["verification_strength"] = strength
 
     def _commit(self, r: dict, action_label: str) -> tuple[bool, str | None]:
         if self.committer is None or not r.get("changed_files"):
@@ -2179,6 +2232,13 @@ class _MaintenancePass:
     def run_step(self, step: ActionStep) -> None:
         if self._learned_skip(step):
             return
+        # ONE-TIME baseline pre-flight: probe (and cache) whether the suite was
+        # green BEFORE this pass touched anything — done before the first apply
+        # (and before any shield apply), so the recorded baseline reflects the
+        # untouched tree. Only when verifying; the result is cached, so later
+        # steps never re-run the suite.
+        if self.verify:
+            self._ensure_baseline()
         tier = self._effective_tier(step)
         # A Tier-0 (additive / comment-only) fix needs no characterization
         # shield: it changes no executable code, so there is nothing for a
@@ -2193,6 +2253,12 @@ class _MaintenancePass:
         # blocked), exactly one result row per step.
         r = self.bridge.apply_step(step, self.project_root, mode=self.mode,
                                    verify=self.verify)
+        # BASELINE-RED: when the suite was already failing before any fix, the
+        # post-apply suite result cannot be attributed to this fix — downgrade
+        # the verification to inconclusive (the green-baseline path leaves ``r``
+        # untouched, so it stays byte-identical).
+        if self.verify and self._baseline_green is False:
+            self._apply_baseline_red(r)
         entry = {"branch": step.branch_path, "action": step.action_type,
                  "operator": step.operator, "label": label,
                  "target": step.target, "risk_tier": tier, **r}
@@ -2227,10 +2293,37 @@ class _MaintenancePass:
             return False
         return r.get("coverage") in (None, "none", "module")
 
+    @staticmethod
+    def _baseline_red_withheld(r: dict) -> bool:
+        """Should this applied step be WITHHELD because the suite was already RED
+        before any fix? True when the baseline pre-flight recorded a non-green
+        baseline (``baseline_green is False`` was stamped onto the result): the
+        post-apply suite — green or still-red — cannot vouch for this fix, so no
+        applied fix (any tier) auto-commits. False otherwise (the common
+        green-baseline case carries no ``baseline_green`` key, so this is a
+        no-op and the commit path is byte-identical)."""
+        return r.get("baseline_green") is False
+
     def _settle_applied(self, step: ActionStep, r: dict, entry: dict) -> None:
         """Bookkeeping for an applied fix: commit, then harden-converge."""
         self.applied += 1
         tier = entry.get("risk_tier", 0)
+        # BASELINE-RED gate (composes with the tier-1 and fence gates below):
+        # the suite was already failing before this pass, so a green-after cannot
+        # be attributed to this fix. Keep it applied on disk for review but never
+        # auto-commit it, and fence its files so a later same-file step can't
+        # sweep the un-attributable hunk into git either.
+        if self.committer is not None and self._baseline_red_withheld(r):
+            entry["committed"] = False
+            entry["commit_withheld"] = True
+            entry["baseline_red"] = True
+            entry["reason"] = (
+                "applied, NOT committed — the test suite was already failing "
+                "before this fix, so a green run cannot be attributed to it "
+                "(verification inconclusive); review manually"
+            )
+            self._fence_files(*(r.get("changed_files") or []), step.target)
+            return
         # Autonomous mode (the only mode where ``committer`` is set) must never
         # auto-commit an unverified behaviour change. Keep it applied on disk —
         # supervised/dry-run never reach here with a committer, so their apply

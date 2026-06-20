@@ -99,13 +99,19 @@ def test_autonomous_withholds_commit_for_smoke_shield_only_tier1(tmp_path):
 def test_autonomous_commits_tier1_with_real_function_test(tmp_path):
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
+    # ``eval`` -> ``ast.literal_eval`` is a Tier-1 harden whose behaviour the
+    # rewrite PRESERVES, so the test that calls load() passes BOTH before and
+    # after — i.e. the baseline is genuinely GREEN. (A ``yaml.load(s)`` fixture
+    # would raise "missing Loader" at the pre-fix baseline, making the baseline
+    # RED — exactly the inconclusive case test_baseline_red_eyml pins — so it is
+    # the wrong fixture for the verified-and-committed green-baseline path.)
     (tmp_path / "app" / "cfg.py").write_text(
-        "import yaml\ndef load(s):\n    return yaml.load(s)\n")
+        "def load(s):\n    return eval(s)\n")
     # A real function-level test: imports cfg AND calls load() -> coverage
-    # "function", verified True after the safe_load rewrite.
+    # "function", verified True after the literal_eval rewrite.
     (tmp_path / "tests" / "test_cfg.py").write_text(
         'from app.cfg import load\n'
-        'def test_load():\n    assert load("a: 1") == {"a": 1}\n')
+        'def test_load():\n    assert load("{\'a\': 1}") == {"a": 1}\n')
     _git_init(tmp_path)
 
     summary = _run(tmp_path, _harden_step("app/cfg.py"),
