@@ -622,6 +622,32 @@ def _develop_all(args, target, grade_before, max_steps, verify, apply) -> int:
     return 0
 
 
+def _develop_session(args, target, max_steps, verify, apply) -> int:
+    """`apex develop session`: run the FIXED concrete-value-first objective
+    sequence on the target in one motion and emit ONE combined verified diff.
+
+    This is the buyer artifact: it OPTS IN the two ``expensive`` concrete
+    objectives (``implement-stub``, ``wire-exports``) that the automatic sweeps
+    exclude, lands them alongside hint-inference, dataclassify, and the idiom
+    modernizers, and prints the combined report — per-objective breakdown, the
+    verified/no-suite tier of each landed move, the full-suite backstop verdict,
+    and the unified diff. Default is report-only; ``--apply`` writes."""
+    from app.engine.develop_session import (
+        render_session_markdown, run_develop_session,
+    )
+
+    report = run_develop_session(
+        str(target), max_steps=max_steps, verify=verify, apply=apply,
+        scope_verify=getattr(args, "fast", False))
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(render_session_markdown(report))
+        if report.applied and report.total_moves:
+            print(_APPLIED_TREE_NOTE)
+    return 0
+
+
 def _develop_from_dream(args, target, objective, max_steps, verify, apply) -> int:
     """`apex develop --from-dream`: scope the campaign to dream-flagged confluences."""
     from app.engine.objective_compiler import (
@@ -687,6 +713,13 @@ def cmd_develop(args: argparse.Namespace) -> int:
 
     want_grade = getattr(args, "grade", False)
     grade_before = _grade_score(str(target)) if want_grade else None
+
+    # `apex develop session` (positional) or `apex develop --session`: the
+    # combined concrete-objective run. Checked before the single-objective
+    # default so the bare-`session` word isn't mistaken for an objective name.
+    if (getattr(args, "session", False)
+            or getattr(args, "mode_word", "") == "session"):
+        return _develop_session(args, target, max_steps, verify, apply)
 
     goal = getattr(args, "goal", "") or ""
     if goal:
@@ -1303,9 +1336,20 @@ def register_parsers(subparsers) -> None:
         help="Drive an objective metric (e.g. zero dead parameters) by composing "
              "verified transforms, each suite-gated (default dry run; --apply writes)",
     )
+    develop_parser.add_argument(
+        "mode_word", nargs="?", default="",
+        help="`session` runs the FIXED concrete-objective sequence (implement "
+             "stubs, wire exports, infer hints, dataclassify, then modernizers) "
+             "in one motion and emits the combined verified diff — the buyer "
+             "artifact (default report-only; --apply writes)")
     develop_parser.add_argument("--target", default="", help="Target project root")
     develop_parser.add_argument("--objective", default="dead-params",
                                 help="Objective to pursue (default: dead-params)")
+    develop_parser.add_argument(
+        "--session", action="store_true",
+        help="Run the combined concrete-objective session (same as the `session` "
+             "positional) — lands stubs + exports + hints + dataclass + "
+             "modernizers in one motion, one combined verified diff")
     develop_parser.add_argument("--goal", default="",
                                 help="Pursue a high-level GOAL that fractally decomposes into "
                                      "objectives (e.g. reduce-debt, tidy, simplify-structure)")

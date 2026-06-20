@@ -39,7 +39,8 @@ __all__ = [
     "modernize_fitness", "dead_code_fitness", "duplication_fitness",
     "bool_return_fitness", "magic_constant_fitness",
     "compile_objective", "compile_all", "available_objectives",
-    "ALL_OBJECTIVES", "dream_confluence_modules", "compile_from_dream",
+    "ALL_OBJECTIVES", "SESSION_OBJECTIVES",
+    "dream_confluence_modules", "compile_from_dream",
     "render_compile_markdown", "render_from_dream_markdown", "render_all_markdown",
     "resolve_objective", "objective_synonyms",
 ]
@@ -549,6 +550,23 @@ _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],
 ALL_OBJECTIVES: tuple[str, ...] = ("modernize", "simplify-bool-return",
                                    "remove-dead-code", "dead-params",
                                    "shrink-functions", "inline-helpers")
+
+
+# The objectives `apex develop session` runs — the combined BUYER artifact:
+# land concrete value FIRST (implement stubs, wire exports, infer hints,
+# dataclassify), THEN the idiom-modernizers (the `--all` set) to tidy the
+# surface. This is a SEPARATE, opt-in list: the two high-value objectives
+# `implement-stub` and `wire-exports` are flagged `expensive` and excluded from
+# every automatic sweep, so a student/buyer otherwise has no single command that
+# lands stubs + exports + hints + dataclass + modernizers and shows the combined
+# verified diff. `apex develop session` OPTS THEM IN explicitly. This list is
+# deliberately distinct from ``ALL_OBJECTIVES`` so the `--all`/`ascend` paths
+# stay byte-identical — the session never changes what those sweep.
+SESSION_OBJECTIVES: tuple[str, ...] = (
+    "implement-stub", "wire-exports", "infer-type-hints", "dataclassify",
+    "modernize", "simplify-bool-return", "remove-dead-code", "dead-params",
+    "shrink-functions", "inline-helpers",
+)
 
 
 def _objectives_map() -> dict[str, tuple[Callable[[str | Path], float],
