@@ -231,6 +231,15 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # campaign that makes ``from pkg import X`` work.
     "the public re-export surface to wire": "wire-exports",
 
+    # Missing usage doc: the document lens's "worked examples" aspect names the
+    # package's USAGE.md — the minimal runnable examples a newcomer needs. The
+    # generate-usage-doc objective LANDS exactly that — a USAGE.md generated from
+    # the public API (signatures + docstring summaries + the docstrings' own
+    # ``>>>`` examples), with every example EXECUTED against the package and
+    # omitted if it does not run green. So the "usage doc" facet becomes the
+    # campaign that documents how to call the package, honestly and for free.
+    "the package usage doc to generate": "generate-usage-doc",
+
     # Boilerplate constructor: the "unreachable or no-op statements" simplify
     # sub-aspect names a hand-written ``__init__`` that does nothing but copy its
     # parameters onto ``self`` — pure ceremony. The dataclassify objective LANDS

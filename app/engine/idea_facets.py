@@ -324,7 +324,12 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # still lead and emit in their existing order.
                              "the public re-export surface to wire"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
-    "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown"],
+    "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown",
+                        # added: the package's USAGE.md generated from its public
+                        # API — the generate-usage-doc objective lands it (sigs +
+                        # docstring summaries + verified doctest examples). Appended,
+                        # so the originals still lead and emit in their existing order.
+                        "the package usage doc to generate"],
     "raised exceptions": ["which type when", "recoverable versus fatal", "error message contract"],
     "partial-failure behavior": ["what completed", "what rolled back", "how callers detect it"],
     "retry guidance": ["safe-to-retry conditions", "backoff recommendation", "idempotency requirement"],
