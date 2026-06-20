@@ -204,6 +204,17 @@ def cmd_daemon(args: argparse.Namespace) -> int:
 
 
 def cmd_self_audit(args: argparse.Namespace) -> int:
+    if getattr(args, "north_star", False):
+        from app.engine.north_star_audit import north_star_report, render_markdown
+
+        ns_target = Path(args.target).resolve() if args.target else _get_project_root()
+        report = north_star_report(str(ns_target), getattr(args, "commits", 20))
+        if args.format == "json":
+            print(json.dumps(report, indent=2, default=str))
+        else:
+            print(render_markdown(report, ns_target))
+        return 1 if report["drift"] else 0
+
     from app.agents.skills.self_audit_agent import SelfAuditAgent
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
@@ -534,6 +545,14 @@ def register_parsers(subparsers) -> None:
     self_audit_parser = subparsers.add_parser("self-audit", help="Run Apex self-audit on its own codebase")
     self_audit_parser.add_argument("--target", default=".", help="Target project root")
     self_audit_parser.add_argument("--format", default="markdown", choices=["markdown", "json"], help="Output format")
+    self_audit_parser.add_argument(
+        "--north-star", action="store_true",
+        help="Run the deterministic North Star denetçi (concrete-ratio + commit-drift); exits non-zero on drift",
+    )
+    self_audit_parser.add_argument(
+        "--commits", type=int, default=20,
+        help="Commit-subject window size for North Star drift detection",
+    )
     self_audit_parser.set_defaults(func=cmd_self_audit)
 
     # fix-docstrings
