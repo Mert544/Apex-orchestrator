@@ -31,7 +31,10 @@ from pathlib import Path
 # output). Kept as a module alias so the many importers of this name — and
 # `_py_files` below — stay on the single source of truth in app.engine.skip_dirs.
 from app.engine.skip_dirs import SKIPPED_DIRS as _SKIPPED_DIRS
-from app.execution._apply_verify import run_full_suite_verification
+from app.execution._apply_verify import (
+    run_full_suite_verification,
+    stamp_coverage_strength,
+)
 
 # A rename span: (line, col_start, col_end) — 1-based line, 0-based cols.
 Span = tuple[int, int, int]
@@ -373,6 +376,16 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
     if not verify:
         return out
 
+    # Coverage inputs for the maintain-path strength grader: the plan already
+    # carries each changed file's before (``originals``) and after
+    # (``new_contents``) text, so a green suite can be graded function/module/none
+    # honestly instead of stamped a bare ``verified`` (the hardening maintain got).
+    strength_inputs = (
+        sorted(plan.new_contents),
+        {rel: plan.originals.get(rel) for rel in plan.new_contents},
+        dict(plan.new_contents),
+    )
+
     # Fast path: verify against just the impacted tests. Falls through to the
     # full suite when nothing covers the change (scoped result is None).
     if impact_scope:
@@ -382,6 +395,10 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
             out["verified"] = ok
             out["test_evidence"] = evidence
             if ok:
+                # The scoped run executed the tests that IMPORT the changed
+                # files, so the suite genuinely exercised them — grade exactly
+                # how strongly (function vs. module) with the same machinery.
+                stamp_coverage_strength(root, out, *strength_inputs)
                 out["rolled_back"] = False
                 return out
             _rollback(root, plan, created)
@@ -389,7 +406,7 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
                        reason="impacted tests failed after change; files restored")
             return out
 
-    if run_full_suite_verification(root, out):
+    if run_full_suite_verification(root, out, strength_inputs=strength_inputs):
         return out
     _rollback(root, plan, created)
     out.update(applied=False, rolled_back=True,

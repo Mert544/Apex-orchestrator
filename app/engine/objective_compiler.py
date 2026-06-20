@@ -67,6 +67,22 @@ class CompileStep:
     fitness_before: float
     fitness_after: float
     verified: bool = False
+    # Coverage strength of the green suite for THIS move (the maintain-path
+    # ``assess_strength`` levels: ``function`` / ``module`` / ``none`` /
+    # ``test-change``, or ``""`` when no suite ran). ``verified`` is the raw
+    # suite-green bool; ``coverage`` is what that green suite actually exercised
+    # — a green-but-unreferencing suite (``none``) must never be labelled a
+    # genuine "verified" move (the never-fake-green hardening maintain carries).
+    coverage: str = ""
+
+    @property
+    def coverage_verified(self) -> bool:
+        """Did a test GENUINELY exercise the change? True only when the suite ran
+        green AND a test references the changed module/function (or only test
+        files changed). A green suite that never looked at the change is NOT
+        coverage-verified — this is the honest tier the develop report counts."""
+        return self.verified and self.coverage in (
+            "function", "module", "test-change")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +90,7 @@ class CompileStep:
             "description": self.description,
             "fitness_before": self.fitness_before,
             "fitness_after": self.fitness_after, "verified": self.verified,
+            "coverage": self.coverage,
         }
 
 
@@ -806,7 +823,8 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
     result.steps.append(CompileStep(
         operator=mv.operator, target=mv.target, description=mv.description,
         fitness_before=current, fitness_after=nxt,
-        verified=res.get("verified") is True))
+        verified=res.get("verified") is True,
+        coverage=str(res.get("coverage") or "")))
     return True, nxt
 
 
@@ -971,19 +989,47 @@ def _record_composition(result: CompileResult, project_root: str) -> None:
         pass  # learning is best-effort; never fail a successful compile on it
 
 
+def _compile_tier_tag(s: CompileStep) -> str:
+    """Honest per-move tag: a green suite is only "verified" when a test actually
+    EXERCISED the change (function/module/test-change). A green-but-unreferencing
+    suite (``coverage == none``) is disclosed as a weak tier, and a suite-less
+    apply as ``no-suite`` — never blended with a genuine verified move."""
+    if s.coverage_verified:
+        return " ✅ tests pass (covered)"
+    if s.verified:
+        # Suite ran green but no test references the change — green proves nothing
+        # about it. Disclose, never label "verified".
+        return " ⚠️ applied — suite green but no test covers this move"
+    return " ⚠️ no-suite — applied, nothing verified it"
+
+
 def render_compile_markdown(result: CompileResult) -> str:
-    """Render a compile campaign as a readable report."""
+    """Render a compile campaign as a readable report.
+
+    The headline splits the landed moves into genuinely test-COVERED ("verified")
+    vs. green-but-unreferencing ("weak") vs. ``no-suite`` — the "N verified"
+    count is only the moves a test actually exercised (never-fake-green: a
+    green suite that never looked at the change is not counted as verified)."""
     verb = "Applied" if result.applied else "Would apply"
+    landed = len(result.steps)
+    verified = sum(1 for s in result.steps if s.coverage_verified)
+    weak = sum(1 for s in result.steps if s.verified and not s.coverage_verified)
+    no_suite = landed - verified - weak
     lines = [f"# Objective compile — `{result.objective}`", ""]
     if result.blocked and not result.steps:
         lines.append(f"_No improving move available. Fitness: {result.fitness_start:g}._")
+    breakdown = f"{verb.lower()} {landed} move(s): {verified} verified"
+    if weak:
+        breakdown += f", {weak} weak (suite green but uncovered)"
+    if no_suite:
+        breakdown += f", {no_suite} no-suite"
     lines.append(
         f"Fitness {result.fitness_start:g} → **{result.fitness_end:g}** "
-        f"({verb.lower()} {len(result.steps)} verified move(s))."
+        f"({breakdown})."
     )
     lines.append("")
     for i, s in enumerate(result.steps, 1):
-        tick = " ✅ tests pass" if s.verified else ""
+        tick = _compile_tier_tag(s)
         lines.append(f"{i}. {s.description} — {s.fitness_before:g}→{s.fitness_after:g}{tick}")
     if result.blocked:
         lines.append("")

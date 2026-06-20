@@ -205,7 +205,8 @@ def test_compile_step_to_dict_roundtrips_fields():
                     fitness_before=4.0, fitness_after=3.0, verified=True)
     d = s.to_dict()
     assert d == {"operator": "inline", "target": "app/m.py:h()", "description": "fold h",
-                 "fitness_before": 4.0, "fitness_after": 3.0, "verified": True}
+                 "fitness_before": 4.0, "fitness_after": 3.0, "verified": True,
+                 "coverage": ""}
 
 
 def test_compile_result_to_dict_and_improved():

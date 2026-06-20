@@ -24,6 +24,7 @@ __all__ = [
     "NO_SUITE",
     "mark_no_suite",
     "run_full_suite_verification",
+    "stamp_coverage_strength",
     "suite_baseline_green",
 ]
 
@@ -79,7 +80,42 @@ def suite_baseline_green(root: Path) -> bool:
     return bool(summary.ok) or not summary.commands
 
 
-def run_full_suite_verification(root: Path, out: dict) -> bool:
+def stamp_coverage_strength(
+    root: Path,
+    out: dict,
+    changed_files: list[str],
+    old_by_path: dict[str, str | None],
+    new_by_path: dict[str, str],
+) -> str:
+    """Grade how strongly the just-passed suite actually VOUCHES for these changes
+    and stamp the verdict onto ``out`` — the SAME coverage machinery the hardened
+    maintain path uses (``assess_strength``), brought to the develop apply tail.
+
+    A green full suite proves nothing about a module no test references: this
+    records ``out["coverage"]`` / ``out["verification_strength"].level`` as
+    ``function`` (a test names the changed function), ``module`` (a test imports
+    the module), ``none`` (no test looks at it — applied blind) or ``test-change``
+    (only test files changed). Returns the level. Purely static — no execution,
+    no clock, no randomness — so it stays deterministic. Additive: a caller that
+    passes no changed-file inputs never reaches this and is byte-identical."""
+    from app.engine.verification_strength import assess_strength
+
+    strength = assess_strength(root, changed_files, old_by_path, new_by_path)
+    level = strength.get("level", "none")
+    existing = dict(out.get("verification_strength") or {})
+    existing.update(strength)
+    out["verification_strength"] = existing
+    out["coverage"] = level
+    return level
+
+
+def run_full_suite_verification(
+    root: Path,
+    out: dict,
+    *,
+    strength_inputs: tuple[list[str], dict[str, str | None], dict[str, str]]
+    | None = None,
+) -> bool:
     """Run the project's full test suite and stamp the verdict onto ``out``.
 
     Records ``out["verified"]`` (a bool) and ``out["test_evidence"]`` (the
@@ -90,13 +126,22 @@ def run_full_suite_verification(root: Path, out: dict) -> bool:
     own rollback. This is the byte-identical verification tail both
     :func:`~app.execution.cross_file_rename.apply_rename` and
     :func:`~app.execution.move_module.apply_move` carried verbatim, with the
-    runner imported lazily exactly as the inlined copies did."""
+    runner imported lazily exactly as the inlined copies did.
+
+    When ``strength_inputs`` is given (``(changed_files, old_by_path,
+    new_by_path)``) and the suite ran green, the change's COVERAGE strength is
+    graded with the maintain path's ``assess_strength`` and ``out["coverage"]`` is
+    stamped, so a green-but-unreferencing suite is never blended with one the
+    tests genuinely vouched for. ``strength_inputs=None`` (the default, and the
+    move_module caller) skips this and is byte-identical to the prior tail."""
     from app.engine.proof_of_fix import summarize_test_run
     from app.skills.execution.run_tests import RunTestsSkill
 
     summary = RunTestsSkill().run(str(root))
     out["verified"] = bool(summary.ok)
     out["test_evidence"] = summarize_test_run(summary)
+    if summary.ok and summary.commands and strength_inputs is not None:
+        stamp_coverage_strength(root, out, *strength_inputs)
     if not summary.commands:
         # No test command was detected, so NOTHING ran: the change is kept, but it
         # is NOT verified and auto-rollback could not have protected it. Make that

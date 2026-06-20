@@ -122,7 +122,15 @@ def test_combined_report_counts_and_diff_present(tmp_path: Path):
     assert report.files_changed  # at least one file changed
     assert report.lines_added > 0 and report.lines_removed > 0
     assert "return a + b" in report.diff
-    assert report.verified_moves == report.total_moves  # all gated green here
+    # COVERAGE-AWARE honesty: a green suite is "verified" ONLY for moves a test
+    # actually exercises. The four moves on modules a test imports
+    # (mathlib/models/util) earn ``verified``; the ``wire-exports`` move edits
+    # ``widgets/__init__.py`` — which NO test imports — so it is the honest
+    # ``weak`` tier (suite green but nothing references the change), never blended
+    # into the verified headline. Split must add back up to the total.
+    assert report.verified_moves + report.weak_moves == report.total_moves
+    assert report.weak_moves >= 1  # the uncovered __init__ edit
+    assert report.no_suite_moves == 0
 
     md = render_session_markdown(report)
     assert "Develop session" in md

@@ -66,7 +66,8 @@ __all__ = [
 # Verification tiers a landed move can carry. A move only reaches the report if
 # it LANDED (the engine kept it); a move that failed its gate was rolled back and
 # is surfaced as a refusal, not a tier.
-TIER_VERIFIED = "verified"   # the project's suite ran green after the move
+TIER_VERIFIED = "verified"   # suite ran green AND a test exercises the change
+TIER_WEAK = "weak"           # suite ran green but NO test references the change
 TIER_NO_SUITE = "no-suite"   # the move landed but NO suite could verify it
 
 # Directories never worth snapshotting for the diff (caches, vcs, venvs, the
@@ -124,6 +125,12 @@ class SessionReport:
     diff: str = ""
     suite_available: bool = True
     suite_green_after: bool = True
+    # Did the full-suite BACKSTOP actually run? Under ``--no-verify`` the
+    # per-move gate is skipped AND the backstop is not run, so the default
+    # ``suite_green_after=True`` must NOT be read as "the suite is green" — nothing
+    # ran. This flag gates that verdict: a "full suite GREEN" claim is only made
+    # when the backstop genuinely ran (never-fake-green).
+    backstop_ran: bool = False
 
     @property
     def total_moves(self) -> int:
@@ -133,6 +140,11 @@ class SessionReport:
     def verified_moves(self) -> int:
         return sum(1 for o in self.objectives for m in o.moves
                    if m.tier == TIER_VERIFIED)
+
+    @property
+    def weak_moves(self) -> int:
+        return sum(1 for o in self.objectives for m in o.moves
+                   if m.tier == TIER_WEAK)
 
     @property
     def no_suite_moves(self) -> int:
@@ -148,12 +160,14 @@ class SessionReport:
             "applied": self.applied,
             "total_moves": self.total_moves,
             "verified_moves": self.verified_moves,
+            "weak_moves": self.weak_moves,
             "no_suite_moves": self.no_suite_moves,
             "files_changed": self.files_changed,
             "lines_added": self.lines_added,
             "lines_removed": self.lines_removed,
             "suite_available": self.suite_available,
             "suite_green_after": self.suite_green_after,
+            "backstop_ran": self.backstop_ran,
             "objectives": [o.to_dict() for o in self.objectives],
             "diff": self.diff,
         }
@@ -181,15 +195,25 @@ def _snapshot(root: Path) -> dict[str, str]:
 
 
 def _tier_for(step: Any) -> str:
-    """The verification tier a landed CompileStep earned.
+    """The verification tier a landed CompileStep earned — COVERAGE-AWARE.
 
-    A landed move's step carries ``verified=True`` only when the suite ran green
-    after it; a move that landed against a project with NO detectable suite was
-    stamped ``no-suite`` by the engine (``mark_no_suite``) and surfaces here as
-    ``verified=False`` — an HONEST tier, never blended with a green one. A move
-    that FAILED its gate never reaches the steps list (it was rolled back), so
-    these are the only two tiers a reported move can hold."""
-    return TIER_VERIFIED if getattr(step, "verified", False) else TIER_NO_SUITE
+    A green suite proves nothing about a module no test references, so a bare
+    ``verified=True`` (suite ran green) is NOT enough to earn ``verified``. The
+    tier reads the step's coverage strength (the maintain-path ``assess_strength``
+    levels the apply tail now stamps):
+
+      * ``verified`` — suite ran green AND a test exercises the change
+        (``coverage`` is ``function`` / ``module`` / ``test-change``);
+      * ``weak`` — suite ran green but NO test references the change
+        (``coverage == none``): honest, never blended with a genuine verified one;
+      * ``no-suite`` — no detectable suite ran (``verified=False``; the
+        ``mark_no_suite`` signal), applied with nothing to verify it.
+
+    A move that FAILED its gate never reaches the steps list (it was rolled back),
+    so these are the only tiers a reported move can hold."""
+    if not getattr(step, "verified", False):
+        return TIER_NO_SUITE
+    return TIER_VERIFIED if getattr(step, "coverage_verified", False) else TIER_WEAK
 
 
 def _collect_objective(result: CompileResult) -> SessionObjective:
@@ -288,9 +312,13 @@ def run_develop_session(
         report.lines_removed = removed
         report.diff = diff
         # Full-suite backstop: even though every move was gated, run the whole
-        # suite once after the combined session and disclose the verdict.
+        # suite once after the combined session and disclose the verdict. Under
+        # ``--no-verify`` (verify=False) NOTHING was gated and the backstop is
+        # NOT run, so ``backstop_ran`` stays False and the renderer must NOT claim
+        # the suite is green (never-fake-green — the moves are UNVERIFIED).
         if verify:
             report.suite_available, report.suite_green_after = _full_suite_green(root)
+            report.backstop_ran = True
     return report
 
 
@@ -304,20 +332,28 @@ def _render_summary(report: SessionReport) -> list[str]:
         f"(+{report.lines_added} / -{report.lines_removed} lines).", "",
     ]
     if report.applied:
+        parts = [f"**{report.verified_moves} verified** "
+                 f"(a test exercises the change)"]
+        if report.weak_moves:
+            parts.append(
+                f"**{report.weak_moves} weak** (suite green but NO test references "
+                f"the change — disclosed, not counted as verified)")
         if report.no_suite_moves:
-            lines.append(
-                f"Verification: **{report.verified_moves} verified**, "
-                f"**{report.no_suite_moves} no-suite** "
-                f"(landed but the repo has no detectable test suite — disclosed, "
-                f"not counted as green).")
+            parts.append(
+                f"**{report.no_suite_moves} no-suite** (landed but the repo has no "
+                f"detectable test suite — disclosed, not counted as green)")
+        lines.append("Verification: " + ", ".join(parts) + ".")
+        if not report.backstop_ran:
+            # --no-verify: nothing was gated and the backstop did NOT run, so we
+            # cannot claim the suite is green. Disclose the moves are UNVERIFIED.
+            backstop = ("backstop not run (--no-verify) — moves UNVERIFIED, "
+                        "the full suite was not run to back-stop them")
+        elif not report.suite_available:
+            backstop = "no test suite detected — nothing to back-stop"
+        elif report.suite_green_after:
+            backstop = "✅ full suite GREEN after the session"
         else:
-            lines.append(f"Verification: **{report.verified_moves} verified** "
-                         f"(suite ran green after each).")
-        backstop = ("no test suite detected — nothing to back-stop"
-                    if not report.suite_available
-                    else ("✅ full suite GREEN after the session"
-                          if report.suite_green_after
-                          else "⚠️ full suite RED after the session"))
+            backstop = "⚠️ full suite RED after the session"
         lines.append(f"Full-suite backstop: {backstop}.")
     lines.append("")
     lines.append("## Per-objective breakdown")
@@ -330,7 +366,11 @@ def _render_summary(report: SessionReport) -> list[str]:
         lines.append("")
         lines.append(f"### `{obj.objective}` — {obj.landed} move(s)")
         for i, mv in enumerate(obj.moves, 1):
-            tag = "✅" if mv.tier == TIER_VERIFIED else "⚠️ no-suite"
+            tag = {
+                TIER_VERIFIED: "✅",
+                TIER_WEAK: "⚠️ weak (suite green but uncovered)",
+                TIER_NO_SUITE: "⚠️ no-suite",
+            }.get(mv.tier, "⚠️ no-suite")
             lines.append(f"{i}. {mv.description} — {tag}")
     return lines
 
