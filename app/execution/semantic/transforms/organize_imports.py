@@ -15,6 +15,46 @@ def _collect_used_names(tree: ast.AST) -> set[str]:
     return used_names
 
 
+def _all_assignment_value(node: ast.AST) -> ast.expr | None:
+    # The right-hand side of a module-level ``__all__ = ...`` or
+    # ``__all__ += ...`` statement, else None.
+    if isinstance(node, ast.Assign):
+        targets = node.targets
+        single = len(targets) == 1 and isinstance(targets[0], ast.Name)
+        if single and targets[0].id == "__all__":
+            return node.value
+        return None
+    if isinstance(node, ast.AugAssign):
+        target = node.target
+        if isinstance(target, ast.Name) and target.id == "__all__":
+            return node.value
+    return None
+
+
+def _string_literals(value: ast.expr | None) -> set[str]:
+    if not isinstance(value, (ast.List, ast.Tuple)):
+        return set()
+    out: set[str] = set()
+    for elt in value.elts:
+        if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+            out.add(elt.value)
+    return out
+
+
+def _all_export_names(tree: ast.AST) -> set[str]:
+    # Names listed in a module-level ``__all__`` are the deliberate public API
+    # of a re-export ``__init__`` — they are USED (exported), even though the
+    # module body never references them. Treating them as used stops this
+    # transform from stripping the very re-exports ``wire-exports`` lands.
+    # Only literal ``__all__ = [...]`` / ``__all__ += [...]`` of string
+    # constants are honoured; a dynamically-built ``__all__`` falls back to
+    # current behaviour (no protection) rather than guessing.
+    names: set[str] = set()
+    for node in getattr(tree, "body", []):
+        names |= _string_literals(_all_assignment_value(node))
+    return names
+
+
 def _has_noqa(src_lines: list[str], node: ast.AST) -> bool:
     # A noqa marker is a human saying "this import is intentional"
     # (re-export surfaces, side-effect imports) — honour it.
@@ -90,7 +130,7 @@ def apply(rel_path: str, source: str) -> SemanticPatchResult | None:
     except (SyntaxError, RecursionError, MemoryError):
         return None
 
-    used_names = _collect_used_names(tree)
+    used_names = _collect_used_names(tree) | _all_export_names(tree)
     src_lines = source.splitlines()
     unused_lines = _collect_unused_lines(tree, src_lines, used_names)
 
