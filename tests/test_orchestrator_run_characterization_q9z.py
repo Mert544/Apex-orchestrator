@@ -9,14 +9,21 @@ wall-clock ``phase_metrics``), the ``debug_stats`` counters, and a complete
 per-node snapshot of the expanded graph. Zero mismatches proves the refactor
 preserved behaviour exactly.
 
-A unique-named scratch copy of the original source is materialised under the
-repo so its absolute imports (``app...``) resolve identically; it is loaded as a
-throwaway module and never installed on ``sys.path`` permanently.
+A unique-named scratch copy of the original source is materialised in a private
+temporary directory OUTSIDE the ``app/`` tree (so it is never visible to ``apex
+grade`` / the structure analyzer, even mid-run or after an interruption). The
+original ``core.py`` only imports sibling ``app.*`` packages (never relative
+imports), so loading it by absolute file path from the tmp dir resolves its
+imports identically. It is loaded as a throwaway module and never installed on
+``sys.path`` permanently, and a ``try/finally`` teardown guarantees the scratch
+is removed even if a test fails or the run is interrupted.
 """
 
 import importlib.util
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -27,7 +34,7 @@ from app.skills.synthesizer import Synthesizer
 from app.skills.validator import Validator
 
 _REPO = Path(__file__).resolve().parents[1]
-_ORIG_SRC = _REPO / "app" / "orchestrator" / "_core_orig_q9z_scratch.py"
+_SCRATCH_MODNAME = "_core_orig_q9z_scratch"
 
 # Deterministic objectives only (the Validator's evidence retrieval is
 # filesystem-dependent and flaky for some phrasings; these stay stable). Each
@@ -45,15 +52,19 @@ _CASES = [
 ]
 
 
-def _load_original():
-    """Materialise the base-commit ``core.py`` and import it as a module."""
+def _load_original(scratch_path):
+    """Materialise the base-commit ``core.py`` at ``scratch_path`` and import it.
+
+    ``scratch_path`` lives in a private temp dir OUTSIDE ``app/`` so the grade /
+    structure analyzer never sees this near-duplicate of ``core.py``. The module
+    is registered under a plain (non-``app.*``) name so importing it does not
+    shadow the real package; its own ``app.*`` imports still resolve normally.
+    """
     src = subprocess.check_output(
         ["git", "show", "HEAD:app/orchestrator/core.py"], cwd=_REPO
     )
-    _ORIG_SRC.write_bytes(src)
-    spec = importlib.util.spec_from_file_location(
-        "app.orchestrator._core_orig_q9z_scratch", _ORIG_SRC
-    )
+    scratch_path.write_bytes(src)
+    spec = importlib.util.spec_from_file_location(_SCRATCH_MODNAME, scratch_path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
@@ -62,10 +73,16 @@ def _load_original():
 
 @pytest.fixture(scope="module")
 def original_cls():
-    cls = _load_original()
-    yield cls
-    sys.modules.pop("app.orchestrator._core_orig_q9z_scratch", None)
-    _ORIG_SRC.unlink(missing_ok=True)
+    # Scratch goes to a private temp dir OUTSIDE the repo tree, with guaranteed
+    # cleanup, so nothing leaks into app/ even on failure/interruption.
+    tmpdir = tempfile.mkdtemp(prefix="apex_q9z_")
+    scratch_path = Path(tmpdir) / f"{_SCRATCH_MODNAME}.py"
+    try:
+        cls = _load_original(scratch_path)
+        yield cls
+    finally:
+        sys.modules.pop(_SCRATCH_MODNAME, None)
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _build(cls, cfg):

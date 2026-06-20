@@ -10,38 +10,56 @@ and edge/empty path. Stdlib-only, deterministic, offline."""
 from __future__ import annotations
 
 import ast
+import atexit
 import importlib.util
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 from app.execution import inline_function as refactored
 
+_SCRATCH_MODNAME = "_inline_orig_blob"
+
 
 def _load_original():
-    """Import the HEAD (pre-refactor) inline_function.py as its own module."""
+    """Import the HEAD (pre-refactor) inline_function.py as its own module.
+
+    The blob is materialised in a private temp dir OUTSIDE the repo tree (never
+    ``tests/`` or ``app/``), so ``apex grade`` / the structure analyzer never
+    sees this near-duplicate and nothing can leak into the tree on interruption.
+    The original only imports ``app.*`` siblings, so loading it by absolute file
+    path resolves its imports identically. Cleanup is registered with
+    :mod:`atexit` (this runs at import time, before any teardown hook) AND via
+    :func:`teardown_module`, so the scratch is removed even on failure.
+    """
     blob = subprocess.check_output(
         ["git", "show", "HEAD:app/execution/inline_function.py"],
         cwd=Path(__file__).resolve().parents[1], text=True)
-    path = Path(__file__).resolve().parent / "_inline_orig_blob.py"
+    tmpdir = Path(tempfile.mkdtemp(prefix="apex_inline_orig_"))
+    path = tmpdir / f"{_SCRATCH_MODNAME}.py"
     path.write_text(blob)
-    spec = importlib.util.spec_from_file_location("_inline_orig_blob", path)
+    atexit.register(_cleanup_scratch, tmpdir, path)
+    spec = importlib.util.spec_from_file_location(_SCRATCH_MODNAME, path)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["_inline_orig_blob"] = mod
+    sys.modules[_SCRATCH_MODNAME] = mod
     spec.loader.exec_module(mod)
-    return mod, path
+    return mod, path, tmpdir
 
 
-ORIGINAL, _ORIG_PATH = _load_original()
+def _cleanup_scratch(tmpdir: Path, path: Path) -> None:
+    path.unlink(missing_ok=True)
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+ORIGINAL, _ORIG_PATH, _ORIG_TMPDIR = _load_original()
 
 
 def teardown_module(module):  # noqa: ARG001
-    try:
-        _ORIG_PATH.unlink()
-    except FileNotFoundError:
-        pass
+    _cleanup_scratch(_ORIG_TMPDIR, _ORIG_PATH)
 
 
 # A battery of multi-file projects, each a dict rel-path -> source text.
