@@ -275,6 +275,210 @@ def test_end_to_end_refuses_unpinned_stub(tmp_path: Path):
     assert (tmp_path / "app" / "l.py").read_text() == original
 
 
+# --- GAP 1: constant overfit fixed (parameter beats constant; >=2-tuple floor) -
+
+def test_constant_is_tried_last_not_first():
+    # The constant template must be the LAST resort: a parameter-shaped body that
+    # also passes the pinned tests has to win over a bare literal. So the
+    # constant-pinning candidate list ends (not starts) with the "constant" entry.
+    import tempfile
+    from pathlib import Path as _P
+
+    from app.execution.stub_synthesis import (
+        StubFunction, ordered_candidate_exprs,
+    )
+    with tempfile.TemporaryDirectory() as d:
+        root = _P(d)
+        _write(root, "tests/test_c.py",
+               "def test():\n    assert const(1) == 9\n    assert const(2) == 9\n")
+        stub = StubFunction("const", ("x",), 1, 2, "", False)
+        labels = [lbl for lbl, _ in
+                  ordered_candidate_exprs(root, ["tests/test_c.py"], stub)]
+        assert "constant" in labels  # two distinct tuples agree -> it is offered
+        assert labels[-1] == "constant"  # ...but only as the LAST resort
+        assert labels[0] != "constant"  # a parameter template is tried first
+
+
+def test_single_example_prefers_parameter_template(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # ONE pinned example, add(3, 4) == 7. The constant template would overfit to
+    # `return 7`; the parameter template `a + b` ALSO passes and, tried first,
+    # wins — landing the intent a human meant, not the single-test literal.
+    _write(tmp_path, "app/m.py", "def add(a, b):\n    raise NotImplementedError\n")
+    _write(tmp_path, "tests/test_m.py",
+           "from app.m import add\ndef test():\n    assert add(3, 4) == 7\n")
+    body = plan_implement_stub(str(tmp_path), "app/m.py").new_contents.get("app/m.py")
+    assert body is not None
+    assert "return a + b" in body
+    assert "return 7" not in body  # never overfit the single example to a literal
+
+
+def test_single_example_no_template_refuses(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # ONE pinned example, f(2) == 5, that NO parameter template fits (passthrough
+    # gives 2, len/min/max/... don't apply to an int). A single example cannot
+    # determine intent, so the >=2-distinct-tuples floor forbids the constant
+    # too: REFUSE (land nothing) rather than overfit to `return 5`. This is the
+    # honesty assertion — it must NOT be weakened into landing a constant.
+    _write(tmp_path, "app/m.py", "def f(x):\n    raise NotImplementedError\n")
+    _write(tmp_path, "tests/test_m.py",
+           "from app.m import f\ndef test():\n    assert f(2) == 5\n")
+    plan = plan_implement_stub(str(tmp_path), "app/m.py")
+    assert not plan.new_contents  # refused: one example can't pin a constant
+    assert not plan.blockers      # an honest no-op, not a failure
+
+
+def test_two_distinct_tuples_constant_accepted(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # TWO DISTINCT argument tuples agree on one literal: const(1) == 9 AND
+    # const(2) == 9. No parameter template yields a constant 9 from a varying
+    # input, so the constant (now witnessed by >=2 inputs) legitimately lands.
+    _write(tmp_path, "app/m.py", "def const(x):\n    raise NotImplementedError\n")
+    _write(tmp_path, "tests/test_m.py",
+           "from app.m import const\n"
+           "def test():\n    assert const(1) == 9\n    assert const(2) == 9\n")
+    body = plan_implement_stub(str(tmp_path), "app/m.py").new_contents.get("app/m.py")
+    assert body is not None and "return 9" in body
+
+
+def test_no_arg_single_example_constant_accepted(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # A no-arg function's single empty-tuple call IS its whole input space, so
+    # k() == 0 fully determines the result: the >=2-distinct-tuples floor does
+    # not apply (there are no arguments to vary) and the constant lands.
+    _write(tmp_path, "app/m.py", "def k():\n    ...\n")
+    _write(tmp_path, "tests/test_m.py",
+           "from app.m import k\ndef test():\n    assert k() == 0\n")
+    body = plan_implement_stub(str(tmp_path), "app/m.py").new_contents.get("app/m.py")
+    assert body is not None and "return 0" in body
+
+
+# --- GAP 2: a module's sibling stubs all land in one atomic move --------------
+
+def test_two_stubs_one_module_separate_test_files_both_land(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # arith.py holds add + mul, each pinned by its OWN test file. The single plan
+    # must implement BOTH in one write — implementing only one would be rolled
+    # back because the sibling's test is still red under the impact-scoped gate.
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "arith.py").write_text(
+        "def add(a, b):\n    raise NotImplementedError\n\n\n"
+        "def mul(a, b):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_add.py").write_text(
+        "from app.arith import add\n"
+        "def test_add():\n    assert add(2, 3) == 5\n    assert add(10, 1) == 11\n",
+        encoding="utf-8")
+    (tmp_path / "tests" / "test_mul.py").write_text(
+        "from app.arith import mul\n"
+        "def test_mul():\n    assert mul(2, 3) == 6\n    assert mul(4, 5) == 20\n",
+        encoding="utf-8")
+
+    plan = plan_implement_stub(str(tmp_path), "app/arith.py")
+    body = plan.new_contents.get("app/arith.py")
+    assert body is not None
+    assert "return a + b" in body and "return a * b" in body  # BOTH landed
+    assert plan.edits_by_file["app/arith.py"] == 1  # one atomic file write
+
+
+def test_two_stubs_one_module_shared_test_file_both_land(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # The MUTUAL deadlock: ONE test file asserts both add and mul, so neither
+    # file goes green until BOTH are implemented. The batch planner must resolve
+    # them together (coordinate descent) and land both.
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "arith.py").write_text(
+        "def add(a, b):\n    raise NotImplementedError\n\n\n"
+        "def mul(a, b):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_arith.py").write_text(
+        "from app.arith import add, mul\n"
+        "def test_add():\n    assert add(2, 3) == 5\n    assert add(10, 1) == 11\n"
+        "def test_mul():\n    assert mul(2, 3) == 6\n    assert mul(4, 5) == 20\n",
+        encoding="utf-8")
+
+    body = plan_implement_stub(str(tmp_path), "app/arith.py").new_contents.get("app/arith.py")
+    assert body is not None
+    assert "return a + b" in body and "return a * b" in body  # BOTH landed
+
+
+def test_two_stubs_one_module_both_land_end_to_end(tmp_path: Path):
+    from app.engine.objective_compiler import compile_objective
+
+    # End-to-end: the gated apply lands BOTH stubs in one verified move and the
+    # full suite stays green (no sibling-deadlock rollback).
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "arith.py").write_text(
+        "def add(a, b):\n    raise NotImplementedError\n\n\n"
+        "def mul(a, b):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_add.py").write_text(
+        "from app.arith import add\n"
+        "def test_add():\n    assert add(2, 3) == 5\n    assert add(10, 1) == 11\n",
+        encoding="utf-8")
+    (tmp_path / "tests" / "test_mul.py").write_text(
+        "from app.arith import mul\n"
+        "def test_mul():\n    assert mul(2, 3) == 6\n    assert mul(4, 5) == 20\n",
+        encoding="utf-8")
+
+    result = compile_objective(str(tmp_path), objective="implement-stub",
+                               apply=True, verify=True)
+    assert result.steps and result.steps[0].verified is True
+    text = (tmp_path / "app" / "arith.py").read_text()
+    assert "raise NotImplementedError" not in text  # NEITHER stub left behind
+    assert "return a + b" in text and "return a * b" in text
+
+
+def test_partial_module_lands_satisfiable_leaves_unsatisfiable(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # One stub is determinable (add, two examples -> a + b); the other has no
+    # satisfiable template (weird's examples rule out every fixed shape). The
+    # determinable one still lands; the unsatisfiable one is left as a stub.
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "arith.py").write_text(
+        "def add(a, b):\n    raise NotImplementedError\n\n\n"
+        "def weird(a, b):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_add.py").write_text(
+        "from app.arith import add\n"
+        "def test_add():\n    assert add(2, 3) == 5\n    assert add(10, 1) == 11\n",
+        encoding="utf-8")
+    (tmp_path / "tests" / "test_weird.py").write_text(
+        "from app.arith import weird\n"
+        "def test_weird():\n    assert weird(2, 3) == 7\n    assert weird(4, 4) == 99\n",
+        encoding="utf-8")
+
+    body = plan_implement_stub(str(tmp_path), "app/arith.py").new_contents.get("app/arith.py")
+    assert body is not None
+    assert "return a + b" in body            # the satisfiable stub landed...
+    assert "def weird(a, b):" in body
+    assert "raise NotImplementedError" in body  # ...the unsatisfiable one stays
+
+
+def test_multi_stub_plan_is_deterministic(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "arith.py").write_text(
+        "def add(a, b):\n    raise NotImplementedError\n\n\n"
+        "def mul(a, b):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_add.py").write_text(
+        "from app.arith import add\n"
+        "def test_add():\n    assert add(2, 3) == 5\n    assert add(10, 1) == 11\n",
+        encoding="utf-8")
+    (tmp_path / "tests" / "test_mul.py").write_text(
+        "from app.arith import mul\n"
+        "def test_mul():\n    assert mul(2, 3) == 6\n    assert mul(4, 5) == 20\n",
+        encoding="utf-8")
+
+    a = plan_implement_stub(str(tmp_path), "app/arith.py").new_contents.get("app/arith.py")
+    b = plan_implement_stub(str(tmp_path), "app/arith.py").new_contents.get("app/arith.py")
+    assert a == b and a is not None and "return a + b" in a and "return a * b" in a
+
+
 # --- full-suite auto-rollback on a synthetic regression ----------------------
 
 def test_full_suite_rollback_on_regression(tmp_path: Path):

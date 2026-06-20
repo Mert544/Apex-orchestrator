@@ -15,13 +15,17 @@ accepted body against the FULL suite and auto-rolls-back any regression.
 
 Template space (tried in this order):
 
-  1. **constant return** — when the function's tests all pin one literal result;
-  2. **identity / passthrough** — ``return <arg>`` of a single parameter;
-  3. **binary op on two args** — ``a + b``, ``a - b``, ``a * b``, ``a // b``,
+  1. **identity / passthrough** — ``return <arg>`` of a single parameter;
+  2. **binary op on two args** — ``a + b``, ``a - b``, ``a * b``, ``a // b``,
      ``a % b``, ``a and b``, ``a or b`` (covers int/str/list ``+`` too);
-  4. **recursion from base cases** — factorial/fibonacci shapes for a one-arg
+  3. **recursion from base cases** — factorial/fibonacci shapes for a one-arg
      integer function, bounded to two fixed templates;
-  5. **iterable reduction** — ``min``/``max``/``len``/``sorted`` of one arg.
+  4. **iterable reduction** — ``min``/``max``/``len``/``sorted`` of one arg;
+  5. **constant return** (LAST RESORT) — only when the tests all pin ONE literal
+     result AND that literal is witnessed by >=2 distinct argument tuples (or the
+     function takes no args). Tried last so a parameter-shaped body that also
+     passes wins over a bare literal — a single pinned example must NOT overfit
+     to ``return <literal>``.
 
 Deterministic (fixed template order, no clock/random — same project, same body),
 offline, stdlib-only, zero-token. Idempotent: a non-stub is never touched. Test
@@ -43,6 +47,8 @@ __all__ = [
     "find_stub_functions",
     "pinned_test_files",
     "candidate_bodies",
+    "ordered_candidate_exprs",
+    "fill_stub_body",
     "synthesize_stub_body",
 ]
 
@@ -219,9 +225,9 @@ def candidate_bodies(stub: StubFunction) -> list[tuple[str, str]]:
     is FIXED and independent of any input value, so synthesis is deterministic.
 
     Pure expression text only — the caller wraps it as ``return <expr>``. A
-    constant-return template is contributed by the caller (it needs the tests'
-    expected literal), so this covers passthrough / binary / recursion /
-    reduction."""
+    constant-return template is contributed by the caller as a LAST resort (it
+    needs the tests' expected literal), so this covers passthrough / binary /
+    recursion / reduction — the parameter-shaped templates that take priority."""
     params = stub.params
     out: list[tuple[str, str]] = []
     if len(params) == 1:
@@ -260,27 +266,41 @@ def _two_arg_templates(a: str, b: str) -> list[tuple[str, str]]:
 # --- synthesis (the gated search) --------------------------------------------
 
 def _expected_constant(root: Path, test_files: list[str], stub: StubFunction) -> str | None:
-    """If every test asserting ``func(...) == <literal>`` pins the SAME literal,
-    return its source text (so a constant-return template can be tried first).
-    Otherwise ``None``. Conservative: any disagreement or a non-literal RHS
-    yields ``None``."""
+    """If every test asserting ``func(...) == <literal>`` pins the SAME literal
+    AND that agreement is witnessed by at least TWO DISTINCT argument tuples,
+    return the literal's source text (so a constant-return template can be tried
+    as a last resort). Otherwise ``None``.
+
+    The two-distinct-tuples floor is what stops a single example overfitting: one
+    ``add(3, 4) == 7`` must NOT become ``return 7`` — a single tuple cannot tell
+    "the answer is always 7" from "the answer happens to be 7 here", so a bare
+    constant is refused until two distinct inputs agree on it (a no-arg ``k()``
+    counts: its single empty tuple genuinely IS the whole input space).
+    Conservative: any disagreement or a non-literal RHS yields ``None``."""
     literals: set[str] = set()
+    arg_tuples: set[str] = set()
     call_eq = re.compile(
         r"(?<![A-Za-z0-9_])" + re.escape(stub.name)
-        + r"\s*\([^()]*\)\s*==\s*([^\n#]+)")
+        + r"\s*\(([^()]*)\)\s*==\s*([^\n#]+)")
     for rel in test_files:
         try:
             text = (root / rel).read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
         for m in call_eq.finditer(text):
-            lit = _leading_literal(m.group(1))
+            lit = _leading_literal(m.group(2))
             if lit is None:
                 return None
             literals.add(lit)
-    if len(literals) == 1:
-        return next(iter(literals))
-    return None
+            arg_tuples.add(m.group(1).strip())
+    if len(literals) != 1:
+        return None
+    # A no-arg function has one empty tuple that fully determines its result; any
+    # other function needs >=2 distinct argument tuples agreeing before a bare
+    # constant is trustworthy (one example is not enough to claim "always this").
+    if stub.params and len(arg_tuples) < 2:
+        return None
+    return next(iter(literals))
 
 
 def _leading_literal(expr_text: str) -> str | None:
@@ -353,13 +373,37 @@ def _candidate_passes(root: Path, module_rel: str, candidate: str,
     so this probe leaves the tree byte-for-byte unchanged."""
     target = root / module_rel
     original = target.read_text(encoding="utf-8")
-    cmd = [_python_for(root), "-m", "pytest", "-q", *test_files]
+    # `-B`: never write a `.pyc`. We also purge the module's stale bytecode below.
+    # Successive probes rewrite the SAME file within one mtime-second with equal
+    # size (e.g. `a + b` -> `a * b`), so a cached `.pyc` would be wrongly reused
+    # and the probe would test the PREVIOUS candidate — a determinism/correctness
+    # hazard the batch planner exposes by probing many candidates back-to-back.
+    cmd = [_python_for(root), "-B", "-m", "pytest", "-q", *test_files]
     try:
         target.write_text(candidate, encoding="utf-8")
+        _purge_pyc(target)
         summary = runner.run(str(root), commands=[cmd])
         return bool(summary.ok)
     finally:
         target.write_text(original, encoding="utf-8")
+        _purge_pyc(target)
+
+
+def _purge_pyc(module_path: Path) -> None:
+    """Delete any cached bytecode for ``module_path`` so the next import always
+    recompiles the just-written source. Removes both the legacy sibling ``.pyc``
+    and the ``__pycache__/<stem>.*.pyc`` forms. Best-effort and silent — a probe
+    is correct even if a stale file can't be removed (it just recompiles)."""
+    try:
+        cache_dir = module_path.parent / "__pycache__"
+        stem = module_path.stem
+        if cache_dir.is_dir():
+            for pyc in cache_dir.glob(stem + ".*.pyc"):
+                pyc.unlink(missing_ok=True)
+        sibling = module_path.with_suffix(".pyc")
+        sibling.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _python_for(root: Path) -> str:
@@ -378,10 +422,12 @@ def synthesize_stub_body(root: Path, module_rel: str, stub: StubFunction,
     """Synthesize a body for ``stub`` that makes ALL its pinned tests pass, or
     ``None`` (REFUSE) when no fixed template does.
 
-    The search is deterministic: a constant-return candidate (when the tests
-    agree on one literal) is tried first, then :func:`candidate_bodies` in fixed
-    order. The FIRST candidate whose pinned tests all pass wins. With no pinned
-    tests there is no spec to satisfy — refuse immediately."""
+    The search is deterministic: :func:`candidate_bodies` (the parameter-shaped
+    templates) in fixed order, then a constant-return candidate LAST (only when
+    the tests agree on one literal across >=2 distinct argument tuples). The
+    FIRST candidate whose pinned tests all pass wins, so a parameter template
+    beats a bare constant. With no pinned tests there is no spec to satisfy —
+    refuse immediately."""
     if not test_files:
         return None
     runner = runner or RunTestsSkill()
@@ -396,13 +442,38 @@ def synthesize_stub_body(root: Path, module_rel: str, stub: StubFunction,
     return None
 
 
+def ordered_candidate_exprs(root: Path, test_files: list[str],
+                            stub: StubFunction) -> list[tuple[str, str]]:
+    """Public view of the fixed-order candidate list for ``stub`` — the
+    parameter-shaped templates first, then the last-resort constant (when the
+    tests pin one literal across >=2 distinct tuples). Used by the per-module
+    batch planner to coordinate sibling stubs whose pinned tests share one file
+    (where no single stub goes green until the others are filled too)."""
+    return _ordered_candidates(root, test_files, stub)
+
+
+def fill_stub_body(source: str, stub: StubFunction, return_expr: str) -> str | None:
+    """Public view of the body rewrite: replace ``stub``'s body with ``return
+    <return_expr>`` (resolving the ``__apex_self__`` recursion marker) and return
+    the new module source, or ``None`` if the edit would not parse. Deterministic
+    and pure (no disk, no tests) — the batch planner uses it to compose a
+    tentative all-stubs-filled source it then verifies once."""
+    return _rewrite_with_body(source, stub, return_expr)
+
+
 def _ordered_candidates(root: Path, test_files: list[str],
                         stub: StubFunction) -> list[tuple[str, str]]:
-    """The full fixed-order candidate list: a constant-return first (when the
-    tests pin one literal), then the parameter-shaped templates."""
-    out: list[tuple[str, str]] = []
+    """The full fixed-order candidate list: the parameter-shaped templates FIRST,
+    then a constant-return as the LAST resort (and only when ``_expected_constant``
+    is satisfied — at least two distinct argument tuples agree on one literal).
+
+    Constant goes last so a parameter-shaped body that ALSO passes the pinned
+    tests WINS over a bare literal: ``add(3, 4) == 7`` lands ``a + b`` (intent),
+    not ``return 7`` (overfit). A constant only fires when no parameter template
+    fits AND the literal is witnessed by >=2 distinct inputs (or the function
+    takes no args)."""
+    out: list[tuple[str, str]] = list(candidate_bodies(stub))
     const = _expected_constant(root, test_files, stub)
     if const is not None:
         out.append(("constant", const))
-    out.extend(candidate_bodies(stub))
     return out
