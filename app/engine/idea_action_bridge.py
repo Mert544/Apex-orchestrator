@@ -1697,6 +1697,7 @@ class IdeaActionBridge:
         mode: str = "supervised",
         verify: bool = False,
         max_apply: int | None = None,
+        max_attempts: int | None = None,
         commit: bool = False,
         test_first: bool = True,
         avoid_signatures: dict | None = None,
@@ -1728,6 +1729,19 @@ class IdeaActionBridge:
         ``drain_rounds``/``converged``. ``drain=False`` -> the apply path is
         byte-identical to today (single pass, same results/counters/keys).
 
+        ATTEMPTS BUDGET (opt-in, default off): ``max_apply`` bounds the number of
+        APPLIED fixes, but a run can still burn many apply+rollback cycles getting
+        there — every step that reaches the apply stage runs the transform + verify
+        whether it lands (applied) or is rolled back. ``max_attempts`` caps that
+        total: an ATTEMPT is any step that reaches apply and is applied OR
+        rolled_back (it ran the transform + verify, regardless of outcome). The
+        single pass AND every drain round break once ``self.attempted >=
+        max_attempts`` (the counter accumulates across rounds, never resets), so a
+        run can't spend unbounded compute on rolled-back fixes. ``max_attempts=None``
+        (the default) -> no cap and the summary keys are byte-identical to today; the
+        ``attempted`` tally and ``attempts_exhausted`` flag appear ONLY when the
+        budget is armed.
+
         RELIABILITY RE-RANK (opt-in, default off): when ``prefer_reliable`` is
         set, the executable steps are stably re-ordered by ascending fix-risk
         (read from the proof history via ``fix_risk``) BEFORE the apply loop, so
@@ -1753,7 +1767,7 @@ class IdeaActionBridge:
         steps = plan.executable_steps()
         if prefer_reliable:
             steps = self._rerank_by_fix_risk(steps, project_root)
-        run._apply_steps(steps, max_apply)
+        run._apply_steps(steps, max_apply, max_attempts)
         # CASCADE-DRAIN outer loop (opt-in): re-detect over only the changed set
         # and re-apply to a fixpoint. The first pass above already ran exactly as
         # before; this only ADDS further rounds, sharing the same budget/counters.
@@ -1761,7 +1775,8 @@ class IdeaActionBridge:
         if drain:
             rp = replan if replan is not None else self._default_replan(
                 project_root, mode)
-            drain_rounds = run._drain_rounds(rp, max_apply, max(0, max_rounds))
+            drain_rounds = run._drain_rounds(rp, max_apply, max_attempts,
+                                             max(0, max_rounds))
         summary = {
             "mode": mode,
             "verify": verify,
@@ -1778,6 +1793,15 @@ class IdeaActionBridge:
         # run's summary keys are byte-identical to before.
         if run.avoid_signatures:
             summary["skipped_learned"] = run.skipped_learned
+        # Additive + opt-in: the attempts tally + "did the budget stop the run"
+        # flag appear ONLY when ``max_attempts`` was armed, so a default run's
+        # summary keys are byte-identical to before. ``attempted`` counts every
+        # step that reached the apply stage (applied OR rolled_back) across the
+        # single pass and all drain rounds; ``attempts_exhausted`` is True iff the
+        # budget was reached (and so capped the run).
+        if max_attempts is not None:
+            summary["attempted"] = run.attempted
+            summary["attempts_exhausted"] = run.attempted >= max_attempts
         # Additive + opt-in: the convergence proof appears ONLY when the drain was
         # armed, so a default run's summary keys are byte-identical to before.
         if drain:
@@ -2035,6 +2059,13 @@ class _MaintenancePass:
         self.results: list[dict] = []
         self.applied = self.rolled_back = self.blocked = 0
         self.committed = self.skipped_learned = 0
+        # ATTEMPTS BUDGET: every step that reaches the apply stage and is APPLIED
+        # OR ROLLED_BACK is one attempt (it ran the transform + verify, whatever
+        # the outcome). Accumulated across the single pass AND all drain rounds
+        # (never reset), so ``max_attempts`` bounds total apply+rollback cycles, a
+        # separate ceiling from ``max_apply`` (which counts only landed fixes).
+        # A blocked/safety-gated step never reached apply, so it is NOT an attempt.
+        self.attempted = 0
         self.can_commit = False
         self.committer = None
         if commit:
@@ -2478,7 +2509,12 @@ class _MaintenancePass:
         """Classify the apply result into exactly one counter + result row."""
         if r.get("rolled_back"):
             self.rolled_back += 1
+            # ATTEMPTS BUDGET: a rolled-back step DID reach apply (transform +
+            # verify ran) — it counts as one attempt.
+            self.attempted += 1
         elif r.get("applied"):
+            # ATTEMPTS BUDGET: an applied step also reached apply — one attempt.
+            self.attempted += 1
             self._settle_applied(step, r, entry)
         else:
             self.blocked += 1
@@ -2492,18 +2528,25 @@ class _MaintenancePass:
                 self._changed_files.add(self._norm_path(f))
         self.results.append(entry)
 
-    def _apply_steps(self, steps, max_apply: int | None) -> None:
-        """Apply a list of executable steps under the SHARED ``max_apply``
-        budget. The budget is read from the live ``self.applied`` counter, so it
-        is never reset between drain rounds — total applied across ALL rounds can
-        never exceed ``max_apply``."""
+    def _apply_steps(self, steps, max_apply: int | None,
+                     max_attempts: int | None = None) -> None:
+        """Apply a list of executable steps under the SHARED ``max_apply`` and
+        ``max_attempts`` budgets. Both are read from the live ``self.applied`` /
+        ``self.attempted`` counters, so neither is reset between drain rounds —
+        total applied across ALL rounds can never exceed ``max_apply``, and total
+        attempts (applied OR rolled_back) can never exceed ``max_attempts``."""
         for step in steps:
             if max_apply is not None and self.applied >= max_apply:
+                break
+            # ATTEMPTS BUDGET: stop once we've spent the attempt ceiling, even if
+            # ``max_apply`` still has room — this is the cost ceiling on
+            # apply+rollback cycles. ``None`` -> no cap, byte-identical to today.
+            if max_attempts is not None and self.attempted >= max_attempts:
                 break
             self.run_step(step)
 
     def _drain_rounds(self, replan, max_apply: int | None,
-                      max_rounds: int) -> int:
+                      max_attempts: int | None, max_rounds: int) -> int:
         """OUTER convergence loop: re-detect → re-plan → apply, until a round
         applies ZERO new fixes or ``max_rounds`` is reached.
 
@@ -2515,7 +2558,8 @@ class _MaintenancePass:
              in ``_handled`` (so a withheld/fenced fix is never re-attempted), and
              the SHARED ``max_apply`` budget is honoured across rounds;
           4. stop when no NEW signature applied a real change this round, or the
-             cap is hit, or the budget is exhausted, or ``replan`` yields nothing.
+             cap is hit, or the apply/attempts budget is exhausted, or ``replan``
+             yields nothing.
 
         Determinism: the changed set is sorted before re-plan; rounds are capped;
         no clock/random. Returns the number of extra rounds executed (0 when the
@@ -2524,6 +2568,11 @@ class _MaintenancePass:
         rounds = 0
         while rounds < max_rounds:
             if max_apply is not None and self.applied >= max_apply:
+                break
+            # ATTEMPTS BUDGET: the attempt ceiling is SHARED across drain rounds —
+            # once total attempts (applied + rolled_back, accumulated since the
+            # single pass) reach it, no further round runs. Inert when None.
+            if max_attempts is not None and self.attempted >= max_attempts:
                 break
             changed = sorted(self._changed_files)
             if not changed:
@@ -2540,7 +2589,7 @@ class _MaintenancePass:
             steps = [s for s in steps if self._signature(s) not in self._handled]
             if not steps:
                 break
-            self._apply_steps(steps, max_apply)
+            self._apply_steps(steps, max_apply, max_attempts)
             rounds += 1
             # Progress = a NEW signature actually APPLIED a fix this round. A round
             # that only re-surfaced already-handled steps, or whose new steps all
