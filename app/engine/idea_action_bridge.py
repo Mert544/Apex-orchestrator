@@ -2391,12 +2391,22 @@ class _MaintenancePass:
         entry = {"branch": step.branch_path, "action": step.action_type,
                  "operator": step.operator, "label": label,
                  "target": step.target, "risk_tier": tier, **r}
+        self._record_shield_commit(entry, shield_result)
+        self._record_outcome(step, r, entry)
+
+    def _record_shield_commit(self, entry: dict, shield_result: dict | None) -> None:
+        """Stamp the applied shield test onto ``entry`` and commit it.
+
+        Extracted verbatim from :meth:`run_step` to keep that method under the
+        complexity ceiling; behaviour is byte-identical — only an applied shield
+        records a ``shield_test`` file and bumps ``committed`` on a successful
+        ``create_test_stub`` commit. A ``None`` / non-applied shield is a no-op.
+        """
         if shield_result is not None and shield_result.get("applied"):
             entry["shield_test"] = (shield_result.get("changed_files") or [""])[0]
             ok_s, _h = self._commit(shield_result, "create_test_stub")
             if ok_s:
                 self.committed += 1
-        self._record_outcome(step, r, entry)
 
     @staticmethod
     def _unverified_behaviour_change(r: dict, tier: int) -> bool:
@@ -2567,27 +2577,10 @@ class _MaintenancePass:
         self._drain_active = True
         rounds = 0
         while rounds < max_rounds:
-            if max_apply is not None and self.applied >= max_apply:
-                break
-            # ATTEMPTS BUDGET: the attempt ceiling is SHARED across drain rounds —
-            # once total attempts (applied + rolled_back, accumulated since the
-            # single pass) reach it, no further round runs. Inert when None.
-            if max_attempts is not None and self.attempted >= max_attempts:
-                break
-            changed = sorted(self._changed_files)
-            if not changed:
-                break
             before_applied = self.applied
             before_handled = len(self._handled)
-            try:
-                plan = replan(changed)
-            except Exception:
-                # A re-plan that raises ends the drain cleanly — the single-pass
-                # results already recorded stand; the drain never crashes a run.
-                break
-            steps = list(plan.executable_steps()) if plan is not None else []
-            steps = [s for s in steps if self._signature(s) not in self._handled]
-            if not steps:
+            steps = self._next_round_steps(replan, max_apply, max_attempts)
+            if steps is None:
                 break
             self._apply_steps(steps, max_apply, max_attempts)
             rounds += 1
@@ -2598,6 +2591,38 @@ class _MaintenancePass:
                 break
         self._drain_active = False
         return rounds
+
+    def _next_round_steps(self, replan, max_apply: int | None,
+                          max_attempts: int | None) -> list[ActionStep] | None:
+        """The fresh, not-yet-handled steps for the next drain round, or ``None``.
+
+        Extracted verbatim from :meth:`_drain_rounds` to keep that loop under the
+        complexity ceiling; behaviour is byte-identical. Returns ``None`` (the
+        loop's ``break`` signal) when any stop condition holds — the shared
+        apply/attempts budget is exhausted, no files changed, ``replan`` raises,
+        or it yields no unhandled executable steps — otherwise the filtered list.
+        """
+        if max_apply is not None and self.applied >= max_apply:
+            return None
+        # ATTEMPTS BUDGET: the attempt ceiling is SHARED across drain rounds —
+        # once total attempts (applied + rolled_back, accumulated since the
+        # single pass) reach it, no further round runs. Inert when None.
+        if max_attempts is not None and self.attempted >= max_attempts:
+            return None
+        changed = sorted(self._changed_files)
+        if not changed:
+            return None
+        try:
+            plan = replan(changed)
+        except Exception:
+            # A re-plan that raises ends the drain cleanly — the single-pass
+            # results already recorded stand; the drain never crashes a run.
+            return None
+        steps = list(plan.executable_steps()) if plan is not None else []
+        steps = [s for s in steps if self._signature(s) not in self._handled]
+        if not steps:
+            return None
+        return steps
 
 
 def _proof_affordance(step: ActionStep) -> str:
