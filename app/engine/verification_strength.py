@@ -153,31 +153,119 @@ def _weaker(current: str, candidate: str) -> str:
     return candidate if _RANK[candidate] < _RANK[current] else current
 
 
+# Decorator attrs that mean a test never actually asserts against the change:
+# ``@pytest.mark.skip``/``skipif`` never run; ``@pytest.mark.xfail`` runs but its
+# failure (even an assertion of the WRONG value) is the EXPECTED outcome, so it
+# keeps the suite green without verifying anything. A reference reachable ONLY
+# from such a test proves nothing — it must not upgrade coverage to ``function``.
+_INERT_DECORATORS = frozenset({"skip", "skipif", "xfail"})
+
+# Statements after one of these (at the same block level) can never run.
+_TERMINATORS = (ast.Return, ast.Raise, ast.Continue, ast.Break)
+
+
+def _decorator_is_inert(node: ast.expr) -> bool:
+    """Is this decorator a ``pytest.mark.skip``/``skipif``/``xfail`` (called or
+    bare)? Matched on the decorator's final attribute/name, so any alias for
+    ``pytest``/``mark`` is covered (``@mark.skip``, ``@pytest.mark.xfail()``)."""
+    if isinstance(node, ast.Call):
+        node = node.func
+    attr = node.attr if isinstance(node, ast.Attribute) else (
+        node.id if isinstance(node, ast.Name) else None)
+    return attr in _INERT_DECORATORS
+
+
+def _is_dead_branch(node: ast.stmt) -> bool:
+    """An ``if False:`` / ``if 0:`` whose body is statically unreachable."""
+    if not isinstance(node, ast.If):
+        return False
+    test = node.test
+    if isinstance(test, ast.Constant):
+        return not bool(test.value)
+    return False
+
+
+def _collect_own_identifiers(stmt: ast.stmt, out: set[str]) -> None:
+    """Identifiers in ``stmt``'s OWN expression parts — i.e. excluding nested
+    statement bodies, which :func:`_reachable_identifiers` walks separately with
+    reachability rules. Walks every child that is not itself a statement."""
+    for child in ast.iter_child_nodes(stmt):
+        if isinstance(child, ast.stmt):
+            continue  # a nested block — handled with its own reachability
+        for sub in ast.walk(child):
+            if isinstance(sub, ast.Name):
+                out.add(sub.id)
+            elif isinstance(sub, ast.Attribute):
+                out.add(sub.attr)
+
+
+def _reachable_identifiers(body: list[ast.stmt], out: set[str]) -> None:
+    """Collect ``Name`` ids / ``Attribute`` attrs from the statements in ``body``
+    that can actually execute, recursing into reachable nested blocks.
+
+    Drops (a) statements after a ``return``/``raise``/``continue``/``break`` at
+    this block level, (b) the body of an ``if False:``/``if 0:`` (its ``else`` is
+    still live), and (c) the whole body of a ``skip``/``skipif``/``xfail`` test.
+    A statically-unreachable or never-asserting reference proves nothing about the
+    change, so it must not be counted as coverage."""
+    for stmt in body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if any(_decorator_is_inert(d) for d in stmt.decorator_list):
+                continue  # a skip/xfail test never verifies — skip its whole body
+            _collect_own_identifiers(stmt, out)  # decorators / default-arg exprs
+            _reachable_identifiers(stmt.body, out)
+        elif _is_dead_branch(stmt):
+            _reachable_identifiers(stmt.orelse, out)  # body dead, else still runs
+        else:
+            _collect_own_identifiers(stmt, out)
+            for nested in _child_bodies(stmt):
+                _reachable_identifiers(nested, out)
+        if isinstance(stmt, _TERMINATORS):
+            break  # nothing after this statement at this level can run
+
+
+def _child_bodies(stmt: ast.stmt) -> list[list[ast.stmt]]:
+    """The nested statement-list bodies of a compound statement (``if``/``for``/
+    ``while``/``with``/``try``/class/handler bodies). Each is walked with its own
+    reachability so an unreachable nested reference still doesn't count."""
+    bodies: list[list[ast.stmt]] = []
+    for field in ("body", "orelse", "finalbody"):
+        block = getattr(stmt, field, None)
+        if isinstance(block, list) and block and isinstance(block[0], ast.stmt):
+            bodies.append(block)
+    for handler in getattr(stmt, "handlers", []) or []:
+        bodies.append(handler.body)
+    return bodies
+
+
 def _code_identifiers(text: str) -> set[str] | None:
-    """Identifiers that appear in CODE positions of ``text`` — every ``Name`` id
-    and ``Attribute`` attr — excluding names mentioned only in comments or string
-    literals. ``None`` when the text can't be parsed (caller falls back)."""
+    """Identifiers in REACHABLE, asserting CODE positions of ``text`` — every
+    ``Name`` id and ``Attribute`` attr — excluding names mentioned only in
+    comments / string literals, names inside a ``skip``/``skipif``/``xfail`` test,
+    and names in statically-unreachable positions (``if False:`` bodies, code
+    after a ``return``/``raise``/``continue``/``break``). ``None`` when the text
+    can't be parsed (caller falls back to a whole-word text match)."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, RecursionError, MemoryError):
         return None
     names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name):
-            names.add(node.id)
-        elif isinstance(node, ast.Attribute):
-            names.add(node.attr)
+    _reachable_identifiers(tree.body, names)
     return names
 
 
 def _names_changed_function(text: str, funcs: list[str]) -> bool:
-    """Does ``text`` REFERENCE (in code, not just a comment/string) any of these
-    changed function names?
+    """Does ``text`` REFERENCE — in code that can actually EXECUTE and assert —
+    any of these changed function names?
 
     AST-exact — mirrors the rigor of :func:`_references_module`: a function name
     that appears only in a comment of an already-importing test must NOT upgrade
     coverage from ``module`` to ``function`` (it proves nothing about the change).
-    Falls back to a whole-word text match only when the test can't be parsed."""
+    Likewise a reference reachable only from a ``skip``/``skipif``/``xfail`` test
+    or a statically-unreachable position (``if False:``, after a ``return``) is
+    NOT coverage: no test runs that line against the change, so a green suite
+    vouches for nothing. Falls back to a whole-word text match only when the test
+    can't be parsed."""
     ids = _code_identifiers(text)
     if ids is not None:
         return any(name in ids for name in funcs)
