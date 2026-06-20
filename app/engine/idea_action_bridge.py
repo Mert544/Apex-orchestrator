@@ -2017,6 +2017,22 @@ class _MaintenancePass:
     def _is_fenced(self, path: str) -> bool:
         return bool(path) and self._norm_path(path) in self._fenced_files
 
+    def _commit_touches_fenced(self, r: dict, step: ActionStep) -> bool:
+        """True when ANY file this commit would stage is fenced.
+
+        ``_commit`` stages every path in ``r["changed_files"]`` (falling back to
+        ``[step.target]`` when the result carries none), so the fence gate must
+        check the WHOLE staged set, not just ``step.target``. A future cross-file
+        transform whose ``changed_files`` includes a fenced sibling would
+        otherwise bypass the per-target gate and sweep the withheld hunk into git
+        via whole-file staging. The fenced-``step.target`` case stays a subset
+        (it is in the fallback list). Uses the same normalized-path comparison as
+        ``_is_fenced``/``_norm_path`` — pure string work, deterministic, and a
+        no-op (``any(...)`` is ``False``) whenever nothing is fenced, so the
+        common no-withhold path stays byte-identical."""
+        staged = r.get("changed_files") or [step.target]
+        return any(self._is_fenced(f) for f in staged)
+
     def _ensure_baseline(self) -> bool:
         """ONE-TIME baseline pre-flight, cached for the whole pass.
 
@@ -2165,8 +2181,11 @@ class _MaintenancePass:
                 break
             # A fenced file (an earlier withheld change still on disk) must not
             # be auto-committed even by a safe converged fix — whole-file
-            # staging would sweep the withheld hunk into git.
-            if self.committer is not None and self._is_fenced(step.target):
+            # staging would sweep the withheld hunk into git. Check EVERY file
+            # this commit would stage, not just ``step.target``, so a cross-file
+            # converged result can't bypass the fence on a sibling path.
+            if (self.committer is not None
+                    and self._commit_touches_fenced(r2, step)):
                 break
             ok2, _h2 = self._commit(r2, step.action_type)
             if ok2:
@@ -2344,7 +2363,10 @@ class _MaintenancePass:
         # file that already carries an earlier, unreviewed withheld change —
         # whole-file staging would sweep that hunk into git unreviewed. Leave
         # this fix applied-on-disk too, record it as fenced, and do not commit.
-        if self.committer is not None and self._is_fenced(step.target):
+        # Gate on EVERY file the commit would stage (not just ``step.target``),
+        # so a cross-file result whose ``changed_files`` includes a fenced
+        # sibling is blocked too.
+        if self.committer is not None and self._commit_touches_fenced(r, step):
             entry["committed"] = False
             entry["commit_withheld"] = True
             entry["fenced"] = True
