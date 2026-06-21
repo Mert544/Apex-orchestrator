@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from app.execution.cross_file_rename import apply_rename
@@ -59,12 +60,12 @@ def test_first_keyword_argument_drop_eats_following_comma(tmp_path):
     (tmp_path / "app" / "first.py").write_text(
         "from app.core import render\n"
         "def g(t):\n"
-        "    return render(t, **{}) or render(color='x', text=t)\n"
+        "    return render(color='x', text=t)\n"
     )
     plan = plan_param_drop(tmp_path, "render", "color")
     assert plan.ok, plan.blockers
+    # Dropping the FIRST keyword argument eats the comma that follows it.
     assert "render(text=t)" in plan.new_contents["app/first.py"]
-    assert any("may still carry 'color'" in w for w in plan.warnings)
 
 
 def test_positional_call_site_blocks(tmp_path):
@@ -359,3 +360,131 @@ def test_plan_pinned_for_blocked_positional_call(tmp_path):
     assert plan.new_contents == {}
     assert plan.originals == {}
     assert plan.edits_by_file == {}
+
+
+# --- Auto-rollback moat fix: a **kwargs call boundary refuses the drop --------
+#
+# A body-unread parameter is NOT provably dead if a reachable ``f(**mapping)``
+# call site could still pass it dynamically. Dropping it changes the accepted-
+# keyword contract — a regression an impact-scoped gate may not see the
+# exerciser for (the transitive ``dispatch`` -> ``handler`` caller below).
+# param_drop refuses such a drop rather than land an unprovable change.
+
+
+def _kwargs_boundary_project(tmp_path: Path) -> Path:
+    """The adversarial field-test shape: a body-unread param that a sibling
+    reaches only through a ``**opts`` splat."""
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "lib" / "__init__.py").write_text("")
+    (tmp_path / "lib" / "api.py").write_text(
+        "def handler(req, verbose):\n"
+        "    return req.upper()\n"
+    )
+    (tmp_path / "lib" / "dispatch.py").write_text(
+        "from lib.api import handler\n"
+        "\n"
+        "def dispatch(req, opts):\n"
+        "    return handler(req, **opts)\n"
+    )
+    (tmp_path / "tests" / "test_api.py").write_text(
+        "from lib.api import handler\n"
+        "def test_handler():\n"
+        "    assert handler('hi', verbose=False) == 'HI'\n"
+    )
+    (tmp_path / "tests" / "test_dispatch.py").write_text(
+        "from lib.dispatch import dispatch\n"
+        "def test_dispatch_passes_verbose():\n"
+        "    assert dispatch('hi', {'verbose': True}) == 'HI'\n"
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'repro'\nversion = '0'\n")
+    return tmp_path
+
+
+def test_kwargs_call_boundary_refuses_unprovable_drop(tmp_path):
+    # The repro: `verbose` is dead in handler's body, but `dispatch` reaches
+    # handler via `**opts`, which could carry it. The drop is REFUSED (honest
+    # blocker, nothing rewritten) — not warned-and-dropped.
+    _kwargs_boundary_project(tmp_path)
+    plan = plan_param_drop(tmp_path, "handler", "verbose")
+    assert not plan.ok
+    assert plan.warnings == []  # the old warning is now a blocker
+    assert plan.blockers == [
+        "lib/dispatch.py:4: handler(**…) could still pass 'verbose' at "
+        "runtime — can't prove the drop is safe; refused"
+    ]
+    # The def is left intact — the contract is unchanged for that param.
+    assert plan.new_contents == {}
+    assert plan.originals == {}
+    assert plan.edits_by_file == {}
+    assert "lib/api.py" not in plan.new_contents
+
+
+def test_end_to_end_scope_verify_keeps_kwargs_reachable_param(tmp_path):
+    # End-to-end through the objective compiler under IMPACT-SCOPED gating
+    # (the develop-session-when-RED flow). The unprovable drop must NOT land:
+    # `verbose` stays in the signature and the suite stays GREEN — no regression
+    # is stamped verified.
+    from app.engine.objective_compiler import compile_objective
+
+    _kwargs_boundary_project(tmp_path)
+    res = compile_objective(tmp_path, objective="dead-params", apply=True,
+                            verify=True, scope_verify=True)
+    # Nothing was applied; the move is recorded as a refusal, not a verified step.
+    assert res.steps == []
+    assert any("handler(verbose)" in b and "refused" in b for b in res.blocked)
+    # The signature is byte-identical — `verbose` survived.
+    assert "def handler(req, verbose):" in (tmp_path / "lib" / "api.py").read_text()
+    # The previously-green suite is STILL green: the regression never landed.
+    import subprocess
+    import sys
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", str(tmp_path / "tests"), "-q"],
+        cwd=str(tmp_path), capture_output=True, text=True,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_safe_drop_with_only_static_call_sites_still_lands(tmp_path):
+    # Regression guard against OVER-refusal: a body-unread param whose only
+    # call sites are static (positional/keyword param_drop rewrites) still
+    # drops exactly as before — no **splat boundary means no refusal.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "core.py").write_text(
+        "def render(text, color=None, width=80):\n    return text[:width]\n")
+    (tmp_path / "app" / "user.py").write_text(
+        "from app.core import render\n"
+        "def f(t):\n    return render(t, color='red', width=40)\n")
+    plan = plan_param_drop(tmp_path, "render", "color")
+    assert plan.ok, plan.blockers
+    assert "def render(text, width=80):" in plan.new_contents["app/core.py"]
+    assert "render(t, width=40)" in plan.new_contents["app/user.py"]
+
+
+def test_kwargs_splat_to_a_different_function_does_not_block(tmp_path):
+    # The refusal is scoped to splats that REACH the target. A `**opts` splat
+    # into an UNRELATED function leaves the drop landable.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "core.py").write_text(
+        "def render(text, color=None):\n    return text\n"
+        "\n"
+        "def other(text):\n    return text\n")
+    (tmp_path / "app" / "user.py").write_text(
+        "from app.core import render, other\n"
+        "def f(t, opts):\n"
+        "    other(t, **opts)\n"           # **opts reaches `other`, not `render`
+        "    return render(t, color='x')\n")
+    plan = plan_param_drop(tmp_path, "render", "color")
+    assert plan.ok, plan.blockers
+    assert "def render(text):" in plan.new_contents["app/core.py"]
+    assert "render(t)" in plan.new_contents["app/user.py"]
+
+
+def test_kwargs_refusal_is_deterministic(tmp_path):
+    # Determinism: the same project yields the same refusal twice.
+    _kwargs_boundary_project(tmp_path)
+    first = _plan_fingerprint(plan_param_drop(tmp_path, "handler", "verbose"))
+    second = _plan_fingerprint(plan_param_drop(tmp_path, "handler", "verbose"))
+    assert first == second
+    assert not plan_param_drop(tmp_path, "handler", "verbose").ok

@@ -121,12 +121,16 @@ def test_rewrite_outputs_and_skips():
             assert plan.new_contents.get("mod.py") == expected, label
 
 
-def test_kwargs_call_site_warns():
+def test_kwargs_call_site_blocks_the_drop():
+    # A f(**mapping) site is the parameter's LIVE boundary: the dict could
+    # carry 'b' at runtime and param_drop can't rewrite the splat to prove it
+    # doesn't. Dropping 'b' would change the accepted-keyword contract, so the
+    # drop is REFUSED (never fake green) and nothing is rewritten.
     plan = _plan("def f(a, b):\n    return a\n\nd = {}\nf(1, **d)\n", "f", "b")
-    assert not plan.blockers
-    assert any("**" in w for w in plan.warnings)
-    # def is still rebuilt; the **kwargs call keeps its text.
-    assert plan.new_contents["mod.py"] == "def f(a):\n    return a\n\nd = {}\nf(1, **d)\n"
+    assert plan.blockers
+    assert any("could still pass 'b'" in b and "refused" in b
+               for b in plan.blockers)
+    assert not plan.new_contents
 
 
 def test_keyword_on_own_line_warns_but_rewrites():

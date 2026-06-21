@@ -12,7 +12,13 @@ refactor family — every ambiguity is a **blocker**, never a guess:
     people;
   - comments inside the signature block (we promise to preserve comments,
     so we refuse the one edit that couldn't);
-  - ``f(**kwargs)`` call sites warn — a dict can smuggle the key at runtime.
+  - ``f(**mapping)`` call sites BLOCK — a dict can smuggle the key at runtime,
+    so the parameter is dead in the body yet LIVE at the call boundary. We
+    can't rewrite the splat to prove the key isn't passed, so dropping it could
+    change the accepted-keyword contract (a ``TypeError`` for some caller).
+    Refusing is the moat-honest choice: never land a drop we can't prove is
+    behavior-preserving, even when a (possibly impact-scoped) gate can't see
+    the transitive exerciser.
 
 Reuses :class:`RenamePlan` / :func:`apply_rename`, so dry-run diffs, test
 verification and full rollback come for free. Deterministic, stdlib-only.
@@ -187,14 +193,23 @@ def _call_targets_func(node: ast.Call, func_name: str, from_names: set[str],
 
 def _keyword_removals(node: ast.Call, rel: str, func_name: str, param: str,
                       plan: RenamePlan) -> list[tuple[int, int, int]]:
-    """The intra-line spans for ``param=`` in one call; ``**kwargs`` warns and
-    a line-spanning keyword blocks."""
+    """The intra-line spans for ``param=`` in one call; a ``**kwargs`` call site
+    that could smuggle ``param`` BLOCKS the drop and a line-spanning keyword
+    blocks.
+
+    A ``f(**mapping)`` site is the parameter's *live boundary*: param_drop
+    cannot rewrite the splat to prove the key isn't in the dict, so the
+    parameter is dead in the body yet reachable at the call. Dropping it would
+    change the function's accepted-keyword contract — a ``TypeError`` for any
+    caller (in scope or not) whose dict carries the key. We cannot prove the
+    drop is behavior-preserving, so we refuse it (never fake green) rather than
+    land a change an impact-scoped gate can't see the exerciser for."""
     removals: list[tuple[int, int, int]] = []
     for kw in node.keywords:
         if kw.arg is None:
-            plan.warnings.append(
-                f"{rel}:{node.lineno}: {func_name}(**…) may still carry "
-                f"'{param}' at runtime; check manually")
+            plan.blockers.append(
+                f"{rel}:{node.lineno}: {func_name}(**…) could still pass "
+                f"'{param}' at runtime — can't prove the drop is safe; refused")
         elif kw.arg == param:
             if kw.lineno != kw.value.end_lineno:
                 plan.blockers.append(
@@ -210,8 +225,9 @@ def _collect_removals(tree: ast.Module, rel: str, func_name: str, param: str,
                       pos_index: int | None, from_names: set[str],
                       module_aliases: set[str], plan: RenamePlan
                       ) -> list[tuple[int, int, int]]:
-    """The intra-line keyword spans to excise in this file; positional passes
-    and line-spanning keywords become blockers, ``**kwargs`` calls warn."""
+    """The intra-line keyword spans to excise in this file; positional passes,
+    line-spanning keywords, and ``**kwargs`` call sites that could carry the
+    parameter all become blockers."""
     removals: list[tuple[int, int, int]] = []  # (line, col_start, col_end)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
