@@ -424,6 +424,7 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
             ("abs", f"abs({a})"),
             ("round", f"round({a})"),
         ])
+        out.extend(_round_ndigits_templates(a, witnesses))
     out.append(("len", f"len({a})"))
     if kind in (None, "str"):
         out.extend(_string_templates(a, witnesses))
@@ -508,6 +509,65 @@ def _scalar_arith_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tu
         out.append((f"n%{k}", f"{a} % {k}"))
     out.append(("n*2", f"{a} * 2"))
     out.append(("n+n", f"{a} + {a}"))
+    return out
+
+
+def _round_ndigits_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The witness-DERIVED ``round(n, k)`` shapes — one per small ``ndigits`` constant
+    ``k`` written in the witnesses — offered AFTER the value-free ``round(n)`` so a
+    plain round wins when both fit. A non-zero ``k`` rounds to ``k`` decimals
+    (``round(3.14159, 2) == 3.14``), a shape a bare ``round`` can never produce, so
+    it only lands on a contract whose expected values actually carry that precision.
+
+    OVERFIT FLOOR + the ``%d`` float-truncation lesson: ``round(n, k)`` bakes the
+    witness's own ``k`` into the body, so it is offered ONLY when at least TWO
+    DISTINCT argument tuples witness the contract (:func:`_string_floor_met`) — one
+    example (``r(3.14159) == 3.14``) could pin an arbitrary ``k`` that is wrong for
+    the next input. The accept-gate's TYPE-EXACT comparison is the divergence
+    guard the ``%d`` class taught us: ``round(2, 2)`` is ``2`` (``int``) while a
+    truncating intent might expect ``2.0`` (``float``), and ``round`` of a non-float
+    that the witnesses don't support is simply rejected — never a fake-green. With
+    NO witnesses (the structural view) the shapes are withheld (no ``k`` to derive);
+    a lone ``round(n)`` already covers the value-free case. Deterministic: ``k`` in
+    sorted order."""
+    if not _string_floor_met(witnesses):
+        return []
+    out: list[tuple[str, str]] = []
+    for k in _round_ndigits_constants(witnesses):
+        out.append((f"round({k})", f"round({a}, {k})"))
+    return out
+
+
+def _round_ndigits_constants(witnesses: list[tuple[str, str]]) -> list[str]:
+    """The small positive ``ndigits`` constants to try in ``round(n, k)``, mined from
+    the number of fractional digits in each witnessed EXPECTED float (``3.14`` -> 2)
+    and any small int literal present. Deterministic: sorted, de-duplicated, capped to
+    a sane precision so the candidate list stays tiny. ``k == 0`` is excluded — that
+    is the value-free ``round(n)`` already offered earlier."""
+    seen: set[int] = set()
+    for _args, expected in witnesses:
+        seen.update(_fractional_digit_counts(expected))
+        for value in _int_literals(expected):
+            if 0 < value <= 10:
+                seen.add(value)
+    return [str(k) for k in sorted(k for k in seen if 0 < k <= 10)]
+
+
+def _fractional_digit_counts(text: str) -> set[int]:
+    """The count of fractional digits of every float literal in ``text`` (``'3.14'``
+    -> ``{2}``, ``'1.5, 2.25'`` -> ``{1, 2}``). Used to propose a ``round`` ndigits.
+    A non-float / non-parseable fragment yields ``set()``. Trailing zeros are counted
+    as written (``'2.50'`` -> 2) since the literal's text is the author's precision."""
+    out: set[int] = set()
+    try:
+        tree = ast.parse(text.strip(), mode="eval")
+    except (SyntaxError, ValueError):
+        return out
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, float):
+            frac = repr(node.value).partition(".")[2]
+            if frac:
+                out.add(len(frac))
     return out
 
 
@@ -598,10 +658,16 @@ def _one_arg_builtin_templates(a: str, kind: str | None) -> list[tuple[str, str]
     view). The shapes:
 
     * ``-{a}`` (negation), ``int({a})`` — numeric coercions (int/float args);
-    * ``{a}[0]`` / ``{a}[-1]`` (first/last), ``list({a})`` — sequence projections
-      (iterable / str args, where indexing and ``list`` are meaningful);
+    * ``{a}[0]`` / ``{a}[-1]`` (first/last), ``list({a})`` / ``tuple({a})`` — sequence
+      projections (iterable / str args, where indexing and materialization are
+      meaningful); ``tuple`` differs from ``list`` only in RESULT TYPE, which the
+      type-exact accept-gate distinguishes, so the right one lands on its witnesses;
     * ``str({a})``, ``not {a}``, ``bool({a})`` — type-agnostic, offered for every
-      kind (any value can be stringified or truth-tested).
+      kind (any value can be stringified or truth-tested). ``set({a})`` is
+      deliberately NOT offered: a ``set`` return is hash-iteration-order-sensitive,
+      so its value oracle is non-deterministic and the determinism invariant forbids
+      landing it; an emptiness check ``len({a}) == 0`` is likewise omitted because the
+      already-present ``not {a}`` is provably equivalent on every length-bearing arg.
 
     ``abs`` / ``len`` / ``sorted`` / ``sum`` already appear earlier in
     :func:`_one_arg_templates`, so they are not repeated here. Order is fixed and
@@ -618,6 +684,7 @@ def _one_arg_builtin_templates(a: str, kind: str | None) -> list[tuple[str, str]
         out.append(("first", f"{a}[0]"))
         out.append(("last", f"{a}[-1]"))
         out.append(("list", f"list({a})"))
+        out.append(("tuple", f"tuple({a})"))
     out.append(("str", f"str({a})"))
     out.append(("not", f"not {a}"))
     out.append(("bool", f"bool({a})"))
@@ -629,15 +696,19 @@ def _two_arg_templates(a: str, b: str,
     """Two-arg binary templates in a fixed order. Covers numeric arithmetic and,
     via ``+``, string/list concatenation; boolean ``and``/``or``; comparison;
     and ``a.join(b)`` for the ``sep.join(xs)`` shape. The widened builtin / operator
-    shapes (``min``/``max``, membership, identity, power, indexing) follow, all
-    value-free and offered BEFORE the constant-last fallback.
+    shapes (``min``/``max``, membership, identity, power, indexing, f-string format,
+    ``a.get(b)`` mapping access) follow, all offered BEFORE the constant-last fallback.
 
     ``min(a, b)`` / ``max(a, b)`` carry an OVERFIT FLOOR: a single example, or a
     batch that never crosses ``a<b`` AND ``a>b``, leaves them indistinguishable from
     a plain ``a``/``b`` passthrough, so they are withheld unless the witnesses
-    DISCRIMINATE (at least one ``a<b`` and one ``a>b``). The other widened shapes are
-    pure and gate-verified, so they need no floor (a non-matching one is rejected,
-    never landed)."""
+    DISCRIMINATE (at least one ``a<b`` and one ``a>b``). The other VALUE-FREE widened
+    shapes are pure and gate-verified, so they need no floor (a non-matching one is
+    rejected, never landed). The VALUE-DERIVED format/get shapes that bake a witness
+    literal (``f"{a}{sep}{b}"`` with a derived ``sep``; ``a.get(b, default)`` with a
+    derived ``default``) carry the same >=2-distinct-witness overfit floor the
+    derived numeric/string shapes use, so one example cannot overfit a literal in."""
+    witnesses = witnesses or []
     ops = ["+", "-", "*", "//", "%", "/"]
     out = [(op, f"{a} {op} {b}") for op in ops]
     out.append(("and", f"{a} and {b}"))
@@ -646,7 +717,7 @@ def _two_arg_templates(a: str, b: str,
     out.append(("<=", f"{a} <= {b}"))
     out.append(("==", f"{a} == {b}"))
     out.append(("join", f"{a}.join({b})"))
-    if _minmax_discriminated(witnesses or []):
+    if _minmax_discriminated(witnesses):
         out.append(("min", f"min({a}, {b})"))
         out.append(("max", f"max({a}, {b})"))
     out.append(("pow", f"{a} ** {b}"))
@@ -655,7 +726,69 @@ def _two_arg_templates(a: str, b: str,
     out.append(("is", f"{a} is {b}"))
     out.append(("rin", f"{b} in {a}"))
     out.append(("index", f"{a}[{b}]"))
+    # f-string concat: distinct from ``a + b`` (it stringifies mixed types, e.g.
+    # ``str`` + ``int``), value-free, gate-verified. The witness-derived
+    # ``f"{a}{sep}{b}"`` (a literal separator) follows under the overfit floor.
+    out.append(("fstr", f'f"{{{a}}}{{{b}}}"'))
+    out.extend(_fstring_sep_templates(a, b, witnesses))
+    # mapping access: ``a.get(b)`` (value-free) then ``a.get(b, default)`` (derived
+    # default, floored). A non-mapping ``a`` simply fails the gate — never landed.
+    out.append(("get", f"{a}.get({b})"))
+    out.extend(_get_default_templates(a, b, witnesses))
     return out
+
+
+def _fstring_sep_templates(a: str, b: str,
+                           witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The witness-DERIVED ``f"{a}{sep}{b}"`` shapes — one per literal string ``sep``
+    written in the witnesses — offered AFTER the value-free ``f"{a}{b}"`` so a plain
+    concat wins when both fit. Each bakes a witnessed separator into the body
+    (``join_with("a", "b") == "a-b"`` lands ``f"{a}-{b}"``), so it carries the same
+    >=2-distinct-witness overfit floor (:func:`_string_floor_met`) the derived string
+    shapes use: one example could pin an arbitrary separator. With NO witnesses (the
+    structural view) it is withheld (no ``sep`` to derive). Deterministic: separators
+    in sorted ``repr`` order; the literal is embedded verbatim so the body round-trips
+    exactly on every witness or is rejected by the gate (never a fuzzy match)."""
+    if not _string_floor_met(witnesses):
+        return []
+    out: list[tuple[str, str]] = []
+    for sep in _string_constants(witnesses):
+        literal = ast.literal_eval(sep)
+        if literal == "":
+            continue  # empty separator is just ``f"{a}{b}"``, already offered
+        out.append((f"fstr({sep})", f'f"{{{a}}}{literal}{{{b}}}"'))
+    return out
+
+
+def _get_default_templates(a: str, b: str,
+                           witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The witness-DERIVED ``a.get(b, default)`` shapes — one per literal default
+    written in the witnesses' EXPECTED values — offered AFTER the value-free
+    ``a.get(b)`` so a plain get wins when both fit. Each bakes a witnessed default
+    into the body, so it carries the same >=2-distinct-witness overfit floor
+    (:func:`_string_floor_met`). The defaults are the witnessed expected literals
+    (a ``.get`` with a default returns either a stored value or that default, so the
+    default is itself a witnessed result). Deterministic: defaults in sorted ``repr``
+    order. With NO witnesses the shape is withheld (no default to derive)."""
+    if not _string_floor_met(witnesses):
+        return []
+    out: list[tuple[str, str]] = []
+    for default in _expected_literals(witnesses):
+        out.append((f"get(default={default})", f"{a}.get({b}, {default})"))
+    return out
+
+
+def _expected_literals(witnesses: list[tuple[str, str]]) -> list[str]:
+    """Every literal EXPECTED value across the witnesses, as canonical ``repr`` source,
+    deterministic (sorted by repr, de-duplicated). Used to propose a ``.get`` default:
+    a ``dict.get(key, default)`` returns the default for a missing key, so the default
+    is one of the witnessed results. Non-literal expecteds are skipped (never guessed)."""
+    seen: set[str] = set()
+    for _args, expected in witnesses:
+        value = _literal_value(expected)
+        if value is not _NO_LITERAL:
+            seen.add(repr(value))
+    return sorted(seen)
 
 
 def _minmax_discriminated(witnesses: list[tuple[str, str]]) -> bool:
@@ -2017,15 +2150,63 @@ def _canary_inputs(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
     which the gate catches anyway, so the guard stays conservative (never
     over-refuses)."""
     probes: list[tuple] = [args for args, _expected in witnesses]
-    arity = len(probes[0]) if probes else 0
+    probes.extend(_off_witness_probes(witnesses))
+    return _dedup_tuples(probes)
+
+
+def _off_witness_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
+    """The type-appropriate off-witness probe family for ``witnesses`` (the
+    witnessed tuples themselves are added by the caller): single-int neighbours,
+    single-sequence reorderings, all-int multi-arg reorder/perturb, or — for a
+    >=2-arg non-all-int contract — cross-witness recombination. ``[]`` when no
+    family applies (the guard then weighs only the witnessed tuples, staying
+    conservative). Deterministic dispatch on arity and component type."""
+    arity = len(witnesses[0][0]) if witnesses else 0
     arg0s = [args[0] for args, _e in witnesses]
     if arity == 1 and all(_is_plain_int(v) for v in arg0s):
-        probes.extend(_int_canary_probes(witnesses))
-    elif arity == 1 and all(isinstance(v, (list, tuple)) for v in arg0s):
-        probes.extend(_sequence_canary_probes(witnesses))
-    elif arity >= 2 and _all_int_tuples(witnesses):
-        probes.extend(_multi_arg_canary_probes(witnesses))
-    return _dedup_tuples(probes)
+        return _int_canary_probes(witnesses)
+    if arity == 1 and all(isinstance(v, (list, tuple)) for v in arg0s):
+        return _sequence_canary_probes(witnesses)
+    if arity >= 2 and _all_int_tuples(witnesses):
+        return _multi_arg_canary_probes(witnesses)
+    if arity >= 2:
+        return _recombination_canary_probes(witnesses)
+    return []
+
+
+def _recombination_canary_probes(
+    witnesses: list[tuple[tuple, object]],
+) -> list[tuple]:
+    """Off-witness probe tuples for a >=2-argument NON-all-int contract (mixed /
+    string / mapping args): for every position take that position's value from one
+    witness and the OTHER positions' values from another witness (a cross-witness
+    recombination), plus the position-swapped variants of each witnessed tuple.
+
+    Each recombined / swapped tuple keeps each position's WITNESSED TYPE (it reuses
+    real witnessed component values), so it is a VALID input the body would accept,
+    just off-witness. This is what splits order-/value-sensitive shapes that the
+    bare witnessed tuples cannot: ``f"{a}{b}"`` and ``f"{b}{a}"`` agree on a
+    single ``("a","b")`` pair but a recombined/swapped pair makes them DIVERGE,
+    exposing a genuine order-ambiguity; ``a.get(b)`` vs ``a[b]`` diverge on a
+    recombined key that is absent from the recombined mapping. Deterministic:
+    source-ordered, deduped by the caller. Bounded to small arities (witnessed
+    stubs are tiny)."""
+    rows = [tuple(args) for args, _e in witnesses]
+    arity = len(rows[0]) if rows else 0
+    out: list[tuple] = []
+    # Position-swapped variants of each witnessed tuple (order-sensitivity).
+    for row in rows:
+        for perm in _ordered_perms(row):
+            if perm != row:
+                out.append(perm)
+    # Cross-witness recombination: one position from row i, the rest from row j.
+    for i, row_i in enumerate(rows):
+        for j, row_j in enumerate(rows):
+            if i == j:
+                continue
+            for pos in range(arity):
+                out.append(row_j[:pos] + (row_i[pos],) + row_j[pos + 1:])
+    return out
 
 
 def _all_int_tuples(witnesses: list[tuple[tuple, object]]) -> bool:
