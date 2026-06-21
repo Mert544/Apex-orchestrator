@@ -6,8 +6,8 @@ i.e. the target is a parseable Python module with an UNdocumented symbol.
 Otherwise the readiness "auto-fixable" count is inflated by steps that merely
 re-block at apply time ("no applicable patch generated"). These tests pin the
 probe: it demotes the dead steps UP FRONT, never over-blocks a real undocumented
-module, and is best-effort (an unreadable/odd target stays serviceable rather
-than crashing).
+module, and FAILS CLOSED on a missing/unreadable target (a nonexistent module is
+declined, never scaffolded).
 """
 
 from app.engine.idea_action_bridge import IdeaActionBridge
@@ -84,13 +84,69 @@ def test_does_not_over_block_undocumented_module(tmp_path):
     assert "no undocumented" not in step.description
 
 
-def test_probe_is_best_effort_on_unreadable_target(tmp_path):
-    # An odd/unreadable target (here: a path that does not exist) must NOT raise
-    # and must NOT over-block — _read returns None, so the probe declines to a
-    # serviceable verdict rather than crashing the planner.
+def test_docstring_probe_fails_closed_on_missing_target(tmp_path):
+    # HONESTY: a NONEXISTENT target (None text) must FAIL CLOSED — return a
+    # non-empty blocking reason, never "" (which would scaffold docstrings for a
+    # file that does not exist). It must not raise.
     bridge = IdeaActionBridge()
     reason = bridge._docstring_unserviceable("app/missing.py", str(tmp_path))
-    assert reason == ""
+    assert reason != ""
+    assert "unreadable target" in reason
+
+
+def test_stub_probe_fails_closed_on_missing_target(tmp_path):
+    # HONESTY: a create_test_stub for a module that does not exist must FAIL
+    # CLOSED — a blocking reason, never "" (which would scaffold a test for
+    # nothing). It must not raise.
+    bridge = IdeaActionBridge()
+    reason = bridge._stub_unserviceable("app/missing.py", str(tmp_path))
+    assert reason != ""
+    assert "not found" in reason
+
+
+def test_docstring_probe_fails_closed_on_unreadable_binary(tmp_path):
+    # A near-binary, non-UTF-8 file is unreadable as source (_read -> None) and
+    # must be BLOCKED, not treated as serviceable.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "blob.py").write_bytes(b"\xff\xfe\x00\x01not utf8")
+    bridge = IdeaActionBridge()
+    reason = bridge._docstring_unserviceable("app/blob.py", str(tmp_path))
+    assert reason != ""
+
+
+def test_stub_probe_fails_closed_on_unreadable_binary(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "blob.py").write_bytes(b"\xff\xfe\x00\x01not utf8")
+    bridge = IdeaActionBridge()
+    reason = bridge._stub_unserviceable("app/blob.py", str(tmp_path))
+    assert reason != ""
+
+
+def test_missing_module_docstring_action_not_serviceable(tmp_path):
+    # End-to-end: a Document action for a nonexistent module is reported NOT
+    # serviceable (recommend-only), not scaffolded.
+    bridge = IdeaActionBridge()
+    reason = bridge._unserviceable_reason(
+        "add_docstring", "app/missing.py", str(tmp_path))
+    assert reason != ""
+
+
+def test_missing_module_stub_action_not_serviceable(tmp_path):
+    # End-to-end: a create_test_stub action for a nonexistent module is reported
+    # NOT serviceable, not scaffolded.
+    bridge = IdeaActionBridge()
+    reason = bridge._unserviceable_reason(
+        "create_test_stub", "app/missing.py", str(tmp_path))
+    assert reason != ""
+
+
+def test_stub_probe_serviceable_for_real_unlinked_module(tmp_path):
+    # REGRESSION GUARD: a real module the suite does not yet reference is still
+    # serviceable exactly as before (a stub is the first test layer).
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "fresh.py").write_text("def f():\n    return 1\n")
+    bridge = IdeaActionBridge()
+    assert bridge._stub_unserviceable("app/fresh.py", str(tmp_path)) == ""
 
 
 def test_probe_returns_empty_directly_for_undocumented(tmp_path):

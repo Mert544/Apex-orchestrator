@@ -491,6 +491,11 @@ class IdeaActionBridge:
     def _stub_unserviceable(self, target: str, project_root: str) -> str:
         from app.engine.verification_strength import module_referenced_by_suite
 
+        # Fail CLOSED on a missing/unreadable target: a stub for a module that
+        # does not exist would scaffold a test for nothing. The engine only
+        # seeds real profiled files, so this never blocks the normal flow.
+        if self._read(project_root, target) is None:
+            return "target file not found; cannot scaffold"
         # A stub can only ever be the FIRST test layer. On a module the suite
         # already references, generation either refuses (the test file
         # exists) or writes a redundant smoke stub.
@@ -523,14 +528,15 @@ class IdeaActionBridge:
         # on a parseable Python file that has an UNdocumented function/class/
         # method. A non-.py target, an unparseable file, or a module where every
         # symbol is already documented yields no patch — that is human-review
-        # territory, so block it UP FRONT instead of at apply time. Best-effort:
-        # an unreadable/odd target (None text) is treated as serviceable rather
-        # than crashing or over-blocking.
+        # territory, so block it UP FRONT instead of at apply time. Fail CLOSED:
+        # a missing/unreadable target (None text) is BLOCKED, never treated as
+        # serviceable — otherwise we would scaffold docstrings for a file that
+        # does not exist.
         from app.execution.semantic.transforms import docstring as ds
 
         text = self._read(project_root, target)
         if text is None:
-            return ""
+            return "unreadable target; cannot document"
         if ds.apply(target, text, "Document this symbol") is not None:
             return ""
         return "no undocumented Python symbol to document; human review"
