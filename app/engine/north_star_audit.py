@@ -195,7 +195,41 @@ def manifest_subset_of_registry(registered=None) -> list[str]:
 _SUBJECT_RE = re.compile(r"^(\w+)\(([\w-]+)\):")
 
 # A `feat`/`fix` whose scope names one of these is concrete development work.
-_CONCRETE_SCOPES = frozenset({"develop", "maintain", "transforms", "self-dev"})
+#
+# Two TIERS of scope name the same concrete-development core:
+#   * the broad umbrella scopes the develop loop has historically committed under
+#     (``develop``/``maintain``/``transforms``/``self-dev``); and
+#   * the FINER per-capability scopes the develop CORE actually ships under, each
+#     of which either LANDS working code or DIRECTLY GATES landed code:
+#       - implement-stub / tdd-implement / stub-synthesis / stub  -> land function
+#         bodies from signatures/tests (and their fake-green floors);
+#       - wire-exports                                            -> land __all__;
+#       - infer-type-hints / type-hints                           -> land hints;
+#       - dataclassify                                            -> land @dataclass;
+#       - strengthen-tests / cover-gaps                           -> land new tests;
+#       - generate-usage-doc / usage-doc                          -> land USAGE.md;
+#       - percent-to-fstring / format-to-fstring / fstring-convert-> land f-string
+#         rewrites (the develop-core string-modernization transforms);
+#       - develop-session                                         -> the loop that
+#         orchestrates the above onto a project;
+#       - test-shield / test_shield                               -> the synthesis
+#         VALUE-ORACLE that gates implement-stub/cover-gaps (no landed fill is
+#         stamped verified without it), so it is concrete-by-gating.
+# Pure-meta scopes (``grade``/``ci``/``docs``/unscoped) and the trust-foundation
+# scopes in ``_SAFETY_SCOPES`` are DELIBERATELY excluded so the concrete count
+# reflects reality and cannot be inflated by housekeeping or safety commits.
+_CONCRETE_SCOPES = frozenset({
+    "develop", "maintain", "transforms", "self-dev",
+    # develop-core capability scopes that LAND code ...
+    "implement-stub", "tdd-implement", "stub-synthesis", "stub",
+    "wire-exports", "infer-type-hints", "type-hints", "dataclassify",
+    "strengthen-tests", "cover-gaps",
+    "generate-usage-doc", "usage-doc",
+    "percent-to-fstring", "format-to-fstring", "fstring-convert",
+    "develop-session",
+    # ... and the value-oracle that DIRECTLY GATES those landed fills.
+    "test-shield", "test_shield",
+})
 # A `fix`/`feat` whose scope names one of these is trust-foundation/safety work.
 _SAFETY_SCOPES = frozenset({
     "safety", "proof", "shield", "grade", "scope",

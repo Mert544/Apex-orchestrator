@@ -127,7 +127,67 @@ def test_render_markdown_surfaces_stale_entries(monkeypatch):
     assert "ghost-objective" in md
 
 
-# --- (3) determinism ---------------------------------------------------------
+# --- (3) the REAL recent window reads accurately (concrete-count fidelity) ----
+#
+# The denetçi audited ITSELF and found the commit-window concrete count was
+# under-reported: the develop CORE ships under finer scopes than `develop`
+# (`stub-synthesis`, `implement-stub`, `wire-exports`, `type-hints`, ...), so
+# genuinely concrete commits were mis-bucketed as neutral. With those scopes
+# credited, the real window must (a) still PASS with drift=False and (b) report a
+# concrete count that reflects the develop-core commits (several, not ~1).
+
+def test_real_recent_window_passes_with_accurate_concrete_count():
+    from app.engine.north_star_audit import commit_drift, north_star_report
+
+    window = commit_drift(".", 30)
+    if window is None:  # non-git checkout (e.g. exported tarball) — nothing to assert
+        return
+    # The drift CONDITION is unchanged (concrete==0 AND safety>0); the recent
+    # window has real landing work, so it does not drift.
+    assert window["drift"] is False
+    # Fidelity: the recent window credits multiple develop-core commits, not ~1.
+    assert window["concrete"] >= 5
+    # Counts are coherent and exhaustive.
+    assert window["concrete"] + window["safety"] + window["neutral"] == window["total"]
+
+    report = north_star_report(".", 30)
+    assert report["verdict"] == "PASS"
+    assert report["drift"] is False
+    assert report["commit_window"]["concrete"] >= 5
+
+
+def test_real_window_is_not_inflated_meta_stays_non_concrete():
+    # Honesty guard against the real repo: a pure-meta commit TYPE must never be
+    # classified concrete even when it carries a develop-core SCOPE. Only feat/fix
+    # land/gate code; a `refactor(implement-stub)`/`perf(implement-stub)` tidies or
+    # tunes EXISTING code, so `_classify_subject` must return non-concrete. (This
+    # is exactly the `refactor(implement-stub)`/`perf(implement-stub)` shape in the
+    # live window — the type gate, not the scope set, keeps them honest.)
+    import re
+
+    from app.engine.north_star_audit import _CONCRETE_SCOPES, _classify_subject, _git_subjects
+
+    # A meta TYPE carrying a concrete SCOPE must still be non-concrete — the type
+    # gate (only feat/fix land/gate code), not the scope set, is what keeps it
+    # honest. Exercise this directly so the guard is meaningful regardless of which
+    # commits sit in the live window.
+    a_core_scope = sorted(_CONCRETE_SCOPES)[0]
+    for meta in ("refactor", "perf", "docs", "chore", "build", "style", "ci", "test"):
+        assert _classify_subject(f"{meta}({a_core_scope}): tidy existing code") != "concrete"
+
+    # And against the REAL window: no meta-typed subject is ever bucketed concrete.
+    subjects = _git_subjects(".", 30)
+    if subjects is None:
+        return
+    meta_types = {"docs", "ci", "test", "chore", "build", "refactor", "perf", "style"}
+    scope_re = re.compile(r"^(\w+)\(")
+    for s in subjects:
+        m = scope_re.match(s)
+        if m and m.group(1) in meta_types:
+            assert _classify_subject(s) != "concrete", s
+
+
+# --- (4) determinism ---------------------------------------------------------
 
 def test_reverse_tripwire_is_deterministic():
     from app.engine.north_star_audit import manifest_subset_of_registry
@@ -135,6 +195,15 @@ def test_reverse_tripwire_is_deterministic():
     a = manifest_subset_of_registry()
     b = manifest_subset_of_registry()
     assert a == b
+
+
+def test_real_commit_window_classification_is_deterministic():
+    # Same window classified twice -> identical counts (no clock/random leak).
+    from app.engine.north_star_audit import commit_drift
+
+    first = commit_drift(".", 30)
+    second = commit_drift(".", 30)
+    assert first == second
 
 
 def test_injected_finding_is_deterministic():

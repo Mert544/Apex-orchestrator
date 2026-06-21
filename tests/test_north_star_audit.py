@@ -83,6 +83,116 @@ def test_neutral_subjects_never_drift(monkeypatch):
     assert window == {"concrete": 0, "safety": 0, "neutral": 3, "total": 3, "drift": False}
 
 
+# --- (3b) develop-CORE capability scopes count as concrete -------------------
+#
+# The develop core ships under finer scopes than the broad `develop` umbrella
+# (`stub-synthesis`, `implement-stub`, `wire-exports`, `type-hints`, ...). Each
+# LANDS code (or directly gates a landed fill), so a feat/fix under it is
+# concrete development — not "neutral". This is the fidelity fix the denetçi
+# flagged on itself (windows of real landing work read as concrete=1, neutral=19).
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "feat(stub-synthesis): mine indirect witnesses",
+        "fix(stub-synthesis): honor src/ source roots",
+        "fix(implement-stub): node-scope the apply gate",
+        "feat(implement-stub): widen template space",
+        "fix(tdd-implement): land from a failing test",
+        "fix(stub): refuse thin multi-arg contracts",
+        "fix(wire-exports): stop folding detail imports into __all__",
+        "fix(type-hints): drop unsound param-from-default inference",
+        "fix(infer-type-hints): land a return annotation",
+        "fix(dataclassify): preserve class docstring",
+        "feat(strengthen-tests): land an assertion witness",
+        "fix(cover-gaps): land a test for an untested branch",
+        "fix(usage-doc): pin PYTHONHASHSEED for determinism",
+        "feat(generate-usage-doc): land USAGE.md",
+        "fix(develop-session): scope tidy gating to impacted tests",
+        "feat(percent-to-fstring): convert %-specs to f-strings",
+        "fix(format-to-fstring): land a str.format rewrite",
+        "fix(fstring-convert): land an implicit-concat f-string",
+        "fix(test-shield): decline hash-seed-flaky value oracles",
+        "fix(test_shield): emit hash-seed-stable canonical literal",
+    ],
+)
+def test_develop_core_scopes_are_concrete(subject):
+    assert nsa._classify_subject(subject) == "concrete"
+
+
+def test_develop_core_window_is_not_misbucketed_as_neutral(monkeypatch):
+    # A window of real develop-core landing commits — the exact shape the denetçi
+    # mis-reported as concrete=1 before the fix.
+    subjects = [
+        "fix(wire-exports): stop folding detail imports into __all__",
+        "fix(stub-synthesis): mine indirect tests and witnesses",
+        "fix(usage-doc): pin PYTHONHASHSEED so landed USAGE.md is deterministic",
+        "fix(dataclassify): preserve class docstring",
+        "fix(type-hints): drop unsound param-from-default inference",
+        "fix(implement-stub): node-scope the apply gate",
+        "feat(percent-to-fstring): convert %-specs to f-strings",
+        "docs(rnd): market positioning package",  # honest neutral, not concrete
+    ]
+    monkeypatch.setattr(nsa, "_git_subjects", lambda *a, **k: subjects)
+    window = nsa.commit_drift(".", 20)
+    assert window["concrete"] == 7
+    assert window["neutral"] == 1  # only the docs commit
+    assert window["safety"] == 0
+    assert window["drift"] is False
+
+
+# --- (3c) the fix is HONEST, not inflationary --------------------------------
+#
+# Pure-meta / housekeeping scopes must STAY non-concrete or the metric becomes a
+# way to inflate the concrete ratio rather than a faithful reading of reality.
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "docs(rnd): research package",
+        "docs: tweak readme",
+        "ci: fetch full git history",
+        "test(grade): characterization baseline",
+        "test(cli): add a case",
+        "chore: bump deps",
+        "refactor(implement-stub): split a helper for complexity",  # type gate
+        "perf(implement-stub): cheap in-process fitness scan",       # type gate
+        "build(deps): pin pydantic",
+        "feat(self-audit): denetçi reverse tripwire",  # auditor machinery, not landing
+    ],
+)
+def test_housekeeping_and_meta_scopes_are_not_concrete(subject):
+    assert nsa._classify_subject(subject) != "concrete"
+
+
+def test_grade_scope_stays_safety_not_concrete():
+    # `grade` is a trust-foundation scope — a feat/fix under it is SAFETY, never
+    # concrete, so the fix can't quietly re-credit safety machinery as landing.
+    assert nsa._classify_subject("fix(grade): count concrete-subclass stub debt") == "safety"
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "fix(safety): harden the rollback",
+        "fix(proof): tighten the proof carrier",
+        "fix(shield): value-oracle stability",
+        "fix(scope): scope_verify seam",
+        "fix(architecture): hub fragility penalty",
+        "fix(intelligence): auditor pass",
+        "fix(fix-risk): risk gate",
+    ],
+)
+def test_safety_scopes_stay_safety(subject):
+    assert nsa._classify_subject(subject) == "safety"
+
+
+def test_concrete_and_safety_scope_sets_are_disjoint():
+    # No scope may live in both sets, or `_classify_subject`'s precedence (concrete
+    # checked first) could mis-credit a safety commit as concrete.
+    assert not (nsa._CONCRETE_SCOPES & nsa._SAFETY_SCOPES)
+
+
 # --- (4) non-git path → unavailable, no exception ----------------------------
 
 def test_non_git_root_returns_none(tmp_path):
