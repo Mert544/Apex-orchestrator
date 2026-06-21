@@ -245,7 +245,7 @@ def candidate_bodies(stub: StubFunction,
     if len(params) == 1:
         out.extend(_one_arg_templates(params[0], witnesses or []))
     elif len(params) >= 2:
-        out.extend(_two_arg_templates(params[0], params[1]))
+        out.extend(_two_arg_templates(params[0], params[1], witnesses or []))
     return out
 
 
@@ -284,6 +284,7 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
             ("sum", f"sum({a})"),
             ("mean", f"sum({a}) / len({a})"),
         ])
+    out.extend(_one_arg_builtin_templates(a, kind))
     if kind in (None, "int") and _recursion_allowed(witnesses):
         out.extend([
             ("factorial", f"1 if {a} <= 1 else {a} * __apex_self__({a} - 1)"),
@@ -404,10 +405,56 @@ def _string_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[st
     return out
 
 
-def _two_arg_templates(a: str, b: str) -> list[tuple[str, str]]:
+def _one_arg_builtin_templates(a: str, kind: str | None) -> list[tuple[str, str]]:
+    """Value-free one-arg builtin / unary-operator shapes, in FIXED source order,
+    offered AFTER the witness-derived scalar/string/reduction templates and BEFORE
+    the constant-last fallback. Each is a pure expression over the single parameter
+    so the gate (or the in-process matcher) verifies it; a shape whose witness type
+    cannot support it is pruned by ``kind`` and simply not offered (it never crashes
+    — the matcher also swallows a stray ``TypeError`` for the unpruned ``None``
+    view). The shapes:
+
+    * ``-{a}`` (negation), ``int({a})`` — numeric coercions (int/float args);
+    * ``{a}[0]`` / ``{a}[-1]`` (first/last), ``list({a})`` — sequence projections
+      (iterable / str args, where indexing and ``list`` are meaningful);
+    * ``str({a})``, ``not {a}``, ``bool({a})`` — type-agnostic, offered for every
+      kind (any value can be stringified or truth-tested).
+
+    ``abs`` / ``len`` / ``sorted`` / ``sum`` already appear earlier in
+    :func:`_one_arg_templates`, so they are not repeated here. Order is fixed and
+    value-independent, preserving determinism."""
+    out: list[tuple[str, str]] = []
+    if kind in (None, "int", "float"):
+        out.append(("neg", f"-{a}"))
+    # ``int(a)`` parses a numeric string as well as truncating a float, so it is
+    # offered for str args too (a common ``parse`` intent); only an iterable arg,
+    # which ``int`` cannot coerce, prunes it.
+    if kind in (None, "int", "float", "str"):
+        out.append(("int", f"int({a})"))
+    if kind in (None, "str", "iterable"):
+        out.append(("first", f"{a}[0]"))
+        out.append(("last", f"{a}[-1]"))
+        out.append(("list", f"list({a})"))
+    out.append(("str", f"str({a})"))
+    out.append(("not", f"not {a}"))
+    out.append(("bool", f"bool({a})"))
+    return out
+
+
+def _two_arg_templates(a: str, b: str,
+                       witnesses: list[tuple[str, str]] | None = None) -> list[tuple[str, str]]:
     """Two-arg binary templates in a fixed order. Covers numeric arithmetic and,
     via ``+``, string/list concatenation; boolean ``and``/``or``; comparison;
-    and ``a.join(b)`` for the ``sep.join(xs)`` shape."""
+    and ``a.join(b)`` for the ``sep.join(xs)`` shape. The widened builtin / operator
+    shapes (``min``/``max``, membership, identity, power, indexing) follow, all
+    value-free and offered BEFORE the constant-last fallback.
+
+    ``min(a, b)`` / ``max(a, b)`` carry an OVERFIT FLOOR: a single example, or a
+    batch that never crosses ``a<b`` AND ``a>b``, leaves them indistinguishable from
+    a plain ``a``/``b`` passthrough, so they are withheld unless the witnesses
+    DISCRIMINATE (at least one ``a<b`` and one ``a>b``). The other widened shapes are
+    pure and gate-verified, so they need no floor (a non-matching one is rejected,
+    never landed)."""
     ops = ["+", "-", "*", "//", "%", "/"]
     out = [(op, f"{a} {op} {b}") for op in ops]
     out.append(("and", f"{a} and {b}"))
@@ -416,7 +463,40 @@ def _two_arg_templates(a: str, b: str) -> list[tuple[str, str]]:
     out.append(("<=", f"{a} <= {b}"))
     out.append(("==", f"{a} == {b}"))
     out.append(("join", f"{a}.join({b})"))
+    if _minmax_discriminated(witnesses or []):
+        out.append(("min", f"min({a}, {b})"))
+        out.append(("max", f"max({a}, {b})"))
+    out.append(("pow", f"{a} ** {b}"))
+    out.append(("in", f"{a} in {b}"))
+    out.append(("not in", f"{a} not in {b}"))
+    out.append(("is", f"{a} is {b}"))
+    out.append(("rin", f"{b} in {a}"))
+    out.append(("index", f"{a}[{b}]"))
     return out
+
+
+def _minmax_discriminated(witnesses: list[tuple[str, str]]) -> bool:
+    """True when the two-arg witnesses DISCRIMINATE ``min``/``max`` from a plain
+    passthrough: at least one literal witness has ``a < b`` and another has
+    ``a > b``. With only ``a < b`` cases (or a single example), ``min(a, b)`` and
+    ``a`` are indistinguishable on the witnesses, so offering them would let an
+    arbitrary guess land — the overfit floor withholds them until the contract
+    actually exercises both orderings. Non-literal / non-orderable witnesses are
+    ignored (they cannot establish an ordering). Deterministic."""
+    saw_lt = saw_gt = False
+    for args_text, _expected in witnesses:
+        value = _literal_tuple(args_text)
+        if value is None or len(value) != 2:
+            continue
+        a, b = value[0], value[1]
+        try:
+            if a < b:
+                saw_lt = True
+            elif a > b:
+                saw_gt = True
+        except TypeError:
+            continue
+    return saw_lt and saw_gt
 
 
 # --- witness extraction (for value-dependent templates) ----------------------
@@ -1258,12 +1338,33 @@ def _canary_inputs(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
             extra.add(-1)
         for v in sorted(extra):
             probes.append((v,))
-    # De-duplicate while preserving deterministic order.
-    seen: set[tuple] = set()
+    elif arity == 1 and all(isinstance(args[0], (list, tuple))
+                            for args, _e in witnesses):
+        # For a single SEQUENCE argument, probe reordered variants of each
+        # witnessed sequence (reversed, then sorted when its elements are mutually
+        # orderable). first/last/min/max/sorted/list all agree on a sequence that
+        # is already sorted-and-distinct, so without a reordered probe the guard
+        # cannot tell ``xs[0]`` from ``min(xs)`` on ``head([1, 2, 3]) == 1``. A
+        # reordered variant is still a valid input of the same type, so two bodies
+        # that diverge on it genuinely differ in intent. Deterministic; a
+        # non-orderable sequence simply skips the sorted variant.
+        for args, _e in witnesses:
+            seq = args[0]
+            probes.append((type(seq)(reversed(seq)),))
+            try:
+                probes.append((type(seq)(sorted(seq)),))
+            except TypeError:
+                pass  # heterogeneous/non-orderable — reversed alone still helps
+    # De-duplicate while preserving deterministic order. An argument tuple may hold
+    # an UNHASHABLE value (a list/dict witness, e.g. ``head([1, 2, 3])``), so the
+    # membership set keys on each tuple's ``repr`` rather than the tuple itself —
+    # never crash on an unhashable arg, stay deterministic.
+    seen: set[str] = set()
     ordered: list[tuple] = []
     for p in probes:
-        if p not in seen:
-            seen.add(p)
+        key = repr(p)
+        if key not in seen:
+            seen.add(key)
             ordered.append(p)
     return ordered
 
