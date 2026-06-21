@@ -18,10 +18,17 @@ repo (no clock, no random, no network):
    work? That is the exact failure mode the North Star guards against.
 
 The objective taxonomy is an EXPLICIT manifest dict literal below (the registry
-carries no category metadata), so it is reviewable and stable. An honesty
-tripwire — :func:`classify_objectives` raising on ANY unclassified name — forces
-a future self-registered objective to be categorised here before this check can
-pass, so the manifest can never silently fall behind the registry.
+carries no category metadata), so it is reviewable and stable. TWO tripwires keep
+the manifest and the live registry in lockstep, in BOTH directions:
+
+* FORWARD — :func:`classify_objectives` RAISES on ANY registered name missing
+  from the manifest, so a future self-registered objective must be categorised
+  here before this check can pass (the manifest can't fall BEHIND the registry).
+* REVERSE — :func:`manifest_subset_of_registry` flags any manifest name that is
+  NOT a currently-registered objective (a renamed/removed objective left stale in
+  the manifest), surfaced through :func:`north_star_report` as a drift finding the
+  ``--north-star`` CLI exits non-zero on (the manifest can't drift AHEAD of the
+  registry either).
 
 Dependencies: stdlib + :mod:`app.engine.develop_registry` (cycle-free by design)
 + a LOCAL git-subprocess helper (the pattern from ``app/tools/git_history.py``),
@@ -37,6 +44,7 @@ from pathlib import Path
 __all__ = [
     "OBJECTIVE_MANIFEST",
     "classify_objectives",
+    "manifest_subset_of_registry",
     "commit_drift",
     "north_star_report",
 ]
@@ -68,7 +76,12 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "dataclassify",
         "generate-usage-doc",
         "cover-gaps",
-        "fix-docstrings",
+        # NOTE: "fix-docstrings" was REMOVED here — it is a standalone CLI
+        # subcommand (`apex fix-docstrings`), NOT a registered develop objective,
+        # so it never appears in ``available_objectives()``. Listing it left the
+        # manifest reverse-stale (a name with no live objective behind it). The
+        # reverse tripwire below now catches exactly this drift; this entry was
+        # the one real stale name it surfaced, removed as part of that fix.
     }),
     "TIDY": frozenset({
         "modernize",
@@ -140,6 +153,39 @@ def classify_objectives(names) -> dict[str, set[str]]:
             "app/engine/north_star_audit.py (CONCRETE / TIDY / SAFETY)."
         )
     return buckets
+
+
+def _manifest_names() -> set[str]:
+    """Every objective NAME the manifest lists, across all category buckets."""
+    names: set[str] = set()
+    for members in OBJECTIVE_MANIFEST.values():
+        names |= set(members)
+    return names
+
+
+def manifest_subset_of_registry(registered=None) -> list[str]:
+    """The REVERSE tripwire: manifest names with NO live objective behind them.
+
+    The forward tripwire (:func:`classify_objectives`) catches a registered
+    objective MISSING from the manifest. This catches the mirror drift — a
+    manifest name that is NOT a currently-registered objective (a renamed/removed
+    objective left stale in the manifest). Validates against the SAME live set the
+    forward tripwire uses — the develop-objective registry via
+    ``available_objectives()`` (built-in + discovered) — so the two tripwires
+    agree on what "a real objective" is.
+
+    Returns the sorted list of stale manifest names (empty == clean). A pure,
+    deterministic function of the manifest + the registry: no clock, no random,
+    no network. ``registered`` may be passed (any iterable of names) to check a
+    manifest against a supplied registry — the seam tests use to inject a stale
+    entry — otherwise the live registry is read.
+    """
+    if registered is None:
+        from app.engine.objective_compiler import available_objectives
+
+        registered = available_objectives()
+    live = set(registered)
+    return sorted(_manifest_names() - live)
 
 
 # --- Commit-drift detection --------------------------------------------------
@@ -227,16 +273,26 @@ def north_star_report(project_root: str | Path, n: int = 20) -> dict:
     registered objectives), ``buckets`` (sorted name lists per category),
     ``bucket_counts``, ``total_objectives``, ``commit_window`` (the
     :func:`commit_drift` dict, or ``None`` when unavailable), ``drift`` (bool),
-    and ``verdict`` ("PASS" / "DRIFT"). ``classify_objectives`` is called on the
-    live registry, so a stale manifest raises here too.
+    and ``verdict`` ("PASS" / "DRIFT"). The key SET is intentionally stable.
+
+    ``classify_objectives`` is called on the live registry, so a stale manifest
+    that has fallen BEHIND the registry raises here (forward tripwire). A manifest
+    that has drifted AHEAD of the registry (a stale name with no live objective
+    behind it, via :func:`manifest_subset_of_registry`) folds into ``drift`` — so
+    the ``--north-star`` CLI exits non-zero on EITHER direction of manifest drift,
+    consistent with the forward tripwire's severity. The stale NAMES are not a new
+    report key (the key set stays stable); they are recomputed for display by
+    :func:`render_markdown`, which calls the tripwire directly.
     """
     from app.engine.objective_compiler import available_objectives
 
-    buckets = classify_objectives(available_objectives())
+    available = available_objectives()
+    buckets = classify_objectives(available)
     total = sum(len(names) for names in buckets.values())
     concrete_ratio = len(buckets["CONCRETE"]) / total if total else 0.0
+    stale = manifest_subset_of_registry(available)
     window = commit_drift(project_root, n)
-    drift = bool(window and window["drift"])
+    drift = bool(stale) or bool(window and window["drift"])
     return {
         "concrete_ratio": concrete_ratio,
         "buckets": {cat: sorted(names) for cat, names in buckets.items()},
@@ -261,6 +317,14 @@ def render_markdown(report: dict, target: str | Path) -> str:
         f"TIDY={report['bucket_counts']['TIDY']}, "
         f"SAFETY={report['bucket_counts']['SAFETY']}",
     ]
+    # Recompute the reverse-tripwire names for display (kept OUT of the report
+    # dict to hold its key set stable). The manifest is read from module state, so
+    # this is a pure function of the same inputs the verdict used.
+    stale = manifest_subset_of_registry()
+    if stale:
+        lines.append(
+            "- STALE MANIFEST ENTRIES (no live objective): " + ", ".join(stale)
+        )
     window = report["commit_window"]
     if window is None:
         lines.append("- Commit window: unavailable (non-git target)")
