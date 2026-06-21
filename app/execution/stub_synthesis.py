@@ -199,13 +199,17 @@ def pinned_test_files(root: Path, module_rel: str, func_name: str) -> list[str]:
     """The test files that pin ``func_name`` from ``module_rel`` — i.e. they
     import the module (by dotted path or ``from pkg import stem``) AND reference
     the function name. Deterministic: sorted. These are the *spec* a candidate
-    body must satisfy."""
-    dotted = module_rel[:-3].replace("/", ".") if module_rel.endswith(".py") else module_rel
-    parent, _, stem = dotted.rpartition(".")
+    body must satisfy.
+
+    Import-linkage is matched against EVERY importable dotted path for the module:
+    the raw path-joined one AND each source-root-stripped one
+    (:func:`_module_dotted_paths`). On a ``src/`` (or pyproject-declared) layout a
+    test importing ``mylib.calc`` reaches ``src/mylib/calc.py`` — the naive
+    ``src.mylib.calc`` would never match, so the stub would silently never land.
+    The raw path stays in the candidate set, so a non-src project is byte-identical
+    to before."""
     name_re = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(func_name) + r"(?![A-Za-z0-9_])")
-    dotted_re = re.compile(re.escape(dotted) + r"(?![A-Za-z0-9_])")
-    from_re = (re.compile(r"from\s+" + re.escape(parent) + r"\s+import\b[^\n()]*\b"
-                          + re.escape(stem) + r"\b") if parent else None)
+    matchers = _import_matchers(root, module_rel)
     out: list[str] = []
     for path in sorted(root.rglob("test_*.py")):
         rel = path.relative_to(root).as_posix()
@@ -215,10 +219,52 @@ def pinned_test_files(root: Path, module_rel: str, func_name: str) -> list[str]:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        imports = bool(dotted_re.search(text)) or bool(from_re and from_re.search(text))
+        imports = any(dotted_re.search(text)
+                      or (from_re and from_re.search(text))
+                      for dotted_re, from_re in matchers)
         if imports and name_re.search(text):
             out.append(rel)
     return out
+
+
+def _module_dotted_paths(root: Path, module_rel: str) -> list[str]:
+    """Every importable dotted path for ``module_rel``, deterministic and sorted:
+    the raw path-joined one (``src.mylib.calc``) AND each source-root-stripped one
+    (``mylib.calc``, when a leading ``src/`` or pyproject-declared root is peeled).
+
+    Deterministic, stdlib-only. The source roots come from
+    :func:`app.engine.mutation_tester._source_roots` (the same ``src/`` + pyproject
+    detection ``covering_test_files`` uses) so impact-scoping and stub-synthesis
+    agree on what a module's importable name is."""
+    from app.engine.mutation_tester import _source_roots
+
+    posix = module_rel.replace("\\", "/")
+    raw = posix[:-3].replace("/", ".") if posix.endswith(".py") else posix
+    paths = {raw}
+    for source_root in _source_roots(root):
+        prefix = source_root + "/"
+        if posix.startswith(prefix):
+            stripped = posix[len(prefix):]
+            paths.add(stripped[:-3].replace("/", ".") if stripped.endswith(".py")
+                      else stripped)
+    return sorted(paths)
+
+
+def _import_matchers(root: Path, module_rel: str):
+    """One ``(dotted_re, from_re)`` pair per importable dotted path of the module
+    (:func:`_module_dotted_paths`). ``dotted_re`` matches a direct ``import
+    pkg.mod`` / dotted reference; ``from_re`` matches ``from pkg import mod`` (only
+    when the path has a parent package). Both reuse the original linkage shape,
+    just applied to every acceptable dotted path so a ``src/``-layout import is no
+    longer missed. Deterministic (the dotted paths are sorted)."""
+    matchers = []
+    for dotted in _module_dotted_paths(root, module_rel):
+        parent, _, stem = dotted.rpartition(".")
+        dotted_re = re.compile(re.escape(dotted) + r"(?![A-Za-z0-9_])")
+        from_re = (re.compile(r"from\s+" + re.escape(parent) + r"\s+import\b[^\n()]*\b"
+                              + re.escape(stem) + r"\b") if parent else None)
+        matchers.append((dotted_re, from_re))
+    return matchers
 
 
 def pinned_test_nodes(root: Path, module_rel: str, func_name: str) -> list[str]:

@@ -38,6 +38,11 @@ import shutil
 import subprocess
 import tempfile
 
+try:  # py311+: stdlib; older: graceful no-pyproject-parse degrade
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised only on <3.11
+    tomllib = None  # type: ignore[assignment]
+
 # The canonical tree-walk exclusion (VCS, caches, venvs, build output, and
 # Apex's own metadata/`.claude` worktree copies) — shared so the walk below and
 # the mutant-sandbox copytree never drift from every other walker.
@@ -476,6 +481,132 @@ def _module_dotted_path(module_rel: str) -> str:
     return ".".join(parts)
 
 
+def _source_roots(project_root: Path) -> list[str]:
+    """The strippable source-root path segments for ``project_root``, deterministic
+    and sorted. A test on a ``src/`` (or pyproject-declared) layout imports the
+    package WITHOUT the root prefix (pytest ``pythonpath=src`` / an installed
+    package strips it), so ``src/mylib/calc.py`` is importable as ``mylib.calc``,
+    not ``src.mylib.calc`` — the naive path-join in :func:`_module_dotted_path`
+    would miss that and leave impact-scoping blind.
+
+    Two sources, both best-effort and stdlib-only:
+
+    * the de-facto ``src/`` convention is ALWAYS a root (no config needed);
+    * roots declared in ``pyproject.toml`` — ``[tool.pytest.ini_options]
+      pythonpath`` and ``[tool.setuptools] package-dir`` / ``[tool.setuptools.
+      packages.find] where`` — so a custom root (``lib``) is honored too.
+
+    A missing/unparseable pyproject (or absent ``tomllib``) degrades to the
+    ``src/`` convention alone. The first path component of each declared root is
+    used (a root like ``"./src"`` or ``"src/pkg"`` contributes ``"src"``)."""
+    roots = {"src"}
+    for declared in _pyproject_roots(project_root):
+        head = _first_path_segment(declared)
+        if head:
+            roots.add(head)
+    return sorted(roots)
+
+
+def _first_path_segment(value: str) -> str | None:
+    """The leading path component of a declared root (``"./src"`` -> ``"src"``,
+    ``"src/pkg"`` -> ``"src"``, ``"."``/``""`` -> ``None``). Best-effort and pure;
+    a non-str or empty value yields ``None``."""
+    if not isinstance(value, str):
+        return None
+    parts = [p for p in value.replace("\\", "/").split("/") if p and p != "."]
+    return parts[0] if parts else None
+
+
+def _pyproject_roots(project_root: Path) -> list[str]:
+    """The raw source-root strings declared in ``project_root``'s ``pyproject.toml``
+    — ``[tool.pytest.ini_options] pythonpath``, ``[tool.setuptools] package-dir``
+    (its values), and ``[tool.setuptools.packages.find] where``. Best-effort: a
+    missing file, absent ``tomllib``, or a parse error yields ``[]``. Deterministic
+    (source order of the parsed lists)."""
+    path = project_root / "pyproject.toml"
+    if tomllib is None or not path.is_file():
+        return []
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    tool = data.get("tool")
+    if not isinstance(tool, dict):
+        return []
+    out: list[str] = []
+    out.extend(_pytest_pythonpath(tool))
+    out.extend(_setuptools_roots(tool))
+    return out
+
+
+def _pytest_pythonpath(tool: dict) -> list[str]:
+    """The ``[tool.pytest.ini_options] pythonpath`` entries (a str or list of str)."""
+    ini = tool.get("pytest", {})
+    ini = ini.get("ini_options", {}) if isinstance(ini, dict) else {}
+    return _as_str_list(ini.get("pythonpath")) if isinstance(ini, dict) else []
+
+
+def _setuptools_roots(tool: dict) -> list[str]:
+    """The setuptools-declared roots: ``[tool.setuptools] package-dir`` values and
+    ``[tool.setuptools.packages.find] where`` entries."""
+    setup = tool.get("setuptools")
+    if not isinstance(setup, dict):
+        return []
+    out: list[str] = []
+    package_dir = setup.get("package-dir")
+    if isinstance(package_dir, dict):
+        out.extend(v for v in package_dir.values() if isinstance(v, str))
+    packages = setup.get("packages")
+    find = packages.get("find") if isinstance(packages, dict) else None
+    if isinstance(find, dict):
+        out.extend(_as_str_list(find.get("where")))
+    return out
+
+
+def _as_str_list(value: object) -> list[str]:
+    """Normalize a TOML scalar/list into a list of strings (a bare str becomes a
+    one-element list; a list keeps only its str items; anything else -> ``[]``)."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, str)]
+    return []
+
+
+def _dotted_prefixes(dotted: str) -> set[str]:
+    """Every dotted prefix of ``dotted`` (``a.b.c`` -> ``{a, a.b, a.b.c}``), plus
+    the bare leaf — the set of import targets that reach the module. ``""`` yields
+    an empty set."""
+    if not dotted:
+        return set()
+    parts = dotted.split(".")
+    out = {".".join(parts[: i + 1]) for i in range(len(parts))}
+    out.add(parts[-1])
+    return out
+
+
+def _import_targets(project_root: Path, module_rel: str) -> set[str]:
+    """Every dotted import target that reaches ``module_rel`` — the raw dotted path
+    AND each source-root-stripped dotted path, each expanded to all its prefixes
+    plus the bare leaf.
+
+    The root-stripped targets are what make a ``src/`` (or pyproject-declared)
+    layout work: a test importing ``mylib.calc`` reaches ``src/mylib/calc.py``
+    because the leading ``src`` root is stripped before the dotted path is formed.
+    The raw path stays in the set, so a non-src project (and the rare test that
+    imports ``src.mylib.calc`` literally) is byte-identical to before."""
+    dotted = _module_dotted_path(module_rel)
+    targets = _dotted_prefixes(dotted)
+    posix = module_rel.replace("\\", "/")
+    for root in _source_roots(project_root):
+        prefix = root + "/"
+        if posix.startswith(prefix):
+            targets |= _dotted_prefixes(_module_dotted_path(posix[len(prefix):]))
+    return targets
+
+
 def _is_test_file(rel: str) -> bool:
     """A path is a test file if it lives under ``tests/`` or its filename
     matches ``test_*.py`` — the same convention pytest discovers by default."""
@@ -523,13 +654,13 @@ def covering_test_files(project_root, module_rel: str) -> list[str]:
     dotted = _module_dotted_path(module_rel)
     if not dotted:
         return []
-    leaf = dotted.split(".")[-1]
     # Every dotted prefix of the module path is an acceptable import target
     # (``app``, ``app.engine``, ``app.engine.foo``); an import of any of these
-    # — or of the bare leaf name — means the test reaches the module.
-    parts = dotted.split(".")
-    targets = {".".join(parts[: i + 1]) for i in range(len(parts))}
-    targets.add(leaf)
+    # — or of the bare leaf name — means the test reaches the module. On a
+    # ``src/`` (or pyproject-declared) layout the source-root-stripped prefixes
+    # (``mylib``, ``mylib.calc`` for ``src/mylib/calc.py``) are ALSO targets, so
+    # a test importing ``mylib.calc`` is no longer missed (impact-scoping blind).
+    targets = _import_targets(root, module_rel)
 
     matches: set[str] = set()
     for path in root.rglob("*.py"):
