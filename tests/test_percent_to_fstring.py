@@ -89,32 +89,28 @@ def _untouched(tmp_path: Path, body: str, rel: str = "mod.py") -> None:
     assert not plan.new_contents
 
 
-def test_percent_d_untouched(tmp_path):
-    _untouched(tmp_path, 'x = "%d" % n\n')
-
-
-def test_percent_r_untouched(tmp_path):
-    _untouched(tmp_path, 'x = "%r" % n\n')
-
-
-def test_percent_f_untouched(tmp_path):
-    _untouched(tmp_path, 'x = "%f" % n\n')
-
-
 def test_mapping_key_untouched(tmp_path):
     _untouched(tmp_path, 'x = "%(name)s" % d\n')
 
 
-def test_width_spec_untouched(tmp_path):
-    _untouched(tmp_path, 'x = "%5s" % v\n')
+def test_dynamic_width_star_untouched(tmp_path):
+    # ``*`` pulls width from an arg — not a fixed, provable spec; refuse.
+    _untouched(tmp_path, 'x = "%*d" % (w, n)\n')
 
 
-def test_precision_spec_untouched(tmp_path):
-    _untouched(tmp_path, 'x = "%.2f" % v\n')
+def test_percent_c_untouched(tmp_path):
+    # ``%c`` maps to chr(); ``{}`` would str() the int — refuse.
+    _untouched(tmp_path, 'x = "%c" % n\n')
 
 
-def test_flag_spec_untouched(tmp_path):
-    _untouched(tmp_path, 'x = "%-s" % v\n')
+def test_string_precision_untouched(tmp_path):
+    # ``%.3s`` truncates the string — kept out of the proven set, refuse.
+    _untouched(tmp_path, 'x = "%.3s" % v\n')
+
+
+def test_int_precision_untouched(tmp_path):
+    # ``%.3d`` zero-pads digits, which ``{:d}`` cannot express — refuse.
+    _untouched(tmp_path, 'x = "%.3d" % n\n')
 
 
 def test_trailing_lone_percent_untouched(tmp_path):
@@ -239,6 +235,148 @@ def test_semantic_equivalence_constant_and_attr(tmp_path):
     exec(body, before_ns)
     exec(out, after_ns)
     assert before_ns["C"]("hi").label() == after_ns["C"]("hi").label()
+
+
+# --- numeric / format conversions (the widened set) ----------------------
+
+def test_percent_d(tmp_path):
+    assert _converted(tmp_path, 'x = "%d" % n\n') == 'x = f"{n:d}"\n'
+
+
+def test_percent_i_normalises_to_d(tmp_path):
+    assert _converted(tmp_path, 'x = "%i" % n\n') == 'x = f"{n:d}"\n'
+
+
+def test_percent_r(tmp_path):
+    assert _converted(tmp_path, 'x = "%r" % n\n') == 'x = f"{n!r}"\n'
+
+
+def test_percent_f(tmp_path):
+    assert _converted(tmp_path, 'x = "%f" % n\n') == 'x = f"{n:f}"\n'
+
+
+def test_percent_precision_f(tmp_path):
+    assert _converted(tmp_path, 'x = "%.2f" % v\n') == 'x = f"{v:.2f}"\n'
+
+
+def test_percent_hex_lower(tmp_path):
+    assert _converted(tmp_path, 'x = "%x" % n\n') == 'x = f"{n:x}"\n'
+
+
+def test_percent_hex_upper(tmp_path):
+    assert _converted(tmp_path, 'x = "%X" % n\n') == 'x = f"{n:X}"\n'
+
+
+def test_percent_octal(tmp_path):
+    assert _converted(tmp_path, 'x = "%o" % n\n') == 'x = f"{n:o}"\n'
+
+
+def test_percent_exp_and_general(tmp_path):
+    assert _converted(tmp_path, 'x = "%e" % v\n') == 'x = f"{v:e}"\n'
+    assert _converted(tmp_path, 'x = "%g" % v\n') == 'x = f"{v:g}"\n'
+
+
+def test_percent_zero_pad_width(tmp_path):
+    assert _converted(tmp_path, 'x = "%05d" % n\n') == 'x = f"{n:05d}"\n'
+
+
+def test_percent_width(tmp_path):
+    assert _converted(tmp_path, 'x = "%5d" % n\n') == 'x = f"{n:5d}"\n'
+
+
+def test_percent_plus_flag(tmp_path):
+    assert _converted(tmp_path, 'x = "%+d" % n\n') == 'x = f"{n:+d}"\n'
+
+
+def test_percent_left_string(tmp_path):
+    assert _converted(tmp_path, 'x = "%-10s" % s\n') == 'x = f"{s!s:<10}"\n'
+
+
+def test_percent_right_string(tmp_path):
+    assert _converted(tmp_path, 'x = "%5s" % s\n') == 'x = f"{s!s:>5}"\n'
+
+
+def test_percent_alt_hex(tmp_path):
+    assert _converted(tmp_path, 'x = "%#x" % n\n') == 'x = f"{n:#x}"\n'
+
+
+def test_percent_minus_drops_zero(tmp_path):
+    # printf ignores ``0`` when ``-`` is present; the f-spec must drop it too.
+    assert _converted(tmp_path, 'x = "%-05d" % n\n') == 'x = f"{n:<5d}"\n'
+
+
+def test_mixed_string_and_numeric_tuple(tmp_path):
+    out = _converted(tmp_path, 'x = "%s=%d" % (k, v)\n')
+    assert out == 'x = f"{k}={v:d}"\n'
+
+
+# --- round-trip honesty gate for the widened set -------------------------
+
+# (template, [representative values]) — every value is eval'd through both the
+# original ``%`` expression and the converted f-string; they must be IDENTICAL.
+_ROUNDTRIP_INTS = [0, 1, -1, 7, 255, -255, 1000000, True, False]
+_ROUNDTRIP_FLOATS = [0.0, 1.5, -1.5, 3.14159, -3.14159, 1e10, 0.000123, 100.0]
+_ROUNDTRIP_STRS = ["", "a", "hello", "x" * 12, "tab\tless"[:3]]
+
+_ROUNDTRIP_CASES = [
+    ('"%d" % v', _ROUNDTRIP_INTS),
+    ('"%i" % v', _ROUNDTRIP_INTS),
+    ('"%x" % v', _ROUNDTRIP_INTS),
+    ('"%X" % v', _ROUNDTRIP_INTS),
+    ('"%o" % v', _ROUNDTRIP_INTS),
+    ('"%5d" % v', _ROUNDTRIP_INTS),
+    ('"%05d" % v', _ROUNDTRIP_INTS),
+    ('"%+d" % v', _ROUNDTRIP_INTS),
+    ('"%-5d" % v', _ROUNDTRIP_INTS),
+    ('"%-05d" % v', _ROUNDTRIP_INTS),
+    ('"%#x" % v', _ROUNDTRIP_INTS),
+    ('"%f" % v', _ROUNDTRIP_FLOATS + _ROUNDTRIP_INTS),
+    ('"%.2f" % v', _ROUNDTRIP_FLOATS + _ROUNDTRIP_INTS),
+    ('"%.0f" % v', _ROUNDTRIP_FLOATS + _ROUNDTRIP_INTS),
+    ('"%10.2f" % v', _ROUNDTRIP_FLOATS + _ROUNDTRIP_INTS),
+    ('"%-10.2f" % v', _ROUNDTRIP_FLOATS + _ROUNDTRIP_INTS),
+    ('"%+.2f" % v', _ROUNDTRIP_FLOATS + _ROUNDTRIP_INTS),
+    ('"%e" % v', _ROUNDTRIP_FLOATS + _ROUNDTRIP_INTS),
+    ('"%E" % v', _ROUNDTRIP_FLOATS + _ROUNDTRIP_INTS),
+    ('"%g" % v', _ROUNDTRIP_FLOATS + _ROUNDTRIP_INTS),
+    ('"%G" % v', _ROUNDTRIP_FLOATS + _ROUNDTRIP_INTS),
+    ('"%s" % v', _ROUNDTRIP_STRS + _ROUNDTRIP_INTS + _ROUNDTRIP_FLOATS),
+    ('"%r" % v', _ROUNDTRIP_STRS + _ROUNDTRIP_INTS + _ROUNDTRIP_FLOATS),
+    ('"%-10s" % v', _ROUNDTRIP_STRS + _ROUNDTRIP_INTS),
+    ('"%10s" % v', _ROUNDTRIP_STRS + _ROUNDTRIP_INTS),
+    ('"got %d items (%s)" % (v, v)', _ROUNDTRIP_INTS),
+]
+
+
+def test_roundtrip_equivalence_widened_set(tmp_path):
+    for i, (expr, values) in enumerate(_ROUNDTRIP_CASES):
+        body = f"def f(v):\n    return {expr}\n"
+        out = _converted(tmp_path, body, rel=f"m{i}.py")
+        assert out.startswith("def f(v):\n    return f"), (expr, out)
+        before_ns: dict = {}
+        after_ns: dict = {}
+        exec(body, before_ns)
+        exec(out, after_ns)
+        for v in values:
+            assert before_ns["f"](v) == after_ns["f"](v), (expr, v)
+
+
+def test_determinism_same_source_same_output(tmp_path):
+    body = 'x = "%s=%d %05x %-10s" % (a, b, c, d)\n'
+    first = _converted(tmp_path, body, rel="a.py")
+    second = _converted(tmp_path, body, rel="b.py")
+    assert first == second
+    assert first == 'x = f"{a}={b:d} {c:05x} {d!s:<10}"\n'
+
+
+def test_idempotent_on_converted_output(tmp_path):
+    body = 'x = "%s=%d %.2f" % (a, b, c)\n'
+    once = _converted(tmp_path, body, rel="once.py")
+    # Feeding the already-converted f-string back in is a strict no-op.
+    rel = _write(tmp_path, "twice.py", once)
+    plan = plan_percent_to_fstring(tmp_path, rel)
+    assert not plan.blockers
+    assert not plan.new_contents
 
 
 # --- blocker / no-op / fixture -------------------------------------------
