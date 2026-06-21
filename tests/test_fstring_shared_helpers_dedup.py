@@ -108,14 +108,15 @@ def _template(literal_src: str) -> tuple[ast.Constant, str]:
 
 
 def test_recover_fstring_template_splits_counts_and_skips() -> None:
-    # ``{}``-style splitter.
+    # ``{}``-style splitter — returns ``(segments, extra)``; the ``{}`` form
+    # carries no per-placeholder payload, so ``extra`` is None.
     def split_braces(inner: str):
         parts = inner.split("{}")
-        return parts if "{" not in "".join(parts) else None
+        return (parts, None) if "{" not in "".join(parts) else None
 
     tmpl, src = _template('"a{}b{}c"')
     assert recover_fstring_template(tmpl, src, 2, split=split_braces) == (
-        '"', ["a", "b", "c"], 2)
+        '"', ["a", "b", "c"], None)
     # Count mismatch -> None.
     assert recover_fstring_template(tmpl, src, 3, split=split_braces) is None
     # Zero placeholders (nothing to interpolate) -> None.

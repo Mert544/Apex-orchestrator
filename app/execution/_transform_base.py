@@ -35,6 +35,7 @@ import ast
 import threading
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.execution.cross_file_rename import RenamePlan
@@ -58,6 +59,8 @@ __all__ = [
     "arg_source",
     "collect_arg_sources",
     "recover_fstring_template",
+    "TemplateScanStep",
+    "scan_template",
     "pin_signature_lines",
     "AccumulatorRewrite",
     "is_name_target",
@@ -571,22 +574,85 @@ def collect_arg_sources(args: list[ast.expr], source: str) -> list[str] | None:
     return arg_srcs
 
 
+@dataclass(frozen=True)
+class TemplateScanStep:
+    """One step of a left-to-right placeholder-template scan (see
+    :func:`scan_template`). ``consumed`` is how many characters of the template
+    this step accounts for (>= 1). Exactly one of two outcomes:
+
+    * ``field`` set — the chars at this position are a PLACEHOLDER: the buffered
+      literal so far is flushed to a segment and ``field`` is recorded (its type
+      is the caller's own field object — opaque here).
+    * ``field`` None — the chars are LITERAL: ``literal`` is appended to the
+      buffer (a plain char passes ``literal=<that char>``; an escape like ``%%``
+      passes ``literal="%"`` with ``consumed=2``).
+    """
+
+    consumed: int
+    field: object | None = None
+    literal: str | None = None
+
+
+def scan_template(
+    inner: str,
+    step: Callable[[str, int], "TemplateScanStep | None"],
+) -> tuple[list[str], object] | None:
+    """Split a template's INNER text into ``(segments, fields)`` by walking it
+    left-to-right, delegating every position to ``step(inner, i)``.
+
+    This is the byte-identical scan SKELETON that the ``{}`` form
+    (format-to-fstring's ``_parse_template``) and the ``%`` form
+    (percent-to-fstring's ``_split_template``) each carried verbatim — a
+    ``while`` loop accumulating a literal ``buf``, flushing it to ``segments``
+    on each placeholder and appending the parsed field. ONLY the per-position
+    decision (what counts as a placeholder, an escape, or a disqualifier)
+    differed, so that is the injected ``step``; the loop lives here once.
+
+    ``step`` returns a :class:`TemplateScanStep`, or ``None`` to DISQUALIFY the
+    whole template (the transform then skips the occurrence). Returns
+    ``(segments, fields)`` with ``len(segments) == len(fields) + 1``, or ``None``
+    if any step disqualified. ``fields`` is a ``list`` of whatever the caller's
+    placeholder steps carried."""
+    segments: list[str] = []
+    fields: list[object] = []
+    buf: list[str] = []
+    i = 0
+    n = len(inner)
+    while i < n:
+        s = step(inner, i)
+        if s is None:
+            return None
+        if s.field is not None:
+            segments.append("".join(buf))
+            buf = []
+            fields.append(s.field)
+        else:
+            buf.append(s.literal if s.literal is not None else inner[i])
+        i += s.consumed
+    segments.append("".join(buf))
+    return segments, fields
+
+
 def recover_fstring_template(
     template: ast.Constant,
     source: str,
     arg_count: int,
     *,
-    split: Callable[[str], list[str] | None],
-) -> tuple[str, list[str], int] | None:
+    split: Callable[[str], tuple[list[str], object] | None],
+) -> tuple[str, list[str], object] | None:
     """Recover the literal, split it on placeholders, and check the count.
 
-    Returns ``(quote, segments, placeholder_count)`` when the literal recovers to
-    a plain string whose placeholder count (per ``split``) both equals
+    Returns ``(quote, segments, extra)`` when the literal recovers to a plain
+    string whose placeholder count (``len(segments) - 1``) both equals
     ``arg_count`` and is nonzero, else None (nothing to interpolate is left
-    alone). ``split`` is the transform's placeholder splitter — the ``{}`` form
-    (fstring-convert) or the ``%s`` form (percent-to-fstring) — the ONLY part
-    that differed between the two otherwise byte-identical ``_recover_template``
-    copies, so it is passed in and the recover/count tail lives here once."""
+    alone). ``split(inner)`` returns ``(segments, extra)``: the ``count + 1``
+    literal segments around the placeholders, plus a transform-specific payload —
+    ``None`` for the ``{}`` form (fstring-convert), the parsed per-placeholder
+    conversion fields for the ``%`` form (percent-to-fstring). The splitter is
+    the ONLY part that differs between the transforms; carrying ``extra`` through
+    here is what lets BOTH reuse this one recover/count tail instead of cloning
+    it (a numeric ``%`` conversion needs its format spec alongside the segments,
+    which is exactly what ``extra`` delivers)."""
     literal_src = ast.get_source_segment(source, template)
     if literal_src is None:
         return None
@@ -595,15 +661,16 @@ def recover_fstring_template(
         return None
     quote, inner = parsed
 
-    segments = split(inner)
-    if segments is None:
+    result = split(inner)
+    if result is None:
         return None
+    segments, extra = result
     count = len(segments) - 1
     if count != arg_count:
         return None
     if count == 0:
         return None  # nothing to interpolate — leave it alone
-    return quote, segments, count
+    return quote, segments, extra
 
 
 def pin_signature_lines(

@@ -61,14 +61,17 @@ __all__ = ["plan_fstring_convert"]
 # NOT the percent ``%s`` logic and must not be merged.
 
 
-def _split_template(inner: str) -> list[str] | None:
+def _split_template(inner: str) -> tuple[list[str], None] | None:
     """Split the template's INNER text (literal content, quotes stripped) on
-    plain ``{}`` placeholders, returning the literal segments between them.
+    plain ``{}`` placeholders, returning ``(segments, None)``.
 
-    The returned list has ``count + 1`` segments for ``count`` placeholders.
-    Returns None when the template has any brace other than a plain ``{}``
-    placeholder — an index/name/spec/conversion, a nested or escaped brace, or
-    an unmatched brace — so the occurrence is skipped."""
+    The segment list has ``count + 1`` entries for ``count`` placeholders; the
+    second element is the shared recover tail's ``extra`` payload, which the
+    ``{}`` form does not use (it is ``None``; only the ``%`` form carries
+    per-placeholder format fields there). Returns None when the template has any
+    brace other than a plain ``{}`` placeholder — an index/name/spec/conversion,
+    a nested or escaped brace, or an unmatched brace — so the occurrence is
+    skipped."""
     segments: list[str] = []
     buf: list[str] = []
     i = 0
@@ -92,7 +95,7 @@ def _split_template(inner: str) -> list[str] | None:
         buf.append(ch)
         i += 1
     segments.append("".join(buf))
-    return segments
+    return segments, None
 
 
 def _format_template(node: ast.Call) -> ast.Constant | None:
@@ -148,13 +151,14 @@ def _build_text(quote: str, segments: list[str], arg_srcs: list[str]) -> str:
 
 def _recover_template(
     template: ast.Constant, source: str, arg_count: int,
-) -> tuple[str, list[str], int] | None:
+) -> tuple[str, list[str], None] | None:
     """Recover the literal, split it on ``{}`` placeholders, and check the count.
 
     Thin ``{}``-specific binding of the shared
     :func:`~app.execution._transform_base.recover_fstring_template` — it supplies
     the ``{}`` placeholder :func:`_split_template`; the recover/count tail (the
-    byte-identical body once shared with percent-to-fstring) lives there once."""
+    body shared with percent-to-fstring) lives there once. The ``extra`` slot the
+    shared tail returns is ``None`` for this form (no per-placeholder spec)."""
     return _recover_fstring_template(
         template, source, arg_count, split=_split_template)
 
@@ -169,7 +173,8 @@ def _try_call(node: ast.Call, source: str) -> _Rewrite | None:
     recovered = _recover_template(template, source, len(node.args))
     if recovered is None:
         return None
-    quote, segments, count = recovered
+    quote, segments, _extra = recovered
+    count = len(segments) - 1
 
     arg_srcs = _collect_arg_sources(node.args, source)
     if arg_srcs is None:

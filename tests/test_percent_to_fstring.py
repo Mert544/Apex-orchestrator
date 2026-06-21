@@ -239,12 +239,17 @@ def test_semantic_equivalence_constant_and_attr(tmp_path):
 
 # --- numeric / format conversions (the widened set) ----------------------
 
-def test_percent_d(tmp_path):
-    assert _converted(tmp_path, 'x = "%d" % n\n') == 'x = f"{n:d}"\n'
+def test_percent_d_refused_float_divergence(tmp_path):
+    # ``"%d" % 3.14`` TRUNCATES to ``"3"``; ``f"{3.14:d}"`` RAISES ValueError.
+    # The transform cannot statically rule out a float arg, so decimal ``d``/``i``
+    # (with any flags/width) are REFUSED rather than risk turning a working
+    # truncation into a crash. (Radix ``x``/``X``/``o`` reject floats in BOTH
+    # forms, so they stay convertible — see the tests below.)
+    _untouched(tmp_path, 'x = "%d" % n\n')
 
 
-def test_percent_i_normalises_to_d(tmp_path):
-    assert _converted(tmp_path, 'x = "%i" % n\n') == 'x = f"{n:d}"\n'
+def test_percent_i_refused(tmp_path):
+    _untouched(tmp_path, 'x = "%i" % n\n')
 
 
 def test_percent_r(tmp_path):
@@ -276,16 +281,22 @@ def test_percent_exp_and_general(tmp_path):
     assert _converted(tmp_path, 'x = "%g" % v\n') == 'x = f"{v:g}"\n'
 
 
-def test_percent_zero_pad_width(tmp_path):
-    assert _converted(tmp_path, 'x = "%05d" % n\n') == 'x = f"{n:05d}"\n'
+def test_percent_zero_pad_width_decimal_refused(tmp_path):
+    # ``%05d`` is still a decimal conversion — refused (float divergence).
+    _untouched(tmp_path, 'x = "%05d" % n\n')
 
 
-def test_percent_width(tmp_path):
-    assert _converted(tmp_path, 'x = "%5d" % n\n') == 'x = f"{n:5d}"\n'
+def test_percent_zero_pad_width_hex_converts(tmp_path):
+    # The same width/flag on a RADIX conversion is safe (rejects floats both ways).
+    assert _converted(tmp_path, 'x = "%05x" % n\n') == 'x = f"{n:05x}"\n'
 
 
-def test_percent_plus_flag(tmp_path):
-    assert _converted(tmp_path, 'x = "%+d" % n\n') == 'x = f"{n:+d}"\n'
+def test_percent_width_decimal_refused(tmp_path):
+    _untouched(tmp_path, 'x = "%5d" % n\n')
+
+
+def test_percent_plus_flag_decimal_refused(tmp_path):
+    _untouched(tmp_path, 'x = "%+d" % n\n')
 
 
 def test_percent_left_string(tmp_path):
@@ -300,14 +311,25 @@ def test_percent_alt_hex(tmp_path):
     assert _converted(tmp_path, 'x = "%#x" % n\n') == 'x = f"{n:#x}"\n'
 
 
-def test_percent_minus_drops_zero(tmp_path):
+def test_percent_minus_drops_zero_decimal_refused(tmp_path):
+    # ``%-05d`` is still decimal — refused. (The ``-``/``0`` flag normalisation is
+    # exercised on a safe radix conversion in test_percent_minus_drops_zero_hex.)
+    _untouched(tmp_path, 'x = "%-05d" % n\n')
+
+
+def test_percent_minus_drops_zero_hex(tmp_path):
     # printf ignores ``0`` when ``-`` is present; the f-spec must drop it too.
-    assert _converted(tmp_path, 'x = "%-05d" % n\n') == 'x = f"{n:<5d}"\n'
+    assert _converted(tmp_path, 'x = "%-05x" % n\n') == 'x = f"{n:<5x}"\n'
 
 
-def test_mixed_string_and_numeric_tuple(tmp_path):
-    out = _converted(tmp_path, 'x = "%s=%d" % (k, v)\n')
-    assert out == 'x = f"{k}={v:d}"\n'
+def test_mixed_string_and_decimal_tuple_refused(tmp_path):
+    # A decimal ``%d`` anywhere refuses the WHOLE template (all-or-nothing).
+    _untouched(tmp_path, 'x = "%s=%d" % (k, v)\n')
+
+
+def test_mixed_string_and_hex_tuple_converts(tmp_path):
+    out = _converted(tmp_path, 'x = "%s=%x" % (k, v)\n')
+    assert out == 'x = f"{k}={v:x}"\n'
 
 
 # --- round-trip honesty gate for the widened set -------------------------
@@ -318,17 +340,18 @@ _ROUNDTRIP_INTS = [0, 1, -1, 7, 255, -255, 1000000, True, False]
 _ROUNDTRIP_FLOATS = [0.0, 1.5, -1.5, 3.14159, -3.14159, 1e10, 0.000123, 100.0]
 _ROUNDTRIP_STRS = ["", "a", "hello", "x" * 12, "tab\tless"[:3]]
 
+# NOTE: decimal ``%d``/``%i`` (and any flagged/width form ``%5d``/``%05d``/…) are
+# intentionally ABSENT — they are refused (``"%d" % 3.14`` truncates but
+# ``f"{:d}"`` raises). Only the radix ints ``x``/``X``/``o`` (which reject floats
+# in BOTH forms) round-trip here, over int values.
 _ROUNDTRIP_CASES = [
-    ('"%d" % v', _ROUNDTRIP_INTS),
-    ('"%i" % v', _ROUNDTRIP_INTS),
     ('"%x" % v', _ROUNDTRIP_INTS),
     ('"%X" % v', _ROUNDTRIP_INTS),
     ('"%o" % v', _ROUNDTRIP_INTS),
-    ('"%5d" % v', _ROUNDTRIP_INTS),
-    ('"%05d" % v', _ROUNDTRIP_INTS),
-    ('"%+d" % v', _ROUNDTRIP_INTS),
-    ('"%-5d" % v', _ROUNDTRIP_INTS),
-    ('"%-05d" % v', _ROUNDTRIP_INTS),
+    ('"%5x" % v', _ROUNDTRIP_INTS),
+    ('"%05x" % v', _ROUNDTRIP_INTS),
+    ('"%-5x" % v', _ROUNDTRIP_INTS),
+    ('"%-05x" % v', _ROUNDTRIP_INTS),
     ('"%#x" % v', _ROUNDTRIP_INTS),
     ('"%f" % v', _ROUNDTRIP_FLOATS + _ROUNDTRIP_INTS),
     ('"%.2f" % v', _ROUNDTRIP_FLOATS + _ROUNDTRIP_INTS),
@@ -344,7 +367,7 @@ _ROUNDTRIP_CASES = [
     ('"%r" % v', _ROUNDTRIP_STRS + _ROUNDTRIP_INTS + _ROUNDTRIP_FLOATS),
     ('"%-10s" % v', _ROUNDTRIP_STRS + _ROUNDTRIP_INTS),
     ('"%10s" % v', _ROUNDTRIP_STRS + _ROUNDTRIP_INTS),
-    ('"got %d items (%s)" % (v, v)', _ROUNDTRIP_INTS),
+    ('"got %x items (%s)" % (v, v)', _ROUNDTRIP_INTS),
 ]
 
 
@@ -362,15 +385,15 @@ def test_roundtrip_equivalence_widened_set(tmp_path):
 
 
 def test_determinism_same_source_same_output(tmp_path):
-    body = 'x = "%s=%d %05x %-10s" % (a, b, c, d)\n'
+    body = 'x = "%s=%x %05o %-10s" % (a, b, c, d)\n'
     first = _converted(tmp_path, body, rel="a.py")
     second = _converted(tmp_path, body, rel="b.py")
     assert first == second
-    assert first == 'x = f"{a}={b:d} {c:05x} {d!s:<10}"\n'
+    assert first == 'x = f"{a}={b:x} {c:05o} {d!s:<10}"\n'
 
 
 def test_idempotent_on_converted_output(tmp_path):
-    body = 'x = "%s=%d %.2f" % (a, b, c)\n'
+    body = 'x = "%s=%x %.2f" % (a, b, c)\n'
     once = _converted(tmp_path, body, rel="once.py")
     # Feeding the already-converted f-string back in is a strict no-op.
     rel = _write(tmp_path, "twice.py", once)

@@ -59,6 +59,8 @@ from pathlib import Path
 
 from app.execution._transform_base import apply_column_rewrites, is_fixture_path
 from app.execution._transform_base import literal_inner as _literal_inner
+from app.execution._transform_base import scan_template as _scan_template
+from app.execution._transform_base import TemplateScanStep as _ScanStep
 from app.execution._transform_base import (
     parse_module_source as _parse_module_source,
     read_module_source as _read_module_source,
@@ -135,36 +137,25 @@ def _parse_template(inner: str) -> tuple[list[str], list[_Field]] | None:
     ``}}``, a lone ``}``, a format spec or conversion (anything but a bare index
     or identifier inside the braces), attribute/index access inside a field, or
     an unterminated field — so the occurrence is skipped."""
-    segments: list[str] = []
-    fields: list[_Field] = []
-    buf: list[str] = []
-    i = 0
-    n = len(inner)
-    while i < n:
-        ch = inner[i]
+    def _step(s: str, i: int) -> _ScanStep | None:
+        ch = s[i]
         if ch == "{":
             # Escaped brace — out of scope (we don't re-escape templates).
-            if i + 1 < n and inner[i + 1] == "{":
+            if i + 1 < len(s) and s[i + 1] == "{":
                 return None
-            close = inner.find("}", i + 1)
+            close = s.find("}", i + 1)
             if close == -1:
                 return None  # unterminated field
-            spec = inner[i + 1:close]
-            field = _classify_field(spec)
+            field = _classify_field(s[i + 1:close])
             if field is None:
                 return None
-            segments.append("".join(buf))
-            buf = []
-            fields.append(field)
-            i = close + 1
-            continue
+            return _ScanStep(consumed=close + 1 - i, field=field)
         if ch == "}":
             # A lone or escaped '}}' — anything else brace-y disqualifies.
             return None
-        buf.append(ch)
-        i += 1
-    segments.append("".join(buf))
-    return segments, fields
+        return _ScanStep(consumed=1, literal=ch)
+
+    return _scan_template(inner, _step)
 
 
 def _keywords_by_name(kw_args: list[ast.keyword]) -> dict[str, ast.expr] | None:

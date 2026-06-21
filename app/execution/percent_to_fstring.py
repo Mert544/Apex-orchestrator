@@ -55,8 +55,10 @@ from pathlib import Path
 from app.execution._transform_base import ColumnRewrite as _Rewrite
 from app.execution._transform_base import collect_arg_sources as _collect_arg_sources
 from app.execution._transform_base import is_simple_arg as _is_simple_arg
-from app.execution._transform_base import literal_inner as _literal_inner
 from app.execution._transform_base import plan_single_module_column_rewrite
+from app.execution._transform_base import recover_fstring_template as _recover_fstring_template
+from app.execution._transform_base import scan_template as _scan_template
+from app.execution._transform_base import TemplateScanStep as _ScanStep
 from app.execution._transform_base import text_is_valid as _text_is_valid
 from app.execution.cross_file_rename import RenamePlan
 
@@ -66,7 +68,7 @@ __all__ = ["plan_percent_to_fstring"]
 #   _Rewrite                 — the located single-line column-splice value (``ColumnRewrite``)
 #   _is_simple_arg           — the "bare {name} is safe" predicate (``is_simple_arg``)
 #   _collect_arg_sources     — the recover-every-arg-source loop (``collect_arg_sources``)
-#   _literal_inner           — the plain-string literal recover (``literal_inner``)
+#   _recover_fstring_template — the literal-recover/count tail (``recover_fstring_template``)
 #   _text_is_valid           — the JoinedStr safety re-parse (``text_is_valid``)
 # The percent-specific conversion parsing (``_parse_conversion`` / ``_split_template``),
 # brace-escaping (``_escape`` / ``_build_text``) and BinOp matching below stay private —
@@ -75,13 +77,17 @@ __all__ = ["plan_percent_to_fstring"]
 # Conversion chars Apex can map BYTE-FOR-BYTE to an f-string field. The mapping is
 # proven by the round-trip tests in ``tests/test_percent_to_fstring.py``:
 #   - ``s``/``r`` -> a ``{}`` / ``{!r}`` field (string coercion preserved);
-#   - integers ``d``/``i``/``x``/``X``/``o`` -> a numeric ``{:...}`` field
-#     (``i`` normalises to ``d``); a precision is NOT allowed (printf ignores it
-#     differently than ``format`` for ints, so refuse rather than guess);
+#   - radix integers ``x``/``X``/``o`` -> a numeric ``{:...}`` field; a precision
+#     is NOT allowed (printf ignores it differently than ``format`` for ints).
+#     DECIMAL ``d``/``i`` are deliberately NOT here: ``"%d" % 3.14`` TRUNCATES to
+#     ``"3"``, but ``f"{3.14:d}"`` RAISES ``ValueError`` — the success paths
+#     diverge on a float arg (which the transform cannot rule out statically), so
+#     ``d``/``i`` are refused rather than risk turning a working truncation into a
+#     crash. (Radix ``x``/``X``/``o`` reject floats in BOTH forms, so they stay.)
 #   - floats ``f``/``F``/``e``/``E``/``g``/``G`` -> a numeric ``{:...}`` field
 #     (a precision IS allowed). ``%c`` / ``%a`` and mapping keys are refused.
 _STRING_CONV = {"s", "r"}
-_INT_CONV = {"d": "d", "i": "d", "x": "x", "X": "X", "o": "o"}
+_INT_CONV = {"x": "x", "X": "X", "o": "o"}
 _FLOAT_CONV = {"f", "F", "e", "E", "g", "G"}
 # printf flag char -> f-string sign/alt/zero token (alignment is handled apart).
 _FLAGS = set("-+ 0#")
@@ -191,32 +197,21 @@ def _split_template(inner: str) -> tuple[list[str], list[_Field]] | None:
     len(fields) + 1``. Returns None when any ``%`` is not a ``%%`` and not a
     PROVEN-equivalent conversion (see :func:`_parse_conversion`), or a lone
     trailing ``%`` — so the occurrence is skipped."""
-    segments: list[str] = []
-    fields: list[_Field] = []
-    buf: list[str] = []
-    i = 0
-    n = len(inner)
-    while i < n:
-        ch = inner[i]
+    def _step(s: str, i: int) -> _ScanStep | None:
+        ch = s[i]
         if ch == "%":
-            if i + 1 >= n:
+            if i + 1 >= len(s):
                 return None  # trailing lone '%'
-            if inner[i + 1] == "%":
-                buf.append("%")  # literal percent, not a placeholder
-                i += 2
-                continue
-            parsed = _parse_conversion(inner, i)
+            if s[i + 1] == "%":
+                return _ScanStep(consumed=2, literal="%")  # literal percent
+            parsed = _parse_conversion(s, i)
             if parsed is None:
                 return None  # unsupported conversion / spec / flag disqualifies
-            field, i = parsed
-            segments.append("".join(buf))
-            buf = []
-            fields.append(field)
-            continue
-        buf.append(ch)
-        i += 1
-    segments.append("".join(buf))
-    return segments, fields
+            field, end = parsed
+            return _ScanStep(consumed=end - i, field=field)
+        return _ScanStep(consumed=1, literal=ch)
+
+    return _scan_template(inner, _step)
 
 
 def _binop_args(node: ast.BinOp) -> list[ast.expr] | None:
@@ -288,28 +283,15 @@ def _recover_template(
 ) -> tuple[str, list[str], list[_Field]] | None:
     """Recover the literal, split it on placeholders, and check the count.
 
-    Returns ``(quote, segments, fields)`` when the literal recovers to a plain
-    string whose placeholder count both equals ``arg_count`` and is nonzero,
-    else None (nothing to interpolate, an unsupported conversion, or a count
-    mismatch is left alone). The split is the ``%``-specific
-    :func:`_split_template`, which also carries the per-placeholder format spec
-    so the numeric / aligned conversions map byte-for-byte."""
-    literal_src = ast.get_source_segment(source, template)
-    if literal_src is None:
-        return None
-    parsed = _literal_inner(literal_src)
-    if parsed is None:
-        return None
-    quote, inner = parsed
-
-    split = _split_template(inner)
-    if split is None:
-        return None
-    segments, fields = split
-    count = len(fields)
-    if count != arg_count or count == 0:
-        return None
-    return quote, segments, fields
+    Thin ``%``-specific binding of the shared
+    :func:`~app.execution._transform_base.recover_fstring_template` — it supplies
+    the ``%`` placeholder :func:`_split_template`, whose ``extra`` payload is the
+    list of per-placeholder format :class:`_Field`\\ s (the part the numeric /
+    aligned conversions need to map byte-for-byte). The recover/count tail lives
+    in the shared helper once, so this is not a clone of the ``{}`` form's copy.
+    Returns ``(quote, segments, fields)`` or None when nothing interpolates."""
+    return _recover_fstring_template(
+        template, source, arg_count, split=_split_template)
 
 
 def _try_binop(node: ast.BinOp, source: str) -> _Rewrite | None:

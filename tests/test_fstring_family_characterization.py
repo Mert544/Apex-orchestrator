@@ -70,11 +70,14 @@ _PERCENT_CASES = [
     ('x = "pre%smid%spost" % (a, b)\n', 'x = f"pre{a}mid{b}post"\n'),
     # brace in the percent template gets escaped:
     ('x = "{%s}" % v\n', 'x = f"{{{v}}}"\n'),
-    # must NOT convert:
+    # widened (proven byte-for-byte equivalent) conversions DO convert now:
+    ('x = "%r" % v\n', 'x = f"{v!r}"\n'),
+    ('x = "%5s" % v\n', 'x = f"{v!s:>5}"\n'),
+    ('x = "%.2f" % v\n', 'x = f"{v:.2f}"\n'),
+    ('x = "%x" % v\n', 'x = f"{v:x}"\n'),
+    # must NOT convert — ``%d``/``%i`` truncate floats but ``{:d}`` raises, so the
+    # decimal conversions are refused; mapping keys / count mismatch / lone % too:
     ('x = "%d" % v\n', 'x = "%d" % v\n'),
-    ('x = "%r" % v\n', 'x = "%r" % v\n'),
-    ('x = "%5s" % v\n', 'x = "%5s" % v\n'),
-    ('x = "%.2f" % v\n', 'x = "%.2f" % v\n'),
     ('x = "%(name)s" % d\n', 'x = "%(name)s" % d\n'),
     ('x = "%s %s" % (a,)\n', 'x = "%s %s" % (a,)\n'),
     ('x = "%s" % (a, b)\n', 'x = "%s" % (a, b)\n'),
