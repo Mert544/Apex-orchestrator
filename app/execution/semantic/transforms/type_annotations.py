@@ -20,16 +20,23 @@ What counts as PROVABLE (the only things ever annotated):
     ``bytes``), or ``-> None`` when the function has no value-returning ``return``
     and no ``yield`` (a pure procedure). Mixed return types, a non-literal
     return, a generator (``yield``), or an existing ``-> T`` are left alone.
-  - **Parameter type** from a non-None literal DEFAULT (``def f(x=0)`` →
-    ``x: int = 0``). A ``None`` default is ambiguous (the real type is
-    ``Optional[...]``), so it is skipped. ``*args`` / ``**kwargs`` and any
-    already-annotated parameter are skipped.
 
-Never guesses: when a type is not provable from the AST the function (or that
-one parameter) is left exactly as it was — an honest under-claim. Annotations
-are behaviour-preserving: they add ``-> T`` / ``param: T`` text only, never
-change runtime values. Deterministic: AST-only, no clock/random, a stable
-left-to-right walk. Test/fixture files are refused by the plan layer.
+Why NOT a parameter type from its default value: a default does NOT constrain
+the type a parameter accepts. ``def f(x=0)`` is routinely called ``f("s")`` or
+``f([1])`` — the ``0`` is only the value used when the argument is omitted, not
+a type bound. Inferring ``x: int`` from ``x=0`` is therefore UNSOUND: it can
+contradict the project's own passing tests (``add("ab")`` on ``def add(x=0)``)
+while still being stamped ``verified`` (an annotation changes no runtime value,
+so no test can ever catch the lie). That wrong-but-verified landing is exactly
+what Apex must never do, so the default-value → parameter-type path was REMOVED.
+Parameters are now left unannotated unless a future, genuinely TYPE-CONSTRAINING
+signal is added; a literal default is not one.
+
+Never guesses: when a type is not provable from the AST the function is left
+exactly as it was — an honest under-claim. Annotations are behaviour-preserving:
+they add ``-> T`` text only, never change runtime values. Deterministic:
+AST-only, no clock/random, a stable left-to-right walk. Test/fixture files are
+refused by the plan layer.
 """
 
 from __future__ import annotations
@@ -277,45 +284,33 @@ def _infer_return_type(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None
 def _annotatable_params(
     fn: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> list[tuple[ast.arg, str]]:
-    """``(arg, type_name)`` for each parameter whose type is PROVABLE from a
-    non-None literal default. ``*args``/``**kwargs`` are excluded (their default
-    cannot be expressed as a defaulted positional/kw arg). Already-annotated
-    params are skipped. None defaults are ambiguous (Optional) and skipped."""
-    args = fn.args
-    out: list[tuple[ast.arg, str]] = []
+    """``(arg, type_name)`` for each parameter whose type is PROVABLE — currently
+    NONE, so always ``[]``.
 
-    # Positional (posonly + normal) defaults align to the TAIL of the list.
-    positional = args.posonlyargs + args.args
-    pos_defaults = args.defaults
-    if pos_defaults:
-        offset = len(positional) - len(pos_defaults)
-        for i, default in enumerate(pos_defaults):
-            arg = positional[offset + i]
-            if arg.annotation is not None:
-                continue
-            t = _literal_type(default)
-            if t is None or t == "None":
-                continue
-            out.append((arg, t))
+    A parameter's DEFAULT value used to drive this (``def f(x=0)`` → ``x: int``),
+    but that is UNSOUND and was removed: a default is the value supplied when the
+    argument is OMITTED, not a bound on the type the parameter accepts. ``def
+    f(x=0)`` is legitimately called ``f("s")`` / ``f([1])``, so ``x: int`` can
+    flatly contradict the project's own passing tests — yet an annotation changes
+    no runtime value, so the suite still goes green and the wrong hint is stamped
+    ``verified`` (the wrong-but-verified failure this module exists to avoid).
 
-    # Keyword-only defaults align 1:1 with kwonlyargs (None entry = no default).
-    for arg, default in zip(args.kwonlyargs, args.kw_defaults):
-        if default is None or arg.annotation is not None:
-            continue
-        t = _literal_type(default)
-        if t is None or t == "None":
-            continue
-        out.append((arg, t))
-
-    return out
+    No other parameter signal is provable from the AST alone today, so this
+    returns ``[]``. The hook is kept (rather than deleted) so a future,
+    genuinely TYPE-CONSTRAINING source — never a literal default — has an
+    obvious, single place to land."""
+    return []
 
 
 def _function_edits(
     fn: ast.FunctionDef | ast.AsyncFunctionDef, source: str, line_starts: list[int]
 ) -> list[tuple[int, int, str]]:
-    """The ``(start, end, text)`` splice edits for one function: a ``: T`` after
-    each provably-typed defaulted param, and a `` -> T`` before the header colon
-    when the return is provable. Offsets are absolute into ``source``."""
+    """The ``(start, end, text)`` splice edits for one function: a `` -> T``
+    before the header colon when the return is provable. (Parameter edits are
+    currently never produced — see :func:`_annotatable_params` for why a default
+    value is not a sound type bound — but the loop is kept so a future sound
+    parameter signal needs no plumbing change.) Offsets are absolute into
+    ``source``."""
     edits: list[tuple[int, int, str]] = []
     for arg, type_name in _annotatable_params(fn):
         off = _end_offset(arg, line_starts)
@@ -485,9 +480,11 @@ def _is_fixture_path(path: str) -> bool:
 def plan_type_annotations(project_root: str | Path, module_rel: str) -> RenamePlan:
     """Build the provable-type-hint plan for one module, or an empty no-op plan.
 
-    Annotates every function in ``module_rel`` whose return and/or defaulted
-    parameters are provable from the AST. Test/fixture files are refused (empty
-    plan). An empty plan means nothing provable to add — a no-op, not a failure.
+    Annotates every function in ``module_rel`` whose return type is provable
+    from the AST (parameters are never inferred — a default value is not a sound
+    type bound; see :func:`_annotatable_params`). Test/fixture files are refused
+    (empty plan). An empty plan means nothing provable to add — a no-op, not a
+    failure.
     The single write goes in ``new_contents`` with the original in ``originals``
     so the verified-apply engine can roll it back if the suite fails."""
     plan = RenamePlan(old=module_rel, new="infer-type-hints")

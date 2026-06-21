@@ -1,7 +1,9 @@
 """infer-type-hints develop objective — land PROVABLE type annotations.
 
 Covers: objective registration/reachability, that the transform lands provable
-return + default-param hints, skips every ambiguous shape, refuses test/fixture
+RETURN hints, NEVER infers a parameter type from its default value (an unsound,
+wrong-but-verified landing — see ``test_does_not_infer_param_from_literal_default``
+and the ``def add(x=0)`` repro), skips every ambiguous shape, refuses test/fixture
 files, auto-rolls-back a suite-breaking case, is deterministic across two runs,
 and strictly increases measured type-hint coverage.
 """
@@ -56,9 +58,35 @@ def test_infers_bool_before_int():
     assert "-> bool:" in out and "-> int:" not in out
 
 
-def test_infers_param_from_literal_default():
-    out = infer_annotations("def f(x=0):\n    return x\n")
-    assert out is not None and "x: int=0" in out
+def test_does_not_infer_param_from_literal_default():
+    # WRONG-BUT-VERIFIED FIX: a default value does NOT constrain the type a
+    # parameter accepts, so `x=0` must NOT yield `x: int`. `def f(x=0)` is
+    # legitimately called `f("s")`; inferring `int` would contradict such a call
+    # while still passing (an annotation changes no runtime value) -> a verified
+    # lie. The return here is non-literal, so NOTHING is provable -> None.
+    assert infer_annotations("def f(x=0):\n    return x\n") is None
+
+
+def test_add_repro_does_not_land_contradicting_param_hint():
+    # The confirmed P1 repro. The repo's own tests call `add("ab")` / `add([1])`
+    # (str/list concatenation) and PASS, so `x` provably accepts more than `int`.
+    # Inferring `x: int` from the `0` default was wrong-but-verified. The return
+    # `x + x` is non-literal (not provable) -> the honest outcome is NO change.
+    src = "def add(x=0):\n    return x + x\n"
+    out = infer_annotations(src)
+    assert out is None
+    # Belt-and-braces: even if a future sound return signal ever lands here, the
+    # parameter must never gain a type from its default.
+    if out is not None:
+        assert "x: int" not in out
+
+
+def test_sound_return_still_lands_with_a_defaulted_param_present():
+    # Removing the unsound param path must NOT regress the sound RETURN path: a
+    # provable literal return is still annotated even when the function has a
+    # defaulted parameter — the param is simply left untouched.
+    out = infer_annotations("def f(x=0):\n    return 1\n")
+    assert out == "def f(x=0) -> int:\n    return 1\n"
 
 
 def test_infers_each_literal_kind():
@@ -76,9 +104,11 @@ def test_infers_each_literal_kind():
         assert out is not None and expect in out, body
 
 
-def test_infers_keyword_only_default():
-    out = infer_annotations("def f(*, n=3):\n    return n\n")
-    assert out is not None and "n: int=3" in out
+def test_does_not_infer_keyword_only_param_from_default():
+    # A keyword-only default is no more type-constraining than a positional one:
+    # `f(n="x")` is valid, so `n=3` must NOT yield `n: int`. The non-literal
+    # return leaves nothing else provable -> None. (Was a param-from-default bug.)
+    assert infer_annotations("def f(*, n=3):\n    return n\n") is None
 
 
 # --- ambiguity is always skipped (never a guess) -----------------------------
@@ -98,9 +128,10 @@ def test_skips_bare_return_mixed_with_value_return():
 
 
 def test_skips_none_default_param():
-    # None default is Optional[...] — ambiguous, so the param is left alone.
+    # No parameter is ever inferred from its default now (a default is not a type
+    # bound); a None default is doubly skipped. Return is non-literal -> nothing
+    # provable at all.
     out = infer_annotations("def f(x=None):\n    return x\n")
-    # x stays unannotated; return is non-literal -> nothing provable at all.
     assert out is None
 
 
@@ -236,11 +267,16 @@ def test_plan_is_noop_when_nothing_provable(tmp_path: Path):
 
 
 def test_plan_is_deterministic_across_two_runs(tmp_path: Path):
+    # Two provable RETURN hints land identically on repeated runs; the defaulted
+    # param `x` is left alone (a default is not a sound type bound).
     src = "def f(x=0):\n    return 1\n\ndef g():\n    return 's'\n"
     _project(tmp_path, "app/m.py", src)
     a = plan_type_annotations(str(tmp_path), "app/m.py").new_contents.get("app/m.py")
     b = plan_type_annotations(str(tmp_path), "app/m.py").new_contents.get("app/m.py")
-    assert a == b and a is not None and "x: int=0" in a and "-> str:" in a
+    assert a == b and a is not None
+    assert "-> int:" in a and "-> str:" in a  # both sound returns landed
+    assert "x: int" not in a                  # param NOT inferred from default
+    assert "def f(x=0)" in a                  # the param spelling is untouched
 
 
 def test_infer_unparseable_is_none():
@@ -284,6 +320,37 @@ def test_end_to_end_lands_hints_keeps_green_and_raises_coverage(tmp_path: Path):
 
     after = analyze_type_hint_coverage(str(tmp_path)).overall_ratio
     assert after > before  # measurable fitness gain
+
+
+def test_end_to_end_add_repro_never_lands_contradicting_param_hint(tmp_path: Path):
+    # The wrong-but-verified P1, end-to-end: `add(x=0)` whose tests call
+    # `add("ab")`/`add([1])` (str/list concat) and PASS. The old default-value
+    # inference stamped `x: int` as verified — provably wrong, since the param
+    # accepts str/list. The objective must now land NO param hint here. The
+    # non-literal return `x + x` is also not provable, so nothing lands for this
+    # function at all — the honest under-claim.
+    from app.engine.objective_compiler import compile_objective
+
+    _suite_project(tmp_path)
+    original = "def add(x=0):\n    return x + x\n"
+    (tmp_path / "app" / "concat.py").write_text(original, encoding="utf-8")
+    (tmp_path / "tests" / "test_concat.py").write_text(
+        "from app.concat import add\n"
+        "def test_it():\n"
+        "    assert add(2) == 4\n"
+        "    assert add('ab') == 'abab'\n"   # str concat — x is NOT int-only
+        "    assert add([1]) == [1, 1]\n",   # list concat — x is NOT int-only
+        encoding="utf-8")
+
+    result = compile_objective(str(tmp_path), objective="infer-type-hints",
+                               apply=True, verify=True)
+
+    text = (tmp_path / "app" / "concat.py").read_text()
+    # The contradicting hint must never appear; the function is left byte-identical.
+    assert "x: int" not in text
+    assert text == original
+    # And no step claims to have verified a (non-existent, would-be-wrong) hint.
+    assert not result.steps
 
 
 def test_end_to_end_auto_rollback_on_breaking_annotation(tmp_path: Path):
