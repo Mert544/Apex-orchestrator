@@ -34,6 +34,13 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # Byte-identical characterization tests recover their pre-refactor
+          # baseline via `git show <sha>:path` (and tests/conftest.py seeds the
+          # /tmp snapshots the same way). A shallow clone lacks those historical
+          # commits, so the whole suite ERRORs at collection. Full history (as
+          # apex-ci.yml / apex-review.yml already use) lets them resolve.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
