@@ -61,5 +61,17 @@ def moves(project_root: str | Path) -> list:
 # implement-stub's per-candidate suite runs. Flag it expensive so the fast
 # plan/ascend board skips it (it stays runnable via
 # `apex develop --objective strengthen-tests`).
+#
+# scope_verify=True: strengthen-tests has the same multi-module red-baseline
+# deadlock implement-stub / tdd-implement opt out of. On a project where several
+# OTHER modules still hold unimplemented stubs, the FULL suite is RED at baseline.
+# A correct strengthen-tests landing only APPENDS a double-gated mutant-killing
+# assertion to ONE module's TEST file; gated by the whole suite, that correct
+# change would be vetoed and rolled back by an unrelated still-red module. Because
+# the change IS to a test file, ``impacted_test_files`` includes that changed test
+# file directly, so impact-scoping runs exactly the appended assertion's own tests
+# (which genuinely pass after the landing, keeping the "verified" stamp honest)
+# and skips the unrelated red modules. The full suite stays the commit-time
+# backstop (``scripts/verify.py``), so never-fake-green holds.
 register(ObjectiveSpec(name="strengthen-tests", fitness=fitness, moves=moves,
-                       expensive=True))
+                       expensive=True, scope_verify=True))
