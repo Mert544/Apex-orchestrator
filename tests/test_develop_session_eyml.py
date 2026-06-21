@@ -653,3 +653,199 @@ def test_red_baseline_tidy_session_is_deterministic(tmp_path: Path):
     for rel in ("pkg/__init__.py", "pkg/models.py", "pkg/calc.py", "pkg/stub.py"):
         assert (a / rel).read_text() == (b / rel).read_text()
     assert ra.total_moves == rb.total_moves and ra.total_moves > 1
+
+
+# --- the auto-rollback MOAT fix: a transitive regression on a RED baseline ----
+#
+# THE VIOLATION (verified end-to-end by a red-team): on a RED baseline the session
+# forces impact-SCOPED gating for every objective (for speed — so the unrelated
+# pre-existing failure can't veto a correct tidy change). That scoping is BLIND to
+# a previously-GREEN test reachable only TRANSITIVELY (outside the impacted scope).
+# A behaviour-CHANGING transform — ``modernize``'s ``x == None`` -> ``x is None``,
+# which DIFFERS when an operand's class overrides ``__eq__`` — can break such a
+# test, and the change LANDED and was NEVER rolled back: the post-session
+# full-suite backstop only DISCLOSED (suite_green_after=False), and on a red
+# baseline a newly-introduced failure was indistinguishable from the pre-existing
+# one and silently kept.
+#
+# THE FIX (sound for ALL transforms): capture the baseline's failing-NODE set up
+# front, rerun the suite once after the session, and if ANY node that was GREEN at
+# baseline is now RED, ROLL THE WHOLE SESSION BACK to its pre-session bytes.
+
+
+def _transitive_regression_project(root: Path) -> Path:
+    """A RED-baseline project where ``modernize`` breaks a previously-GREEN test
+    reachable ONLY transitively (outside the move's impacted scope).
+
+    Layout:
+      * ``pkg/sentinel.py`` — a ``Missing`` sentinel whose ``__eq__`` treats
+        ``== None`` as True (so ``x == None`` and ``x is None`` genuinely DIFFER —
+        the exact behaviour-change ``modernize``'s ``==None``->``is None`` makes).
+      * ``pkg/check.py`` — ``def is_blank(value): return value == None`` — the
+        modernizable idiom. Its OWN test (``test_check.py``, in scope) passes both
+        BEFORE and AFTER the rewrite (``None``/``7`` cases are identical for ``==``
+        and ``is``), so the impact-scoped gate LETS THE MOVE LAND.
+      * ``pkg/wrapper.py`` — calls ``is_blank`` indirectly; ``test_wrapper.py``
+        imports the WRAPPER (not ``check``), so it is OUTSIDE the move's impacted
+        scope. It feeds ``MISSING`` and is GREEN at baseline (``MISSING == None``)
+        but RED after the rewrite (``MISSING is None`` is False) — the transitive
+        regression the scoped gate misses.
+      * ``tests/test_unrelated_red.py`` — a pre-existing FAILING test (unrelated),
+        which FORCES the session onto the impact-scoped path (the violation's
+        precondition)."""
+    (root / "pkg").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='pkg'\nversion='0'\n", encoding="utf-8")
+    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pkg" / "sentinel.py").write_text(
+        "class Missing:\n"
+        "    def __eq__(self, other):\n"
+        "        return other is None or isinstance(other, Missing)\n"
+        "    def __hash__(self):\n        return 0\n\n\n"
+        "MISSING = Missing()\n", encoding="utf-8")
+    (root / "pkg" / "check.py").write_text(
+        "def is_blank(value):\n    return value == None\n", encoding="utf-8")
+    (root / "pkg" / "wrapper.py").write_text(
+        "from pkg.check import is_blank\n\n\n"
+        "def blank_via_wrapper(value):\n    return is_blank(value)\n",
+        encoding="utf-8")
+    (root / "tests" / "test_check.py").write_text(
+        "from pkg.check import is_blank\n"
+        "def test_blank_none():\n    assert is_blank(None) is True\n"
+        "def test_blank_value():\n    assert is_blank(7) is False\n",
+        encoding="utf-8")
+    (root / "tests" / "test_wrapper.py").write_text(
+        "from pkg.wrapper import blank_via_wrapper\n"
+        "from pkg.sentinel import MISSING\n"
+        "def test_missing_is_blank():\n"
+        "    assert blank_via_wrapper(MISSING) is True\n", encoding="utf-8")
+    (root / "tests" / "test_unrelated_red.py").write_text(
+        "def test_preexisting_failure():\n    assert 1 == 2\n", encoding="utf-8")
+    return root
+
+
+def test_transitive_regression_on_red_baseline_is_rolled_back(tmp_path: Path):
+    # THE MOAT FIX, end-to-end. A behaviour-changing modernize move that breaks a
+    # previously-GREEN test reachable only transitively now ROLLS BACK (not merely
+    # discloses). The file is restored to its baseline bytes and the previously-
+    # green test passes again.
+    _transitive_regression_project(tmp_path)
+    check_before = (tmp_path / "pkg" / "check.py").read_text()
+
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+
+    # The session rolled the whole thing back: nothing landed, the node is named.
+    assert report.regression_rolled_back is True
+    assert report.regressed_nodes == [
+        "tests/test_wrapper.py::test_missing_is_blank"]
+    assert report.total_moves == 0
+    # The modernize change was UN-landed: check.py is byte-for-byte its baseline
+    # (still ``== None``), so the previously-green transitive test passes again.
+    assert (tmp_path / "pkg" / "check.py").read_text() == check_before
+    assert "== None" in (tmp_path / "pkg" / "check.py").read_text()
+
+    # The report HONESTLY says a regression was detected and restored.
+    md = render_session_markdown(report)
+    assert "Auto-rollback" in md
+    assert "ROLLED BACK" in md
+    assert "tests/test_wrapper.py::test_missing_is_blank" in md
+    # NOT the misleading "already satisfied" wording.
+    assert "every objective is already satisfied" not in md
+
+
+def test_transitive_regression_actually_lands_without_the_backstop(tmp_path: Path):
+    # Proves the violation EXISTS: with the per-move impact-scoped gate alone (no
+    # end-of-session baseline-diff backstop), the behaviour-changing modernize move
+    # LANDS — its own in-scope test still passes — and the transitive green test is
+    # broken and silently kept. This is exactly what the backstop now catches.
+    from app.engine.objective_compiler import compile_objective
+
+    _transitive_regression_project(tmp_path)
+    result = compile_objective(str(tmp_path), objective="modernize", apply=True,
+                               verify=True, scope_verify=True)
+    # The move landed (scoped gate saw only check.py's own passing tests).
+    assert result.steps
+    assert "value is None" in (tmp_path / "pkg" / "check.py").read_text()
+    # And the transitive green test is now broken — the silent regression.
+    import subprocess
+    import sys
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q",
+         str(tmp_path / "tests" / "test_wrapper.py")],
+        cwd=str(tmp_path), env={"PYTHONPATH": str(tmp_path), "PATH": ""},
+        capture_output=True, text=True)
+    assert proc.returncode != 0  # previously-green test now FAILS, un-rolled-back
+
+
+def test_red_baseline_clean_session_still_lands_no_over_rollback(tmp_path: Path):
+    # THE NO-OVER-ROLLBACK GUARD. A RED-baseline session whose changes do NOT
+    # regress any green node must still LAND its contributions; the pre-existing
+    # red test (the unsynthesizable stub) must NOT trigger a rollback. (Reuses the
+    # tidy-work fixture: red at baseline via an unsynthesizable stub, real tidy
+    # work in other modules.)
+    _red_baseline_with_tidy_work(tmp_path)
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+
+    # No regression detected: the pre-existing red is NOT counted as one.
+    assert report.regression_rolled_back is False
+    assert report.regressed_nodes == []
+    # The tidy contributions still LAND (the moat fix preserves them).
+    assert report.total_moves > 1
+    landed = {o.objective for o in report.objectives if o.moves}
+    assert "wire-exports" in landed and "dataclassify" in landed
+    # The still-red baseline (unsynthesizable stub) is honestly disclosed as
+    # BEFORE — a pre-existing red is disclosure, never a regression-rollback.
+    assert report.suite_available is True
+    assert report.suite_green_after is False
+    md = render_session_markdown(report)
+    assert "full suite RED after the session" in md
+    assert "Auto-rollback" not in md  # nothing was rolled back
+
+
+def test_green_baseline_never_runs_regression_backstop(tmp_path: Path, monkeypatch):
+    # The GREEN-baseline path is BYTE-IDENTICAL: it gates full-suite per move, so
+    # the regression backstop never runs and never rolls anything back. We pin that
+    # the failing-node capture is NEVER invoked on a green baseline.
+    from app.engine import develop_session as ds
+
+    _green_baseline_with_tidy_work(tmp_path)
+    calls = {"n": 0}
+    real = ds._failing_nodes
+
+    def counting(root):
+        calls["n"] += 1
+        return real(root)
+
+    monkeypatch.setattr(ds, "_failing_nodes", counting)
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+    assert calls["n"] == 0  # never captured on a green baseline
+    assert report.regression_rolled_back is False
+    assert report.regressed_nodes == []
+    assert report.total_moves >= 1
+    assert report.suite_green_after is True
+
+
+def test_regression_rollback_is_deterministic_byte_for_byte(tmp_path: Path):
+    # Same transitive-regression fixture -> identical rollback outcome + report
+    # bytes across two runs (sorted node sets; no clock/random).
+    a = _transitive_regression_project(tmp_path / "a")
+    b = _transitive_regression_project(tmp_path / "b")
+    ra = run_develop_session(str(a), apply=True)
+    rb = run_develop_session(str(b), apply=True)
+    assert ra.regression_rolled_back is rb.regression_rolled_back is True
+    assert ra.regressed_nodes == rb.regressed_nodes
+    assert render_session_markdown(ra) == render_session_markdown(rb)
+    # The restored tree is byte-identical too.
+    assert (a / "pkg" / "check.py").read_text() == (
+        b / "pkg" / "check.py").read_text()
+
+
+def test_regression_fields_serialise(tmp_path: Path):
+    # The new fields are on the dict artifact for downstream consumers.
+    _transitive_regression_project(tmp_path)
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+    d = report.to_dict()
+    assert d["regression_rolled_back"] is True
+    assert d["regressed_nodes"] == [
+        "tests/test_wrapper.py::test_missing_is_blank"]

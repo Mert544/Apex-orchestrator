@@ -19,6 +19,7 @@ no time, no randomness.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 __all__ = [
     "NO_SUITE",
@@ -26,7 +27,41 @@ __all__ = [
     "run_full_suite_verification",
     "stamp_coverage_strength",
     "suite_baseline_green",
+    "suite_failing_nodes",
 ]
+
+# pytest's short-summary failure lines name every failing node id, e.g.
+# ``FAILED tests/test_x.py::test_y - AssertionError``. We want the WHOLE set (the
+# proof summariser caps its copy at 5 for human display; the rollback backstop
+# needs every one to diff baseline-green vs. after), so this parses them directly.
+# Matches both ``FAILED <node>`` and ``ERROR <node>``; the trailing ``- reason``
+# (if any) is stripped so the node id is the bare ``path::name`` token.
+_NODE_LINE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
+
+
+def suite_failing_nodes(root: Path) -> tuple[bool, frozenset[str]]:
+    """One full-suite run, reduced to ``(suite_available, failing_node_ids)``.
+
+    Runs the project's full test suite ONCE (the same runner the baseline
+    pre-flight and the per-move gate use) and returns the DETERMINISTIC set of
+    every failing/erroring pytest node id parsed from the short-summary lines
+    (``FAILED <node>`` / ``ERROR <node>``). ``suite_available`` is False when no
+    test command is detectable.
+
+    This is the granularity the session's end-of-session rollback backstop diffs:
+    a node that FAILED at baseline but is absent here recovered; a node ABSENT at
+    baseline that FAILS here is a REGRESSION the session introduced. Parsed from
+    the captured output, sorted into a ``frozenset`` — no clock, no randomness, so
+    the same suite output always yields the same set. Stdlib-only; the runner is
+    imported lazily exactly as the rest of this tail does."""
+    from app.skills.execution.run_tests import RunTestsSkill
+
+    summary = RunTestsSkill().run(str(root))
+    nodes: set[str] = set()
+    for res in summary.results or []:
+        text = (res.get("stdout") or "") + (res.get("stderr") or "")
+        nodes.update(_NODE_LINE.findall(text))
+    return bool(summary.commands), frozenset(nodes)
 
 # HONEST no-suite tier. When no test command can be detected, a change is applied
 # WITHOUT running anything and WITHOUT any rollback safety net — the auto-rollback

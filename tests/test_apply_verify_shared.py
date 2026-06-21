@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.execution._apply_verify import run_full_suite_verification
+from app.execution._apply_verify import (
+    run_full_suite_verification,
+    suite_failing_nodes,
+)
 
 
 class _Summary:
@@ -125,3 +128,67 @@ def test_apply_move_uses_the_shared_tail(tmp_path: Path, monkeypatch) -> None:
     assert calls["verify"] == 1
     assert res["verified"] is True
     assert res["rolled_back"] is False
+
+
+# --- suite_failing_nodes: the DETERMINISTIC full failing-node-id set ----------
+
+
+class _NodeSummary:
+    """A fake TestRunSummary carrying pytest short-summary output."""
+
+    def __init__(self, commands: list, stdout: str = "", stderr: str = "") -> None:
+        self.commands = commands
+        self.results = [{"stdout": stdout, "stderr": stderr}]
+
+
+def _patch_nodes(monkeypatch, summary: _NodeSummary) -> None:
+    import app.skills.execution.run_tests as run_tests_mod
+
+    class _FakeSkill:
+        def run(self, root: str):  # noqa: ANN001 - test double
+            return summary
+
+    monkeypatch.setattr(run_tests_mod, "RunTestsSkill", _FakeSkill)
+
+
+def test_failing_nodes_parses_every_failed_and_error_node(monkeypatch) -> None:
+    # ALL failing nodes (not the 5-cap the human-facing summary uses), both
+    # FAILED and ERROR lines, returned as a deterministic sorted frozenset.
+    out = (
+        "FAILED tests/test_b.py::test_two - AssertionError\n"
+        "FAILED tests/test_a.py::test_one - AssertionError\n"
+        "ERROR tests/test_c.py::test_err - ImportError\n"
+        "FAILED tests/test_a.py::test_three\n"
+    )
+    _patch_nodes(monkeypatch, _NodeSummary(commands=[["pytest"]], stdout=out))
+    available, nodes = suite_failing_nodes(Path("/tmp"))
+    assert available is True
+    assert nodes == frozenset({
+        "tests/test_a.py::test_one",
+        "tests/test_a.py::test_three",
+        "tests/test_b.py::test_two",
+        "tests/test_c.py::test_err",
+    })
+    # Sorting is deterministic.
+    assert sorted(nodes) == [
+        "tests/test_a.py::test_one",
+        "tests/test_a.py::test_three",
+        "tests/test_b.py::test_two",
+        "tests/test_c.py::test_err",
+    ]
+
+
+def test_failing_nodes_empty_when_all_green(monkeypatch) -> None:
+    _patch_nodes(monkeypatch, _NodeSummary(
+        commands=[["pytest"]], stdout="5 passed in 0.1s\n"))
+    available, nodes = suite_failing_nodes(Path("/tmp"))
+    assert available is True
+    assert nodes == frozenset()
+
+
+def test_failing_nodes_no_suite_available(monkeypatch) -> None:
+    # No test command detected -> suite_available False, empty failing set.
+    _patch_nodes(monkeypatch, _NodeSummary(commands=[], stdout=""))
+    available, nodes = suite_failing_nodes(Path("/tmp"))
+    assert available is False
+    assert nodes == frozenset()

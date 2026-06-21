@@ -139,6 +139,22 @@ class SessionReport:
     # the suite is RED, never "already satisfied" (never-fake-green). ``True`` = the
     # baseline genuinely passed, so "already satisfied" is honest.
     baseline_suite_green: bool | None = None
+    # Did the END-OF-SESSION baseline-diff backstop detect a regression and ROLL
+    # the whole session BACK? On a RED baseline the per-move gate is impact-scoped
+    # (for speed), so a behaviour-CHANGING transform can break a previously-GREEN
+    # test reachable only TRANSITIVELY — outside the impacted scope. The session
+    # captures the baseline's failing-node set, reruns the suite once after applying,
+    # and if ANY baseline-green node regressed, restores every modified file (and
+    # deletes created ones) to its pre-session bytes. ``True`` here means that
+    # happened: the contributions were UN-landed and the tree is back at baseline.
+    # ``False`` (the default) means no baseline-green node regressed — the changes
+    # stand. Only ever ``True`` on a RED baseline that actually applied changes; the
+    # GREEN-baseline path gates full-suite per move and never reaches this.
+    regression_rolled_back: bool = False
+    # The sorted node ids that were GREEN at baseline but RED after the session —
+    # the evidence behind a ``regression_rolled_back``. Empty unless a regression
+    # was detected (and rolled back), so a clean session's artifact is unchanged.
+    regressed_nodes: list[str] = field(default_factory=list)
 
     @property
     def total_moves(self) -> int:
@@ -177,6 +193,8 @@ class SessionReport:
             "suite_green_after": self.suite_green_after,
             "backstop_ran": self.backstop_ran,
             "baseline_suite_green": self.baseline_suite_green,
+            "regression_rolled_back": self.regression_rolled_back,
+            "regressed_nodes": self.regressed_nodes,
             "objectives": [o.to_dict() for o in self.objectives],
             "diff": self.diff,
         }
@@ -303,6 +321,120 @@ def _full_suite_green(root: Path) -> tuple[bool, bool]:
     return suite_available, green
 
 
+def _failing_nodes(root: Path) -> frozenset[str]:
+    """The DETERMINISTIC set of test node ids that FAIL on one full-suite run.
+
+    Thin wrapper over :func:`app.execution._apply_verify.suite_failing_nodes`,
+    used for BOTH the up-front baseline capture (on a red apply baseline) and the
+    end-of-session re-run, so the backstop can diff "green at baseline" against
+    "red after" and ROLL BACK a regression instead of merely disclosing it. Sorted
+    node ids, no clock/random — same suite output in, same set out."""
+    from app.execution._apply_verify import suite_failing_nodes
+
+    _available, nodes = suite_failing_nodes(root)
+    return nodes
+
+
+def _restore_snapshot(root: Path, before: dict[str, str],
+                      after: dict[str, str]) -> None:
+    """Roll the tree back to the pre-session ``before`` snapshot, byte-for-byte.
+
+    Mirrors ``apply_rename``'s rollback semantics: every file the session MODIFIED
+    is rewritten to its exact pre-session bytes, and every file the session CREATED
+    (present in ``after`` but absent from ``before``) is deleted. Walked in sorted
+    order for determinism; a file deleted by the session is recreated from
+    ``before``. Best-effort per path (an unwritable path is skipped) but the common
+    case restores the whole working tree to its captured baseline state."""
+    for rel in sorted(set(before) | set(after)):
+        path = root / rel
+        if rel in before:
+            if after.get(rel) == before[rel]:
+                continue
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(before[rel], encoding="utf-8")
+            except OSError:
+                continue
+        else:
+            # Created by the session — remove it to restore the baseline tree.
+            try:
+                path.unlink()
+            except OSError:
+                continue
+
+
+def _regressed_nodes(baseline_failing: frozenset[str],
+                     after_failing: frozenset[str]) -> frozenset[str]:
+    """The node ids that were GREEN at baseline but are RED after the session.
+
+    The sound rollback signal: ``after_failing - baseline_failing``. A node that
+    was already failing at baseline (an unsynthesizable stub's pinned test) is NOT
+    a regression — it was red before Apex touched anything, so keeping it red is
+    honest disclosure, never an over-rollback. A node ABSENT from baseline_failing
+    that now fails is a previously-green test the session broke."""
+    return after_failing - baseline_failing
+
+
+def _maybe_rollback_regression(
+    report: SessionReport, root: Path, before: dict[str, str],
+    after: dict[str, str], baseline_failing: frozenset[str],
+) -> dict[str, str]:
+    """The END-OF-SESSION baseline-diff rollback backstop. Returns the effective
+    ``after`` snapshot (``before`` when a regression was rolled back).
+
+    The per-move gate already ran (impact-scoped on a red baseline), but a
+    transitively-reachable GREEN test — outside every move's impacted scope — can
+    be broken by a behaviour-changing transform and silently kept. So rerun the
+    suite once, diff its failing-node set against the baseline's, and if ANY
+    baseline-green node regressed, RESTORE every file to its pre-session bytes
+    (delete created ones) — the sound, transform-agnostic guard. A node already
+    failing at baseline is NOT a regression (honest disclosure, never
+    over-rollback). Caller invokes this ONLY on a red baseline that changed files."""
+    after_failing = _failing_nodes(root)
+    regressed = _regressed_nodes(baseline_failing, after_failing)
+    if not regressed:
+        return after
+    _restore_snapshot(root, before, after)
+    report.regression_rolled_back = True
+    report.regressed_nodes = sorted(regressed)
+    # The tree is back at baseline: drop every landed move so the artifact
+    # reflects the rollback, not phantom contributions.
+    for obj in report.objectives:
+        obj.moves = []
+    return before
+
+
+def _finalize_apply(
+    report: SessionReport, root: Path, before: dict[str, str], *, verify: bool,
+    baseline_green: bool | None, baseline_failing: frozenset[str],
+) -> None:
+    """Build the apply-mode diff + run the full-suite backstop, after the session.
+
+    The baseline-diff ROLLBACK backstop runs ONLY when the baseline was RED, the
+    run gated (``verify``), and files actually changed — the precondition for the
+    transitive-regression hole; the GREEN path (full-suite per-move gating) never
+    reaches it and is byte-identical. Then the unified diff is recomputed against
+    the EFFECTIVE after (which is ``before`` if a regression rolled the session
+    back) and the disclosure-only full-suite backstop runs as before."""
+    after = _snapshot(root)
+    if verify and baseline_green is False and after != before:
+        after = _maybe_rollback_regression(
+            report, root, before, after, baseline_failing)
+    files, added, removed, diff = _diff_snapshots(before, after)
+    report.files_changed = files
+    report.lines_added = added
+    report.lines_removed = removed
+    report.diff = diff
+    # Full-suite backstop: even though every move was gated, run the whole suite
+    # once after the combined session and disclose the verdict. Under ``--no-verify``
+    # (verify=False) NOTHING was gated and the backstop is NOT run, so
+    # ``backstop_ran`` stays False and the renderer must NOT claim the suite is
+    # green (never-fake-green — the moves are UNVERIFIED).
+    if verify:
+        report.suite_available, report.suite_green_after = _full_suite_green(root)
+        report.backstop_ran = True
+
+
 def run_develop_session(
     project_root: str | Path, *, max_steps: int = 25, verify: bool = True,
     apply: bool = False, scope_verify: bool = False,
@@ -339,8 +471,19 @@ def run_develop_session(
     # pick the gate scope); a dry run gates nothing, so it probes lazily below only
     # if it must explain an empty outcome. ``None`` = not yet probed.
     baseline_green: bool | None = None
+    # On a RED baseline the per-move gate is impact-SCOPED (above), which is fast
+    # but blind to a previously-GREEN test reachable only TRANSITIVELY (outside the
+    # impacted scope): a behaviour-CHANGING transform can break it and the move
+    # lands un-noticed. So when (and only when) the baseline is RED we also capture
+    # the EXACT set of failing node ids up front; after the session we rerun the
+    # suite once and ROLL BACK if any baseline-green node regressed. The capture is
+    # a single extra full-suite run, taken ONLY on a red apply baseline — correctness
+    # over speed, and the green happy path pays nothing.
+    baseline_failing: frozenset[str] = frozenset()
     if apply and verify:
         baseline_green = _baseline_suite_green(root)
+        if baseline_green is False:
+            baseline_failing = _failing_nodes(root)
     effective_scope = scope_verify or baseline_green is False
 
     report = SessionReport(applied=apply)
@@ -351,20 +494,9 @@ def run_develop_session(
         report.objectives.append(_collect_objective(result))
 
     if apply:
-        after = _snapshot(root)
-        files, added, removed, diff = _diff_snapshots(before, after)
-        report.files_changed = files
-        report.lines_added = added
-        report.lines_removed = removed
-        report.diff = diff
-        # Full-suite backstop: even though every move was gated, run the whole
-        # suite once after the combined session and disclose the verdict. Under
-        # ``--no-verify`` (verify=False) NOTHING was gated and the backstop is
-        # NOT run, so ``backstop_ran`` stays False and the renderer must NOT claim
-        # the suite is green (never-fake-green — the moves are UNVERIFIED).
-        if verify:
-            report.suite_available, report.suite_green_after = _full_suite_green(root)
-            report.backstop_ran = True
+        _finalize_apply(report, root, before, verify=verify,
+                        baseline_green=baseline_green,
+                        baseline_failing=baseline_failing)
 
     # Baseline-red guard. When NOTHING landed, the renderer would otherwise say
     # "every objective is already satisfied" — which is a LIE if the real reason is
@@ -407,33 +539,52 @@ def _headline_lines(report: SessionReport) -> list[str]:
     return head
 
 
+def _backstop_phrase(report: SessionReport) -> str:
+    """The one-line full-suite backstop verdict — disclosure-only, as before."""
+    if not report.backstop_ran:
+        # --no-verify: nothing was gated and the backstop did NOT run, so we
+        # cannot claim the suite is green. Disclose the moves are UNVERIFIED.
+        return ("backstop not run (--no-verify) — moves UNVERIFIED, "
+                "the full suite was not run to back-stop them")
+    if not report.suite_available:
+        return "no test suite detected — nothing to back-stop"
+    if report.suite_green_after:
+        return "✅ full suite GREEN after the session"
+    return "⚠️ full suite RED after the session"
+
+
+def _verification_lines(report: SessionReport) -> list[str]:
+    """The applied-mode verification + backstop + auto-rollback disclosure lines."""
+    parts = [f"**{report.verified_moves} verified** "
+             f"(a test exercises the change)"]
+    if report.weak_moves:
+        parts.append(
+            f"**{report.weak_moves} weak** (suite green but NO test references "
+            f"the change — disclosed, not counted as verified)")
+    if report.no_suite_moves:
+        parts.append(
+            f"**{report.no_suite_moves} no-suite** (landed but the repo has no "
+            f"detectable test suite — disclosed, not counted as green)")
+    lines = ["Verification: " + ", ".join(parts) + ".",
+             f"Full-suite backstop: {_backstop_phrase(report)}."]
+    if report.regression_rolled_back:
+        # The end-of-session baseline-diff backstop caught a previously-GREEN test
+        # the (impact-scoped) per-move gate missed and rolled the WHOLE session
+        # back to its pre-session bytes. Disclose it loudly and name the regressed
+        # nodes — never silently keep a regression.
+        nodes = ", ".join(f"`{n}`" for n in report.regressed_nodes)
+        lines.append(
+            "⚠️ Auto-rollback: a previously-GREEN test regressed "
+            f"({nodes}) — the entire session was ROLLED BACK to its "
+            "pre-session state; no contribution landed.")
+    return lines
+
+
 def _render_summary(report: SessionReport) -> list[str]:
     """The headline + per-objective breakdown lines (no diff)."""
     lines = _headline_lines(report)
     if report.applied:
-        parts = [f"**{report.verified_moves} verified** "
-                 f"(a test exercises the change)"]
-        if report.weak_moves:
-            parts.append(
-                f"**{report.weak_moves} weak** (suite green but NO test references "
-                f"the change — disclosed, not counted as verified)")
-        if report.no_suite_moves:
-            parts.append(
-                f"**{report.no_suite_moves} no-suite** (landed but the repo has no "
-                f"detectable test suite — disclosed, not counted as green)")
-        lines.append("Verification: " + ", ".join(parts) + ".")
-        if not report.backstop_ran:
-            # --no-verify: nothing was gated and the backstop did NOT run, so we
-            # cannot claim the suite is green. Disclose the moves are UNVERIFIED.
-            backstop = ("backstop not run (--no-verify) — moves UNVERIFIED, "
-                        "the full suite was not run to back-stop them")
-        elif not report.suite_available:
-            backstop = "no test suite detected — nothing to back-stop"
-        elif report.suite_green_after:
-            backstop = "✅ full suite GREEN after the session"
-        else:
-            backstop = "⚠️ full suite RED after the session"
-        lines.append(f"Full-suite backstop: {backstop}.")
+        lines += _verification_lines(report)
     lines.append("")
     lines.append("## Per-objective breakdown")
     work = report.objectives_with_work
@@ -467,6 +618,16 @@ def _nothing_landed_lines(report: SessionReport) -> list[str]:
       * otherwise (genuinely satisfied, or the baseline was never probed) — keep
         the positive "already satisfied" message byte-for-byte, so a clean GREEN
         project's report is unchanged from before."""
+    if report.regression_rolled_back:
+        # The empty contribution list here is NOT "nothing to do" — work landed
+        # then was UN-landed because it regressed a previously-green test. Say so
+        # plainly; the backstop line above already named the regressed nodes.
+        return [
+            "_No contribution stands: the session landed work that REGRESSED a "
+            "previously-green test, so Apex rolled the entire session back to its "
+            "pre-session state (auto-rollback). This is NOT an 'already satisfied' "
+            "project — nothing was kept because nothing held._",
+        ]
     if report.baseline_suite_green is False:
         return [
             "_No concrete contribution available, but the project's test suite is "
