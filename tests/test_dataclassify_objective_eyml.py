@@ -156,6 +156,143 @@ def test_other_methods_are_preserved():
     assert ns["Box"](3, 4).area() == 12
 
 
+# --- behaviour preservation: a leading class docstring stays ``__doc__`` ------
+# @dataclass synthesises ``Foo(...)`` as ``__doc__`` when the class has none, so
+# a leading docstring that is relocated after the generated fields is silently
+# DESTROYED (``__doc__`` flips from the real text to the signature) — an
+# observable change the rewrite must NOT make. It must keep the docstring as the
+# first body statement.
+
+def _doc_first_stmt(out: str) -> bool:
+    """True when the converted source opens its (single) class with a docstring
+    as body statement 0 — the position that makes it the class ``__doc__``."""
+    import ast
+
+    cls = next(n for n in ast.parse(out).body if isinstance(n, ast.ClassDef))
+    return ast.get_docstring(cls) is not None and isinstance(cls.body[0], ast.Expr)
+
+
+def test_class_docstring_is_preserved_as_doc():
+    # The confirmed repro: a documented boilerplate class. After conversion
+    # ``__doc__`` must still be the ORIGINAL text, not @dataclass's ``Point(...)``.
+    src = (
+        "class Point:\n"
+        '    """A 2D point."""\n'
+        "    def __init__(self, x, y):\n"
+        "        self.x = x\n"
+        "        self.y = y\n"
+    )
+    out = rewrite_dataclasses(src)
+    assert out is not None and "@dataclass" in out
+    assert _doc_first_stmt(out)  # docstring is the FIRST body statement
+
+    ns: dict = {}
+    exec(out, ns)
+    Point = ns["Point"]
+    assert Point.__doc__ == "A 2D point."  # NOT the auto-generated signature
+    assert Point.__doc__ != "Point(x: Any, y: Any)"
+    assert (Point(1, 2).x, Point(1, 2).y) == (1, 2)  # construction still works
+
+
+def test_multiline_class_docstring_is_preserved_verbatim():
+    src = (
+        "class Box:\n"
+        '    """A box.\n'
+        "\n"
+        "    Holds a width and a height.\n"
+        '    """\n'
+        "    def __init__(self, w, h):\n"
+        "        self.w = w\n"
+        "        self.h = h\n"
+    )
+    out = rewrite_dataclasses(src)
+    assert out is not None and _doc_first_stmt(out)
+
+    ns: dict = {}
+    exec(out, ns)
+    assert ns["Box"].__doc__ == "A box.\n\n    Holds a width and a height.\n    "
+
+
+def test_documented_class_with_method_keeps_doc_first_and_method():
+    # A leading docstring AND a trailing non-field statement (a method): the
+    # docstring stays first, the method is still preserved as before.
+    src = (
+        "class Box:\n"
+        '    """A box."""\n'
+        "    def __init__(self, w, h):\n"
+        "        self.w = w\n"
+        "        self.h = h\n"
+        "\n"
+        "    def area(self):\n"
+        "        return self.w * self.h\n"
+    )
+    out = rewrite_dataclasses(src)
+    assert out is not None and _doc_first_stmt(out)
+
+    ns: dict = {}
+    exec(out, ns)
+    Box = ns["Box"]
+    assert Box.__doc__ == "A box."
+    assert Box(3, 4).area() == 12  # the method survives the rewrite
+
+
+def test_no_docstring_output_is_byte_identical_to_unconverted_shape():
+    # Regression guard for the docstring fix: a class WITHOUT a docstring must
+    # convert exactly as it always did — the leading-docstring branch must not
+    # perturb the un-documented path. Two equivalent shapes (fields-only and
+    # fields+method) are checked against their known-good rewrites.
+    fields_only = (
+        "class P:\n"
+        "    def __init__(self, x, y=0):\n"
+        "        self.x = x\n"
+        "        self.y = y\n"
+    )
+    assert rewrite_dataclasses(fields_only) == (
+        "from typing import Any\n"
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass\n"
+        "class P:\n"
+        "    x: Any\n"
+        "    y: Any = 0\n"
+    )
+
+    with_method = (
+        "class Box:\n"
+        "    def __init__(self, w, h):\n"
+        "        self.w = w\n"
+        "        self.h = h\n"
+        "\n"
+        "    def area(self):\n"
+        "        return self.w * self.h\n"
+    )
+    assert rewrite_dataclasses(with_method) == (
+        "from typing import Any\n"
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass\n"
+        "class Box:\n"
+        "    w: Any\n"
+        "    h: Any\n"
+        "\n"
+        "    def area(self):\n"
+        "        return self.w * self.h\n"
+    )
+
+
+def test_documented_class_rewrite_is_deterministic_and_idempotent():
+    src = (
+        "class Point:\n"
+        '    """A 2D point."""\n'
+        "    def __init__(self, x, y):\n"
+        "        self.x = x\n"
+        "        self.y = y\n"
+    )
+    once = rewrite_dataclasses(src)
+    assert rewrite_dataclasses(src) == once          # deterministic
+    assert rewrite_dataclasses(once) is None         # idempotent — already done
+
+
 # --- mutable defaults -> field(default_factory=...) --------------------------
 
 def test_mutable_list_default_becomes_factory():

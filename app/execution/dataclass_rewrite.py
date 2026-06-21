@@ -281,14 +281,19 @@ def _rewrite_one_class(cls: ast.ClassDef, lines: list[str]) -> tuple[
     header_idx = cls.lineno - 1
     init_start, init_end = _node_line_span(init)
 
-    # The class header line (``class Foo:``) plus everything above __init__,
-    # then the fields, then everything below __init__ (other methods preserved).
+    # The class header line (``class Foo:``), then a LEADING DOCSTRING (kept as
+    # the first body statement so it stays ``__doc__`` — emitting it after the
+    # fields would let ``@dataclass`` overwrite ``__doc__`` with its generated
+    # ``Foo(...)`` signature, a wrong-but-verified behaviour change), then the
+    # fields, then everything below __init__ (other methods preserved).
     body_first = cls.body[0].lineno - 1
     pre = lines[header_idx:body_first]
-    above = _body_lines_excluding(lines, cls, init, body_first, init_start, init_end)
+    doc_lines, body_start = _leading_docstring_lines(cls, lines, body_first)
+    above = _body_lines_excluding(lines, cls, init, body_start, init_start, init_end)
 
     new_lines = [f"{decorator_indent}@dataclass"]
     new_lines.extend(pre)
+    new_lines.extend(doc_lines)  # docstring stays at body position 0
     new_lines.extend(field_lines)
     if above and above[0].strip():
         new_lines.append("")  # one blank line between fields and kept methods
@@ -307,21 +312,45 @@ def _node_line_span(node: ast.AST) -> tuple[int, int]:
     return start, end
 
 
+def _leading_docstring_lines(
+    cls: ast.ClassDef, lines: list[str], body_first: int
+) -> tuple[list[str], int]:
+    """When ``cls`` opens with a docstring on its OWN line(s), its source lines
+    and the index just PAST it; otherwise ``([], body_first)``.
+
+    The docstring must stay the FIRST body statement so it remains the class's
+    ``__doc__`` — emitting it after the generated fields would let ``@dataclass``
+    replace ``__doc__`` with its synthesised ``Foo(...)`` signature. A class with
+    no leading docstring yields no docstring lines and an unchanged body start,
+    so its rewrite is byte-identical to before. A docstring sharing the ``class
+    Foo:`` header line (which a convertible class never has) is left in place so
+    the header is not dropped."""
+    if ast.get_docstring(cls) is None:
+        return [], body_first
+    first = cls.body[0]
+    if not isinstance(first, ast.Expr):
+        return [], body_first  # not a bare string-expression statement
+    doc_start, doc_end = _node_line_span(first)
+    if doc_start <= cls.lineno - 1:
+        return [], body_first  # docstring shares the class header line
+    return lines[doc_start:doc_end], doc_end
+
+
 def _body_lines_excluding(
     lines: list[str],
     cls: ast.ClassDef,
     init: ast.FunctionDef,
-    body_first: int,
+    body_start: int,
     init_start: int,
     init_end: int,
 ) -> list[str]:
-    """Every line of the class body EXCEPT the ``__init__`` definition (and the
-    docstring-or-blank lines belonging to nothing else are preserved). Walks the
-    class body lines, dropping the ``__init__`` span and any blank line directly
-    adjacent to it so no double blank survives."""
+    """Every body line from ``body_start`` (which already skips any leading
+    docstring) EXCEPT the ``__init__`` definition. Walks the class body lines,
+    dropping the ``__init__`` span and any blank line directly adjacent to it so
+    no double blank survives."""
     _, cls_end = _node_line_span(cls)
     kept: list[str] = []
-    i = body_first
+    i = body_start
     while i < cls_end:
         if init_start <= i < init_end:
             i = init_end
