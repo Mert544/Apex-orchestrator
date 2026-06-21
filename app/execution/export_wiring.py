@@ -35,9 +35,9 @@ Two real-world layouts this engine handles deliberately:
   :func:`oracle_target` strips the detected source root so the oracle validates
   the package exactly as a real caller imports it. Source roots are the de-facto
   ``src/`` convention plus ``pyproject.toml``-declared roots (pytest
-  ``pythonpath`` / setuptools ``package-dir`` / ``packages.find where``); the
-  detection mirrors ``app.engine.mutation_tester._source_roots`` and is replicated
-  here (stdlib-only ``tomllib``) so wire-exports has no cross-module coupling.
+  ``pythonpath`` / setuptools ``package-dir`` / ``packages.find where``); that
+  detection is shared via :func:`app.engine.source_roots.source_roots` — the single
+  source-root utility used by both wire-exports and mutation-impact scoping.
 """
 
 from __future__ import annotations
@@ -46,12 +46,8 @@ import ast
 from dataclasses import dataclass, field
 from pathlib import Path
 
-try:  # py311+: stdlib; older: graceful no-pyproject-parse degrade
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - exercised only on <3.11
-    tomllib = None  # type: ignore[assignment]
-
 from app.engine.skip_dirs import is_test_or_fixture_path
+from app.engine.source_roots import source_roots
 
 __all__ = [
     "WirePlan",
@@ -368,7 +364,7 @@ def oracle_target(
     rel_posix = Path(init_rel).as_posix()
     parent_parts = Path(init_rel).parent.parts
     best: str | None = None
-    for source_root in _source_roots(root):
+    for source_root in source_roots(root):
         # Strip a root only when a real package remains UNDER it (the root is the
         # FIRST segment AND is not the package's own only segment). ``src/__init__
         # .py`` — a regular package literally named ``src`` — keeps its name; we do
@@ -391,88 +387,6 @@ def _dotted_package(parent_parts: tuple[str, ...]) -> str:
     """Dotted import name for a package whose ``__init__.py`` parent path is
     ``parent_parts`` (``("a", "b")`` -> ``"a.b"``; empty -> ``""``)."""
     return ".".join(parent_parts)
-
-
-def _source_roots(project_root: Path) -> list[str]:
-    """Strippable source-root path segments, deterministic and sorted.
-
-    Mirrors ``app.engine.mutation_tester._source_roots`` (replicated locally so
-    wire-exports stays decoupled): the de-facto ``src/`` convention is ALWAYS a
-    root, plus any root declared in ``pyproject.toml`` (pytest ``pythonpath`` /
-    setuptools ``package-dir`` / ``packages.find where``). A missing/unparseable
-    pyproject (or absent ``tomllib``) degrades to ``src/`` alone."""
-    roots = {"src"}
-    for declared in _pyproject_roots(project_root):
-        head = _first_path_segment(declared)
-        if head:
-            roots.add(head)
-    return sorted(roots)
-
-
-def _first_path_segment(value: str) -> str | None:
-    """The leading path component of a declared root (``"./src"`` -> ``"src"``,
-    ``"src/pkg"`` -> ``"src"``, ``"."``/``""`` -> ``None``)."""
-    if not isinstance(value, str):
-        return None
-    parts = [p for p in value.replace("\\", "/").split("/") if p and p != "."]
-    return parts[0] if parts else None
-
-
-def _pyproject_roots(project_root: Path) -> list[str]:
-    """Raw source-root strings declared in ``pyproject.toml`` — pytest
-    ``pythonpath``, setuptools ``package-dir`` values, and ``packages.find
-    where``. Best-effort: a missing file, absent ``tomllib``, or a parse error
-    yields ``[]``."""
-    path = project_root / "pyproject.toml"
-    if tomllib is None or not path.is_file():
-        return []
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(data, dict):
-        return []
-    tool = data.get("tool")
-    if not isinstance(tool, dict):
-        return []
-    out: list[str] = []
-    out.extend(_pytest_pythonpath(tool))
-    out.extend(_setuptools_roots(tool))
-    return out
-
-
-def _pytest_pythonpath(tool: dict) -> list[str]:
-    """The ``[tool.pytest.ini_options] pythonpath`` entries (str or list of str)."""
-    ini = tool.get("pytest", {})
-    ini = ini.get("ini_options", {}) if isinstance(ini, dict) else {}
-    return _as_str_list(ini.get("pythonpath")) if isinstance(ini, dict) else []
-
-
-def _setuptools_roots(tool: dict) -> list[str]:
-    """The setuptools-declared roots: ``[tool.setuptools] package-dir`` values and
-    ``[tool.setuptools.packages.find] where`` entries."""
-    setup = tool.get("setuptools")
-    if not isinstance(setup, dict):
-        return []
-    out: list[str] = []
-    package_dir = setup.get("package-dir")
-    if isinstance(package_dir, dict):
-        out.extend(v for v in package_dir.values() if isinstance(v, str))
-    packages = setup.get("packages")
-    find = packages.get("find") if isinstance(packages, dict) else None
-    if isinstance(find, dict):
-        out.extend(_as_str_list(find.get("where")))
-    return out
-
-
-def _as_str_list(value: object) -> list[str]:
-    """Normalize a TOML scalar/list into a list of strings (a bare str becomes a
-    one-element list; a list keeps only its str items; anything else -> ``[]``)."""
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list):
-        return [v for v in value if isinstance(v, str)]
-    return []
 
 
 def plan_init_text(
