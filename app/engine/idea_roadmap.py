@@ -404,10 +404,13 @@ class RoadmapSynthesizer:
         # Group into ordered phases; sort each by ranking-ROI then raw value, desc.
         phases: list[RoadmapPhase] = []
         for name in PHASE_ORDER:
+            # Descending ranking-ROI then value; branch_path is the final,
+            # ascending tiebreaker so an exact ROI/value tie is deterministic
+            # rather than input-order-dependent. Explicit negated keys keep the
+            # tiebreak itself ascending (a plain reverse=True would flip it).
             phase_items = sorted(
                 (i for i in items if i.phase == name),
-                key=lambda i: (ranked_roi[id(i)], i.value),
-                reverse=True,
+                key=lambda i: (-ranked_roi[id(i)], -i.value, i.branch_path),
             )
             if phase_items:
                 phases.append(RoadmapPhase(name=name, theme=PHASE_THEME[name], items=phase_items))
@@ -417,8 +420,7 @@ class RoadmapSynthesizer:
         # "big & cheap" beats "small & cheap".
         quick_wins = sorted(
             (i for i in items if i.roi >= self.quick_win_min_roi),
-            key=lambda i: (ranked_roi[id(i)], i.impact),
-            reverse=True,
+            key=lambda i: (-ranked_roi[id(i)], -i.impact, i.branch_path),
         )[: self.quick_win_count]
 
         stats = {

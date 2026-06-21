@@ -317,3 +317,78 @@ def test_impact_discriminates_hub_from_leaf():
     # And a plain idea with no structural signal sits at the low base.
     plain = _node()
     assert estimate_impact(plain) < 0.5
+
+
+# --- sort self-containment (determinism) --------------------------------------
+
+def _roi_tied_ideas(order):
+    # Three ideas IDENTICAL in every ROI/value signal (same operator, structural
+    # axes, fact label, no metrics) so their ranking-ROI and value tie EXACTLY.
+    # Only branch_path differs, so the tiebreaker is the sole discriminator.
+    nodes = {
+        "a": _node(id="a", branch_path="x.a", subject="app/a.py", value=0.6,
+                   feasibility=0.7, operator="harden",
+                   source_facts=["sensitive-path: app/a.py"]),
+        "b": _node(id="b", branch_path="x.b", subject="app/b.py", value=0.6,
+                   feasibility=0.7, operator="harden",
+                   source_facts=["sensitive-path: app/b.py"]),
+        "c": _node(id="c", branch_path="x.c", subject="app/c.py", value=0.6,
+                   feasibility=0.7, operator="harden",
+                   source_facts=["sensitive-path: app/c.py"]),
+    }
+    return IdeaTreeReport(ideas=[nodes[k] for k in order])
+
+
+def test_roadmap_phase_order_is_input_order_independent_on_roi_tie():
+    # FIX B: three ROI/value-identical ideas fed [a,b,c] vs reversed [c,b,a] must
+    # produce the SAME phase ordering — branch_path is the final tiebreaker, so
+    # order no longer falls back to report.ideas input order.
+    fwd = RoadmapSynthesizer().build(_roi_tied_ideas(["a", "b", "c"]))
+    rev = RoadmapSynthesizer().build(_roi_tied_ideas(["c", "b", "a"]))
+    fwd_paths = [i.branch_path for ph in fwd.phases for i in ph.items]
+    rev_paths = [i.branch_path for ph in rev.phases for i in ph.items]
+    assert fwd_paths == rev_paths == ["x.a", "x.b", "x.c"]
+
+
+def test_roadmap_quick_wins_input_order_independent_on_roi_tie():
+    # The quick-wins sort shares the same tie hazard; branch_path must settle it.
+    fwd = RoadmapSynthesizer(quick_win_count=3, quick_win_min_roi=0.0).build(
+        _roi_tied_ideas(["a", "b", "c"]))
+    rev = RoadmapSynthesizer(quick_win_count=3, quick_win_min_roi=0.0).build(
+        _roi_tied_ideas(["c", "b", "a"]))
+    assert [i.branch_path for i in fwd.quick_wins] == \
+           [i.branch_path for i in rev.quick_wins] == ["x.a", "x.b", "x.c"]
+
+
+def test_roadmap_non_tied_order_is_byte_identical():
+    # REGRESSION GUARD: when ROI/value differ, the tiebreaker is never reached,
+    # so the descending ROI-then-value ordering is exactly as before. The cheap
+    # module (higher ROI) leads the expensive one regardless of input order.
+    ideas = [
+        _node(id="big", branch_path="a.big", subject="app/big.py", value=0.6,
+              feasibility=0.7, operator="harden",
+              source_facts=["sensitive-path: app/big.py"]),
+        _node(id="small", branch_path="z.small", subject="app/small.py",
+              value=0.6, feasibility=0.7, operator="harden",
+              source_facts=["sensitive-path: app/small.py"]),
+    ]
+    stats = {"metrics": {
+        "app/big.py": {"loc": 800, "complexity": 80},
+        "app/small.py": {"loc": 20, "complexity": 1},
+    }}
+    rm = RoadmapSynthesizer().build(IdeaTreeReport(ideas=ideas, stats=stats))
+    ordered = [i.subject for ph in rm.phases for i in ph.items]
+    # The cheap module (higher ROI) leads, even though its branch_path "z.small"
+    # sorts AFTER the big module's "a.big". This proves ROI still dominates and
+    # the new branch_path tiebreak is inert when ROI/value differ — non-tied
+    # ordering is byte-identical to the pre-fix behavior.
+    assert ordered == ["app/small.py", "app/big.py"]
+
+
+def test_roadmap_build_is_deterministic_across_runs():
+    rep = _roi_tied_ideas(["b", "a", "c"])
+    one = RoadmapSynthesizer().build(rep)
+    two = RoadmapSynthesizer().build(rep)
+    assert [i.branch_path for ph in one.phases for i in ph.items] == \
+           [i.branch_path for ph in two.phases for i in ph.items]
+    assert one.to_dict() == two.to_dict()
