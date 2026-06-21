@@ -77,8 +77,10 @@ def test_kwargs_and_args(tmp_path):
 
 
 def test_nested_literal_oracle(tmp_path):
+    # Dict keys render SORTED ('t' < 'x') for hash-seed-stable bytes; the contained
+    # list/tuple keep their (deterministic) order, so the value oracle still lands.
     out = _capture(tmp_path, "char_nested", _MOD_OK, [("h", "")])
-    assert out == {"h": "{'x': [1, 2], 't': (1, 'a')}"}
+    assert out == {"h": "{'t': (1, 'a'), 'x': [1, 2]}"}
 
 
 def test_string_return_oracle(tmp_path):
@@ -130,7 +132,7 @@ def test_mixed_specs(tmp_path):
             ("missing", ""),
         ],
     )
-    assert out == {"f": "42", "g": "3", "h": "{'x': [1, 2], 't': (1, 'a')}"}
+    assert out == {"f": "42", "g": "3", "h": "{'t': (1, 'a'), 'x': [1, 2]}"}
 
 
 def test_non_importable_module(tmp_path):

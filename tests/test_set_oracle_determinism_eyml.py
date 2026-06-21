@@ -65,13 +65,16 @@ def test_frozenset_still_declines_to_an_oracle():
     assert _captured_oracle(repr(fs), fs) is None
 
 
-def test_list_and_tuple_and_dict_order_is_preserved_not_sorted():
-    # Lists keep insertion order (NOT sorted).
+def test_list_and_tuple_order_is_preserved_dict_keys_are_sorted():
+    # Lists keep insertion order (NOT sorted) — order is semantically meaningful.
     assert _canonical_repr(["b", "a"]) == "['b', 'a']"
     # Tuples keep insertion order.
     assert _canonical_repr(("b", "a")) == "('b', 'a')"
-    # Dicts keep insertion order (insertion-ordered, deterministic).
-    assert _canonical_repr({"b": 1, "a": 2}) == "{'b': 1, 'a': 2}"
+    # Dicts render with keys SORTED by canonical key repr: dict eq ignores order,
+    # so this is byte-stable across hash seeds with NO change to assertion validity
+    # (a dict whose key order is set-iteration-derived would otherwise flake).
+    assert _canonical_repr({"b": 1, "a": 2}) == "{'a': 2, 'b': 1}"
+    assert ast.literal_eval("{'a': 2, 'b': 1}") == {"b": 1, "a": 2}
 
 
 def test_single_element_tuple_keeps_trailing_comma():

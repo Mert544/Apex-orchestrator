@@ -619,8 +619,10 @@ def test_container_return_value_oracle(tmp_path):
     )
     shield = generate_characterization_test(tmp_path, rel)
     assert shield is not None
-    # A dict of literals round-trips to a value oracle.
-    assert "assert fn(0) == {'lo': 0, 'hi': 1}" in shield.content
+    # A dict of literals round-trips to a value oracle. Keys are rendered SORTED
+    # ('hi' < 'lo') so the landed literal is byte-stable across hash seeds; dict
+    # eq is order-insensitive, so the assertion stays valid.
+    assert "assert fn(0) == {'hi': 1, 'lo': 0}" in shield.content
     path = write_shield_test(tmp_path, shield)
     proc = _run_generated(tmp_path, path)
     assert proc.returncode == 0, proc.stdout + proc.stderr

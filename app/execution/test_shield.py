@@ -65,6 +65,9 @@ import ast
 import doctest
 import importlib
 import io
+import json
+import os
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -326,16 +329,40 @@ def _canonical_set_repr(value: object) -> str:
     return "{" + ", ".join(rendered) + "}"
 
 
+def _canonical_dict_repr(value: object) -> str:
+    """A deterministic source literal for a ``dict`` — keys sorted by their OWN
+    canonical repr, never seed-dependent.
+
+    A dict whose KEY ORDER comes from set iteration (e.g. ``{k: f(k) for k in
+    a_set}``) has a ``PYTHONHASHSEED``-dependent key order, so emitting that order
+    verbatim into LANDED test code makes two CI runs land different git diffs.
+    Dict EQUALITY ignores order, so sorting the rendered pairs by canonical key
+    repr (a total string order, robust to mixed/unorderable key types — exactly
+    how sets are already handled) makes the landed BYTES deterministic with NO
+    change to the assertion's validity (``fn() == {...}`` still holds, dict eq is
+    order-insensitive). The empty dict renders ``{}``.
+    """
+    pairs = sorted(
+        (_canonical_repr(k), _canonical_repr(v))
+        for k, v in value.items()  # type: ignore[union-attr]
+    )
+    return "{" + ", ".join(f"{k}: {v}" for k, v in pairs) + "}"
+
+
 def _canonical_repr(value: object) -> str:
     """A DETERMINISTIC, order-stable source literal for ``value``.
 
-    ``repr`` of a ``set`` of strings is ``PYTHONHASHSEED``-dependent (str hashing
-    is randomized), so emitting it into LANDED test code makes two CI runs land
-    different git diffs for the same project. This renders every container with a
-    deterministic element order — sets sorted by canonical element repr, while
-    ``list``/``tuple``/``dict`` preserve their (already deterministic) insertion
-    order — recursing so nested sets are canonicalized too. Scalars and anything
-    we do not specially handle delegate to ``repr`` (already deterministic).
+    ``repr`` of a ``set`` of strings — or of a ``dict`` whose key order comes from
+    set iteration — is ``PYTHONHASHSEED``-dependent (str hashing is randomized),
+    so emitting it into LANDED test code makes two CI runs land different git diffs
+    for the same project. This renders every order-INSENSITIVE container with a
+    deterministic element order — sets AND dicts sorted by canonical element/key
+    repr (dict equality ignores order, so sorting its rendered pairs changes only
+    the bytes, never the value) — while ``list``/``tuple`` preserve their order
+    (it is order-SENSITIVE: sorting it would change the value, so the value-capture
+    site instead DECLINES a list/tuple whose order is not reproducible across hash
+    seeds). Recurses so nested sets/dicts are canonicalized too. Scalars and
+    anything we do not specially handle delegate to ``repr`` (already deterministic).
     """
     t = type(value)
     if t in _LITERAL_SCALARS:
@@ -348,11 +375,7 @@ def _canonical_repr(value: object) -> str:
             return "(" + _canonical_repr(items[0]) + ",)"
         return "(" + ", ".join(_canonical_repr(v) for v in items) + ")"
     if t is dict:
-        pairs = (
-            f"{_canonical_repr(k)}: {_canonical_repr(v)}"
-            for k, v in value.items()  # type: ignore[union-attr]
-        )
-        return "{" + ", ".join(pairs) + "}"
+        return _canonical_dict_repr(value)
     if t is set:
         return _canonical_set_repr(value)
     return repr(value)
@@ -390,6 +413,141 @@ def _captured_oracle(repr_text: str, value: object) -> str | None:
     return None
 
 
+def _contains_list_or_tuple(value: object) -> bool:
+    """``True`` when ``value`` IS, or (recursively) CONTAINS, a ``list``/``tuple``.
+
+    Only these two containers have an ORDER that is both semantically meaningful
+    (list/tuple equality is order-SENSITIVE) AND potentially set-iteration-derived
+    at runtime — so only they need the cross-hash-seed re-capture check. A plain
+    scalar, a ``set`` (rendered sorted), or a ``dict`` (rendered with sorted keys)
+    is byte-stable already and needs NO subprocess round-trip. We recurse through
+    set/dict members too: a ``set`` whose elements are tuples, or a ``dict`` whose
+    values are lists, still hides an order-sensitive sub-value.
+    """
+    t = type(value)
+    if t in (list, tuple):
+        return True
+    if t in (set, frozenset):
+        return any(_contains_list_or_tuple(item) for item in value)  # type: ignore[union-attr]
+    if t is dict:
+        return any(
+            _contains_list_or_tuple(k) or _contains_list_or_tuple(v)
+            for k, v in value.items()  # type: ignore[union-attr]
+        )
+    return False
+
+
+# Fixed hash seeds for the re-capture children. We re-capture under SEVERAL
+# distinct, pinned seeds and demand the canonical literal match the parent's under
+# EVERY one. Two reasons it must be a set, not a single seed: (1) the parent's own
+# seed is arbitrary (often unset -> random), so a single child seed could COINCIDE
+# with it and let a set-iteration-order value slip through on that one run; (2)
+# different seeds reshuffle set iteration differently, so a genuinely order-stable
+# value matches them ALL while a set-order list almost surely diverges on at least
+# one. Pinning the seeds keeps the CHECK itself deterministic (same children every
+# run); using more than one closes the parent-seed coincidence hole.
+_RECAPTURE_HASHSEEDS = ("1", "2", "424242")
+
+# The probe: import the target under ``root`` on ``sys.path``, call the function
+# with the SAME literal args, and print the CANONICAL literal of its return value
+# (via the project's own ``_canonical_repr``, so the comparison is byte-for-byte
+# the same rendering the parent emits). argv: root, dotted, name, call_args text.
+_RECAPTURE_PROBE = r"""
+import ast, json, sys
+root, dotted, name, call_args = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+sys.path.insert(0, root)
+try:
+    import importlib
+    from app.execution.test_shield import _canonical_repr, _eval_call_args, _is_simple_literal
+    mod = importlib.import_module(dotted)
+    fn = getattr(mod, name, None)
+    if not callable(fn):
+        print(json.dumps({"ok": False}))
+        sys.exit(0)
+    args, kwargs = _eval_call_args(call_args)
+    value = fn(*args, **kwargs)
+    if not _is_simple_literal(value):
+        print(json.dumps({"ok": False}))
+        sys.exit(0)
+    print(json.dumps({"ok": True, "canon": _canonical_repr(value)}))
+except BaseException:  # noqa: BLE001 - any failure -> decline (no oracle)
+    print(json.dumps({"ok": False}))
+    sys.exit(0)
+"""
+
+
+def _recapture_canonical(
+    project_root: Path, dotted: str, name: str, call_args: str, hashseed: str
+) -> str | None:
+    """The canonical literal of ``dotted.name(call_args)`` re-captured in a CLEAN
+    subprocess under the fixed ``PYTHONHASHSEED`` ``hashseed``, or ``None`` on any
+    failure.
+
+    A fresh interpreter (bytecode off, project root on ``sys.path``, seed pinned to
+    ``hashseed``) re-runs the exact same call and renders the result through the
+    project's own :func:`_canonical_repr`. Under a hash seed that differs from the
+    parent's, a list/tuple whose order came from set iteration renders DIFFERENT
+    bytes here — which the caller uses to DECLINE the oracle. Any subprocess
+    error/crash/timeout, or a child that itself declines, yields ``None`` (the
+    caller then declines too — never an unverified oracle).
+    """
+    env = {
+        **os.environ,
+        "PYTHONHASHSEED": hashseed,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": str(project_root) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+    }
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _RECAPTURE_PROBE,
+             str(project_root), dotted, name, call_args],
+            cwd=str(project_root), capture_output=True, text=True,
+            env=env, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        result = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return None
+    if not result.get("ok"):
+        return None
+    canon = result.get("canon")
+    return canon if isinstance(canon, str) else None
+
+
+def _order_is_reproducible(
+    project_root: Path, dotted: str, name: str, call_args: str,
+    value: object, in_process_canon: str,
+) -> bool:
+    """Is ``value``'s order reproducible across hash seeds? (the honest gate).
+
+    For a value with NO list/tuple anywhere the answer is trivially ``True`` (sets
+    and dicts are rendered sorted, so the bytes are already seed-stable — no child
+    needed). When the value DOES contain a list/tuple, we re-capture the producing
+    call in subprocesses under SEVERAL distinct fixed ``PYTHONHASHSEED`` values
+    (:data:`_RECAPTURE_HASHSEEDS`) and require the child's canonical literal to be
+    BYTE-IDENTICAL to the parent's under EVERY one: a deterministically-ordered
+    list (``[1, 2, 3]``, ``sorted(s)``, ``list(range(n))``) re-renders identically
+    under all seeds and PASSES; a set-iteration-order list re-renders in a
+    different order under at least one seed and FAILS, so the oracle is declined.
+    Using several seeds (not one) closes the hole where the parent's own seed
+    coincides with a single child seed. A subprocess that fails or declines makes
+    this ``False`` — we never emit an unverified value oracle. Deterministic: the
+    seeds are pinned, so the children render the same bytes every run.
+    """
+    if not _contains_list_or_tuple(value):
+        return True  # no order-sensitive sub-value -> already byte-stable
+    for hashseed in _RECAPTURE_HASHSEEDS:
+        child_canon = _recapture_canonical(
+            project_root, dotted, name, call_args, hashseed)
+        if child_canon is None or child_canon != in_process_canon:
+            return False
+    return True
+
+
 def _stale_module_names(dotted: str, module_names: list[str]) -> list[str]:
     """The cached module names that shadow ``dotted`` (it, or a package prefix).
 
@@ -403,7 +561,10 @@ def _stale_module_names(dotted: str, module_names: list[str]) -> list[str]:
     ]
 
 
-def _capture_one_oracle(module: object, name: str, call_args: str) -> str | None:
+def _capture_one_oracle(
+    module: object, name: str, call_args: str,
+    project_root: Path | None = None, dotted: str | None = None,
+) -> str | None:
     """The literal ``repr`` oracle for ``module.name`` called with ``call_args``,
     or ``None`` when no honest value oracle is available.
 
@@ -411,6 +572,14 @@ def _capture_one_oracle(module: object, name: str, call_args: str) -> str | None
     (arg not a plain literal, attribute missing/not callable, the call raises,
     a non-literal return, or a ``repr`` that does not round-trip) so the caller
     falls back to the "callable & runs" smoke assertion.
+
+    When the captured value contains a ``list``/``tuple`` (an ORDER-sensitive
+    value) and ``project_root``/``dotted`` are supplied, the producing call is
+    re-captured in a subprocess under a DIFFERENT fixed ``PYTHONHASHSEED`` and the
+    oracle is DECLINED unless the re-rendered canonical literal is byte-identical
+    — so a list whose order came from set iteration (genuinely flaky:
+    ``fn() == [set-derived order]`` fails under a different seed) is never landed,
+    while a deterministically-ordered list still lands its oracle.
     """
     try:
         args, kwargs = _eval_call_args(call_args)
@@ -425,7 +594,18 @@ def _capture_one_oracle(module: object, name: str, call_args: str) -> str | None
         return None  # the call raises on synthesized args -> smoke fallback
     if not _is_simple_literal(value):
         return None  # non-literal return -> smoke fallback (no value oracle)
-    return _captured_oracle(repr(value), value)
+    oracle = _captured_oracle(repr(value), value)
+    if oracle is None:
+        return None
+    # ORDER-sensitivity gate: a list/tuple whose order is set-iteration-derived is
+    # genuinely flaky (can't be sorted — that would change the value), so decline
+    # unless a different-hash-seed subprocess re-renders byte-identically.
+    if project_root is not None and dotted is not None:
+        if not _order_is_reproducible(
+            project_root, dotted, name, call_args, value, oracle
+        ):
+            return None
+    return oracle
 
 
 def _restore_modules(saved_modules: dict[str, object]) -> None:
@@ -437,12 +617,19 @@ def _restore_modules(saved_modules: dict[str, object]) -> None:
     sys.modules.update(saved_modules)
 
 
-def _collect_oracles(module: object, specs: list[tuple[str, str]]) -> dict[str, str]:
+def _collect_oracles(
+    module: object, specs: list[tuple[str, str]],
+    project_root: Path | None = None, dotted: str | None = None,
+) -> dict[str, str]:
     """Map ``function name -> literal repr`` for the ``specs`` whose real return is
-    a simple, reproducible literal, against an already-imported ``module``."""
+    a simple, reproducible literal, against an already-imported ``module``.
+
+    ``project_root``/``dotted`` (when supplied) enable the cross-hash-seed
+    re-capture that DECLINES a value whose list/tuple order is not reproducible.
+    """
     oracles: dict[str, str] = {}
     for name, call_args in specs:
-        oracle = _capture_one_oracle(module, name, call_args)
+        oracle = _capture_one_oracle(module, name, call_args, project_root, dotted)
         if oracle is not None:
             oracles[name] = oracle
     return oracles
@@ -465,7 +652,11 @@ def _capture_oracles(
     oracle, falling back to the existing "callable & runs" smoke assertion.
 
     Deterministic: only proven-literal return values produce an oracle; nothing
-    here consults time or randomness.
+    here consults time or randomness. A value whose order is set-iteration-derived
+    (a ``list``/``tuple`` whose element order depends on ``PYTHONHASHSEED``) is
+    DECLINED here too — its producing call is re-captured in a subprocess under a
+    different fixed seed and the oracle is kept only if the canonical literal is
+    byte-identical, so Apex never lands a hash-seed-flaky value oracle.
     """
     if not specs:
         return {}
@@ -485,7 +676,7 @@ def _capture_oracles(
             module = importlib.import_module(dotted)
         except Exception:
             return {}  # not importable -> no oracles (smoke handles import)
-        return _collect_oracles(module, specs)
+        return _collect_oracles(module, specs, project_root, dotted)
     finally:
         if added_to_path and sys.path and sys.path[0] == root_str:
             sys.path.pop(0)
