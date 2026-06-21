@@ -303,13 +303,29 @@ def pinned_test_nodes(root: Path, module_rel: str, func_name: str) -> list[str]:
 def _test_nodes_referencing(text: str, rel: str,
                             name_re: re.Pattern[str]) -> list[str]:
     """The ``rel::test_name`` node IDs of every top-level ``def test_*`` in ``text``
-    whose source segment references ``name_re`` (the stub's symbol). Deterministic:
-    source order. ``[]`` on a syntax error (the caller then falls back to the whole
-    file, so a parse hiccup never drops a real contract)."""
+    whose source segment references the stub's symbol, DIRECTLY or via one level of
+    indirection. Deterministic: source order. ``[]`` on a syntax error (the caller
+    then falls back to the whole file, so a parse hiccup never drops a contract).
+
+    A ``test_*`` is selected when:
+
+    * (a) its source segment references the symbol by name (current behavior —
+      also catches a ``@pytest.mark.parametrize`` test whose body is
+      ``assert symbol(n) == expected``, since ``symbol`` is literally in the body),
+      OR
+    * (c) its body CALLS a MODULE-LOCAL helper — a top-level ``def`` in the same
+      file that does NOT start with ``test`` — whose own body references the
+      symbol. This is the indirect-pinning fix: ``test_add_indirect`` whose body is
+      ``_check_add(2, 3, 5)`` pins ``add`` through ``_check_add``, so its node
+      (``::test_add_indirect``) must be in ``add``'s gate — otherwise discovery
+      finds nothing, the gate falls back to the whole FILE, and an unsynthesizable
+      sibling re-vetoes the landable stub. One level only (we never recurse into a
+      helper's own helper calls). AST-based, stdlib-only."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return []
+    helpers = _helpers_referencing(tree, text, name_re)
     out: list[str] = []
     for node in tree.body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -317,9 +333,42 @@ def _test_nodes_referencing(text: str, rel: str,
         if not node.name.startswith("test"):
             continue
         seg = ast.get_source_segment(text, node) or ""
-        if name_re.search(seg):
+        if name_re.search(seg) or _calls_any_helper(node, helpers):
             out.append(f"{rel}::{node.name}")
     return out
+
+
+def _helpers_referencing(tree: ast.Module, text: str,
+                         name_re: re.Pattern[str]) -> set[str]:
+    """The names of top-level ``def``s in ``tree`` that are NOT tests (their name
+    does not start with ``test``) and whose source segment references the symbol
+    (``name_re``). These are the module-local helpers a ``test_*`` may call to pin
+    the symbol one level indirectly. Deterministic; a parse-less, purely structural
+    scan over the module body."""
+    helpers: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name.startswith("test"):
+            continue
+        seg = ast.get_source_segment(text, node) or ""
+        if name_re.search(seg):
+            helpers.add(node.name)
+    return helpers
+
+
+def _calls_any_helper(node: ast.AST, helpers: set[str]) -> bool:
+    """True when ``node``'s body contains a direct call to any name in ``helpers``
+    (``_check_add(...)``). Only a bare-``Name`` callee counts — a one-level
+    module-local helper invocation — so we never chase attribute calls or recurse.
+    ``helpers`` empty short-circuits to ``False``."""
+    if not helpers:
+        return False
+    for child in ast.walk(node):
+        if (isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+                and child.func.id in helpers):
+            return True
+    return False
 
 
 # --- candidate body templates ------------------------------------------------
@@ -755,7 +804,26 @@ def _function_witnesses(root: Path, test_files: list[str],
     it never runs), so it must not be mined for witnesses — otherwise a wrong body
     that fails only an xfail assertion gets stamped "verified" while the suite
     stays green. Used to PROPOSE value-dependent template constants and to gate
-    in-process synthesis. Deterministic: source order within each sorted file."""
+    in-process synthesis. Deterministic: source order within each sorted file.
+
+    Two INDIRECT forms are also mined so a stub pinned through them is actually
+    synthesizable, not just gated right:
+
+    * ``@pytest.mark.parametrize`` — each literal ROW of the decorator is bound to
+      the test's params and substituted into the ``symbol(params) == param``
+      assert (``@parametrize("n,e", [(2, 6), (5, 15)])`` + ``assert scale(n) == e``
+      recovers ``scale(2) == 6``, ``scale(5) == 15``);
+    * a ONE-LEVEL module-local helper — when ``test_x`` calls ``_h(lit, lit, lit)``
+      and ``_h(a, b, expected)`` asserts ``symbol(a, b) == expected``, the literals
+      are resolved through the helper's params (``add(2, 3) == 5``).
+
+    Only LITERAL arguments are resolved (re-using the existing literal extraction);
+    a non-literal row/argument is skipped — never guessed. An assert that one of
+    these indirect miners resolves is EXCLUDED from the direct regex pass (its raw
+    ``symbol(n) == e`` text is non-literal and would otherwise poison the evaluable
+    witness set); a DIRECT assert keeps the exact regex output, byte-for-byte as
+    before. This only ADDS witnesses that were always there — the accept-gate is
+    unchanged, the ambiguity guard still applies, never-fake-green holds."""
     call_eq = re.compile(
         r"(?<![A-Za-z0-9_])" + re.escape(stub.name)
         + r"\s*\(([^()]*)\)\s*==\s*([^\n#]+)")
@@ -765,13 +833,370 @@ def _function_witnesses(root: Path, test_files: list[str],
             text = (root / rel).read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        excluded = _unenforced_line_ranges(text)
-        for m in call_eq.finditer(text):
-            line = text.count("\n", 0, m.start()) + 1
-            if _line_in_ranges(line, excluded):
-                continue  # assertion lives in an xfail/skip test — not a contract
-            out.append((m.group(1).strip(), m.group(2).strip()))
+        out.extend(_witnesses_in_file(text, stub, call_eq))
     return out
+
+
+def _witnesses_in_file(text: str, stub: StubFunction,
+                       call_eq: re.Pattern[str]) -> list[tuple[str, str]]:
+    """Every enforceable ``(args_text, expected_text)`` witness mined from ONE test
+    file's ``text``: the indirect (parametrize + module-local-helper) literal
+    witnesses first, then the direct regex witnesses for any assert NOT already
+    resolved by an indirect miner.
+
+    Suppression is ASSERT-PRECISE: only the exact source lines of asserts that an
+    indirect miner turned into a LITERAL witness are skipped in the direct pass (so
+    the non-literal raw form of a parametrize/helper assert doesn't poison the
+    evaluable set). An assert the indirect miners did NOT resolve keeps its direct
+    regex output byte-for-byte — guaranteeing the change is strictly additive (it
+    never removes a witness the direct pass used to yield). Deterministic."""
+    excluded = _unenforced_line_ranges(text)
+    indirect, resolved_lines = _indirect_witnesses(text, stub)
+    out: list[tuple[str, str]] = list(indirect)
+    for m in call_eq.finditer(text):
+        line = text.count("\n", 0, m.start()) + 1
+        if _line_in_ranges(line, excluded):
+            continue  # assertion lives in an xfail/skip test — not a contract
+        if line in resolved_lines:
+            continue  # this exact assert already mined as a literal indirectly
+        out.append((m.group(1).strip(), m.group(2).strip()))
+    return out
+
+
+def _indirect_witnesses(text: str,
+                        stub: StubFunction) -> tuple[list[tuple[str, str]], set[int]]:
+    """The literal witnesses recovered from the two indirect forms (parametrize
+    rows and one-level module-local helpers), plus the exact source LINES of the
+    asserts that were resolved (so the direct regex pass skips only those lines).
+    ``([], set())`` on a syntax error — the direct pass then still runs.
+    Enforceable-only: an assert inside an xfail/skip test is not mined.
+    Deterministic: source order."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return [], set()
+    excluded = _unenforced_line_ranges(text)
+    witnesses: list[tuple[str, str]] = []
+    resolved: set[int] = set()
+    p_w, p_lines = _parametrize_witnesses(tree, text, stub, excluded)
+    h_w, h_lines = _helper_witnesses(tree, text, stub, excluded)
+    witnesses.extend(p_w)
+    witnesses.extend(h_w)
+    resolved |= p_lines
+    resolved |= h_lines
+    return witnesses, resolved
+
+
+def _symbol_assert_pairs(body_node: ast.AST,
+                         stub: StubFunction) -> list[tuple[ast.Call, ast.expr]]:
+    """Every ``symbol(<args>) == <expected>`` assertion in ``body_node``'s subtree,
+    as ``(call_node, expected_node)`` AST pairs. Both ``call == expected`` and
+    ``expected == call`` orderings are accepted (the comparator that IS the call to
+    ``stub.name`` becomes the call side). Only a simple two-operand ``==`` compare
+    is mined — never a chained one. The call node carries its ``lineno`` so a
+    resolved assert's exact source line can be suppressed in the direct pass."""
+    out: list[tuple[ast.Call, ast.expr]] = []
+    for cmp_node in ast.walk(body_node):
+        if not isinstance(cmp_node, ast.Compare):
+            continue
+        if len(cmp_node.ops) != 1 or not isinstance(cmp_node.ops[0], ast.Eq):
+            continue
+        left, right = cmp_node.left, cmp_node.comparators[0]
+        if _is_symbol_call(left, stub.name):
+            out.append((left, right))
+        elif _is_symbol_call(right, stub.name):
+            out.append((right, left))
+    return out
+
+
+def _is_symbol_call(node: ast.expr, name: str) -> bool:
+    """True when ``node`` is a direct call ``name(...)`` (a bare-``Name`` callee)."""
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == name)
+
+
+def _bind_and_render(call_node: ast.Call, expected: ast.expr,
+                     binding: dict[str, ast.expr]) -> tuple[str, str] | None:
+    """Substitute ``binding`` (param name -> literal AST) into the call's positional
+    arguments and the expected expression, then render both as source text — the
+    ``(args_text, expected_text)`` of one recovered literal witness. ``None`` when,
+    after substitution, any argument or the expected is not a pure literal (a
+    non-literal reference survived), so we never guess. Positional args only; a
+    starred/keyword arg makes the witness unrecoverable (``None``)."""
+    if any(isinstance(a, ast.Starred) for a in call_node.args) or call_node.keywords:
+        return None
+    rendered_args: list[str] = []
+    for arg in call_node.args:
+        text = _render_substituted(arg, binding)
+        if text is None:
+            return None
+        rendered_args.append(text)
+    expected_text = _render_substituted(expected, binding)
+    if expected_text is None:
+        return None
+    return ", ".join(rendered_args), expected_text
+
+
+def _render_substituted(node: ast.expr, binding: dict[str, ast.expr]) -> str | None:
+    """Render ``node`` to source after replacing every ``Name`` bound in
+    ``binding`` with its literal AST, but ONLY when the result is a pure literal
+    (``ast.literal_eval`` succeeds) — otherwise ``None`` (a non-literal survived).
+    Pure and deterministic; the rendered text round-trips through the existing
+    literal extractor."""
+    substituted = _Substitute(binding).visit(ast.copy_location(_clone(node), node))
+    try:
+        ast.literal_eval(substituted)
+    except (ValueError, SyntaxError, TypeError):
+        return None
+    return ast.unparse(substituted)
+
+
+def _clone(node: ast.expr) -> ast.expr:
+    """A deep, location-stripped copy of ``node`` safe to mutate during
+    substitution (we never edit the original tree)."""
+    return ast.parse(ast.unparse(node), mode="eval").body
+
+
+class _Substitute(ast.NodeTransformer):
+    """Replace each ``Name`` whose id is a key of ``binding`` with the bound literal
+    AST node — the one-step param->value substitution that turns a parametrize/
+    helper assert into a concrete literal witness."""
+
+    def __init__(self, binding: dict[str, ast.expr]) -> None:
+        self._binding = binding
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:  # noqa: N802 - ast API
+        replacement = self._binding.get(node.id)
+        return ast.copy_location(_clone(replacement), node) if replacement is not None else node
+
+
+def _all_literal(nodes: list[ast.expr]) -> bool:
+    """True when every node is a literal (``ast.literal_eval`` succeeds). Used to
+    admit only fully-literal parametrize rows / helper-call arguments."""
+    for n in nodes:
+        try:
+            ast.literal_eval(n)
+        except (ValueError, SyntaxError, TypeError):
+            return False
+    return True
+
+
+def _parametrize_witnesses(tree: ast.Module, text: str, stub: StubFunction,
+                           excluded: list[tuple[int, int]]) -> tuple[list[tuple[str, str]], set[int]]:
+    """Literal witnesses recovered from ``@pytest.mark.parametrize`` tests. For each
+    top-level enforced ``test_*`` carrying a parametrize decorator, bind every
+    literal row to the declared param names and substitute into each
+    ``symbol(...) == ...`` assert in its body. Returns the witnesses and the exact
+    LINES of the asserts resolved (so the direct pass skips only those lines).
+    Deterministic: source order; non-literal rows / unresolved asserts are
+    skipped."""
+    witnesses: list[tuple[str, str]] = []
+    resolved: set[int] = set()
+    for node in tree.body:
+        if not _is_enforced_test(node, excluded):
+            continue
+        rows = _parametrize_rows(node)
+        if rows is None:
+            continue
+        names, value_rows = rows
+        pairs = _symbol_assert_pairs(node, stub)
+        if not pairs:
+            continue
+        emitted, lines = _emit_param_rows(names, value_rows, pairs)
+        witnesses.extend(emitted)
+        resolved |= lines
+    return witnesses, resolved
+
+
+def _emit_param_rows(names: list[str], value_rows: list[list[ast.expr]],
+                     pairs: list[tuple[ast.Call, ast.expr]]) -> tuple[list[tuple[str, str]], set[int]]:
+    """For each literal parametrize row, bind it to ``names`` and render every
+    ``symbol`` assert pair into a literal witness. Returns the witnesses and the
+    source lines of the asserts that produced at least one. A row whose arity
+    mismatches the names, or that holds a non-literal, is skipped (never guessed)."""
+    out: list[tuple[str, str]] = []
+    resolved: set[int] = set()
+    for row in value_rows:
+        if len(row) != len(names) or not _all_literal(row):
+            continue
+        binding = {name: value for name, value in zip(names, row)}
+        for call_node, expected in pairs:
+            rendered = _bind_and_render(call_node, expected, binding)
+            if rendered is not None:
+                out.append(rendered)
+                resolved.add(call_node.lineno)
+    return out, resolved
+
+
+def _parametrize_rows(node: ast.AST) -> tuple[list[str], list[list[ast.expr]]] | None:
+    """The ``(param_names, value_rows)`` of a test's ``@pytest.mark.parametrize``
+    decorator: the argnames (a ``"a,b"`` string or a list/tuple of name strings)
+    and each argvalues row as a list of arg AST nodes (a single-param row is a bare
+    value, wrapped to a one-element list). ``None`` when the node has no usable
+    parametrize decorator. The FIRST parametrize decorator is used (stacked marks
+    are an uncommon shape we conservatively skip beyond the first)."""
+    for dec in getattr(node, "decorator_list", []):
+        names_values = _parse_parametrize_call(dec)
+        if names_values is not None:
+            return names_values
+    return None
+
+
+def _parse_parametrize_call(dec: ast.expr) -> tuple[list[str], list[list[ast.expr]]] | None:
+    """Parse one decorator AST into ``(names, value_rows)`` when it is a
+    ``parametrize(argnames, argvalues, ...)`` call, else ``None``. ``argnames`` is a
+    string literal (``"a,b"``) or a list/tuple of string literals; ``argvalues`` is
+    a list/tuple of rows. A single-name parametrize wraps each scalar row into a
+    one-element list so binding is uniform."""
+    if not (isinstance(dec, ast.Call) and _is_parametrize(dec.func)):
+        return None
+    if len(dec.args) < 2:
+        return None
+    names = _parametrize_names(dec.args[0])
+    if not names:
+        return None
+    rows_node = dec.args[1]
+    if not isinstance(rows_node, (ast.List, ast.Tuple)):
+        return None
+    value_rows: list[list[ast.expr]] = []
+    for row in rows_node.elts:
+        if len(names) == 1:
+            value_rows.append([row])
+        elif isinstance(row, (ast.List, ast.Tuple)):
+            value_rows.append(list(row.elts))
+    return names, value_rows
+
+
+def _is_parametrize(func: ast.expr) -> bool:
+    """True for a ``parametrize`` decorator callee in any spelling
+    (``pytest.mark.parametrize``, ``mark.parametrize``, a bare ``parametrize``
+    alias) — matched on the trailing attribute/name token."""
+    if isinstance(func, ast.Attribute):
+        return func.attr == "parametrize"
+    return isinstance(func, ast.Name) and func.id == "parametrize"
+
+
+def _parametrize_names(node: ast.expr) -> list[str]:
+    """The parameter names of a parametrize ``argnames`` node: a ``"a, b"`` string
+    literal split on commas, or a list/tuple of string literals. ``[]`` when the
+    node is not a recognizable name spec."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [n.strip() for n in node.value.split(",") if n.strip()]
+    if isinstance(node, (ast.List, ast.Tuple)):
+        names = [el.value for el in node.elts
+                 if isinstance(el, ast.Constant) and isinstance(el.value, str)]
+        return names if len(names) == len(node.elts) else []
+    return []
+
+
+def _helper_witnesses(tree: ast.Module, text: str, stub: StubFunction,
+                      excluded: list[tuple[int, int]]) -> tuple[list[tuple[str, str]], set[int]]:
+    """Literal witnesses recovered from one-level module-local helpers. For each
+    top-level helper ``_h(params...)`` whose body asserts ``symbol(...) == ...``
+    over its own params, find every enforced ``test_*`` that calls ``_h(lit, ...)``
+    with all-literal args, bind them to the helper's params, and substitute into
+    the assert. Returns the witnesses and the exact LINES of the helper asserts that
+    were resolved (so the direct pass skips ONLY the helper's own non-literal assert
+    when a test actually drove it to a literal). Deterministic: helpers then their
+    call sites in source order; non-literal calls are skipped."""
+    helpers = _resolvable_helpers(tree, stub)
+    if not helpers:
+        return [], set()
+    witnesses: list[tuple[str, str]] = []
+    resolved: set[int] = set()
+    for node in tree.body:
+        if not _is_enforced_test(node, excluded):
+            continue
+        w, lines = _witnesses_from_helper_calls(node, helpers)
+        witnesses.extend(w)
+        resolved |= lines
+    return witnesses, resolved
+
+
+def _resolvable_helpers(tree: ast.Module, stub: StubFunction
+                        ) -> dict[str, tuple[list[str], list[tuple[ast.Call, ast.expr]]]]:
+    """The module-local helpers usable for one-level witness resolution: a top-level
+    non-``test`` ``def`` with positional params whose body asserts ``symbol(...) ==
+    ...`` referencing only those params. Maps helper name -> (param names, the
+    ``(call, expected)`` assert pairs). Deterministic."""
+    out: dict[str, tuple[list[str], list[tuple[ast.Call, ast.expr]]]] = {}
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name.startswith("test"):
+            continue
+        params = _plain_param_names(node)
+        if not params:
+            continue
+        pairs = _symbol_assert_pairs(node, stub)
+        if pairs:
+            out[node.name] = (params, pairs)
+    return out
+
+
+def _plain_param_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """The ordered plain positional parameter names of a helper ``def`` (no
+    ``self``/``cls`` dropping — a helper is a free function). ``*args``/keyword-only
+    params make the helper unresolvable, so ``[]`` is returned then."""
+    args = node.args
+    if args.vararg or args.kwarg or args.kwonlyargs:
+        return []
+    return [a.arg for a in (args.posonlyargs + args.args)]
+
+
+def _witnesses_from_helper_calls(test_node: ast.AST,
+                                 helpers: dict) -> tuple[list[tuple[str, str]], set[int]]:
+    """Every literal witness from ``test_node``'s direct calls to a resolvable
+    helper, plus the helper-assert lines resolved: for each ``_h(lit, lit, ...)``
+    whose arity and literalness match, bind the literals to the helper's params and
+    render each of the helper's ``symbol`` asserts. Deterministic: calls in source
+    order; a non-literal/arity-mismatched call is skipped."""
+    out: list[tuple[str, str]] = []
+    resolved: set[int] = set()
+    for call in ast.walk(test_node):
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)):
+            continue
+        entry = helpers.get(call.func.id)
+        if entry is not None:
+            w, lines = _witnesses_from_one_call(call, entry)
+            out.extend(w)
+            resolved |= lines
+    return out, resolved
+
+
+def _witnesses_from_one_call(call: ast.Call,
+                             entry: tuple[list[str], list[tuple[ast.Call, ast.expr]]]
+                             ) -> tuple[list[tuple[str, str]], set[int]]:
+    """The literal witnesses from ONE ``_h(lit, ...)`` helper call, plus the
+    helper-assert lines they resolve: bind its literal args to the helper's params
+    and render each of the helper's ``symbol`` asserts. ``([], set())`` when the
+    call is not all-literal-positional or its arity mismatches the helper's params
+    (never guessed)."""
+    params, pairs = entry
+    if call.keywords or any(isinstance(a, ast.Starred) for a in call.args):
+        return [], set()
+    if len(call.args) != len(params) or not _all_literal(call.args):
+        return [], set()
+    binding = {name: value for name, value in zip(params, call.args)}
+    out: list[tuple[str, str]] = []
+    resolved: set[int] = set()
+    for inner_call, expected in pairs:
+        rendered = _bind_and_render(inner_call, expected, binding)
+        if rendered is not None:
+            out.append(rendered)
+            resolved.add(inner_call.lineno)
+    return out, resolved
+
+
+def _is_enforced_test(node: ast.AST, excluded: list[tuple[int, int]]) -> bool:
+    """True when ``node`` is a top-level ``def test_*`` that is NOT inside an
+    xfail/skip range (its assertions are enforced). Used to gate both indirect
+    witness miners so an unenforced test pins no witness."""
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    if not node.name.startswith("test"):
+        return False
+    return not _line_in_ranges(node.lineno, excluded)
 
 
 def _unenforced_line_ranges(text: str) -> list[tuple[int, int]]:

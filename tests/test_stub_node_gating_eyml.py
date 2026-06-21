@@ -183,10 +183,13 @@ def test_landing_is_deterministic(tmp_path: Path):
 # --- fallback: a symbol whose test doesn't name it discoverably --------------
 
 def _indirect_project(root: Path) -> None:
-    """A stub whose pinned test references the symbol only via a module-qualified
-    call (``m.twice(...)``), so the bare-name AST reference still finds it, but we
-    also include a test whose function name does not start with ``test`` to prove
-    the fallback path (no discoverable node -> whole-file gate) still lands it."""
+    """A stub pinned through TWO levels of indirection — ``test_run`` -> ``_outer``
+    -> ``_inner`` -> ``twice`` — so the symbol name appears in NEITHER ``test_run``
+    nor the helper it calls directly (``_outer``). The indirect-pinning fix
+    resolves ONE level only (a parametrize test, or a test calling a helper that
+    itself references the symbol); a second hop is deliberately NOT chased, so this
+    stays a genuine no-discoverable-node case. Node discovery finds nothing for
+    ``twice`` and falls back to whole-file gating, which still lands it."""
     (root / "app").mkdir()
     (root / "tests").mkdir()
     (root / "app" / "__init__.py").write_text("", encoding="utf-8")
@@ -194,14 +197,15 @@ def _indirect_project(root: Path) -> None:
         "[project]\nname='i'\nversion='0'\n", encoding="utf-8")
     (root / "app" / "ind.py").write_text(
         "def twice(n):\n    raise NotImplementedError\n", encoding="utf-8")
-    # The assertions live in a helper that does NOT start with `test`, invoked by a
-    # parametrized-style runner — the symbol name appears only inside the helper,
-    # so no `def test_*` references it directly. Node discovery finds nothing for
-    # `twice` and falls back to whole-file gating, which still lands it.
+    # `twice` is named only inside `_inner` (two hops from `test_run`) and on the
+    # import line, so no `def test_*` references it directly and the ONLY helper
+    # `test_run` calls (`_outer`) does not reference it either — one-level
+    # resolution finds nothing, so discovery falls back to the whole file.
     (root / "tests" / "test_ind.py").write_text(
         "from app.ind import twice\n\n"
-        "def check_twice(x, y):\n    assert twice(x) == y\n\n"
-        "def test_run():\n    check_twice(3, 6)\n    check_twice(5, 10)\n",
+        "def _inner(x, y):\n    assert twice(x) == y\n\n"
+        "def _outer(x, y):\n    _inner(x, y)\n\n"
+        "def test_run():\n    _outer(3, 6)\n    _outer(5, 10)\n",
         encoding="utf-8")
 
 
@@ -210,8 +214,9 @@ def test_fallback_to_whole_file_when_no_node_names_symbol(tmp_path: Path):
 
     _indirect_project(tmp_path)
     nodes = pinned_test_nodes(tmp_path, "app/ind.py", "twice")
-    # No `def test_*` references `twice` directly (it's named only in `check_twice`
-    # and via the import line), so discovery falls back to the whole file path.
+    # No `def test_*` references `twice` directly, and `test_run` calls only
+    # `_outer` (which doesn't reference `twice`) — two-level indirection is not
+    # resolved, so discovery falls back to the whole file path.
     assert nodes == ["tests/test_ind.py"]
 
 
