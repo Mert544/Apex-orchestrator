@@ -322,11 +322,32 @@ def run_develop_session(
     root = Path(project_root)
     before = _snapshot(root) if apply else {}
 
+    # Probe the baseline suite ONCE, UP FRONT — before any objective runs — and
+    # cache the bool. On a RED baseline (a "finish my project" repo whose suite
+    # fails for an UNRELATED reason — an unfinished stub in some other module) the
+    # cheap TIDY objectives would otherwise gate their CORRECT rename/hint/dataclass
+    # change against the full red suite and get vetoed (every change rolled back).
+    # When the baseline is RED we force impact-scoped gating for ALL objectives, so
+    # a tidy change is gated only against the tests it actually impacts (which pass)
+    # — never the unrelated pre-existing failures. The full-suite backstop below is
+    # still the commit-time guard, so never-fake-green holds. A GREEN baseline keeps
+    # full-suite gating exactly as before (happy path unchanged). The same cached
+    # bool feeds the end-of-session honest "baseline RED" disclosure, so the suite
+    # is probed AT MOST ONCE per session. ``scope_verify`` (the buyer's ``--fast``)
+    # still forces scoping too; the two combine.
+    # Only the apply path GATES (and so needs the baseline known BEFORE the loop to
+    # pick the gate scope); a dry run gates nothing, so it probes lazily below only
+    # if it must explain an empty outcome. ``None`` = not yet probed.
+    baseline_green: bool | None = None
+    if apply and verify:
+        baseline_green = _baseline_suite_green(root)
+    effective_scope = scope_verify or baseline_green is False
+
     report = SessionReport(applied=apply)
     for objective in objectives:
         result = compile_objective(
             str(root), objective=objective, max_steps=max_steps,
-            verify=verify, apply=apply, scope_verify=scope_verify)
+            verify=verify, apply=apply, scope_verify=effective_scope)
         report.objectives.append(_collect_objective(result))
 
     if apply:
@@ -348,11 +369,19 @@ def run_develop_session(
     # Baseline-red guard. When NOTHING landed, the renderer would otherwise say
     # "every objective is already satisfied" — which is a LIE if the real reason is
     # a RED baseline (unsynthesizable stubs / pre-existing failures), not a clean
-    # project. Probe the baseline ONCE, and ONLY in this no-contribution case (so a
-    # session that LANDS work never pays the extra full-suite run), to let the
-    # wording key off the honest reason. Deterministic: same project -> same bool.
-    if not report.objectives_with_work:
-        report.baseline_suite_green = _baseline_suite_green(root)
+    # project. REUSE the up-front cached probe (so the suite is run AT MOST ONCE per
+    # session — no second full-suite run) to let the wording key off the honest
+    # reason. Surfaced ONLY in this no-contribution case, so a session that LANDS
+    # work keeps the field ``None`` (the cause of an empty list is moot when work
+    # landed). Deterministic: same project -> same cached bool. When ``verify`` is
+    # off the baseline was never probed (``baseline_green`` defaulted True) and the
+    # field stays ``None`` — we never assert green we didn't run.
+    if not report.objectives_with_work and verify:
+        # Reuse the up-front probe if the apply path already ran it (AT MOST ONCE
+        # per session); a dry run that landed nothing probes here, lazily.
+        if baseline_green is None:
+            baseline_green = _baseline_suite_green(root)
+        report.baseline_suite_green = baseline_green
     return report
 
 

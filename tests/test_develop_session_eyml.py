@@ -415,9 +415,11 @@ def test_baseline_green_flag_is_true_for_clean_false_for_red(tmp_path: Path):
 
 
 def test_baseline_not_probed_when_work_lands(tmp_path: Path):
-    # Performance + scope guard: when the session LANDS work, the baseline is NEVER
-    # probed (no extra suite run), so the field stays ``None`` — the probe only
-    # runs to explain a no-contribution outcome.
+    # Scope guard: when an APPLY session LANDS work, the report FIELD stays ``None``
+    # — the cause of an empty contribution list is moot when work landed, so the
+    # honest "baseline RED" disclosure (and its field) is reserved for the no-work
+    # case. (On apply the baseline is probed ONCE up front to pick the gate scope,
+    # but that drives gating, not this disclosure field.)
     _foreign_project(tmp_path)
     report = run_develop_session(str(tmp_path), apply=True, verify=True)
     assert report.total_moves > 0
@@ -439,3 +441,208 @@ def test_baseline_green_field_serialises(tmp_path: Path):
     report = run_develop_session(
         str(_red_baseline_project(tmp_path)), apply=True)
     assert report.to_dict()["baseline_suite_green"] is False
+
+
+# --- the cross-module apply deadlock: tidy work lands on a RED baseline --------
+#
+# The field-test blocker: a realistic "finish my project" repo whose suite is RED
+# at baseline (an unfinished stub in ONE module) dry-runs N tidy contributions
+# READY but lands only the stub work, because the TIDY objectives gated their
+# CORRECT change against the FULL red suite and every change was rolled back
+# (``tests failed after rename; all files restored``) for an UNRELATED reason.
+# The fix probes the baseline ONCE up front; on a RED baseline it forces
+# impact-scoped gating for ALL objectives, so a tidy change is gated only against
+# the tests it actually impacts (which pass) — never the unrelated pre-existing
+# failure. The full-suite backstop is still the commit-time guard, so the report
+# still HONESTLY discloses the suite is RED after (never-fake-green).
+
+
+def _red_baseline_with_tidy_work(root: Path) -> Path:
+    """A multi-module foreign package whose suite is RED at baseline (an
+    UNSYNTHESIZABLE stub in ``pkg/stub.py`` keeps it red) but with REAL tidy work
+    in OTHER modules, each covered by a PASSING test:
+
+      * ``pkg/__init__.py`` — empty / under-exported  -> wire-exports
+      * ``pkg/models.py``   — a pure data-holder class -> dataclassify + hints
+      * ``pkg/calc.py``     — a function w/ inferable hints (covered, passing)
+
+    The tidy modules are imported by ``tests/test_tidy.py`` (which PASSES), so
+    impact-scoped gating runs those passing tests and the tidy change genuinely
+    lands. ``pkg/stub.py`` is imported only by ``tests/test_stub.py`` (which
+    FAILS on the unsatisfiable contract), so the baseline stays RED and
+    implement-stub REFUSES it."""
+    (root / "pkg").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='pkg'\nversion='0'\n", encoding="utf-8")
+    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pkg" / "stub.py").write_text(
+        "def f(a, b):\n    raise NotImplementedError\n", encoding="utf-8")
+    (root / "pkg" / "calc.py").write_text(
+        "def double(n):\n    return n + n\n", encoding="utf-8")
+    (root / "pkg" / "models.py").write_text(
+        "class Point:\n    def __init__(self, x, y):\n"
+        "        self.x = x\n        self.y = y\n", encoding="utf-8")
+    # The stub's pinned test asserts a contract no fixed template satisfies -> the
+    # baseline suite is RED for this UNRELATED reason.
+    (root / "tests" / "test_stub.py").write_text(
+        "from pkg.stub import f\n"
+        "def test_f():\n    assert f(2, 3) == 999999\n", encoding="utf-8")
+    # The tidy modules (and the package itself, for wire-exports) are imported by
+    # a PASSING test, so impact-scoped gating exercises them and they land.
+    (root / "tests" / "test_tidy.py").write_text(
+        "from pkg.calc import double\nfrom pkg.models import Point\nimport pkg\n"
+        "def test_double():\n    assert double(4) == 8\n"
+        "def test_point():\n    p = Point(1, 2)\n    assert (p.x, p.y) == (1, 2)\n",
+        encoding="utf-8")
+    return root
+
+
+def test_red_baseline_lands_tidy_work_despite_unrelated_red_suite(tmp_path: Path):
+    # The blocker fix, end-to-end: WITHOUT --fast/scope_verify, the tidy objectives
+    # now LAND on a RED baseline instead of being vetoed by the unrelated red suite.
+    _red_baseline_with_tidy_work(tmp_path)
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+
+    landed = {o.objective for o in report.objectives if o.moves}
+    # The tidy contributions that the field test saw rolled back now land.
+    assert "wire-exports" in landed
+    assert "infer-type-hints" in landed
+    assert "dataclassify" in landed
+    # More than the ~1 the blocker stranded at: the report shows >1 contribution.
+    assert report.total_moves > 1
+
+    # The exports are wired and the data-holder became a dataclass — REAL diffs.
+    init_src = (tmp_path / "pkg" / "__init__.py").read_text()
+    assert "__all__" in init_src
+    models_src = (tmp_path / "pkg" / "models.py").read_text()
+    assert "@dataclass" in models_src or "dataclass" in models_src
+
+    # Never-fake-green: the unsynthesizable stub is UNTOUCHED, still raising, so
+    # the full-suite backstop honestly reports the suite is RED after the session.
+    stub_src = (tmp_path / "pkg" / "stub.py").read_text()
+    assert "raise NotImplementedError" in stub_src
+    assert report.suite_available is True
+    assert report.suite_green_after is False
+    md = render_session_markdown(report)
+    assert "full suite RED after the session" in md
+
+
+def test_red_baseline_lands_nothing_without_the_fix(tmp_path: Path):
+    # Proves the blocker existed: with the OLD full-suite gating (scope_verify
+    # False, as the session forwarded on a red baseline before the fix), every
+    # tidy change is vetoed by the unrelated red suite — ZERO land.
+    from app.engine.objective_compiler import compile_objective
+
+    _red_baseline_with_tidy_work(tmp_path)
+    landed = 0
+    for obj in ("wire-exports", "infer-type-hints", "dataclassify"):
+        r = compile_objective(str(tmp_path), objective=obj, apply=True,
+                              verify=True, scope_verify=False)
+        landed += len(r.steps)
+    assert landed == 0
+
+
+def _spy_session(monkeypatch, root, **kw):
+    """Run a session recording the ``scope_verify`` each objective received."""
+    from app.engine import develop_session as ds
+    from app.engine.objective_compiler import compile_objective as real
+
+    seen: list[bool] = []
+
+    def spy(root_, *, objective, scope_verify=False, **kw_):
+        seen.append(scope_verify)
+        return real(root_, objective=objective, scope_verify=scope_verify, **kw_)
+
+    monkeypatch.setattr(ds, "compile_objective", spy)
+    report = run_develop_session(str(root), **kw)
+    return report, seen
+
+
+def test_red_baseline_forces_impact_scoped_gating(tmp_path: Path, monkeypatch):
+    # On a RED baseline the up-front probe forces scope_verify=True for EVERY
+    # objective (impact-scoped gating), even though the buyer did NOT pass --fast.
+    _red_baseline_with_tidy_work(tmp_path)
+    _report, seen = _spy_session(monkeypatch, tmp_path, apply=True, verify=True)
+    assert seen and all(s is True for s in seen)
+
+
+def test_green_baseline_keeps_full_suite_gating_unchanged(tmp_path: Path, monkeypatch):
+    # The happy path is UNCHANGED: on a GREEN baseline the forwarded scope_verify
+    # equals the caller's (False here) — full-suite gating, exactly as before. The
+    # fix never churns the green path.
+    _green_baseline_with_tidy_work(tmp_path)
+    report, seen = _spy_session(monkeypatch, tmp_path, apply=True, verify=True)
+    assert seen and all(s is False for s in seen)
+    # And it still lands the tidy work (gated against a green full suite).
+    assert report.total_moves >= 1
+    assert report.suite_green_after is True
+
+
+def _green_baseline_with_tidy_work(root: Path) -> Path:
+    """A GREEN-at-baseline foreign package WITH real tidy work: a data-holder class
+    + an unwired ``__init__``, all covered by a PASSING suite. The session lands the
+    tidy work via the unchanged full-suite gate (the green happy path)."""
+    (root / "pkg").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='pkg'\nversion='0'\n", encoding="utf-8")
+    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pkg" / "models.py").write_text(
+        "class Point:\n    def __init__(self, x, y):\n"
+        "        self.x = x\n        self.y = y\n", encoding="utf-8")
+    (root / "tests" / "test_tidy.py").write_text(
+        "from pkg.models import Point\nimport pkg\n"
+        "def test_point():\n    p = Point(1, 2)\n    assert (p.x, p.y) == (1, 2)\n",
+        encoding="utf-8")
+    return root
+
+
+def test_baseline_probed_at_most_once_on_apply(tmp_path: Path, monkeypatch):
+    # The up-front probe drives gating AND (when nothing lands) the disclosure, so
+    # the full baseline suite is run AT MOST ONCE per apply session — no regression
+    # to two full-suite probes.
+    from app.engine import develop_session as ds
+
+    _red_baseline_with_tidy_work(tmp_path)
+    calls = {"n": 0}
+    real = ds._baseline_suite_green
+
+    def counting(root):
+        calls["n"] += 1
+        return real(root)
+
+    monkeypatch.setattr(ds, "_baseline_suite_green", counting)
+    run_develop_session(str(tmp_path), apply=True, verify=True)
+    assert calls["n"] == 1
+
+
+def test_no_baseline_probe_when_verify_off(tmp_path: Path, monkeypatch):
+    # Under --no-verify nothing is gated and no backstop runs, so the baseline is
+    # NEVER probed (no full-suite run at all) and the field stays None.
+    from app.engine import develop_session as ds
+
+    _red_baseline_with_tidy_work(tmp_path)
+    calls = {"n": 0}
+
+    def boom(root):
+        calls["n"] += 1
+        return True
+
+    monkeypatch.setattr(ds, "_baseline_suite_green", boom)
+    report = run_develop_session(str(tmp_path), apply=True, verify=False)
+    assert calls["n"] == 0
+    assert report.baseline_suite_green is None
+
+
+def test_red_baseline_tidy_session_is_deterministic(tmp_path: Path):
+    # Same RED-baseline-with-tidy-work fixture -> identical report AND identical
+    # landed files across two independent runs (no clock/random; one cached probe).
+    a = _red_baseline_with_tidy_work(tmp_path / "a")
+    b = _red_baseline_with_tidy_work(tmp_path / "b")
+    ra = run_develop_session(str(a), apply=True)
+    rb = run_develop_session(str(b), apply=True)
+    assert render_session_markdown(ra) == render_session_markdown(rb)
+    for rel in ("pkg/__init__.py", "pkg/models.py", "pkg/calc.py", "pkg/stub.py"):
+        assert (a / rel).read_text() == (b / rel).read_text()
+    assert ra.total_moves == rb.total_moves and ra.total_moves > 1
