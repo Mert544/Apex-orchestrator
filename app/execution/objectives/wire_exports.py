@@ -29,7 +29,11 @@ from pathlib import Path
 
 from app.engine.develop_registry import ObjectiveSpec, register
 from app.execution.cross_file_rename import RenamePlan
-from app.execution.export_wiring import plan_init_text, rendered_all_names
+from app.execution.export_wiring import (
+    oracle_target,
+    plan_init_text,
+    rendered_all_names,
+)
 from app.execution.import_oracle import exports_resolve
 
 
@@ -61,7 +65,15 @@ def plan_wire_exports(project_root: str | Path, init_rel: str) -> RenamePlan:
     expected = rendered_all_names(wire, original)
     if not expected:
         return plan  # nothing public to export
-    if not exports_resolve(root, init_rel, candidate, expected):
+    # Import the candidate under its REAL top-level path so a ``src/`` (or
+    # pyproject-declared) layout validates as ``pkg`` (with ``src/`` on the path),
+    # not ``src.pkg`` — otherwise a sibling's absolute ``from pkg.x import y`` would
+    # make the oracle wrongly refuse a wireable package. The normal layout is the
+    # identity (``project_root``/``init_rel``), byte-identical to before. The
+    # resolved ``oracle_root``/``oracle_init_rel`` point at the SAME physical
+    # ``__init__.py``, so the oracle writes and restores the right file.
+    oracle_root, oracle_init_rel, _ = oracle_target(root, init_rel)
+    if not exports_resolve(oracle_root, oracle_init_rel, candidate, expected):
         return plan  # the import oracle refused — land nothing
 
     plan.originals[init_rel] = original

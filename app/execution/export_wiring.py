@@ -18,6 +18,26 @@ symbols are emitted sorted, ``__all__`` is sorted — same package, same
 honestly: the first module in sorted order wins; a colliding name from a later
 module is SKIPPED, never guessed. A package already fully exported produces the
 identical text (a byte-for-byte no-op). Stdlib-only, no LLM, no clock, no random.
+
+Two real-world layouts this engine handles deliberately:
+
+* **PEP 420 namespace packages** (a package directory with public modules but NO
+  ``__init__.py``): creating an ``__init__.py`` would convert it into a *regular*
+  package and BREAK the namespace semantics (the portion would stop merging with
+  sibling portions on other ``sys.path`` entries). That is a semantic change we
+  cannot prove safe, so the conservative choice is to REFUSE cleanly — an honest
+  no-op, never a silent conversion. :func:`plan_init_text` returns ``None`` with a
+  ``refused_reason`` when the target ``__init__.py`` does not already exist.
+* **``src/`` layouts** (and any pyproject-declared source root): the emitted
+  ``from .module import Name`` is RELATIVE, so it is layout-agnostic; but the
+  import ORACLE that proves the names resolve must import the package under its
+  REAL top-level path — ``pkg`` (with ``src/`` on ``sys.path``), not ``src.pkg``.
+  :func:`oracle_target` strips the detected source root so the oracle validates
+  the package exactly as a real caller imports it. Source roots are the de-facto
+  ``src/`` convention plus ``pyproject.toml``-declared roots (pytest
+  ``pythonpath`` / setuptools ``package-dir`` / ``packages.find where``); the
+  detection mirrors ``app.engine.mutation_tester._source_roots`` and is replicated
+  here (stdlib-only ``tomllib``) so wire-exports has no cross-module coupling.
 """
 
 from __future__ import annotations
@@ -25,6 +45,11 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
+
+try:  # py311+: stdlib; older: graceful no-pyproject-parse degrade
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised only on <3.11
+    tomllib = None  # type: ignore[assignment]
 
 from app.engine.skip_dirs import is_test_or_fixture_path
 
@@ -35,6 +60,8 @@ __all__ = [
     "render_init_source",
     "rendered_all_names",
     "plan_init_text",
+    "oracle_target",
+    "is_namespace_package",
 ]
 
 # Protocol / runtime dunders that may be top-level bindings in an existing
@@ -297,6 +324,157 @@ def _existing_all(init_source: str) -> list[str] | None:
     return None
 
 
+# --- layout awareness: namespace packages + source-root (src/) import paths ---
+
+def is_namespace_package(project_root: str | Path, package_rel: str) -> bool:
+    """True iff ``package_rel`` is a PEP 420 namespace-package directory.
+
+    A directory that EXISTS and holds at least one ``*.py`` module but has NO
+    ``__init__.py`` is a namespace-package portion (it merges with sibling
+    portions on other ``sys.path`` entries). Wiring an ``__init__.py`` into it
+    would convert it to a regular package and break that merging, so wire-exports
+    refuses such a directory rather than change its semantics. A non-existent
+    directory, a file, or a directory that already has an ``__init__.py`` is NOT a
+    namespace package and returns ``False``."""
+    pkg = Path(project_root) / package_rel
+    if not pkg.is_dir():
+        return False
+    if (pkg / "__init__.py").exists():
+        return False
+    return any(p.is_file() for p in pkg.glob("*.py"))
+
+
+def oracle_target(
+    project_root: str | Path, init_rel: str,
+) -> tuple[Path, str, str]:
+    """Resolve how the import oracle should import the package at ``init_rel``.
+
+    Returns ``(oracle_root, oracle_init_rel, dotted_name)``:
+
+    * ``oracle_root`` — the directory to place on ``sys.path`` for the import;
+    * ``oracle_init_rel`` — ``init_rel`` made relative to ``oracle_root``;
+    * ``dotted_name`` — the top-level dotted package name to import.
+
+    For a normal (non-``src``) layout this is the IDENTITY: ``(project_root,
+    init_rel, pkg.sub)`` — byte-identical to importing the package rooted at the
+    project. For a ``src/`` (or pyproject-declared) layout the leading source root
+    is STRIPPED, so ``src/pkg/__init__.py`` imports as ``pkg`` with ``src/`` on the
+    path — exactly how a real caller (or pytest ``pythonpath=src``) imports it,
+    NOT as ``src.pkg`` (which would miss a sibling's absolute ``from pkg.x import
+    y`` and make the oracle wrongly refuse a wireable package). Only the FIRST
+    matching source root is stripped; the longest root wins when several match, so
+    nesting is deterministic. ``tomllib``-only, no clock/random."""
+    root = Path(project_root)
+    rel_posix = Path(init_rel).as_posix()
+    parent_parts = Path(init_rel).parent.parts
+    best: str | None = None
+    for source_root in _source_roots(root):
+        # Strip a root only when a real package remains UNDER it (the root is the
+        # FIRST segment AND is not the package's own only segment). ``src/__init__
+        # .py`` — a regular package literally named ``src`` — keeps its name; we do
+        # not mistake it for a source root and empty its dotted path.
+        if (
+            len(parent_parts) >= 2
+            and parent_parts[0] == source_root
+            and rel_posix.startswith(source_root + "/")
+            and (best is None or len(source_root) > len(best))
+        ):
+            best = source_root
+    if best is None:
+        return root, rel_posix, _dotted_package(parent_parts)
+    stripped_rel = rel_posix[len(best) + 1:]
+    stripped_parts = Path(stripped_rel).parent.parts
+    return root / best, stripped_rel, _dotted_package(stripped_parts)
+
+
+def _dotted_package(parent_parts: tuple[str, ...]) -> str:
+    """Dotted import name for a package whose ``__init__.py`` parent path is
+    ``parent_parts`` (``("a", "b")`` -> ``"a.b"``; empty -> ``""``)."""
+    return ".".join(parent_parts)
+
+
+def _source_roots(project_root: Path) -> list[str]:
+    """Strippable source-root path segments, deterministic and sorted.
+
+    Mirrors ``app.engine.mutation_tester._source_roots`` (replicated locally so
+    wire-exports stays decoupled): the de-facto ``src/`` convention is ALWAYS a
+    root, plus any root declared in ``pyproject.toml`` (pytest ``pythonpath`` /
+    setuptools ``package-dir`` / ``packages.find where``). A missing/unparseable
+    pyproject (or absent ``tomllib``) degrades to ``src/`` alone."""
+    roots = {"src"}
+    for declared in _pyproject_roots(project_root):
+        head = _first_path_segment(declared)
+        if head:
+            roots.add(head)
+    return sorted(roots)
+
+
+def _first_path_segment(value: str) -> str | None:
+    """The leading path component of a declared root (``"./src"`` -> ``"src"``,
+    ``"src/pkg"`` -> ``"src"``, ``"."``/``""`` -> ``None``)."""
+    if not isinstance(value, str):
+        return None
+    parts = [p for p in value.replace("\\", "/").split("/") if p and p != "."]
+    return parts[0] if parts else None
+
+
+def _pyproject_roots(project_root: Path) -> list[str]:
+    """Raw source-root strings declared in ``pyproject.toml`` — pytest
+    ``pythonpath``, setuptools ``package-dir`` values, and ``packages.find
+    where``. Best-effort: a missing file, absent ``tomllib``, or a parse error
+    yields ``[]``."""
+    path = project_root / "pyproject.toml"
+    if tomllib is None or not path.is_file():
+        return []
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    tool = data.get("tool")
+    if not isinstance(tool, dict):
+        return []
+    out: list[str] = []
+    out.extend(_pytest_pythonpath(tool))
+    out.extend(_setuptools_roots(tool))
+    return out
+
+
+def _pytest_pythonpath(tool: dict) -> list[str]:
+    """The ``[tool.pytest.ini_options] pythonpath`` entries (str or list of str)."""
+    ini = tool.get("pytest", {})
+    ini = ini.get("ini_options", {}) if isinstance(ini, dict) else {}
+    return _as_str_list(ini.get("pythonpath")) if isinstance(ini, dict) else []
+
+
+def _setuptools_roots(tool: dict) -> list[str]:
+    """The setuptools-declared roots: ``[tool.setuptools] package-dir`` values and
+    ``[tool.setuptools.packages.find] where`` entries."""
+    setup = tool.get("setuptools")
+    if not isinstance(setup, dict):
+        return []
+    out: list[str] = []
+    package_dir = setup.get("package-dir")
+    if isinstance(package_dir, dict):
+        out.extend(v for v in package_dir.values() if isinstance(v, str))
+    packages = setup.get("packages")
+    find = packages.get("find") if isinstance(packages, dict) else None
+    if isinstance(find, dict):
+        out.extend(_as_str_list(find.get("where")))
+    return out
+
+
+def _as_str_list(value: object) -> list[str]:
+    """Normalize a TOML scalar/list into a list of strings (a bare str becomes a
+    one-element list; a list keeps only its str items; anything else -> ``[]``)."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, str)]
+    return []
+
+
 def plan_init_text(
     project_root: str | Path, init_rel: str,
 ) -> tuple[str | None, WirePlan]:
@@ -311,6 +489,16 @@ def plan_init_text(
     rel = Path(init_rel)
     if rel.name != "__init__.py" or is_test_or_fixture_path(rel.parent):
         return None, WirePlan(package_rel=init_rel, refused_reason="not a wireable package")
+
+    # PEP 420 namespace package: a package dir with modules but no existing
+    # ``__init__.py``. CREATING one would convert it to a regular package and
+    # break namespace-portion merging across ``sys.path`` entries — a semantic
+    # change we cannot prove safe. Refuse cleanly (honest no-op), never convert.
+    if is_namespace_package(root, rel.parent.as_posix()):
+        return None, WirePlan(
+            package_rel=init_rel,
+            refused_reason="namespace package (no __init__.py) — not converting",
+        )
 
     package_dir = root / rel.parent
     try:

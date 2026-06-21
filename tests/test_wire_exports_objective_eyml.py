@@ -16,6 +16,8 @@ from pathlib import Path
 
 from app.execution.export_wiring import (
     collect_package_exports,
+    is_namespace_package,
+    oracle_target,
     plan_init_text,
     public_symbols_of_module,
     render_init_source,
@@ -488,3 +490,299 @@ def test_end_to_end_noop_on_already_wired(tmp_path: Path):
                                apply=True, verify=True)
     assert not result.steps  # nothing landed
     assert (pkg / "__init__.py").read_text() == wired  # byte-identical no-op
+
+
+# --- PEP 420 namespace packages (no __init__.py): refuse cleanly -------------
+# DECISION: a package directory with public modules but NO __init__.py is a
+# deliberate PEP 420 namespace-package portion. CREATING an __init__.py would
+# convert it to a *regular* package and break namespace-portion merging across
+# sys.path entries — a semantic change we cannot prove safe. The conservative,
+# honest behavior is to REFUSE (no crash, no file created), never silently
+# convert. (If we ever created one, the import oracle would still have to prove
+# every name resolves; we choose not to, to preserve the namespace semantics.)
+
+def _ns_pkg(tmp_path: Path, files: dict[str, str], name: str = "ns_pkg") -> Path:
+    """A namespace-package dir: real modules, but deliberately NO __init__.py."""
+    pkg = tmp_path / name
+    pkg.mkdir()
+    for fname, src in files.items():
+        (pkg / fname).write_text(src, encoding="utf-8")
+    return pkg
+
+
+def test_is_namespace_package_detects_missing_init(tmp_path: Path):
+    _ns_pkg(tmp_path, {"aaa.py": "def alpha():\n    return 1\n"})
+    assert is_namespace_package(tmp_path, "ns_pkg") is True
+
+
+def test_is_namespace_package_false_when_init_present(tmp_path: Path):
+    # A regular package (has __init__.py) is NOT a namespace package.
+    _pkg(tmp_path, {"aaa.py": "def alpha():\n    return 1\n"})
+    assert is_namespace_package(tmp_path, "pkg") is False
+
+
+def test_is_namespace_package_false_for_empty_or_missing_dir(tmp_path: Path):
+    # A dir with no *.py modules is nothing to wire; a missing dir is not a package.
+    (tmp_path / "empty").mkdir()
+    assert is_namespace_package(tmp_path, "empty") is False
+    assert is_namespace_package(tmp_path, "does_not_exist") is False
+
+
+def test_plan_init_text_refuses_namespace_package(tmp_path: Path):
+    # The headline safe behavior: a namespace package yields a clean refusal
+    # (candidate None + a reason), NOT a fabricated __init__.py.
+    _ns_pkg(tmp_path, {
+        "aaa.py": "def alpha():\n    return 1\n",
+        "bbb.py": "class Widget:\n    pass\n",
+    })
+    candidate, plan = plan_init_text(str(tmp_path), "ns_pkg/__init__.py")
+    assert candidate is None
+    assert plan.refused_reason is not None
+    assert "namespace" in plan.refused_reason
+
+
+def test_plan_wire_exports_refuses_namespace_package_no_file_created(tmp_path: Path):
+    # End-to-end refusal: an empty plan AND the namespace package stays a
+    # namespace package — no __init__.py is created on disk (semantics preserved).
+    _ns_pkg(tmp_path, {"aaa.py": "def alpha():\n    return 1\n"})
+    plan = plan_wire_exports(str(tmp_path), "ns_pkg/__init__.py")
+    assert not plan.new_contents and not plan.blockers
+    assert not (tmp_path / "ns_pkg" / "__init__.py").exists()  # never converted
+
+
+def test_regular_package_still_wires_after_namespace_guard(tmp_path: Path):
+    # Regression: the namespace guard keys ONLY off a MISSING __init__.py, so a
+    # normal package (empty __init__.py present) wires exactly as before.
+    _pkg(tmp_path, {"aaa.py": "def alpha():\n    return 1\n"})
+    candidate, plan = plan_init_text(str(tmp_path), "pkg/__init__.py")
+    assert candidate is not None
+    assert plan.refused_reason is None
+    assert "from .aaa import alpha" in candidate
+
+
+# --- src/ layout: oracle imports under the REAL top-level path (pkg, not src.pkg)
+
+def _src_project(tmp_path: Path, pyproject: str, files: dict[str, str],
+                 init: str = "", pkg_name: str = "pkg") -> Path:
+    """A src/-layout project: pyproject declares the root, package lives at
+    src/<pkg_name>/ with an existing (possibly empty) __init__.py."""
+    (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    pkg = tmp_path / "src" / pkg_name
+    pkg.mkdir(parents=True)
+    for fname, src in files.items():
+        (pkg / fname).write_text(src, encoding="utf-8")
+    (pkg / "__init__.py").write_text(init, encoding="utf-8")
+    return pkg
+
+
+_PYTEST_SRC = "[tool.pytest.ini_options]\npythonpath = [\"src\"]\n"
+_SETUPTOOLS_SRC = "[tool.setuptools]\npackage-dir = {\"\" = \"src\"}\n"
+
+
+def test_oracle_target_strips_src_root():
+    # The import oracle must import src/pkg as `pkg` with src/ on the path, not
+    # `src.pkg` rooted at the project. oracle_target encodes exactly that.
+    root, init_rel, dotted = oracle_target("/proj", "src/pkg/__init__.py")
+    assert root == Path("/proj/src")
+    assert init_rel == "pkg/__init__.py"
+    assert dotted == "pkg"
+    # And package_dotted_name on the stripped init_rel agrees (the oracle derives
+    # the dotted name from init_rel, so the stripping alone fixes the import path).
+    assert package_dotted_name(init_rel) == "pkg"
+
+
+def test_oracle_target_identity_for_normal_layout():
+    # No src/, no declared root -> identity: byte-identical to the old behavior.
+    assert oracle_target("/proj", "pkg/__init__.py") == (
+        Path("/proj"), "pkg/__init__.py", "pkg")
+    assert oracle_target("/proj", "app/sub/__init__.py") == (
+        Path("/proj"), "app/sub/__init__.py", "app.sub")
+
+
+def test_oracle_target_keeps_subpackage_path_under_src():
+    # A sub-package under src/ keeps its full dotted path below the stripped root.
+    assert oracle_target("/proj", "src/pkg/sub/__init__.py") == (
+        Path("/proj/src"), "pkg/sub/__init__.py", "pkg.sub")
+
+
+def test_oracle_target_does_not_strip_package_named_src():
+    # A regular package literally named `src` (src/__init__.py) is NOT a source
+    # root to strip — stripping would empty its dotted path. Keep it as identity.
+    assert oracle_target("/proj", "src/__init__.py") == (
+        Path("/proj"), "src/__init__.py", "src")
+
+
+def test_oracle_target_honors_pyproject_declared_root(tmp_path: Path):
+    # A custom setuptools root (`lib`) declared in pyproject is stripped too.
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.setuptools]\npackage-dir = {\"\" = \"lib\"}\n", encoding="utf-8")
+    root, init_rel, dotted = oracle_target(str(tmp_path), "lib/pkg/__init__.py")
+    assert root == tmp_path / "lib"
+    assert init_rel == "pkg/__init__.py" and dotted == "pkg"
+
+
+def test_src_layout_wires_with_absolute_sibling_import(tmp_path: Path):
+    # The real-world break: a src/ package whose module does the ABSOLUTE
+    # top-level import `from pkg.helper import base` (normal in src/ layouts,
+    # since `pkg` is the installed name). Under the WRONG `src.pkg` path that
+    # absolute import fails and the oracle wrongly refuses; under the corrected
+    # `pkg` path (src/ on sys.path) it resolves and the surface wires.
+    _src_project(tmp_path, _PYTEST_SRC, {
+        "aaa.py": "from pkg.helper import base\n\ndef alpha():\n    return base() + 1\n",
+        "helper.py": "def base():\n    return 10\n",
+    })
+    plan = plan_wire_exports(str(tmp_path), "src/pkg/__init__.py")
+    landed = plan.new_contents["src/pkg/__init__.py"]
+    assert "from .aaa import alpha" in landed
+    assert "from .helper import base" in landed
+    assert '"alpha"' in landed and '"base"' in landed
+
+
+def test_src_layout_oracle_resolves_under_pkg_not_src_pkg(tmp_path: Path):
+    # Direct oracle contrast at the layout boundary: the SAME candidate that
+    # resolves under the corrected `pkg` path (src/ on the path) is REFUSED under
+    # the naive `src.pkg` path — proving the oracle validates the right module.
+    _src_project(tmp_path, _PYTEST_SRC, {
+        "aaa.py": "from pkg.helper import base\n\ndef alpha():\n    return base()\n",
+        "helper.py": "def base():\n    return 10\n",
+    })
+    candidate = (
+        "from .aaa import alpha\nfrom .helper import base\n\n"
+        "__all__ = [\n    \"alpha\",\n    \"base\",\n]\n"
+    )
+    expected = ["alpha", "base"]
+
+    # WRONG: project root on the path, dotted `src.pkg` -> the absolute
+    # `from pkg.helper` inside aaa.py cannot resolve -> oracle refuses.
+    assert exports_resolve(str(tmp_path), "src/pkg/__init__.py",
+                           candidate, expected) is False
+    # RIGHT: the oracle_target-resolved root/init_rel -> imports as `pkg`.
+    o_root, o_init, _ = oracle_target(str(tmp_path), "src/pkg/__init__.py")
+    assert exports_resolve(o_root, o_init, candidate, expected) is True
+    # Side-effect-free: the empty __init__.py is restored either way.
+    assert (tmp_path / "src" / "pkg" / "__init__.py").read_text() == ""
+
+
+def test_src_layout_via_setuptools_package_dir(tmp_path: Path):
+    # The setuptools `package-dir={"":"src"}` declaration is honored the same as
+    # pytest pythonpath — the src/ root is stripped and the package wires.
+    _src_project(tmp_path, _SETUPTOOLS_SRC, {
+        "aaa.py": "from pkg.helper import base\n\ndef alpha():\n    return base()\n",
+        "helper.py": "def base():\n    return 1\n",
+    })
+    plan = plan_wire_exports(str(tmp_path), "src/pkg/__init__.py")
+    assert plan.new_contents
+    assert "from .aaa import alpha" in plan.new_contents["src/pkg/__init__.py"]
+
+
+def test_src_layout_wrong_path_name_is_refused(tmp_path: Path):
+    # never-fake-green at the layout boundary: a __all__ name that does NOT
+    # resolve even under the corrected `pkg` path is still refused — the fix only
+    # changes WHICH module is imported, never relaxes the resolve check.
+    _src_project(tmp_path, _PYTEST_SRC, {"aaa.py": "def alpha():\n    return 1\n"})
+    o_root, o_init, _ = oracle_target(str(tmp_path), "src/pkg/__init__.py")
+    candidate = (
+        "from .aaa import alpha\n\n__all__ = [\n    \"alpha\",\n    \"ghost\",\n]\n"
+    )
+    # `ghost` is nowhere defined -> unresolvable -> oracle refuses the candidate.
+    assert exports_resolve(o_root, o_init, candidate, ["alpha", "ghost"]) is False
+
+
+def test_src_layout_import_failure_still_refuses(tmp_path: Path):
+    # Determinism/honesty unchanged on src/: a module that raises at import time
+    # makes its export unresolvable, so the oracle declines and nothing lands —
+    # exactly as on a normal layout.
+    _src_project(tmp_path, _PYTEST_SRC, {
+        "bad.py": "raise RuntimeError('boom')\n\ndef gamma():\n    return 3\n",
+    })
+    plan = plan_wire_exports(str(tmp_path), "src/pkg/__init__.py")
+    assert not plan.new_contents
+    assert (tmp_path / "src" / "pkg" / "__init__.py").read_text() == ""
+
+
+def test_src_layout_plan_is_deterministic(tmp_path: Path):
+    # Same src/ package -> byte-identical candidate across two runs (no clock/random).
+    _src_project(tmp_path, _PYTEST_SRC, {
+        "m1.py": "def zee():\n    return 1\n\nclass Aye:\n    pass\n",
+        "m2.py": "def mid():\n    return 2\n",
+    })
+    a = plan_wire_exports(str(tmp_path), "src/pkg/__init__.py").new_contents
+    b = plan_wire_exports(str(tmp_path), "src/pkg/__init__.py").new_contents
+    assert a == b and a
+    block = a["src/pkg/__init__.py"].split("__all__", 1)[1]
+    assert block.index("Aye") < block.index("mid") < block.index("zee")
+
+
+# --- regression guard: the normal (__init__-present, non-src) case is unchanged
+
+def test_normal_case_candidate_is_byte_identical(tmp_path: Path):
+    # The exact bytes the engine emitted before this change for a plain package,
+    # pinned so the namespace + src/ work cannot perturb the common path.
+    _pkg(tmp_path, {
+        "aaa.py": "class Widget:\n    pass\n\ndef alpha():\n    return 1\n",
+        "bbb.py": "def beta():\n    return 2\n",
+    })
+    candidate, _ = plan_init_text(str(tmp_path), "pkg/__init__.py")
+    assert candidate == (
+        "from .aaa import Widget, alpha\n"
+        "from .bbb import beta\n"
+        "\n"
+        "__all__ = [\n"
+        '    "Widget",\n'
+        '    "alpha",\n'
+        '    "beta",\n'
+        "]\n"
+    )
+
+
+def test_normal_layout_oracle_call_is_identity(tmp_path: Path):
+    # The oracle plumbing for a non-src package is the identity, so a normal
+    # package still wires and resolves exactly as before the layout work.
+    _pkg(tmp_path, {"aaa.py": "def alpha():\n    return 1\n"})
+    assert oracle_target(str(tmp_path), "pkg/__init__.py") == (
+        tmp_path, "pkg/__init__.py", "pkg")
+    plan = plan_wire_exports(str(tmp_path), "pkg/__init__.py")
+    assert "from .aaa import alpha" in plan.new_contents["pkg/__init__.py"]
+
+
+def test_end_to_end_lands_init_in_src_layout_and_import_works(tmp_path: Path):
+    # The headline src/ proof: a full gated apply lands a real __init__.py under
+    # src/pkg/ and `from pkg import X` resolves in a clean import with src/ on the
+    # path (pytest pythonpath=src), even with an absolute sibling import inside.
+    import os
+    import subprocess
+    import sys
+
+    from app.engine.objective_compiler import compile_objective
+
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='d'\nversion='0'\n\n"
+        "[tool.pytest.ini_options]\npythonpath = [\"src\"]\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_ok.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8")
+    pkg = tmp_path / "src" / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "aaa.py").write_text(
+        "from pkg.helper import base\n\ndef alpha():\n    return base() + 1\n",
+        encoding="utf-8")
+    (pkg / "helper.py").write_text("def base():\n    return 10\n", encoding="utf-8")
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+
+    result = compile_objective(str(tmp_path), objective="wire-exports",
+                               apply=True, verify=True)
+    assert result.steps and result.steps[0].verified is True
+
+    text = (pkg / "__init__.py").read_text()
+    assert "from .aaa import alpha" in text
+    assert "from .helper import base" in text
+
+    # `from pkg import X` resolves with src/ on the path — exactly how a real
+    # caller / pytest pythonpath=src imports the package (NOT src.pkg).
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    proc = subprocess.run(
+        [sys.executable, "-c",
+         "from pkg import alpha, base; "
+         "assert base() == 10 and alpha() == 11; print('OK')"],
+        cwd=str(tmp_path / "src"), capture_output=True, text=True, env=env)
+    assert proc.returncode == 0 and "OK" in proc.stdout, proc.stderr
