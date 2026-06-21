@@ -1308,57 +1308,50 @@ def _identity_canonical_shape(expr: str, stub: StubFunction) -> str:
     return expr
 
 
-def _canary_inputs(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
-    """A fixed, deterministic set of off-witness probe inputs for the ambiguity
-    check, built from the witnessed argument tuples. For a single int argument we
-    probe small neighbours of the witnessed values (``v-1``, ``v+1``, plus a few
-    fixed anchors) so two bodies that agree on the witnesses but diverge nearby
-    (parity vs threshold) are caught. The witnessed tuples themselves are always
-    included. Multi-arg / non-int args fall back to the witnessed tuples alone —
-    two bodies that disagree there already disagree on a witness, which the gate
-    catches anyway, so the guard stays conservative (never over-refuses)."""
-    probes: list[tuple] = [args for args, _expected in witnesses]
-    arity = len(probes[0]) if probes else 0
-    if arity == 1 and all(isinstance(args[0], int) and not isinstance(args[0], bool)
-                          for args, _e in witnesses):
-        extra: set[int] = set()
-        for args, _e in witnesses:
-            v = args[0]
-            extra.update({v - 1, v + 1})
-        extra.update({0, 1, 2, 3, 50, 99, 100})
-        # Probe a negative input only when a witness IS negative. Injecting a
-        # negative anchor for an all-non-negative contract makes ``abs(a)`` /
-        # ``round(a)`` look like a different intent from a plain passthrough
-        # (they agree on every non-negative input and diverge only at the
-        # off-domain negative), wrongly tripping the ambiguity guard against a
-        # genuine ``identity(5)==5, identity(9)==9``. Staying within the
-        # witnessed sign-envelope keeps the guard from over-refusing while still
-        # catching parity-vs-threshold (which diverge among non-negatives too).
-        if any(args[0] < 0 for args, _e in witnesses):
-            extra.add(-1)
-        for v in sorted(extra):
-            probes.append((v,))
-    elif arity == 1 and all(isinstance(args[0], (list, tuple))
-                            for args, _e in witnesses):
-        # For a single SEQUENCE argument, probe reordered variants of each
-        # witnessed sequence (reversed, then sorted when its elements are mutually
-        # orderable). first/last/min/max/sorted/list all agree on a sequence that
-        # is already sorted-and-distinct, so without a reordered probe the guard
-        # cannot tell ``xs[0]`` from ``min(xs)`` on ``head([1, 2, 3]) == 1``. A
-        # reordered variant is still a valid input of the same type, so two bodies
-        # that diverge on it genuinely differ in intent. Deterministic; a
-        # non-orderable sequence simply skips the sorted variant.
-        for args, _e in witnesses:
-            seq = args[0]
-            probes.append((type(seq)(reversed(seq)),))
-            try:
-                probes.append((type(seq)(sorted(seq)),))
-            except TypeError:
-                pass  # heterogeneous/non-orderable — reversed alone still helps
-    # De-duplicate while preserving deterministic order. An argument tuple may hold
-    # an UNHASHABLE value (a list/dict witness, e.g. ``head([1, 2, 3])``), so the
-    # membership set keys on each tuple's ``repr`` rather than the tuple itself —
-    # never crash on an unhashable arg, stay deterministic.
+def _int_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
+    """Off-witness probe tuples for a single-int-argument contract: each
+    witnessed value's neighbours (``v-1``/``v+1``) plus fixed anchors, so two
+    bodies that agree on the witnesses but diverge nearby (parity vs threshold)
+    are caught. A negative anchor is probed ONLY when a witness is itself
+    negative — injecting one for an all-non-negative contract makes ``abs(a)`` /
+    ``round(a)`` look like a different intent from a plain passthrough (they
+    diverge only at the off-domain negative), wrongly tripping the guard against
+    a genuine ``identity(5)==5, identity(9)==9``."""
+    extra: set[int] = set()
+    for args, _e in witnesses:
+        v = args[0]
+        extra.update({v - 1, v + 1})
+    extra.update({0, 1, 2, 3, 50, 99, 100})
+    if any(args[0] < 0 for args, _e in witnesses):
+        extra.add(-1)
+    return [(v,) for v in sorted(extra)]
+
+
+def _sequence_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
+    """Off-witness probe tuples for a single-sequence-argument contract:
+    reordered variants of each witnessed sequence (reversed, then sorted when its
+    elements are mutually orderable). first/last/min/max/sorted/list all agree on
+    an already-sorted-and-distinct sequence, so without a reordered probe the
+    guard cannot tell ``xs[0]`` from ``min(xs)`` on ``head([1, 2, 3]) == 1``. A
+    reordered variant is a valid input of the same type, so two bodies that
+    diverge on it genuinely differ in intent. A non-orderable sequence simply
+    skips the sorted variant."""
+    out: list[tuple] = []
+    for args, _e in witnesses:
+        seq = args[0]
+        out.append((type(seq)(reversed(seq)),))
+        try:
+            out.append((type(seq)(sorted(seq)),))
+        except TypeError:
+            pass  # heterogeneous/non-orderable — reversed alone still helps
+    return out
+
+
+def _dedup_tuples(probes: list[tuple]) -> list[tuple]:
+    """De-duplicate ``probes`` preserving first-seen (deterministic) order. An
+    argument tuple may hold an UNHASHABLE value (a ``list``/``dict`` witness, e.g.
+    ``head([1, 2, 3])``), so membership keys on each tuple's ``repr`` rather than
+    the tuple itself — never crash on an unhashable arg, stay deterministic."""
     seen: set[str] = set()
     ordered: list[tuple] = []
     for p in probes:
@@ -1367,6 +1360,26 @@ def _canary_inputs(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
             seen.add(key)
             ordered.append(p)
     return ordered
+
+
+def _canary_inputs(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
+    """A fixed, deterministic set of off-witness probe inputs for the ambiguity
+    check, built from the witnessed argument tuples (always included). A single
+    int argument adds neighbour/anchor probes (:func:`_int_canary_probes`); a
+    single sequence argument adds reordered-sequence probes
+    (:func:`_sequence_canary_probes`). Multi-arg / other-typed args fall back to
+    the witnessed tuples alone — two bodies that disagree there already disagree
+    on a witness, which the gate catches anyway, so the guard stays conservative
+    (never over-refuses)."""
+    probes: list[tuple] = [args for args, _expected in witnesses]
+    arity = len(probes[0]) if probes else 0
+    if arity == 1 and all(isinstance(args[0], int) and not isinstance(args[0], bool)
+                          for args, _e in witnesses):
+        probes.extend(_int_canary_probes(witnesses))
+    elif arity == 1 and all(isinstance(args[0], (list, tuple))
+                            for args, _e in witnesses):
+        probes.extend(_sequence_canary_probes(witnesses))
+    return _dedup_tuples(probes)
 
 
 def _expr_fingerprint(expr: str, stub: StubFunction, canaries: list[tuple]) -> tuple:
