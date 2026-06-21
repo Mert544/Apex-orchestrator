@@ -32,6 +32,7 @@ from app.execution.stub_synthesis import (
     _purge_pyc,
     fill_stub_body,
     find_stub_functions,
+    module_has_fillable_stub,
     pinned_test_files,
     synthesize_expr_from_witnesses,
     synthesize_stub_body,
@@ -269,10 +270,29 @@ def _is_fixture_path(path: str) -> bool:
 
 
 def _modules(project_root: str | Path) -> list[str]:
+    """Own modules that hold at least one fillable stub — the implement-stub
+    fitness/move scan, made CHEAP.
+
+    This is the DEFECT-1 fix: the scan formerly ran the FULL pytest-gated
+    ``plan_implement_stub`` for EVERY module just to COUNT/enumerate work, and
+    ``compile_objective`` calls the fitness/candidate scan once PER PASS — so the
+    whole per-candidate pytest synthesis ran many times merely to MEASURE. The
+    scan now uses :func:`module_has_fillable_stub`, an IN-PROCESS estimate (no
+    pytest): a module counts when any stub with pinned tests is fillable via the
+    in-process witness synthesis (non-recursive shapes) OR a recursion template
+    evaluated as a real recursive function in-process. This never under-counts a
+    landable stub (recursion included), so the SAME modules are offered.
+
+    The actual apply is UNCHANGED: when a move is selected, ``plan_implement_stub``
+    builds the real plan under the FULL pytest gate that ``apply_rename`` enforces
+    — the never-fake-green moat governs what LANDS, exactly as before. A stub this
+    cheap estimate counts but the gate later rejects simply no-ops at apply.
+    Deterministic; fixed source-order traversal preserved."""
     from app.engine.objective_compiler import _own_modules
 
+    root = Path(project_root)
     return [rel for rel, _src in _own_modules(project_root)
-            if plan_implement_stub(project_root, rel).new_contents]
+            if module_has_fillable_stub(root, rel)]
 
 
 def fitness(project_root: str | Path) -> float:
@@ -280,7 +300,9 @@ def fitness(project_root: str | Path) -> float:
 
     Implementable = a stub whose pinned tests a fixed template can satisfy. A
     stub with no tests or an unsatisfiable contract does NOT count (we refuse to
-    touch it), so it never appears as remaining debt — an honest measure."""
+    touch it), so it never appears as remaining debt — an honest measure. Counted
+    by the CHEAP in-process estimate (:func:`_modules`), never the slow pytest
+    gate; the gate still governs what actually lands at apply."""
     return float(len(_modules(project_root)))
 
 
@@ -295,9 +317,11 @@ def moves(project_root: str | Path) -> list:
     ) for rel in _modules(project_root)]
 
 
-# Synthesis runs the project's tests once per candidate template, so the fitness
-# scan is heavyweight — flag it expensive so the fast plan/ascend board skips it
-# (it stays runnable explicitly via `apex develop --objective implement-stub`).
+# The fitness/move SCAN is now cheap (an in-process estimate, no pytest — see
+# `_modules`), but the APPLY still runs the project's tests per candidate template
+# to actually LAND a fill, so the objective stays flagged `expensive`: the fast
+# plan/ascend board skips it and it runs explicitly via
+# `apex develop --objective implement-stub` (or the opt-in `develop session`).
 # scope_verify=True: gate each fill against the IMPACTED tests, not the full
 # suite. On a multi-module project where several modules each hold an
 # unimplemented stub, the baseline suite is legitimately RED (every stub fails its

@@ -49,6 +49,8 @@ __all__ = [
     "candidate_bodies",
     "ordered_candidate_exprs",
     "synthesize_expr_from_witnesses",
+    "can_fill_stub_in_process",
+    "module_has_fillable_stub",
     "fill_stub_body",
     "synthesize_stub_body",
 ]
@@ -898,6 +900,168 @@ def synthesize_expr_from_witnesses(root: Path, test_files: list[str],
     return None
 
 
+def can_fill_stub_in_process(root: Path, test_files: list[str],
+                             stub: StubFunction) -> bool:
+    """A CHEAP, in-process estimate of whether ``stub`` is fillable — no pytest.
+
+    This is the fitness/move-scan oracle: it must be FAST (the develop loop
+    measures fitness and enumerates moves once per pass, and the pytest-gated
+    ``plan_implement_stub`` is far too slow to run for that) yet it must NOT
+    under-count any stub the real (pytest-gated) apply would land — a stub the
+    estimate misses would silently stop being offered. So it accepts when EITHER:
+
+    * a non-recursive fixed template matches every witness in-process
+      (:func:`synthesize_expr_from_witnesses`), OR
+    * a recursion template (factorial/fibonacci), which the pure-expression
+      synth cannot evaluate (``__apex_self__`` is not bound), matches every
+      witness when evaluated AS a real recursive function in-process
+      (:func:`_recursion_matches`). This is the cheap structural recursion check
+      that keeps recursion-only stubs (e.g. a factorial body) in the scan.
+
+    The estimate may OVER-count (a stub it accepts that the real per-module gate
+    later rejects simply no-ops at apply — already handled), but it never
+    UNDER-counts a landable stub. Deterministic, offline, stdlib-only; runs the
+    same never-fake-green floors (enforceable contract, ambiguity) as the apply
+    path so it never offers a stub the apply would refuse on principle.
+
+    When the witnesses are NOT literal enough to evaluate in-process (a non-literal
+    argument or expected value), the in-process synth cannot decide either way —
+    but the pytest-gated apply still might land a value-free template (e.g.
+    ``s.lower()``). To stay safe (never under-count), such a stub is counted
+    CONSERVATIVELY: the move is offered, and the real per-module pytest gate is the
+    authority on whether it actually lands (a no-op if it doesn't)."""
+    if not _has_enforceable_contract(root, test_files, stub):
+        return False  # only xfail/skip tests pin this stub — apply would refuse too
+    if synthesize_expr_from_witnesses(root, test_files, stub) is not None:
+        return True
+    if _recursion_matches(root, test_files, stub):
+        return True
+    # In-process synthesis couldn't decide. If the witnesses aren't evaluable
+    # in-process (non-literal args/expected), the pytest gate might still land a
+    # value-free template — count it conservatively rather than under-count. If
+    # the witnesses ARE evaluable yet nothing matched, the apply path would refuse
+    # too (same templates, same gate), so it is honestly NOT counted.
+    return _has_pinned_but_non_evaluable_witnesses(root, test_files, stub)
+
+
+def _has_pinned_but_non_evaluable_witnesses(root: Path, test_files: list[str],
+                                            stub: StubFunction) -> bool:
+    """True when ``stub`` has enforceable pinned witnesses that the in-process
+    evaluator CANNOT turn into literal ``(args, expected)`` pairs (a non-literal
+    call site). Such a contract is undecidable in-process, so the cheap scan
+    counts it conservatively (the pytest apply gate decides for real) rather than
+    risk under-counting a stub the pytest path could still fill. A stub with no
+    enforceable witnesses at all is NOT counted (no contract to satisfy)."""
+    witnesses = _function_witnesses(root, test_files, stub)
+    if not witnesses:
+        return False
+    return _evaluable_witnesses(witnesses, stub) is None
+
+
+def _recursion_matches(root: Path, test_files: list[str],
+                       stub: StubFunction) -> bool:
+    """True when a recursion template (the ``__apex_self__`` shapes) reproduces
+    every enforceable witness for ``stub``, evaluated AS a real recursive function
+    in-process (no pytest). The pure-expression synth skips recursion because
+    ``__apex_self__`` has no binding; here we wrap each recursion body in an
+    actual ``def`` over the stub's parameters so factorial/fibonacci can be
+    checked cheaply. Runs the same enforceable-contract / ambiguity floors first,
+    so it never offers a stub the apply path would refuse. Deterministic."""
+    if not _has_enforceable_contract(root, test_files, stub):
+        return False
+    witnesses = _function_witnesses(root, test_files, stub)
+    evaluable = _evaluable_witnesses(witnesses, stub) if witnesses else None
+    if not evaluable:
+        return False
+    if _is_ambiguous(root, test_files, stub):
+        return False
+    # Evaluate the recursion only against SMALL-magnitude witnesses: the fibonacci
+    # template is EXPONENTIAL, so ``fib(95)`` would never terminate in-process. A
+    # recursion-shaped contract is pinned by small base/step cases anyway
+    # (``fact(0)==1, fact(5)==120``), so bounding the evaluated witnesses keeps the
+    # cheap check fast without missing a real recursion. A contract whose ONLY
+    # witnesses are large (e.g. ``grade_letter(95)=='A'``) yields no small witness
+    # to check, so recursion is honestly not claimed — and such a contract is not a
+    # recursion shape anyway (its expected values are strings, not the recursion's
+    # ints). The explicit pytest-gated apply remains the authority for any genuine
+    # large-argument recursion that this cheap bound would skip.
+    small = [(args, exp) for args, exp in evaluable
+             if all(isinstance(a, int) and abs(a) <= _RECURSION_WITNESS_CAP
+                    for a in args)]
+    if len({args for args, _e in small}) < 2:
+        return False  # too few small witnesses to determine a recursion cheaply
+    for _label, expr in _ordered_candidates(root, test_files, stub):
+        if "__apex_self__" in expr and _recursive_expr_matches_all(expr, stub, small):
+            return True
+    return False
+
+
+# Largest |arg| the in-process recursion check evaluates. Factorial (linear) and
+# fibonacci (exponential) both stay cheap within this bound; larger witnesses are
+# left to the explicit pytest-gated apply path so the cheap scan never hangs.
+_RECURSION_WITNESS_CAP = 25
+
+
+def _recursive_expr_matches_all(expr: str, stub: StubFunction,
+                                witnesses: list[tuple[tuple, object]]) -> bool:
+    """True when the recursion body ``expr`` (with the ``__apex_self__`` marker)
+    yields the expected value for EVERY witness, evaluated as a genuine recursive
+    function bound to ``stub``'s parameters. The caller passes only small-magnitude
+    witnesses, so factorial/fibonacci stay cheap and always terminate; a deep
+    linear recursion is additionally guarded by a temporary recursion-limit.
+    Sandboxed to the safe builtin set, like the pure-expression matcher."""
+    body = expr.replace("__apex_self__", "__apex_rec__")
+    params = ", ".join(stub.params)
+    src = f"def __apex_rec__({params}):\n    return {body}\n"
+    env: dict = {"__builtins__": _SAFE_BUILTINS}
+    try:
+        exec(compile(src, "<apex-recursion>", "exec"), env)  # noqa: S102 - fixed templates
+        fn = env["__apex_rec__"]
+    except Exception:
+        return False
+    import sys
+    prev = sys.getrecursionlimit()
+    sys.setrecursionlimit(min(prev, 1000))
+    try:
+        for args, expected in witnesses:
+            try:
+                value = fn(*args)
+            except Exception:
+                return False
+            if type(value) is not type(expected) or value != expected:
+                return False
+        return True
+    finally:
+        sys.setrecursionlimit(prev)
+
+
+def module_has_fillable_stub(root: Path, module_rel: str) -> bool:
+    """A CHEAP, in-process estimate (no pytest) of whether ``module_rel`` holds at
+    least one fillable stub — the oracle the implement-stub fitness/move scan uses
+    instead of the slow pytest-gated ``plan_implement_stub``.
+
+    A module qualifies when any of its stubs has pinned tests AND
+    :func:`can_fill_stub_in_process` accepts it. Test/fixture files and unreadable
+    modules never qualify. Deterministic: stubs are taken in fixed source order.
+
+    HONESTY: this only changes the SCAN cost, never WHAT lands. The actual apply
+    still runs the full pytest gate in ``plan_implement_stub`` — a stub this
+    estimate counts but the gate later rejects simply no-ops at apply; a stub it
+    accepts is exactly the set the apply path can land (it never under-counts a
+    landable stub, recursion included)."""
+    if _is_test_or_fixture(module_rel):
+        return False
+    try:
+        source = (root / module_rel).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for stub in find_stub_functions(source):
+        tests = pinned_test_files(root, module_rel, stub.name)
+        if tests and can_fill_stub_in_process(root, tests, stub):
+            return True
+    return False
+
+
 def _evaluable_witnesses(witnesses: list[tuple[str, str]],
                          stub: StubFunction) -> list[tuple[tuple, object]] | None:
     """Parse the witnesses into ``(arg_values, expected_value)`` pairs of real
@@ -1003,11 +1167,25 @@ def _is_ambiguous(root: Path, test_files: list[str], stub: StubFunction) -> bool
     if not evaluable:
         return False
     matching: list[str] = []
+    seen_shapes: set[str] = set()
     for label, expr in _ordered_candidates(root, test_files, stub):
         if label == "constant" or "__apex_self__" in expr:
             continue
-        if _expr_matches_all(expr, stub, evaluable):
-            matching.append(expr)
+        if not _expr_matches_all(expr, stub, evaluable):
+            continue
+        # Collapse the algebraic-identity family (``a``, ``a + 0``, ``a - 0``,
+        # ``a * 1``, ``a // 1``, ``a / 1``) to ONE semantic shape: they are the
+        # same passthrough answer spelled different ways, so they must not count
+        # as DISTINCT competing intents against each other. Without this, a
+        # genuine passthrough (``identity(5)==5, identity(9)==9``) is matched by
+        # several identity-family templates and the >=2-shapes guard wrongly
+        # refuses ``return a``. A genuinely different shape (``a * 2``, ``a + k``,
+        # a comparison) is NOT in the family, so the guard still refuses it.
+        shape = _identity_canonical_shape(expr, stub)
+        if shape in seen_shapes:
+            continue  # an identity-family duplicate already represented
+        seen_shapes.add(shape)
+        matching.append(expr)
     if len(matching) < 2:
         return False
     canaries = _canary_inputs(evaluable)
@@ -1017,6 +1195,37 @@ def _is_ambiguous(root: Path, test_files: list[str], stub: StubFunction) -> bool
         if len(fingerprints) >= 2:
             return True  # two passing templates disagree off-witness — ambiguous
     return False
+
+
+# The algebraic-identity family: expressions over a single parameter ``a`` that
+# all evaluate to ``a`` itself. Collapsed to one shape in the ambiguity guard so
+# they never count as competing intents against EACH OTHER (a passthrough lands).
+_IDENTITY_FAMILY: tuple[tuple[str, ...], ...] = (
+    ("",),  # bare ``a``
+    ("+", "0"), ("-", "0"), ("*", "1"), ("//", "1"), ("/", "1"),
+)
+
+
+def _identity_canonical_shape(expr: str, stub: StubFunction) -> str:
+    """Canonical shape key for ``expr``: every algebraic-identity-family member
+    over the stub's single parameter (``a``, ``a + 0``, ``a - 0``, ``a * 1``,
+    ``a // 1``, ``a / 1``) collapses to one fixed ``"<identity>"`` token; any
+    other expression keys to its own text. Used by the ambiguity guard so the
+    identity family is treated as ONE semantic shape, not several competing ones.
+
+    Deterministic and purely syntactic: only a one-parameter stub can have an
+    identity family (the templates are built over ``params[0]``), so a
+    multi-param expr always keys to itself."""
+    if len(stub.params) != 1:
+        return expr
+    a = stub.params[0]
+    text = expr.strip()
+    if text == a:
+        return "<identity>"
+    for op, const in (p for p in _IDENTITY_FAMILY if len(p) == 2):
+        if text == f"{a} {op} {const}":
+            return "<identity>"
+    return expr
 
 
 def _canary_inputs(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
@@ -1036,7 +1245,17 @@ def _canary_inputs(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
         for args, _e in witnesses:
             v = args[0]
             extra.update({v - 1, v + 1})
-        extra.update({0, 1, 2, 3, 50, 99, 100, -1})
+        extra.update({0, 1, 2, 3, 50, 99, 100})
+        # Probe a negative input only when a witness IS negative. Injecting a
+        # negative anchor for an all-non-negative contract makes ``abs(a)`` /
+        # ``round(a)`` look like a different intent from a plain passthrough
+        # (they agree on every non-negative input and diverge only at the
+        # off-domain negative), wrongly tripping the ambiguity guard against a
+        # genuine ``identity(5)==5, identity(9)==9``. Staying within the
+        # witnessed sign-envelope keeps the guard from over-refusing while still
+        # catching parity-vs-threshold (which diverge among non-negatives too).
+        if any(args[0] < 0 for args, _e in witnesses):
+            extra.add(-1)
         for v in sorted(extra):
             probes.append((v,))
     # De-duplicate while preserving deterministic order.
