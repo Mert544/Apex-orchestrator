@@ -70,20 +70,60 @@ def plan_implement_stub(project_root: str | Path, module_rel: str) -> RenamePlan
     if not find_stub_functions(original):
         return plan  # nothing unfinished here — no-op (idempotent)
 
-    filled = _fill_all_stubs(root, module_rel, original)
+    filled, filled_names = _fill_all_stubs(root, module_rel, original)
     if filled is None or filled == original:
         return plan  # every stub refused — honest empty plan
 
     plan.originals[module_rel] = original
     plan.new_contents[module_rel] = filled
     plan.edits_by_file[module_rel] = 1
+    _scope_apply_gate(plan, root, module_rel, original, filled_names)
     return plan
 
 
-def _fill_all_stubs(root: Path, module_rel: str, original: str) -> str | None:
+def _scope_apply_gate(plan: RenamePlan, root: Path, module_rel: str,
+                      original: str, filled_names: set[str]) -> None:
+    """Tell the apply gate which pinned nodes this fill makes green, and which
+    pre-existing-red sibling nodes to deselect.
+
+    ``scoped_test_nodes``: the sorted union of pinned-test NODE IDs
+    (``file::test_x``) for ONLY the stubs this plan actually filled — the tests
+    that genuinely pass after the fill (transparency + never-fake-green: each
+    landed stub is grounded in its OWN real tests).
+
+    ``scoped_excluded_nodes``: the pinned nodes of every stub that was PRESENT in
+    the module but NOT filled (unsynthesizable, or no spec) — i.e. nodes that were
+    red BEFORE the change and the fill doesn't worsen. The gate deselects exactly
+    these from the whole impacted files, so an unsynthesizable sibling no longer
+    rolls the landable fill back end-to-end, while every still-green impacted test
+    keeps running (a genuine regression is still caught). A node naming BOTH a
+    filled and an unfilled stub is kept (never deselect a node a landed stub must
+    pass). Deterministic: sorted. Both empty when nothing is discoverable, leaving
+    the gate on its unchanged whole-file impacted-scope."""
+    included: set[str] = set()
+    for name in filled_names:
+        included.update(pinned_test_nodes(root, module_rel, name))
+    unfilled = {s.name for s in find_stub_functions(original)} - filled_names
+    excluded: set[str] = set()
+    for name in unfilled:
+        excluded.update(pinned_test_nodes(root, module_rel, name))
+    # Only deselect TRUE node IDs (``file::test``) of an unfilled sibling, and
+    # never one a filled stub depends on (``excluded - included``). pytest can
+    # deselect a single function from a shared file while its sibling functions
+    # still run, which is exactly the same-file deadlock fix. A whole-file
+    # fallback (no ``::``) is left in scope — it can't be deselected node-wise.
+    deselectable = {n for n in (excluded - included) if "::" in n}
+    plan.scoped_test_nodes = sorted(included)
+    plan.scoped_excluded_nodes = sorted(deselectable)
+
+
+def _fill_all_stubs(root: Path, module_rel: str,
+                    original: str) -> tuple[str | None, set[str]]:
     """Cumulatively synthesize a body for EVERY satisfiable stub in the module,
-    returning the full module source with all of them filled (or the original
-    text unchanged when none was satisfiable).
+    returning ``(filled_source, filled_names)`` — the full module source with all
+    satisfiable stubs filled and the set of stub names that landed (or
+    ``(None, set())`` when none was satisfiable). The names let the planner scope
+    the apply gate to exactly those stubs' pinned tests.
 
     Each stub is synthesized against the *current* (partially-filled) source on
     disk, so an already-filled sibling's body is in place while the next stub's
@@ -147,7 +187,7 @@ def _fill_all_stubs(root: Path, module_rel: str, original: str) -> str | None:
                 break  # re-derive: this fill shifted later stubs' line spans
     finally:
         target.write_text(original, encoding="utf-8")
-    return current if filled else None
+    return (current, filled) if filled else (None, filled)
 
 
 def _resolve_mutual_stubs(root: Path, module_rel: str, current: str,

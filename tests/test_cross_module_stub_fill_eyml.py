@@ -197,3 +197,89 @@ def test_compile_is_deterministic_across_fresh_fixtures(tmp_path: Path):
 
     assert first == second  # no clock/random — same input, byte-identical output
     assert "raise NotImplementedError" not in first
+
+
+# --- END-TO-END same-file sibling: the apply gate now node-scopes ------------
+
+def _mathutils_one_file_project(root: Path) -> None:
+    """ONE module ``app/mathutils.py`` with ``add`` (-> ``a + b``), ``scale``
+    (-> ``value * factor``) — both synthesizable — and ``running_total``
+    (genuinely unsynthesizable), ALL pinned in ONE ``tests/test_mathutils.py``.
+
+    This is the same-FILE sibling case the OUTER apply gate used to mishandle:
+    the whole-file impacted scope re-ran ``test_running_total`` (red) and rolled
+    the correct ``add``/``scale`` fill back. The node-deselecting gate lands them.
+    """
+    (root / "app").mkdir()
+    (root / "tests").mkdir()
+    (root / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    (root / "app" / "mathutils.py").write_text(
+        "def add(a, b):\n    raise NotImplementedError\n\n\n"
+        "def scale(value, factor):\n    raise NotImplementedError\n\n\n"
+        "def running_total(n):\n    raise NotImplementedError\n",
+        encoding="utf-8")
+    (root / "tests" / "test_mathutils.py").write_text(
+        "from app.mathutils import add, scale, running_total\n\n"
+        "def test_add():\n    assert add(2, 3) == 5\n    assert add(10, 1) == 11\n\n"
+        "def test_scale():\n"
+        "    assert scale(2, 3) == 6\n    assert scale(4, 5) == 20\n\n"
+        "def test_running_total():\n"
+        "    assert running_total(0) == 2\n"
+        "    assert running_total(1) == 2\n"
+        "    assert running_total(2) == 9\n",
+        encoding="utf-8")
+
+
+def test_compile_lands_add_scale_running_total_stays_stub(tmp_path: Path):
+    from app.engine.objective_compiler import compile_objective
+
+    _mathutils_one_file_project(tmp_path)
+    # Baseline: the whole suite is RED (running_total fails), and add/scale are
+    # still stubs.
+    assert _full_suite_green(tmp_path) is False
+
+    result = compile_objective(str(tmp_path), "implement-stub", apply=True)
+
+    text = (tmp_path / "app" / "mathutils.py").read_text()
+    # END-TO-END: add and scale land their REAL bodies via compile_objective
+    # (NOT just at the planner) — they are no longer rolled back by the sibling.
+    assert text.rstrip().endswith("return value * factor") or "return value * factor" in text
+    assert "return a + b" in text
+    assert "return value * factor" in text
+    assert result.steps and any(s.verified for s in result.steps)
+
+    # running_total stays a stub (its red node was deselected, not faked green).
+    assert text.count("raise NotImplementedError") == 1
+    rt_def = text.split("def running_total(n):", 1)[1]
+    assert "raise NotImplementedError" in rt_def
+
+    # The full suite is STILL red (running_total still fails) — never faked green.
+    assert _full_suite_green(tmp_path) is False
+    # add/scale's own nodes genuinely pass on disk.
+    import subprocess
+    import sys
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+         "tests/test_mathutils.py::test_add",
+         "tests/test_mathutils.py::test_scale"],
+        cwd=str(tmp_path), capture_output=True, text=True)
+    assert proc.returncode == 0
+
+
+def test_compile_same_file_sibling_is_deterministic(tmp_path: Path):
+    from app.engine.objective_compiler import compile_objective
+
+    _mathutils_one_file_project(tmp_path)
+    compile_objective(str(tmp_path), "implement-stub", apply=True)
+    first = (tmp_path / "app" / "mathutils.py").read_text()
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        root2 = Path(d)
+        _mathutils_one_file_project(root2)
+        compile_objective(str(root2), "implement-stub", apply=True)
+        second = (root2 / "app" / "mathutils.py").read_text()
+
+    assert first == second  # byte-identical landed file, no clock/random

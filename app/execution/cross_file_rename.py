@@ -50,6 +50,16 @@ class RenamePlan:
     edits_by_file: dict[str, int] = field(default_factory=dict)
     blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Optional pinned pytest node IDs (``file::test_name``) this change makes
+    # green — the specific tests the planner KNOWS its fill satisfies (e.g.
+    # implement-stub's per-symbol pinned tests for the stubs it filled). When
+    # set, the impact-scoped apply gate still runs the whole impacted test FILES
+    # (so a currently-green test the change would regress is caught), but it
+    # DESELECTS ``scoped_excluded_nodes`` — the pre-existing-red nodes of any
+    # unsynthesizable sibling — so they don't veto the landable change. Empty →
+    # whole-file behavior, byte-identical to before. Sorted/deterministic.
+    scoped_test_nodes: list[str] = field(default_factory=list)
+    scoped_excluded_nodes: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -343,13 +353,25 @@ def _verify_scoped(root: Path, plan: RenamePlan) -> tuple[bool, dict] | None:
     impacted = impacted_test_files(root, list(plan.new_contents))
     if not impacted:
         return None
-    env = {**os.environ,
-           "PYTHONPATH": str(root) + os.pathsep + os.environ.get("PYTHONPATH", "")}
+    # Default scope: the whole impacted test files, byte-identical to before. When
+    # the plan names the pre-existing-red nodes of an unsynthesizable sibling
+    # (``scoped_excluded_nodes``), DESELECT exactly those — a node red BEFORE the
+    # change isn't made worse by it, so it must not veto the landable fill — while
+    # the rest of each impacted file still runs, so a currently-green test the
+    # change would REGRESS is still caught (never-fake-green). Deselects are sorted
+    # for a deterministic command; empty → command shape unchanged.
+    deselect: list[str] = []
+    for node in sorted(plan.scoped_excluded_nodes):
+        deselect += ["--deselect", node]
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", *impacted],
-        cwd=str(root), capture_output=True, text=True, env=env)
+        [sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider",
+         *deselect, *impacted],
+        cwd=str(root), capture_output=True, text=True, env={
+            **os.environ,
+            "PYTHONPATH": str(root) + os.pathsep + os.environ.get("PYTHONPATH", "")})
     ok = proc.returncode == 0
-    return ok, {"scoped": True, "tests": impacted, "passed": ok}
+    return ok, {"scoped": True, "tests": impacted,
+                "deselected": sorted(plan.scoped_excluded_nodes), "passed": ok}
 
 
 def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True,
