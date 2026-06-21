@@ -7,6 +7,8 @@ idea_permutation re-exports IdeaSeeder, so the import surface is unchanged.
 
 from __future__ import annotations
 
+import re
+
 from app.models.idea import IdeaNode
 from app.tools.project_profile import ProjectProfile
 from app.utils.branching import make_branch_path
@@ -514,6 +516,26 @@ class IdeaSeeder:
     # these" list, not a flood).
     _EXPOSURE_CAP = 3
 
+    # JS/TS test-coverage awareness family (RECOMMEND-ONLY, language breadth).
+    # Apex deep-analyses only Python, so for a JS/TS module it can only NAME the
+    # gap honestly — never claim to fix it. The family surfaces an UNTESTED,
+    # high-churn JS/TS module as an awareness idea grounded in the SAME
+    # deterministic polyglot facts the profiler already trusts (path, churn, LOC,
+    # convention-based test presence). Small cap: a focused "consider testing
+    # these" list, not a flood.
+    _JS_TS_COVERAGE_CAP = 3
+    # Only these two languages (from polyglot_facts._LANGUAGE_BY_EXT) are the
+    # JS/TS family's scope; every other non-Python language stays covered solely
+    # by the broader (already-shipped) polyglot-hotspot awareness family.
+    _JS_TS_LANGUAGES = frozenset({"JavaScript", "TypeScript"})
+    # A JS/TS file that is ITSELF a test (sibling convention ``*.test.*`` /
+    # ``*.spec.*`` / ``*_test`` / ``*_spec`` / ``test_*``, or living under a
+    # recognised test directory) is never a coverage GAP — recommending a test
+    # for a test file is a false positive. Detected with conservative, name-only
+    # markers (mirrors polyglot_facts' own conventions; pure string checks).
+    _JS_TS_TEST_DIRS = frozenset({"__tests__", "tests", "test", "spec"})
+    _JS_TS_TEST_STEM_MARKERS = (".test", ".spec", "_test", "_spec")
+
     def seed(self, profile: ProjectProfile, objective: str | None = None,
              accelerating: dict[str, dict] | None = None,
              *, seed_discoveries: bool = False) -> list[IdeaNode]:
@@ -580,6 +602,14 @@ class IdeaSeeder:
         # so the seeded set is byte-identical on every input that doesn't trip
         # the threshold, and even when it fires every prior root is unchanged.
         self._seed_exposure_gradient(roots, seen_subjects, profile)
+        # JS/TS test-coverage awareness runs LAST too (RECOMMEND-ONLY language
+        # breadth), on a ``::js-ts-coverage``-suffixed subject no other family can
+        # claim, so it is purely ADDITIVE: it never competes for or deduplicates
+        # against a module an earlier family (incl. polyglot-hotspot) already owns,
+        # and every prior root stays byte-identical and in the same order. It reads
+        # the SAME deterministic polyglot facts (git+stdlib only) and seeds nothing
+        # on a Python-only repo, so that path stays byte-identical.
+        self._seed_js_ts_coverage(roots, seen_subjects, profile)
         # NOTE: dream-discovery seeds (``discovered_idea_seeds``) are intentionally
         # NOT auto-seeded here. As competing roots they disrupt the bounded idea
         # budget, displacing valuable synthesis ideas (e.g. import-cycle pairs) and
@@ -1068,6 +1098,192 @@ class IdeaSeeder:
                             f"{commit_word}{fact_debt} — biggest/most-active file "
                             f"outside Apex's Python analysis scope)"),
             )
+
+    # Tight, conservative regex for a JS/TS top-level public declaration:
+    # ``export function NAME`` / ``export const NAME`` / ``export class NAME``
+    # (also ``export default function NAME`` / ``export async function NAME``).
+    # Anchored at line start (after optional indentation) so it never matches an
+    # ``export`` token buried mid-expression; NAME is a plain identifier. Used
+    # ONLY to point at a concrete line — string/comment-guarded by the caller
+    # (lines inside ``//`` / ``/* */`` / string literals are skipped), and a
+    # no-match is a clean no-op (the idea still grounds on path + churn).
+    _JS_TS_EXPORT_RE = re.compile(
+        r"^\s*export\s+(?:default\s+)?(?:async\s+)?"
+        r"(?:function\*?|const|let|var|class)\s+"
+        r"([A-Za-z_$][\w$]*)"
+    )
+
+    def _js_ts_first_export(self, rel_path: str) -> tuple[str, int]:
+        """The first top-level ``export function/const/class NAME`` in ``rel_path``.
+
+        Returns ``(symbol, line)`` — ``("", 0)`` when no root is wired, the file
+        can't be read, or no public export is found. Conservative + string/
+        comment-guarded: lines inside a ``/* */`` block, after ``//``, or whose
+        ``export`` falls inside a quote are skipped, so a commented-out or
+        string-embedded ``export`` never produces a false anchor. Pure I/O + a
+        tight regex; deterministic (first match in file order, no time/random).
+        """
+        from pathlib import Path
+
+        root = getattr(self, "project_root", "")
+        if not root:
+            return "", 0
+        try:
+            text = (Path(root) / rel_path).read_text(
+                encoding="utf-8", errors="ignore")
+        except OSError:
+            return "", 0
+        in_block = False
+        for idx, raw in enumerate(text.splitlines(), start=1):
+            line, in_block = self._strip_js_comments(raw, in_block)
+            match = self._JS_TS_EXPORT_RE.match(line)
+            if match and not self._export_in_string(line, match.start()):
+                return match.group(1), idx
+        return "", 0
+
+    @staticmethod
+    def _strip_js_comments(raw: str, in_block: bool) -> tuple[str, bool]:
+        """Remove comment text from one line, tracking ``/* */`` block state.
+
+        Returns ``(code_only_line, in_block_after)``. While a block comment is
+        open, everything up to a closing ``*/`` is dropped; a same-line ``/* */``
+        is excised; an unterminated ``/*`` opens a block for later lines; a ``//``
+        truncates the rest. Pure, deterministic — no regex, no I/O.
+        """
+        line = raw
+        if in_block:
+            if "*/" not in line:
+                return "", True
+            line = line.split("*/", 1)[1]
+            in_block = False
+        while "/*" in line:
+            before, after = line.split("/*", 1)
+            if "*/" in after:
+                line = before + after.split("*/", 1)[1]
+            else:
+                return before, True
+        if "//" in line:
+            line = line.split("//", 1)[0]
+        return line, in_block
+
+    @staticmethod
+    def _export_in_string(line: str, start: int) -> bool:
+        """True when the ``export`` keyword at ``start`` sits inside a quote.
+
+        Cheap, sufficient heuristic: an ODD number of quote characters before the
+        keyword on the SAME line means we are inside an open string literal, so
+        the match is a string-embedded ``export`` (e.g. ``const s = 'export ...'``)
+        and must be ignored. Pure.
+        """
+        prefix = line[:start]
+        return bool(
+            prefix.count("'") % 2 or prefix.count('"') % 2 or prefix.count("`") % 2
+        )
+
+    def _seed_js_ts_coverage(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
+        # JS/TS test-coverage awareness (RECOMMEND-ONLY language breadth): an
+        # UNTESTED, high-churn JS/TS module is the highest-leverage place to add a
+        # first test — yet Apex deep-analyses only Python, so it must NAME the gap
+        # HONESTLY, never claim to fix it (no transform is wired; the bridge's
+        # default routes a ``js-ts-coverage`` fact to a recommend-only design_task).
+        #
+        # Grounded in the SAME deterministic polyglot facts the profiler trusts
+        # (``scan_polyglot_facts``: path, churn, LOC, convention-based test
+        # presence) — re-read here only because the profile's ``polyglot_hotspots``
+        # strips the per-file ``has_test`` flag this family needs. Git+stdlib only,
+        # so a Python-only repo (or any repo with no JS/TS file) yields NOTHING and
+        # seeding stays byte-identical. HONEST UNDER-CLAIM: a JS/TS module WITH a
+        # convention-matching test (``has_test=True``) seeds no idea (no false
+        # positive). The subject carries a ``::js-ts-coverage`` suffix no other
+        # family can claim, so this is purely ADDITIVE — it never competes for or
+        # deduplicates against the polyglot-hotspot root for the same path.
+        facts = self._scan_js_ts_facts()
+        seeded = 0
+        for fact in facts:
+            if seeded >= self._JS_TS_COVERAGE_CAP:
+                break
+            if fact.language not in self._JS_TS_LANGUAGES:
+                continue
+            if fact.has_test:
+                continue  # honest under-claim: a tested module is not a gap
+            if self._is_js_ts_test_file(fact.path):
+                continue  # a test file is never a coverage gap (no false positive)
+            path = fact.path
+            loc = fact.loc
+            churn = fact.churn
+            language = fact.language
+            commit_word = "commit" if churn == 1 else "commits"
+            # Optional concrete anchor: the first public export's name + line, so
+            # the recommendation points at a real symbol when one is cheaply
+            # found. Stays a no-op (no anchor, byte-identical otherwise) when the
+            # file has no top-level export or can't be read.
+            symbol, line = self._js_ts_first_export(path)
+            anchors = (
+                [{"module": path, "symbol": symbol, "line": line,
+                  "metric": f"{language}, {churn} {commit_word}"}]
+                if symbol else None
+            )
+            export_clause = (
+                f" (start with `{symbol}` at line {line})" if symbol else ""
+            )
+            self._append_root(
+                roots, seen_subjects,
+                title=(f"Establish test coverage for `{path}` — {loc} LOC, "
+                       f"{churn} recent {commit_word}, no test found "
+                       f"(a high-churn {language} module Apex can't deep-analyse, "
+                       f"but it concentrates untested risk; consider testing/"
+                       f"simplifying){export_clause}"),
+                subject=f"{path}::js-ts-coverage",
+                fact_label="js-ts-coverage",
+                fact_value=(f"{path} ({language}, {loc} LOC, {churn} recent "
+                            f"{commit_word}, no convention test found — an "
+                            f"untested, actively-changed module outside Apex's "
+                            f"Python analysis scope; recommend adding a first "
+                            f"test)"),
+                anchors=anchors,
+            )
+            seeded += 1
+
+    @classmethod
+    def _is_js_ts_test_file(cls, rel_path: str) -> bool:
+        """True when ``rel_path`` is ITSELF a JS/TS test (so not a coverage gap).
+
+        Conservative, name-only, pure: a path is a test when any directory
+        component is a recognised test dir, or its basename stem carries a test
+        marker (``foo.test.ts`` / ``foo.spec.ts`` / ``foo_test.ts`` / ``test_foo
+        .ts``). No I/O, deterministic.
+        """
+        parts = rel_path.split("/")
+        if any(part in cls._JS_TS_TEST_DIRS for part in parts[:-1]):
+            return True
+        name = parts[-1]
+        stem = name.rsplit(".", 1)[0] if "." in name else name
+        stem_l = stem.lower()
+        if stem_l.startswith("test_") or stem_l.startswith("spec_"):
+            return True
+        return any(stem_l.endswith(marker) for marker in cls._JS_TS_TEST_STEM_MARKERS)
+
+    def _scan_js_ts_facts(self) -> list:
+        """The deterministic polyglot file facts under ``project_root`` (or []).
+
+        Hermetic + total: returns ``[]`` when no root is wired or the scan raises,
+        so a bare seeder (and a Python-only repo) seeds nothing here. Reuses the
+        already-shipped ``scan_polyglot_facts`` (git+stdlib only, ranked
+        deterministically by ``(-churn, -loc, path)``) READ-ONLY — no new scan,
+        no profiler edit. A slightly larger limit is requested than the cap so the
+        JS/TS filter (other languages, tested files) still yields up to the cap.
+        """
+        root = getattr(self, "project_root", "")
+        if not root:
+            return []
+        try:
+            from app.tools.polyglot_facts import scan_polyglot_facts
+
+            return scan_polyglot_facts(str(root), limit=12)
+        except Exception:
+            return []
 
     def _seed_incomplete_protocols(
         self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
