@@ -2,9 +2,10 @@
 
 Land PROVABLE type annotations on a project's own code — the concrete
 contribution a student would otherwise pay an LLM for. Where ``apex insights``
-only MEASURES type-hint coverage, this WRITES the hints: a ``-> T`` inferred
-from agreeing literal returns and a ``param: T`` inferred from a non-None
-literal default, never a guess.
+only MEASURES type-hint coverage, this WRITES the hints: ONLY a ``-> T`` return
+type inferred from agreeing literal returns, never a guess. Parameter types are
+deliberately NOT inferred — a default value is a value, not a type bound
+(``def f(x=None)`` does not mean ``x: None``), so that unsound path is not taken.
 
 The inference + plan live in
 :mod:`app.execution.semantic.transforms.type_annotations`

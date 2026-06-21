@@ -119,7 +119,12 @@ def public_symbols_of_module(source: str) -> list[str]:
 
 def _existing_init_bindings(init_source: str) -> set[str]:
     """Names already imported / bound at the top level of an existing
-    ``__init__.py`` — these are left to the human and never re-emitted."""
+    ``__init__.py`` — these are left to the human and never re-emitted.
+
+    Includes ``import``/``from`` aliases as well as ``def``/``class`` definitions:
+    a name the human already bound (however) must not be re-wired by us. This is
+    the COLLISION/leave-alone set — distinct from the FOLD set (the names we add to
+    ``__all__``), which excludes bare imports; see :func:`_existing_public_definitions`."""
     try:
         tree = ast.parse(init_source)
     except (SyntaxError, RecursionError, MemoryError):
@@ -132,6 +137,44 @@ def _existing_init_bindings(init_source: str) -> set[str]:
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bound.add(node.name)
     return bound
+
+
+def _existing_public_definitions(init_source: str) -> set[str]:
+    """The existing ``__init__``'s OWN public surface — the names safe to fold into
+    ``__all__``, EXCLUDING bare ``import``/``from`` aliases.
+
+    A bare ``import os`` / ``from collections import OrderedDict`` is an
+    implementation-detail dependency, not the package's public API; auto-folding it
+    into ``__all__`` would make ``from pkg import *`` re-export ``os``/``sys`` and
+    fool API/doc tooling into treating them as public (the names resolve, so the
+    oracle passes — a semantic over-claim). The package's OWN public surface is:
+
+    * top-level ``def`` / ``async def`` / ``class`` definitions,
+    * top-level assignment targets (module-level constants/objects defined here),
+    * names a human EXPLICITLY listed in a literal ``__all__`` (their deliberate
+      choice — honored even if one happens to be an imported name like ``os``).
+
+    ``_``-prefixed names and protocol dunders are excluded (the caller also drops
+    ``_PROTOCOL_DUNDERS``). Returns ``set()`` for source that does not parse."""
+    try:
+        tree = ast.parse(init_source)
+    except (SyntaxError, RecursionError, MemoryError):
+        return set()
+    defined: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if _is_public(node.name):
+                defined.add(node.name)
+        else:
+            for name in _node_export_names(node):
+                if name != "__all__" and _is_public(name):
+                    defined.add(name)
+    # Honor an explicit human ``__all__`` verbatim — if they deliberately listed a
+    # name (even an imported one), it is their declared public surface, keep it.
+    explicit = _existing_all(init_source)
+    if explicit is not None:
+        defined.update(explicit)
+    return defined
 
 
 def _module_rels(package_dir: Path) -> list[str]:
@@ -214,13 +257,22 @@ def render_init_source(plan: WirePlan, existing_init: str) -> str | None:
 
 def rendered_all_names(plan: WirePlan, existing_init: str) -> list[str]:
     """The exact sorted ``__all__`` :func:`render_init_source` would emit: the
-    newly-wired exports UNION the existing top-level bindings, with protocol
-    dunders (``__getattr__``/``__dir__``/…) excluded — those are import machinery,
-    not re-exportable attributes. The objective feeds THIS full list to the import
-    oracle so a folded-in name that does not resolve is caught, never landed."""
+    newly-wired exports UNION the existing ``__init__``'s OWN public surface.
+
+    The fold set is the package's public surface ONLY — top-level ``def``/``class``
+    definitions, module-level assignment targets, and any name a human explicitly
+    listed in a literal ``__all__`` (see :func:`_existing_public_definitions`). A
+    bare ``import os`` / ``from collections import OrderedDict`` is implementation
+    detail, NOT public surface, and is NEVER auto-folded into ``__all__`` — doing so
+    would make ``from pkg import *`` re-export ``os``/``sys`` and mislead API/doc
+    tooling (the names resolve, so the oracle would pass — a semantic over-claim).
+    Protocol dunders (``__getattr__``/``__dir__``/…) are excluded too — import
+    machinery, not re-exportable attributes. The objective feeds THIS full list to
+    the import oracle so a folded-in name that does not resolve is caught, never
+    landed."""
     new_names = set(plan.exports)
     folded = {
-        name for name in _existing_init_bindings(existing_init)
+        name for name in _existing_public_definitions(existing_init)
         if name not in _PROTOCOL_DUNDERS
     }
     return sorted(new_names | folded)
