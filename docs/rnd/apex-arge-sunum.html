@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Apex Orchestrator — Faaliyet-Öncesi Ar-Ge Sunumu</title>
+<style>
+:root{
+  --bg:#070a12; --card:rgba(20,28,48,.62); --line:rgba(86,116,178,.28);
+  --ink:#eaf0ff; --muted:#93a4c8; --dim:#5b6b8c;
+  --blue:#58a6ff; --purple:#bc8cff; --teal:#41d6c3; --gold:#e3b341; --green:#3fb950; --red:#ff7b72;
+}
+[data-theme="light"]{
+  --bg:#f4f7ff; --card:rgba(255,255,255,.86); --line:rgba(40,70,130,.20);
+  --ink:#0e1730; --muted:#41557f; --dim:#7488ad;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);overflow:hidden;
+  font-family:-apple-system,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+.orb{position:fixed;border-radius:50%;filter:blur(70px);opacity:.32;pointer-events:none;z-index:0}
+.orb.a{width:560px;height:560px;left:-160px;top:-180px;background:radial-gradient(circle,#1d3a7a,transparent 70%);animation:drift 16s ease-in-out infinite alternate}
+.orb.b{width:480px;height:480px;right:-140px;bottom:-160px;background:radial-gradient(circle,#3c2a86,transparent 70%);animation:drift 19s ease-in-out infinite alternate-reverse}
+@keyframes drift{from{transform:translate3d(0,0,0) scale(1)}to{transform:translate3d(60px,40px,0) scale(1.12)}}
+
+/* left side-nav */
+.sidenav{position:fixed;left:0;top:0;bottom:0;width:236px;overflow-y:auto;z-index:8;
+  background:rgba(7,10,18,.82);border-right:1px solid var(--line);backdrop-filter:blur(8px);padding:16px 0 60px}
+[data-theme="light"] .sidenav{background:rgba(244,247,255,.9)}
+.sidenav .brand{font-weight:800;font-size:14px;letter-spacing:.5px;padding:6px 18px 12px;color:var(--ink)}
+.sidenav .brand b{background:linear-gradient(100deg,var(--teal),var(--blue) 45%,var(--purple) 85%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.sidenav .act{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);padding:14px 18px 4px}
+.navitem{display:flex;gap:9px;align-items:baseline;padding:6px 18px;font-size:12.5px;color:var(--muted);cursor:pointer;border-left:2px solid transparent;line-height:1.3}
+.navitem:hover{color:var(--ink);background:rgba(88,166,255,.07)}
+.navitem.on{color:var(--ink);border-left-color:var(--blue);background:rgba(88,166,255,.10)}
+.navitem .num{color:var(--dim);font-size:11px;min-width:16px}
+.navtoggle{display:none;position:fixed;top:12px;left:12px;z-index:9;background:var(--card);border:1px solid var(--line);
+  color:var(--ink);border-radius:10px;padding:7px 11px;font-size:13px;cursor:pointer}
+.themebtn{position:fixed;top:12px;right:14px;z-index:9;background:var(--card);border:1px solid var(--line);
+  color:var(--ink);border-radius:10px;padding:6px 11px;font-size:12px;cursor:pointer}
+
+.stage{position:fixed;inset:0;left:236px}
+.slide{position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;z-index:1;
+  padding:6vh 6vw 7vh;overflow-y:auto;
+  background:radial-gradient(900px 520px at 72% -12%, rgba(88,166,255,.10), transparent 60%),
+             radial-gradient(720px 520px at 8% 112%, rgba(137,87,229,.10), transparent 60%)}
+.slide.on{display:flex;animation:enter .4s ease-out}
+@keyframes enter{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+
+.eyebrow{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+h1{font-size:clamp(34px,5vw,64px);letter-spacing:-1.6px;line-height:1.04;font-weight:800}
+h2{font-size:clamp(23px,3.2vw,40px);letter-spacing:-.8px;margin-bottom:12px;font-weight:800}
+.gx{background:linear-gradient(100deg,var(--teal),var(--blue) 45%,var(--purple) 85%);-webkit-background-clip:text;background-clip:text;color:transparent}
+p.lead{font-size:clamp(15px,1.6vw,20px);color:var(--ink);opacity:.92;max-width:920px;margin-top:12px;line-height:1.5}
+p.sub{font-size:clamp(12.5px,1.2vw,15px);color:var(--muted);margin-top:14px;max-width:1000px;line-height:1.55}
+
+ul.big{margin:14px 0 0;list-style:none;max-width:1040px}
+ul.big li{font-size:clamp(13.5px,1.45vw,18px);color:var(--ink);opacity:.92;padding:7px 0 7px 30px;position:relative;line-height:1.45}
+ul.big li::before{content:"▸";position:absolute;left:6px;color:var(--purple)}
+ul.big li b{opacity:1}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:13px;margin-top:18px;max-width:1180px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:15px 17px}
+.card h3{font-size:15.5px;margin:4px 0 5px}
+.card p{font-size:13px;color:var(--muted);line-height:1.5}
+.card .ico{font-size:20px}
+.card .tag{display:inline-block;margin-top:9px;font-size:11px;color:var(--teal);border:1px solid rgba(65,214,195,.35);border-radius:99px;padding:2px 9px}
+.mono.cmd{display:inline-block;margin-top:8px;font-size:11.5px;color:#9fd8ff;background:rgba(20,40,80,.5);border:1px solid var(--line);border-radius:8px;padding:3px 9px}
+[data-theme="light"] .mono.cmd{color:#1b4f8a;background:rgba(88,166,255,.12)}
+
+.kpis{display:flex;gap:12px;flex-wrap:wrap;margin-top:20px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:14px 22px;text-align:center;min-width:130px}
+.kpi b{display:block;font-size:clamp(22px,2.7vw,34px);letter-spacing:-1px}
+.kpi span{font-size:12px;color:var(--muted)}
+
+.flow{display:flex;gap:0;align-items:stretch;flex-wrap:wrap;margin-top:20px;max-width:1240px}
+.fstep{flex:1;min-width:150px;background:var(--card);border:1px solid var(--line);border-radius:13px;padding:14px;margin:6px;position:relative}
+.fstep h3{font-size:14.5px;margin:6px 0 4px}
+.fstep p{font-size:12px;color:var(--muted);line-height:1.45}
+.fstep .n{position:absolute;top:-11px;left:13px;background:linear-gradient(100deg,var(--blue),var(--purple));color:#06101f;font-weight:800;font-size:11px;border-radius:99px;padding:2px 9px}
+.fstep .bs{display:block;margin-top:7px;font-size:11px;color:var(--gold)}
+
+table{border-collapse:collapse;margin-top:14px;font-size:clamp(11.5px,1.15vw,14px);width:100%;max-width:1240px}
+.tw{overflow-x:auto;max-width:100%}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase;position:sticky;top:0;background:var(--bg)}
+td b{color:var(--ink)}
+td{color:var(--ink);opacity:.9}
+.y{color:var(--green);font-weight:700}.n{color:var(--red);font-weight:700}.m{color:var(--gold);font-weight:700}
+.apexrow td{background:rgba(65,214,195,.08)}.apexrow td b{color:var(--teal)}
+
+.swot{display:grid;grid-template-columns:1fr 1fr;gap:13px;margin-top:16px;max-width:1180px}
+.swot .card{padding:15px 18px}
+.swot h3{font-size:15px;margin-bottom:6px}
+.swot ul{list-style:none}
+.swot li{font-size:12.8px;color:var(--ink);opacity:.9;padding:4px 0 4px 18px;position:relative;line-height:1.4}
+.swot li::before{content:"•";position:absolute;left:4px}
+.sw-s{border-color:rgba(63,185,80,.5)}.sw-s h3{color:var(--green)}
+.sw-w{border-color:rgba(255,123,114,.5)}.sw-w h3{color:var(--red)}
+.sw-o{border-color:rgba(88,166,255,.5)}.sw-o h3{color:var(--blue)}
+.sw-t{border-color:rgba(227,179,65,.5)}.sw-t h3{color:var(--gold)}
+
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:16px;max-width:1180px}
+.angle{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:12px;padding:13px 16px}
+.angle h3{font-size:14.5px;margin-bottom:4px}.angle h3 .L{color:var(--teal)}
+.angle p{font-size:12.5px;color:var(--muted);line-height:1.5}
+.angle .risk{display:block;margin-top:7px;font-size:11.5px;color:var(--gold)}
+
+.heroicon{width:clamp(120px,15vw,190px);margin-bottom:20px;perspective:900px}
+.heroicon svg{width:100%;height:auto;animation:float 7s ease-in-out infinite;filter:drop-shadow(0 26px 50px rgba(40,80,200,.35))}
+@keyframes float{0%,100%{transform:rotateY(-9deg) rotateX(5deg) translateY(0)}50%{transform:rotateY(9deg) rotateX(-3deg) translateY(-12px)}}
+
+.quote{border-left:3px solid var(--purple);padding:8px 0 8px 20px;margin-top:18px;max-width:900px}
+.quote p{font-size:clamp(15px,1.8vw,22px);font-style:italic;color:var(--ink);line-height:1.4}
+.quote span{display:block;margin-top:7px;font-size:12.5px;color:var(--muted)}
+
+.chart{margin-top:14px;max-width:760px}
+.note{margin-top:10px;font-size:11.5px;color:var(--dim)}
+.pill{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:99px;padding:2px 10px;color:var(--muted);margin:3px 4px 0 0}
+
+.bar{position:fixed;top:0;left:0;height:3px;background:linear-gradient(90deg,var(--teal),var(--blue),var(--purple));z-index:9;transition:width .3s}
+.pager{position:fixed;bottom:12px;right:18px;color:var(--dim);font-size:12px;z-index:6}
+.hint{position:fixed;bottom:12px;left:252px;color:var(--dim);font-size:11.5px;z-index:6}
+
+@media(max-width:900px){
+  .sidenav{transform:translateX(-100%);transition:transform .25s;width:230px}
+  body.navopen .sidenav{transform:none}
+  .navtoggle{display:block}.stage{left:0}.hint{left:14px;bottom:42px}
+  .swot,.two{grid-template-columns:1fr}
+}
+@media print{
+  .orb,.sidenav,.navtoggle,.themebtn,.bar,.pager,.hint{display:none!important}
+  .stage{position:static;left:0}
+  .slide{display:flex!important;position:relative;inset:auto;min-height:100vh;page-break-after:always;overflow:visible}
+  body{overflow:visible;height:auto;background:#fff;color:#0e1730}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
+</style>
+</head>
+<body>
+<div class="orb a"></div><div class="orb b"></div>
+<div class="bar" id="bar"></div>
+<button class="navtoggle" onclick="document.body.classList.toggle('navopen')">☰ Bölümler</button>
+<button class="themebtn" id="themebtn">☀︎ / ☾</button>
+
+<nav class="sidenav" id="sidenav">
+  <div class="brand">APEX <b>ORCHESTRATOR</b><br/><span style="font-weight:500;font-size:11px;color:var(--dim)">Ar-Ge · Pazar Konumu</span></div>
+  <div id="navlist"></div>
+</nav>
+
+<div class="stage">
+
+<!-- 1 KAPAK -->
+<section class="slide" data-act="Ürün" data-title="Kapak">
+  <div class="heroicon" id="heroicon"></div>
+  <h1>APEX <span class="gx">ORCHESTRATOR</span></h1>
+  <p class="lead">Sıfır-token, çevrimdışı, deterministik, kanıt-taşıyan, <b>LLM'siz</b> otonom proje-<b>geliştirme</b> ajanı.
+  Gerçek, test-doğrulamalı kodu projeye <b>indirir</b> — tutmazsa otomatik geri sarar, <b>asla sahte-yeşil göstermez</b>.</p>
+  <p class="sub mono">Faaliyet-öncesi Ar-Ge · rakip analizi · pazar konumu · yatırımcı tezi · geliştirme yönleri & kör taraflar</p>
+  <p class="sub">Bu deste <b>dengeli</b> bir çerçeve sunar: hem yatırımcıya cazip yönler hem de dürüst kör taraflar/dezavantajlar.</p>
+</section>
+
+<!-- 2 YÖNETİCİ ÖZETİ -->
+<section class="slide" data-act="Ürün" data-title="Yönetici Özeti">
+  <div class="eyebrow">Yönetici Özeti</div>
+  <h2>Tek cümlelik tez</h2>
+  <p class="lead">LLM ajanları kodu <i>hızlı ama olasılıksal</i> yazar; Apex, mekanik geliştirme işinin
+  <b>deterministik %80'ini sıfır token ile, kanıt taşıyarak ve çevrimdışı</b> yapar — pahalı/regüle ortamlarda
+  rakiplerin <b>servis edemediği</b> bir boşluğu doldurur.</p>
+  <div class="kpis">
+    <div class="kpi"><b>21.270</b><span>çevrimdışı test</span></div>
+    <div class="kpi"><b>A+ · 99</b><span>kendi rubriği, kendi notu</span></div>
+    <div class="kpi"><b>~1.509</b><span>dosya</span></div>
+    <div class="kpi"><b>0</b><span>token maliyeti</span></div>
+  </div>
+  <ul class="big" style="margin-top:18px">
+    <li><b>Cazibe:</b> sıfır marjinal maliyet (≈%85–95 brüt marj), on-prem/air-gapped pazar kilidi, denetlenebilir güven.</li>
+    <li><b>Dürüstlük:</b> kapsam dar ve sonlu (yalnız mekanik/deterministik iş); yerleşiklere karşı savunulabilirlik bir risk.</li>
+  </ul>
+</section>
+
+<!-- 3 APEX NEDİR -->
+<section class="slide" data-act="Ürün" data-title="Apex Nedir">
+  <div class="eyebrow">Ürün</div>
+  <h2>Apex ne <span class="gx">yapar</span>? — gerçek kod indirir</h2>
+  <p class="lead">8 somut kod-üretim hedefi + ~40 deyim modernizleyici. Hepsi: belirsizlik = <b>blokaj</b> (asla tahmin),
+  uygulama = <b>testle doğrulama</b>, kızaran süit = <b>tam geri sarma</b>.</p>
+  <div class="grid">
+    <div class="card"><h3>implement-stub</h3><p>Testlerle sabitlenmiş bir stub'ı, gövdesini deterministik sentezleyip <b>tamamlar</b>.</p></div>
+    <div class="card"><h3>tdd-implement</h3><p>Önce yazılmış testlerden fonksiyon gövdesini üretir.</p></div>
+    <div class="card"><h3>strengthen-tests</h3><p>Zayıf testlere mutant-öldüren iddialar ekler.</p></div>
+    <div class="card"><h3>wire-exports</h3><p>Paketin <code>__init__</code> dışa-aktarım yüzeyini kurar.</p></div>
+    <div class="card"><h3>infer-type-hints</h3><p>Sağlam biçimde çıkarsanabilen tip ipuçlarını ekler.</p></div>
+    <div class="card"><h3>dataclassify</h3><p>Veri-tutucu sınıfı güvenli biçimde <code>@dataclass</code>'a çevirir.</p></div>
+    <div class="card"><h3>generate-usage-doc</h3><p>Doğrulanmış kullanım örnekleriyle USAGE üretir.</p></div>
+    <div class="card"><h3>cover-gaps</h3><p>Kapsanmayan dallar için karakterizasyon testi üretir.</p></div>
+  </div>
+  <p class="sub">Buyer artefaktı: <span class="mono cmd">apex develop session</span> → tek, test-doğrulamalı birleşik diff + kanıt kayıtları.</p>
+</section>
+
+<!-- 4 MOAT -->
+<section class="slide" data-act="Ürün" data-title="Çekirdek MOAT">
+  <div class="eyebrow">Güven Temeli (Moat)</div>
+  <h2>Neden bir ücretsiz ajanı <span class="gx">gerçek koduna</span> bırakmak güvenli?</h2>
+  <ul class="big">
+    <li><b>Asla sahte-yeşil:</b> kapsam-farkında doğrulama katmanları (function / module / none / test-change) — "verified" damgası gerçekten değişikliği gezen testlerin geçtiği anlamına gelir.</li>
+    <li><b>Auto-rollback:</b> tam süit geçmezse değişiklik <b>byte-for-byte</b> geri alınır; oluşturulan dosyalar silinir.</li>
+    <li><b>Kanıt-taşıyan:</b> <code>proof-of-fix.json</code> — her hamlenin diff'i, test kanıtı, doğrulama gücü, geri-sarma günlüğü.</li>
+    <li><b>Mission Auditor:</b> <span class="mono cmd">apex self-audit --north-star</span> — deterministik sapma dedektörü.</li>
+    <li><b>Impact-scoped gating:</b> her değişiklik onu gezen testlere karşı doğrulanır; ilgisiz kırıklık bir doğru işi vetolamaz.</li>
+  </ul>
+  <p class="sub">Bu güven mekanizmaları ürünün kendisi değil <b>temelidir</b> — ücretsiz, otonom bir ajanın gerçek projeye dokunmasını <i>güvenli</i> kılar.</p>
+</section>
+
+<!-- 5 IDEA ENGINE -->
+<section class="slide" data-act="Ürün" data-title="Idea/Roadmap Motoru">
+  <div class="eyebrow">Benzersiz: Idea / Roadmap Motoru</div>
+  <h2>"Sırada ne var?" sorusunun <span class="gx">kanıta dayalı</span> cevabı</h2>
+  <ul class="big">
+    <li>Tarama, koddan <b>olgular</b> çıkarır ("şu modül 14 kez değişti", "şu parametre hiç okunmuyor").</li>
+    <li>Her olgu bir kök fikir; operatör mercekleri onu <b>fraktal</b> derinleştirir; değer = ilgililik × yenilik × yapılabilirlik.</li>
+    <li>Fazlı yol haritası — <b>Stabilize → Secure → Evolve → Refine</b> — etki/efor/<b>ROI</b> ile sıralı.</li>
+    <li><b>İzlenebilir & deterministik:</b> aynı kod → aynı ağaç; diff'lenebilir, CI'da koşturulabilir.</li>
+  </ul>
+  <p class="sub">Bu motor <b>hiçbir rakipte yok</b> — ne LLM ajanlarında ne de deterministik codemod araçlarında.</p>
+</section>
+
+<!-- 6 KANIT -->
+<section class="slide" data-act="Ürün" data-title="Kanıt: Titizlik Gerçek">
+  <div class="eyebrow">Kanıt — "asla sahte-yeşil" fiilen uygulanıyor</div>
+  <h2>Bu oturumda <span class="gx">moat'ı kendimiz kırmaya çalıştık</span></h2>
+  <p class="lead">İki saldırgan saha-testi turu, alıcı görmeden önce <b>gerçek</b> kusurları buldu ve düzeltti — disiplinin slogan değil, işleyen bir mekanizma olduğunun kanıtı.</p>
+  <div class="tw"><table>
+    <tr><th>Bulgu</th><th>Önem</th><th>Ne oluyordu</th><th>Sonuç</th></tr>
+    <tr><td><b>2-arg yanlış-yeşil</b></td><td><span class="n">P0</span></td><td>İnce sözleşmeye tesadüfen geçen yanlış gövde "verified" damgalanıyordu</td><td>dürüst ret</td></tr>
+    <tr><td><b>Kararsız test</b></td><td><span class="n">P0</span></td><td>set-sıralı liste → kullanıcının CI'ında çöken test üretiliyordu</td><td>reddetme + kanonik render</td></tr>
+    <tr><td>src/ düzeni körlüğü</td><td><span class="m">P1</span></td><td>Çok yaygın yapıda Apex hiç kod indirmiyordu</td><td>nokta-yol düzeltmesi</td></tr>
+    <tr><td>Dolaylı test sabitleme</td><td><span class="m">P1</span></td><td>parametrize/yardımcı testler tanınmıyordu</td><td>düğüm-keşfi genişletildi</td></tr>
+    <tr><td>Yanlış tip ipucu / usage determinizmi / __all__ kirliliği / docstring kaybı</td><td><span class="m">P1×3 + P2</span></td><td>doğrulanmış-ama-yanlış / kararsız çıktı</td><td>hepsi düzeltildi</td></tr>
+  </table></div>
+  <p class="sub">Ayrıca: çok-modüllü kilit çözüldü ve sentez <b>~915×</b> hızlandı. <b>maintain</b> (otomatik güvenli-düzeltme) yolu sağlam çıktı — regresyonda auto-rollback doğru çalışıyor.</p>
+</section>
+
+<!-- 7 DÜRÜST SINIRLAR -->
+<section class="slide" data-act="Ürün" data-title="Dürüst Sınırlar">
+  <div class="eyebrow">Dürüst sınırlar — erken ve net</div>
+  <h2>Apex'in <span class="gx">yapamadıkları</span></h2>
+  <ul class="big">
+    <li><b>Yalnız mekanik & deterministik-doğrulanabilir iş:</b> mimari tasarlayamaz, özgün iş mantığı/algoritma yazamaz, niyeti testlerin ötesinde anlayamaz.</li>
+    <li><b>Sonlu şablon uzayı:</b> sentez (passthrough/aritmetik/string/builtins/recursion) sabit; her yeni yetenek insan mühendisliği ister.</li>
+    <li><b>Muhafazakâr reddeder:</b> kanıtlayamadığında <b>indirmez</b> (yanlış-yeşil göstermektense reddeder) — güvenli ama "değer sızıntısı" riski.</li>
+    <li><b>Python-odaklı:</b> dil genişliği bugün dar (JS/TS yol haritada).</li>
+  </ul>
+  <p class="sub">Konumlandırma dürüst olmalı: Apex bir <b>geliştirme asistanı</b>dır, "yaratıcı kodlayıcı" değil; bir <b>güvenlik tarayıcı</b> da değil.</p>
+</section>
+
+<!-- 8 İKİ KAMP -->
+<section class="slide" data-act="Rekabet" data-title="Rekabet — İki Kamp">
+  <div class="eyebrow">Rekabet Manzarası</div>
+  <h2>İki kamp — ve Apex'in <span class="gx">boş çeyreği</span></h2>
+  <div class="chart">
+  <svg viewBox="0 0 760 360" width="100%" height="auto" font-family="inherit">
+    <line x1="60" y1="320" x2="730" y2="320" stroke="#56749b" stroke-opacity=".4"/>
+    <line x1="60" y1="40" x2="60" y2="320" stroke="#56749b" stroke-opacity=".4"/>
+    <text x="395" y="350" fill="#93a4c8" font-size="12" text-anchor="middle">Tek-amaçlı / insan-güdümlü  →  Otonom &amp; çok-objektifli</text>
+    <text x="20" y="180" fill="#93a4c8" font-size="12" text-anchor="middle" transform="rotate(-90 20 180)">Olasılıksal / LLM  →  Deterministik / kanıt-taşıyan</text>
+    <line x1="395" y1="40" x2="395" y2="320" stroke="#56749b" stroke-opacity=".18" stroke-dasharray="4 5"/>
+    <line x1="60" y1="180" x2="730" y2="180" stroke="#56749b" stroke-opacity=".18" stroke-dasharray="4 5"/>
+    <!-- Camp A: top-right (LLM + autonomous) -->
+    <rect x="402" y="48" width="320" height="124" rx="12" fill="rgba(255,123,114,.07)" stroke="rgba(255,123,114,.3)"/>
+    <text x="416" y="68" fill="#ff7b72" font-size="12" font-weight="700">KAMP A · LLM ajanları</text>
+    <text x="416" y="90" fill="#c2cee8" font-size="11">Copilot · Cursor · Devin · Claude Code</text>
+    <text x="416" y="108" fill="#c2cee8" font-size="11">Aider · Sweep · Windsurf · Cody · Amazon Q</text>
+    <text x="416" y="132" fill="#93a4c8" font-size="10">token maliyeti · bulut · olasılıksal · sahte-yeşil olabilir</text>
+    <!-- Camp B: bottom-left (deterministic + single-purpose) -->
+    <rect x="66" y="190" width="320" height="124" rx="12" fill="rgba(88,166,255,.06)" stroke="rgba(88,166,255,.28)"/>
+    <text x="80" y="210" fill="#58a6ff" font-size="12" font-weight="700">KAMP B · Deterministik araçlar</text>
+    <text x="80" y="232" fill="#c2cee8" font-size="11">OpenRewrite · Semgrep · Batch Changes</text>
+    <text x="80" y="250" fill="#c2cee8" font-size="11">jscodeshift · Diffblue · Bowler · comby</text>
+    <text x="80" y="274" fill="#93a4c8" font-size="10">tek-amaçlı · insan-güdümlü · idea-engine yok</text>
+    <!-- Apex: bottom-right star (deterministic + autonomous) = white space -->
+    <rect x="402" y="190" width="320" height="124" rx="12" fill="rgba(65,214,195,.10)" stroke="rgba(65,214,195,.55)"/>
+    <path d="M520,214 l9,28 h29 l-23,17 l9,28 l-24,-18 l-24,18 l9,-28 l-23,-17 h29 z" fill="#41d6c3"/>
+    <text x="562" y="236" fill="#41d6c3" font-size="16" font-weight="800">APEX</text>
+    <text x="416" y="276" fill="#c2cee8" font-size="11">otonom + çok-objektif + deterministik</text>
+    <text x="416" y="294" fill="#c2cee8" font-size="11">+ sıfır-token + offline + kanıt + idea-engine</text>
+  </svg>
+  </div>
+  <p class="note">Boş çeyrek: otonom & çok-objektifli olup AYNI ZAMANDA deterministik/kanıt-taşıyan tek oyuncu Apex.</p>
+</section>
+
+<!-- 9 KAMP A -->
+<section class="slide" data-act="Rekabet" data-title="Kamp A Oyuncuları">
+  <div class="eyebrow">Kamp A — LLM / token / bulut / olasılıksal</div>
+  <h2>Otonom ama <span class="gx">öngörülemez ve pahalı</span></h2>
+  <div class="tw"><table>
+    <tr><th>Oyuncu</th><th>Fiyat</th><th>Güç</th><th>Apex'e karşı zayıflık</th></tr>
+    <tr><td><b>GitHub Copilot</b></td><td>$10–39/ay + kullanım</td><td>her yerde, IDE-yerlisi</td><td>token maliyeti agent'ta katlanır; kanıt yok; halüsinasyon</td></tr>
+    <tr><td><b>Cursor</b></td><td>$20–200/ay + run eki</td><td>en iyi IDE UX</td><td>her koşu olasılıksal; test-doğrulama garantisi yok</td></tr>
+    <tr><td><b>Devin (Cognition)</b></td><td>$500+/ay ($2/ACU)</td><td>en yüksek otonomi</td><td>~%14 SWE-bench (≈%86 başarısız); kanıt yok; offline yok</td></tr>
+    <tr><td><b>Claude Code</b></td><td>API kullanımı</td><td>en konuşkan, MCP</td><td>token ölçeklenir; çıktı tavsiye, kanıt-taşıyan değil</td></tr>
+    <tr><td><b>Aider / Sweep / Windsurf</b></td><td>ücretsiz–$40/ay</td><td>açık kaynak / ucuz PR</td><td>LLM-bağımlı, kararsız, kanıt yok, offline yok</td></tr>
+  </table></div>
+  <p class="sub">Ortak yapısal kusur: <b>token tüketir, olasılıksaldır, buluttadır, denetlenmesi zordur</b> — ve geçen test ≠ doğru kod.</p>
+</section>
+
+<!-- 10 KAMP B -->
+<section class="slide" data-act="Rekabet" data-title="Kamp B Oyuncuları">
+  <div class="eyebrow">Kamp B — deterministik / tek-amaçlı / insan-güdümlü</div>
+  <h2>Güvenli ama <span class="gx">otonom değil</span></h2>
+  <div class="tw"><table>
+    <tr><th>Oyuncu</th><th>Ne yapar</th><th>Neden tam bir geliştirme ajanı DEĞİL</th></tr>
+    <tr><td><b>OpenRewrite (Moderne)</b></td><td>AST recipe migration (Java/Kotlin)</td><td>otonom değil; tek-amaçlı; idea-engine yok; test-doğrulama döngüsü yok; Python kısmi</td></tr>
+    <tr><td><b>Semgrep Autofix</b></td><td>pattern-tabanlı düzeltme</td><td>pattern-kapsamlı; kurallar insan-küratörlü; LLM-hibrit determinizmi bozar</td></tr>
+    <tr><td><b>Sourcegraph Batch Changes</b></td><td>çok-repo script orkestrasyonu</td><td>otonom değil (insan script yazar); doğrulama döngüsü yok</td></tr>
+    <tr><td><b>Diffblue Cover</b></td><td>deterministik test üretimi (Java)</td><td>yalnız test; Java-only; kod düzeltemez; idea-engine yok</td></tr>
+    <tr><td><b>jscodeshift · Bowler · comby · Sorald · IDE refactor</b></td><td>codemod / yerel dönüşüm</td><td>elle yazılan dönüşüm; keşif yok; doğrulama yok; öğrenme yok</td></tr>
+  </table></div>
+  <p class="sub">Determinizm ve güveni var — ama <b>otonomi, çok-objektif akıl ve idea-engine yok</b>.</p>
+</section>
+
+<!-- 11 EN YAKIN RAKİPLER -->
+<section class="slide" data-act="Rekabet" data-title="En Yakın Rakipler">
+  <div class="eyebrow">En yakın gerçek rakipler — ve neden yetersiz</div>
+  <h2>Çeyrek-yakınlığına göre <span class="gx">4 rakip</span></h2>
+  <div class="grid">
+    <div class="card"><h3>OpenRewrite / Moderne</h3><p>"Deterministik çok-dosya refactor"un altın standardı (Java). <b>Eksik:</b> otonom değil, idea-engine yok, test-doğrulama yok, Python kısmi.</p></div>
+    <div class="card"><h3>Diffblue Cover</h3><p>Deterministik otonom test üretimi. <b>Eksik:</b> yalnız test, Java-only, çok-objektif akıl yok, kod düzeltemez.</p></div>
+    <div class="card"><h3>Semgrep Autofix</h3><p>Hızlı pattern-fix, SAST-yerlisi. <b>Eksik:</b> pattern-kapsamlı, idea-engine yok, LLM-hibrit determinizmi bozuyor.</p></div>
+    <div class="card"><h3>Sweep</h3><p>Ucuz, test-farkında otonom PR (ruhen en yakın). <b>Eksik:</b> LLM/olasılıksal, kanıt yok, "asla sahte-yeşil" garantisi yok.</p></div>
+  </div>
+  <p class="sub">Hiçbiri Apex'in <b>tüm</b> kombinasyonunu sunmuyor (otonom + çok-objektif + deterministik + sıfır-token + offline + kanıt + idea-engine).</p>
+</section>
+
+<!-- 12 MATRİS -->
+<section class="slide" data-act="Rekabet" data-title="Rakip × Boyut Matrisi">
+  <div class="eyebrow">Karşılaştırma — dürüst (Apex her yerde ✅ değil)</div>
+  <h2>Rakip × <span class="gx">boyut</span> matrisi</h2>
+  <div class="tw"><table>
+    <tr><th>Boyut</th><th>Apex</th><th>Copilot</th><th>Cursor</th><th>Devin</th><th>OpenRewrite</th><th>Diffblue</th><th>Semgrep</th><th>Sweep</th></tr>
+    <tr class="apexrow"><td>Deterministik</td><td class="y">✅</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="y">✅</td><td class="y">✅</td><td class="y">✅</td><td class="n">✕</td></tr>
+    <tr class="apexrow"><td>Sıfır-token</td><td class="y">✅</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="y">✅</td><td class="y">✅</td><td class="y">✅</td><td class="n">✕</td></tr>
+    <tr class="apexrow"><td>Offline / on-prem</td><td class="y">✅</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="y">✅</td><td class="y">✅</td><td class="y">✅</td><td class="n">✕</td></tr>
+    <tr class="apexrow"><td>Otonom yürütme</td><td class="y">✅</td><td class="m">◑</td><td class="y">✅</td><td class="y">✅</td><td class="n">✕</td><td class="m">◑</td><td class="n">✕</td><td class="y">✅</td></tr>
+    <tr class="apexrow"><td>Çok-objektif</td><td class="y">✅</td><td class="m">◑</td><td class="m">◑</td><td class="y">✅</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td></tr>
+    <tr class="apexrow"><td>Test-doğrulamalı uygulama</td><td class="y">✅</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="m">◑</td><td class="n">✕</td><td class="m">◑</td></tr>
+    <tr class="apexrow"><td>Auto-rollback</td><td class="y">✅</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td></tr>
+    <tr class="apexrow"><td>Asla sahte-yeşil</td><td class="y">✅</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="m">◑</td><td class="y">✅</td><td class="m">◑</td><td class="n">✕</td></tr>
+    <tr class="apexrow"><td>Kanıt-taşıyan</td><td class="y">✅</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="y">✅</td><td class="y">✅</td><td class="m">◑</td><td class="n">✕</td></tr>
+    <tr class="apexrow"><td>Idea / Roadmap motoru</td><td class="y">✅</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td></tr>
+    <tr><td>Dil kapsamı</td><td class="m">Python◑</td><td class="y">çok✅</td><td class="y">çok✅</td><td class="y">çok✅</td><td class="m">Java◑</td><td class="n">Java✕</td><td class="y">çok✅</td><td class="y">çok✅</td></tr>
+    <tr><td>Yaratıcı/özgün kod</td><td class="n">✕</td><td class="y">✅</td><td class="y">✅</td><td class="y">✅</td><td class="n">✕</td><td class="n">✕</td><td class="n">✕</td><td class="m">◑</td></tr>
+  </table></div>
+  <p class="note">✅ var · ◑ kısmi · ✕ yok. Son iki satır dürüstlük için: Apex dil genişliği ve yaratıcı kodda <b>zayıf</b>; rakipler orada güçlü.</p>
+</section>
+
+<!-- 13 PAZAR -->
+<section class="slide" data-act="Pazar & Yatırımcı" data-title="Pazar Büyüklüğü">
+  <div class="eyebrow">Pazar Büyüklüğü & Büyüme</div>
+  <h2>Hızlı büyüyen, <span class="gx">konsolide olan</span> pazar</h2>
+  <div class="chart">
+  <svg viewBox="0 0 620 230" width="100%" height="auto" font-family="inherit">
+    <defs><linearGradient id="g1" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#58a6ff"/><stop offset="1" stop-color="#bc8cff"/></linearGradient></defs>
+    <line x1="60" y1="190" x2="600" y2="190" stroke="#56749b" stroke-opacity=".4"/>
+    <rect x="120" y="158" width="90" height="32" rx="5" fill="url(#g1)" opacity=".85"/>
+    <text x="165" y="150" fill="#eaf0ff" font-size="13" text-anchor="middle" font-weight="700">~$6B</text>
+    <text x="165" y="208" fill="#93a4c8" font-size="12" text-anchor="middle">2024</text>
+    <rect x="420" y="40" width="90" height="150" rx="5" fill="url(#g1)"/>
+    <text x="465" y="32" fill="#eaf0ff" font-size="13" text-anchor="middle" font-weight="700">~$47B</text>
+    <text x="465" y="208" fill="#93a4c8" font-size="12" text-anchor="middle">2034</text>
+    <text x="300" y="100" fill="#41d6c3" font-size="14" text-anchor="middle" font-weight="700">%24–27 CAGR</text>
+  </svg>
+  </div>
+  <div class="kpis" style="margin-top:8px">
+    <div class="kpi"><b>%91</b><span>geliştirici AI aracı kullanıyor</span></div>
+    <div class="kpi"><b>~%41</b><span>kodun AI tarafından yazıldığı oran</span></div>
+    <div class="kpi"><b>$1B+ ARR</b><span>Copilot / Claude Code / Anysphere eşiği</span></div>
+  </div>
+  <p class="note">Kaynaklar (web, 2026): Mordor Intelligence, Spherical Insights, market.us, CB Insights. Yönlendirici büyüklükler, denetlenmiş değil.</p>
+</section>
+
+<!-- 14 LLM MALİYET KRİZİ -->
+<section class="slide" data-act="Pazar & Yatırımcı" data-title="LLM Maliyet Krizi">
+  <div class="eyebrow">Apex'in giriş noktası</div>
+  <h2>LLM <span class="gx">maliyet krizi</span></h2>
+  <div class="chart">
+  <svg viewBox="0 0 620 220" width="100%" height="auto" font-family="inherit">
+    <defs><linearGradient id="g2" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#e3b341"/><stop offset="1" stop-color="#ff7b72"/></linearGradient></defs>
+    <line x1="60" y1="180" x2="600" y2="180" stroke="#56749b" stroke-opacity=".4"/>
+    <rect x="140" y="118" width="90" height="62" rx="5" fill="url(#g2)" opacity=".85"/>
+    <text x="185" y="110" fill="#eaf0ff" font-size="13" text-anchor="middle" font-weight="700">$3.5B</text>
+    <text x="185" y="200" fill="#93a4c8" font-size="12" text-anchor="middle">2024 kurumsal LLM</text>
+    <rect x="400" y="32" width="90" height="148" rx="5" fill="url(#g2)"/>
+    <text x="445" y="24" fill="#eaf0ff" font-size="13" text-anchor="middle" font-weight="700">$8.4B</text>
+    <text x="445" y="200" fill="#93a4c8" font-size="12" text-anchor="middle">2025 (&gt;%130 YoY)</text>
+  </svg>
+  </div>
+  <ul class="big">
+    <li><b>Agentic akışlar 5–30× daha fazla token</b> harcar; ekipler bütçenin <b>%40–60'ını israf</b> ediyor.</li>
+    <li>Apex deterministik %80'i <b>sıfır token</b> ile yapar → token bütçesini yaratıcı %20'ye saklar.</li>
+  </ul>
+</section>
+
+<!-- 15 REGÜLASYON -->
+<section class="slide" data-act="Pazar & Yatırımcı" data-title="Regülasyon & Air-gapped">
+  <div class="eyebrow">Bulut LLM'lerin servis EDEMEDİĞİ pazar</div>
+  <h2>Regülasyon & <span class="gx">hava-boşluklu</span> talep</h2>
+  <ul class="big">
+    <li><b>Finans / savunma / sağlık / kamu:</b> kod güvenli çevreden çıkamaz (SOX, HIPAA, air-gap, GDPR). Bulut LLM araçları bu alıcılara <b>hiç</b> hizmet veremez.</li>
+    <li>Kurumsal yazılım harcamasının <b>~%25–40'ı</b> regüle sektörlerde; uyum için <b>prim</b> öderler.</li>
+    <li><b>EU AI Act / denetlenebilir-AI rüzgârı:</b> "AI'ın kodu bozmadığını kanıtla" — deterministik, kanıt-taşıyan araçları kayırır.</li>
+    <li>Apex <b>yerel olarak çevrimdışı, sıfır ağ çağrısı, sıfır anahtar</b> → en yüksek regülasyon çıtasını karşılar.</li>
+  </ul>
+  <p class="sub">TAM genişlemesi: büyük yerleşiklerle <i>doğrudan</i> çatışmadan kapılabilen, yapışkan ve takdir-dışı bir kama.</p>
+</section>
+
+<!-- 16 FONLAMA -->
+<section class="slide" data-act="Pazar & Yatırımcı" data-title="Karşılaştırılabilirler & Fonlama">
+  <div class="eyebrow">Karşılaştırılabilirler — değerleme çerçevesi</div>
+  <h2>Yatırım <span class="gx">ortamı</span></h2>
+  <div class="chart">
+  <svg viewBox="0 0 640 260" width="100%" height="auto" font-family="inherit">
+    <!-- log-ish horizontal bars -->
+    <g font-size="12">
+      <text x="8" y="30" fill="#c2cee8">Cursor (Anysphere)</text><rect x="200" y="20" width="400" height="15" rx="4" fill="#bc8cff"/><text x="608" y="32" fill="#eaf0ff">~$29.3B</text>
+      <text x="8" y="58" fill="#c2cee8">Devin (Cognition)</text><rect x="200" y="48" width="388" height="15" rx="4" fill="#bc8cff"/><text x="596" y="60" fill="#eaf0ff">~$25B</text>
+      <text x="8" y="86" fill="#c2cee8">Codeium</text><rect x="200" y="76" width="250" height="15" rx="4" fill="#58a6ff"/><text x="458" y="88" fill="#eaf0ff">~$2.85B</text>
+      <text x="8" y="114" fill="#c2cee8">Sourcegraph</text><rect x="200" y="104" width="244" height="15" rx="4" fill="#58a6ff"/><text x="452" y="116" fill="#eaf0ff">~$2.6B</text>
+      <text x="8" y="142" fill="#c2cee8">Tabnine</text><rect x="200" y="132" width="120" height="15" rx="4" fill="#41d6c3"/><text x="328" y="144" fill="#eaf0ff">~$100M+</text>
+      <text x="8" y="170" fill="#c2cee8">Diffblue</text><rect x="200" y="160" width="95" height="15" rx="4" fill="#41d6c3"/><text x="303" y="172" fill="#eaf0ff">~$50M (tahmin)</text>
+      <text x="8" y="198" fill="#c2cee8">Moderne (tur)</text><rect x="200" y="188" width="80" height="15" rx="4" fill="#41d6c3"/><text x="288" y="200" fill="#eaf0ff">$30M tur</text>
+    </g>
+    <text x="200" y="232" fill="#5b6b8c" font-size="11">Çubuk genişliği ~log ölçek. Mor = "otonom-LLM hype" tezi · Mavi/Teal = "deterministik/kurumsal" tezi.</text>
+  </svg>
+  </div>
+  <p class="note">Gözlem: en yüksek değerlemeler LLM-hype'ında; deterministik/kurumsal kategori daha küçük ama sağlam gelir + savunulabilirlik. Apex bu ikinci tezde konumlanır.</p>
+</section>
+
+<!-- 17 YATIRIMCI TEZİ -->
+<section class="slide" data-act="Pazar & Yatırımcı" data-title="Yatırımcı Tezi (A–E)">
+  <div class="eyebrow">Yatırımcı Tezi — her açı + hayatta kalması gereken risk</div>
+  <h2>Apex neden <span class="gx">cazip</span>?</h2>
+  <div class="two">
+    <div class="angle"><h3><span class="L">A.</span> Sıfır marjinal maliyet</h3><p>Token yok → ≈%85–95 brüt marj; LLM araçları token-vergisiyle tavanlı.<span class="risk">Risk: maliyet avantajı demoda görünmez, anlatılmalı.</span></p></div>
+    <div class="angle"><h3><span class="L">B.</span> On-prem/offline kilidi</h3><p>Bulut LLM'lerin servis edemediği regüle alıcılar (~$2–4T harcama).<span class="risk">Risk: satış döngüsü uzun (6–12 ay).</span></p></div>
+    <div class="angle"><h3><span class="L">C.</span> Kanıt-taşıyan güven</h3><p>Asla sahte-yeşil + denetim izi → EU-AI-Act-yerlisi.<span class="risk">Risk: regülasyon rüzgârı hafifleyebilir.</span></p></div>
+    <div class="angle"><h3><span class="L">D.</span> Tamamlayıcı, rakip değil</h3><p>Ucuz deterministik %80; yaratıcı %20 LLM/insanda → maliyet-optimizasyon katmanı.<span class="risk">Risk: "özellik mi ürün mü" algısı.</span></p></div>
+    <div class="angle"><h3><span class="L">E.</span> Doğrulama-motoru moat</h3><p>Dürüst dedektör + kanıt + mutation-test — replikası pahalı.<span class="risk">Risk: LLM+doğrulama-harness yaklaşması.</span></p></div>
+    <div class="angle" style="border-left-color:var(--teal)"><h3 style="color:var(--teal)">Özet</h3><p>Birincil kama: <b>regüle dikeyler + maliyet-duyarlı ekipler</b>. Sıralama: önce B &amp; A, sonra C.</p></div>
+  </div>
+</section>
+
+<!-- 18 İŞ MODELİ -->
+<section class="slide" data-act="Pazar & Yatırımcı" data-title="İş Modelleri & Fiyatlama">
+  <div class="eyebrow">İş Modelleri & Fiyatlama</div>
+  <h2>Para nasıl <span class="gx">kazanılır</span>?</h2>
+  <div class="tw"><table>
+    <tr><th>Model</th><th>Brüt marj</th><th>Regülasyon uyumu</th><th>Not</th></tr>
+    <tr><td><b>Open-core hibrit</b> (ücretsiz çekirdek + ücretli pano/denetim)</td><td>%80–85</td><td>Yüksek</td><td>düşük CAC, yüksek yapışkanlık (GitLab/Sourcegraph modeli)</td></tr>
+    <tr><td><b>Per-seat SaaS + on-prem lisans</b></td><td>%80–88</td><td>Yüksek</td><td>$5–15/dev/ay bulut; $50–200k/yıl on-prem (regüle)</td></tr>
+    <tr><td>CI-entegrasyon / kullanım</td><td>%60–75</td><td>Orta</td><td>düşük birim fiyat, yüksek hacim</td></tr>
+    <tr><td>Destek / yönetilen hizmet</td><td>%70–80</td><td>Orta</td><td>yüksek ACV, düşük churn</td></tr>
+  </table></div>
+  <p class="sub">Önerilen: <b>open-core hibrit + on-prem lisans, regüle-dikey-önce.</b> ACV: genel <b>$500–2.000</b>, regüle <b>$10k+</b>.</p>
+</section>
+
+<!-- 19 SWOT -->
+<section class="slide" data-act="SWOT & Kör Noktalar" data-title="SWOT">
+  <div class="eyebrow">SWOT — dengeli</div>
+  <h2>Güçlü / Zayıf / <span class="gx">Fırsat / Tehdit</span></h2>
+  <div class="swot">
+    <div class="card sw-s"><h3>Güçlü Yönler</h3><ul>
+      <li>Benzersiz çeyrek: otonom + deterministik + kanıt-taşıyan</li>
+      <li>Sıfır-token → ≈%85–95 brüt marj</li>
+      <li>Idea/Roadmap motoru (rakipte yok)</li>
+      <li>Olgun: 21.270 test, A+99, mutation-test'li, adversaryal öz-test</li></ul></div>
+    <div class="card sw-w"><h3>Zayıf Yönler</h3><ul>
+      <li>Dar, sonlu, yalnız-mekanik kapsam</li>
+      <li>Python-odaklı (dil genişliği dar)</li>
+      <li>Tekil araç (entegre süit değil) → adopsiyon sürtünmesi</li>
+      <li>Şablon uzayı insan-mühendisliği hızıyla büyür</li></ul></div>
+    <div class="card sw-o"><h3>Fırsatlar</h3><ul>
+      <li>Regüle/air-gapped pazar (bulut LLM giremiyor)</li>
+      <li>LLM maliyet krizi → sıfır-token cazip</li>
+      <li>EU AI Act / denetlenebilir-AI rüzgârı</li>
+      <li>LLM-PR güven kapısı (Copilot/Cursor ekipleri için)</li></ul></div>
+    <div class="card sw-t"><h3>Tehditler</h3><ul>
+      <li>Yerleşikler "deterministik mod" ekleyebilir (GitHub/JetBrains)</li>
+      <li>LLM + doğrulama-harness yaklaşması</li>
+      <li>Açık-kaynak alternatifleri (Moderne vb.) Python'a açılabilir</li>
+      <li>Regülasyon rüzgârı hafifleyebilir</li></ul></div>
+  </div>
+</section>
+
+<!-- 20 RİSKLER -->
+<section class="slide" data-act="SWOT & Kör Noktalar" data-title="Riskler & Kör Noktalar">
+  <div class="eyebrow">Riskler & Kör Noktalar — yumuşatılmamış</div>
+  <h2>Bir yatırımcının <span class="gx">sorgulayacağı</span> her şey</h2>
+  <ul class="big">
+    <li><b>"Özellik mi, şirket mi?":</b> deterministik mekanik iş bir $1B+ SaaS mı, yoksa GitHub/JetBrains'in 3–5 yılda içe alacağı bir özellik mi?</li>
+    <li><b>Şablon-hızı riski:</b> yeni yetenek kategorileri elle eklenir; rakipler daha hızlı eklerse farklılaşma erir.</li>
+    <li><b>Adopsiyon sürtünmesi:</b> kurumlar entegre süit alır; tekil araç CAC'ı yüksek (kama: CI-entegrasyon + regüle dikey).</li>
+    <li><b>Replikasyon tehdidi:</b> iyi-fonlanmış bir rakip LLM'e doğrulama-harness ekleyip determinizmi metalaştırabilir.</li>
+    <li><b>Tek-kurucu / erken-aşama:</b> "asla sahte-yeşil" kültürünü ölçeklerken korumak zor.</li>
+    <li><b>Yerleşik savunulabilirliği:</b> taban senaryoda moat zayıf; regüle pazarı derinlemesine sahiplenmek şart.</li>
+  </ul>
+  <p class="sub">Bu deck bu riskleri <b>saklamıyor</b> — gerçek bir alıcı/yatırımcı hype'ı iskonto eder; dürüstlük güven üretir.</p>
+</section>
+
+<!-- 21 YÖNLER + EXIT -->
+<section class="slide" data-act="Yön & Yol Haritası" data-title="Geliştirme Yönleri + Exit">
+  <div class="eyebrow">Geliştirme Yönleri (North-Star hizalı) + Exit</div>
+  <h2>Nereye <span class="gx">büyür</span>? Nasıl <span class="gx">çıkar</span>?</h2>
+  <div class="flow">
+    <div class="fstep"><span class="n">1</span><h3>Sentez uzayını genişlet</h3><p>Daha çok deterministik şablon → daha çok inen kod.<span class="bs">kapatır: sonlu kapsam</span></p></div>
+    <div class="fstep"><span class="n">2</span><h3>Çok-dilli dedektör</h3><p>JS/TS — güvenliği sulandırmadan.<span class="bs">kapatır: dil genişliği</span></p></div>
+    <div class="fstep"><span class="n">3</span><h3>Idea motorunu güçlendir</h3><p>Daha zengin sinyal, daha derin fraktal.<span class="bs">kapatır: farklılaşma</span></p></div>
+    <div class="fstep"><span class="n">4</span><h3>Regüle / denetim hikâyesi</h3><p>Kanıt-artefaktı + uyum sertifikaları.<span class="bs">kapatır: savunulabilirlik</span></p></div>
+    <div class="fstep"><span class="n">5</span><h3>Opsiyonel yerel-LLM</h3><p>Yalnız belirsiz %20; çekirdek sıfır-token kalır.<span class="bs">kapatır: yaratıcı sınır</span></p></div>
+    <div class="fstep"><span class="n">6</span><h3>Sürekli adversaryal öz-test</h3><p>Bu oturumda kanıtlandı — moat'ı canlı tutar.<span class="bs">kapatır: gizli kör noktalar</span></p></div>
+  </div>
+  <p class="sub"><b>Exit tezi:</b> build-to-exit <b>$200–800M</b> stratejik satın alma (GitHub / JetBrains / Sourcegraph doğrulama-IP + kullanıcı tabanı için).
+  $10B IPO <b>değil</b> — ancak kapsam deterministik mimari analize genişler ve regülasyon rüzgârı sürerse yukarı.</p>
+</section>
+
+<!-- 22 KAPANIŞ -->
+<section class="slide" data-act="Kapanış" data-title="Kapanış">
+  <div class="heroicon" id="heroicon2"></div>
+  <h2>Apex: <span class="gx">LLM çağının kanıt katmanı</span></h2>
+  <p class="lead">Kuruluşların güvendiği araç — çünkü <b>asla sahte-yeşil göstermez</b>; ve her commit'te <b>ücretsiz</b> koşturabilecekleri ajan.
+  Deterministik %80'i o yapar; yaratıcı %20'yi insana/LLM'e bırakır.</p>
+  <p class="sub mono">github.com/Mert544/Apex-orchestrator &nbsp;·&nbsp; apex develop session &nbsp;·&nbsp; sıfır-token · offline · kanıt-taşıyan</p>
+  <p class="sub">Bu sunum: <b>dengeli</b> faaliyet-öncesi Ar-Ge — cazibe + dürüst kör taraflar. Sayılar bu repodan; rakip/pazar verileri kamuya açık kategori bilgisi (denetim değil, yönlendirme).</p>
+</section>
+
+</div><!-- /stage -->
+
+<div class="pager" id="pager"></div>
+<div class="hint">← → / yan menü / tıkla</div>
+
+<script>
+const ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Apex">
+  <defs>
+    <radialGradient id="tile" cx="35%" cy="20%" r="100%"><stop offset="0%" stop-color="#162040"/><stop offset="55%" stop-color="#0b1126"/><stop offset="100%" stop-color="#060913"/></radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#46598f"/><stop offset="100%" stop-color="#141b33"/></linearGradient>
+    <linearGradient id="faceTop" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#a5dcff"/><stop offset="48%" stop-color="#58a6ff"/><stop offset="100%" stop-color="#7a5cff"/></linearGradient>
+    <linearGradient id="faceLeft" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2a4f9f"/><stop offset="100%" stop-color="#152350"/></linearGradient>
+    <linearGradient id="faceRight" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#5d40d8"/><stop offset="100%" stop-color="#2a1d66"/></linearGradient>
+    <linearGradient id="vein" x1="0" y1="1" x2="0" y2="0"><stop offset="0%" stop-color="#41d6c3"/><stop offset="55%" stop-color="#58a6ff"/><stop offset="100%" stop-color="#bc8cff"/></linearGradient>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="14"/></filter>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="104" fill="url(#tile)"/>
+  <rect x="17" y="17" width="478" height="478" rx="103" fill="none" stroke="url(#rim)" stroke-width="2" stroke-opacity=".85"/>
+  <ellipse cx="256" cy="420" rx="126" ry="24" fill="#000" opacity=".5" filter="url(#soft)"/>
+  <polygon points="256,112 372,172 256,232 140,172" fill="url(#faceTop)"/>
+  <polygon points="140,172 256,232 256,400 140,340" fill="url(#faceLeft)"/>
+  <polygon points="372,172 256,232 256,400 372,340" fill="url(#faceRight)"/>
+  <polyline points="140,172 256,232 372,172" fill="none" stroke="#dff0ff" stroke-opacity=".55" stroke-width="2.5"/>
+  <line x1="256" y1="232" x2="256" y2="400" stroke="#cfe2ff" stroke-opacity=".3" stroke-width="2"/>
+  <g filter="url(#glow)" stroke="url(#vein)" stroke-width="7" stroke-linecap="round" fill="none">
+    <path d="M256,382 L256,328"/><path d="M256,328 L209,295"/><path d="M256,328 L303,295"/>
+    <path d="M209,295 L185,256"/><path d="M209,295 L233,253"/><path d="M303,295 L279,253"/><path d="M303,295 L327,256"/>
+  </g>
+  <g filter="url(#glow)"><circle cx="256" cy="382" r="11" fill="#41d6c3"/><circle cx="209" cy="295" r="8" fill="#58a6ff"/><circle cx="303" cy="295" r="8" fill="#58a6ff"/>
+    <circle cx="185" cy="256" r="6.5" fill="#bc8cff"/><circle cx="233" cy="253" r="6.5" fill="#bc8cff"/><circle cx="279" cy="253" r="6.5" fill="#bc8cff"/><circle cx="327" cy="256" r="6.5" fill="#bc8cff"/></g>
+  <g filter="url(#glow)"><path d="M256,70 L264,96 L290,104 L264,112 L256,138 L248,112 L222,104 L248,96 Z" fill="#eef6ff"/></g>
+</svg>`;
+document.getElementById('heroicon').innerHTML = ICON;
+document.getElementById('heroicon2').innerHTML = ICON;
+
+const slides=[...document.querySelectorAll('.slide')];
+const navlist=document.getElementById('navlist');
+let lastAct='';
+slides.forEach((s,i)=>{
+  const act=s.dataset.act, title=s.dataset.title;
+  if(act!==lastAct){const a=document.createElement('div');a.className='act';a.textContent=act;navlist.appendChild(a);lastAct=act;}
+  const it=document.createElement('div');it.className='navitem'+(i===0?' on':'');
+  it.innerHTML='<span class="num">'+(i+1)+'</span><span>'+title+'</span>';
+  it.onclick=()=>{go(i);document.body.classList.remove('navopen');};
+  navlist.appendChild(it);
+});
+const navitems=[...document.querySelectorAll('.navitem')];
+let cur=0;
+function go(i){
+  if(i<0||i>=slides.length)return;
+  slides[cur].classList.remove('on'); navitems[cur].classList.remove('on');
+  cur=i;
+  slides[cur].classList.add('on'); navitems[cur].classList.add('on');
+  slides[cur].scrollTop=0;
+  navitems[cur].scrollIntoView({block:'nearest'});
+  document.getElementById('pager').textContent=(cur+1)+' / '+slides.length;
+  document.getElementById('bar').style.width=((cur+1)/slides.length*100)+'%';
+  location.hash='s'+(i+1);
+}
+const h=parseInt((location.hash||'').replace('#s',''));
+go(Number.isFinite(h)&&h>=1&&h<=slides.length?h-1:0);
+
+addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT')return;
+  if(e.key==='ArrowRight'||e.key==='PageDown')go(cur+1);
+  if(e.key==='ArrowLeft'||e.key==='PageUp')go(cur-1);
+  if(e.key==='Home')go(0); if(e.key==='End')go(slides.length-1);
+});
+let tx=null;
+addEventListener('touchstart',e=>tx=e.touches[0].clientX);
+addEventListener('touchend',e=>{if(tx===null)return;const dx=e.changedTouches[0].clientX-tx;if(Math.abs(dx)>60)go(dx<0?cur+1:cur-1);tx=null;});
+
+document.getElementById('themebtn').onclick=()=>{
+  const r=document.documentElement;
+  r.setAttribute('data-theme', r.getAttribute('data-theme')==='light'?'':'light');
+};
+</script>
+</body>
+</html>
