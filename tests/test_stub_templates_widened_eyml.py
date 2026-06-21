@@ -432,3 +432,80 @@ def test_new_two_arg_builtins_present_and_ordered():
     # the existing arithmetic/comparison shapes precede the widened operators.
     assert labels.index("+") < labels.index("pow")
     assert labels.index("==") < labels.index("in")
+
+
+# --- Blocker 3: single-witness value-derived replace/split is refused --------
+
+def test_single_witness_replace_refuses_overfit(tmp_path: Path):
+    # `shout("hi") == "HI!"` is ONE witness. The value-derived `replace(old,new)`
+    # template would land `text.replace('hi', 'HI!')` — green on the one example,
+    # WRONG for any other input (an obviously-overfit literal map). The >=2-
+    # distinct-witness overfit floor (the same one guarding value-derived numeric
+    # constants) now withholds it, so synthesis REFUSES: file untouched.
+    body = _plan_body(
+        tmp_path, "shout.py",
+        "def shout(text):\n    raise NotImplementedError\n",
+        "from app.shout import shout\n"
+        "def test():\n    assert shout('hi') == 'HI!'\n")
+    if body is not None:
+        assert ".replace(" not in body and ".split(" not in body
+
+
+def test_two_discriminating_witnesses_land_genuine_replace(tmp_path: Path):
+    # `slug("A B") == "a-b"` AND `slug("C D") == "c-d"`: two DISTINCT argument
+    # tuples witness the genuine transform, so the value-derived replace shape
+    # clears the overfit floor and the real `s.lower().replace(' ', '-')` lands.
+    body = _plan_body(
+        tmp_path, "slug.py",
+        "def slug(s):\n    raise NotImplementedError\n",
+        "from app.slug import slug\n"
+        "def test():\n    assert slug('A B') == 'a-b'\n    assert slug('C D') == 'c-d'\n")
+    assert body is not None and ".lower().replace(' ', '-')" in body
+
+
+def test_value_free_chains_unaffected_by_floor(tmp_path: Path):
+    # The floor only touches the witness-DERIVED replace/split. The value-free
+    # `.lower()` chain carries NO witness literal, so a single example still lands
+    # it honestly (gate-verified): `down('HELLO') == 'hello'` -> `s.lower()`.
+    body = _plan_body(
+        tmp_path, "dn.py",
+        "def down(s):\n    raise NotImplementedError\n",
+        "from app.dn import down\n"
+        "def test():\n    assert down('HELLO') == 'hello'\n")
+    assert body is not None and "return s.lower()" in body
+
+
+def test_string_floor_offered_only_with_two_witnesses():
+    # Unit view: `_string_templates` offers the derived replace/split ONLY with
+    # >=2 distinct witnesses; one witness yields just the value-free chains.
+    from app.execution.stub_synthesis import _string_templates
+
+    one = [lbl for lbl, _ in _string_templates("s", [("'hi'", "'HI!'")])]
+    assert not any(lbl.startswith(("replace(", "split(", "lower.replace(")) for lbl in one)
+    assert "lower" in one and "upper" in one  # value-free chains still present
+
+    two = [lbl for lbl, _ in
+           _string_templates("s", [("'A B'", "'a-b'"), ("'C D'", "'c-d'")])]
+    assert any(lbl.startswith("replace(") for lbl in two)
+    assert any(lbl.startswith("split(") for lbl in two)
+
+    # The pure structural view (no witnesses) still offers everything.
+    none = [lbl for lbl, _ in _string_templates("s", [])]
+    assert any(lbl.startswith("replace(") for lbl in none)
+
+
+def test_single_witness_replace_refusal_is_deterministic(tmp_path: Path):
+    body1 = _plan_body(
+        tmp_path, "sh.py",
+        "def shout(text):\n    raise NotImplementedError\n",
+        "from app.sh import shout\n"
+        "def test():\n    assert shout('hi') == 'HI!'\n")
+    import tempfile
+    from pathlib import Path as _P
+    with tempfile.TemporaryDirectory() as d:
+        body2 = _plan_body(
+            _P(d), "sh.py",
+            "def shout(text):\n    raise NotImplementedError\n",
+            "from app.sh import shout\n"
+            "def test():\n    assert shout('hi') == 'HI!'\n")
+    assert body1 == body2  # same input -> same result (refused both times)

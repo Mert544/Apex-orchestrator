@@ -34,6 +34,7 @@ from app.execution.stub_synthesis import (
     find_stub_functions,
     module_has_fillable_stub,
     pinned_test_files,
+    pinned_test_nodes,
     synthesize_expr_from_witnesses,
     synthesize_stub_body,
 )
@@ -169,7 +170,7 @@ def _resolve_mutual_stubs(root: Path, module_rel: str, current: str,
     composed = _compose(current, assignment)
     if composed is None:
         return current
-    tests = _union_test_files(root, module_rel, assignment)
+    tests = _union_node_ids(root, module_rel, assignment)
     if not tests:
         return current
     if not _union_passes(root, module_rel, composed, tests, runner):
@@ -198,13 +199,24 @@ def _independent_assignment(root: Path, module_rel: str, current: str,
     return assignment
 
 
-def _union_test_files(root: Path, module_rel: str,
-                      assignment: dict[str, str]) -> list[str]:
-    """The sorted union of pinned test files across the stubs being landed — the
-    suite the composed source is verified against once before it lands."""
+def _union_node_ids(root: Path, module_rel: str,
+                    assignment: dict[str, str]) -> list[str]:
+    """The sorted union of per-symbol pinned-test NODE IDs across the stubs being
+    landed — the spec the composed source is verified against once before it
+    lands.
+
+    This is the Blocker-2 fix for the mutual-stub union gate: gating against the
+    landed stubs' OWN node IDs (``test_mathutils.py::test_add``,
+    ``::test_scale``) — not the whole shared file — keeps an unsynthesizable
+    sibling's red node (``::test_running_total``, NOT in ``assignment``) out of
+    the gate, so ``add``/``scale`` land together while ``running_total`` stays a
+    stub. Each landed stub is still gated against its OWN real tests
+    (never-fake-green). Falls back to whole-file paths per file where a symbol's
+    node IDs aren't discoverable (so nothing that used to land stops landing).
+    Deterministic: sorted."""
     union: set[str] = set()
     for name in assignment:
-        union.update(pinned_test_files(root, module_rel, name))
+        union.update(pinned_test_nodes(root, module_rel, name))
     return sorted(union)
 
 

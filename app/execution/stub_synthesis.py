@@ -46,6 +46,7 @@ __all__ = [
     "StubFunction",
     "find_stub_functions",
     "pinned_test_files",
+    "pinned_test_nodes",
     "candidate_bodies",
     "ordered_candidate_exprs",
     "synthesize_expr_from_witnesses",
@@ -220,6 +221,61 @@ def pinned_test_files(root: Path, module_rel: str, func_name: str) -> list[str]:
     return out
 
 
+def pinned_test_nodes(root: Path, module_rel: str, func_name: str) -> list[str]:
+    """The pytest NODE IDs that pin ``func_name`` from ``module_rel`` — i.e. the
+    ``tests/test_x.py::test_y`` items, at FUNCTION granularity, of the tests that
+    name the symbol. Returns whole-FILE paths as a fallback for any pinned file
+    whose node-ID discovery finds nothing (so nothing that used to land via the
+    whole-file gate stops landing).
+
+    This is the Blocker-2 fix: a shared test file ``tests/test_mathutils.py`` may
+    pin several sibling stubs (``add``, ``scale``, ``running_total``). Gating a
+    candidate ``add`` body against the whole FILE re-runs ``test_running_total``
+    too — and if ``running_total`` is unsynthesizable, the file stays RED and
+    ``add`` is refused even though its OWN node (``::test_add``) passes. Gating
+    against the per-symbol node IDs lets ``add`` land on its own tests while the
+    unsynthesizable sibling's red node is simply not in ``add``'s gate (it was
+    never going to pass — pre-existing, not caused by the fill; never-fake-green
+    holds because each landed stub is still gated against its OWN real tests).
+
+    A node is selected when its ``def test_*`` function body/decorators REFERENCE
+    ``func_name`` by name — the same import-linkage + name-reference shape
+    :func:`pinned_test_files` uses, applied at function granularity. Deterministic:
+    files sorted, then functions in source order; AST-based, stdlib-only."""
+    name_re = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(func_name) + r"(?![A-Za-z0-9_])")
+    out: list[str] = []
+    for rel in pinned_test_files(root, module_rel, func_name):
+        try:
+            text = (root / rel).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        nodes = _test_nodes_referencing(text, rel, name_re)
+        out.extend(nodes if nodes else [rel])  # fallback: whole file when none found
+    return out
+
+
+def _test_nodes_referencing(text: str, rel: str,
+                            name_re: re.Pattern[str]) -> list[str]:
+    """The ``rel::test_name`` node IDs of every top-level ``def test_*`` in ``text``
+    whose source segment references ``name_re`` (the stub's symbol). Deterministic:
+    source order. ``[]`` on a syntax error (the caller then falls back to the whole
+    file, so a parse hiccup never drops a real contract)."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return []
+    out: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not node.name.startswith("test"):
+            continue
+        seg = ast.get_source_segment(text, node) or ""
+        if name_re.search(seg):
+            out.append(f"{rel}::{node.name}")
+    return out
+
+
 # --- candidate body templates ------------------------------------------------
 
 def candidate_bodies(stub: StubFunction,
@@ -387,7 +443,20 @@ def _string_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[st
     ``s.upper()``, ``s.strip()``, ``s.title()``, ``s.lower().strip()``) plus, for
     each ordered pair / single string constant inferable from the witnesses,
     ``s.replace(a, b)`` and ``s.split(sep)``. Constants come from the EXPECTED and
-    ARGUMENT text of the witnesses so common slug/clean shapes are reachable."""
+    ARGUMENT text of the witnesses so common slug/clean shapes are reachable.
+
+    The value-free chains are ALWAYS offered — they carry no witness-derived
+    literal, so a single example cannot overfit them (``shout_down('HELLO') ==
+    'hello'`` honestly lands ``s.lower()``). The value-DERIVED ``replace(old, new)``
+    / ``split(sep)`` shapes, by contrast, bake the witness's own string constants
+    into the body, so one example degenerates to a literal map (``shout('hi') ==
+    'HI!'`` would land ``text.replace('hi', 'HI!')`` — green on the one witness,
+    wrong for any other input). They carry the SAME >=2-distinct-witness overfit
+    floor the value-derived numeric constants use (:func:`_string_floor_met`): they
+    are offered only when at least TWO DISTINCT argument tuples witness the
+    contract, so a genuine transform with two discriminating examples still lands
+    while a single example REFUSES. With NO witness list (the pure structural view)
+    the shapes are still offered — that caller gates elsewhere."""
     out: list[tuple[str, str]] = [
         ("lower", f"{a}.lower()"),
         ("upper", f"{a}.upper()"),
@@ -395,6 +464,8 @@ def _string_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[st
         ("title", f"{a}.title()"),
         ("lower.strip", f"{a}.lower().strip()"),
     ]
+    if not _string_floor_met(witnesses):
+        return out  # single example — refuse the witness-derived replace/split
     strings = _string_constants(witnesses)
     for old, new in _ordered_string_pairs(strings):
         out.append((f"replace({old},{new})", f"{a}.replace({old}, {new})"))
@@ -403,6 +474,23 @@ def _string_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[st
     for sep in strings:
         out.append((f"split({sep})", f"{a}.split({sep})"))
     return out
+
+
+def _string_floor_met(witnesses: list[tuple[str, str]]) -> bool:
+    """True when the witness-DERIVED string templates (``replace``/``split``) may
+    be OFFERED — only once at least TWO DISTINCT argument tuples witness the
+    contract, the same overfit floor the value-derived numeric constants use
+    (:func:`_derived_constants`). A single witness (``shout('hi') == 'HI!'``) bakes
+    its own literals into a ``replace`` body that is wrong for every other input,
+    so with <2 distinct argument tuples the derived shapes are withheld (the
+    value-free ``.lower()/.upper()/...`` chains in :func:`_string_templates` are
+    unaffected — they carry no witness literal). With NO witness list at all (the
+    pure structural view used by callers that gate elsewhere) the shapes are still
+    offered. Deterministic."""
+    if not witnesses:
+        return True
+    distinct = {args for args, _expected in witnesses}
+    return len(distinct) >= 2
 
 
 def _one_arg_builtin_templates(a: str, kind: str | None) -> list[tuple[str, str]]:
@@ -923,12 +1011,17 @@ def synthesize_stub_body(root: Path, module_rel: str, stub: StubFunction,
         return None  # witnesses fit >=2 different-shape templates — under-specified
     runner = runner or RunTestsSkill()
     source = (root / module_rel).read_text(encoding="utf-8")
+    # Gate against THIS stub's per-symbol node IDs, not the whole pinned file: a
+    # shared file's unsynthesizable sibling (its own red node) must not veto this
+    # stub when its OWN node passes. Falls back to whole-file paths per file when
+    # no node is discoverable (so nothing that used to land stops landing).
+    gate = pinned_test_nodes(root, module_rel, stub.name)
 
     for label, expr in _ordered_candidates(root, test_files, stub):
         candidate = _rewrite_with_body(source, stub, expr)
         if candidate is None:
             continue
-        if _candidate_passes(root, module_rel, candidate, test_files, runner):
+        if _candidate_passes(root, module_rel, candidate, gate, runner):
             return candidate
     return None
 

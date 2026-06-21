@@ -587,15 +587,33 @@ def test_lower_lands_string_method(tmp_path: Path):
 
 
 def test_slugify_lands_lower_replace(tmp_path: Path):
-    # The buyer moment: `slugify(s) -> s.lower().replace(' ', '-')`. The ' ' and
-    # '-' constants are structurally present in the witness, so one example lands.
+    # The buyer moment: `slugify(s) -> s.lower().replace(' ', '-')`. The value-
+    # DERIVED replace shape now carries the >=2-distinct-witness overfit floor
+    # (Blocker 3), so TWO discriminating examples are required — one would
+    # degenerate to a literal map. Two distinct inputs that both reduce to the
+    # genuine transform land it honestly.
     body = _plan_body(
         tmp_path, "slug.py",
         "def slugify(s):\n    raise NotImplementedError\n",
         "from app.slug import slugify\n"
-        "def test():\n    assert slugify('Hello World') == 'hello-world'\n")
+        "def test():\n    assert slugify('Hello World') == 'hello-world'\n"
+        "    assert slugify('Foo Bar') == 'foo-bar'\n")
     assert body is not None
     assert ".lower().replace(' ', '-')" in body
+
+
+def test_single_witness_replace_refuses_overfit(tmp_path: Path):
+    # Blocker 3: a LONE string witness must NOT land a value-derived replace that
+    # bakes its own literals in (green on the one example, wrong for any other).
+    # `slugify('Hello World') == 'hello-world'` alone REFUSES the replace shape.
+    body = _plan_body(
+        tmp_path, "slug1.py",
+        "def slugify(s):\n    raise NotImplementedError\n",
+        "from app.slug1 import slugify\n"
+        "def test():\n    assert slugify('Hello World') == 'hello-world'\n")
+    # No witness-derived replace/split may land off one example.
+    if body is not None:
+        assert ".replace(" not in body and ".split(" not in body
 
 
 def test_mean_lands_composite(tmp_path: Path):
@@ -766,11 +784,12 @@ def test_contradictory_witnesses_refuse(tmp_path: Path):
 
 
 def test_wider_space_is_deterministic(tmp_path: Path):
+    src = ("def test():\n    assert slugify('Hello World') == 'hello-world'\n"
+           "    assert slugify('Foo Bar') == 'foo-bar'\n")
     body1 = _plan_body(
         tmp_path, "s.py",
         "def slugify(s):\n    raise NotImplementedError\n",
-        "from app.s import slugify\n"
-        "def test():\n    assert slugify('Hello World') == 'hello-world'\n")
+        "from app.s import slugify\n" + src)
     # Second independent project, identical inputs -> identical body.
     import tempfile
     from pathlib import Path as _P
@@ -778,8 +797,7 @@ def test_wider_space_is_deterministic(tmp_path: Path):
         body2 = _plan_body(
             _P(d), "s.py",
             "def slugify(s):\n    raise NotImplementedError\n",
-            "from app.s import slugify\n"
-            "def test():\n    assert slugify('Hello World') == 'hello-world'\n")
+            "from app.s import slugify\n" + src)
     assert body1 == body2 and body1 is not None
 
 
