@@ -131,6 +131,14 @@ class SessionReport:
     # ran. This flag gates that verdict: a "full suite GREEN" claim is only made
     # when the backstop genuinely ran (never-fake-green).
     backstop_ran: bool = False
+    # Was the project's suite ALREADY green BEFORE any change? ``None`` means the
+    # baseline was never probed (the session landed work, so the cause of an empty
+    # contribution list is moot — we only probe when we'd otherwise have to explain
+    # WHY nothing landed). ``False`` = the baseline suite is RED, so an empty
+    # contribution list does NOT mean the project is clean: the renderer must say
+    # the suite is RED, never "already satisfied" (never-fake-green). ``True`` = the
+    # baseline genuinely passed, so "already satisfied" is honest.
+    baseline_suite_green: bool | None = None
 
     @property
     def total_moves(self) -> int:
@@ -168,6 +176,7 @@ class SessionReport:
             "suite_available": self.suite_available,
             "suite_green_after": self.suite_green_after,
             "backstop_ran": self.backstop_ran,
+            "baseline_suite_green": self.baseline_suite_green,
             "objectives": [o.to_dict() for o in self.objectives],
             "diff": self.diff,
         }
@@ -262,6 +271,22 @@ def _diff_snapshots(before: dict[str, str],
     return files, added, removed, "".join(chunks)
 
 
+def _baseline_suite_green(root: Path) -> bool:
+    """Was the project's suite ALREADY green BEFORE the session touched it?
+
+    Thin wrapper over the shared one-time baseline pre-flight
+    (:func:`app.execution._apply_verify.suite_baseline_green`) so the session
+    keys its "nothing landed" wording off the REAL reason: a clean project
+    (genuinely satisfied) vs. a RED baseline (pre-existing failures Apex must not
+    paper over). Runs the full suite ONCE — the session calls this at most once,
+    and ONLY when it would otherwise have to explain why nothing landed, so the
+    happy path that LANDS work pays no extra suite run. "No test command" counts
+    as a GREEN baseline (the same convention the apply gate uses)."""
+    from app.execution._apply_verify import suite_baseline_green
+
+    return suite_baseline_green(root)
+
+
 def _full_suite_green(root: Path) -> tuple[bool, bool]:
     """``(suite_available, green)`` from one full-suite run — the backstop.
 
@@ -319,6 +344,15 @@ def run_develop_session(
         if verify:
             report.suite_available, report.suite_green_after = _full_suite_green(root)
             report.backstop_ran = True
+
+    # Baseline-red guard. When NOTHING landed, the renderer would otherwise say
+    # "every objective is already satisfied" — which is a LIE if the real reason is
+    # a RED baseline (unsynthesizable stubs / pre-existing failures), not a clean
+    # project. Probe the baseline ONCE, and ONLY in this no-contribution case (so a
+    # session that LANDS work never pays the extra full-suite run), to let the
+    # wording key off the honest reason. Deterministic: same project -> same bool.
+    if not report.objectives_with_work:
+        report.baseline_suite_green = _baseline_suite_green(root)
     return report
 
 
@@ -376,8 +410,7 @@ def _render_summary(report: SessionReport) -> list[str]:
     work = report.objectives_with_work
     if not work:
         lines.append("")
-        lines.append("_No concrete contribution available — every objective is "
-                     "already satisfied._")
+        lines += _nothing_landed_lines(report)
     for obj in work:
         lines.append("")
         lines.append(f"### `{obj.objective}` — {obj.landed} move(s)")
@@ -390,6 +423,32 @@ def _render_summary(report: SessionReport) -> list[str]:
             lines.append(f"{i}. {mv.description} — {tag}")
     lines += _tier_footnote(report)
     return lines
+
+
+def _nothing_landed_lines(report: SessionReport) -> list[str]:
+    """The "no contribution landed" wording — HONEST about the reason.
+
+    Two genuinely different causes hide behind an empty contribution list and the
+    session must not conflate them (never-fake-green):
+
+      * ``baseline_suite_green is False`` — the project's suite was RED *before*
+        Apex touched anything (unsynthesizable stubs / pre-existing failures). An
+        empty list does NOT mean the project is clean, so we say so explicitly and
+        decline to claim a green Apex didn't earn.
+      * otherwise (genuinely satisfied, or the baseline was never probed) — keep
+        the positive "already satisfied" message byte-for-byte, so a clean GREEN
+        project's report is unchanged from before."""
+    if report.baseline_suite_green is False:
+        return [
+            "_No concrete contribution available, but the project's test suite is "
+            "RED before any change (pre-existing failures). Apex verifies each "
+            "contribution against the tests it impacts and will not claim a green "
+            "it didn't earn — this is NOT an 'already satisfied' project._",
+        ]
+    return [
+        "_No concrete contribution available — every objective is "
+        "already satisfied._",
+    ]
 
 
 def _tier_footnote(report: SessionReport) -> list[str]:

@@ -277,3 +277,165 @@ def test_dry_run_lists_moves_without_writing(tmp_path: Path):
     md = render_session_markdown(report)
     assert "ready to land" in md
     assert "0 file(s)" not in md
+
+
+# --- baseline-red guard: never claim "already satisfied" on a RED suite -------
+
+# The EXACT happy-path "nothing landed" wording, captured BEFORE this guard
+# existed. A clean GREEN project with no debt must still render this byte-for-byte
+# (the report is a buyer artifact and is byte-compared) — the guard adds new
+# wording STRICTLY behind the baseline-red condition and must not churn this.
+_SATISFIED_LINE = ("_No concrete contribution available — every objective is "
+                   "already satisfied._")
+
+
+def _red_baseline_project(root: Path) -> Path:
+    """A multi-module foreign package whose suite is RED *before* any change: one
+    module is an UNSYNTHESIZABLE stub (its pinned test asserts a contract no fixed
+    template can satisfy), so ``implement-stub`` REFUSES — nothing lands for it —
+    and the raised ``NotImplementedError`` keeps the baseline suite RED. A second,
+    already-complete module proves the project is genuinely multi-module."""
+    (root / "pkg").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='pkg'\nversion='0'\n", encoding="utf-8")
+    # Exports already wired + an already-implemented module, so wire-exports and
+    # the other objectives have NOTHING to land — the ONLY reason the session
+    # lands nothing is the RED baseline, not a clean project.
+    (root / "pkg" / "__init__.py").write_text(
+        'from .stub import f\nfrom .done import g\n\n'
+        '__all__ = [\n    "f",\n    "g",\n]\n', encoding="utf-8")
+    (root / "pkg" / "stub.py").write_text(
+        "def f(a, b):\n    raise NotImplementedError\n", encoding="utf-8")
+    (root / "pkg" / "done.py").write_text(
+        "def g(a, b):\n    return a + b\n", encoding="utf-8")
+    (root / "tests" / "test_pkg.py").write_text(
+        "from pkg.stub import f\nfrom pkg.done import g\n"
+        "def test_f():\n    assert f(2, 3) == 999999\n"
+        "def test_g():\n    assert g(2, 3) == 5\n", encoding="utf-8")
+    return root
+
+
+def _red_no_debt_project(root: Path) -> Path:
+    """A RED-baseline package with NO synthesizable debt at all: the only module is
+    already type-hinted, exports are wired, no stub / no idiom — but a pre-existing
+    test FAILS. So the session lands nothing in BOTH apply and dry-run (no candidate
+    moves even to propose), and the ONLY reason for the empty outcome is the RED
+    baseline — the case the guard must explain instead of "already satisfied"."""
+    (root / "pkg").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='pkg'\nversion='0'\n", encoding="utf-8")
+    (root / "pkg" / "__init__.py").write_text(
+        'from .done import g\n\n__all__ = [\n    "g",\n]\n', encoding="utf-8")
+    (root / "pkg" / "done.py").write_text(
+        "def g(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8")
+    # A second test asserts a pre-existing FALSE contract -> the baseline is RED.
+    (root / "tests" / "test_pkg.py").write_text(
+        "from pkg.done import g\n"
+        "def test_g():\n    assert g(2, 3) == 5\n"
+        "def test_pre_existing_failure():\n    assert g(1, 1) == 999999\n",
+        encoding="utf-8")
+    return root
+
+
+def _clean_green_project(root: Path) -> Path:
+    """A genuinely SATISFIED foreign package: a green suite, exports already wired,
+    no stub / no idiom debt — so every objective truly has nothing to land and the
+    positive "already satisfied" message is HONEST."""
+    (root / "pkg").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='pkg'\nversion='0'\n", encoding="utf-8")
+    (root / "pkg" / "__init__.py").write_text(
+        'from .done import g\n\n__all__ = [\n    "g",\n]\n', encoding="utf-8")
+    (root / "pkg" / "done.py").write_text(
+        "def g(a, b):\n    return a + b\n", encoding="utf-8")
+    (root / "tests" / "test_pkg.py").write_text(
+        "from pkg.done import g\n"
+        "def test_g():\n    assert g(2, 3) == 5\n", encoding="utf-8")
+    return root
+
+
+def test_red_baseline_says_suite_red_not_satisfied(tmp_path: Path):
+    # A multi-module RED-baseline project that lands NOTHING must NOT be reported
+    # as "already satisfied" — that would imply the project is clean when it is
+    # not (never-fake-green). It must disclose the RED baseline.
+    _red_baseline_project(tmp_path)
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+
+    assert report.total_moves == 0
+    assert report.baseline_suite_green is False
+
+    md = render_session_markdown(report)
+    assert "RED before any change" in md
+    assert "pre-existing failures" in md
+    assert "will not claim a green it didn't earn" in md
+    # The misleading positive wording must be ABSENT for a red baseline.
+    assert _SATISFIED_LINE not in md
+    assert "every objective is already satisfied" not in md
+
+
+def test_red_baseline_dry_run_also_discloses_red(tmp_path: Path):
+    # The honest wording is keyed off the baseline, so the dry-run (report-only)
+    # path that lands nothing discloses the RED baseline too. Uses the no-debt-but-
+    # RED fixture so dry-run also reaches the "nothing landed" branch (a fixture
+    # with synthesizable debt would PROPOSE candidate moves in dry-run instead).
+    _red_no_debt_project(tmp_path)
+    report = run_develop_session(str(tmp_path), apply=False, verify=True)
+    assert report.total_moves == 0
+    assert report.baseline_suite_green is False
+    md = render_session_markdown(report)
+    assert "RED before any change" in md
+    assert "every objective is already satisfied" not in md
+
+
+def test_clean_green_baseline_keeps_satisfied_wording_byte_identical(tmp_path: Path):
+    # The happy path is UNCHANGED: a clean GREEN project with no debt still says
+    # "already satisfied", byte-for-byte the pre-guard wording.
+    _clean_green_project(tmp_path)
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+
+    assert report.total_moves == 0
+    assert report.baseline_suite_green is True
+
+    md = render_session_markdown(report)
+    assert _SATISFIED_LINE in md
+    # The red-baseline wording must NOT leak into a clean project's report.
+    assert "RED before any change" not in md
+
+
+def test_baseline_green_flag_is_true_for_clean_false_for_red(tmp_path: Path):
+    # The explicit deterministic field: True for the clean project, False for the
+    # red one — the bool the wording keys off.
+    clean = _clean_green_project(tmp_path / "clean")
+    red = _red_baseline_project(tmp_path / "red")
+    assert run_develop_session(str(clean), apply=True).baseline_suite_green is True
+    assert run_develop_session(str(red), apply=True).baseline_suite_green is False
+
+
+def test_baseline_not_probed_when_work_lands(tmp_path: Path):
+    # Performance + scope guard: when the session LANDS work, the baseline is NEVER
+    # probed (no extra suite run), so the field stays ``None`` — the probe only
+    # runs to explain a no-contribution outcome.
+    _foreign_project(tmp_path)
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+    assert report.total_moves > 0
+    assert report.baseline_suite_green is None
+
+
+def test_red_baseline_report_is_deterministic_byte_for_byte(tmp_path: Path):
+    # Same RED-baseline fixture -> identical report bytes twice (the new field +
+    # wording are deterministic; the bool carries no clock/random).
+    a = _red_baseline_project(tmp_path / "a")
+    b = _red_baseline_project(tmp_path / "b")
+    md_a = render_session_markdown(run_develop_session(str(a), apply=True))
+    md_b = render_session_markdown(run_develop_session(str(b), apply=True))
+    assert md_a == md_b
+
+
+def test_baseline_green_field_serialises(tmp_path: Path):
+    # The new field is on the dict artifact for downstream consumers.
+    report = run_develop_session(
+        str(_red_baseline_project(tmp_path)), apply=True)
+    assert report.to_dict()["baseline_suite_green"] is False
