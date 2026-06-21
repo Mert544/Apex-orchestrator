@@ -509,3 +509,172 @@ def test_single_witness_replace_refusal_is_deterministic(tmp_path: Path):
             "from app.sh import shout\n"
             "def test():\n    assert shout('hi') == 'HI!'\n")
     assert body1 == body2  # same input -> same result (refused both times)
+
+
+# --- multi-arg thin-contract ambiguity (P0 fake-green fix) --------------------
+
+def test_clamp_low_thin_2arg_refuses_no_fake_green(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # P0 FAKE-GREEN repro: clamp_low(1,5)==1, clamp_low(2,8)==2 (author means
+    # min(a,b)). The thin witnesses are ALSO satisfied by `a % b` (1%5==1, 2%8==2)
+    # and `a or b` (1 or 5 == 1, 2 or 8 == 2) — coincidental, semantically WRONG
+    # (clamp_low(7,4) would be 3 not 4). These competing shapes DIVERGE on the
+    # swapped/perturbed canary tuples, so the multi-arg canary branch exposes the
+    # ambiguity and Apex REFUSES — honest no-op, never a fake-green `a % b`.
+    _suite_project(tmp_path)
+    original = "def clamp_low(a, b):\n    raise NotImplementedError\n"
+    (tmp_path / "app" / "cl.py").write_text(original, encoding="utf-8")
+    (tmp_path / "tests" / "test_cl.py").write_text(
+        "from app.cl import clamp_low\n"
+        "def test():\n"
+        "    assert clamp_low(1, 5) == 1\n"
+        "    assert clamp_low(2, 8) == 2\n", encoding="utf-8")
+    plan = plan_implement_stub(str(tmp_path), "app/cl.py")
+    assert not plan.new_contents and not plan.blockers  # ambiguous -> honest no-op
+    assert (tmp_path / "app" / "cl.py").read_text() == original  # file untouched
+
+
+def test_clamp_low_refusal_is_deterministic(tmp_path: Path):
+    # Same thin contract -> same (refused) outcome twice; no clock/random.
+    src = "def clamp_low(a, b):\n    raise NotImplementedError\n"
+    test_src = (
+        "from app.cl import clamp_low\n"
+        "def test():\n"
+        "    assert clamp_low(1, 5) == 1\n"
+        "    assert clamp_low(2, 8) == 2\n")
+    body1 = _plan_body(tmp_path, "cl.py", src, test_src)
+    import tempfile
+    from pathlib import Path as _P
+    with tempfile.TemporaryDirectory() as d:
+        body2 = _plan_body(_P(d), "cl.py", src, test_src)
+    assert body1 is None and body2 is None  # refused both times
+
+
+def test_genuine_add_2arg_still_lands(tmp_path: Path):
+    # add(2,3)==5, add(10,1)==11 — ONLY `a + b` passes both witnesses (a*b, a-b,
+    # a%b, a or b all fail one). No competing shape -> no ambiguity -> still lands.
+    body = _plan_body(
+        tmp_path, "ad.py",
+        "def add(a, b):\n    raise NotImplementedError\n",
+        "from app.ad import add\n"
+        "def test():\n    assert add(2, 3) == 5\n    assert add(10, 1) == 11\n")
+    assert body is not None and "return a + b" in body
+
+
+def test_genuine_power_2arg_still_lands(tmp_path: Path):
+    # power(2,3)==8, power(5,2)==25 — only `a ** b` fits both -> lands.
+    body = _plan_body(
+        tmp_path, "pw.py",
+        "def power(a, b):\n    raise NotImplementedError\n",
+        "from app.pw import power\n"
+        "def test():\n    assert power(2, 3) == 8\n    assert power(5, 2) == 25\n")
+    assert body is not None and "return a ** b" in body
+
+
+def test_genuine_min_discriminating_still_lands(tmp_path: Path):
+    # A DISCRIMINATING min contract crosses a<b AND a>b, so the overfit floor admits
+    # min/max and the witnesses pin exactly min(a,b): f(1,5)==1, f(5,1)==1, f(3,4)==3.
+    body = _plan_body(
+        tmp_path, "mn.py",
+        "def f(a, b):\n    raise NotImplementedError\n",
+        "from app.mn import f\n"
+        "def test():\n"
+        "    assert f(1, 5) == 1\n    assert f(5, 1) == 1\n    assert f(3, 4) == 3\n")
+    assert body is not None and "return min(a, b)" in body
+
+
+def test_genuine_max_discriminating_still_lands(tmp_path: Path):
+    # Discriminating max contract: f(1,5)==5, f(5,1)==5, f(3,4)==4 -> max(a,b).
+    body = _plan_body(
+        tmp_path, "mx.py",
+        "def f(a, b):\n    raise NotImplementedError\n",
+        "from app.mx import f\n"
+        "def test():\n"
+        "    assert f(1, 5) == 5\n    assert f(5, 1) == 5\n    assert f(3, 4) == 4\n")
+    assert body is not None and "return max(a, b)" in body
+
+
+# --- multi-arg canary unit checks --------------------------------------------
+
+def test_multi_arg_canary_set_deterministic_nonempty():
+    from app.execution.stub_synthesis import _canary_inputs
+
+    wit = [((1, 5), 1), ((2, 8), 2)]
+    c1 = _canary_inputs(wit)
+    c2 = _canary_inputs(wit)
+    assert c1 == c2  # same input -> same canaries
+    assert len(c1) > len(wit)  # off-witness probes were added
+    # the cross-ordering probe that splits `a % b` from `a or b` is present
+    assert (5, 1) in c1
+
+
+def test_mod_vs_or_fingerprints_differ_on_canaries():
+    from app.execution.stub_synthesis import (
+        StubFunction, _canary_inputs, _expr_fingerprint)
+
+    stub = StubFunction(name="clamp_low", params=("a", "b"),
+                        lineno=1, end_lineno=2, indent="", is_method=False)
+    canaries = _canary_inputs([((1, 5), 1), ((2, 8), 2)])
+    fp_mod = _expr_fingerprint("a % b", stub, canaries)
+    fp_or = _expr_fingerprint("a or b", stub, canaries)
+    assert fp_mod != fp_or  # they diverge off-witness -> ambiguity detectable
+
+
+def test_multi_arg_canary_respects_sign_envelope():
+    # All-positive witnesses must NOT inject a negative or zero perturbation (a
+    # zero second arg would make `a % b` / `a // b` raise, faking a distinct intent
+    # against a single-shape contract). Probes stay within the positive envelope.
+    from app.execution.stub_synthesis import _canary_inputs
+
+    canaries = _canary_inputs([((2, 3), 5), ((10, 1), 11)])
+    for tup in canaries:
+        assert all(v > 0 for v in tup)  # no negative/zero injected off-domain
+
+
+def test_multi_arg_canary_crash_safe_fingerprint():
+    # A probe that makes one body RAISE (a // 0) must fold into a stable '<err>'
+    # token, never crash and never fake agreement. Here a witness holds a zero so
+    # the envelope admits zero-bearing probes; a // b raises on (x, 0).
+    from app.execution.stub_synthesis import (
+        StubFunction, _canary_inputs, _expr_fingerprint)
+
+    stub = StubFunction(name="f", params=("a", "b"),
+                        lineno=1, end_lineno=2, indent="", is_method=False)
+    canaries = _canary_inputs([((0, 4), 0), ((0, 6), 0)])  # zero present
+    fp = _expr_fingerprint("b // a", stub, canaries)  # raises when a==0
+    assert "<err>" in fp  # raising probe yields a stable token, no crash
+
+
+def test_is_ambiguous_detects_thin_2arg_contract(tmp_path: Path):
+    # Direct unit view of the guard on the P0 contract: _is_ambiguous must be True
+    # because a % b and a or b (both pass the witnesses) DIVERGE on the canaries.
+    from app.execution.stub_synthesis import _is_ambiguous, find_stub_functions
+
+    _suite_project(tmp_path)
+    src = "def clamp_low(a, b):\n    raise NotImplementedError\n"
+    (tmp_path / "app" / "cl.py").write_text(src, encoding="utf-8")
+    (tmp_path / "tests" / "test_cl.py").write_text(
+        "from app.cl import clamp_low\n"
+        "def test():\n"
+        "    assert clamp_low(1, 5) == 1\n"
+        "    assert clamp_low(2, 8) == 2\n", encoding="utf-8")
+    stubs = find_stub_functions(src)
+    assert len(stubs) == 1
+    assert _is_ambiguous(tmp_path, ["tests/test_cl.py"], stubs[0]) is True
+
+
+def test_is_ambiguous_false_for_genuine_2arg_contract(tmp_path: Path):
+    # The genuine add contract pins exactly one shape (a + b), so _is_ambiguous is
+    # False and the body lands — the new canaries add NO spurious refusal.
+    from app.execution.stub_synthesis import _is_ambiguous, find_stub_functions
+
+    _suite_project(tmp_path)
+    src = "def add(a, b):\n    raise NotImplementedError\n"
+    (tmp_path / "app" / "ad.py").write_text(src, encoding="utf-8")
+    (tmp_path / "tests" / "test_ad.py").write_text(
+        "from app.ad import add\n"
+        "def test():\n    assert add(2, 3) == 5\n    assert add(10, 1) == 11\n",
+        encoding="utf-8")
+    stubs = find_stub_functions(src)
+    assert _is_ambiguous(tmp_path, ["tests/test_ad.py"], stubs[0]) is False

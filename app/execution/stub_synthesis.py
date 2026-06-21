@@ -1440,6 +1440,84 @@ def _sequence_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple
     return out
 
 
+def _multi_arg_canary_probes(
+    witnesses: list[tuple[tuple, object]],
+) -> list[tuple]:
+    """Off-witness probe tuples for a >=2-int-argument contract: for each
+    witnessed tuple ``(a, b, ...)`` add the REORDERED tuples (every rotation/swap
+    among the positions) plus per-position neighbour perturbations
+    (``v-1``/``v+1`` on one position, others held fixed), staying inside the
+    witnessed sign envelope.
+
+    A thin 2-arg contract (``clamp_low(1, 5) == 1, clamp_low(2, 8) == 2``) is
+    matched by BOTH ``a % b`` and ``a or b`` (and others) — they all AGREE on the
+    witnessed tuples but DIVERGE on a swapped tuple (``(5, 1)``: ``5 % 1 == 0`` vs
+    ``5 or 1 == 5``) or a perturbed one (``(7, 4)``), so this probe set exposes the
+    ambiguity and Apex refuses rather than landing an arbitrary coincidental body.
+
+    Sign envelope: a negative/zero perturbation is dropped unless a witness
+    already holds a value of that sign at that position, mirroring
+    :func:`_int_canary_probes` — never inject an off-domain value that makes a
+    body raise (``a % b`` with ``b == 0``) look like a distinct intent against a
+    genuine, single-shape contract (``add(2, 3) == 5, add(10, 1) == 11`` stays
+    ``a + b``: only one shape passes the witnesses, so there is no ambiguity to
+    trip regardless of the probes)."""
+    has_neg = any(any(v < 0 for v in args) for args, _e in witnesses)
+    has_zero = any(any(v == 0 for v in args) for args, _e in witnesses)
+    out: list[tuple] = []
+    for args, _e in witnesses:
+        out.extend(_probes_for_tuple(tuple(args), has_neg, has_zero))
+    return out
+
+
+def _admit_probe(probe: tuple, has_neg: bool, has_zero: bool) -> bool:
+    """True when every component of ``probe`` stays inside the witnessed sign
+    envelope: a negative is allowed only when a witness already held a negative,
+    a zero only when a witness held a zero. Keeps off-domain values (a zero
+    divisor that makes ``a % b`` raise) from faking a distinct intent."""
+    for v in probe:
+        if v < 0 and not has_neg:
+            return False
+        if v == 0 and not has_zero:
+            return False
+    return True
+
+
+def _probes_for_tuple(args: tuple, has_neg: bool, has_zero: bool) -> list[tuple]:
+    """The reordered + per-position-perturbed off-witness probes derived from one
+    witnessed argument tuple, each kept only when it stays inside the sign
+    envelope (:func:`_admit_probe`). Deterministic ordering."""
+    out: list[tuple] = []
+    for perm in _ordered_perms(args):
+        if perm != args and _admit_probe(perm, has_neg, has_zero):
+            out.append(perm)
+    for pos in range(len(args)):
+        for delta in (-1, 1):
+            probe = args[:pos] + (args[pos] + delta,) + args[pos + 1:]
+            if _admit_probe(probe, has_neg, has_zero):
+                out.append(probe)
+    return out
+
+
+def _ordered_perms(args: tuple) -> list[tuple]:
+    """The deterministic, sorted-by-repr set of reorderings of ``args`` — swaps and
+    rotations that surface order-sensitivity (``a % b`` vs ``a or b`` diverge on a
+    swapped tuple). Bounded to small arities (the witnessed stubs are tiny), and
+    deduplicated by repr so a tuple with repeated values yields no spurious dupes."""
+    from itertools import permutations
+
+    if len(args) > 4:
+        return [args]
+    seen: set[str] = set()
+    ordered: list[tuple] = []
+    for perm in sorted(permutations(args), key=repr):
+        key = repr(perm)
+        if key not in seen:
+            seen.add(key)
+            ordered.append(perm)
+    return ordered
+
+
 def _dedup_tuples(probes: list[tuple]) -> list[tuple]:
     """De-duplicate ``probes`` preserving first-seen (deterministic) order. An
     argument tuple may hold an UNHASHABLE value (a ``list``/``dict`` witness, e.g.
@@ -1460,19 +1538,38 @@ def _canary_inputs(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
     check, built from the witnessed argument tuples (always included). A single
     int argument adds neighbour/anchor probes (:func:`_int_canary_probes`); a
     single sequence argument adds reordered-sequence probes
-    (:func:`_sequence_canary_probes`). Multi-arg / other-typed args fall back to
-    the witnessed tuples alone — two bodies that disagree there already disagree
-    on a witness, which the gate catches anyway, so the guard stays conservative
-    (never over-refuses)."""
+    (:func:`_sequence_canary_probes`). A >=2-int-argument contract adds
+    reordered/perturbed probes (:func:`_multi_arg_canary_probes`) so a thin
+    contract matched by several order-sensitive bodies (``a % b`` vs ``a or b``) is
+    detected as ambiguous. Other-typed / mixed args fall back to the witnessed
+    tuples alone — two bodies that disagree there already disagree on a witness,
+    which the gate catches anyway, so the guard stays conservative (never
+    over-refuses)."""
     probes: list[tuple] = [args for args, _expected in witnesses]
     arity = len(probes[0]) if probes else 0
-    if arity == 1 and all(isinstance(args[0], int) and not isinstance(args[0], bool)
-                          for args, _e in witnesses):
+    arg0s = [args[0] for args, _e in witnesses]
+    if arity == 1 and all(_is_plain_int(v) for v in arg0s):
         probes.extend(_int_canary_probes(witnesses))
-    elif arity == 1 and all(isinstance(args[0], (list, tuple))
-                            for args, _e in witnesses):
+    elif arity == 1 and all(isinstance(v, (list, tuple)) for v in arg0s):
         probes.extend(_sequence_canary_probes(witnesses))
+    elif arity >= 2 and _all_int_tuples(witnesses):
+        probes.extend(_multi_arg_canary_probes(witnesses))
     return _dedup_tuples(probes)
+
+
+def _all_int_tuples(witnesses: list[tuple[tuple, object]]) -> bool:
+    """True when EVERY component of EVERY witnessed argument tuple is a plain int
+    (:func:`_is_plain_int`) — the precondition for the multi-arg canary branch.
+    A mixed/other-typed tuple falls back to the witnessed tuples alone."""
+    return all(_is_plain_int(v) for args, _e in witnesses for v in args)
+
+
+def _is_plain_int(value: object) -> bool:
+    """True for a genuine ``int`` (excluding ``bool``, which subclasses ``int``).
+    The canary probes perturb/reorder integers; a ``bool`` is a degenerate
+    two-value domain where ``+/-1`` neighbours leave the witnessed range, so it is
+    not treated as a probe-able int."""
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _expr_fingerprint(expr: str, stub: StubFunction, canaries: list[tuple]) -> tuple:
