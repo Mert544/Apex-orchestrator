@@ -473,12 +473,15 @@ def test_two_discriminating_witnesses_land_genuine_replace(tmp_path: Path):
 def test_value_free_chains_unaffected_by_floor(tmp_path: Path):
     # The floor only touches the witness-DERIVED replace/split. The value-free
     # `.lower()` chain carries NO witness literal, so a single example still lands
-    # it honestly (gate-verified): `down('HELLO') == 'hello'` -> `s.lower()`.
+    # it honestly (gate-verified). The witness PRESERVES surrounding whitespace so
+    # it pins `s.lower()` against `s.lower().strip()` (which the off-witness
+    # whitespace canary would otherwise leave ambiguous on a no-whitespace
+    # example): `down(' HELLO ') == ' hello '` -> `s.lower()`.
     body = _plan_body(
         tmp_path, "dn.py",
         "def down(s):\n    raise NotImplementedError\n",
         "from app.dn import down\n"
-        "def test():\n    assert down('HELLO') == 'hello'\n")
+        "def test():\n    assert down(' HELLO ') == ' hello '\n")
     assert body is not None and "return s.lower()" in body
 
 

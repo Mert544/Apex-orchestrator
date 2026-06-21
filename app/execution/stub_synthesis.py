@@ -436,7 +436,7 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
             ("sum", f"sum({a})"),
             ("mean", f"sum({a}) / len({a})"),
         ])
-    out.extend(_one_arg_builtin_templates(a, kind))
+    out.extend(_one_arg_builtin_templates(a, kind, witnesses))
     if kind in (None, "int") and _recursion_allowed(witnesses):
         out.extend([
             ("factorial", f"1 if {a} <= 1 else {a} * __apex_self__({a} - 1)"),
@@ -648,7 +648,29 @@ def _string_floor_met(witnesses: list[tuple[str, str]]) -> bool:
     return len(distinct) >= 2
 
 
-def _one_arg_builtin_templates(a: str, kind: str | None) -> list[tuple[str, str]]:
+def _has_set_arg(witnesses: list[tuple[str, str]] | None) -> bool:
+    """True when ANY witnessed single argument is a ``set``/``frozenset`` literal.
+    ``list(a)``/``tuple(a)`` are withheld for such a witness because materializing
+    an unordered collection of non-int elements is PYTHONHASHSEED-dependent — the
+    same non-determinism that excludes ``set(a)``. A non-literal / multi-arg / no
+    witness view returns ``False`` so the structural (gate-elsewhere) path keeps
+    offering the shapes unchanged."""
+    if not witnesses:
+        return False
+    for args_text, _expected in witnesses:
+        value = _literal_tuple(args_text)
+        if value is None or len(value) != 1:
+            continue
+        if isinstance(value[0], (set, frozenset)):
+            return True
+    return False
+
+
+def _one_arg_builtin_templates(
+    a: str,
+    kind: str | None,
+    witnesses: list[tuple[str, str]] | None = None,
+) -> list[tuple[str, str]]:
     """Value-free one-arg builtin / unary-operator shapes, in FIXED source order,
     offered AFTER the witness-derived scalar/string/reduction templates and BEFORE
     the constant-last fallback. Each is a pure expression over the single parameter
@@ -661,7 +683,12 @@ def _one_arg_builtin_templates(a: str, kind: str | None) -> list[tuple[str, str]
     * ``{a}[0]`` / ``{a}[-1]`` (first/last), ``list({a})`` / ``tuple({a})`` — sequence
       projections (iterable / str args, where indexing and materialization are
       meaningful); ``tuple`` differs from ``list`` only in RESULT TYPE, which the
-      type-exact accept-gate distinguishes, so the right one lands on its witnesses;
+      type-exact accept-gate distinguishes, so the right one lands on its witnesses.
+      ``list({a})`` / ``tuple({a})`` are WITHHELD when a witnessed argument is a
+      ``set``/``frozenset``: materializing an unordered collection of non-int
+      elements yields a PYTHONHASHSEED-dependent order, the same non-deterministic
+      value oracle that already excludes ``set({a})`` — landing such a body would
+      break the determinism invariant;
     * ``str({a})``, ``not {a}``, ``bool({a})`` — type-agnostic, offered for every
       kind (any value can be stringified or truth-tested). ``set({a})`` is
       deliberately NOT offered: a ``set`` return is hash-iteration-order-sensitive,
@@ -683,8 +710,9 @@ def _one_arg_builtin_templates(a: str, kind: str | None) -> list[tuple[str, str]
     if kind in (None, "str", "iterable"):
         out.append(("first", f"{a}[0]"))
         out.append(("last", f"{a}[-1]"))
-        out.append(("list", f"list({a})"))
-        out.append(("tuple", f"tuple({a})"))
+        if not _has_set_arg(witnesses):
+            out.append(("list", f"list({a})"))
+            out.append(("tuple", f"tuple({a})"))
     out.append(("str", f"str({a})"))
     out.append(("not", f"not {a}"))
     out.append(("bool", f"bool({a})"))
@@ -2133,6 +2161,69 @@ def _int_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
     return [(v,) for v in sorted(extra)]
 
 
+def _str_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
+    """Off-witness probe tuples for a single-str-argument contract: for each
+    witnessed string emit perturbations that SPLIT the competing string-method
+    shapes which coincide on the witnessed values themselves —
+
+    * a surrounding-whitespace variant (``"  " + s + "  "``) distinguishes a
+      trailing/leading ``.strip()`` (or ``.lower().strip()``) from a plain
+      ``.lower()``/``.upper()``: they agree on a witness with no surrounding
+      whitespace but diverge once it is added;
+    * a case-flipped variant (``s.swapcase()``) distinguishes ``.upper()`` /
+      ``.lower()`` / ``.title()`` from one another and from a passthrough — the
+      witnessed casing alone cannot tell ``up("A")=="A"`` (passthrough) from
+      ``s.upper()``;
+    * a separator-injection variant — only when a separator character already
+      appears in a witness — distinguishes ``.replace``/``.split`` family shapes;
+    * fixed anchors ``""`` and ``" "`` exercise the empty / whitespace-only edge.
+
+    Each probe is a valid ``str`` input, so two bodies that diverge on it
+    genuinely differ in intent and the ambiguity guard honestly refuses an
+    under-specified contract (``f("Hello")=="hello", f("World")=="world"`` is
+    matched by BOTH ``s.lower()`` and ``s.lower().strip()`` — they diverge on the
+    whitespace probe). A contract that pins exactly one shape
+    (``up("a")=="A", up("bc")=="BC"`` → only ``s.upper()``) still lands: there is
+    no second matching shape to disagree with. Deduped + repr-sorted for
+    determinism."""
+    extra: set[str] = set()
+    seps = {" ", ",", "-", "_", "."}
+    for args, _e in witnesses:
+        s = args[0]
+        extra.add("  " + s + "  ")
+        extra.add(s.swapcase())
+        if any(ch in s for ch in seps):
+            for sep in sorted(seps):
+                if sep in s:
+                    extra.add(s.replace(sep, "X"))
+    extra.update({"", " "})
+    return [(v,) for v in sorted(extra)]
+
+
+def _float_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
+    """Off-witness probe tuples for a single-float-argument contract: for each
+    witnessed value emit perturbations that SPLIT the competing numeric shapes —
+
+    * ``-v`` distinguishes ``abs(x)`` from a plain passthrough (they agree on a
+      positive witness, diverge on its negation);
+    * ``v + 0.5`` and a value carrying an extra decimal place (``v + 0.125``)
+      distinguish ``round(x, k)`` precisions and an ``int(x)``-style truncation
+      from a passthrough (``f(2.5)==2.5, f(3.5)==3.5`` is matched by ``x``,
+      ``abs(x)`` AND ``round(x, 1)`` — they diverge on these probes);
+    * fixed anchors ``0.0`` and ``-1.5`` exercise the zero / negative edge.
+
+    Each probe stays in the float domain, so a body that raises is folded to the
+    stable ``'<err>'`` fingerprint token by the eval. A contract that pins one
+    shape (``round(x, 2)`` with discriminating witnesses) still lands — no second
+    matching shape to disagree with. Deduped + sorted for determinism."""
+    extra: set[float] = set()
+    for args, _e in witnesses:
+        v = args[0]
+        extra.update({-v, v + 0.5, v + 0.125})
+    extra.update({0.0, -1.5})
+    return [(v,) for v in sorted(extra)]
+
+
 def _sequence_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
     """Off-witness probe tuples for a single-sequence-argument contract:
     reordered variants of each witnessed sequence (reversed, then sorted when its
@@ -2266,20 +2357,42 @@ def _canary_inputs(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
 def _off_witness_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
     """The type-appropriate off-witness probe family for ``witnesses`` (the
     witnessed tuples themselves are added by the caller): single-int neighbours,
-    single-sequence reorderings, all-int multi-arg reorder/perturb, or — for a
-    >=2-arg non-all-int contract — cross-witness recombination. ``[]`` when no
-    family applies (the guard then weighs only the witnessed tuples, staying
-    conservative). Deterministic dispatch on arity and component type."""
+    single-str perturbations (whitespace/case/separator —
+    :func:`_str_canary_probes`), single-float perturbations
+    (:func:`_float_canary_probes`), single-sequence reorderings, all-int
+    multi-arg reorder/perturb, or — for a >=2-arg non-all-int contract —
+    cross-witness recombination. ``[]`` when no family applies (the guard then
+    weighs only the witnessed tuples, staying conservative). Deterministic
+    dispatch on arity and component type."""
     arity = len(witnesses[0][0]) if witnesses else 0
-    arg0s = [args[0] for args, _e in witnesses]
-    if arity == 1 and all(_is_plain_int(v) for v in arg0s):
-        return _int_canary_probes(witnesses)
-    if arity == 1 and all(isinstance(v, (list, tuple)) for v in arg0s):
-        return _sequence_canary_probes(witnesses)
+    if arity == 1:
+        return _single_arg_canary_probes(witnesses)
     if arity >= 2 and _all_int_tuples(witnesses):
         return _multi_arg_canary_probes(witnesses)
     if arity >= 2:
         return _recombination_canary_probes(witnesses)
+    return []
+
+
+def _single_arg_canary_probes(
+    witnesses: list[tuple[tuple, object]],
+) -> list[tuple]:
+    """Off-witness probes for a SINGLE-argument contract, dispatched on the
+    argument's homogeneous type: int neighbours (:func:`_int_canary_probes`), str
+    perturbations (:func:`_str_canary_probes`), float perturbations
+    (:func:`_float_canary_probes`), or sequence reorderings
+    (:func:`_sequence_canary_probes`). ``[]`` for a mixed-typed / other-typed
+    single arg — the guard then weighs only the witnessed tuples, staying
+    conservative. Deterministic dispatch."""
+    arg0s = [args[0] for args, _e in witnesses]
+    if all(_is_plain_int(v) for v in arg0s):
+        return _int_canary_probes(witnesses)
+    if all(isinstance(v, str) for v in arg0s):
+        return _str_canary_probes(witnesses)
+    if all(isinstance(v, float) for v in arg0s):
+        return _float_canary_probes(witnesses)
+    if all(isinstance(v, (list, tuple)) for v in arg0s):
+        return _sequence_canary_probes(witnesses)
     return []
 
 

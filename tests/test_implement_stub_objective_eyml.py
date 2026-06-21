@@ -586,11 +586,15 @@ def test_is_even_lands_parity(tmp_path: Path):
 def test_lower_lands_string_method(tmp_path: Path):
     # `shout_down(s) -> s.lower()` from a single string witness — string-method
     # chains carry no derived arithmetic, so one example is enough (gate-verified).
+    # The witness keeps its surrounding whitespace so it pins `s.lower()` against
+    # `s.lower().strip()` (the off-witness whitespace canary refuses an otherwise
+    # under-specified no-whitespace `'HELLO' -> 'hello'`, which `.lower().strip()`
+    # matches just as well).
     body = _plan_body(
         tmp_path, "low.py",
         "def shout_down(s):\n    raise NotImplementedError\n",
         "from app.low import shout_down\n"
-        "def test():\n    assert shout_down('HELLO') == 'hello'\n")
+        "def test():\n    assert shout_down(' HELLO ') == ' hello '\n")
     assert body is not None and "return s.lower()" in body
 
 
