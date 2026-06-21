@@ -121,5 +121,20 @@ def moves(project_root: str | Path) -> list:
 # The fitness scan imports each candidate package in a subprocess (the oracle),
 # so it is heavyweight — flag it expensive so the fast plan/ascend board skips it
 # (it stays runnable explicitly via `apex develop --objective wire-exports`).
+#
+# scope_verify=True: gate each wired ``__init__.py`` against the IMPACTED tests
+# (those importing the changed package), not the full suite. A work-in-progress
+# repo's baseline suite is legitimately RED for UNRELATED reasons (e.g. a sibling
+# ``registry.capital_of`` stub no synthesizer can fill keeps its own test red). A
+# full-suite gate would let that unrelated redness veto a VALID ``__init__.py`` and
+# roll it back — a value leak — even though every re-exported name resolves. This
+# stays honest: wire-exports ALREADY runs an IMPORT ORACLE that imports every
+# export in a clean subprocess and refuses the candidate if any name fails to
+# resolve (independent of the suite), and impact-scoping additionally runs the
+# tests that import the wired package (catching collateral breakage like a name
+# collision shadowing a symbol an importing test uses). The full suite stays the
+# commit-time backstop. When NO test imports the package (empty impacted set),
+# ``apply_rename`` falls back to the full suite — so an uncovered wiring is never
+# landed blind.
 register(ObjectiveSpec(name="wire-exports", fitness=fitness, moves=moves,
-                       expensive=True))
+                       expensive=True, scope_verify=True))

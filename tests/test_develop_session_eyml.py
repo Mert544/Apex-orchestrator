@@ -532,11 +532,18 @@ def test_red_baseline_lands_nothing_without_the_fix(tmp_path: Path):
     # Proves the blocker existed: with the OLD full-suite gating (scope_verify
     # False, as the session forwarded on a red baseline before the fix), every
     # tidy change is vetoed by the unrelated red suite — ZERO land.
+    #
+    # NOTE: wire-exports is intentionally EXCLUDED here — it now carries its own
+    # ``scope_verify=True`` spec flag (the red-baseline value-leak fix), so
+    # ``effective_scope = scope_verify or spec.scope_verify`` keeps it impact-scoped
+    # even when the caller passes ``scope_verify=False``; it correctly lands. The
+    # session-level forcing this test pins is still demonstrated by the objectives
+    # WITHOUT a spec flag.
     from app.engine.objective_compiler import compile_objective
 
     _red_baseline_with_tidy_work(tmp_path)
     landed = 0
-    for obj in ("wire-exports", "infer-type-hints", "dataclassify"):
+    for obj in ("infer-type-hints", "dataclassify"):
         r = compile_objective(str(tmp_path), objective=obj, apply=True,
                               verify=True, scope_verify=False)
         landed += len(r.steps)

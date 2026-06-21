@@ -43,6 +43,11 @@ def test_objective_spec_is_callable_and_expensive():
     # The fitness scan imports each candidate package in a subprocess — flagged
     # expensive so the fast plan/ascend board skips it (runnable explicitly).
     assert spec.expensive is True
+    # Impact-scoped gating: a wired __init__.py is verified against the tests that
+    # IMPORT the changed package, not the full suite — so a work-in-progress repo's
+    # baseline suite, legitimately RED for an UNRELATED reason, no longer vetoes a
+    # VALID __init__.py whose every export the import oracle already proved resolves.
+    assert spec.scope_verify is True
 
 
 def test_objective_is_reachable_from_a_facet():
@@ -786,3 +791,185 @@ def test_end_to_end_lands_init_in_src_layout_and_import_works(tmp_path: Path):
          "assert base() == 10 and alpha() == 11; print('OK')"],
         cwd=str(tmp_path / "src"), capture_output=True, text=True, env=env)
     assert proc.returncode == 0 and "OK" in proc.stdout, proc.stderr
+
+
+# --- value-leak fix: land a VALID __init__.py on a RED baseline (impact-scoped) -
+# The buyer demonstration: a work-in-progress repo whose FULL suite is red for an
+# UNRELATED reason (an unsynthesizable `registry.capital_of` stub) refused to land
+# a correct `toolkit/__init__.py`, even though wire-exports' import oracle had
+# already proved every re-exported name resolves AND toolkit's own tests pass.
+# scope_verify=True gates wire-exports against the tests that IMPORT the changed
+# package, so the unrelated red module — which does not import toolkit — no longer
+# vetoes the valid wiring. The full suite stays the commit-time backstop.
+
+def _red_baseline_two_package_project(tmp_path: Path) -> Path:
+    """A WIP repo: a wireable `toolkit/` package (sibling public symbols, empty
+    __init__.py, its OWN passing test importing `from toolkit import ...`) PLUS an
+    UNRELATED `registry.py` whose test FAILS — keeping the FULL suite RED. The
+    failing test does NOT import toolkit, so it is not in toolkit's impacted set."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='wip'\nversion='0'\n", encoding="utf-8")
+    toolkit = tmp_path / "toolkit"
+    toolkit.mkdir()
+    (toolkit / "shapes.py").write_text(
+        "def area(side):\n    return side * side\n", encoding="utf-8")
+    (toolkit / "colors.py").write_text(
+        "def mix(a, b):\n    return a + b\n", encoding="utf-8")
+    (toolkit / "__init__.py").write_text("", encoding="utf-8")
+
+    # The unrelated, unsynthesizable module: a function that raises, and a test
+    # that asserts a real return value — so the full suite is legitimately RED and
+    # stays RED (no synthesizer can fill it). It imports ONLY `registry`.
+    (tmp_path / "registry.py").write_text(
+        "def capital_of(country):\n"
+        "    raise NotImplementedError\n", encoding="utf-8")
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    # toolkit's OWN test — imports the wired PACKAGE surface (`from toolkit import
+    # ...`), so it COVERS `toolkit/__init__.py` (the impact scope) and passes once
+    # the package is wired. This is the realistic buyer test: it expects the public
+    # API the package is supposed to re-export.
+    (tests / "test_toolkit.py").write_text(
+        "from toolkit import area, mix\n\n"
+        "def test_area():\n    assert area(3) == 9\n\n"
+        "def test_mix():\n    assert mix(2, 3) == 5\n", encoding="utf-8")
+    # The UNRELATED red test — imports only `registry`, never toolkit.
+    (tests / "test_registry.py").write_text(
+        "from registry import capital_of\n\n"
+        "def test_capital():\n    assert capital_of('france') == 'paris'\n",
+        encoding="utf-8")
+    return tmp_path
+
+
+def _full_suite_is_red(root: Path) -> bool:
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ,
+           "PYTHONPATH": str(root) + os.pathsep + os.environ.get("PYTHONPATH", "")}
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"],
+        cwd=str(root), capture_output=True, text=True, env=env)
+    return proc.returncode != 0
+
+
+def test_red_baseline_lands_init_under_impact_scope(tmp_path: Path):
+    # The headline value-leak proof: on a RED baseline, wire-exports now LANDS a
+    # verified `toolkit/__init__.py` because impact-scoping runs toolkit's own
+    # (passing) importing tests, NOT the unrelated red registry test.
+    from app.engine.objective_compiler import compile_objective
+
+    root = _red_baseline_two_package_project(tmp_path)
+    # Precondition: the FULL suite is genuinely RED (the unrelated stub fails).
+    assert _full_suite_is_red(root)
+
+    result = compile_objective(str(root), objective="wire-exports",
+                               apply=True, verify=True)
+
+    # The valid __init__.py LANDED and was VERIFIED (its impacted tests passed),
+    # despite the red baseline — the change was NOT rolled back.
+    assert result.steps and result.steps[0].verified is True
+    text = (root / "toolkit" / "__init__.py").read_text()
+    assert "from .shapes import area" in text
+    assert "from .colors import mix" in text
+    assert '"area"' in text and '"mix"' in text
+
+    # The unrelated red test STAYS red — it was never touched, and the suite is
+    # still red for the same pre-existing reason (no fake-green of the whole suite).
+    assert _full_suite_is_red(root)
+    assert (root / "registry.py").read_text() == (
+        "def capital_of(country):\n    raise NotImplementedError\n")
+
+
+def test_red_baseline_vetoes_under_full_suite_path(tmp_path: Path):
+    # Contrast: the SAME landed wiring, gated by the FULL suite (impact_scope off),
+    # IS rolled back by the unrelated red test — exactly the value leak the
+    # scope_verify flag fixes. Proves the flag is load-bearing, not incidental.
+    from app.execution.cross_file_rename import apply_rename
+    from app.execution.objectives.wire_exports import plan_wire_exports
+
+    root = _red_baseline_two_package_project(tmp_path)
+    plan = plan_wire_exports(str(root), "toolkit/__init__.py")
+    assert plan.new_contents  # the oracle passed — a valid candidate exists
+
+    # Full-suite gate (impact_scope=False): the unrelated red registry test fails
+    # the suite, so the correct __init__.py is rolled back — the leak.
+    res = apply_rename(str(root), plan, verify=True, impact_scope=False)
+    assert res.get("applied") is False
+    assert res.get("rolled_back") is True
+    assert (root / "toolkit" / "__init__.py").read_text() == ""  # restored
+
+    # Impact-scoped gate (impact_scope=True): the SAME plan LANDS, verified by
+    # toolkit's own passing tests.
+    plan2 = plan_wire_exports(str(root), "toolkit/__init__.py")
+    res2 = apply_rename(str(root), plan2, verify=True, impact_scope=True)
+    assert res2.get("applied") is True and res2.get("verified") is True
+    assert "from .shapes import area" in (root / "toolkit" / "__init__.py").read_text()
+
+
+def test_green_baseline_behavior_unchanged(tmp_path: Path):
+    # Regression: on a GREEN-baseline project the impact-scoped flag changes
+    # nothing observable — wire-exports lands the same verified __init__.py.
+    from app.engine.objective_compiler import compile_objective
+
+    _suite_project(tmp_path)  # all-green suite (test_ok passes)
+    pkg = tmp_path / "app" / "pkg"
+    pkg.mkdir()
+    (pkg / "aaa.py").write_text(
+        "def alpha():\n    return 1\n\nclass Widget:\n    pass\n", encoding="utf-8")
+    (pkg / "bbb.py").write_text("def beta():\n    return 2\n", encoding="utf-8")
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+
+    result = compile_objective(str(tmp_path), objective="wire-exports",
+                               apply=True, verify=True)
+    assert result.steps and result.steps[0].verified is True
+    text = (pkg / "__init__.py").read_text()
+    assert "from .aaa import Widget, alpha" in text
+    assert "from .bbb import beta" in text
+
+
+def test_oracle_still_refuses_unresolvable_export_under_impact_scope(tmp_path: Path):
+    # never-fake-green: impact-scoping is ADDITIVE to the import oracle, not a
+    # relaxation. A package whose only public symbol lives behind an import-time
+    # crash never produces a candidate (the oracle refuses BEFORE any gate), so
+    # nothing lands — even on a red baseline and even under scope_verify.
+    from app.engine.objective_compiler import compile_objective
+
+    root = _red_baseline_two_package_project(tmp_path)
+    # Replace a toolkit module with one that crashes at import — `area` cannot
+    # resolve, so the oracle (subprocess, suite-independent) refuses the candidate.
+    (root / "toolkit" / "shapes.py").write_text(
+        "raise RuntimeError('boom')\n\ndef area(side):\n    return side\n",
+        encoding="utf-8")
+    # Remove toolkit's test that would import the crashing module (so the failure
+    # is the ORACLE's, not a test-collection error) — colors still has a surface.
+    (root / "tests" / "test_toolkit.py").write_text(
+        "from toolkit.colors import mix\n\n"
+        "def test_mix():\n    assert mix(2, 3) == 5\n", encoding="utf-8")
+
+    result = compile_objective(str(root), objective="wire-exports",
+                               apply=True, verify=True)
+    text = (root / "toolkit" / "__init__.py").read_text()
+    # The crashing `area` is never re-exported (oracle refused that name); the
+    # __init__ holds no `from .shapes import area`. Either nothing landed, or only
+    # the resolvable `colors` surface — but never the unresolvable `area`.
+    assert "from .shapes import area" not in text
+    if result.steps:
+        assert "from .colors import mix" in text and '"area"' not in text
+
+
+def test_red_baseline_apply_is_deterministic(tmp_path: Path):
+    # Determinism: two independent red-baseline projects yield byte-identical
+    # landed __init__.py (no clock/random in scoring or rendering).
+    from app.engine.objective_compiler import compile_objective
+
+    root_a = _red_baseline_two_package_project(tmp_path / "a")
+    root_b = _red_baseline_two_package_project(tmp_path / "b")
+    compile_objective(str(root_a), objective="wire-exports", apply=True, verify=True)
+    compile_objective(str(root_b), objective="wire-exports", apply=True, verify=True)
+    a = (root_a / "toolkit" / "__init__.py").read_text()
+    b = (root_b / "toolkit" / "__init__.py").read_text()
+    assert a == b and "from .shapes import area" in a
