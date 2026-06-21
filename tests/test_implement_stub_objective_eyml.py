@@ -566,12 +566,20 @@ def test_scale_lands_inferred_constant(tmp_path: Path):
 
 
 def test_is_even_lands_parity(tmp_path: Path):
-    # `is_even(n) -> n % 2 == 0` from two boolean witnesses.
+    # `is_even(n) -> n % 2 == 0` from boolean `is True`/`is False` witnesses.
+    # FOUR witnesses (2->T, 3->F, 4->T, 7->F) so the contract DISCRIMINATES parity
+    # from the competing comparison shapes (`n == 2`, `n <= 2`, `n < 3` all fail
+    # on 4 or 7) — only parity fits all four, so the ambiguity guard is satisfied
+    # and `n % 2 == 0` lands. (Two witnesses alone are genuinely ambiguous now that
+    # the `is True/False` idiom mines real witnesses — parity is indistinguishable
+    # from a threshold on just 2->T,3->F — so the guard would correctly refuse.)
     body = _plan_body(
         tmp_path, "e.py",
         "def is_even(n):\n    raise NotImplementedError\n",
         "from app.e import is_even\n"
-        "def test():\n    assert is_even(2) is True\n    assert is_even(3) is False\n")
+        "def test():\n"
+        "    assert is_even(2) is True\n    assert is_even(3) is False\n"
+        "    assert is_even(4) is True\n    assert is_even(7) is False\n")
     assert body is not None and "return n % 2 == 0" in body
 
 
@@ -638,12 +646,18 @@ def test_join_lands_two_arg(tmp_path: Path):
 
 
 def test_less_than_lands_comparison(tmp_path: Path):
-    # `lt(a, b) -> a < b` — the new two-arg comparison shape.
+    # `lt(a, b) -> a < b` — the two-arg comparison shape, pinned with `is True`/
+    # `is False`. An equal-args witness (3, 3)->False DISCRIMINATES `a < b` from
+    # `a <= b` (which would be True there), so the contract is unambiguous and the
+    # strict `<` lands. (Without the boundary witness `a < b` and `a <= b` both fit
+    # `lt(1,2)=T, lt(5,3)=F` yet diverge on equal args, so the guard would refuse.)
     body = _plan_body(
         tmp_path, "lt.py",
         "def lt(a, b):\n    raise NotImplementedError\n",
         "from app.lt import lt\n"
-        "def test():\n    assert lt(1, 2) is True\n    assert lt(5, 3) is False\n")
+        "def test():\n"
+        "    assert lt(1, 2) is True\n    assert lt(5, 3) is False\n"
+        "    assert lt(3, 3) is False\n    assert lt(2, 9) is True\n")
     assert body is not None and "return a < b" in body
 
 

@@ -99,11 +99,13 @@ def test_int_lands_coercion(tmp_path: Path):
 
 
 def test_not_lands_logical_negation(tmp_path: Path):
-    # `negate(flag) -> not flag`. Three int witnesses (0->True, 5->False, 4->False)
-    # break parity (`flag % 2 == 1` would give 4->False but expects... 4 is even ->
-    # `not 4` is False, parity `4%2==1` is False too — to discriminate from parity
-    # we use 0->True,5->False,4->False where `not` matches and `flag % 2 == 1`
-    # gives 0->False, mismatching the first witness). Only `not flag` fits all.
+    # `negate(flag)` is True exactly when flag is falsy. Four int witnesses
+    # (0->True, 5->False, 4->False, -3->False) rule out the threshold/parity
+    # competitors (`flag <= 0`, `flag < k` give True at -3; parity disagrees at 0),
+    # leaving the falsy-test class. On an INTEGER domain `not flag` and `flag == 0`
+    # are the SAME function (an int is falsy iff it equals 0), so the ambiguity
+    # guard treats them as one intent and the determined representative lands —
+    # accept either spelling (both are a correct negation of the truth value).
     body = _plan_body(
         tmp_path, "nt.py",
         "def negate(flag):\n    raise NotImplementedError\n",
@@ -111,15 +113,19 @@ def test_not_lands_logical_negation(tmp_path: Path):
         "def test():\n"
         "    assert negate(0) is True\n"
         "    assert negate(5) is False\n"
-        "    assert negate(4) is False\n")
-    assert body is not None and "return not flag" in body
+        "    assert negate(4) is False\n"
+        "    assert negate(-3) is False\n")
+    assert body is not None and (
+        "return not flag" in body or "return flag == 0" in body)
 
 
 def test_bool_lands_truthiness(tmp_path: Path):
-    # `truthy(x) -> bool(x)`. Three witnesses (0->False, 5->True, 4->True) break the
-    # comparison/parity competitors (`x % 2 == 1` gives 4->False; `x > 0` agrees on
-    # non-negatives but is witness-derived only when k is present — here bool(x)
-    # is the determined shape that fits all three). Only bool(x) fits.
+    # `truthy(x) -> bool(x)`. Four witnesses (0->False, 5->True, 4->True, -3->True)
+    # break the comparison/parity competitors: a NEGATIVE truthy witness rules out
+    # `x > 0` (which would be False at -3) and any threshold, while parity disagrees
+    # at 4 vs 5. Only `bool(x)` fits all four, so the contract is unambiguous and the
+    # truthiness body lands. (Three non-negative witnesses alone leave `bool(x)` and
+    # `x > 0` indistinguishable now that the `is True/False` idiom mines witnesses.)
     body = _plan_body(
         tmp_path, "bl.py",
         "def truthy(x):\n    raise NotImplementedError\n",
@@ -127,7 +133,8 @@ def test_bool_lands_truthiness(tmp_path: Path):
         "def test():\n"
         "    assert truthy(0) is False\n"
         "    assert truthy(5) is True\n"
-        "    assert truthy(4) is True\n")
+        "    assert truthy(4) is True\n"
+        "    assert truthy(-3) is True\n")
     assert body is not None and "return bool(x)" in body
 
 

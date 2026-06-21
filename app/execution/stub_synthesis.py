@@ -982,7 +982,13 @@ def _witnesses_in_file(text: str, stub: StubFunction,
     the non-literal raw form of a parametrize/helper assert doesn't poison the
     evaluable set). An assert the indirect miners did NOT resolve keeps its direct
     regex output byte-for-byte — guaranteeing the change is strictly additive (it
-    never removes a witness the direct pass used to yield). Deterministic."""
+    never removes a witness the direct pass used to yield). Deterministic.
+
+    The ``is``-SINGLETON witnesses (``symbol(...) is None/True/False``) are mined
+    last and APPENDED: the ``==`` regex never matches an ``is`` compare, so the
+    direct pass above is byte-identical, and these only ADD the very common
+    identity-equality idiom (``assert cfg(d, 'k') is None``) the regex used to drop
+    — letting e.g. a ``d.get(k)`` shape land on a missing-key contract."""
     excluded = _unenforced_line_ranges(text)
     indirect, resolved_lines = _indirect_witnesses(text, stub)
     out: list[tuple[str, str]] = list(indirect)
@@ -993,7 +999,110 @@ def _witnesses_in_file(text: str, stub: StubFunction,
         if line in resolved_lines:
             continue  # this exact assert already mined as a literal indirectly
         out.append((m.group(1).strip(), m.group(2).strip()))
+    out.extend(_singleton_witnesses(text, stub, excluded))
     return out
+
+
+# The only objects whose ``is`` comparison IS a value-equality contract: the three
+# interned singletons. ``x is 5`` / ``x is 'k'`` are NOT mined — CPython interns
+# small ints/strings but identity is not a value contract there (the idiom is a
+# bug, not a spec), so the miner stays restricted to exactly None/True/False.
+_SINGLETON_EXPECTED: dict[object, str] = {None: "None", True: "True", False: "False"}
+
+
+def _singleton_witnesses(text: str, stub: StubFunction,
+                         excluded: list[tuple[int, int]]) -> list[tuple[str, str]]:
+    """The ``(args_text, expected_text)`` witnesses mined from the identity-equality
+    idiom ``symbol(<args>) is None`` / ``is True`` / ``is False`` — the idiomatic way
+    to pin a function that returns one of those singletons (a ``dict.get`` miss
+    returns ``None``, a predicate returns ``True``/``False``). The expected text is
+    the singleton's source (``"None"``/``"True"``/``"False"``), which flows through
+    the SAME literal parsing, accept-gate, and ambiguity guard as a ``== None`` would
+    — only the recognised SYNTAX is widened, never the acceptance rule.
+
+    Conservative by construction:
+
+    * only the three interned SINGLETONS are mined; ``symbol(x) is 5`` (a non-singleton
+      ``is``) yields NO witness — identity on a small int/str is not a value contract;
+    * only a single, non-chained ``is`` compare with a bare-``Name`` ``symbol(...)``
+      call on one side counts (mirrors the ``==`` mining shape);
+    * ``is not`` is NOT mined: the witness model is equality-only (a witness asserts
+      ``func(args) == expected``), and there is no must-NOT-equal witness channel, so
+      inventing a negative witness would be unsound — we stay conservative and skip it;
+    * an assert inside an ``xfail``/``skip`` test (its line in ``excluded``) pins no
+      enforceable contract and is dropped, exactly as the ``==`` pass drops it.
+
+    Deterministic, AST-based, stdlib-only: ``[]`` on a syntax error (the ``==`` regex
+    pass already ran, so nothing a parse hiccup could have mined is lost)."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return []
+    out: list[tuple[str, str]] = []
+    for cmp_node in ast.walk(tree):
+        if not isinstance(cmp_node, ast.Compare):
+            continue
+        if len(cmp_node.ops) != 1 or not isinstance(cmp_node.ops[0], ast.Is):
+            continue
+        if _line_in_ranges(cmp_node.lineno, excluded):
+            continue  # xfail/skip assertion — not an enforceable contract
+        pair = _singleton_compare_witness(cmp_node, stub)
+        if pair is not None:
+            out.append(pair)
+    return out
+
+
+def _singleton_compare_witness(cmp_node: ast.Compare,
+                               stub: StubFunction) -> tuple[str, str] | None:
+    """One ``(args_text, expected_text)`` witness from an ``is``-compare ``symbol(...)
+    is <singleton>`` (either operand order), or ``None`` when it is not that shape.
+    The call side must be a bare-``Name`` call to ``stub.name``; the other side must
+    be one of the three singletons (``_SINGLETON_EXPECTED``). The args are rendered
+    from the call's positional arguments verbatim, so they round-trip through the
+    existing literal extraction the same way a ``==`` witness's args do."""
+    left, right = cmp_node.left, cmp_node.comparators[0]
+    call = singleton = None
+    if _is_symbol_call(left, stub.name):
+        call, singleton = left, right
+    elif _is_symbol_call(right, stub.name):
+        call, singleton = right, left
+    if call is None:
+        return None
+    expected = _singleton_text(singleton)
+    if expected is None:
+        return None
+    args_text = _render_call_args(call)
+    if args_text is None:
+        return None
+    return args_text, expected
+
+
+def _singleton_text(node: ast.expr) -> str | None:
+    """``"None"``/``"True"``/``"False"`` when ``node`` is exactly that singleton
+    constant, else ``None``. Matched by IDENTITY against the three interned singletons
+    so a non-singleton ``is`` operand (``5``, ``'k'``, a ``Name``) is never mined —
+    ``True``/``False`` are matched before ``1``/``0`` since ``True is 1`` is ``False``
+    and ``bool`` is the distinguishing type. Deterministic, value-exact."""
+    if not isinstance(node, ast.Constant):
+        return None
+    value = node.value
+    if value is None:
+        return "None"
+    if value is True:
+        return "True"
+    if value is False:
+        return "False"
+    return None
+
+
+def _render_call_args(call: ast.Call) -> str | None:
+    """The comma-joined source text of ``call``'s POSITIONAL arguments — the
+    ``args_text`` of a witness, rendered exactly as the ``==`` regex would have
+    captured the ``(...)`` group. ``None`` when the call carries a starred or keyword
+    argument (the witness's arg tuple would be unrecoverable — never guessed)."""
+    if call.keywords or any(isinstance(a, ast.Starred) for a in call.args):
+        return None
+    return ", ".join(ast.unparse(a) for a in call.args)
 
 
 def _indirect_witnesses(text: str,
