@@ -169,3 +169,30 @@ def test_detection_is_deterministic(tmp_path: Path) -> None:
     first = skill._detect_commands(tmp_path)
     second = skill._detect_commands(tmp_path)
     assert first == second == [_pytest_cmd(tmp_path)]
+
+
+# --- src-layout PYTHONPATH: the bare-stem import gap is unblocked -------------
+
+def test_src_layout_bare_import_runs_green(tmp_path: Path) -> None:
+    # The separated layout (``src/calc.py`` + ``tests/test_calc.py`` doing
+    # ``import calc``): with only the root on PYTHONPATH this was a collection
+    # ERROR misread as RED; now ``src`` is on the path and a correct impl is GREEN.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "import calc\n"
+        "def test_add():\n    assert calc.add(1, 2) == 3\n")
+
+    assert RunTestsSkill().run(tmp_path).ok is True
+
+
+def test_flat_layout_path_is_single_root(tmp_path: Path) -> None:
+    # Regression guard for shadowing: a flat-root project keeps ONLY the root on
+    # the import path (no src/lib widening), so its command shape is unchanged.
+    (tmp_path / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    (tmp_path / "test_calc.py").write_text(
+        "from calc import add\n"
+        "def test_add():\n    assert add(1, 2) == 3\n")
+
+    assert RunTestsSkill()._import_roots(tmp_path) == [str(tmp_path.resolve())]

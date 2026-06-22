@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import os
 import re
 import sys
@@ -83,11 +84,15 @@ class RunTestsSkill:
             return summary
 
         # Run tests in the target project's own isolation. Set PYTHONPATH to the
-        # target root ONLY, dropping the caller's entries, so the project's own
+        # target root (FIRST, dropping the caller's entries), so the project's own
         # packages resolve and a caller's same-named package (e.g. Apex's own
-        # `app/`) can't shadow the project under test.
+        # `app/`) can't shadow the project under test. A separated `src/`/`lib/`
+        # layout adds its source dir too, but ONLY when a test imports a module
+        # that lives there by bare stem (see ``_import_roots``) — otherwise
+        # ``import mod`` is unresolvable, collection errors, and the GREEN baseline
+        # is misread as RED so Apex lands nothing.
         env = dict(os.environ)
-        env["PYTHONPATH"] = str(root)
+        env["PYTHONPATH"] = os.pathsep.join(self._import_roots(root))
         # Force the subprocess to start in the target dir, not inherit ours.
         env.pop("PYTEST_ADDOPTS", None)
 
@@ -214,6 +219,105 @@ class RunTestsSkill:
             if any(directory.glob(pattern)):
                 return True
         return False
+
+    def _import_roots(self, root: Path) -> list[str]:
+        """The PYTHONPATH entries for the target's tests — root first, then any
+        genuine separated source dir (``src``/``lib``).
+
+        The flat shape (``mod.py`` + ``tests/test_mod.py`` doing ``import mod``)
+        is already served by ``str(root)`` alone. The SEPARATED shape
+        (``src/mod.py`` + ``tests/test_mod.py`` doing ``import mod``) is the
+        surviving gap: with only ``root`` on the path, ``import mod`` is
+        unresolvable, pytest collection errors, and the GREEN baseline is misread
+        as RED — so Apex lands nothing on a whole class of student/company repos.
+
+        A ``src``/``lib`` dir is added ONLY when a test imports a module that
+        actually lives there by bare stem, so the path is never blindly widened
+        (a soundness guard against shadowing). ``str(root)`` stays FIRST so a
+        same-named package under ``src/`` can never shadow the target's own root
+        modules or Apex's ``app/``.
+
+        Bounded + deterministic, mirroring ``_has_flat_pytest_suite``: only the
+        first-level ``src``/``lib`` dirs and the top-level ``*.py`` modules inside
+        them are inspected (no deep walk), via sorted globs, and the result is
+        sorted, so the same filesystem always yields the same path."""
+        roots = [str(root)]
+        imported = self._bare_stem_imports(root)
+        if not imported:
+            return roots
+        extra: list[str] = []
+        for name in ("src", "lib"):
+            candidate = root / name
+            if not candidate.is_dir():
+                continue
+            if self._dir_supplies_imported_module(candidate, imported):
+                extra.append(str(candidate))
+        return roots + sorted(extra)
+
+    @staticmethod
+    def _dir_supplies_imported_module(directory: Path, imported: set[str]) -> bool:
+        """Whether `directory` directly holds a top-level ``*.py`` module whose
+        bare stem is in `imported` (bounded to its own first level — no walk)."""
+        try:
+            modules = sorted(p.stem for p in directory.glob("*.py"))
+        except OSError:
+            return False
+        return any(stem in imported for stem in modules)
+
+    def _bare_stem_imports(self, root: Path) -> set[str]:
+        """The set of bare-stem module names imported by the project's tests.
+
+        ``import mod`` / ``from mod import x`` contribute ``mod``; a dotted form
+        (``import pkg.mod`` / ``from pkg.mod import x``) does NOT — only a
+        top-level ``src/mod.py`` / ``lib/mod.py`` is reachable by adding that dir
+        to the path, so dotted imports can't be served this way and are ignored.
+
+        Bounded + deterministic like ``_has_flat_pytest_suite``: only test files
+        directly in the root and its immediate first-level subdirectories are
+        read (no deep walk), via sorted globs, skipping hidden dirs and the
+        target's own virtualenv so a dependency's bundled tests can't widen the
+        path for a repo that has none of its own."""
+        names: set[str] = set()
+        self._collect_imports_from_dir(root, names)
+        skip = {".venv", "venv", ".git", "__pycache__", ".tox", "node_modules"}
+        try:
+            children = sorted(p for p in root.iterdir() if p.is_dir())
+        except OSError:
+            return names
+        for child in children:
+            if child.name in skip or child.name.startswith("."):
+                continue
+            self._collect_imports_from_dir(child, names)
+        return names
+
+    def _collect_imports_from_dir(self, directory: Path, names: set[str]) -> None:
+        """Add bare-stem imports from the pytest files directly in `directory`."""
+        for pattern in ("test_*.py", "*_test.py", "conftest.py"):
+            for path in sorted(directory.glob(pattern)):
+                names.update(self._bare_imports_in_file(path))
+
+    @staticmethod
+    def _bare_imports_in_file(path: Path) -> set[str]:
+        """The bare-stem (single-segment) module names imported by `path`.
+
+        AST-parsed so a name in a string/comment never counts; a syntax error or
+        read failure yields no names (conservative — never widen the path on a
+        guess). Dotted imports are excluded (their top segment is a package, not a
+        ``src/mod.py``-style bare module)."""
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, ValueError):
+            return set()
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if "." not in alias.name:
+                        names.add(alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module and "." not in node.module:
+                    names.add(node.module)
+        return names
 
     def _result_to_dict(self, result: CommandResult) -> dict:
         return {
