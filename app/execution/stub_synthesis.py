@@ -441,6 +441,7 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
         ])
         out.extend(_reduction_join_templates(a, witnesses))
     out.extend(_affine_string_templates(a, witnesses))
+    out.extend(_constant_index_templates(a, witnesses))
     out.extend(_one_arg_builtin_templates(a, kind, witnesses))
     if kind in (None, "int") and _recursion_allowed(witnesses):
         out.extend([
@@ -879,6 +880,75 @@ def _fstring_inner(text: str) -> str:
     inner = repr(text)[1:-1]
     inner = inner.replace("\\'", "'").replace('"', '\\"')
     return inner.replace("{", "{{").replace("}", "}}")
+
+
+def _constant_index_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The 1-arg CONSTANT-INDEX family: ``return a[k]`` for each fixed integer index
+    ``k`` mined from the witnesses. ``second([1, 2, 3]) == 2, second([5, 9, 1]) == 9``
+    lands ``xs[1]`` — the position the expected value sits at in EVERY witnessed
+    sequence. This fills the gap between the ``a[0]`` / ``a[-1]`` endpoint builtins
+    (:func:`_one_arg_builtin_templates`) and the value-free reductions: a body for an
+    arbitrary interior index that no other template can spell.
+
+    Indices come from :func:`_constant_index_constants` — the TYPE-EXACT intersection
+    of the (non-negative) positions where each witness's expected value occurs in that
+    witness's own sequence literal, so the index reproduces every witness by
+    construction (the caller still gates it against all pinned tests, never-fake-green).
+
+    OVERFIT FLOOR: offered ONLY when at least TWO DISTINCT argument tuples witness the
+    contract (:func:`_string_floor_met`, the same floor the witness-derived string /
+    numeric / reduction shapes use). A single witness cannot tell ``xs[0]`` from a bare
+    ``return 1`` (``first([1, 2, 3]) == 1`` fits both), so with <2 distinct tuples no
+    index is derived. Index ``0`` is intentionally omitted — the ``a[0]`` ``first``
+    builtin already covers it, and only an interior / non-zero index is NEW value (the
+    ``a[-1]`` ``last`` builtin likewise covers the tail, so negative indices are not
+    mined here). With NO witness list (the structural view) no index is derived — there
+    is no literal to mine. Deterministic: indices in sorted order, de-duplicated."""
+    out: list[tuple[str, str]] = []
+    for idx in _constant_index_constants(witnesses):
+        out.append((f"index[{idx}]", f"{a}[{idx}]"))
+    return out
+
+
+def _constant_index_constants(witnesses: list[tuple[str, str]]) -> list[int]:
+    """The fixed integer indices ``k`` to try in ``a[k]``, mined as the TYPE-EXACT
+    INTERSECTION of the non-negative positions where each witness's expected value sits
+    in that witness's own sequence literal. ``second([1, 2, 3]) == 2`` contributes the
+    positions ``{1}`` (only index 1 holds an ``int`` equal to ``2``); intersecting with
+    ``second([5, 9, 1]) == 9``'s ``{1}`` yields ``[1]`` -> ``xs[1]``.
+
+    Each witness must be a single SEQUENCE argument (``list`` / ``tuple`` / ``str``)
+    with a LITERAL expected value; any witness that is not (a non-literal, multi-arg, or
+    non-sequence shape) yields NO index — the family cannot be mined then, never guessed.
+    A position counts only when the element's TYPE matches the expected value's type
+    exactly (``1`` does not match ``True``), mirroring the accept-gate's type-exact
+    comparison so a mined index can never imply a value the gate would reject.
+
+    Index ``0`` is dropped from the result — the ``a[0]`` ``first`` builtin already
+    spells it, so re-emitting it would only shadow that long-standing body; the genuine
+    new value is an interior / non-zero index (``xs[1]``, ``xs[2]``). Negative positions
+    are not mined (the ``a[-1]`` ``last`` builtin owns the tail). Gated behind the
+    >=2-distinct-witness overfit floor (:func:`_string_floor_met`). Deterministic:
+    sorted, de-duplicated; an empty / single / non-sequence witness set yields ``[]``."""
+    if not _string_floor_met(witnesses):
+        return []
+    common: set[int] | None = None
+    for args_text, expected_text in witnesses:
+        value = _literal_tuple(args_text)
+        expected = _literal_value(expected_text)
+        if value is None or len(value) != 1 or expected is _NO_LITERAL:
+            return []
+        seq = value[0]
+        if not isinstance(seq, (list, tuple, str)):
+            return []
+        positions = {
+            i for i, el in enumerate(seq)
+            if type(el) is type(expected) and el == expected
+        }
+        common = positions if common is None else (common & positions)
+        if not common:
+            return []
+    return sorted(idx for idx in (common or set()) if idx != 0)
 
 
 def _has_set_arg(witnesses: list[tuple[str, str]] | None) -> bool:
