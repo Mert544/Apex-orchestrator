@@ -437,6 +437,7 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
             ("mean", f"sum({a}) / len({a})"),
         ])
         out.extend(_reduction_join_templates(a, witnesses))
+    out.extend(_affine_string_templates(a, witnesses))
     out.extend(_one_arg_builtin_templates(a, kind, witnesses))
     if kind in (None, "int") and _recursion_allowed(witnesses):
         out.extend([
@@ -743,6 +744,138 @@ def _empty_collection_defaults(witnesses: list[tuple[str, str]]) -> list[str]:
         if default is not _NO_LITERAL:
             seen.add(repr(default))
     return sorted(seen)
+
+
+def _affine_string_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The 1-arg AFFINE-STRING (f-string) family: ``return f"{p}{a}{s}"`` for a
+    common literal PREFIX ``p`` and SUFFIX ``s`` mined from the witnesses whose
+    EXPECTED value is a ``str`` and whose output is ``p + str(arg) + s`` (so the arg
+    sits verbatim between a fixed prefix and suffix). ``label(3) == "item-3"`` lands
+    ``f"item-{n}"``; ``greet("Bob") == "Hi Bob!"`` lands ``f"Hi {name}!"``.
+
+    The body is the NATURAL one a human writes: an f-string ``{a}`` already
+    stringifies, so an int arg (``f"item-{n}"``) and a str arg (``f"Hi {name}!"``)
+    share the SAME body shape — no redundant ``str()`` wrapper is ever added. The
+    mining merely checks ``output == p + str(arg) + s`` (the f-string's own
+    stringification rule), so the verified body round-trips on every witness or is
+    rejected by the type-exact accept-gate. The DEGENERATE empty-prefix/empty-suffix
+    split is NOT emitted here: ``f"{a}"`` is pure stringification, identical to the
+    long-standing value-free ``str(a)`` builtin, so re-offering it would only shadow
+    that existing body and shift existing idea sets — a genuine affine shape always
+    carries a non-empty prefix OR suffix.
+
+    OVERFIT FLOOR: a prefix/suffix bakes witnessed literals into the body, so it is
+    offered ONLY when at least TWO DISTINCT argument tuples witness the contract
+    (:func:`_string_floor_met`) — a single ``label(3) == "item-3"`` cannot tell
+    ``f"item-{n}"`` from a bare ``return "item-3"`` constant, so one witness derives
+    NO affine body. With NO witness list (the pure structural view) nothing is
+    offered — there is no expected text to mine a prefix/suffix from.
+
+    AMBIGUITY / OFF-WITNESS CANARY: every (prefix, suffix) split CONSISTENT across
+    ALL witnesses is offered as its own candidate, longest-prefix-first then
+    deterministically tie-broken (:func:`_affine_splits`), and each is verified to
+    reproduce every witness (:func:`_affine_split_holds`). A split that is only
+    coincidental on one witness (``f("aa") == "aaa"`` admits ``f"a{x}"`` and
+    ``f"{x}a"`` IN ISOLATION) cannot survive a second DISTINCT argument — a fixed
+    literal "a" added to "bb" gives "abb"/"bba", never "bbb" — so the >=2-distinct
+    floor itself dissolves a coincidental split before it is ever offered. Where a
+    genuine affine split still competes with ANOTHER offered shape (e.g. the empty/
+    empty case competes with passthrough / ``.lower()`` etc.), the EXISTING ambiguity
+    guard evaluates each off-witness via :func:`_str_canary_probes` and REFUSES when
+    they diverge, exactly like the min-vs-last-vs-len guards — the affine candidate
+    rides the same canary mechanism, never a parallel one. A contract that pins
+    exactly one split with no diverging rival still lands.
+
+    LITERAL witnesses only: a non-literal argument / expected yields no usable split
+    and is skipped (never guessed). Deterministic: splits in fixed order."""
+    if not _string_floor_met(witnesses):
+        return []
+    pairs = _affine_witness_pairs(witnesses)
+    if pairs is None:
+        return []
+    out: list[tuple[str, str]] = []
+    for prefix, suffix in _affine_splits(pairs):
+        if not prefix and not suffix:
+            continue  # f"{a}" is pure stringification (== str(a)), not an affine
+            # shape — the value-free ``str(a)`` builtin already covers it, so emitting
+            # it here would only shadow that long-standing body. The genuine affine
+            # family always carries a non-empty prefix OR suffix literal.
+        out.append((f"affine({prefix!r},{suffix!r})", _affine_fstring(a, prefix, suffix)))
+    return out
+
+
+def _affine_witness_pairs(witnesses: list[tuple[str, str]]) -> list[tuple[str, str]] | None:
+    """The ``(str(arg), output)`` pairs for the affine miner: one per witness whose
+    single LITERAL argument and LITERAL ``str`` expected value are recoverable, with
+    the argument rendered through ``str`` exactly as an f-string ``{a}`` would. ``None``
+    when ANY witness is not a single-literal-arg / literal-str-output shape (the family
+    cannot be mined then — never guessed). An empty result (no qualifying witness) also
+    yields ``None``. Deterministic: source order."""
+    out: list[tuple[str, str]] = []
+    for args_text, expected_text in witnesses:
+        value = _literal_tuple(args_text)
+        if value is None or len(value) != 1:
+            return None
+        expected = _literal_value(expected_text)
+        if expected is _NO_LITERAL or not isinstance(expected, str):
+            return None
+        out.append((str(value[0]), expected))
+    return out or None
+
+
+def _affine_splits(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Every ``(prefix, suffix)`` such that EVERY ``(mid, output)`` pair satisfies
+    ``output == prefix + mid + suffix`` — the affine splits consistent across all
+    witnesses. A split is admitted only when, in each output, the witnessed ``mid``
+    occurs at the position implied by the prefix length AND the residual head/tail
+    match the prefix/suffix exactly (so the arg sits verbatim in the middle).
+
+    Enumerated from the FIRST witness's output by every start index where its ``mid``
+    occurs, then VERIFIED against all witnesses; a candidate that fails any witness is
+    dropped. Deterministic and total: longest-prefix-first, then by ``repr`` of
+    ``(prefix, suffix)`` so ties break the same way every run."""
+    first_mid, first_out = pairs[0]
+    candidates: list[tuple[str, str]] = []
+    start = first_out.find(first_mid)
+    while start != -1:
+        prefix = first_out[:start]
+        suffix = first_out[start + len(first_mid):]
+        if _affine_split_holds(prefix, suffix, pairs):
+            candidates.append((prefix, suffix))
+        start = first_out.find(first_mid, start + 1)
+    candidates = list(dict.fromkeys(candidates))
+    candidates.sort(key=lambda ps: (-len(ps[0]), repr(ps)))
+    return candidates
+
+
+def _affine_split_holds(prefix: str, suffix: str,
+                        pairs: list[tuple[str, str]]) -> bool:
+    """True when ``output == prefix + mid + suffix`` for EVERY ``(mid, output)`` pair —
+    the verification that an affine split derived from one witness reproduces them all.
+    A split that fails any witness is not affine for this contract."""
+    return all(output == prefix + mid + suffix for mid, output in pairs)
+
+
+def _affine_fstring(a: str, prefix: str, suffix: str) -> str:
+    """The f-string body source ``f"{prefix}{a}{suffix}"`` with ``prefix``/``suffix``
+    embedded SAFELY: the literal text is escaped for an f-string literal (``{`` -> ``{{``,
+    ``}`` -> ``}}``) and the whole string is built from a ``repr``-derived double-quoted
+    literal so quotes/backslashes/newlines round-trip exactly. The result evaluates and
+    unparses identically on every witness or is rejected by the gate — never a fuzzy
+    match. ``f"item-{n}"`` / ``f"Hi {name}!"`` come out as the natural human spelling."""
+    return 'f"' + _fstring_inner(prefix) + "{" + a + "}" + _fstring_inner(suffix) + '"'
+
+
+def _fstring_inner(text: str) -> str:
+    """The literal TEXT of ``text`` rendered for the inside of a DOUBLE-QUOTED f-string:
+    ``repr`` yields a safe quoted literal (escaping quotes/backslashes/control chars);
+    its inner body is normalised to a double-quote context (a literal ``"`` escaped, a
+    needless ``\\'`` un-escaped) and every literal brace is doubled (``{`` -> ``{{``)
+    so the f-string parser reads it as text, not a replacement field. No surrounding
+    quotes — the caller wraps the whole ``f"..."`` once. Empty text yields ``""``."""
+    inner = repr(text)[1:-1]
+    inner = inner.replace("\\'", "'").replace('"', '\\"')
+    return inner.replace("{", "{{").replace("}", "}}")
 
 
 def _has_set_arg(witnesses: list[tuple[str, str]] | None) -> bool:
