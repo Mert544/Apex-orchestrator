@@ -290,7 +290,10 @@ def test_min_single_example_does_not_overfit(tmp_path: Path):
     # Whatever happens, a bare min must NOT land off a non-discriminating example.
     if body is not None:
         assert "return min(a, b)" not in body
-    assert not plan.blockers
+    # When nothing lands it is an ambiguity refusal, now disclosed (additive): the
+    # reason names a concrete discriminating input and how to fix it.
+    if body is None:
+        assert any("add a discriminating test" in b for b in plan.blockers)
 
 
 def test_min_non_discriminating_batch_withholds_minmax():
@@ -354,7 +357,9 @@ def test_first_vs_min_single_witness_refuses(tmp_path: Path):
         "from app.hm import head\n"
         "def test():\n    assert head([1, 2, 3]) == 1\n", encoding="utf-8")
     plan = plan_implement_stub(str(tmp_path), "app/hm.py")
-    assert not plan.new_contents and not plan.blockers  # ambiguous -> honest no-op
+    assert not plan.new_contents  # ambiguous -> honest no-op (refuse unchanged)
+    # Additive disclosure: both competing shapes (first vs min) are named.
+    assert any("xs[0]" in b and "min(xs)" in b for b in plan.blockers)
     assert (tmp_path / "app" / "hm.py").read_text() == original
 
 
@@ -373,7 +378,9 @@ def test_neg_vs_abs_all_negative_refuses(tmp_path: Path):
         "from app.na import f\n"
         "def test():\n    assert f(-3) == 3\n    assert f(-5) == 5\n", encoding="utf-8")
     plan = plan_implement_stub(str(tmp_path), "app/na.py")
-    assert not plan.new_contents and not plan.blockers  # ambiguous -> honest no-op
+    assert not plan.new_contents  # ambiguous -> honest no-op (refuse unchanged)
+    # Additive disclosure: both competing shapes (abs vs negation) are named.
+    assert any("abs(a)" in b and "-a" in b for b in plan.blockers)
     assert (tmp_path / "app" / "na.py").read_text() == original
 
 
@@ -541,7 +548,11 @@ def test_clamp_low_thin_2arg_refuses_no_fake_green(tmp_path: Path):
         "    assert clamp_low(1, 5) == 1\n"
         "    assert clamp_low(2, 8) == 2\n", encoding="utf-8")
     plan = plan_implement_stub(str(tmp_path), "app/cl.py")
-    assert not plan.new_contents and not plan.blockers  # ambiguous -> honest no-op
+    assert not plan.new_contents  # ambiguous -> honest no-op (refuse unchanged)
+    # Additive disclosure: a competing coincidental shape (a % b / a or b) is named
+    # with a concrete discriminating input — never a fake-green, now also explained.
+    assert any("a % b" in b and "add a discriminating test" in b
+               for b in plan.blockers)
     assert (tmp_path / "app" / "cl.py").read_text() == original  # file untouched
 
 

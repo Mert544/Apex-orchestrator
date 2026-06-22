@@ -30,6 +30,7 @@ from app.engine.develop_registry import ObjectiveSpec, register
 from app.execution.cross_file_rename import RenamePlan
 from app.execution.stub_synthesis import (
     _purge_pyc,
+    ambiguity_reason,
     fill_stub_body,
     find_stub_functions,
     module_has_fillable_stub,
@@ -72,13 +73,44 @@ def plan_implement_stub(project_root: str | Path, module_rel: str) -> RenamePlan
 
     filled, filled_names = _fill_all_stubs(root, module_rel, original)
     if filled is None or filled == original:
-        return plan  # every stub refused — honest empty plan
+        _disclose_ambiguity(plan, root, module_rel, original)
+        return plan  # every stub refused — honest empty plan (reason disclosed)
 
     plan.originals[module_rel] = original
     plan.new_contents[module_rel] = filled
     plan.edits_by_file[module_rel] = 1
     _scope_apply_gate(plan, root, module_rel, original, filled_names)
     return plan
+
+
+def _disclose_ambiguity(plan: RenamePlan, root: Path, module_rel: str,
+                        original: str) -> None:
+    """When this module's stubs were ALL refused, disclose WHY for each one that
+    was refused specifically because its pinned witnesses are AMBIGUOUS — and HOW
+    to fix it (add a discriminating test).
+
+    A stub Apex correctly REFUSES on ambiguity (≥2 competing template bodies
+    satisfy every witness but diverge off-witness) otherwise lands nothing with no
+    explanation — the buyer gets silence. This rides the plan's EXISTING
+    ``blockers`` channel, which ``objective_compiler`` records into
+    ``CompileResult.blocked`` (rendered under "Blocked" and carried into the
+    develop-session report), so the reason reaches the buyer through a path that
+    already renders refusals — no new cross-cutting surface.
+
+    Purely additive and never changes WHAT lands: it is called ONLY on the
+    genuinely-empty refusal branch (``new_contents`` is empty here), where a
+    blocker cannot suppress a landing — a module that lands any stub never reaches
+    this branch, so its blockers stay untouched and its fill is unaffected. One
+    line per ambiguous stub, in source order; non-ambiguous refusals (no pinned
+    tests, unsatisfiable, xfail-only) add nothing. Deterministic: the reason is a
+    pure function of the fixtures."""
+    for stub in find_stub_functions(original):
+        tests = pinned_test_files(root, module_rel, stub.name)
+        if not tests:
+            continue  # no spec — not an ambiguity refusal, nothing to disclose
+        reason = ambiguity_reason(root, tests, stub)
+        if reason is not None:
+            plan.blockers.append(f"{stub.name}: {reason}")
 
 
 def _scope_apply_gate(plan: RenamePlan, root: Path, module_rel: str,

@@ -267,7 +267,11 @@ def test_genuine_passthrough_vs_double_still_refuses(tmp_path: Path):
     (tmp_path / "tests" / "test_a.py").write_text(
         "from app.a import f\ndef test():\n    assert f(0) == 0\n", encoding="utf-8")
     plan = plan_implement_stub(str(tmp_path), "app/a.py")
-    assert not plan.new_contents and not plan.blockers  # honest no-op
+    assert not plan.new_contents  # honest no-op — refuse decision unchanged
+    # Additive ambiguity disclosure (does not change what lands): the refusal now
+    # names a concrete discriminating input and how to fix it.
+    assert any("f: ambiguous:" in b and "differ on x=" in b
+               and "add a discriminating test" in b for b in plan.blockers)
 
 
 def test_abs_vs_passthrough_still_refuses_with_negative_witness(tmp_path: Path):
@@ -302,7 +306,10 @@ def test_is_big_thin_contract_still_refuses(tmp_path: Path):
         "def test():\n    assert is_big(5) == False\n    assert is_big(200) == True\n",
         encoding="utf-8")
     plan = plan_implement_stub(str(tmp_path), "app/b.py")
-    assert not plan.new_contents and not plan.blockers
+    assert not plan.new_contents  # refuse decision unchanged
+    # Additive ambiguity disclosure: the refusal now explains WHY (parity vs a
+    # threshold) without changing what lands.
+    assert any("n % 2 == 0" in b for b in plan.blockers)
 
 
 def test_identity_canonical_shape_collapses_family():

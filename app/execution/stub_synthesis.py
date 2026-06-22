@@ -54,6 +54,9 @@ __all__ = [
     "module_has_fillable_stub",
     "fill_stub_body",
     "synthesize_stub_body",
+    "AmbiguityDiagnosis",
+    "ambiguity_reason",
+    "render_ambiguity_reason",
 ]
 
 
@@ -2558,6 +2561,25 @@ def _expr_matches_all(expr: str, stub: StubFunction,
     return True
 
 
+@dataclass(frozen=True)
+class AmbiguityDiagnosis:
+    """Why a stub's pinned witnesses are AMBIGUOUS — the data behind a refusal,
+    captured so the buyer can be told WHAT to fix, never to change WHAT lands.
+
+    ``exprs`` are the two representative competing body expressions (the first
+    two distinct off-witness-diverging shapes, in fixed candidate order).
+    ``params`` are the stub's positional parameter names. ``canary`` is the FIRST
+    discriminating input tuple — the earliest in the fixed canary order where the
+    two exprs' fingerprints differ — and ``values`` are each expr's rendered value
+    on that input (``'<err>'`` when it raises). All deterministic: the same
+    fixtures yield the same diagnosis, so the rendered reason is stable."""
+
+    exprs: tuple[str, str]
+    params: tuple[str, ...]
+    canary: tuple
+    values: tuple[str, str]
+
+
 def _is_ambiguous(root: Path, test_files: list[str], stub: StubFunction) -> bool:
     """True when the stub's ENFORCEABLE witnesses are satisfied by >=2 templates
     that DISAGREE on some untested input — the witnesses don't determine intent,
@@ -2577,12 +2599,51 @@ def _is_ambiguous(root: Path, test_files: list[str], stub: StubFunction) -> bool
     of them ever produce different results, the contract is ambiguous. Recursion
     bodies (``__apex_self__``) can't be eval'd here, and the constant last resort
     is excluded — only the genuine competing intents are weighed. With no
-    evaluable witnesses there is nothing to disambiguate, so it returns
-    ``False``."""
+    evaluable witnesses there is nothing to disambiguate, so it returns ``False``.
+
+    A thin wrapper over :func:`_ambiguity_diagnosis`: the refuse DECISION is
+    exactly "a diagnosis exists", so the same input lands the same nothing whether
+    or not the diagnosis is ever rendered (the disclosure is purely additive)."""
+    return _ambiguity_diagnosis(root, test_files, stub) is not None
+
+
+def _ambiguity_diagnosis(root: Path, test_files: list[str],
+                         stub: StubFunction) -> AmbiguityDiagnosis | None:
+    """The structured ambiguity finding for ``stub`` — ``None`` when the contract
+    is NOT ambiguous, else the two representative competing exprs, the first
+    discriminating canary input, and each expr's value there.
+
+    This is the single source of truth :func:`_is_ambiguous` wraps: it computes
+    the SAME ``matching`` shapes (identity-family collapsed, constant/recursion
+    excluded) the bool guard always did, then — instead of discarding everything
+    but the verdict — keeps the FIRST pair whose fingerprints diverge and the
+    EARLIEST canary at which they do. Deterministic throughout: candidates and
+    canaries are in their fixed order, so the chosen pair and input are stable."""
     witnesses = _function_witnesses(root, test_files, stub)
     evaluable = _evaluable_witnesses(witnesses, stub) if witnesses else None
     if not evaluable:
-        return False
+        return None
+    matching = _matching_shapes(root, test_files, stub, evaluable)
+    if len(matching) < 2:
+        return None
+    canaries = _canary_inputs(evaluable)
+    return _first_divergence(matching, stub, canaries)
+
+
+def _matching_shapes(root: Path, test_files: list[str], stub: StubFunction,
+                     evaluable: list[tuple[tuple, object]]) -> list[str]:
+    """The witness-passing templates, ONE per distinct semantic shape, in fixed
+    candidate order — the competing intents the ambiguity guard weighs.
+
+    The algebraic-identity family (``a``, ``a + 0``, ``a - 0``, ``a * 1``,
+    ``a // 1``, ``a / 1``) is collapsed to ONE shape: they are the same
+    passthrough answer spelled different ways, so they must not count as DISTINCT
+    competing intents against each other. Without this, a genuine passthrough
+    (``identity(5)==5, identity(9)==9``) is matched by several identity-family
+    templates and the >=2-shapes guard wrongly refuses ``return a``. A genuinely
+    different shape (``a * 2``, ``a + k``, a comparison) is NOT in the family, so
+    the guard still refuses it. Constant and recursion candidates are excluded —
+    only the genuine competing intents are weighed."""
     matching: list[str] = []
     seen_shapes: set[str] = set()
     for label, expr in _ordered_candidates(root, test_files, stub):
@@ -2590,28 +2651,114 @@ def _is_ambiguous(root: Path, test_files: list[str], stub: StubFunction) -> bool
             continue
         if not _expr_matches_all(expr, stub, evaluable):
             continue
-        # Collapse the algebraic-identity family (``a``, ``a + 0``, ``a - 0``,
-        # ``a * 1``, ``a // 1``, ``a / 1``) to ONE semantic shape: they are the
-        # same passthrough answer spelled different ways, so they must not count
-        # as DISTINCT competing intents against each other. Without this, a
-        # genuine passthrough (``identity(5)==5, identity(9)==9``) is matched by
-        # several identity-family templates and the >=2-shapes guard wrongly
-        # refuses ``return a``. A genuinely different shape (``a * 2``, ``a + k``,
-        # a comparison) is NOT in the family, so the guard still refuses it.
         shape = _identity_canonical_shape(expr, stub)
         if shape in seen_shapes:
             continue  # an identity-family duplicate already represented
         seen_shapes.add(shape)
         matching.append(expr)
-    if len(matching) < 2:
-        return False
-    canaries = _canary_inputs(evaluable)
-    fingerprints: set[tuple] = set()
+    return matching
+
+
+def _first_divergence(matching: list[str], stub: StubFunction,
+                      canaries: list[tuple]) -> AmbiguityDiagnosis | None:
+    """The first pair of ``matching`` exprs whose fingerprints differ, with the
+    EARLIEST canary at which they do — or ``None`` when every expr computes the
+    same function on the probes (NOT ambiguous: same intent spelled many ways).
+
+    Mirrors the bool guard's accumulation EXACTLY: it adds each expr's fingerprint
+    in fixed order and stops at the first one that disagrees with an earlier expr,
+    so the refuse decision is byte-for-byte unchanged. The earlier expr is the
+    first already-seen one whose per-canary values differ, and the discriminating
+    canary is the first index at which the two differ — both deterministic."""
+    seen: list[tuple[str, tuple]] = []  # (expr, fingerprint) in fixed order
     for expr in matching:
-        fingerprints.add(_expr_fingerprint(expr, stub, canaries))
-        if len(fingerprints) >= 2:
-            return True  # two passing templates disagree off-witness — ambiguous
-    return False
+        fp = _expr_fingerprint(expr, stub, canaries)
+        for prev_expr, prev_fp in seen:
+            idx = _first_diff_index(prev_fp, fp)
+            if idx is not None:
+                return _build_diagnosis(prev_expr, expr, stub, canaries, idx)
+        seen.append((expr, fp))
+    return None
+
+
+def _first_diff_index(a: tuple, b: tuple) -> int | None:
+    """The first index where fingerprints ``a`` and ``b`` differ, or ``None`` when
+    they are identical (the two exprs compute the same function on every probe).
+    Both fingerprints share the canary order, so the index selects a canary."""
+    for i, (va, vb) in enumerate(zip(a, b)):
+        if va != vb:
+            return i
+    return None
+
+
+def _build_diagnosis(expr_a: str, expr_b: str, stub: StubFunction,
+                     canaries: list[tuple], idx: int) -> AmbiguityDiagnosis:
+    """Assemble the diagnosis for the diverging pair ``(expr_a, expr_b)`` at the
+    discriminating canary ``canaries[idx]``: the human-facing value of each expr
+    there (``repr`` of the result, or ``'<err>'`` when it raises). Deterministic —
+    a pure re-evaluation of two fixed exprs on one fixed input."""
+    canary = canaries[idx]
+    return AmbiguityDiagnosis(
+        exprs=(expr_a, expr_b),
+        params=stub.params,
+        canary=canary,
+        values=(_canary_value(expr_a, stub, canary),
+                _canary_value(expr_b, stub, canary)))
+
+
+def _canary_value(expr: str, stub: StubFunction, canary: tuple) -> str:
+    """The human-facing value ``expr`` yields on one canary input: ``repr`` of the
+    result, or the stable ``'<err>'`` token when it raises — matching the
+    fingerprint's per-canary rendering so the reason agrees with the divergence
+    that was detected. Sandboxed to the fixed safe builtins, like every probe."""
+    env_globals = {"__builtins__": _SAFE_BUILTINS}
+    local = dict(zip(stub.params, canary))
+    try:
+        return repr(eval(expr, env_globals, local))  # noqa: S307 - fixed templates
+    except Exception:
+        return "<err>"
+
+
+def ambiguity_reason(root: Path, test_files: list[str],
+                     stub: StubFunction) -> str | None:
+    """A one-line, human-readable explanation of WHY ``stub`` was refused for
+    ambiguity and HOW to fix it — or ``None`` when the contract is NOT ambiguous.
+
+    Public companion to the (unchanged) :func:`_is_ambiguous` decision: it renders
+    the same structured finding the guard uses, naming the two competing body
+    expressions, the first discriminating input, and each body's value there, then
+    points the buyer at the missing discriminating witness, e.g.::
+
+        ambiguous: `min(a)` and `a[-1]` both satisfy the tests but differ on
+        a=[3, 9, 2] (2 vs -2)… add a discriminating test
+
+    Deterministic: identical fixtures yield the identical string (no clock/random,
+    offline). Used to disclose an honest refusal without changing what lands."""
+    diagnosis = _ambiguity_diagnosis(root, test_files, stub)
+    if diagnosis is None:
+        return None
+    return render_ambiguity_reason(diagnosis)
+
+
+def render_ambiguity_reason(diagnosis: AmbiguityDiagnosis) -> str:
+    """Render an :class:`AmbiguityDiagnosis` to its fixed one-line string. Pure and
+    deterministic (no disk, no tests): the buyer-facing wording lives here so the
+    in-process diagnosis and any caller render it identically."""
+    a, b = diagnosis.exprs
+    va, vb = diagnosis.values
+    return (f"ambiguous: `{a}` and `{b}` both satisfy the tests but differ on "
+            f"{_render_args(diagnosis.params, diagnosis.canary)} "
+            f"({va} vs {vb})… add a discriminating test")
+
+
+def _render_args(params: tuple[str, ...], canary: tuple) -> str:
+    """Render the discriminating input as ``name=value`` pairs (``a=[3, 9, 2]``,
+    or ``a=5, b=1`` for a multi-arg stub), in parameter order. Falls back to a bare
+    ``repr`` of the tuple if the arities ever mismatch (defensive — they never do
+    for a synthesized stub). Deterministic: a pure ``repr`` over fixed values."""
+    if len(params) != len(canary):
+        return repr(canary)
+    return ", ".join(f"{name}={value!r}" for name, value in zip(params, canary))
 
 
 # The algebraic-identity family: expressions over a single parameter ``a`` that

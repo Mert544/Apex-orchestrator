@@ -946,8 +946,12 @@ def test_thin_ambiguous_contract_is_refused(tmp_path: Path):
         "def test():\n    assert is_big(5) == False\n    assert is_big(200) == True\n",
         encoding="utf-8")
     plan = plan_implement_stub(str(tmp_path), "app/b.py")
-    assert not plan.new_contents and not plan.blockers  # ambiguity -> honest no-op
+    assert not plan.new_contents  # ambiguity -> honest no-op (refuse decision)
     assert (tmp_path / "app" / "b.py").read_text() == original
+    # Purely additive disclosure: the refusal now carries a one-line reason naming
+    # both competing shapes (parity vs threshold) so the buyer knows WHY/HOW to
+    # fix it — see test_stub_ambiguity_disclosure_eyml for the full contract.
+    assert any("n % 2 == 0" in b for b in plan.blockers)
 
 
 def test_ambiguous_contract_refused_end_to_end(tmp_path: Path):

@@ -278,7 +278,9 @@ def test_get_vs_index_all_present_refuses(tmp_path: Path):
         "def test():\n"
         "    assert lookup({'x': 1}, 'x') == 1\n"
         "    assert lookup({'x': 1, 'y': 2}, 'y') == 2\n")
-    assert not plan.new_contents and not plan.blockers  # ambiguous -> no-op
+    assert not plan.new_contents  # ambiguous -> no-op (refuse decision unchanged)
+    # Additive disclosure: both competing shapes (index vs .get) are named.
+    assert any("a[b]" in b and "a.get(b)" in b for b in plan.blockers)
     assert (tmp_path / "app" / "gx.py").read_text() == (
         "def lookup(a, b):\n    raise NotImplementedError\n")
 
