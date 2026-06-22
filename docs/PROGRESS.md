@@ -30,6 +30,12 @@
 **Araçlar:**
 - `64ef1ac` **paralel kapı** — `python scripts/verify.py --chunks 16 -j 8` (opt-in; varsayılan sıralı/güvenli kalır)
 
+**Develop UX / dürüstlük (ne indiği DEĞİŞMEZ — yalnız ek açıklama):**
+- `436e51b` **belirsizlik açıklaması** — bir stub belirsiz witness yüzünden reddedilince
+  artık NEDEN'i ve nasıl düzeltileceğini söyler (`plan.blockers` → `CompileResult.blocked`):
+  ör. `lowest_price: ambiguous: \`min(prices)\` ve \`prices[-1]\` ikisi de testleri geçer ama
+  prices=[2,9,3]'te ayrışır (2 vs 3)… ayırt edici test ekle`. Reddetme kararı birebir aynı.
+
 **Ar-Ge paketi:** `docs/rnd/` (APEX-ARGE.md, apex-arge-sunum.html, README.md) — rakip analizi, pazar, yatırımcı tezi, geliştirme yönleri.
 
 ---
@@ -48,8 +54,8 @@
 
 ## 3. SIRADAKİ İŞLER (öncelik sırası — saha testi gaplerine dayalı)
 
-1. **Reduction belirsizlik açıklaması** (develop diff'inde). `min` vs `prices[-1]` gibi belirsizlikte stub reddedilince, kullanıcıya "ayırt edici bir witness ekle" diye **dürüstçe bildir**. Orta değer, **negatif soundness riski** (dürüstlüğü artırır). Dosya: stub_synthesis.py / develop_session.py raporlama.
-2. **Idea-motoru erişimi** (Ar-Ge yönü #3) — daha zengin sinyaller / daha derin fraktal.
+1. ✅ **(TAMAM — `436e51b`) Reduction belirsizlik açıklaması.** Stub belirsiz witness yüzünden reddedilince neden+nasıl-düzelt bildiriliyor. **Kalan 1-satır follow-up:** SADECE belirsiz stub'ı olan bir modül honest-fitness ile move-enumerasyonundan eleniyor (`module_has_fillable_stub`→False), o yüzden all-ambiguous modülde sebep uçtan-uca yönlenmiyor; `objective_compiler.py`/`develop_session.py`'de bir disclosure-only refuse-move veya `render_session_markdown`'da `obj.blocked` render'ı gerekir.
+2. **Idea-motoru erişimi** (Ar-Ge yönü #3) — daha zengin sinyaller / daha derin fraktal. **← SIRADAKİ ÖNCELİK**
 3. **Düz-paket import edilemezliği tespiti + pythonpath/conftest probe-shim** (saha gap #5). Student repo'ları sık sık pyproject/pythonpath'siz → her şey `no-suite`'a düşüyor. **DİKKAT:** geniş/hassas yüzey (`run_tests.py`, `cli_autonomy.py`, `develop_session.py`, `objective_compiler.py`, `proof_of_fix.py`). Ayrıca dry-run vs apply `no-suite` dürüstlük tutarsızlığı (küçük).
 4. **JS/TS gerçek lander** (Ar-Ge #2) — şu an yalnız öneri-modu (`idea_seeder`); güvenliği sulandırmadan ilk gerçek adım.
 
