@@ -18,6 +18,16 @@ _SNAPSHOTS = [
     ("app/engine/debug_engine.py", "5e10cb2", "/tmp/debug_engine_original.py"),
     ("app/agents/skills/apex_debug_agent.py", "f537010",
      "/tmp/apex_debug_agent_ORIG.py"),
+    # The byte-identical decompose harness (test_transforms_byte_identical_refactor)
+    # loads these two sub-package transforms standalone from /tmp/charorig. Their
+    # source uses a relative ``from ..result import`` that cannot resolve when loaded
+    # outside the package, so the staged snapshot rewrites it to the absolute form
+    # below (a no-op for the top-level snapshots above). The pre-refactor reference
+    # is the parent of 1820170, the commit that decomposed both into pure helpers.
+    ("app/execution/semantic/transforms/redundant_lambda.py", "1820170",
+     "/tmp/charorig/redundant_lambda_orig.py"),
+    ("app/execution/semantic/transforms/mutable_defaults.py", "1820170",
+     "/tmp/charorig/mutable_defaults_orig.py"),
 ]
 
 
@@ -32,7 +42,15 @@ def _stage_refactor_snapshots() -> None:
                 cwd=ROOT, capture_output=True, text=True, timeout=30,
             )
             if src.returncode == 0 and src.stdout:
-                Path(dest).write_text(src.stdout, encoding="utf-8")
+                # A sub-package snapshot loaded standalone (spec_from_file_location)
+                # cannot resolve a relative import; rewrite the one ``from ..result``
+                # to its absolute form. No-op for the top-level snapshots.
+                text = src.stdout.replace(
+                    "from ..result import",
+                    "from app.execution.semantic.result import",
+                )
+                Path(dest).parent.mkdir(parents=True, exist_ok=True)
+                Path(dest).write_text(text, encoding="utf-8")
         except Exception:
             pass  # the harness itself skips/handles a still-missing snapshot
 
