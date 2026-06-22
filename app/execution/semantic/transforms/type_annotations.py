@@ -18,14 +18,18 @@ What counts as PROVABLE (the only things ever annotated):
     yields a value of the SAME statically-certain concrete type:
     ``int``/``str``/``bool``/``float``/``list``/``dict``/``tuple``/``set``/
     ``bytes`` constants and displays, an f-string (``JoinedStr`` ⇒ ``str``), a
-    list/dict/set comprehension (⇒ ``list``/``dict``/``set``), and a certainly-
-    boolean expression (a comparison or ``not x`` ⇒ ``bool``). Or ``-> None``
-    when the function has no value-returning ``return`` and no ``yield`` (a pure
-    procedure). REFUSED (left alone): mixed return types (e.g. ``int``+
-    ``float``), a generator expression (yields a generator, not a container) or
-    ``and``/``or`` (returns an operand, not a bool), any non-certain return
-    (name/call/attribute/subscript/arithmetic), a ``yield`` generator, or an
-    existing ``-> T``.
+    list/dict/set comprehension (⇒ ``list``/``dict``/``set``), a certainly-
+    boolean expression (a comparison or ``not x`` ⇒ ``bool``), and a SAME-TYPE-
+    LITERAL binary op over a TYPE-CLOSED operator (``1 + 2`` ⇒ ``int``,
+    ``'a' + 'b'`` ⇒ ``str`` — see :func:`_binop_same_type_literal`). Or
+    ``-> None`` when the function has no value-returning ``return`` and no
+    ``yield`` (a pure procedure). REFUSED (left alone): mixed return types (e.g.
+    ``int``+``float``), a generator expression (yields a generator, not a
+    container) or ``and``/``or`` (returns an operand, not a bool), a ``/`` or
+    ``**`` binary op or one with a non-literal/mixed-type operand (``x + 1`` ⇒
+    ``x`` is a value, not a type bound), any other non-certain return
+    (name/call/attribute/subscript), a ``yield`` generator, or an existing
+    ``-> T``.
 
 Why NOT a parameter type from its default value: a default does NOT constrain
 the type a parameter accepts. ``def f(x=0)`` is routinely called ``f("s")`` or
@@ -155,9 +159,15 @@ def _literal_type(node: ast.expr) -> str | None:
         chains) and ``<method>`` is in :data:`_STR_RETURNING_METHODS` (str
         methods that ALWAYS return ``str``). See
         :func:`_str_method_call_returns_str` for the soundness rules.
+      - a SAME-TYPE-LITERAL binary op ⇒ that type: ``<lit> <op> <lit>`` where
+        BOTH operands are provably the SAME concrete type and ``<op>`` is in the
+        type-closed safe set — ``1 + 2`` ⇒ ``int``, ``'a' + 'b'`` ⇒ ``str``,
+        ``[1] + [2]`` ⇒ ``list``, ``(1,) + (2,)`` ⇒ ``tuple``. See
+        :func:`_binop_same_type_literal` for the soundness rules (why
+        ``/``/``**`` and ``bool`` and any non-literal operand are refused).
 
-    Everything else (a name, call, attribute, subscript, arithmetic, etc.) is
-    not statically certain ⇒ ``None`` (refuse)."""
+    Everything else (a name, call, attribute, subscript, etc.) is not
+    statically certain ⇒ ``None`` (refuse)."""
     if isinstance(node, ast.Constant):
         return _constant_type(node.value)
     if isinstance(node, ast.JoinedStr):
@@ -169,7 +179,7 @@ def _literal_type(node: ast.expr) -> str | None:
         return "bool"
     if _str_method_call_returns_str(node):
         return "str"
-    return None
+    return _binop_same_type_literal(node)
 
 
 # str methods that ALWAYS return a ``str`` when they return at all. Excluded by
@@ -213,6 +223,57 @@ def _str_method_call_returns_str(node: ast.expr) -> bool:
     if func.attr not in _STR_RETURNING_METHODS:
         return False
     return _literal_type(func.value) == "str"
+
+
+# Binary operators that are TYPE-CLOSED over same-type literal operands — the
+# result is provably the SAME concrete type as the operands (or the op raises,
+# in which case the function never returns and a ``-> T`` stays sound since it
+# only constrains a value that IS returned). Verified exhaustively for
+# ``int``/``float`` and for ``str``/``bytes``/``list``/``tuple``.
+#
+# Deliberately EXCLUDED — not type-closed, so unsound to treat as same-type:
+#   - ``/`` (``Div``): ``int / int`` is always a ``float`` (``4 / 2 == 2.0``),
+#     so the result type differs from the operands — left out entirely.
+#   - ``**`` (``Pow``): ``2 ** -1 == 0.5`` (a ``float`` from two ``int``s) and
+#     ``(-2.0) ** 0.5`` is a ``complex`` — the result escapes the operand type,
+#     so ``Pow`` is unsound and left out.
+#   - bitwise/shift (``|``/``&``/``^``/``<<``/``>>``/``@``): not part of the
+#     provable set — left out (conservative).
+_SAME_TYPE_BINOPS: tuple[type[ast.operator], ...] = (
+    ast.Add, ast.Sub, ast.Mult, ast.Mod, ast.FloorDiv,
+)
+
+
+def _binop_same_type_literal(node: ast.expr) -> str | None:
+    """The provable type NAME for ``<lit> <op> <lit>`` (``ast.BinOp``), or
+    ``None`` when not provable.
+
+    Returns a type name ONLY when ALL hold:
+      1. ``<op>`` is in :data:`_SAME_TYPE_BINOPS` — a TYPE-CLOSED op (``+`` ``-``
+         ``*`` ``%`` ``//``). ``/`` and ``**`` are excluded as unsound (see the
+         set's docstring), so ``1 / 2`` and ``2 ** n`` refuse.
+      2. BOTH operands are PROVABLY the SAME concrete type, via
+         :func:`_literal_type` recursively (so a NON-literal operand — a name,
+         call, or attribute like ``x`` in ``x + 1`` — yields ``None`` there and
+         refuses: a value/parameter is NOT a type bound). MIXED types
+         (``1 + 'a'`` ⇒ ``int`` vs ``str``) refuse.
+      3. That shared type is NOT ``bool``. In Python ``bool`` is a subtype of
+         ``int`` and ``True + True == 2`` is an ``int``, so a bool operand must
+         NOT be reported as ``bool`` for ``+`` — refuse it rather than risk the
+         bool-arithmetic-returns-int subtlety.
+
+    Sound because ``ast.Constant``/display operands are built-ins whose dunder
+    ops are not instance-overridable: ``1 + 2`` ⇒ ``int``, ``'a' + 'b'`` ⇒
+    ``str``, ``[1] + [2]`` ⇒ ``list``, ``(1,) + (2,)`` ⇒ ``tuple`` are PROVABLE.
+    """
+    if not isinstance(node, ast.BinOp):
+        return None
+    if not isinstance(node.op, _SAME_TYPE_BINOPS):
+        return None
+    left = _literal_type(node.left)
+    if left is None or left == "bool":
+        return None
+    return left if _literal_type(node.right) == left else None
 
 
 _CERTAIN_BOOL_CMP_OPS: tuple[type[ast.cmpop], ...] = (
