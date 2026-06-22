@@ -157,3 +157,62 @@ def test_chunk_count_total_files_preserved(chunks):
     total = sum(int(line.split("—")[1].split("file")[0])
                 for line in out.splitlines() if line.startswith("\n=====") is False and "file(s)" in line)
     assert total == len(FAKE_FILES)
+
+
+# --- parallel mode (--jobs/-j): opt-in, deterministic transcript -------------
+
+def _drive_parallel(argv, fail_file=None, ruff_code=0):
+    """Run main(argv) with the CAPTURED chunk-runner + ruff + clock mocked.
+
+    ``fail_file`` (a test_NN.py name) makes exactly the chunk containing it exit
+    1 — keyed on file CONTENT, not a shared counter, so the result is
+    deterministic regardless of thread completion order."""
+    def fake_captured(files, extra):
+        names = {f.name for f in files}
+        code = 1 if (fail_file and fail_file in names) else 0
+        return code, f"captured {len(files)} file(s)\n"
+
+    buf = io.StringIO()
+    with mock.patch.object(verify, "discover_tests", return_value=list(FAKE_FILES)), \
+         mock.patch.object(verify, "run_chunk_captured", side_effect=fake_captured), \
+         mock.patch.object(verify, "run_ruff", return_value=ruff_code), \
+         mock.patch.object(verify.time, "time", side_effect=[100.0, 142.7]), \
+         contextlib.redirect_stdout(buf):
+        rc = verify.main(argv)
+    return buf.getvalue(), rc
+
+
+def test_default_jobs_is_sequential_unchanged():
+    # jobs defaults to 1 -> the sequential path is taken byte-for-byte (the
+    # captured runner must NOT be consulted), so the canonical transcript holds.
+    with mock.patch.object(verify, "run_chunk_captured",
+                           side_effect=AssertionError("parallel path must not run")):
+        out, rc = _drive([], [0], 0)
+    assert rc == 0 and "  ✅ all green (5 step(s), 43s)\n" in out
+
+
+def test_parallel_all_pass_orders_chunks_and_is_green():
+    out, rc = _drive_parallel(["--chunks", "4", "-j", "4"])
+    assert rc == 0
+    # Headers appear in CHUNK ORDER despite concurrent execution.
+    pos = [out.index(f"===== chunk {n}/4 ") for n in range(1, 5)]
+    assert pos == sorted(pos)
+    assert "  ✅ all green (5 step(s), 43s)\n" in out
+    assert out.count("captured ") == 4  # every chunk's buffered block replayed
+
+
+def test_parallel_failing_chunk_reported_deterministically():
+    # FAKE_FILES[3] = test_03.py lands in chunk 2 of 4 (files 3-4, 0-based 2-3).
+    out, rc = _drive_parallel(["--chunks", "4", "-j", "4"], fail_file="test_03.py")
+    assert rc == 1
+    assert "  FAIL  chunk 2/4\n" in out
+    assert "  ❌ 1 step(s) failed: chunk 2/4  (43s)\n" in out
+
+
+def test_parallel_with_single_chunk_falls_back_to_sequential():
+    # --chunk 2 selects ONE chunk; even with -j 8 the live (sequential) path is
+    # used (len(labelled) == 1), so run_chunk_captured is never called.
+    with mock.patch.object(verify, "run_chunk_captured",
+                           side_effect=AssertionError("should stay sequential")):
+        out, rc = _drive(["--chunk", "2", "-j", "8", "--no-lint"], [0], 0)
+    assert rc == 0 and "  PASS  chunk 2/4\n" in out

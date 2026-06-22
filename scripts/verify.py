@@ -15,8 +15,14 @@ stdlib, so it works on Windows as well as Linux/macOS).
     python scripts/verify.py --no-lint     # tests only
     python scripts/verify.py --lint-only   # ruff only
     python scripts/verify.py -- -x -k foo  # pass extra args through to pytest
+    python scripts/verify.py --chunks 16 -j 8   # 16 chunks, 8 at a time (multi-core host)
 
-Exit code is non-zero if any chunk or ruff fails — drop it straight into CI.
+By default chunks run SEQUENTIALLY so a memory-constrained container never holds
+two suites at once (the OOM the chunking exists to prevent). On a host with more
+RAM and cores, ``--jobs/-j N`` runs up to N chunks concurrently — each still its
+own process, so determinism is unchanged — which (with more ``--chunks``) cuts
+wall-clock to roughly the slowest chunk. Exit code is non-zero if any chunk or
+ruff fails — drop it straight into CI.
 """
 
 from __future__ import annotations
@@ -69,6 +75,49 @@ def run_chunk(files: list[Path], extra: list[str]) -> int:
     return subprocess.run(cmd, cwd=str(ROOT)).returncode
 
 
+def run_chunk_captured(files: list[Path], extra: list[str]) -> tuple[int, str]:
+    """Run one chunk in its own pytest process, CAPTURING its output; return
+    ``(exit_code, combined_text)``. Used only by the parallel runner so that
+    concurrently-running chunks never interleave their dots on the shared
+    stdout — each block is buffered and replayed in chunk order afterwards."""
+    cmd = [sys.executable, "-m", "pytest", *(_rel(f) for f in files),
+           "-q", "-p", "no:cacheprovider", *extra]
+    proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def run_chunks_parallel(
+    labelled: list[tuple[str, list[Path]]], extra: list[str], jobs: int,
+) -> list[tuple[str, int]]:
+    """Run the labelled chunks concurrently — at most ``jobs`` pytest processes
+    at once — each still in its OWN process (no in-process xdist, so per-test
+    isolation and determinism are unchanged; only the timing differs). Each
+    chunk's output is captured and replayed in chunk ORDER once all finish, so
+    the transcript is deterministic regardless of completion order. Returns
+    ``(label, exit_code)`` pairs in chunk order.
+
+    Memory note: each chunk peaks around its own pytest process, so only raise
+    ``jobs`` on a host with the RAM for it (the cloud gate stays at 1)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    outcomes: list[tuple[int, str]] = [(0, "")] * len(labelled)
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = {
+            pool.submit(run_chunk_captured, files, extra): idx
+            for idx, (_label, files) in enumerate(labelled)
+        }
+        for fut in futures:
+            outcomes[futures[fut]] = fut.result()
+    results: list[tuple[str, int]] = []
+    for idx, (label, files) in enumerate(labelled):
+        code, text = outcomes[idx]
+        print(f"\n===== {label} — {len(files)} file(s) =====", flush=True)
+        if text:
+            print(text if text.endswith("\n") else text + "\n", end="", flush=True)
+        results.append((label, code))
+    return results
+
+
 def run_ruff() -> int:
     """Run ``ruff check app/``; return its exit code (0 = clean)."""
     return subprocess.run([sys.executable, "-m", "ruff", "check", "app/"],
@@ -82,6 +131,11 @@ def _build_parser() -> argparse.ArgumentParser:
                         help=f"number of test chunks (default {DEFAULT_CHUNKS})")
     parser.add_argument("--chunk", type=int, default=0,
                         help="run only this 1-based chunk of --chunks (fast re-run)")
+    parser.add_argument("--jobs", "-j", type=int, default=1,
+                        help="run chunks concurrently, up to N pytest processes at "
+                             "once (default 1 = sequential). Each chunk needs ~1-2GB "
+                             "RAM; raise only on a host with the memory (the cloud "
+                             "gate stays 1). Pairs well with more --chunks.")
     parser.add_argument("--no-lint", action="store_true", help="skip ruff")
     parser.add_argument("--lint-only", action="store_true", help="run ruff only")
     parser.add_argument("pytest_args", nargs="*",
@@ -134,10 +188,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"⛔ --chunk {args.chunk} out of range (1..{len(all_chunks)})")
             return 2
         selected = select_chunks(all_chunks, args.chunk)
-        for i, chunk in enumerate(selected, 1):
-            label = chunk_label(i, args.chunk, len(all_chunks), len(selected))
-            print(f"\n===== {label} — {len(chunk)} file(s) =====", flush=True)
-            results.append((label, run_chunk(chunk, args.pytest_args)))
+        labelled = [
+            (chunk_label(i, args.chunk, len(all_chunks), len(selected)), chunk)
+            for i, chunk in enumerate(selected, 1)
+        ]
+        if args.jobs > 1 and len(labelled) > 1:
+            results.extend(run_chunks_parallel(labelled, args.pytest_args, args.jobs))
+        else:
+            for label, chunk in labelled:
+                print(f"\n===== {label} — {len(chunk)} file(s) =====", flush=True)
+                results.append((label, run_chunk(chunk, args.pytest_args)))
 
     if not args.no_lint and not args.pytest_args:
         print("\n===== ruff check app/ =====", flush=True)
