@@ -239,6 +239,37 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                        "line carries the exact `apex signature drop` command "
                        "(chain `apex signature keywordify` first if a caller "
                        "passes it positionally)", False),
+    # The three DEVELOP-GRADE synthesis objectives ``apex plan --concrete`` can
+    # already LAND. Unlike the readability simplifications above, these are NOT
+    # emitted by the seeder — the bridge augments the action plan with them
+    # (``_augment_synthesis_steps``) ONLY for the modules whose own lander
+    # predicate proves a change is producible, so the executable claim is honest
+    # by construction. These fact labels make the same (action_type, executable)
+    # routing testable through the standard ``_FACT_ACTIONS`` path; emitting one
+    # from a seeder would also yield a genuinely-executable step.
+    #
+    # infer-type-hints / dataclassify are pure (no pytest): they dispatch
+    # straight to their adapter in ``_simplify_dispatch`` and flow through the
+    # SAME guarded apply_step gate (snapshot → write → verify → auto-rollback) as
+    # every other transform; each adapter returns None when the real lander would
+    # not change the source, so an unsafe/no-op input simply produces no patch.
+    "infer-type-hints": ("infer_type_hints",
+                         "Add PROVABLE return-type hints to unannotated functions "
+                         "in {s} (only types the AST proves; never a guess)", True),
+    "dataclassify": ("dataclassify",
+                     "Convert a pure boilerplate-`__init__` class in {s} to a "
+                     "`@dataclass` (behaviour-equivalent; real `__init__` logic "
+                     "is refused)", True),
+    # implement-stub is DIFFERENT: its synthesis runs pytest internally and its
+    # verify MUST be impact-scoped, so the bridge does NOT route it through the
+    # SemanticPatchResult gate — ``apply_step`` delegates it to the proven
+    # develop-core apply path (``plan_implement_stub`` + ``apply_rename`` with
+    # ``impact_scope=True``). It is surfaced executable ONLY for a module with a
+    # genuinely fillable stub (``fillable_stub_modules``), so the claim is honest.
+    "implement-stub": ("implement_stub",
+                       "Implement the test-pinned stub(s) in {s} — synthesise a "
+                       "body that makes their pinned tests pass (refuses ambiguous "
+                       "/ unpinned stubs)", True),
 }
 
 
@@ -721,6 +752,16 @@ class IdeaActionBridge:
         # only so ``_step_targets`` recognises the action as a real transform
         # objective; the actual rewrite is chosen in ``_simplify_dispatch``.
         "simplify_bool_comparison": ["drop bool-literal comparison"],
+        # The three develop-grade synthesis objectives. ``infer_type_hints`` and
+        # ``dataclassify`` are pure: each dispatches to its adapter in
+        # ``_simplify_dispatch`` (the strategy hint is only a proof/preview
+        # label). ``implement_stub`` is NOT a SemanticPatchResult transform —
+        # ``apply_step`` delegates it to the develop-core ``apply_rename`` path —
+        # but it is listed here so ``_step_targets`` recognises it as a real
+        # transform objective (a .py target → ``[step.target]``).
+        "infer_type_hints": ["infer provable return type hints"],
+        "dataclassify": ["convert boilerplate init to dataclass"],
+        "implement_stub": ["implement test-pinned stub body"],
     }
 
     # Behaviour-preserving readability simplifications dispatched STRAIGHT to
@@ -792,6 +833,21 @@ class IdeaActionBridge:
             # "executable" the brief forbids.
             "augmented_assign": (lambda rel, src, _title:
                                  _t.augmented_assign.apply(rel, src)),
+            # Two develop-grade PURE synthesis transforms, adapted to the uniform
+            # 3-arg ``apply(rel, src, title)`` shape. Each calls the lander's OWN
+            # pure source→source function and builds a SemanticPatchResult only on
+            # a CHANGED source (None on unchanged/refused), so the executable
+            # claim is honest and the step flows through the IDENTICAL guarded
+            # apply_step gate (snapshot → write → verify → auto-rollback).
+            #
+            # infer_type_hints drives ``infer_annotations`` — the DEVELOP-GRADE
+            # provable-return inference (NOT the shallow ``type_annotations.apply``
+            # that only stamps ``-> None`` on the first function).
+            "infer_type_hints": cls._infer_type_hints_apply,
+            # dataclassify drives ``rewrite_dataclasses``, with the develop loop's
+            # fixture-path guard ported in so the bridge never offers to rewrite a
+            # test/fixture file the lander would itself refuse.
+            "dataclassify": cls._dataclassify_apply,
             # Four on-disk ``plan_<name>(root, rel) -> RenamePlan`` rewrites
             # under ``app/execution/``, adapted by ``plan_to_apply`` to the same
             # ``apply(rel, src, title) -> SemanticPatchResult | None`` shape (it
@@ -837,6 +893,80 @@ class IdeaActionBridge:
             # (which never touches bool literals).
             "simplify_bool_comparison": plan_to_apply(_pt.plan_simplify_bool_comparison),
         }
+
+    @staticmethod
+    def _synthesis_result(rel_path: str, source: str, new_source: str | None,
+                          transform_type: str, rationale: str):
+        """A ``SemanticPatchResult`` for a develop-grade pure transform, or None.
+
+        The shared honesty spine of the two pure synthesis adapters: build a
+        result ONLY when the lander's own source→source function returned a
+        CHANGED source (``new_source`` is not None and differs). An unchanged /
+        refused source yields None, so the apply gate's ``_vet_result`` drops it
+        and the step never claims a patch it cannot produce."""
+        if new_source is None or new_source == source:
+            return None
+        from app.execution.semantic.result import SemanticPatchResult
+
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel_path,
+                "new_content": new_source,
+                "expected_old_content": source,
+            }],
+            transform_type=transform_type,
+            rationale=[rationale.format(rel=rel_path)],
+        )
+
+    @classmethod
+    def _infer_type_hints_apply(cls, rel_path: str, source: str, _title: str):
+        """Adapter: the DEVELOP-GRADE provable-return inference as a uniform
+        ``apply(rel, src, title)`` transform.
+
+        Calls :func:`infer_annotations` (the pure source→source inference the
+        ``infer-type-hints`` objective composes — NOT the shallow ``-> None``
+        ``type_annotations.apply``) and returns its real patch only on a changed
+        source. ``infer_annotations`` itself returns None on a syntax error or
+        when nothing provable changes, so an unsafe/no-op input yields no patch."""
+        from app.execution.semantic.transforms.type_annotations import (
+            infer_annotations,
+        )
+        return cls._synthesis_result(
+            rel_path, source, infer_annotations(source), "infer-type-hints",
+            "Added provable return-type annotation(s) in {rel}.")
+
+    @classmethod
+    def _dataclassify_apply(cls, rel_path: str, source: str, _title: str):
+        """Adapter: the boilerplate-``__init__`` → ``@dataclass`` rewrite as a
+        uniform ``apply(rel, src, title)`` transform.
+
+        Calls :func:`rewrite_dataclasses` and returns its real patch only on a
+        changed source. The pure ``rewrite_dataclasses`` does NOT refuse
+        test/fixture files, so the develop loop's fixture-path guard is ported in
+        here (mirroring ``app/execution/objectives/dataclassify._is_fixture_path``)
+        — the bridge must never offer to rewrite a file the develop loop would
+        itself refuse."""
+        if cls._is_fixture_path(rel_path):
+            return None  # never offer to rewrite a test/fixture file
+        from app.execution.dataclass_rewrite import rewrite_dataclasses
+        return cls._synthesis_result(
+            rel_path, source, rewrite_dataclasses(source), "dataclassify",
+            "Converted a boilerplate-`__init__` class to `@dataclass` in {rel}.")
+
+    @staticmethod
+    def _is_fixture_path(path: str) -> bool:
+        """Example/test/fixture files are REFUSED — a faithful local copy of the
+        develop loop's own guard (``objectives/dataclassify._is_fixture_path``)
+        so the bridge's dataclassify adapter refuses exactly what the lander
+        would, never offering a rewrite the develop loop would decline."""
+        p = path.replace("\\", "/").lower()
+        name = Path(p).name
+        return (
+            p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
+            or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
+            or name.startswith("test_") or name.endswith("_test.py")
+            or name == "conftest.py"
+        )
 
     @staticmethod
     def _read(project_root: str, rel_path: str) -> str | None:
@@ -1109,6 +1239,15 @@ class IdeaActionBridge:
         if target_files is None:
             return None
 
+        # ``implement_stub`` does NOT fit the SemanticPatchResult gate: its
+        # synthesis runs pytest internally and its verify MUST be impact-scoped,
+        # so ``apply_step`` delegates it to the develop-core ``apply_rename`` path
+        # instead. The SemanticPatchResult-based ``_generate`` (used by
+        # draft_patch / attach_proofs) has no patch to offer here — return None so
+        # those preview surfaces show nothing rather than fabricating one.
+        if step.action_type == "implement_stub":
+            return None
+
         # ``add_ci`` is not an AST rewrite of an existing file — it scaffolds a
         # new workflow file. Route it to its dedicated additive generator, which
         # returns into the IDENTICAL guarded apply gate as any other patch.
@@ -1370,6 +1509,12 @@ class IdeaActionBridge:
         before writing; after applying, the test suite is run and — if it
         fails — every changed file is restored to its pre-patch content
         (automatic rollback). Returns a result dict describing what happened.
+
+        ``implement_stub`` is the one action NOT routed through the
+        SemanticPatchResult gate: its synthesis runs pytest internally and its
+        verify must be impact-scoped, so it is DELEGATED to the proven
+        develop-core ``apply_rename`` path (the same one ``objective_compiler``
+        uses), which restores the tree itself and never double-applies.
         """
         from app.policies.mode_policy import ModePolicy, mode_from_string
 
@@ -1377,6 +1522,12 @@ class IdeaActionBridge:
         perms = policy.permissions
         if not perms.can_patch:
             return {"applied": False, "reason": f"mode '{mode}' is read-only (cannot patch)"}
+
+        # ``implement_stub`` does not fit the in-memory patch gate (it runs pytest
+        # during synthesis and needs impact-scoped verify); delegate it to the
+        # develop-core apply path, which owns its own snapshot/verify/rollback.
+        if step.action_type == "implement_stub":
+            return self._apply_implement_stub(step, project_root, verify)
 
         result = self._generate(step, project_root)
         if result is None:
@@ -1413,6 +1564,48 @@ class IdeaActionBridge:
         return self._verify_or_rollback(project_root, out, snapshot,
                                         patch_requests, applied,
                                         tier_for(step.action_type))
+
+    def _apply_implement_stub(self, step: ActionStep, project_root: str,
+                              verify: bool) -> dict:
+        """Delegate an ``implement_stub`` step to the develop-core apply path.
+
+        Mirrors ``objective_compiler._apply_one_move``: build the one-module
+        plan with :func:`plan_implement_stub`, then land it through
+        :func:`apply_rename` with ``impact_scope=True`` (the synthesis already
+        restored the tree, so this is the single real write; the gate runs the
+        impacted tests and rolls back on any regression). The ``apply_rename``
+        result is translated into the bridge's ``apply_step`` result shape.
+
+        Honesty: an EMPTY plan (``not plan.new_contents``) means nothing here is
+        synthesizable — never a fake-green — so it returns a non-applied result
+        (carrying any disclosed blocker reason) and writes nothing.
+        """
+        from app.execution.cross_file_rename import apply_rename
+        from app.execution.objectives.implement_stub import plan_implement_stub
+
+        plan = plan_implement_stub(project_root, step.target)
+        if not plan.new_contents:
+            reason = ("; ".join(plan.blockers)
+                      or "no synthesizable stub (unpinned / ambiguous / non-stub)")
+            return {"applied": False, "transform_type": "implement_stub",
+                    "reason": reason}
+        res = apply_rename(project_root, plan, verify=verify, impact_scope=True)
+        return self._implement_stub_result(res)
+
+    @staticmethod
+    def _implement_stub_result(res: dict) -> dict:
+        """Translate an ``apply_rename`` result into the ``apply_step`` shape.
+
+        Carries ``applied``/``rolled_back``/``changed_files``/``verified``/
+        ``coverage``/``reason`` through verbatim where present so the maintenance
+        report and the autonomous-commit gate read it exactly like any other
+        applied/rolled-back step. ``transform_type`` is stamped ``implement_stub``
+        so the report names the synthesis that landed."""
+        out: dict = {"transform_type": "implement_stub", **res}
+        out["applied"] = bool(res.get("applied"))
+        if "verified" in res:
+            out["suite_green"] = bool(res.get("verified"))
+        return out
 
     @staticmethod
     def _safety_gate_block(perms, patch_requests: list[dict], project_root: str,
@@ -1887,6 +2080,99 @@ class IdeaActionBridge:
         )
         return [s for _, s in leaders] + steps[band:]
 
+    # The develop-grade synthesis objectives the action plan is augmented with,
+    # one per honest grounding signal. Each tuple is
+    # ``(signal_fn, action_type, fact_label, phase)``: the signal returns the
+    # subset of candidate modules for which the real lander would land a change
+    # (so the step is executable by construction); ``fact_label`` reuses the
+    # ``_FACT_ACTIONS`` description template; ``phase`` is the roadmap phase
+    # (implement-stub builds new code → Evolve; the two pure refactors → Refine).
+    # Order is fixed for determinism.
+    _SYNTHESIS_OBJECTIVES = (
+        ("fillable_stub_modules", "implement_stub", "implement-stub", "Evolve"),
+        ("inferable_return_modules", "infer_type_hints", "infer-type-hints", "Refine"),
+        ("dataclassifiable_modules", "dataclassify", "dataclassify", "Refine"),
+    )
+
+    # Cost ceiling: at most this many candidate modules are probed per signal
+    # (the signals each read + parse a file), keeping augmentation cheap on a
+    # large plan. Deterministic — the sorted candidate prefix is used.
+    _SYNTHESIS_CANDIDATE_LIMIT = 40
+
+    @classmethod
+    def _synthesis_candidates(cls, steps: list[ActionStep]) -> list[str]:
+        """The distinct ``.py`` module targets already present in ``steps``,
+        sorted and capped — the bounded candidate set the synthesis signals probe.
+
+        These modules are already surfaced as ideas, so probing them adds no new
+        discovery cost and keeps the augmentation tied to what the plan already
+        deems relevant. Sorted for determinism, capped for cost."""
+        mods = {
+            s.target for s in steps
+            if s.target and s.target.endswith(".py")
+        }
+        return sorted(mods)[:cls._SYNTHESIS_CANDIDATE_LIMIT]
+
+    def _augment_synthesis_steps(self, steps: list[ActionStep],
+                                 project_root: str) -> None:
+        """Append executable develop-grade synthesis steps for the qualifying
+        candidate modules, in place (the caller then de-dups).
+
+        For each synthesis objective, run its honest grounding signal over the
+        candidate modules (the ``.py`` targets already in ``steps``) and append
+        one executable :class:`ActionStep` per qualifying ``(module, objective)``
+        whose ``(target, action_type)`` is not already present. The signal only
+        returns a module when the REAL lander would land a change, so every
+        appended step is genuinely executable — never a fake-green.
+
+        Determinism / opt-in safety: on a project with NO synthesis-eligible
+        module (or no ``project_root``), nothing is appended and the plan stays
+        byte-identical to before this augmentation. Never raises — the signals
+        themselves swallow per-module errors, and an unexpected failure here
+        leaves the plan untouched."""
+        if not project_root:
+            return
+        candidates = self._synthesis_candidates(steps)
+        if not candidates:
+            return
+        present = {(s.target, s.action_type) for s in steps}
+        try:
+            from app.engine import idea_synthesis_signals as sigs
+        except Exception:  # pragma: no cover - defensive import guard
+            return
+        for signal_name, action_type, fact, phase in self._SYNTHESIS_OBJECTIVES:
+            signal = getattr(sigs, signal_name)
+            for module in signal(project_root, candidates,
+                                 limit=self._SYNTHESIS_CANDIDATE_LIMIT):
+                key = (module, action_type)
+                if key in present:
+                    continue
+                present.add(key)
+                steps.append(self._synthesis_step(module, action_type, fact, phase))
+
+    @staticmethod
+    def _synthesis_step(module: str, action_type: str, fact: str,
+                        phase: str) -> ActionStep:
+        """Build one executable synthesis :class:`ActionStep` for ``module``.
+
+        The ``(action_type, description, executable)`` comes from the objective's
+        ``_FACT_ACTIONS`` row (single source of truth for phrasing), and the
+        branch_path is a stable, deterministic ``x.syn.<action>.<module>`` so the
+        same plan renders identically run-to-run. Marked executable because the
+        grounding signal already proved a patch is producible for this module."""
+        _action, desc_tmpl, executable = _FACT_ACTIONS[fact]
+        return ActionStep(
+            branch_path=f"x.syn.{action_type}.{module}",
+            title=f"Synthesis: {action_type} {module}",
+            operator="synthesis",
+            subject=module,
+            action_type=action_type,
+            target=module,
+            description=desc_tmpl.format(s=module),
+            executable=executable,
+            phase=phase,
+        )
+
     def plan_tree(
         self,
         report: IdeaTreeReport,
@@ -1904,6 +2190,7 @@ class IdeaActionBridge:
         steps: list[ActionStep] = []
         for i in ideas:
             steps.extend(self._expand_idea(i, project_root=root_for_checks))
+        self._augment_synthesis_steps(steps, root_for_checks)
         steps = self._dedupe_steps(steps)
         # Opt-in (default off, so existing plans are byte-identical): when the
         # top steps are a value near-tie, surface the subject with the most
@@ -1976,6 +2263,7 @@ class IdeaActionBridge:
                     continue
                 steps.extend(self._expand_idea(idea, default_phase=ph.name,
                                                project_root=root_for_checks))
+        self._augment_synthesis_steps(steps, root_for_checks)
         steps = self._dedupe_steps(steps)
         from app.engine.idea_roadmap import PHASE_ORDER
         phase_rank = {name: i for i, name in enumerate(PHASE_ORDER)}

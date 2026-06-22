@@ -234,6 +234,33 @@ _CASES = {
         "def f(a, b):\n    return (a < b) == True\n",
         "def f():\n    return 1\n",
     ),
+    # Two develop-grade PURE synthesis transforms wired this wave through their
+    # adapters in ``_simplify_dispatch`` (same refuse-on-unsafe / guarded-gate
+    # contract). ``infer_type_hints`` drives the develop-grade provable-return
+    # inference (a changed source always carries a real ``-> T``); the no-match
+    # source is already fully annotated. ``dataclassify`` drives the boilerplate-
+    # ``__init__`` → ``@dataclass`` rewrite; the no-match source has real
+    # ``__init__`` logic the rewrite refuses. (A fixture-PATH refusal for
+    # dataclassify is proven separately in test_dataclassify_refuses_fixture_path.)
+    "infer_type_hints": (
+        "infer-type-hints",
+        "infer-type-hints",
+        "def label(name):\n    return f\"item-{name}\"\n",
+        "def label(name) -> str:\n    return f\"item-{name}\"\n",
+    ),
+    "dataclassify": (
+        "dataclassify",
+        "dataclassify",
+        "class Point:\n"
+        "    def __init__(self, x: int, y: int) -> None:\n"
+        "        self.x = x\n"
+        "        self.y = y\n",
+        "class Acct:\n"
+        "    def __init__(self, bal):\n"
+        "        if bal < 0:\n"
+        "            raise ValueError('neg')\n"
+        "        self.bal = bal\n",
+    ),
 }
 
 
@@ -489,6 +516,60 @@ def test_new_transforms_report_mode_never_applies(tmp_path: Path) -> None:
         assert out["applied"] is False, action_type
         # Read-only: the file is never modified.
         assert (tmp_path / rel).read_text(encoding="utf-8") == match_src, action_type
+
+
+def test_dataclassify_refuses_fixture_path(tmp_path: Path) -> None:
+    """The dataclassify adapter ports the develop loop's fixture-path guard: a
+    ``tests/...`` target whose content WOULD be rewritten (pure boilerplate
+    ``__init__``) is REFUSED, so the bridge never offers to rewrite a file the
+    develop loop itself declines. The same content in a NON-fixture module IS
+    rewritten — proving the refusal is path-based, not a blanket no-op."""
+    bridge = IdeaActionBridge()
+    boilerplate = _CASES["dataclassify"][2]  # the matching @dataclass-able source
+    # A fixture-path target is refused even though the content matches.
+    rel_fixture = "tests/test_models.py"
+    (tmp_path / "tests").mkdir()
+    (tmp_path / rel_fixture).write_text(boilerplate, encoding="utf-8")
+    assert bridge._generate(_step("dataclassify", rel_fixture), str(tmp_path)) is None
+    out = bridge.apply_step(_step("dataclassify", rel_fixture), str(tmp_path),
+                            mode="autonomous")
+    assert out["applied"] is False
+    assert (tmp_path / rel_fixture).read_text(encoding="utf-8") == boilerplate
+    # The SAME content under a non-fixture module is rewritten (sanity).
+    rel_mod = "models.py"
+    (tmp_path / rel_mod).write_text(boilerplate, encoding="utf-8")
+    result = bridge._generate(_step("dataclassify", rel_mod), str(tmp_path))
+    assert result is not None
+    assert "@dataclass" in result.patch_requests[0]["new_content"]
+
+
+def test_infer_type_hints_uses_provable_inference_not_shallow_none(
+        tmp_path: Path) -> None:
+    """The infer_type_hints adapter drives the DEVELOP-GRADE ``infer_annotations``
+    (a PROVABLE return type), not the shallow ``-> None`` single-function rewrite:
+    an f-string return is annotated ``-> str``."""
+    bridge = IdeaActionBridge()
+    rel = "labels.py"
+    (tmp_path / rel).write_text(_CASES["infer_type_hints"][2], encoding="utf-8")
+    result = bridge._generate(_step("infer_type_hints", rel), str(tmp_path))
+    assert result is not None
+    assert "-> str:" in result.patch_requests[0]["new_content"]
+    assert "-> None" not in result.patch_requests[0]["new_content"]
+
+
+def test_implement_stub_not_in_simplify_dispatch_and_generate_is_none(
+        tmp_path: Path) -> None:
+    """implement_stub is registered as an executable strategy but is DELIBERATELY
+    NOT a SemanticPatchResult transform: it is absent from ``_simplify_dispatch``
+    and ``_generate`` returns None for it (the in-memory patch gate has no
+    impact-scoped channel; ``apply_step`` delegates it to the develop-core path).
+    """
+    assert "implement_stub" in IdeaActionBridge._ACTION_STRATEGY
+    assert "implement_stub" not in IdeaActionBridge._simplify_dispatch()
+    bridge = IdeaActionBridge()
+    rel = "calc.py"
+    (tmp_path / rel).write_text("def total(xs) -> int:\n    ...\n", encoding="utf-8")
+    assert bridge._generate(_step("implement_stub", rel), str(tmp_path)) is None
 
 
 def test_bool_comparison_skips_bare_name(tmp_path: Path) -> None:
