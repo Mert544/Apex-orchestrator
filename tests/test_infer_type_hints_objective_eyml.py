@@ -111,6 +111,167 @@ def test_does_not_infer_keyword_only_param_from_default():
     assert infer_annotations("def f(*, n=3):\n    return n\n") is None
 
 
+# --- widened sound shapes: str / bool / numeric / collection ----------------
+
+def test_infers_str_from_fstring_return():
+    # An f-string (JoinedStr) always evaluates to a str -> sound -> str.
+    out = infer_annotations("def f(n):\n    return f'n={n}'\n")
+    assert out == "def f(n) -> str:\n    return f'n={n}'\n"
+
+
+def test_infers_str_from_multiple_string_returns():
+    src = "def f(c):\n    if c:\n        return 'a'\n    else:\n        return 'b'\n"
+    out = infer_annotations(src)
+    assert out is not None and "-> str:" in out
+
+
+def test_infers_str_from_mixed_str_literal_and_fstring():
+    # Both arms are str (a plain literal and an f-string) -> agree on str.
+    src = (
+        "def f(c, n):\n"
+        "    if c:\n"
+        "        return 'plain'\n"
+        "    else:\n"
+        "        return f'{n}'\n"
+    )
+    out = infer_annotations(src)
+    assert out is not None and "-> str:" in out
+
+
+def test_infers_bool_from_comparison_return():
+    out = infer_annotations("def f(a, b):\n    return a < b\n")
+    assert out == "def f(a, b) -> bool:\n    return a < b\n"
+
+
+def test_infers_bool_from_is_comparison():
+    out = infer_annotations("def f(x):\n    return x is None\n")
+    assert out is not None and "-> bool:" in out
+
+
+def test_infers_bool_from_not_expression():
+    out = infer_annotations("def f(x):\n    return not x\n")
+    assert out is not None and "-> bool:" in out
+
+
+def test_infers_bool_from_mixed_literal_and_comparison():
+    # `True` (bool literal) and `a == b` (comparison) both certain bool -> bool.
+    src = (
+        "def f(c, a, b):\n"
+        "    if c:\n"
+        "        return True\n"
+        "    else:\n"
+        "        return a == b\n"
+    )
+    out = infer_annotations(src)
+    assert out is not None and "-> bool:" in out
+
+
+def test_refuses_and_or_boolop_return():
+    # `a and b` returns an OPERAND (e.g. `1 and 2 == 2`), NOT necessarily a bool;
+    # it is not statically certain -> refuse.
+    assert infer_annotations("def f(a, b):\n    return a and b\n") is None
+    assert infer_annotations("def f(a, b):\n    return a or b\n") is None
+
+
+def test_infers_int_from_agreeing_int_literals():
+    src = "def f(c):\n    if c:\n        return 1\n    else:\n        return 2\n"
+    out = infer_annotations(src)
+    assert out is not None and "-> int:" in out
+
+
+def test_infers_float_from_agreeing_float_literals():
+    src = "def f(c):\n    if c:\n        return 1.0\n    else:\n        return 2.5\n"
+    out = infer_annotations(src)
+    assert out is not None and "-> float:" in out
+
+
+def test_refuses_int_float_mix():
+    # int + float disagree on concrete type -> never guess (refuse), even though
+    # an int is "a kind of" float at runtime; statically the names differ.
+    src = "def f(c):\n    if c:\n        return 1\n    else:\n        return 2.0\n"
+    assert infer_annotations(src) is None
+
+
+def test_infers_list_from_comprehension():
+    out = infer_annotations("def f(xs):\n    return [x for x in xs]\n")
+    assert out is not None and "-> list:" in out
+
+
+def test_infers_dict_from_comprehension():
+    out = infer_annotations("def f(xs):\n    return {x: 1 for x in xs}\n")
+    assert out is not None and "-> dict:" in out
+
+
+def test_infers_set_from_comprehension():
+    out = infer_annotations("def f(xs):\n    return {x for x in xs}\n")
+    assert out is not None and "-> set:" in out
+
+
+def test_refuses_generator_expression_return():
+    # A generator expression yields a `generator` object, not a list/set/etc. —
+    # not a concrete container we name -> refuse.
+    assert infer_annotations("def f(xs):\n    return (x for x in xs)\n") is None
+
+
+def test_infers_list_when_display_and_comprehension_agree():
+    # A list DISPLAY and a list COMPREHENSION both produce `list` -> agree.
+    src = (
+        "def f(c, xs):\n"
+        "    if c:\n"
+        "        return [1, 2]\n"
+        "    else:\n"
+        "        return [x for x in xs]\n"
+    )
+    out = infer_annotations(src)
+    assert out is not None and "-> list:" in out
+
+
+def test_refuses_disagreeing_comprehension_types():
+    # A list comprehension and a set comprehension disagree -> refuse.
+    src = (
+        "def f(c, xs):\n"
+        "    if c:\n"
+        "        return [x for x in xs]\n"
+        "    else:\n"
+        "        return {x for x in xs}\n"
+    )
+    assert infer_annotations(src) is None
+
+
+def test_refuses_str_mixed_with_bool():
+    # An f-string (str) and a comparison (bool) disagree -> refuse.
+    src = (
+        "def f(c, a, b):\n"
+        "    if c:\n"
+        "        return f'{a}'\n"
+        "    else:\n"
+        "        return a == b\n"
+    )
+    assert infer_annotations(src) is None
+
+
+def test_refuses_name_return_even_amid_certain_returns():
+    # One arm returns a bare name (not statically certain) -> the whole function
+    # is refused, even though the other arm is a certain str.
+    src = (
+        "def f(c, x):\n"
+        "    if c:\n"
+        "        return 'a'\n"
+        "    else:\n"
+        "        return x\n"
+    )
+    assert infer_annotations(src) is None
+
+
+def test_refuses_call_return():
+    assert infer_annotations("def f(x):\n    return len(x)\n") is None
+
+
+def test_widened_inference_is_deterministic():
+    src = "def f(a, b):\n    return a < b\n"
+    assert infer_annotations(src) == infer_annotations(src)
+
+
 # --- ambiguity is always skipped (never a guess) -----------------------------
 
 def test_skips_non_literal_return():

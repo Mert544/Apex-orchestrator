@@ -15,11 +15,17 @@ Two surfaces live here:
 What counts as PROVABLE (the only things ever annotated):
 
   - **Return type** from the function's ``return`` statements when every return
-    yields a literal of the SAME concrete type
-    (``int``/``str``/``bool``/``float``/``list``/``dict``/``tuple``/``set``/
-    ``bytes``), or ``-> None`` when the function has no value-returning ``return``
-    and no ``yield`` (a pure procedure). Mixed return types, a non-literal
-    return, a generator (``yield``), or an existing ``-> T`` are left alone.
+    yields a value of the SAME statically-certain concrete type:
+    ``int``/``str``/``bool``/``float``/``list``/``dict``/``tuple``/``set``/
+    ``bytes`` constants and displays, an f-string (``JoinedStr`` ⇒ ``str``), a
+    list/dict/set comprehension (⇒ ``list``/``dict``/``set``), and a certainly-
+    boolean expression (a comparison or ``not x`` ⇒ ``bool``). Or ``-> None``
+    when the function has no value-returning ``return`` and no ``yield`` (a pure
+    procedure). REFUSED (left alone): mixed return types (e.g. ``int``+
+    ``float``), a generator expression (yields a generator, not a container) or
+    ``and``/``or`` (returns an operand, not a bool), any non-certain return
+    (name/call/attribute/subscript/arithmetic), a ``yield`` generator, or an
+    existing ``-> T``.
 
 Why NOT a parameter type from its default value: a default does NOT constrain
 the type a parameter accepts. ``def f(x=0)`` is routinely called ``f("s")`` or
@@ -90,37 +96,82 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
 
 # Concrete literal node -> the type name to annotate with. Only these
 # unambiguous literal shapes are ever inferred.
-def _literal_type(node: ast.expr) -> str | None:
-    """The provable type NAME for a literal expression, or ``None`` if the
-    expression's type is not provable from the AST alone.
+def _constant_type(value: object) -> str | None:
+    """The provable type NAME for an ``ast.Constant`` value, or ``None``.
 
     ``bool`` is checked before ``int`` because ``True``/``False`` are
     ``ast.Constant`` with a ``bool`` value (and ``bool`` is a subclass of
     ``int`` — we want the precise ``bool``)."""
-    if isinstance(node, ast.Constant):
-        value = node.value
-        if value is None:
-            return "None"
-        if isinstance(value, bool):
-            return "bool"
-        if isinstance(value, int):
-            return "int"
-        if isinstance(value, float):
-            return "float"
-        if isinstance(value, str):
-            return "str"
-        if isinstance(value, bytes):
-            return "bytes"
-        return None
-    if isinstance(node, ast.List):
-        return "list"
-    if isinstance(node, ast.Dict):
-        return "dict"
-    if isinstance(node, ast.Set):
-        return "set"
-    if isinstance(node, ast.Tuple):
-        return "tuple"
+    if value is None:
+        return "None"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, bytes):
+        return "bytes"
     return None
+
+
+# Concrete display/comprehension node -> the type it always evaluates to. A
+# ``GeneratorExp`` is deliberately ABSENT: it yields a ``generator`` object, not
+# a ``list``/``set``, so its concrete type is not one we name — it must refuse.
+_DISPLAY_TYPES: dict[type[ast.expr], str] = {
+    ast.List: "list",
+    ast.Dict: "dict",
+    ast.Set: "set",
+    ast.Tuple: "tuple",
+    ast.ListComp: "list",
+    ast.DictComp: "dict",
+    ast.SetComp: "set",
+}
+
+
+def _literal_type(node: ast.expr) -> str | None:
+    """The provable type NAME for a return expression, or ``None`` if the
+    expression's type is not statically certain from the AST alone.
+
+    Statically certain shapes (and ONLY these — never a guess):
+      - constants: ``None``/``bool``/``int``/``float``/``str``/``bytes``;
+      - an f-string (``JoinedStr``) ⇒ always ``str``;
+      - a display/comprehension literal ⇒ its container type
+        (``list``/``dict``/``set``/``tuple``, ``ListComp``/``DictComp``/
+        ``SetComp``); a ``GeneratorExp`` yields a generator, NOT a concrete
+        container, so it is refused;
+      - a CERTAINLY-boolean expression ⇒ ``bool``: a comparison
+        (``a < b``, ``x is None``, ``y in z``) or ``not x``. ``and``/``or``
+        are NOT certain (``a and b`` returns an operand, not a bool), so they
+        are refused.
+
+    Everything else (a name, call, attribute, subscript, arithmetic, etc.) is
+    not statically certain ⇒ ``None`` (refuse)."""
+    if isinstance(node, ast.Constant):
+        return _constant_type(node.value)
+    if isinstance(node, ast.JoinedStr):
+        return "str"  # an f-string always evaluates to a str
+    display = _DISPLAY_TYPES.get(type(node))
+    if display is not None:
+        return display
+    if _is_certain_bool(node):
+        return "bool"
+    return None
+
+
+def _is_certain_bool(node: ast.expr) -> bool:
+    """True only when ``node`` PROVABLY evaluates to a ``bool``.
+
+    Certain: a comparison (``ast.Compare`` — ``a < b``, ``x is y``, ``i in s``,
+    always a ``bool``) and ``not x`` (``UnaryOp``/``Not`` — always a ``bool``).
+    NOT certain (and so excluded): ``a and b`` / ``a or b`` (``BoolOp`` returns
+    one of its OPERANDS, e.g. ``1 and 2 == 2``), and any call to ``bool(...)``
+    (a call is not statically certain here)."""
+    if isinstance(node, ast.Compare):
+        return True
+    return isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)
 
 
 def _own_returns(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Return]:
