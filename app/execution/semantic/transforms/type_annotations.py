@@ -142,10 +142,13 @@ def _literal_type(node: ast.expr) -> str | None:
         (``list``/``dict``/``set``/``tuple``, ``ListComp``/``DictComp``/
         ``SetComp``); a ``GeneratorExp`` yields a generator, NOT a concrete
         container, so it is refused;
-      - a CERTAINLY-boolean expression ⇒ ``bool``: a comparison
-        (``a < b``, ``x is None``, ``y in z``) or ``not x``. ``and``/``or``
-        are NOT certain (``a and b`` returns an operand, not a bool), so they
-        are refused.
+      - a CERTAINLY-boolean expression ⇒ ``bool``: an IDENTITY/MEMBERSHIP
+        comparison (``x is None``, ``y in z`` — the ``is``/``is not``/``in``/
+        ``not in`` operators always yield a ``bool``) or ``not x``. A rich
+        comparison (``==``/``!=``/``<``/``<=``/``>``/``>=``) is NOT certain —
+        it dispatches to an overridable dunder (``__eq__``/``__lt__``/...) that
+        may return any type — so it is refused. ``and``/``or`` are NOT certain
+        (``a and b`` returns an operand, not a bool), so they are refused.
 
     Everything else (a name, call, attribute, subscript, arithmetic, etc.) is
     not statically certain ⇒ ``None`` (refuse)."""
@@ -161,16 +164,29 @@ def _literal_type(node: ast.expr) -> str | None:
     return None
 
 
+_CERTAIN_BOOL_CMP_OPS: tuple[type[ast.cmpop], ...] = (
+    ast.Is, ast.IsNot, ast.In, ast.NotIn,
+)
+
+
 def _is_certain_bool(node: ast.expr) -> bool:
     """True only when ``node`` PROVABLY evaluates to a ``bool``.
 
-    Certain: a comparison (``ast.Compare`` — ``a < b``, ``x is y``, ``i in s``,
-    always a ``bool``) and ``not x`` (``UnaryOp``/``Not`` — always a ``bool``).
-    NOT certain (and so excluded): ``a and b`` / ``a or b`` (``BoolOp`` returns
-    one of its OPERANDS, e.g. ``1 and 2 == 2``), and any call to ``bool(...)``
-    (a call is not statically certain here)."""
+    Certain: ``not x`` (``UnaryOp``/``Not`` — always a ``bool``), and an
+    IDENTITY/MEMBERSHIP comparison whose every operator is ``is``/``is not``/
+    ``in``/``not in`` (these operators always yield a ``bool`` and cannot be
+    overridden to return otherwise — ``in``/``not in`` coerce ``__contains__``
+    to ``bool``; ``is``/``is not`` are identity checks).
+
+    NOT certain (and so excluded): a RICH comparison containing any of
+    ``==``/``!=``/``<``/``<=``/``>``/``>=`` — each dispatches to an overridable
+    rich-comparison dunder (``__eq__``/``__lt__``/...) that may return any type
+    (e.g. a sentinel's ``__eq__`` or a numpy array), so ``a == b`` is not
+    provably a ``bool``; ``a and b`` / ``a or b`` (``BoolOp`` returns one of its
+    OPERANDS, e.g. ``1 and 2 == 2``); and any ``bool(...)`` call (a call is not
+    statically certain here)."""
     if isinstance(node, ast.Compare):
-        return True
+        return all(isinstance(op, _CERTAIN_BOOL_CMP_OPS) for op in node.ops)
     return isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)
 
 

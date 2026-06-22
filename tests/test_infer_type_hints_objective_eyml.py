@@ -138,14 +138,40 @@ def test_infers_str_from_mixed_str_literal_and_fstring():
     assert out is not None and "-> str:" in out
 
 
-def test_infers_bool_from_comparison_return():
-    out = infer_annotations("def f(a, b):\n    return a < b\n")
-    assert out == "def f(a, b) -> bool:\n    return a < b\n"
+def test_refuses_bool_from_rich_comparison_return():
+    # SOUNDNESS: `a < b` dispatches to `__lt__`, which is overridable and may
+    # return any type (numpy arrays, sentinels) -> NOT provably a bool -> refuse.
+    assert infer_annotations("def f(a, b):\n    return a < b\n") is None
+
+
+def test_refuses_bool_from_equality_comparison_return():
+    # `a == b` / `a != b` dispatch to `__eq__`/`__ne__` (overridable) -> refuse.
+    assert infer_annotations("def f(a, b):\n    return a == b\n") is None
+    assert infer_annotations("def f(a, b):\n    return a != b\n") is None
+    # `value == None` (the exact modernizable idiom) must NOT gain `-> bool`.
+    assert infer_annotations("def f(value):\n    return value == None\n") is None
 
 
 def test_infers_bool_from_is_comparison():
+    # `is`/`is not` are identity checks -> always a bool (not overridable).
     out = infer_annotations("def f(x):\n    return x is None\n")
     assert out is not None and "-> bool:" in out
+    out2 = infer_annotations("def f(x):\n    return x is not None\n")
+    assert out2 is not None and "-> bool:" in out2
+
+
+def test_infers_bool_from_membership_comparison():
+    # `in`/`not in` coerce `__contains__` to a bool -> always a bool.
+    out = infer_annotations("def f(x, xs):\n    return x in xs\n")
+    assert out is not None and "-> bool:" in out
+    out2 = infer_annotations("def f(x, xs):\n    return x not in xs\n")
+    assert out2 is not None and "-> bool:" in out2
+
+
+def test_refuses_mixed_is_and_rich_comparison():
+    # A chained comparison mixing a certain op (`is`) with a rich op (`<`) is
+    # only certain if EVERY op is certain -> the `<` poisons it -> refuse.
+    assert infer_annotations("def f(a, b):\n    return a is None < b\n") is None
 
 
 def test_infers_bool_from_not_expression():
@@ -153,14 +179,27 @@ def test_infers_bool_from_not_expression():
     assert out is not None and "-> bool:" in out
 
 
-def test_infers_bool_from_mixed_literal_and_comparison():
-    # `True` (bool literal) and `a == b` (comparison) both certain bool -> bool.
+def test_refuses_mixed_literal_and_rich_comparison():
+    # `True` is certainly bool but `a == b` is NOT (overridable `__eq__`); a
+    # function mixing them is not provably bool -> refuse, no annotation.
     src = (
         "def f(c, a, b):\n"
         "    if c:\n"
         "        return True\n"
         "    else:\n"
         "        return a == b\n"
+    )
+    assert infer_annotations(src) is None
+
+
+def test_infers_bool_from_mixed_literal_and_identity_comparison():
+    # `True` and `x is None` are BOTH certainly bool -> bool.
+    src = (
+        "def f(c, x):\n"
+        "    if c:\n"
+        "        return True\n"
+        "    else:\n"
+        "        return x is None\n"
     )
     out = infer_annotations(src)
     assert out is not None and "-> bool:" in out
