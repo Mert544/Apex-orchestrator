@@ -81,3 +81,12 @@ preferred way to make the denetçi permanent and automatic.
 See `AGENTS.md` and `docs/DEVELOPING.md` for the full development model
 (Objective-Compiler, fractal goal tree, `apex develop` / `plan` / `ascend`,
 `scripts/new_objective.py`, `apex dream`).
+
+## 📌 Cross-session memory (living state — READ after the North Star)
+
+`docs/PROGRESS.md` is the **living handoff**: what the last session shipped, the
+current proof posture (gate = `python scripts/verify.py`; fast local run =
+`--chunks 16 -j 8`; self-grade A+99 with the grader's complexity ceiling **12**),
+and the **ranked next development directions**. A new session — especially a
+**local** one — should read it to continue where the previous one left off.
+Update `docs/PROGRESS.md` at the end of a session so the next one inherits state.
