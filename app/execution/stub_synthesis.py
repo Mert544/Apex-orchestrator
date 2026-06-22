@@ -1881,17 +1881,7 @@ def _fold_constant(node: ast.expr) -> object:
     if isinstance(node, ast.Constant):
         return node.value
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-        items = [_fold_constant(el) for el in node.elts]
-        if any(it is _NO_LITERAL for it in items):
-            return _NO_LITERAL
-        if isinstance(node, ast.List):
-            return items
-        if isinstance(node, ast.Set):
-            try:
-                return set(items)
-            except TypeError:
-                return _NO_LITERAL
-        return tuple(items)
+        return _fold_sequence(node)
     if isinstance(node, ast.Dict):
         return _fold_dict(node)
     if isinstance(node, ast.BinOp) and isinstance(node.op, _FOLD_BINOPS):
@@ -1899,6 +1889,23 @@ def _fold_constant(node: ast.expr) -> object:
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, _FOLD_UNARYOPS):
         return _fold_unaryop(node)
     return _NO_LITERAL
+
+
+def _fold_sequence(node: ast.List | ast.Tuple | ast.Set) -> object:
+    """Fold a list/tuple/set display whose every element is foldable, into the
+    matching container value; ``_NO_LITERAL`` when any element is non-constant or
+    a set element is unhashable."""
+    items = [_fold_constant(el) for el in node.elts]
+    if any(it is _NO_LITERAL for it in items):
+        return _NO_LITERAL
+    if isinstance(node, ast.List):
+        return items
+    if isinstance(node, ast.Set):
+        try:
+            return set(items)
+        except TypeError:
+            return _NO_LITERAL
+    return tuple(items)
 
 
 def _fold_dict(node: ast.Dict) -> object:
