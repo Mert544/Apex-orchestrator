@@ -436,6 +436,7 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
             ("sum", f"sum({a})"),
             ("mean", f"sum({a}) / len({a})"),
         ])
+        out.extend(_reduction_join_templates(a, witnesses))
     out.extend(_one_arg_builtin_templates(a, kind, witnesses))
     if kind in (None, "int") and _recursion_allowed(witnesses):
         out.extend([
@@ -646,6 +647,102 @@ def _string_floor_met(witnesses: list[tuple[str, str]]) -> bool:
         return True
     distinct = {args for args, _expected in witnesses}
     return len(distinct) >= 2
+
+
+def _reduction_join_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The 1-arg REDUCTION / JOIN family for an iterable arg, in FIXED order:
+    the witness-DERIVED shapes that PIN intent FIRST, then the value-free shapes.
+
+    Two derived shapes (each baking a witnessed literal, so each under the
+    >=2-distinct-witness overfit floor):
+
+    * ``sep.join(a)`` — for every string separator ``sep`` mined from the witnesses
+      (:func:`_string_constants`, the same derivation ``replace``/``split`` use), so
+      ``join_words(["a", "b"]) == "a b"`` reaches ``" ".join(words)``. Offered ONLY
+      when the witnessed elements are strings (:func:`_join_arg_is_str_iterable`) —
+      ``"".join`` of a non-str iterable always raises, so it could never land and
+      must not bloat the gate;
+    * ``max(a, default=k)`` / ``min(a, default=k)`` — where ``k`` is the EXPECTED
+      value of a witness whose argument is the EMPTY collection
+      (:func:`_empty_collection_defaults`): ``top([]) == 0`` pins ``default=0``. The
+      floor demands the empty-collection witness PLUS a second distinct witness (a
+      lone ``f([]) == 0`` cannot tell ``max(a, default=0)`` from a bare ``return 0``),
+      so a single witness derives no default.
+
+    Then the value-free joins (``"".join(a)``, ``" ".join(a)``) — pure, carrying no
+    witness literal, gate-verified — offered AFTER the derived shapes (so a derived
+    separator wins when both fit) and BEFORE the constant-last fallback. ``max(a)`` /
+    ``min(a)`` are already offered just above in :func:`_one_arg_templates`, so they
+    are not repeated here. Deterministic: separators / defaults in sorted order. With
+    NO witnesses (the structural view) only the value-free joins are offered (no
+    literal to derive)."""
+    out: list[tuple[str, str]] = []
+    if _string_floor_met(witnesses) and _join_arg_is_str_iterable(witnesses):
+        for sep in _string_constants(witnesses):
+            literal = ast.literal_eval(sep)
+            if literal in ("", " "):
+                continue  # value-free joins below already cover these
+            out.append((f"join({sep})", f"{sep}.join({a})"))
+    for default in _empty_collection_defaults(witnesses):
+        out.append((f"max(default={default})", f"max({a}, default={default})"))
+        out.append((f"min(default={default})", f"min({a}, default={default})"))
+    if _join_arg_is_str_iterable(witnesses):
+        out.append(("join('')", f"''.join({a})"))
+        out.append(("join(' ')", f"' '.join({a})"))
+    return out
+
+
+def _join_arg_is_str_iterable(witnesses: list[tuple[str, str]]) -> bool:
+    """True when the join shapes may be OFFERED for the single iterable arg: every
+    LITERAL witnessed argument is a list/tuple whose elements are ALL strings (a
+    ``str.join`` of a non-str element always raises, so such a shape could never
+    land). An empty collection contributes no element evidence but does not veto
+    (``join([]) == ""`` is a valid str-join). With NO witnesses (the structural
+    view) the shapes are offered so the gate decides. A non-literal / non-sequence
+    witness withholds them (we never guess the element type). Deterministic."""
+    if not witnesses:
+        return True
+    saw_str_element = False
+    for args_text, _expected in witnesses:
+        value = _literal_tuple(args_text)
+        if value is None or len(value) != 1:
+            return False
+        seq = value[0]
+        if not isinstance(seq, (list, tuple)):
+            return False
+        for el in seq:
+            if not isinstance(el, str):
+                return False
+            saw_str_element = True
+    return saw_str_element
+
+
+def _empty_collection_defaults(witnesses: list[tuple[str, str]]) -> list[str]:
+    """The default constants ``k`` for ``max(a, default=k)`` / ``min(a, default=k)``,
+    mined from any witness whose single argument is the EMPTY collection: its expected
+    value IS the default a reduction returns on an empty iterable (``top([]) == 0`` →
+    ``0``). Each default is the canonical ``repr`` source of that expected literal.
+
+    OVERFIT FLOOR: a default is offered ONLY when the empty-collection witness is
+    accompanied by at least one further DISTINCT witness (>=2 distinct argument
+    tuples) — a lone ``f([]) == 0`` is indistinguishable from a bare ``return 0`` and
+    must not pin a reduction shape. With <2 distinct witnesses, or no empty-collection
+    witness, no default is derived (the plain ``max(a)`` / ``min(a)`` cover the
+    non-empty case). Deterministic: sorted by repr, de-duplicated."""
+    if not _string_floor_met(witnesses):
+        return []
+    seen: set[str] = set()
+    for args_text, expected_text in witnesses:
+        value = _literal_tuple(args_text)
+        if value is None or len(value) != 1:
+            continue
+        seq = value[0]
+        if not isinstance(seq, (list, tuple, set, frozenset)) or len(seq) != 0:
+            continue
+        default = _literal_value(expected_text)
+        if default is not _NO_LITERAL:
+            seen.add(repr(default))
+    return sorted(seen)
 
 
 def _has_set_arg(witnesses: list[tuple[str, str]] | None) -> bool:
@@ -2232,7 +2329,19 @@ def _sequence_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple
     guard cannot tell ``xs[0]`` from ``min(xs)`` on ``head([1, 2, 3]) == 1``. A
     reordered variant is a valid input of the same type, so two bodies that
     diverge on it genuinely differ in intent. A non-orderable sequence simply
-    skips the sorted variant."""
+    skips the sorted variant.
+
+    Two further probes discriminate the REDUCTION / JOIN family:
+
+    * an EMPTY variant of each witnessed sequence (``type(seq)()``) splits the
+      empty-safe ``max(a, default=k)`` / ``min(a, default=k)`` from a plain
+      ``max(a)`` / ``min(a)`` (which raises on empty -> ``<err>``) and from each
+      other when their defaults differ;
+    * a MULTI-ELEMENT variant (the witnessed sequence with its first element
+      duplicated ahead of it) splits the join separators: ``" ".join(a)`` and
+      ``"".join(a)`` agree on a one-element list but diverge once two elements are
+      joined. Built only for an all-string sequence (a join input), so a numeric
+      reduction contract is unaffected."""
     out: list[tuple] = []
     for args, _e in witnesses:
         seq = args[0]
@@ -2241,6 +2350,9 @@ def _sequence_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple
             out.append((type(seq)(sorted(seq)),))
         except TypeError:
             pass  # heterogeneous/non-orderable — reversed alone still helps
+        out.append((type(seq)(),))  # empty edge: splits default= from plain reduce
+        if seq and all(isinstance(el, str) for el in seq):
+            out.append((type(seq)([seq[0], *seq]),))  # >=2 elems: splits join seps
     return out
 
 
