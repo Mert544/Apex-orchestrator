@@ -1365,12 +1365,12 @@ def _render_call_args(call: ast.Call) -> str | None:
 
 def _indirect_witnesses(text: str,
                         stub: StubFunction) -> tuple[list[tuple[str, str]], set[int]]:
-    """The literal witnesses recovered from the two indirect forms (parametrize
-    rows and one-level module-local helpers), plus the exact source LINES of the
-    asserts that were resolved (so the direct regex pass skips only those lines).
-    ``([], set())`` on a syntax error — the direct pass then still runs.
-    Enforceable-only: an assert inside an xfail/skip test is not mined.
-    Deterministic: source order."""
+    """The literal witnesses recovered from the three indirect forms (parametrize
+    rows, one-level module-local helpers, and same-test local-literal bindings),
+    plus the exact source LINES of the asserts that were resolved (so the direct
+    regex pass skips only those lines). ``([], set())`` on a syntax error — the
+    direct pass then still runs. Enforceable-only: an assert inside an xfail/skip
+    test is not mined. Deterministic: source order."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
@@ -1380,10 +1380,13 @@ def _indirect_witnesses(text: str,
     resolved: set[int] = set()
     p_w, p_lines = _parametrize_witnesses(tree, text, stub, excluded)
     h_w, h_lines = _helper_witnesses(tree, text, stub, excluded)
+    l_w, l_lines = _localvar_witnesses(tree, stub, excluded)
     witnesses.extend(p_w)
     witnesses.extend(h_w)
+    witnesses.extend(l_w)
     resolved |= p_lines
     resolved |= h_lines
+    resolved |= l_lines
     return witnesses, resolved
 
 
@@ -1686,6 +1689,269 @@ def _witnesses_from_one_call(call: ast.Call,
             out.append(rendered)
             resolved.add(inner_call.lineno)
     return out, resolved
+
+
+def _localvar_witnesses(tree: ast.Module, stub: StubFunction,
+                        excluded: list[tuple[int, int]]) -> tuple[list[tuple[str, str]], set[int]]:
+    """Literal witnesses recovered from SAME-TEST local-literal bindings — the
+    third indirect form (real-repo GAP #3). Within each enforced top-level
+    ``test_*``, a straight-line constant environment is built from that function's
+    OWN top-level ``Assign`` statements whose RHS is a literal, and every
+    ``symbol(...) == ...`` assert whose call-args / expected REFERENCE such a name
+    is resolved by substituting the bound literal (reusing :func:`_bind_and_render`,
+    the same substitution parametrize/helper use). Returns the recovered witnesses
+    and the exact source LINES of the asserts resolved (so the direct regex pass
+    skips ONLY those lines — otherwise the non-literal raw text ``prefix + "3"``
+    would poison the evaluable witness set).
+
+    Per-test only (no cross-test / module-scope leakage); constants-only,
+    straight-line, last-binding-wins; control-flow / augmented-assign / reassigned
+    names refuse (:func:`_straightline_literal_env`). Deterministic: tests then
+    their asserts in source order. A binding that does not turn the witness fully
+    literal yields nothing (``_bind_and_render`` returns ``None``) — never guessed."""
+    witnesses: list[tuple[str, str]] = []
+    resolved: set[int] = set()
+    for node in tree.body:
+        if not _is_enforced_test(node, excluded):
+            continue
+        env = _straightline_literal_env(node)
+        if not env:
+            continue
+        w, lines = _witnesses_from_local_env(node, stub, env)
+        witnesses.extend(w)
+        resolved |= lines
+    return witnesses, resolved
+
+
+def _straightline_literal_env(test_node: ast.FunctionDef | ast.AsyncFunctionDef
+                              ) -> dict[str, tuple[int, ast.expr]]:
+    """The straight-line constant environment of ``test_node``: maps each name bound
+    by a TOP-LEVEL ``Assign`` in the function body whose RHS is a pure literal
+    (``ast.literal_eval`` succeeds — a ``Constant`` or a list/dict/set/tuple display
+    of constants) to ``(lineno, literal_ast)``, last-binding-wins in source order.
+
+    SOUNDNESS — refuse anything not provably a straight-line constant:
+
+    * only direct children of the function body are considered (a binding inside an
+      ``if`` / ``for`` / ``while`` / ``with`` / ``try`` is NOT straight-line, so it
+      is never collected);
+    * only a single-target ``Name`` assign (``x = <lit>``) qualifies — a tuple/list
+      unpack target or attribute/subscript target is skipped;
+    * an ``AugAssign`` (``x += 1``) and an ``AnnAssign`` are NOT collected;
+    * a NAME that is the target of MORE THAN ONE qualifying straight-line assign, or
+      that ALSO appears as a target inside nested control flow / aug-assign / unpack,
+      is POISONED (removed) — we cannot pin its value at the assert, so we refuse it.
+
+    The ``lineno`` lets the caller enforce assignment-BEFORE-use. Deterministic;
+    nothing is executed."""
+    bound: dict[str, tuple[int, ast.expr]] = {}
+    poisoned: set[str] = set()
+    for stmt in test_node.body:
+        name, literal = _straightline_assignment(stmt)
+        if name is not None:
+            if name in bound:
+                poisoned.add(name)  # reassigned at top level — last value unclear here
+            bound[name] = (stmt.lineno, literal)
+            continue
+        poisoned |= _names_unsafely_bound(stmt)
+    for name in poisoned:
+        bound.pop(name, None)
+    return bound
+
+
+def _straightline_assignment(stmt: ast.stmt) -> tuple[str | None, ast.expr | None]:
+    """``(name, literal_ast)`` when ``stmt`` is a single-target ``Name = <literal>``
+    straight-line assign whose RHS is a pure literal, else ``(None, None)``. The
+    literal is validated with ``ast.literal_eval`` (a ``Constant`` or a list/dict/
+    set/tuple display of constants); a name/call/attribute/comprehension/arithmetic
+    RHS fails and is refused. Never executes anything."""
+    if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+        return None, None
+    target = stmt.targets[0]
+    if not isinstance(target, ast.Name):
+        return None, None
+    try:
+        ast.literal_eval(stmt.value)
+    except (ValueError, SyntaxError, TypeError):
+        return None, None
+    return target.id, stmt.value
+
+
+def _names_unsafely_bound(stmt: ast.stmt) -> set[str]:
+    """The names ``stmt`` binds in a way that makes them NOT safely resolvable as a
+    straight-line constant: a non-literal top-level ``Assign`` target, an
+    ``AugAssign`` / ``AnnAssign`` target, a tuple/list unpack target, or ANY name
+    assigned inside nested control flow (``if`` / ``for`` / ``while`` / ``with`` /
+    ``try``). Such names are poisoned out of the constant environment so a witness
+    referencing them is refused, never guessed. ``Name`` STORE contexts anywhere in
+    the statement subtree are collected (covers nested + unpack uniformly)."""
+    names: set[str] = set()
+    for child in ast.walk(stmt):
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+            names.add(child.id)
+    return names
+
+
+def _witnesses_from_local_env(test_node: ast.AST, stub: StubFunction,
+                              env: dict[str, tuple[int, ast.expr]]
+                              ) -> tuple[list[tuple[str, str]], set[int]]:
+    """Resolve every ``symbol(...) == ...`` assert in ``test_node`` against the
+    straight-line constant ``env``: substitute each bound literal into the call-args
+    and expected, rendering a fully-literal witness via :func:`_bind_and_render`.
+    Only names bound BEFORE the assert's source line are substituted (assignment-
+    before-use); an assert whose result is not fully literal after substitution is
+    skipped (never guessed). Returns the witnesses and the asserts' source lines (so
+    the direct pass skips them). Deterministic: asserts in source order."""
+    out: list[tuple[str, str]] = []
+    resolved: set[int] = set()
+    for call_node, expected in _symbol_assert_pairs(test_node, stub):
+        use_line = call_node.lineno
+        binding = {name: literal for name, (lineno, literal) in env.items()
+                   if lineno < use_line}
+        if not binding:
+            continue
+        rendered = _bind_and_fold(call_node, expected, binding)
+        if rendered is not None:
+            out.append(rendered)
+            resolved.add(call_node.lineno)
+    return out, resolved
+
+
+def _bind_and_fold(call_node: ast.Call, expected: ast.expr,
+                   binding: dict[str, ast.expr]) -> tuple[str, str] | None:
+    """Like :func:`_bind_and_render`, but for the same-test local-var case: after
+    substituting the bound literals, CONSTANT-FOLD each call-arg and the expected to
+    a single literal value and render its canonical ``repr`` — so an expression that
+    merely COMBINES constants (``prefix + "3"`` -> ``'item-3'``, ``base + 2`` ->
+    ``12``) becomes the fully-literal ``args_text`` / ``expected_text`` the rest of
+    the pipeline consumes via ``ast.literal_eval``.
+
+    ``None`` (witness dropped, never guessed) when, after substitution, any arg or
+    the expected still references a non-constant (a surviving ``Name``/``Call``/
+    ``Attribute``/comprehension) or uses an operator outside the safe constant-fold
+    whitelist (:func:`_fold_constant`). Positional args only; a starred/keyword arg
+    is unrecoverable (``None``). Sound: nothing from the test is executed — only a
+    tree of literals and whitelisted operators is folded in an empty sandbox."""
+    if any(isinstance(a, ast.Starred) for a in call_node.args) or call_node.keywords:
+        return None
+    rendered_args: list[str] = []
+    for arg in call_node.args:
+        text = _render_folded(arg, binding)
+        if text is None:
+            return None
+        rendered_args.append(text)
+    expected_text = _render_folded(expected, binding)
+    if expected_text is None:
+        return None
+    return ", ".join(rendered_args), expected_text
+
+
+def _render_folded(node: ast.expr, binding: dict[str, ast.expr]) -> str | None:
+    """Substitute ``binding`` into ``node`` then constant-fold the whole tree to one
+    literal, returning its ``repr`` source — or ``None`` when a non-constant survives
+    or an unsafe operator is used. The ``repr`` round-trips through the existing
+    ``ast.literal_eval``-based extractor exactly like a hand-written literal would.
+    Pure and deterministic; nothing is executed beyond folding a constants-only
+    expression in an empty namespace."""
+    substituted = _Substitute(binding).visit(ast.copy_location(_clone(node), node))
+    value = _fold_constant(substituted)
+    if value is _NO_LITERAL:
+        return None
+    return repr(value)
+
+
+# Operators/containers safe to constant-fold over already-substituted LITERALS only.
+# Bitwise/shift ops are intentionally excluded as uncommon in witness expectations;
+# adding them would only widen coverage, never weaken soundness (still constants-only).
+_FOLD_BINOPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow)
+_FOLD_UNARYOPS = (ast.UAdd, ast.USub, ast.Not)
+
+
+def _fold_constant(node: ast.expr) -> object:
+    """The literal VALUE of ``node`` when it is built ENTIRELY from constants and a
+    whitelisted set of operators / container displays — else the sentinel
+    ``_NO_LITERAL``. This is a tiny total evaluator that NEVER touches a ``Name``,
+    ``Call``, ``Attribute``, comprehension, or any non-whitelisted node, so a
+    non-constant that survived substitution refuses the witness (never guessed).
+
+    Handled: ``Constant``; list/tuple/set/dict displays of foldable elements;
+    ``BinOp`` over :data:`_FOLD_BINOPS`; ``UnaryOp`` over :data:`_FOLD_UNARYOPS`. A
+    ``ZeroDivisionError`` / ``TypeError`` from a nonsensical fold (``'a' - 'b'``)
+    also refuses. Deterministic; pure-Python, no ``eval``/builtins."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        items = [_fold_constant(el) for el in node.elts]
+        if any(it is _NO_LITERAL for it in items):
+            return _NO_LITERAL
+        if isinstance(node, ast.List):
+            return items
+        if isinstance(node, ast.Set):
+            try:
+                return set(items)
+            except TypeError:
+                return _NO_LITERAL
+        return tuple(items)
+    if isinstance(node, ast.Dict):
+        return _fold_dict(node)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, _FOLD_BINOPS):
+        return _fold_binop(node)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, _FOLD_UNARYOPS):
+        return _fold_unaryop(node)
+    return _NO_LITERAL
+
+
+def _fold_dict(node: ast.Dict) -> object:
+    """Fold a dict display whose keys and values are all foldable constants, else
+    ``_NO_LITERAL``. A ``**spread`` (a ``None`` key) refuses (non-constant shape)."""
+    out: dict = {}
+    for key_node, val_node in zip(node.keys, node.values):
+        if key_node is None:
+            return _NO_LITERAL  # ``{**other}`` spread — not a constant display
+        key = _fold_constant(key_node)
+        val = _fold_constant(val_node)
+        if key is _NO_LITERAL or val is _NO_LITERAL:
+            return _NO_LITERAL
+        try:
+            out[key] = val
+        except TypeError:
+            return _NO_LITERAL  # unhashable key
+    return out
+
+
+def _fold_binop(node: ast.BinOp) -> object:
+    """Fold a whitelisted ``BinOp`` over two foldable constants; ``_NO_LITERAL`` when
+    either side is non-constant or the operation is undefined for the values."""
+    left = _fold_constant(node.left)
+    right = _fold_constant(node.right)
+    if left is _NO_LITERAL or right is _NO_LITERAL:
+        return _NO_LITERAL
+    ops = {
+        ast.Add: lambda a, b: a + b, ast.Sub: lambda a, b: a - b,
+        ast.Mult: lambda a, b: a * b, ast.Div: lambda a, b: a / b,
+        ast.FloorDiv: lambda a, b: a // b, ast.Mod: lambda a, b: a % b,
+        ast.Pow: lambda a, b: a ** b,
+    }
+    try:
+        return ops[type(node.op)](left, right)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return _NO_LITERAL
+
+
+def _fold_unaryop(node: ast.UnaryOp) -> object:
+    """Fold a whitelisted ``UnaryOp`` over a foldable constant operand;
+    ``_NO_LITERAL`` when the operand is non-constant or the op is undefined for it."""
+    operand = _fold_constant(node.operand)
+    if operand is _NO_LITERAL:
+        return _NO_LITERAL
+    try:
+        if isinstance(node.op, ast.USub):
+            return -operand
+        if isinstance(node.op, ast.UAdd):
+            return +operand
+        return not operand
+    except TypeError:
+        return _NO_LITERAL
 
 
 def _is_enforced_test(node: ast.AST, excluded: list[tuple[int, int]]) -> bool:
