@@ -308,6 +308,13 @@ def _ideate_action_plan(args, report, target):
 
 def _print_apply_results(apply_results) -> None:
     """Print the maintenance-run summary + per-step lines (verbatim move)."""
+    if apply_results.get("verification_unavailable"):
+        # VERIFICATION UNAVAILABLE — pytest is not importable under the interpreter
+        # Apex would invoke, so the apply DECLINED before touching anything. Surface
+        # the same loud, actionable message the develop session and maintain report
+        # show, instead of a misleading "applied 0 · rolled back 0".
+        print(f"\n⚠️ {apply_results['verification_unavailable']}")
+        return
     verify_note = " · verified" if apply_results.get("verify") else ""
     commit_note = (
         f" · committed {apply_results.get('committed', 0)}"

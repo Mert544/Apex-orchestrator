@@ -1900,6 +1900,44 @@ class IdeaActionBridge:
             )
         ]
 
+    @staticmethod
+    def _verification_unavailable_summary(
+        project_root: str, mode: str
+    ) -> dict | None:
+        """An apply-summary that DECLINES because pytest is not importable, or
+        ``None`` to proceed normally.
+
+        Consults the shared entry-guard
+        (:func:`app.execution._apply_verify.verification_unavailable_interpreter`):
+        when the project has a pytest suite Apex cannot run, returns a summary with
+        zero applied/rolled-back/blocked counts and the LOUD, actionable message
+        (reusing the develop session's single source of truth so the wording is
+        identical everywhere). ``verification_unavailable``/``pytest_interpreter``
+        are additive keys the renderers surface. Returns ``None`` — the common,
+        byte-identical path — for a suite-less / non-pytest project or when pytest
+        IS importable. Deterministic + offline; the helpers are imported lazily."""
+        from app.engine.develop_session import _verification_unavailable_message
+        from app.execution._apply_verify import (
+            verification_unavailable_interpreter,
+        )
+
+        interp = verification_unavailable_interpreter(Path(project_root))
+        if interp is None:
+            return None
+        return {
+            "mode": mode,
+            "verify": True,
+            "commit": False,
+            "total_executable": 0,
+            "applied": 0,
+            "rolled_back": 0,
+            "blocked": 0,
+            "committed": 0,
+            "results": [],
+            "verification_unavailable": _verification_unavailable_message(interp),
+            "pytest_interpreter": interp,
+        }
+
     def apply_plan(
         self,
         plan: ActionPlan,
@@ -1971,6 +2009,20 @@ class IdeaActionBridge:
         each successfully-applied step is committed individually via
         GitAutoCommit, so every change is an isolated, revertible commit.
         """
+        # VERIFICATION-UNAVAILABLE short-circuit. BEFORE applying any step, decline
+        # if the project HAS a pytest suite but pytest is not importable under the
+        # interpreter Apex would invoke: nothing could be verified, so applying +
+        # reading the (necessarily failing) suite as RED would roll every fix back
+        # — a silent, total under-delivery. Decline up front instead (proof-
+        # carrying: can't verify => don't touch), counting nothing applied/verified
+        # and surfacing the SAME loud, actionable message the develop session does.
+        # Gated on ``verify`` so a ``--no-verify`` run (already unverified by
+        # choice) is byte-identical. Deterministic + memoized — at most one probe.
+        if verify:
+            decline = self._verification_unavailable_summary(project_root, mode)
+            if decline is not None:
+                return decline
+
         run = _MaintenancePass(self, project_root, mode=mode, verify=verify,
                                test_first=test_first, commit=commit,
                                avoid_signatures=avoid_signatures)
@@ -3074,6 +3126,17 @@ def render_maintenance_markdown(summary: dict, project_root: str, objective: str
     ]
     if objective:
         lines.append(f"_Objective: {objective}_")
+    if summary.get("verification_unavailable"):
+        # VERIFICATION UNAVAILABLE — pytest is not importable under the interpreter
+        # Apex would invoke, so the pass DECLINED before applying anything (nothing
+        # verified, nothing rolled back). Lead with the loud, actionable message so
+        # the user sees the real, fixable cause — never a silent "0 applied".
+        lines += [
+            "",
+            f"⚠️ **{summary['verification_unavailable']}**",
+            "",
+        ]
+        return "\n".join(lines)
     lines += [
         "",
         f"- Mode: **{summary.get('mode')}**"

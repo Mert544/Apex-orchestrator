@@ -1,11 +1,28 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.runtime.command_runner import CommandResult, CommandRunner, CommandSpec
+
+# Defensive backstop. When a pytest command is run under an interpreter that has
+# no ``pytest`` installed, the subprocess exits non-zero with a stderr line like
+# ``/usr/local/bin/python: No module named pytest`` and an EMPTY stdout — there is
+# no ``FAILED``/``ERROR`` node line, so the failing-node parser sees nothing and
+# the run is misread as a RED suite. This signature recognises that exact case so
+# the run can be flagged ``pytest_missing`` even if the proactive probe was
+# bypassed (e.g. caller-supplied ``commands``). Matches optional quoting of the
+# module name across Python versions.
+_NO_PYTEST_RE = re.compile(r"No module named ['\"]?pytest['\"]?")
+
+# Memoized result of the proactive ``-c "import pytest"`` probe, keyed by the
+# interpreter path. Pure function of the interpreter on disk (no clock/random),
+# so caching it is deterministic and keeps a session from re-spawning the probe
+# once per objective. Cleared only by process exit.
+_PYTEST_IMPORTABLE: dict[str, bool] = {}
 
 
 @dataclass
@@ -14,6 +31,44 @@ class TestRunSummary:
     commands: list[list[str]] = field(default_factory=list)
     results: list[dict] = field(default_factory=list)
     ok: bool = False
+    # HONEST verification-unavailable signal — DISTINCT from a red suite and from
+    # a no-suite project. ``True`` only when pytest is not importable under the
+    # interpreter Apex invoked (the proactive ``import pytest`` probe failed, or a
+    # pytest run failed with the "No module named pytest" signature). A change can
+    # never be verified in this state, so the orchestration layers decline rather
+    # than misread it as RED and roll every move back. Defaults falsy so a summary
+    # for a project WITH pytest is byte-identical to before.
+    pytest_missing: bool = False
+    # The interpreter path the missing pytest was probed/observed under, so the
+    # loud diagnostic can name exactly which Python needs ``pip install pytest``
+    # (or be pointed at the project's ``.venv``). Empty unless ``pytest_missing``.
+    pytest_interpreter: str = ""
+
+
+def pytest_importable(python: str) -> bool:
+    """Whether ``pytest`` can be imported under interpreter ``python`` — MEMOIZED.
+
+    A proactive ``<python> -c "import pytest"`` probe via the same allowlisted
+    :class:`CommandRunner` the test runs use (``python`` is already allowed). The
+    boolean is cached per interpreter path: the answer is a pure function of that
+    interpreter's installed packages, so a develop session probing it once per
+    objective re-uses the first result instead of re-spawning the subprocess.
+
+    Deterministic and offline (no network, no clock, no randomness). Any failure
+    to even launch the probe is treated as "not importable" — the conservative,
+    never-fake-green reading (if we cannot prove pytest is present, we must not
+    claim a run could verify anything)."""
+    cached = _PYTEST_IMPORTABLE.get(python)
+    if cached is not None:
+        return cached
+    try:
+        result = CommandRunner().run(
+            CommandSpec(command=[python, "-c", "import pytest"]))
+        ok = bool(result.ok)
+    except Exception:
+        ok = False
+    _PYTEST_IMPORTABLE[python] = ok
+    return ok
 
 
 class RunTestsSkill:
@@ -36,13 +91,54 @@ class RunTestsSkill:
         # Force the subprocess to start in the target dir, not inherit ours.
         env.pop("PYTEST_ADDOPTS", None)
 
+        # PROACTIVE verification-availability probe. When the selected command is
+        # a ``<python> -m pytest`` invocation, confirm pytest is importable under
+        # that interpreter BEFORE running it. A missing pytest would otherwise exit
+        # non-zero with an empty stdout and be misread as a RED suite (and the
+        # impact-scoping probes that follow can't import pytest EITHER), so every
+        # landing is wrongly rolled back. Flagging it here lets the orchestration
+        # layers decline honestly. Memoized per interpreter, so it costs at most
+        # one extra probe subprocess per interpreter per process.
+        interp = self._pytest_interpreter_of(selected)
+        if interp and not pytest_importable(interp):
+            summary.pytest_missing = True
+            summary.pytest_interpreter = interp
+
         overall_ok = True
         for command in selected:
             result = self.runner.run(CommandSpec(command=command, cwd=root, env=env))
             summary.results.append(self._result_to_dict(result))
             overall_ok = overall_ok and result.ok
+            # DEFENSIVE backstop: even if the proactive probe was bypassed (e.g. a
+            # caller passed ``commands`` for a non-detected interpreter), a pytest
+            # run that failed with the "No module named pytest" signature still
+            # flags the state — never let it pass as a real RED suite.
+            if not result.ok and not summary.pytest_missing:
+                self._note_missing_from_stderr(summary, command, result)
         summary.ok = overall_ok
         return summary
+
+    @staticmethod
+    def _pytest_interpreter_of(commands: list[list[str]]) -> str:
+        """The interpreter of the first ``<python> -m pytest`` command, or "".
+
+        Pure inspection of the selected command list — the proactive probe runs
+        only for a pytest invocation (a bare ``npm test`` has no Python to probe).
+        Deterministic; no clock/random."""
+        for cmd in commands:
+            if len(cmd) >= 3 and cmd[1] == "-m" and cmd[2] == "pytest":
+                return cmd[0]
+        return ""
+
+    @staticmethod
+    def _note_missing_from_stderr(
+        summary: TestRunSummary, command: list[str], result: CommandResult
+    ) -> None:
+        """Flag ``pytest_missing`` from a failed run's "No module named pytest"
+        stderr signature (the backstop for a bypassed proactive probe)."""
+        if _NO_PYTEST_RE.search(result.stderr or ""):
+            summary.pytest_missing = True
+            summary.pytest_interpreter = command[0] if command else ""
 
     def _python_for(self, root: Path) -> str:
         """The interpreter to run the target's tests with.

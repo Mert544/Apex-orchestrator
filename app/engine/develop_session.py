@@ -70,6 +70,23 @@ TIER_VERIFIED = "verified"   # suite ran green AND a test exercises the change
 TIER_WEAK = "weak"           # suite ran green but NO test references the change
 TIER_NO_SUITE = "no-suite"   # the move landed but NO suite could verify it
 
+
+def _verification_unavailable_message(interpreter: str) -> str:
+    """The LOUD, actionable decline message — names the offending interpreter.
+
+    Surfaced at every entry point when pytest is not importable under the Python
+    Apex would invoke. Honest and specific: it says what is wrong (pytest missing),
+    how to fix it (install pytest, or point Apex at the project's venv), and that
+    NOTHING was rolled back as a failure (the move loop simply declined — we never
+    fake-green, and we never roll back a move we could not verify)."""
+    return (
+        "verification unavailable — pytest is not importable under the "
+        f"interpreter running Apex ({interpreter}); install it "
+        "(pip install pytest) or point Apex at the project's interpreter "
+        "(e.g. its .venv). No contribution was rolled back as failed — "
+        "nothing could be verified."
+    )
+
 # Directories never worth snapshotting for the diff (caches, vcs, venvs, the
 # .apex memory store). Skipping them keeps the snapshot — and so the report — a
 # stable function of the project's own source, not its incidental tooling state.
@@ -155,6 +172,16 @@ class SessionReport:
     # the evidence behind a ``regression_rolled_back``. Empty unless a regression
     # was detected (and rolled back), so a clean session's artifact is unchanged.
     regressed_nodes: list[str] = field(default_factory=list)
+    # VERIFICATION-UNAVAILABLE short-circuit. ``True`` when the interpreter Apex
+    # would invoke for this project HAS a pytest suite to run but cannot import
+    # pytest — so NOTHING could be verified. This is DISTINCT from a RED baseline
+    # (the old, misleading reading) and from a suite-less project: the session
+    # declines up front, lands nothing, and rolls nothing back as "failed". The
+    # interpreter path names which Python needs ``pip install pytest`` (or to be
+    # pointed at the project's ``.venv``). Both default falsy so a project WITH
+    # pytest produces a byte-identical report.
+    pytest_missing: bool = False
+    pytest_interpreter: str = ""
 
     @property
     def total_moves(self) -> int:
@@ -180,7 +207,7 @@ class SessionReport:
         return [o for o in self.objectives if o.moves]
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "applied": self.applied,
             "total_moves": self.total_moves,
             "verified_moves": self.verified_moves,
@@ -195,9 +222,19 @@ class SessionReport:
             "baseline_suite_green": self.baseline_suite_green,
             "regression_rolled_back": self.regression_rolled_back,
             "regressed_nodes": self.regressed_nodes,
+            "pytest_missing": self.pytest_missing,
+            "pytest_interpreter": self.pytest_interpreter,
             "objectives": [o.to_dict() for o in self.objectives],
             "diff": self.diff,
         }
+        if self.pytest_missing:
+            # Surface the LOUD message in --json too, so a machine consumer gets
+            # the same actionable diagnostic the markdown shows (never a silent,
+            # mislabelled "0 executable" — name the interpreter, say nothing was
+            # rolled back). Additive: present ONLY in the pytest-missing case.
+            data["verification_unavailable"] = _verification_unavailable_message(
+                self.pytest_interpreter)
+        return data
 
 
 def _snapshot(root: Path) -> dict[str, str]:
@@ -287,6 +324,20 @@ def _diff_snapshots(before: dict[str, str],
             chunk += "\n"
         chunks.append(chunk)
     return files, added, removed, "".join(chunks)
+
+
+def _verification_unavailable(root: Path) -> str | None:
+    """The interpreter under which verification is unavailable, or ``None``.
+
+    Thin wrapper over the shared entry-guard
+    (:func:`app.execution._apply_verify.verification_unavailable_interpreter`) so
+    the session declines BEFORE any move work when the project has a pytest suite
+    Apex cannot run (pytest not importable under the interpreter it would invoke).
+    Returns ``None`` (the common path) for a suite-less / non-pytest project or
+    when pytest IS importable — both of which proceed exactly as before."""
+    from app.execution._apply_verify import verification_unavailable_interpreter
+
+    return verification_unavailable_interpreter(root)
 
 
 def _baseline_suite_green(root: Path) -> bool:
@@ -466,6 +517,22 @@ def run_develop_session(
     root = Path(project_root)
     before = _snapshot(root) if apply else {}
 
+    # VERIFICATION-UNAVAILABLE short-circuit. BEFORE any move work, check whether
+    # the interpreter Apex would invoke can import pytest. If the project HAS a
+    # pytest suite but pytest is missing, NOTHING can be verified: reading the
+    # baseline as RED and rolling every landing back would be a silent, total
+    # under-delivery. Decline up front instead — land nothing, roll nothing back,
+    # set the loud flag the renderer surfaces. Gated on ``verify`` so an explicit
+    # ``--no-verify`` run (which already declares its moves UNVERIFIED) is
+    # byte-identical. Deterministic + memoized, so this costs at most one probe.
+    if verify:
+        interp = _verification_unavailable(root)
+        if interp is not None:
+            report = SessionReport(applied=apply)
+            report.pytest_missing = True
+            report.pytest_interpreter = interp
+            return report
+
     # Probe the baseline suite ONCE, UP FRONT — before any objective runs — and
     # cache the bool. On a RED baseline (a "finish my project" repo whose suite
     # fails for an UNRELATED reason — an unfinished stub in some other module) the
@@ -537,6 +604,16 @@ def _headline_lines(report: SessionReport) -> list[str]:
     rendering them reads as broken — point at ``--apply`` instead; the
     per-objective breakdown already lists each candidate move."""
     head = ["# Develop session — concrete objectives, one motion", ""]
+    if report.pytest_missing:
+        # Verification is unavailable: do NOT report a landed/ready count (there is
+        # none, and a "0 contribution(s)" headline reads as a silent failure). Lead
+        # with the honest decline; the body carries the actionable instructions.
+        head += [
+            "**Apex declined — verification is unavailable.** pytest is not "
+            f"importable under the interpreter running Apex (`{report.pytest_interpreter}`), "
+            "so no contribution could be verified, landed, or rolled back.", "",
+        ]
+        return head
     if report.applied:
         head += [
             f"**Apex landed {report.total_moves} contribution(s)** across "
@@ -595,7 +672,10 @@ def _verification_lines(report: SessionReport) -> list[str]:
 def _render_summary(report: SessionReport) -> list[str]:
     """The headline + per-objective breakdown lines (no diff)."""
     lines = _headline_lines(report)
-    if report.applied:
+    # The pytest-missing decline carries NO verification stats (nothing ran), so
+    # skip the "N verified / backstop" block that would read as a hollow "0
+    # verified" — the loud decline message in the breakdown below says it plainly.
+    if report.applied and not report.pytest_missing:
         lines += _verification_lines(report)
     lines.append("")
     lines.append("## Per-objective breakdown")
@@ -630,6 +710,18 @@ def _nothing_landed_lines(report: SessionReport) -> list[str]:
       * otherwise (genuinely satisfied, or the baseline was never probed) — keep
         the positive "already satisfied" message byte-for-byte, so a clean GREEN
         project's report is unchanged from before."""
+    if report.pytest_missing:
+        # NOT "nothing to do" and NOT a RED suite: pytest is not importable under
+        # the interpreter Apex would invoke, so NOTHING could be verified. The
+        # session declined up front (proof-carrying: can't verify => don't touch);
+        # nothing landed and nothing was rolled back as failed. Lead with the LOUD,
+        # actionable message naming the interpreter so this is never a silent
+        # mislabelled "0 executable".
+        return [
+            "_⚠️ "
+            + _verification_unavailable_message(report.pytest_interpreter)
+            + "_",
+        ]
     if report.regression_rolled_back:
         # The empty contribution list here is NOT "nothing to do" — work landed
         # then was UN-landed because it regressed a previously-green test. Say so

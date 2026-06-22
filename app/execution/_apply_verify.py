@@ -23,13 +23,16 @@ import re
 
 __all__ = [
     "NO_SUITE",
+    "VERIFICATION_UNAVAILABLE",
     "function_of",
     "mark_no_suite",
+    "mark_verification_unavailable",
     "regressed_functions",
     "run_full_suite_verification",
     "stamp_coverage_strength",
     "suite_baseline_green",
     "suite_failing_nodes",
+    "verification_unavailable_interpreter",
 ]
 
 # pytest's short-summary failure lines name every failing node id, e.g.
@@ -201,6 +204,69 @@ def mark_no_suite(out: dict) -> None:
     out["verification_strength"] = strength
 
 
+# HONEST verification-UNAVAILABLE tier — a SIBLING of ``NO_SUITE``, never folded
+# into it. ``NO_SUITE`` means "this project has no tests"; this means "this
+# project HAS tests, but the interpreter Apex invoked cannot import pytest, so
+# NOTHING could be run". Conflating the two would itself be dishonest: a
+# pytest-missing run is not a suite-less project, and (the original bug) it is not
+# a RED suite either. The tier is emitted purely from ``summary.pytest_missing``
+# — a deterministic fact about the interpreter on disk, no clock/random.
+VERIFICATION_UNAVAILABLE = "verification-unavailable"
+
+
+def mark_verification_unavailable(out: dict, interpreter: str) -> None:
+    """Stamp the explicit "pytest is not importable, so nothing could run"
+    disclosure onto ``out`` (additive — touched ONLY on the pytest-missing path,
+    so a project WITH pytest produces a byte-identical result).
+
+    Mirrors :func:`mark_no_suite` but with a DISTINCT level so the report and proof
+    artifact can tell "no tests exist" from "tests exist but pytest is missing"
+    from "tests failed". Records:
+
+      * ``suite_available`` -> ``False`` (nothing could run);
+      * ``verification_unavailable`` -> ``True`` and ``pytest_interpreter`` -> the
+        offending interpreter path, so the loud message can name it;
+      * ``verification_strength.level`` -> ``"verification-unavailable"``.
+    """
+    out["suite_available"] = False
+    out["verification_unavailable"] = True
+    out["pytest_interpreter"] = interpreter
+    strength = dict(out.get("verification_strength") or {})
+    strength["level"] = VERIFICATION_UNAVAILABLE
+    strength["suite_available"] = False
+    out["verification_strength"] = strength
+
+
+def verification_unavailable_interpreter(root: Path) -> str | None:
+    """The interpreter path under which verification is UNAVAILABLE, or ``None``.
+
+    The shared entry-guard the orchestration layers (the develop session, the
+    maintenance/ideate bridge) consult BEFORE doing any move work: if the
+    interpreter the runner would invoke for ``root`` cannot import pytest, they
+    must decline up front — never read the baseline as RED, never roll a move
+    back as "failed", never claim "verified" (proof-carrying: can't verify => don't
+    touch). Returns that interpreter path so the decline message can name it.
+
+    Returns ``None`` (the common, byte-identical path) when there is no detectable
+    pytest suite (a non-pytest / suite-less project is NOT a verification-
+    unavailable one — it has the honest ``NO_SUITE`` story) or when pytest IS
+    importable. Deterministic and offline — reuses ``RunTestsSkill`` exactly as the
+    rest of this tail imports it lazily, so it never forms an import cycle."""
+    from app.skills.execution.run_tests import (
+        RunTestsSkill,
+        pytest_importable,
+    )
+
+    skill = RunTestsSkill()
+    for cmd in skill._detect_commands(root):
+        if len(cmd) >= 3 and cmd[1] == "-m" and cmd[2] == "pytest":
+            interp = cmd[0]
+            if not pytest_importable(interp):
+                return interp
+            return None
+    return None
+
+
 def suite_baseline_green(root: Path) -> bool:
     """One-time BASELINE pre-flight: was the suite ALREADY green before any fix?
 
@@ -279,6 +345,20 @@ def run_full_suite_verification(
     from app.skills.execution.run_tests import RunTestsSkill
 
     summary = RunTestsSkill().run(str(root))
+    if getattr(summary, "pytest_missing", False):
+        # VERIFICATION UNAVAILABLE — pytest is not importable under the interpreter
+        # Apex invoked, so the run proved NOTHING. This is NOT a RED suite (the
+        # original bug returned False here and the caller rolled the change back as
+        # "failed") and NOT a no-suite project. Stamp the DISTINCT tier, leave the
+        # change applied WITHOUT a rollback, and return True so the caller keeps it
+        # un-touched — proof-carrying: we never claim "verified", and we never roll
+        # back a move we simply could not verify.
+        out["verified"] = False
+        out["test_evidence"] = summarize_test_run(summary)
+        mark_verification_unavailable(
+            out, getattr(summary, "pytest_interpreter", ""))
+        out["rolled_back"] = False
+        return True
     out["verified"] = bool(summary.ok)
     out["test_evidence"] = summarize_test_run(summary)
     if summary.ok and summary.commands and strength_inputs is not None:
