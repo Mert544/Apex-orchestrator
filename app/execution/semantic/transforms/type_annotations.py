@@ -149,6 +149,12 @@ def _literal_type(node: ast.expr) -> str | None:
         it dispatches to an overridable dunder (``__eq__``/``__lt__``/...) that
         may return any type — so it is refused. ``and``/``or`` are NOT certain
         (``a and b`` returns an operand, not a bool), so they are refused.
+      - a PROVABLY-str method call ⇒ ``str``: ``<receiver>.<method>(...)`` where
+        ``<receiver>`` is itself provably ``str`` (recursively — a str constant,
+        an f-string, or a provably-str method call, so ``','.join(x).upper()``
+        chains) and ``<method>`` is in :data:`_STR_RETURNING_METHODS` (str
+        methods that ALWAYS return ``str``). See
+        :func:`_str_method_call_returns_str` for the soundness rules.
 
     Everything else (a name, call, attribute, subscript, arithmetic, etc.) is
     not statically certain ⇒ ``None`` (refuse)."""
@@ -161,7 +167,52 @@ def _literal_type(node: ast.expr) -> str | None:
         return display
     if _is_certain_bool(node):
         return "bool"
+    if _str_method_call_returns_str(node):
+        return "str"
     return None
+
+
+# str methods that ALWAYS return a ``str`` when they return at all. Excluded by
+# design: ``split``/``rsplit``/``splitlines``/``partition``/``rpartition``
+# (list/tuple), ``encode`` (bytes), ``find``/``rfind``/``index``/``count`` (int),
+# and every predicate (``startswith``/``isdigit``/... ⇒ bool). When unsure
+# whether a method is always-str, it is EXCLUDED (conservative).
+_STR_RETURNING_METHODS: frozenset[str] = frozenset({
+    "join", "format", "format_map", "upper", "lower", "strip", "lstrip",
+    "rstrip", "replace", "title", "capitalize", "casefold", "swapcase",
+    "center", "ljust", "rjust", "zfill", "expandtabs", "translate",
+    "removeprefix", "removesuffix",
+})
+
+
+def _str_method_call_returns_str(node: ast.expr) -> bool:
+    """True only when ``node`` is a ``<receiver>.<method>(...)`` call that
+    PROVABLY evaluates to a ``str``.
+
+    Both must hold:
+      1. ``<receiver>`` is PROVABLY ``str`` — defined RECURSIVELY via
+         :func:`_literal_type` (``_literal_type(receiver) == "str"``): a ``str``
+         constant, an f-string, or itself a provably-str method call (so
+         ``','.join(x).upper()`` and ``f"a{n}".strip()`` chain soundly). A bare
+         ``ast.Name`` receiver (``name.strip()`` where ``name`` is a parameter
+         of unknown type) is NOT provably str ⇒ refuse — never assume a
+         parameter is a ``str``.
+      2. ``<method>`` is in :data:`_STR_RETURNING_METHODS` — a str method that
+         ALWAYS returns ``str``. Methods returning non-str (``split`` ⇒ list,
+         ``encode`` ⇒ bytes, ``find`` ⇒ int, ``startswith`` ⇒ bool) are
+         excluded and so refuse.
+
+    Call ARGUMENTS are not inspected: ``join``/``format`` return a ``str``
+    regardless of args (they raise on bad args, but if they RETURN it is a str).
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return False
+    if func.attr not in _STR_RETURNING_METHODS:
+        return False
+    return _literal_type(func.value) == "str"
 
 
 _CERTAIN_BOOL_CMP_OPS: tuple[type[ast.cmpop], ...] = (

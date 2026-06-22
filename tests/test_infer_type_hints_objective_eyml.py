@@ -311,6 +311,105 @@ def test_widened_inference_is_deterministic():
     assert infer_annotations(src) == infer_annotations(src)
 
 
+# --- provably-str-rooted method calls (-> str) -------------------------------
+
+def test_infers_str_from_str_literal_join():
+    # `','.join(xs)` — the receiver is a str CONSTANT and `join` always returns
+    # a str -> provably str.
+    out = infer_annotations("def f(xs):\n    return ','.join(xs)\n")
+    assert out == "def f(xs) -> str:\n    return ','.join(xs)\n"
+
+
+def test_infers_str_from_empty_str_join():
+    out = infer_annotations("def f(parts):\n    return ''.join(parts)\n")
+    assert out is not None and "-> str:" in out
+
+
+def test_infers_str_from_str_literal_format():
+    out = infer_annotations("def f(x):\n    return \"{}\".format(x)\n")
+    assert out is not None and "-> str:" in out
+
+
+def test_infers_str_from_fstring_method_call():
+    # The receiver is an f-string (provably str) and `strip` returns str.
+    out = infer_annotations("def f(n):\n    return f'a{n}'.strip()\n")
+    assert out is not None and "-> str:" in out
+
+
+def test_infers_str_from_chained_str_method_calls():
+    # `','.join(xs).upper()` — the inner join is provably str, so the chained
+    # `.upper()` on it is provably str too (recursive receiver rule).
+    out = infer_annotations("def f(xs):\n    return ','.join(xs).upper()\n")
+    assert out is not None and "-> str:" in out
+
+
+def test_refuses_str_method_on_name_receiver():
+    # SOUNDNESS: `name` is a parameter of UNKNOWN type — `name.strip()` is only
+    # str if `name` is a str, which is not provable -> refuse. Never assume a
+    # parameter is a str.
+    assert infer_annotations("def f(name):\n    return name.strip()\n") is None
+
+
+def test_refuses_split_returns_list_not_str():
+    # `s.split(',')` returns a LIST; even with a str-literal-looking receiver,
+    # `split` is not in the str-returning whitelist -> refuse.
+    assert infer_annotations("def f():\n    return 's'.split(',')\n") is None
+
+
+def test_refuses_encode_returns_bytes_not_str():
+    assert infer_annotations("def f():\n    return 's'.encode()\n") is None
+
+
+def test_refuses_find_returns_int_not_str():
+    assert infer_annotations("def f():\n    return 's'.find('x')\n") is None
+
+
+def test_refuses_str_method_on_non_str_rooted_receiver():
+    # `obj` is an unknown-typed name, so `obj.method()` is not provably str even
+    # though `method` were whitelisted-shaped -> refuse on the receiver.
+    assert infer_annotations("def f(obj):\n    return obj.upper()\n") is None
+
+
+def test_str_method_call_inference_is_deterministic():
+    src = "def f(xs):\n    return ','.join(xs).upper()\n"
+    assert infer_annotations(src) == infer_annotations(src)
+
+
+def test_str_literal_and_fstring_return_no_regression():
+    # Control: the pre-existing str-literal / f-string return shapes still land
+    # exactly as before alongside the new method-call shape.
+    assert infer_annotations("def f():\n    return 'x'\n") == (
+        "def f() -> str:\n    return 'x'\n")
+    assert infer_annotations("def f(n):\n    return f'n={n}'\n") == (
+        "def f(n) -> str:\n    return f'n={n}'\n")
+
+
+def test_refuses_str_method_call_mixed_with_non_str_return():
+    # One arm is a provably-str join, the other a bare name (not provable) ->
+    # the whole function refuses (existing disagreement rule preserved).
+    src = (
+        "def f(c, xs, y):\n"
+        "    if c:\n"
+        "        return ','.join(xs)\n"
+        "    else:\n"
+        "        return y\n"
+    )
+    assert infer_annotations(src) is None
+
+
+def test_str_method_call_agrees_with_str_literal():
+    # A str-literal arm and a provably-str method-call arm agree on str -> str.
+    src = (
+        "def f(c, xs):\n"
+        "    if c:\n"
+        "        return 'a'\n"
+        "    else:\n"
+        "        return ','.join(xs)\n"
+    )
+    out = infer_annotations(src)
+    assert out is not None and "-> str:" in out
+
+
 # --- ambiguity is always skipped (never a guess) -----------------------------
 
 def test_skips_non_literal_return():
