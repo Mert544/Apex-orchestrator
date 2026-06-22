@@ -30,6 +30,20 @@
   stub / real-logic class / unprovable return / güvenlik bulguları **doğru reddedildi**;
   byte-identical, `unshare -rn` offline, zero-token.
 
+**Aynı oturum — develop-core + dürüstlük dalgaları (üçü de birleşik full-gate yeşil, A+99):**
+- `13168c5` **feat(verify): pytest-not-importable distinct honest tier** — Apex'i çalıştıran
+  yorumlayıcı pytest'e sahip değilse artık "suite RED" sanılmaz; ayrı `verification-unavailable`
+  tier'ı (NO_SUITE'e KATILMADAN) + her giriş noktasında (develop/ideate/maintain) yüksek-sesli,
+  yorumlayıcıyı-adıyla-söyleyen mesaj; proof-carrying (doğrulayamayınca land ETMEZ). Buyer-proof'un
+  bulduğu **sessiz tam-teslimat-açığını** kapatır. (run_tests/_apply_verify/develop_session/
+  idea_action_bridge/cli_ideate; green/red/no-suite byte-identical.)
+- `921de98` **feat(stub-synthesis): sabit-anahtar indeksleme `a[k]`** — iç pozisyonlar (`xs[1]`,
+  `xs[2]`) artık sentezlenebilir; indeks witness'ların tip-tam kesişiminden, ≥2-witness tabanı +
+  mevcut canary/accept gate'leri değişmeden (0/negatif indeks first/last builtin'lerinin).
+- `0687fc3` **feat(infer-type-hints): aynı-tip literal binary** — `1+2`→int, `'a'+'b'`→str,
+  `[1]+[2]`→list, `(1,)+(2,)`→tuple (Add/Sub/Mult/Mod/FloorDiv; **Pow/Div/bool sağlamlık için
+  hariç**; name/mixed/non-literal reddedilir — değer tip-sınırı değildir).
+
 **— önceki oturum —**
 
 **Sentez gövde aileleri (Apex'in artık yazabildiği yeni kod):**
@@ -74,6 +88,12 @@
   kırıklarını full suite koşmadan yakalar).
   - **HIZLI (yerel, 32GB/Core Ultra 9):** `python scripts/verify.py --chunks 16 -j 8` (~6-10 dk).
   - Burada (4 çekirdek/15GB) `-j 2` ile ~30 dk, tepe RAM 2.8GB. Varsayılan sıralı = OOM-güvenli.
+    Bu oturum `-j 4` ile ~650s, sorunsuz.
+- **⚠️ Worktree izolasyonu GÜVENİLMEZ:** bu ortamda `isolation: worktree` bazen **eski tabandan**
+  checkout açar (gözlemlendi: `54962d3`, HEAD'den 1114 commit geride → hedef dosya orada YOK;
+  başka bir worktree doğru `4d9466c`'teydi — tutarsız). **Kod-yazan mühendisleri ANA AĞAÇTA**
+  çalıştır (worktree değil), git komutu yasakla + tek-yazar/dosya. (#D worktree'de bloklandı,
+  ana ağaçta indi.) Ana ağaçta paralel = çakışma → **ayrık-dosya + sıralı** koştur.
 - **Öz-not invaryantı A+99:** grader karmaşıklık tavanı **12** (`app.tools.code_metrics.function_complexities`, ruff C901'den FARKLI/daha sıkı). Yeni fonksiyonu >12 bırakırsan `test_*_self_grade*` / `*a_plus_99` KIRILIR. Kontrol:
   `python -c "from app.tools.code_metrics import function_complexities as f; print([(n,cx) for n,l,cx in f(open('<dosya>').read()) if cx>12])"` → `[]` olmalı.
 - **Buyer-proof saha testi:** bağımsız bir projede tüm yetenekler **gerçek kod indirdi**; determinism (byte-byte), çevrimdışı (`unshare -n`), sıfır-token doğrulandı; `==`→bool reddi sahada teyit edildi.
@@ -89,28 +109,25 @@
    ve `--apply` ile **landable**; grounding `idea_synthesis_signals.py`, additive bridge
    augmentasyonu, seeder'a dokunulmadı. Buyer-proof bağımsız projede doğruladı.
 
-**← SIRADAKİ ÖNCELİK (bu oturumun buyer-proof + scout ordusundan RAFİNE; somut-landing önceliğiyle):**
-- **#A (EN YÜKSEK DEĞER) — Yorumlayıcı/pytest uyumsuzluğunu YÜKSEK SESLE yüzeye çıkar.**
-  Buyer-proof: Apex'i çalıştıran yorumlayıcı pytest'e sahip değilse (`sys.executable -m
-  pytest` → "No module named pytest"), develop-kalite landing'ler **sessizce** düşer
-  (suite RED sanılır, `0 executable`), kullanıcıya uyarı yok → gerçek makinede **tam-
-  teslimat-açığı**. Küçük, dürüstlük-odaklı, en yüksek değer.
+**✅ İNDİ (bu oturum, üçü birden, birleşik full-gate yeşil):** #A yorumlayıcı/pytest dürüst
+tier'ı (`13168c5`) · #D sabit-anahtar indeksleme (`921de98`) · #E aynı-tip literal binary (`0687fc3`).
+
+**← SIRADAKİ ÖNCELİK (somut-landing önceliğiyle):**
 - **#B — src-layout import-root probe** (eski #3'ün RAFİNE hali): kanonik DÜZ vaka zaten
   çözülmüş (`_has_flat_pytest_suite`); hayatta kalan boşluk **src-layout** (`src/pkg/...`,
   test `import pkg`): `PYTHONPATH=root` tek başına → collection-error → yanlışlıkla RED.
   Fix TEK yer: `run_tests.py`'de `_import_roots(root)` (bounded/sorted/root-first; Apex'in
   kendi `app/`'ini gölgeleme). Downstream consumer'lara (cli_autonomy/objective_compiler/
-  develop_session/proof_of_fix) **DOKUNMA** — fix upstream, dar.
+  develop_session/proof_of_fix) **DOKUNMA** — fix upstream, dar. **NOT:** #A artık
+  `run_tests.py`'ye `pytest_importable`/tespit ekledi → `_import_roots`'u onunla dikkatli birleştir.
 - **#C — raporlama dürüstlük uzlaştırması:** apply sayacı sentez landing'lerini eksik
   sayıyor; `--json` blocked-satır şeması tutarsız; geri-sarılan create_test_stub artık
-  dosya bırakıyor.
-- **#D — sentez şablonu +1:** sabit-anahtar indeksleme `a[k]` (≥2-witness + tip-tam +
-  canary; ~8 LOC, `stub_synthesis.py`). (2. sıra: iki-witness ternary.)
-- **#E — literal tip-çıkarımı:** aynı-tip literal binary (`1+2`→int, `'a'+'b'`→str;
-  ~12 LOC, `type_annotations.py`); sağlam, dar. Takip: unary numeric, `str/list*int`.
+  dosya bırakıyor. (`idea_action_bridge.py` apply-summary.)
 - **JSDoc-only JS/TS lander** (Ar-Ge #2): tek çevrimdışı-sağlam JS adımı (yorum-only; en
   kötü hata = yanlış yorum, bozuk kod değil; saf-Python 3 yapısal kontrol + `no-suite`
   damga). Ötesi vendored offline parser ister → o gelene dek recommend-only.
+- **Sentez genişletme follow-up'ları:** #D 2. sıra **iki-witness ternary**; #E takip
+  **unary numeric** + `str/list*int`. (develop-core kod-yazma gücü; sağlamlık disiplini birebir.)
 - **PARK (North-Star sürücüsü DEĞİL — moat cilası):** coverage backlog (en riskli:
   `app/execution/semantic/transforms/_apply_helpers.py`, fan-in 10, 0 direct test);
   determinizm/fake-green sweep (0 canlı delik; `nan`→`math.isfinite` H1 latent).
