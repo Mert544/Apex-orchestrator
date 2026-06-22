@@ -367,12 +367,24 @@ def _regressed_nodes(baseline_failing: frozenset[str],
                      after_failing: frozenset[str]) -> frozenset[str]:
     """The node ids that were GREEN at baseline but are RED after the session.
 
-    The sound rollback signal: ``after_failing - baseline_failing``. A node that
-    was already failing at baseline (an unsynthesizable stub's pinned test) is NOT
-    a regression — it was red before Apex touched anything, so keeping it red is
-    honest disclosure, never an over-rollback. A node ABSENT from baseline_failing
-    that now fails is a previously-green test the session broke."""
-    return after_failing - baseline_failing
+    Delegates to the shared TEST-FUNCTION-granularity diff
+    (:func:`app.execution._apply_verify.regressed_functions`): a node is charged as
+    a regression ONLY when its test FUNCTION (``path::func``, the ``[...]``
+    parametrize suffix stripped) had NO failing node at baseline. This is sound
+    where a raw ``after - baseline`` set difference is NOT:
+
+      * a node already failing at baseline (an unsynthesizable stub's pinned test)
+        is NOT a regression — honest disclosure, never an over-rollback;
+      * a ``@parametrize`` case whose id SHIFTED on a still-red function
+        (``test_lookup[a-1]`` -> ``test_lookup[x-1]``, the literal data legitimately
+        changed by a transform) is NOT a new failure — the function was red before;
+      * a function MASKED at baseline (behind a collection error since cleared) is
+        NOT charged — it was never proven green. ``--continue-on-collection-errors``
+        keeps it collected in both runs, but the function-granularity guard makes
+        the unmask case safe regardless. Deterministic — sorted sets, no clock."""
+    from app.execution._apply_verify import regressed_functions
+
+    return regressed_functions(baseline_failing, after_failing)
 
 
 def _maybe_rollback_regression(

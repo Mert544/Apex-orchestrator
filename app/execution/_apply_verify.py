@@ -23,7 +23,9 @@ import re
 
 __all__ = [
     "NO_SUITE",
+    "function_of",
     "mark_no_suite",
+    "regressed_functions",
     "run_full_suite_verification",
     "stamp_coverage_strength",
     "suite_baseline_green",
@@ -39,7 +41,71 @@ __all__ = [
 _NODE_LINE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
 
 
-def suite_failing_nodes(root: Path) -> tuple[bool, frozenset[str]]:
+def _pytest_failing_cmd(root: Path) -> list[list[str]]:
+    """The runner's own pytest command(s), with collection errors made NON-FATAL.
+
+    A single test/conftest with an import or syntax error makes pytest print
+    ``Interrupted: N error(s) during collection`` and run NOTHING — the whole
+    suite is masked behind one ``ERROR <file>`` line, so a regression to a REAL
+    test never appears in the failing-node set and is silently kept (the
+    collection-interrupt BYPASS). Threading pytest's ``--continue-on-collection-errors``
+    makes the un-collectable file report as an ERROR node (same in both runs) while
+    the REST of the suite actually runs, so the failing-node set is COMPLETE and
+    comparable and a real regression becomes visible.
+
+    Built from the runner's OWN detected command (so the target's interpreter /
+    venv is preserved). The flag is appended ONLY to pytest invocations and ONLY
+    once; a non-pytest command (``npm test``) is returned unchanged. When there is
+    NO collection error the flag is a no-op, so a clean suite's run is
+    behaviourally identical. Returns an empty list when no suite is detectable."""
+    from app.skills.execution.run_tests import RunTestsSkill
+
+    detected = RunTestsSkill()._detect_commands(root)
+    out: list[list[str]] = []
+    for cmd in detected:
+        if "pytest" in cmd and "--continue-on-collection-errors" not in cmd:
+            cmd = [*cmd, "--continue-on-collection-errors"]
+        out.append(cmd)
+    return out
+
+
+def function_of(node_id: str) -> str:
+    """The TEST-FUNCTION identity of a pytest node id — its ``[...]`` suffix stripped.
+
+    ``tests/t.py::test_lookup[a-1]`` and ``tests/t.py::test_lookup[x-1]`` are the
+    SAME function ``tests/t.py::test_lookup`` parametrized over different data. The
+    rollback backstop diffs at THIS granularity so a transform that legitimately
+    changes the literal data feeding a ``@parametrize`` (shifting the case ids of a
+    still-RED function) is not mistaken for a brand-new failure. A node with no
+    ``[`` (the common case) returns unchanged. Pure/deterministic — no clock."""
+    head = node_id.split("[", 1)[0]
+    return head
+
+
+def _file_of(node_id: str) -> str:
+    """The test FILE a node id belongs to — everything before the first ``::``.
+
+    A collection-error node is bare (``tests/t.py``, no ``::``) and returns itself;
+    a per-test node (``tests/t.py::test_x``) returns ``tests/t.py``. Lets the
+    regression diff recognise that a function newly failing AFTER lives in a file
+    that had a COLLECTION ERROR at baseline (so it was masked, never proven green)."""
+    return node_id.split("::", 1)[0]
+
+
+def _collection_error_files(failing: frozenset[str]) -> frozenset[str]:
+    """The FILE-level collection-error nodes in a failing set (bare paths, no ``::``).
+
+    With ``--continue-on-collection-errors`` an un-collectable module reports as a
+    bare ``ERROR <file>`` node while its per-test functions never run. Knowing those
+    files lets the diff treat a function newly failing AFTER (because the session
+    CLEARED the collection error and unmasked pre-existing failures) as NOT a
+    regression — it was masked, not green, at baseline."""
+    return frozenset(n for n in failing if "::" not in n)
+
+
+def suite_failing_nodes(
+    root: Path,
+) -> tuple[bool, frozenset[str]]:
     """One full-suite run, reduced to ``(suite_available, failing_node_ids)``.
 
     Runs the project's full test suite ONCE (the same runner the baseline
@@ -47,6 +113,12 @@ def suite_failing_nodes(root: Path) -> tuple[bool, frozenset[str]]:
     every failing/erroring pytest node id parsed from the short-summary lines
     (``FAILED <node>`` / ``ERROR <node>``). ``suite_available`` is False when no
     test command is detectable.
+
+    Collection errors are made NON-FATAL (pytest ``--continue-on-collection-errors``)
+    so a single un-collectable module cannot mask the whole suite: it reports as an
+    ERROR node in BOTH baseline and after (unchanged, so never a false regression)
+    while every other test actually runs, making a real regression visible. When
+    there is NO collection error the flag is a no-op and the run is identical.
 
     This is the granularity the session's end-of-session rollback backstop diffs:
     a node that FAILED at baseline but is absent here recovered; a node ABSENT at
@@ -56,12 +128,46 @@ def suite_failing_nodes(root: Path) -> tuple[bool, frozenset[str]]:
     imported lazily exactly as the rest of this tail does."""
     from app.skills.execution.run_tests import RunTestsSkill
 
-    summary = RunTestsSkill().run(str(root))
+    commands = _pytest_failing_cmd(root)
+    if not commands:
+        return False, frozenset()
+    summary = RunTestsSkill().run(str(root), commands=commands)
     nodes: set[str] = set()
     for res in summary.results or []:
         text = (res.get("stdout") or "") + (res.get("stderr") or "")
         nodes.update(_NODE_LINE.findall(text))
     return bool(summary.commands), frozenset(nodes)
+
+
+def regressed_functions(
+    baseline_failing: frozenset[str], after_failing: frozenset[str]
+) -> frozenset[str]:
+    """The node ids that are a TRUE regression: a baseline-GREEN test function now RED.
+
+    Diffs at TEST-FUNCTION granularity (``function_of``), not raw node id, so two
+    failure modes that look like regressions but are NOT get filtered out:
+
+      * **parametrize id-shift** — a still-RED ``@parametrize`` function whose case
+        ids shifted (``test_lookup[a-1]`` -> ``test_lookup[x-1]``) because a
+        transform legitimately changed the data feeding it. The FUNCTION was red at
+        baseline, so a shifted/added case under it is NOT a new regression.
+      * **unmask** — a function that was MASKED at baseline (uncollected behind a
+        collection error the session legitimately cleared) cannot be charged: it was
+        never proven GREEN at baseline. ``--continue-on-collection-errors`` already
+        keeps such functions collected in both runs, but this guard is kept for
+        safety — a function is only charged if NO node of it failed at baseline.
+
+    So an after-node is a regression ONLY when its function had NO failing node at
+    baseline AND its file did not have a COLLECTION ERROR at baseline (a masked file
+    was never proven green). Returns the offending AFTER node ids, sorted-stable via
+    ``frozenset`` — deterministic, no clock/random."""
+    baseline_funcs = {function_of(n) for n in baseline_failing}
+    baseline_collerr = _collection_error_files(baseline_failing)
+    return frozenset(
+        n for n in after_failing
+        if function_of(n) not in baseline_funcs
+        and _file_of(n) not in baseline_collerr
+    )
 
 # HONEST no-suite tier. When no test command can be detected, a change is applied
 # WITHOUT running anything and WITHOUT any rollback safety net — the auto-rollback

@@ -849,3 +849,132 @@ def test_regression_fields_serialise(tmp_path: Path):
     assert d["regression_rolled_back"] is True
     assert d["regressed_nodes"] == [
         "tests/test_wrapper.py::test_missing_is_blank"]
+
+
+# --- P0-A: the collection-interrupt BYPASS (under-rollback / fake-green) -------
+#
+# THE BYPASS (verified end-to-end): when ANY module fails at COLLECTION time
+# (import/syntax error in a test or conftest — the "unfinished module" shape),
+# pytest prints ``Interrupted: N error(s) during collection`` and runs NOTHING.
+# The short summary then holds only ``ERROR <file>`` — every real per-test result
+# is masked. On a RED baseline carrying such a persistent collection-error module
+# at BOTH baseline and after, ``baseline_failing == after_failing == {collerr}``,
+# so a regression the session introduces to a REAL test is never collected, never
+# in ``after_failing``, and is silently KEPT (fake-green). The FIX runs the suite
+# with ``--continue-on-collection-errors`` so the collection-error file reports as
+# an ERROR node in BOTH runs (unchanged) AND the rest of the suite actually runs,
+# making the regression to the real test visible — and rolled back.
+
+
+def _collerr_plus_transitive_regression(root: Path) -> Path:
+    """The transitive-regression project PLUS a PERSISTENT collection-error module.
+
+    ``broken_mod.py: import nonexistent`` + ``tests/test_broken.py: import
+    broken_mod`` cannot be collected at baseline OR after (the session never
+    touches them), so they print ``Interrupted: ... during collection`` and, on the
+    OLD fatal-collection run, mask every real per-test result. The transitive
+    ``modernize`` regression (``pkg/check.py`` -> breaks ``test_wrapper.py``) is the
+    REAL break that the bypass hid and the fix must now surface + roll back."""
+    _transitive_regression_project(root)
+    (root / "broken_mod.py").write_text(
+        "import totally_nonexistent_module_xyz  # noqa: F401\n", encoding="utf-8")
+    (root / "tests" / "test_broken.py").write_text(
+        "import broken_mod  # noqa: F401\n"
+        "def test_broken():\n    assert True\n", encoding="utf-8")
+    return root
+
+
+def test_collection_interrupt_regression_now_rolled_back(tmp_path: Path):
+    # P0-A, end-to-end: with a PERSISTENT collection error masking the suite, the
+    # transitive regression to a REAL test is now DETECTED and the whole session is
+    # ROLLED BACK (it was silently KEPT before the fix).
+    _collerr_plus_transitive_regression(tmp_path)
+    check_before = (tmp_path / "pkg" / "check.py").read_text()
+
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+
+    assert report.regression_rolled_back is True
+    assert "tests/test_wrapper.py::test_missing_is_blank" in report.regressed_nodes
+    assert report.total_moves == 0
+    # The modernize change was un-landed: check.py is byte-for-byte its baseline.
+    assert (tmp_path / "pkg" / "check.py").read_text() == check_before
+    assert "== None" in (tmp_path / "pkg" / "check.py").read_text()
+
+    md = render_session_markdown(report)
+    assert "Auto-rollback" in md and "ROLLED BACK" in md
+
+
+def _collerr_plus_clean_tidy(root: Path) -> Path:
+    """A RED-baseline tidy-work project PLUS a PERSISTENT, UNRELATED collection
+    error. The clean tidy work does NOT regress anything; the collection error is
+    never cleared and unrelated — it must NOT, by itself, block the clean work."""
+    _red_baseline_with_tidy_work(root)
+    (root / "broken_mod.py").write_text(
+        "import totally_nonexistent_module_xyz  # noqa: F401\n", encoding="utf-8")
+    (root / "tests" / "test_broken.py").write_text(
+        "import broken_mod  # noqa: F401\n"
+        "def test_broken():\n    assert True\n", encoding="utf-8")
+    return root
+
+
+def test_unrelated_persistent_collection_error_does_not_block_clean_work(tmp_path: Path):
+    # P0-A complement: a persistent UNRELATED collection error must NOT trigger a
+    # rollback of clean tidy work — it is unchanged in both runs, so no regression.
+    _collerr_plus_clean_tidy(tmp_path)
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+
+    assert report.regression_rolled_back is False
+    assert report.regressed_nodes == []
+    assert report.total_moves > 1
+    landed = {o.objective for o in report.objectives if o.moves}
+    assert "wire-exports" in landed and "dataclassify" in landed
+
+
+# --- P0-B: parametrize id-shift / unmask OVER-rollback (discards good work) ----
+#
+# THE OVER-ROLLBACK: the OLD ``after - baseline`` raw set difference assumed node
+# ids were stable identities. A ``@parametrize`` test RED at baseline AND RED after
+# whose node ids SHIFT (a transform legitimately changed the literal data feeding
+# the parametrize) yields a disjoint after-set -> every shifted id looks "newly
+# failing" -> the WHOLE session is rolled back, discarding verified work. The FIX
+# diffs at TEST-FUNCTION granularity: a still-red ``path::func`` is not charged
+# when its case ids shift. Pinned directly on the helper here (the data-shift is
+# hard to provoke through a real transform deterministically); the end-to-end
+# rollback machinery is exercised by the f022cd6 + P0-A tests.
+
+
+def test_id_shift_on_still_red_function_is_not_over_rollback():
+    # P0-B id-shift: baseline {test_lookup[a-1], test_lookup[b-2]}, after
+    # {test_lookup[x-1], test_lookup[y-2]} (same function, still red, ids shifted)
+    # -> _regressed_nodes returns EMPTY (no over-rollback).
+    from app.engine.develop_session import _regressed_nodes
+
+    baseline = frozenset({"tests/t.py::test_lookup[a-1]",
+                          "tests/t.py::test_lookup[b-2]"})
+    after = frozenset({"tests/t.py::test_lookup[x-1]",
+                       "tests/t.py::test_lookup[y-2]"})
+    assert _regressed_nodes(baseline, after) == frozenset()
+
+
+def test_unmask_pre_existing_failures_not_charged_as_regression():
+    # P0-B unmask: a baseline COLLECTION ERROR the session clears, unmasking
+    # PRE-EXISTING unrelated failures, must NOT charge them as regressions (the
+    # functions were masked, never proven green) -> clean work still lands.
+    from app.engine.develop_session import _regressed_nodes
+
+    baseline = frozenset({"tests/test_mod.py"})  # collection-error file at baseline
+    after = frozenset({"tests/test_mod.py::test_pre_existing_a",
+                       "tests/test_mod.py::test_pre_existing_b"})
+    assert _regressed_nodes(baseline, after) == frozenset()
+
+
+def test_genuine_regression_still_charged_alongside_unmask():
+    # The unmask guard does NOT excuse a GENUINE green->red regression in a fully
+    # collected file — still charged (never-fake-green preserved).
+    from app.engine.develop_session import _regressed_nodes
+
+    baseline = frozenset({"tests/test_mod.py"})  # masked at baseline
+    after = frozenset({"tests/test_mod.py::test_pre_existing_a",  # unmasked
+                       "tests/test_real.py::test_broke"})         # genuine
+    assert _regressed_nodes(baseline, after) == frozenset(
+        {"tests/test_real.py::test_broke"})

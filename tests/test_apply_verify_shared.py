@@ -13,6 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.execution._apply_verify import (
+    function_of,
+    regressed_functions,
     run_full_suite_verification,
     suite_failing_nodes,
 )
@@ -141,14 +143,26 @@ class _NodeSummary:
         self.results = [{"stdout": stdout, "stderr": stderr}]
 
 
-def _patch_nodes(monkeypatch, summary: _NodeSummary) -> None:
+def _patch_nodes(monkeypatch, summary: _NodeSummary, detected=None) -> None:
+    """Patch the lazily-imported runner. ``detected`` is what ``_detect_commands``
+    returns (defaults to a single pytest command when the summary has commands), so
+    ``suite_failing_nodes`` can build its ``--continue-on-collection-errors`` run."""
     import app.skills.execution.run_tests as run_tests_mod
 
+    if detected is None:
+        detected = [["python", "-m", "pytest", "-q"]] if summary.commands else []
+    captured: dict[str, list] = {}
+
     class _FakeSkill:
-        def run(self, root: str):  # noqa: ANN001 - test double
+        def _detect_commands(self, root):  # noqa: ANN001 - test double
+            return detected
+
+        def run(self, root: str, commands=None):  # noqa: ANN001 - test double
+            captured["commands"] = commands
             return summary
 
     monkeypatch.setattr(run_tests_mod, "RunTestsSkill", _FakeSkill)
+    return captured
 
 
 def test_failing_nodes_parses_every_failed_and_error_node(monkeypatch) -> None:
@@ -192,3 +206,113 @@ def test_failing_nodes_no_suite_available(monkeypatch) -> None:
     available, nodes = suite_failing_nodes(Path("/tmp"))
     assert available is False
     assert nodes == frozenset()
+
+
+def test_failing_nodes_threads_continue_on_collection_errors(monkeypatch) -> None:
+    # FIX 1: the failing-node run makes collection errors NON-FATAL so one
+    # un-collectable module can't mask the whole suite. The pytest command carries
+    # ``--continue-on-collection-errors`` exactly once, appended to the detected
+    # command (the target's interpreter is preserved).
+    captured = _patch_nodes(
+        monkeypatch,
+        _NodeSummary(commands=[["python", "-m", "pytest", "-q"]], stdout=""),
+        detected=[["python", "-m", "pytest", "-q"]])
+    suite_failing_nodes(Path("/tmp"))
+    assert captured["commands"] == [
+        ["python", "-m", "pytest", "-q", "--continue-on-collection-errors"]]
+    assert captured["commands"][0].count("--continue-on-collection-errors") == 1
+
+
+def test_failing_nodes_non_pytest_command_unchanged(monkeypatch) -> None:
+    # A non-pytest runner (npm) is NOT given the pytest flag — byte-identical.
+    captured = _patch_nodes(
+        monkeypatch,
+        _NodeSummary(commands=[["npm", "test"]], stdout=""),
+        detected=[["npm", "test", "--", "--runInBand"]])
+    suite_failing_nodes(Path("/tmp"))
+    assert captured["commands"] == [["npm", "test", "--", "--runInBand"]]
+
+
+def test_failing_nodes_no_collection_error_identical_set(monkeypatch) -> None:
+    # CONFIRM byte-identical when there is NO collection error: the same FAILED set
+    # is parsed regardless of the (no-op) flag.
+    out = "FAILED tests/test_a.py::test_one - AssertionError\n5 passed\n"
+    _patch_nodes(monkeypatch, _NodeSummary(
+        commands=[["python", "-m", "pytest", "-q"]], stdout=out))
+    available, nodes = suite_failing_nodes(Path("/tmp"))
+    assert available is True
+    assert nodes == frozenset({"tests/test_a.py::test_one"})
+
+
+# --- function_of: strip the parametrize suffix --------------------------------
+
+
+def test_function_of_strips_parametrize_suffix() -> None:
+    assert function_of("t.py::test_lookup[a-1]") == "t.py::test_lookup"
+    assert function_of("t.py::test_lookup[x-1]") == "t.py::test_lookup"
+    # A plain (non-parametrized) node is unchanged.
+    assert function_of("t.py::test_plain") == "t.py::test_plain"
+    # A bare collection-error file (no ``::``) is unchanged.
+    assert function_of("t.py") == "t.py"
+
+
+# --- regressed_functions: function-granularity true-regression diff -----------
+
+
+def test_regressed_functions_empty_when_nothing_new() -> None:
+    base = frozenset({"t.py::test_a", "t.py::test_b"})
+    assert regressed_functions(base, base) == frozenset()
+
+
+def test_regressed_functions_charges_a_new_green_to_red() -> None:
+    # A function GREEN at baseline (absent) now RED -> charged.
+    base = frozenset({"t.py::test_a"})
+    after = frozenset({"t.py::test_a", "t.py::test_new"})
+    assert regressed_functions(base, after) == frozenset({"t.py::test_new"})
+
+
+def test_regressed_functions_ignores_parametrize_id_shift() -> None:
+    # FIX 2 (id-shift): same function still RED, parametrize ids shifted ->
+    # NOT a regression (no over-rollback). The empty set is returned.
+    base = frozenset({"t.py::test_lookup[a-1]", "t.py::test_lookup[b-2]"})
+    after = frozenset({"t.py::test_lookup[x-1]", "t.py::test_lookup[y-2]"})
+    assert regressed_functions(base, after) == frozenset()
+
+
+def test_regressed_functions_added_param_case_under_red_func_is_not_regression() -> None:
+    # A still-red function gaining an extra parametrize case is not a new failure.
+    base = frozenset({"t.py::test_lookup[a-1]"})
+    after = frozenset({"t.py::test_lookup[a-1]", "t.py::test_lookup[c-3]"})
+    assert regressed_functions(base, after) == frozenset()
+
+
+def test_regressed_functions_unmask_not_charged() -> None:
+    # FIX 3 (unmask): a baseline COLLECTION ERROR (bare file-level ERROR node) that
+    # the session clears, unmasking PRE-EXISTING failures of functions in that file,
+    # must NOT charge those as regressions — they were masked (never collected, never
+    # proven green) at baseline. The diff recognises the baseline collection-error
+    # file and excludes after-failures of its functions -> EMPTY set (no over-rollback).
+    base = frozenset({"tests/test_mod.py"})  # collection-error file node
+    after = frozenset({
+        "tests/test_mod.py::test_pre_existing_a",
+        "tests/test_mod.py::test_pre_existing_b",
+    })
+    assert regressed_functions(base, after) == frozenset()
+
+
+def test_regressed_functions_unmask_still_charges_other_files() -> None:
+    # A clearing of one file's collection error does NOT excuse a GENUINE regression
+    # introduced in a DIFFERENT, fully-collected file — that is still charged.
+    base = frozenset({"tests/test_mod.py"})  # masked file at baseline
+    after = frozenset({
+        "tests/test_mod.py::test_pre_existing_a",  # unmasked, not charged
+        "tests/test_other.py::test_real_regression",  # genuine, charged
+    })
+    assert regressed_functions(base, after) == frozenset(
+        {"tests/test_other.py::test_real_regression"})
+
+
+def test_regressed_functions_is_deterministic() -> None:
+    base = frozenset({"t.py::test_a[1]"})
+    after = frozenset({"t.py::test_b", "t.py::test_c"})
+    assert regressed_functions(base, after) == regressed_functions(base, after)
