@@ -11,6 +11,27 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM — Idea-motoru erişimi: sentez hedefleri artık `apex ideate`'te LANDABLE:**
+- `4417d40` **feat(ideate): surface synthesis objectives as executable ideas** — yeni
+  `app/engine/idea_synthesis_signals.py` grounding katmanı (lander'ın KENDİ yüklemini
+  ÇAĞIRIR: `module_has_fillable_stub`/`rewrite_dataclasses`/`infer_annotations` —
+  kopyalamadan; inşa-gereği dürüst: signal == lander'ın yapacağı) + `idea_action_bridge`'e
+  additive `_augment_synthesis_steps` (`plan_tree`/`_roadmap_steps`): zaten-mevcut modül
+  hedeflerine `implement-stub`/`infer-type-hints`/`dataclassify` **executable** adımı ekler;
+  sentez-uygun modül yoksa **byte-identical** (determinizm korunur, seeder'a DOKUNULMADI).
+  infer/dataclassify saf `_simplify_dispatch` adaptörü (dataclassify fixture-guard'lı);
+  implement-stub develop-çekirdeğine delege (`plan_implement_stub`→`apply_rename(impact_scope=True)`,
+  honesty=`bool(plan.new_contents)`). `_generate` üretemezse None → **sahte-yeşil yok**.
+- `5d4a086` **test(conftest): byte-identical snapshot reproducibility** — `/tmp/charorig/*`
+  artık `1820170^`'ten + relative→absolute import rewrite ile staged; fresh-clone
+  collection-error'ı kapandı (conftest stager bunları atlıyordu).
+- **Buyer-proof (bağımsız `/tmp` projesi):** 7 doğrulanmış değişiklik indi (4 stub —
+  recursion dahil + 8 kanıtlanabilir tip + 1 dataclass), RED süit → GREEN; belirsiz
+  stub / real-logic class / unprovable return / güvenlik bulguları **doğru reddedildi**;
+  byte-identical, `unshare -rn` offline, zero-token.
+
+**— önceki oturum —**
+
 **Sentez gövde aileleri (Apex'in artık yazabildiği yeni kod):**
 - `370e1c0` **GAP #1** — reduction/join: `max(a)`/`min(a)`/`min(a,default=k)`/`sep.join(a)`
 - `a78c990` **GAP #2** — affine f-string: `return f"{prefix}{a}{suffix}"` (≥2-witness floor + off-witness canary)
@@ -42,7 +63,15 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (~21.490 test + ruff), öz-not **A+99**.
+- **Kapı:** `python scripts/verify.py` → full green (**~21.591 test** + ruff), öz-not **A+99**
+  (bu oturumda `--chunks 16 -j 4` → 647s, 16/16 chunk + ruff PASS, exit 0).
+- **⚠️ FRESH-CONTAINER KAPI ÖN-KOŞULU (yeni oturum bunu OKUSUN):** Bulut klonu **shallow**
+  gelir (~50 commit); karakterizasyon testleri `git show <eski-commit>^` ile snapshot
+  stage eder → shallow'da **collection-error** (bu oturumda 7 chunk böyle kırıldı, dalga
+  DEĞİL). Kapıdan önce **`git fetch --unshallow`** ŞART (50→~1462 commit). Ayrıca
+  `pip install -e ".[dev]"` (pytest-timeout + PyYAML; yoksa addopts/import kırılır).
+  Hızlı ön-uçuş: `python -m pytest tests/ --collect-only -q` (≈5 sn, import/snapshot
+  kırıklarını full suite koşmadan yakalar).
   - **HIZLI (yerel, 32GB/Core Ultra 9):** `python scripts/verify.py --chunks 16 -j 8` (~6-10 dk).
   - Burada (4 çekirdek/15GB) `-j 2` ile ~30 dk, tepe RAM 2.8GB. Varsayılan sıralı = OOM-güvenli.
 - **Öz-not invaryantı A+99:** grader karmaşıklık tavanı **12** (`app.tools.code_metrics.function_complexities`, ruff C901'den FARKLI/daha sıkı). Yeni fonksiyonu >12 bırakırsan `test_*_self_grade*` / `*a_plus_99` KIRILIR. Kontrol:
@@ -55,9 +84,39 @@
 ## 3. SIRADAKİ İŞLER (öncelik sırası — saha testi gaplerine dayalı)
 
 1. ✅ **(TAMAM — `436e51b`) Reduction belirsizlik açıklaması.** Stub belirsiz witness yüzünden reddedilince neden+nasıl-düzelt bildiriliyor. **Kalan 1-satır follow-up:** SADECE belirsiz stub'ı olan bir modül honest-fitness ile move-enumerasyonundan eleniyor (`module_has_fillable_stub`→False), o yüzden all-ambiguous modülde sebep uçtan-uca yönlenmiyor; `objective_compiler.py`/`develop_session.py`'de bir disclosure-only refuse-move veya `render_session_markdown`'da `obj.blocked` render'ı gerekir.
-2. **Idea-motoru erişimi** (Ar-Ge yönü #3) — daha zengin sinyaller / daha derin fraktal. **← SIRADAKİ ÖNCELİK**
-3. **Düz-paket import edilemezliği tespiti + pythonpath/conftest probe-shim** (saha gap #5). Student repo'ları sık sık pyproject/pythonpath'siz → her şey `no-suite`'a düşüyor. **DİKKAT:** geniş/hassas yüzey (`run_tests.py`, `cli_autonomy.py`, `develop_session.py`, `objective_compiler.py`, `proof_of_fix.py`). Ayrıca dry-run vs apply `no-suite` dürüstlük tutarsızlığı (küçük).
-4. **JS/TS gerçek lander** (Ar-Ge #2) — şu an yalnız öneri-modu (`idea_seeder`); güvenliği sulandırmadan ilk gerçek adım.
+2. ✅ **(TAMAM — bu oturum, `4417d40`) Idea-motoru erişimi.** Sentez hedefleri
+   (implement-stub/infer-type-hints/dataclassify) `apex ideate --actions`'te **executable**
+   ve `--apply` ile **landable**; grounding `idea_synthesis_signals.py`, additive bridge
+   augmentasyonu, seeder'a dokunulmadı. Buyer-proof bağımsız projede doğruladı.
+
+**← SIRADAKİ ÖNCELİK (bu oturumun buyer-proof + scout ordusundan RAFİNE; somut-landing önceliğiyle):**
+- **#A (EN YÜKSEK DEĞER) — Yorumlayıcı/pytest uyumsuzluğunu YÜKSEK SESLE yüzeye çıkar.**
+  Buyer-proof: Apex'i çalıştıran yorumlayıcı pytest'e sahip değilse (`sys.executable -m
+  pytest` → "No module named pytest"), develop-kalite landing'ler **sessizce** düşer
+  (suite RED sanılır, `0 executable`), kullanıcıya uyarı yok → gerçek makinede **tam-
+  teslimat-açığı**. Küçük, dürüstlük-odaklı, en yüksek değer.
+- **#B — src-layout import-root probe** (eski #3'ün RAFİNE hali): kanonik DÜZ vaka zaten
+  çözülmüş (`_has_flat_pytest_suite`); hayatta kalan boşluk **src-layout** (`src/pkg/...`,
+  test `import pkg`): `PYTHONPATH=root` tek başına → collection-error → yanlışlıkla RED.
+  Fix TEK yer: `run_tests.py`'de `_import_roots(root)` (bounded/sorted/root-first; Apex'in
+  kendi `app/`'ini gölgeleme). Downstream consumer'lara (cli_autonomy/objective_compiler/
+  develop_session/proof_of_fix) **DOKUNMA** — fix upstream, dar.
+- **#C — raporlama dürüstlük uzlaştırması:** apply sayacı sentez landing'lerini eksik
+  sayıyor; `--json` blocked-satır şeması tutarsız; geri-sarılan create_test_stub artık
+  dosya bırakıyor.
+- **#D — sentez şablonu +1:** sabit-anahtar indeksleme `a[k]` (≥2-witness + tip-tam +
+  canary; ~8 LOC, `stub_synthesis.py`). (2. sıra: iki-witness ternary.)
+- **#E — literal tip-çıkarımı:** aynı-tip literal binary (`1+2`→int, `'a'+'b'`→str;
+  ~12 LOC, `type_annotations.py`); sağlam, dar. Takip: unary numeric, `str/list*int`.
+- **JSDoc-only JS/TS lander** (Ar-Ge #2): tek çevrimdışı-sağlam JS adımı (yorum-only; en
+  kötü hata = yanlış yorum, bozuk kod değil; saf-Python 3 yapısal kontrol + `no-suite`
+  damga). Ötesi vendored offline parser ister → o gelene dek recommend-only.
+- **PARK (North-Star sürücüsü DEĞİL — moat cilası):** coverage backlog (en riskli:
+  `app/execution/semantic/transforms/_apply_helpers.py`, fan-in 10, 0 direct test);
+  determinizm/fake-green sweep (0 canlı delik; `nan`→`math.isfinite` H1 latent).
+3. _(Eski #3 "düz-paket import" ve #4 "JS/TS lander" yukarıda **#B** ve **JSDoc** olarak
+   RAFİNE edildi — scout #1 ampirik gösterdi: düz vaka zaten çözülmüş, src-layout kaldı,
+   fix TEK yer ve dar; JS/TS için tek çevrimdışı-sağlam adım JSDoc-yorum.)_
 
 **SAĞLAM-DEĞİL diye REDDEDİLDİ (YAPMA):** default/call-site'tan parametre-tipi veya dataclass alan-tipi çıkarımı; param-alıcılı `name.strip()→str`. Bir değer/varsayılan bir **tip sınırı değildir** — Apex'in soundness duruşunu ihlal eder (`type_annotations.py` docstring bunu açıklıyor).
 
