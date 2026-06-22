@@ -1,0 +1,567 @@
+diff --git a/app/cli_insight.py b/app/cli_insight.py
+index b1d675c..0f24c14 100644
+--- a/app/cli_insight.py
++++ b/app/cli_insight.py
+@@ -690,11 +690,21 @@ def _scope_report(root: Path) -> dict:
+         {"language": lang, "files": count}
+         for lang, count in profile.language_breakdown.items()
+     ]
+-    unparsed_count = int(getattr(profile, "unparsed_count", 0) or 0)
++    # The COMPLETE unanalysed accounting (parse-failures + ``.pyi`` stubs +
++    # over-cap files), single-sourced from the profiler. ``unanalyzed_*`` is the
++    # canonical name; ``unparsed_*`` is its back-compat alias (same set).
++    unparsed_count = int(
++        getattr(profile, "unanalyzed_count", None)
++        if getattr(profile, "unanalyzed_count", None) is not None
++        else getattr(profile, "unparsed_count", 0) or 0
++    )
+     # Bounded, sorted (the profile already sorts) preview of the dropped files —
+     # capped like the other report sections so a repo with hundreds of broken
+     # files doesn't dump them all. The count carries the TRUE total.
+-    unparsed_files = list(getattr(profile, "unparsed_files", []) or [])[:5]
++    unparsed_files = list(
++        getattr(profile, "unanalyzed_files", None)
++        or getattr(profile, "unparsed_files", []) or []
++    )[:5]
+     # The reassuring "100% (all Python)" path is honest ONLY when nothing was
+     # dropped. A repo that is all-Python yet has a file that failed to parse must
+     # NOT take it — there is a real gap to disclose, so fall to the detailed shape.
+@@ -716,7 +726,11 @@ def _scope_report(root: Path) -> dict:
+     else:
+         honest_ratio = getattr(profile, "analyzed_ratio_honest",
+                                profile.analyzed_ratio)
+-        analyzed_pct = round(honest_ratio * 100)
++        # A real drop exists, so the honest answer is NEVER 100%: one broken file
++        # in a 601-file repo is 99.83%, which would round UP to 100 and re-hide
++        # the gap. Clamp at 99 when anything was dropped so the disclosed
++        # percentage can never silently claim full coverage.
++        analyzed_pct = min(round(honest_ratio * 100), 99)
+         out_of_scope_pct = 100 - analyzed_pct
+     return {
+         "source_file_count": profile.source_file_count,
+diff --git a/app/cli_reporting.py b/app/cli_reporting.py
+index 65b92ae..f0f0284 100644
+--- a/app/cli_reporting.py
++++ b/app/cli_reporting.py
+@@ -240,6 +240,29 @@ def _pulse_grade(root: Path) -> dict:
+         return {"letter": "", "score": None, "scope_line": ""}
+ 
+ 
++def _honest_unanalyzed_count(profile) -> int:
++    """COMPLETE count of in-language files counted but NOT analysed, read straight
++    off the profile (the SINGLE SOURCE OF TRUTH). Prefers the canonical
++    ``unanalyzed_count``, falls back to its back-compat alias ``unparsed_count``;
++    any missing/None attribute reads as 0. Inlined (not imported) so the pulse
++    snapshot's lazy ``project_profile`` stub-injection can't shadow it."""
++    n = getattr(profile, "unanalyzed_count", None)
++    if n is None:
++        n = getattr(profile, "unparsed_count", 0)
++    return int(n or 0)
++
++
++def _honest_analyzed_ratio(profile) -> float:
++    """The HONEST analysed fraction (analysed-count / source-total) read off the
++    profile's ``analyzed_ratio_honest``; falls back to the raw language
++    ``analyzed_ratio`` only if absent. Equals the language ratio when nothing was
++    dropped, so the common case is byte-identical."""
++    honest = getattr(profile, "analyzed_ratio_honest", None)
++    if honest is None:
++        honest = getattr(profile, "analyzed_ratio", 1.0)
++    return float(honest if honest is not None else 1.0)
++
++
+ def _pulse_scope(root: Path) -> dict:
+     """Honest analysis-coverage: analysed% (Python) vs out-of-scope%, plus the
+     1-2 biggest out-of-scope files. Grounded in the profile's scope-accounting
+@@ -258,23 +281,56 @@ def _pulse_scope(root: Path) -> dict:
+ 
+     out_ratio = getattr(profile, "out_of_scope_ratio", 0.0) or 0.0
+     breakdown = getattr(profile, "language_breakdown", {}) or {}
+-    all_python = not (out_ratio > 0 and breakdown)
+-    files: list[dict] = []
+-    if not all_python:
+-        try:
+-            facts = scan_polyglot_facts(str(root), limit=_PULSE_OUT_OF_SCOPE_FILES)
+-        except Exception:
+-            facts = []
+-        files = [{"path": f.path, "language": f.language, "loc": f.loc} for f in facts]
+-
++    unanalyzed_count = _honest_unanalyzed_count(profile)
++    # "all Python" (the reassuring 100% footer) is honest ONLY when the grade
++    # truly speaks for the whole repo: no out-of-scope languages AND no in-language
++    # file that was counted but not analysed. Same gate as ``_scope_report``.
++    all_python = not (out_ratio > 0 and breakdown) and unanalyzed_count == 0
++    # The biggest out-of-scope files come from the polyglot scan (NON-Python),
++    # populated only when a polyglot remainder genuinely exists.
++    files = _pulse_scope_files(root, scan_polyglot_facts) if (
++        out_ratio > 0 and breakdown) else []
++    analyzed_pct, out_of_scope_pct = _pulse_scope_pcts(
++        profile, out_ratio, unanalyzed_count)
+     return {
+         "all_python": all_python,
+-        "analyzed_pct": round((getattr(profile, "analyzed_ratio", 1.0) or 1.0) * 100),
+-        "out_of_scope_pct": round(out_ratio * 100),
++        "analyzed_pct": analyzed_pct,
++        "out_of_scope_pct": out_of_scope_pct,
+         "files": files,
+     }
+ 
+ 
++def _pulse_scope_files(root: Path, scan_polyglot_facts) -> list[dict]:
++    """The biggest / most-active NON-Python files for the pulse scope footer.
++
++    Defensive: any scan failure yields [] so the snapshot never crashes. Split out
++    to keep ``_pulse_scope`` simple."""
++    try:
++        facts = scan_polyglot_facts(str(root), limit=_PULSE_OUT_OF_SCOPE_FILES)
++    except Exception:
++        facts = []
++    return [{"path": f.path, "language": f.language, "loc": f.loc} for f in facts]
++
++
++def _pulse_scope_pcts(profile, out_ratio: float, unanalyzed_count: int) -> tuple[int, int]:
++    """``(analyzed_pct, out_of_scope_pct)`` for the pulse scope footer.
++
++    Byte-identity: with NOTHING dropped, derive the percentages EXACTLY as before
++    (raw language ratio, independent round of each), so the common case is
++    unchanged down to float rounding. ONLY when files were dropped do we switch to
++    the honest ratio (clamped at 99 so a real drop can never round UP to a false
++    100%) and derive out-of-scope as ``100 - analyzed`` so the two sum to 100 —
++    mirroring ``cli_insight._scope_report``.
++    """
++    if unanalyzed_count <= 0:
++        return (
++            round((getattr(profile, "analyzed_ratio", 1.0) or 1.0) * 100),
++            round(out_ratio * 100),
++        )
++    analyzed_pct = min(round(_honest_analyzed_ratio(profile) * 100), 99)
++    return analyzed_pct, 100 - analyzed_pct
++
++
+ def _pulse_moves(root: Path) -> list[dict]:
+     """The top few grounded next-moves: each idea's title + its concrete focus
+     (the riskiest anchor symbol/line when the idea carries one).
+diff --git a/app/engine/readiness_report.py b/app/engine/readiness_report.py
+index bb95dc2..a8756a3 100644
+--- a/app/engine/readiness_report.py
++++ b/app/engine/readiness_report.py
+@@ -153,11 +153,37 @@ def _scope_section(profile) -> dict[str, Any]:
+             "out_of_scope_ratio": 0.0,
+             "language_breakdown": {},
+         }
++    # The HONEST analysed ratio (analysed-count / source-total), single-sourced so
++    # readiness reports the SAME number as scope/pulse/dashboard. When nothing was
++    # dropped this EQUALS the raw language ratio, so the rounded field is
++    # byte-identical to before; only repos with unanalysed files change. Out-of-
++    # scope is derived as ``1 - analyzed`` so the two always reconcile.
++    #
++    # The honest field is preferred ONLY when actually present; a profile missing
++    # it falls back to the raw language ``analyzed_ratio`` with its original 0.0
++    # default, so a bare/defensive profile is unchanged (the ``out_of_scope_ratio``
++    # default likewise stays 0.0 — derived from the same fallback ratio).
++    honest = getattr(profile, "analyzed_ratio_honest", None)
++    if honest is None:
++        analyzed = float(getattr(profile, "analyzed_ratio", 0.0) or 0.0)
++        out_of_scope = float(getattr(profile, "out_of_scope_ratio", 0.0) or 0.0)
++    else:
++        analyzed = float(honest)
++        # A real drop means coverage is NEVER full: clamp at 0.99 so a 99.83%
++        # honest ratio (one broken file in a 601-file repo) cannot round UP to a
++        # false 100% — the same clamp scope/pulse/dashboard apply, so all four
++        # surfaces report the SAME number.
++        unanalyzed = getattr(profile, "unanalyzed_count", None)
++        if unanalyzed is None:
++            unanalyzed = getattr(profile, "unparsed_count", 0)
++        if int(unanalyzed or 0) > 0:
++            analyzed = min(analyzed, 0.99)
++        out_of_scope = 1.0 - analyzed
+     return {
+         "source_files": int(getattr(profile, "source_file_count", 0)),
+         "python_files": int(getattr(profile, "python_file_count", 0)),
+-        "analyzed_ratio": round(float(getattr(profile, "analyzed_ratio", 0.0)), 4),
+-        "out_of_scope_ratio": round(float(getattr(profile, "out_of_scope_ratio", 0.0)), 4),
++        "analyzed_ratio": round(analyzed, 4),
++        "out_of_scope_ratio": round(out_of_scope, 4),
+         "language_breakdown": dict(sorted(
+             (getattr(profile, "language_breakdown", {}) or {}).items())),
+     }
+diff --git a/app/reporting/dashboard.py b/app/reporting/dashboard.py
+index 532a4f1..50316ef 100644
+--- a/app/reporting/dashboard.py
++++ b/app/reporting/dashboard.py
+@@ -463,8 +463,23 @@ def _hero_security_count(findings) -> int:
+ 
+ 
+ def _hero_scope_pct(profile) -> int:
+-    """Analyzed-scope percentage from the project profile (``0`` when absent)."""
+-    return int(round(float(getattr(profile, "analyzed_ratio", 1.0) or 0.0) * 100))
++    """Analyzed-scope percentage from the project profile (``0`` when absent).
++
++    Reads the HONEST analysed ratio (single-sourced) so the hero tile reports the
++    SAME number as scope/pulse/readiness. Equals the raw language ratio when
++    nothing was dropped, so an all-analysed repo's tile is byte-identical. When a
++    file WAS dropped the percentage is clamped below 100 (a real gap can never
++    round UP to a false 100%), matching the other surfaces.
++    """
++    from app.tools.project_profile import (
++        honest_analyzed_ratio,
++        honest_unanalyzed_count,
++    )
++
++    pct = round(honest_analyzed_ratio(profile) * 100)
++    if honest_unanalyzed_count(profile) > 0:
++        pct = min(pct, 99)
++    return int(pct)
+ 
+ 
+ def _hero_top_move(action_plan) -> str:
+diff --git a/app/reporting/dashboard_sections.py b/app/reporting/dashboard_sections.py
+index 1759713..82497d6 100644
+--- a/app/reporting/dashboard_sections.py
++++ b/app/reporting/dashboard_sections.py
+@@ -367,8 +367,20 @@ def _scope_composition(p: ProjectProfile) -> str:
+     (``out_of_scope_ratio > 0``). An all-Python repo (ratio 0) is omitted, so
+     its page stays byte-identical to before this feature existed.
+     """
++    from app.tools.project_profile import (
++        honest_analyzed_ratio,
++        honest_unanalyzed_count,
++    )
++
+     out_ratio = getattr(p, "out_of_scope_ratio", 0.0)
+-    if not isinstance(out_ratio, (int, float)) or out_ratio <= 0.0:
++    if not isinstance(out_ratio, (int, float)):
++        return ""
++    # Render whenever a genuine analysed-vs-rest split exists: a polyglot
++    # remainder (out-of-scope languages) OR in-language files that were counted
++    # but NOT analysed (parse-failures / ``.pyi`` / over-cap). An all-analysed
++    # all-Python repo (both zero) is omitted, so its page stays byte-identical.
++    unanalyzed = honest_unanalyzed_count(p)
++    if out_ratio <= 0.0 and unanalyzed <= 0:
+         return ""
+     analyzed = getattr(p, "analyzed_ratio", None)
+     if not isinstance(analyzed, (int, float)):
+@@ -376,9 +388,15 @@ def _scope_composition(p: ProjectProfile) -> str:
+ 
+     from app.reporting.dashboard_charts import stacked_bar
+ 
++    # The HONEST analysed fraction (single-sourced), so the bar reports the SAME
++    # split as scope/pulse/readiness. The remainder is everything NOT truly
++    # analysed (out-of-scope languages + unanalysed in-language files), derived as
++    # ``1 - honest`` so the two segments always sum to 1. Equals the language
++    # ratio when nothing was dropped, so the polyglot common case is unchanged.
++    honest = honest_analyzed_ratio(p)
+     segments = [
+-        ("Analysed (Python)", float(analyzed)),
+-        ("Out of scope", float(out_ratio)),
++        ("Analysed (Python)", float(honest)),
++        ("Out of scope", float(1.0 - honest)),
+     ]
+     return (
+         "<div class='scopecomp'><h4 style='margin:12px 0 4px'>"
+diff --git a/app/tools/project_profile.py b/app/tools/project_profile.py
+index e97d69a..f78b247 100644
+--- a/app/tools/project_profile.py
++++ b/app/tools/project_profile.py
+@@ -6,7 +6,7 @@ from collections import Counter
+ from dataclasses import dataclass, field
+ from pathlib import Path
+ 
+-from app.engine.skip_dirs import is_skipped
++from app.engine.skip_dirs import is_skipped, iter_source_files
+ from app.tools.dependency_graph import DependencyGraphBuilder
+ from app.tools.profile_scanners import _CodeQualityScansMixin
+ from app.tools.python_structure import PythonStructureAnalyzer, parse_cached
+@@ -164,20 +164,34 @@ class ProjectProfile:
+     language_breakdown: dict[str, int] = field(default_factory=dict)
+     analyzed_ratio: float = 1.0
+     out_of_scope_ratio: float = 0.0
+-    # PARSE-AWARE honesty: in-language ``.py`` files Apex SAW but did NOT actually
+-    # analyse — they failed ``ast.parse`` (syntax error) or could not be read, so
+-    # PythonStructureAnalyzer dropped them from the structure graph / security /
+-    # cycle scans. Threaded straight off that analyzer's single parse pass (no
+-    # second walk/reparse). Without this a broken ``.py`` hides for free: it still
+-    # counts in ``python_file_count`` so the language ratio claims it was analysed.
+-    #   - unparsed_files: sorted, root-relative paths of those dropped files
+-    #     (deterministic; the scope report names a bounded prefix of them);
+-    #   - unparsed_count: TRUE total before any display truncation;
+-    #   - analyzed_ratio_honest: (python_file_count - unparsed_count) /
+-    #     source_file_count, in [0,1] — the fraction TRULY analysed. Equals
+-    #     ``analyzed_ratio`` exactly when nothing was dropped (so an all-parseable
+-    #     repo's scope output is byte-identical to today). The SCOPE REPORT reads
+-    #     this, never the raw language ratio.
++    # ANALYSIS-AWARE honesty: the COMPLETE set of in-language (``.py``/``.pyi``)
++    # files Apex COUNTED but did NOT actually analyse. SINGLE SOURCE OF TRUTH for
++    # "analysed": a ``.py`` file the structure analyzer would build a module from —
++    # i.e. one that parses. Everything else in the profiler's in-language set is
++    # unanalysed, for ANY reason — not just parse failures:
++    #   - parse-failures: ``.py`` files that fail ``ast.parse`` / are unreadable;
++    #   - ``.pyi`` stubs: counted in ``python_file_count`` but the analyzer's
++    #     ``iter_source_files('*.py')`` walk NEVER yields them, so none is analysed.
++    # The accounting walk runs up to the PROFILER's ``max_files`` (not the smaller
++    # structure-scan cap), so a broken/stub file past the structure-scan cap is
++    # disclosed rather than silently swallowed; the grade's structure signals stay
++    # on their own (unchanged) cap. Without this a dropped file hides for free: it
++    # still counts in ``python_file_count`` so the LANGUAGE ratio
++    # (``analyzed_ratio``) claims it was analysed. ``analyzed_ratio_honest`` divides
++    # the TRULY-analysed count by the source total instead, so it never over-claims.
++    #   - unanalyzed_files: sorted, root-relative paths of EVERY counted-but-not-
++    #     analysed file (deterministic; the scope report names a bounded prefix);
++    #   - unanalyzed_count: TRUE total before any display truncation;
++    #   - analyzed_ratio_honest: analyzed_count / source_file_count, in [0,1] —
++    #     the fraction TRULY analysed. Equals ``analyzed_ratio`` exactly when
++    #     nothing was dropped (so an all-analysed repo's output is byte-identical
++    #     to today). Every honest surface (scope/pulse/readiness/dashboard) reads
++    #     THIS, never the raw language ratio.
++    # ``unparsed_files``/``unparsed_count`` are kept as BACK-COMPAT aliases of the
++    # complete set (some consumers read them); they now carry the full unanalysed
++    # set, not only parse-failures.
++    unanalyzed_files: list[str] = field(default_factory=list)
++    unanalyzed_count: int = 0
+     unparsed_files: list[str] = field(default_factory=list)
+     unparsed_count: int = 0
+     analyzed_ratio_honest: float = 1.0
+@@ -733,14 +747,15 @@ class ProjectProfiler(_CodeQualityScansMixin):
+         ratio = 1.0 if source_total == 0 else python_total / source_total
+         profile.analyzed_ratio = ratio
+         profile.out_of_scope_ratio = 1.0 - ratio
+-        # PARSE-AWARE honest ratio: subtract the in-language ``.py`` files that
+-        # were dropped (failed ``ast.parse`` / unreadable, set by
+-        # ``_populate_python_structure``, which runs before this scan) from the
+-        # analysed numerator. ``analyzed`` is floored at 0 in case the two walks
+-        # (rglob here vs iter_source_files there) ever disagree, so the ratio
+-        # never goes negative. When nothing was dropped this EQUALS
+-        # ``analyzed_ratio`` exactly, so an all-parseable repo is byte-identical.
+-        analyzed = max(0, python_total - profile.unparsed_count)
++        # ANALYSIS-AWARE honest ratio: subtract the COMPLETE set of in-language
++        # files that were counted but NOT actually analysed (parse-failures +
++        # ``.pyi`` stubs + over-cap files — set by ``_populate_python_structure``,
++        # which runs before this scan) from the analysed numerator. ``analyzed`` is
++        # floored at 0 in case the two walks (rglob here vs iter_source_files
++        # there) ever disagree, so the ratio never goes negative. When nothing was
++        # dropped this EQUALS ``analyzed_ratio`` exactly, so an all-analysed repo
++        # is byte-identical.
++        analyzed = max(0, python_total - profile.unanalyzed_count)
+         profile.analyzed_ratio_honest = (
+             1.0 if source_total == 0 else analyzed / source_total
+         )
+@@ -1262,16 +1277,71 @@ class ProjectProfiler(_CodeQualityScansMixin):
+             for i in detect(source)
+         )
+ 
++    def _compute_unanalyzed(self) -> list[str]:
++        """The COMPLETE, sorted set of in-language files counted but NOT analysed.
++
++        SINGLE SOURCE OF TRUTH for "analysed": an in-language file is analysed iff
++        it is a ``.py`` file the structure analyzer would build a module from —
++        i.e. it parses. Everything else in the in-language (``.py``/``.pyi``) set is
++        unanalysed, for ANY reason, and is NAMED here:
++
++        - parse-failures: ``.py`` files that fail ``ast.parse`` / are unreadable
++          (``_analyze_file`` returns ``None`` — the structure graph / security /
++          cycle scans never see them);
++        - ``.pyi`` stubs: counted in ``python_file_count`` but the structure
++          analyzer's ``iter_source_files('*.py')`` walk NEVER yields them, so a
++          ``.pyi`` is never analysed though the language ratio claimed it was.
++
++        The parse classification is done over the SAME sorted, skip-dir-pruned
++        ``iter_source_files`` walk the analyzer uses, but up to the PROFILER's
++        ``max_files`` (not the analyzer's smaller structure-scan cap) so the two
++        walks agree on the counted denominator and a broken/stub file past the
++        structure-scan cap is NOT silently swallowed — it is disclosed. The parse
++        result flows through the SHARED parse cache (``parse_cached``), which the
++        structure analyzer already primed for the files within its cap, so this is
++        no second reparse for those and at most one cheap parse for the rest.
++        Deterministic: ``iter_source_files`` yields sorted paths and ``ast.parse``
++        is pure, so the result is byte-stable across runs.
++        """
++        from app.tools.python_structure import parse_cached
++
++        unanalyzed: list[str] = []
++        scanned = 0
++        for path in iter_source_files(self.root):  # '*.py', sorted, pruned
++            if scanned >= self.max_files:
++                break
++            scanned += 1
++            # Analysed == parses (exactly what ``_analyze_file`` requires to build
++            # a module). A ``None`` tree is a real drop — name it.
++            if parse_cached(path) is None:
++                unanalyzed.append(str(path.relative_to(self.root)))
++        # ``.pyi`` stubs are in-language (counted) yet the structure analyzer never
++        # walks them, so NONE of them is analysed — every one is a drop. Bounded by
++        # the same profiler cap for symmetry with the denominator.
++        scanned = 0
++        for path in iter_source_files(self.root, "*.pyi"):
++            if scanned >= self.max_files:
++                break
++            scanned += 1
++            unanalyzed.append(str(path.relative_to(self.root)))
++        return sorted(unanalyzed)
++
+     def _populate_python_structure(self, profile: ProjectProfile) -> None:
+         analyzer = PythonStructureAnalyzer(self.root)
+         modules = analyzer.analyze()
+-        # Capture the in-language ``.py`` files that failed to parse/read BEFORE
+-        # the early return: a repo of all-broken Python yields no modules yet must
+-        # still report those drops honestly. Read off the analyzer's single parse
+-        # pass (no reparse). ``_scan_analysis_scope`` turns this into the honest
+-        # ratio; sorted already, copied so the field owns its list.
+-        profile.unparsed_files = list(analyzer.unparsed_files)
+-        profile.unparsed_count = len(analyzer.unparsed_files)
++        # COMPLETE unanalysed accounting, computed BEFORE the early return (a repo
++        # of all-broken / all-stub Python yields no modules yet must still report
++        # the drops honestly). ``_compute_unanalyzed`` is the single source of
++        # truth: a ``.py`` is analysed iff it parses; everything else in the full
++        # in-language (``.py``/``.pyi``) set is named — parse-failures and ``.pyi``
++        # stubs the structure analyzer never walks. Sorted / deterministic.
++        # ``_scan_analysis_scope`` turns the count into the honest ratio.
++        # ``unparsed_*`` are kept as back-compat aliases of the same set.
++        unanalyzed = self._compute_unanalyzed()
++        profile.unanalyzed_files = unanalyzed
++        profile.unanalyzed_count = len(unanalyzed)
++        profile.unparsed_files = list(unanalyzed)
++        profile.unparsed_count = len(unanalyzed)
+         if not modules:
+             return
+ 
+@@ -2016,6 +2086,36 @@ class ProjectProfiler(_CodeQualityScansMixin):
+         return sorted(out)
+ 
+ 
++def honest_unanalyzed_count(profile: "ProjectProfile") -> int:
++    """The COMPLETE count of in-language files counted but NOT analysed.
++
++    Single accessor so every surface (scope/pulse/readiness/dashboard) reads the
++    SAME number. Prefers the canonical ``unanalyzed_count`` and falls back to its
++    back-compat alias ``unparsed_count`` (which now also carries the full set).
++    Defensive: any missing/None attribute reads as 0.
++    """
++    n = getattr(profile, "unanalyzed_count", None)
++    if n is None:
++        n = getattr(profile, "unparsed_count", 0)
++    return int(n or 0)
++
++
++def honest_analyzed_ratio(profile: "ProjectProfile") -> float:
++    """The fraction of the repo Apex TRULY analysed, in [0,1].
++
++    The SINGLE honest number behind every surface. ``analyzed_ratio_honest`` is
++    the analysed-count / source-total ratio the profiler computes from the
++    complete unanalysed set (parse-failures + ``.pyi`` + over-cap); it EQUALS the
++    raw language ``analyzed_ratio`` exactly when nothing was dropped, so an
++    all-analysed repo is byte-identical. Falls back to the language ratio only if
++    the honest field is somehow absent.
++    """
++    honest = getattr(profile, "analyzed_ratio_honest", None)
++    if honest is None:
++        honest = getattr(profile, "analyzed_ratio", 1.0)
++    return float(honest if honest is not None else 1.0)
++
++
+ def render_analysis_scope_line(profile: ProjectProfile) -> str:
+     """One honest, factual line about how much of the repo Apex analysed.
+ 
+@@ -2045,27 +2145,60 @@ def render_analysis_scope_line(profile: ProjectProfile) -> str:
+     """
+     if profile.source_file_count <= 0:
+         return ""
+-    if not (profile.out_of_scope_ratio > 0 and profile.language_breakdown):
+-        return ""  # all-Python: the grade already speaks for the whole repo
+-    analysed_pct = round(profile.analyzed_ratio * 100)
+-    out_pct = round(profile.out_of_scope_ratio * 100)
+-    # language_breakdown is already sorted (count desc, then name); render the
+-    # first language with its " files" unit, the rest as bare counts.
+-    items = list(profile.language_breakdown.items())
+-    parts = [f"{lang} {count} files" if i == 0 else f"{lang} {count}"
+-             for i, (lang, count) in enumerate(items)]
+-    line = (
+-        f"Scope: analysing {analysed_pct}% of the repo (Python). "
+-        f"{out_pct}% is outside analysis scope — {', '.join(parts)}."
+-    )
+-    # Name the concrete files behind that percentage, reusing the profile's
+-    # existing root. Only reached when out-of-scope content exists, so the
+-    # all-Python path above never imports/runs this — output stays identical.
+-    from app.tools.polyglot_facts import (
+-        render_polyglot_attention,
+-        scan_polyglot_facts,
+-    )
+-    attention = render_polyglot_attention(scan_polyglot_facts(profile.root))
+-    if attention:
+-        line = f"{line} {attention}"
++    n_unanalyzed = honest_unanalyzed_count(profile)
++    has_polyglot = bool(profile.out_of_scope_ratio > 0 and profile.language_breakdown)
++    if not has_polyglot and n_unanalyzed <= 0:
++        return ""  # all-Python, all-analysed: the grade speaks for the whole repo
++
++    # Byte-identity: with NOTHING dropped use the raw language percentages exactly
++    # as before (independent round of each). ONLY when in-language files were
++    # counted-but-not-analysed do we switch to the honest ratio (which the raw
++    # language ratio cannot express) and derive out-of-scope as ``100 - analysed``
++    # so the two always sum to 100.
++    if n_unanalyzed <= 0:
++        analysed_pct = round(profile.analyzed_ratio * 100)
++        out_pct = round(profile.out_of_scope_ratio * 100)
++    else:
++        # A real drop means coverage is NEVER full: clamp at 99 so a 99.83% honest
++        # ratio cannot round UP to a false 100% (the same clamp the other surfaces
++        # apply, keeping one honest number everywhere).
++        analysed_pct = min(round(honest_analyzed_ratio(profile) * 100), 99)
++        out_pct = 100 - analysed_pct
++
++    if has_polyglot:
++        # language_breakdown is already sorted (count desc, then name); render the
++        # first language with its " files" unit, the rest as bare counts.
++        items = list(profile.language_breakdown.items())
++        parts = [f"{lang} {count} files" if i == 0 else f"{lang} {count}"
++                 for i, (lang, count) in enumerate(items)]
++        line = (
++            f"Scope: analysing {analysed_pct}% of the repo (Python). "
++            f"{out_pct}% is outside analysis scope — {', '.join(parts)}."
++        )
++        # Name the concrete files behind that percentage, reusing the profile's
++        # existing root. Only reached when out-of-scope content exists, so the
++        # all-Python path above never imports/runs this — output stays identical.
++        from app.tools.polyglot_facts import (
++            render_polyglot_attention,
++            scan_polyglot_facts,
++        )
++        attention = render_polyglot_attention(scan_polyglot_facts(profile.root))
++        if attention:
++            line = f"{line} {attention}"
++    else:
++        # All-Python repo that nonetheless has in-language files it could NOT
++        # analyse — disclose that gap honestly instead of staying silent (the old
++        # "" would have implied 100% coverage).
++        line = (
++            f"Scope: analysing {analysed_pct}% of the repo (Python). "
++            f"{out_pct}% is in-language but was not analysed."
++        )
++
++    if n_unanalyzed > 0:
++        f_word = "file" if n_unanalyzed == 1 else "files"
++        was_word = "was" if n_unanalyzed == 1 else "were"
++        line = (
++            f"{line} {n_unanalyzed} Python {f_word} could not be analysed "
++            f"(syntax error, stub, or past the scan cap) and {was_word} excluded."
++        )
+     return line
+diff --git a/tests/test_profile_parse_cache_eyml.py b/tests/test_profile_parse_cache_eyml.py
+index bf7764b..e8258a3 100644
+--- a/tests/test_profile_parse_cache_eyml.py
++++ b/tests/test_profile_parse_cache_eyml.py
+@@ -99,7 +99,14 @@ _OriginalProfiler = _load_original_profiler()
+ # no field is ever added later, so these additive keys are dropped from BOTH
+ # sides before the comparison. (The parse-aware behaviour has its own dedicated
+ # suite: ``tests/test_scope_parse_aware_eyml.py``.)
+-_POST_SNAPSHOT_FIELDS = ("unparsed_files", "unparsed_count", "analyzed_ratio_honest")
++_POST_SNAPSHOT_FIELDS = (
++    "unparsed_files", "unparsed_count", "analyzed_ratio_honest",
++    # COMPLETE single-sourced unanalysed accounting (parse-failures + ``.pyi`` +
++    # over-cap), added AFTER this HEAD snapshot. Additive, same contract as the
++    # ``unparsed_*`` keys above — the snapshot profiler cannot set them. Dedicated
++    # suite: ``tests/test_scope_honesty_complete_eyml.py``.
++    "unanalyzed_files", "unanalyzed_count",
++)
+ 
+ 
+ def _profile_dict(profiler_cls, root: Path) -> dict:

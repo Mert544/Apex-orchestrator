@@ -59,6 +59,11 @@
 - `nan` float-canary `sorted` determinizmini bozuyor → `math.isfinite` filtresi (stub_synthesis).
 - `north_star_audit.py` `_CONCRETE_SCOPES` idea-* scope'larını az sayıyor (yalnız precision, muhafazakâr — denetçi flag'ledi, düşük öncelik, **fix etme** demişti).
 
+**Parke WIP (kaybolmasın diye patch'lendi — `docs/wip/`):** iki eski "scope-honesty"
+raporlama stash'i (project_profile/dashboard). **Stale + büyük olasılıkla aşılmış**
+(analysis-scope dürüstlüğü zaten branch'te). Drift-bitişik (raporlama/honesty) —
+North Star bunu öncelemez. Yalnız referans; gerekirse HEAD üzerine **yeniden** yaz.
+
 ---
 
 ## 4. Operasyon disiplini (DEĞİŞMEZ — `AGENTS.md`/`CLAUDE.md`)
