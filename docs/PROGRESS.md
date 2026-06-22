@@ -43,6 +43,11 @@
 - `0687fc3` **feat(infer-type-hints): aynı-tip literal binary** — `1+2`→int, `'a'+'b'`→str,
   `[1]+[2]`→list, `(1,)+(2,)`→tuple (Add/Sub/Mult/Mod/FloorDiv; **Pow/Div/bool sağlamlık için
   hariç**; name/mixed/non-literal reddedilir — değer tip-sınırı değildir).
+- `1360346` **feat(verify): src-layout import çözümü** — `src/`/`lib/` layout'lu repolarda
+  `import mod` artık çözülür (`RunTestsSkill._import_roots`: root-FIRST + yalnız bare-stem-import
+  edilen modülü barındıran src/lib eklenir, bounded/sorted/saf-AST); collection-error → yanlış-RED
+  → "hiç inmedi" kapanır. Gerçek öğrenci/şirket repolarında landing'i açar; #A'nın pytest-tespiti
+  bozulmadan birleşti.
 
 **— önceki oturum —**
 
@@ -109,26 +114,38 @@
    ve `--apply` ile **landable**; grounding `idea_synthesis_signals.py`, additive bridge
    augmentasyonu, seeder'a dokunulmadı. Buyer-proof bağımsız projede doğruladı.
 
-**✅ İNDİ (bu oturum, üçü birden, birleşik full-gate yeşil):** #A yorumlayıcı/pytest dürüst
-tier'ı (`13168c5`) · #D sabit-anahtar indeksleme (`921de98`) · #E aynı-tip literal binary (`0687fc3`).
+**✅ İNDİ (bu oturum, birleşik full-gate yeşil):** #A yorumlayıcı/pytest dürüst tier'ı (`13168c5`)
+· #D sabit-anahtar indeksleme (`921de98`) · #E aynı-tip literal binary (`0687fc3`) · #B src-layout
+import çözümü (`1360346`).
 
-**← SIRADAKİ ÖNCELİK (somut-landing önceliğiyle):**
-- **#B — src-layout import-root probe** (eski #3'ün RAFİNE hali): kanonik DÜZ vaka zaten
-  çözülmüş (`_has_flat_pytest_suite`); hayatta kalan boşluk **src-layout** (`src/pkg/...`,
-  test `import pkg`): `PYTHONPATH=root` tek başına → collection-error → yanlışlıkla RED.
-  Fix TEK yer: `run_tests.py`'de `_import_roots(root)` (bounded/sorted/root-first; Apex'in
-  kendi `app/`'ini gölgeleme). Downstream consumer'lara (cli_autonomy/objective_compiler/
-  develop_session/proof_of_fix) **DOKUNMA** — fix upstream, dar. **NOT:** #A artık
-  `run_tests.py`'ye `pytest_importable`/tespit ekledi → `_import_roots`'u onunla dikkatli birleştir.
-- **#C — raporlama dürüstlük uzlaştırması:** apply sayacı sentez landing'lerini eksik
-  sayıyor; `--json` blocked-satır şeması tutarsız; geri-sarılan create_test_stub artık
-  dosya bırakıyor. (`idea_action_bridge.py` apply-summary.)
-- **JSDoc-only JS/TS lander** (Ar-Ge #2): tek çevrimdışı-sağlam JS adımı (yorum-only; en
-  kötü hata = yanlış yorum, bozuk kod değil; saf-Python 3 yapısal kontrol + `no-suite`
-  damga). Ötesi vendored offline parser ister → o gelene dek recommend-only.
-- **Sentez genişletme follow-up'ları:** #D 2. sıra **iki-witness ternary**; #E takip
-  **unary numeric** + `str/list*int`. (develop-core kod-yazma gücü; sağlamlık disiplini birebir.)
-- **PARK (North-Star sürücüsü DEĞİL — moat cilası):** coverage backlog (en riskli:
+**← SIRADAKİ ÖNCELİK:**
+- **#C — raporlama dürüstlük uzlaştırması** (NET kazanımlar): (a) `--json` blocked/skipped satırları
+  `verified`/`coverage` anahtarlarını atlıyor (`idea_action_bridge.py` ~2586/2689) → `None` default
+  ekle (additive); (b) rollback yeni-dosyayı unlink ediyor ama `__pycache__/*.pyc` + boş
+  `.github/workflows/` kalıyor (`_restore_snapshot` ~1756) → temizle. (c) apply-sayacı sentezi
+  ayrı mı sayıyor — ÖNCE ampirik doğrula (scout buyer-proof'un bu iddiasını KISMEN çürüttü).
+
+**📋 SCOUT-HARİTALI SIRADAKİ DALGALAR (bu oturumun 8 keşifçisinden; soundness + insertion intel HAZIR):**
+- **Idea-reach v2 — cover-gaps'i ideate'e köprüle** (EN YÜKSEK; pure): yeni sinyal
+  `cover_gaps_modules` (`plan_cover_gaps(root,rel).new_contents` gate'i — dürüst) + `_FACT_ACTIONS`
+  + `_SYNTHESIS_OBJECTIVES` satırı + implement-stub gibi `apply_rename` delege (yeni `_apply_objective_via_develop_core`).
+  Ardından wire-exports / generate-usage-doc (pure+oracle), strengthen-tests / tdd-implement (pytest-gated; tdd per-symbol → özel wiring).
+- **PARAM-tipi isinstance-guard'dan** (NOVEL, sağlam, kilitli-refusal'dan AYRI): koşulsuz entry
+  `if not isinstance(x,T): raise` / `assert isinstance(x,T)` → `x: T` (çalışma-zamanı zorunlu bound,
+  değer-tahmini DEĞİL). Koşullar: girişte koşulsuz, tek-sınıf (tuple→Union reddet), guard'dan önce
+  reassign/kullanım yok, mevcut anotasyon yok. Insertion `_annotatable_params()`.
+- **builtin-call dönüş-tipleri** (`len/ord/id/hash`→int, `str/repr/hex/oct/bin/chr`→str, `bool`→bool,
+  `list/set/dict/tuple/frozenset/sorted`→container) — **shadowing-guard ŞART** (`_assigned_names_in_scope`,
+  `_own_returns` deseni); test satır 306 `len`-refusal'ı guard'la KASITLI güncellenir (zayıflatma değil).
+- **UnaryOp numeric** (`-1`→int, `~5`→int, `-1.5`→float; ≤4 LOC) + **sequence/str × int**
+  (`'a'*3`→str, `[0]*3`→list; ayrı `_mixed_sequence_int_mult`, mixed-type olduğu için same-type-binop kapsamaz).
+- **Stub şablonları (sıra):** Slicing `a[:k]`/`a[k:]` (~50 LOC, constant-index disiplini) → `a.index(k)`
+  → `k*a` sol-sabit (yalnız `*`) → iki-witness ternary (yalnız `<=`/`>=`/`==`; `<`/`>` min/max ile ÖZDEŞ → emit etme).
+- **JSDoc-only JS/TS lander** (R&D #2, **recommend-only** — JS runner yok): `js-doc-params` objektifi,
+  `ObjectiveSpec` ile kayıt (module-objective DEĞİL), 3 saf-Python yapısal kontrol (yorum-only/imza-byte-identical/
+  kod-bytes-değişmez), NO_SUITE dürüstlük damgası; additive `_seed_js_ts_doc_params`. Ötesi vendored parser ister.
+
+**PARK (North-Star sürücüsü DEĞİL — moat cilası):** coverage backlog (en riskli:
   `app/execution/semantic/transforms/_apply_helpers.py`, fan-in 10, 0 direct test);
   determinizm/fake-green sweep (0 canlı delik; `nan`→`math.isfinite` H1 latent).
 3. _(Eski #3 "düz-paket import" ve #4 "JS/TS lander" yukarıda **#B** ve **JSDoc** olarak
