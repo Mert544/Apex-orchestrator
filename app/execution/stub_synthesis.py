@@ -637,6 +637,7 @@ def _string_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[st
                     f"{a}.lower().replace({old}, {new})"))
     for sep in strings:
         out.append((f"split({sep})", f"{a}.split({sep})"))
+    out.extend(_str_predicate_templates(a, witnesses))
     return out
 
 
@@ -655,6 +656,120 @@ def _string_floor_met(witnesses: list[tuple[str, str]]) -> bool:
         return True
     distinct = {args for args, _expected in witnesses}
     return len(distinct) >= 2
+
+
+def _str_predicate_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The 1-arg STRING-PREDICATE family: ``return a.startswith(k)`` /
+    ``return a.endswith(k)`` for a string constant ``k`` mined from the witnesses,
+    so a boolean prefix/suffix check is reachable. ``is_http('http://x') == True,
+    is_http('ftp://y') == False`` lands ``s.startswith('http')`` — the witnessed
+    prefix that reproduces every expected bool.
+
+    Mirrors the witness-derived string-method discipline of ``replace``/``split``
+    in :func:`_string_templates`: ``k`` is mined (:func:`_str_prefix_constant` /
+    :func:`_str_suffix_constant`) from the witnessed strings whose expected bool is
+    ``True`` (their common prefix / suffix), then VERIFIED to reproduce EVERY
+    witness's expected bool before being emitted — the caller still gates it
+    against all pinned tests, never-fake-green.
+
+    SOUNDNESS: the body returns a ``bool`` (no domain/raise issues — ``str``
+    arguments are guaranteed by the str-only family this lives in). The contract
+    must DISCRIMINATE — at least one witness expecting ``True`` AND one expecting
+    ``False`` (:func:`_discriminating_str_predicate_witnesses`); an all-``True`` /
+    all-``False`` contract collapses to a constant the constant-last fallback owns,
+    so this family refuses it rather than baking a coincidental ``k`` that another
+    family should answer.
+
+    OVERFIT FLOOR: offered ONLY when at least TWO DISTINCT argument tuples witness
+    the contract (:func:`_string_floor_met`, the same floor the witness-derived
+    ``replace``/``split`` shapes use). A single witness cannot discriminate at all
+    (it pins one bool), so with <2 distinct tuples no predicate is derived. With NO
+    witness list (the structural view) nothing is mined — there is no expected bool
+    to verify against. The existing type-exact accept-gate and off-witness str
+    canary probes (:func:`_str_canary_probes`) stay the sole ambiguity arbiters.
+    Deterministic: a fixed (startswith-then-endswith) order, at most one ``k`` each."""
+    if not _string_floor_met(witnesses):
+        return []
+    pairs = _discriminating_str_predicate_witnesses(witnesses)
+    if pairs is None:
+        return []
+    out: list[tuple[str, str]] = []
+    prefix = _str_prefix_constant(pairs)
+    if prefix is not None:
+        out.append((f"startswith({prefix!r})", f"{a}.startswith({prefix!r})"))
+    suffix = _str_suffix_constant(pairs)
+    if suffix is not None:
+        out.append((f"endswith({suffix!r})", f"{a}.endswith({suffix!r})"))
+    return out
+
+
+def _discriminating_str_predicate_witnesses(
+    witnesses: list[tuple[str, str]],
+) -> list[tuple[str, bool]] | None:
+    """The ``(str_arg, expected_bool)`` pairs for the string-predicate miner, or
+    ``None`` when the family cannot be mined. Every witness must be ONE LITERAL
+    ``str`` argument with a LITERAL ``bool`` expected value (a ``bool`` is
+    type-distinct from ``int`` — a ``startswith`` result is always a ``bool``), and
+    the contract must DISCRIMINATE: at least one ``True`` AND one ``False`` expected
+    (else the predicate collapses to a constant another family owns). A non-literal,
+    multi-arg, non-``str``-argument, or non-``bool``-expected shape yields ``None`` —
+    never guessed. Deterministic: source order."""
+    out: list[tuple[str, bool]] = []
+    saw_true = saw_false = False
+    for args_text, expected_text in witnesses:
+        value = _literal_tuple(args_text)
+        expected = _literal_value(expected_text)
+        if value is None or len(value) != 1 or not isinstance(value[0], str):
+            return None
+        if type(expected) is not bool:
+            return None
+        out.append((value[0], expected))
+        saw_true = saw_true or expected
+        saw_false = saw_false or not expected
+    if not (out and saw_true and saw_false):
+        return None
+    return out
+
+
+def _str_prefix_constant(pairs: list[tuple[str, bool]]) -> str | None:
+    """The string constant ``k`` for ``a.startswith(k)``, or ``None`` when no single
+    ``k`` reproduces every witness's expected bool. ``k`` is the longest common
+    PREFIX of the ``True``-expecting strings (the natural prefix a human checks); it
+    is VERIFIED that ``s.startswith(k) == expected`` for EVERY pair before it is
+    returned (an empty ``k`` — no shared prefix — would make ``startswith`` always
+    ``True`` and so fail a ``False`` witness, refusing). Deterministic, total."""
+    trues = [s for s, expected in pairs if expected]
+    k = _longest_common_prefix(trues)
+    if not k:
+        return None
+    return k if all(s.startswith(k) == expected for s, expected in pairs) else None
+
+
+def _str_suffix_constant(pairs: list[tuple[str, bool]]) -> str | None:
+    """The string constant ``k`` for ``a.endswith(k)``, or ``None`` when no single
+    ``k`` reproduces every witness's expected bool. ``k`` is the longest common
+    SUFFIX of the ``True``-expecting strings; it is VERIFIED that
+    ``s.endswith(k) == expected`` for EVERY pair before it is returned (an empty
+    ``k`` would make ``endswith`` always ``True`` and fail a ``False`` witness,
+    refusing). Deterministic, total."""
+    trues = [s for s, expected in pairs if expected]
+    suffixes = [s[::-1] for s in trues]
+    k = _longest_common_prefix(suffixes)[::-1]
+    if not k:
+        return None
+    return k if all(s.endswith(k) == expected for s, expected in pairs) else None
+
+
+def _longest_common_prefix(strings: list[str]) -> str:
+    """The longest string that PREFIXES every member of ``strings`` (``""`` for an
+    empty list or no shared prefix). Deterministic, total — a pure character scan."""
+    if not strings:
+        return ""
+    shortest = min(strings, key=len)
+    for i, ch in enumerate(shortest):
+        if any(s[i] != ch for s in strings):
+            return shortest[:i]
+    return shortest
 
 
 def _reduction_join_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
