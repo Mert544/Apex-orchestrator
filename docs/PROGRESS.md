@@ -11,6 +11,27 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (9. tur) — ideate-CLI opt-in bayrakları · document-signature (9. CONCRETE) · paylaşılan plan-helper; `/code-review` 2 GERÇEK bug yakaladı (full-gate yeşil, A+99):**
+- `9e87325` **feat(ideate-cli): 8 grounded opt-in bayrağı** — **kullanım-açığı KAPANDI**: bridge'in kabul ettiği ama
+  CLI'da erişilemeyen 8 hedef (`--cover-gaps`/`--tdd-implement`/…) artık `apex ideate --actions` ile çağrılabilir
+  (`_OPTIN_SYNTHESIS_FLAGS` + defensive getattr → plan_tree/plan_roadmap'e splat). Default plan byte-identical.
+  ("Ne kadar kullanabiliyor?" ölçümünün doğrudan ürünü — capability-gym'de bulunan açık.)
+- `fde0f00` **feat(develop): document-signature objektifi (9. CONCRETE)** — belgesiz public fonksiyona `Args:`
+  (param adları=AST gerçeği) + `Returns: <type>` (YALNIZ kanıtlı dönüş tipinde); kanıtlanamıyorsa/zaten-belgeli/
+  private/test→reddet (placeholder yok). Facet-bağlantısı (1:1 parite korundu) + north-star manifest CONCRETE.
+  `/code-review` bug yakaladı: tek-satır-gövde `def f(): return 1` `_body_insertion`'a header'ı "indent" verip
+  splice'ı bozuyor + batch-self-validation TÜM modülün doc'larını düşürüyordu → artık atlanıyor (indent saf-boşluk
+  olmalı); regresyon testleri pinledi.
+- `a4a9175` **refactor: paylaşılan `plan_source_rewrite`** — infer-type-hints + document-signature (+gelecekteki
+  tek-dosya objektifler) aynı RenamePlan boilerplate'ini elle kopyalıyordu; tek kaynağa çıkarıldı
+  (`cross_file_rename.plan_source_rewrite`, cycle-safe ev). Byte-identical davranış; self-grade'in flag'lediği
+  duplike bloğu kaldırıp **A+99'u korudu** (49 objektif → A+99 dengesi sürüyor).
+- **W9-3 (doctest-witness madenleme) DÜŞÜRÜLDÜ — PRENSİPLİ:** `/code-review` kodun DOĞRU ama production'da ÖLÜ
+  olduğunu buldu (hiçbir caller `module_source` geçmiyor) + naif scan-only wiring over-count honesty-bug'ı yaratırdı
+  (apply yolu doctest-only stub'ı landleyemez — `pinned_test_files` yalnız `test_*.py` tarar). "Kullanılamayan
+  yetenek" göndermek tam da kapatmaya çalıştığımız açık → DÜŞÜRÜLDÜ; kod+test scratchpad'e (`w9-3_*`), uçtan-uca
+  dalga (scan+apply doctest-aware) olarak §3'e işlendi.
+
 **BU OTURUM (8. tur) — parametrize tipler+join · sequence-reduction stub'lar · `/code-review` skill GERÇEK bug yakaladı (full-gate yeşil, A+99):**
 - `b660971` **feat(infer-type-hints): parametrize konteyner tipleri + type-join** — tam-literal display artık
   parametrize tip: `[1,2]`→`list[int]`, `{1:'a'}`→`dict[int,str]`, `(1,'a')`→`tuple[int,str]`, iç-içe
@@ -235,8 +256,10 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**~22.136 test** + ruff), öz-not **A+99**
-  (bu oturumda `--chunks 16 -j 4` → 773s, 16/16 chunk + ruff PASS, exit 0).
+- **Kapı:** `python scripts/verify.py` → full green (**~22.194 test** + ruff), öz-not **A+99**
+  (bu oturumda `--chunks 16 -j 4` → ~860s, 16/16 chunk + ruff PASS, exit 0). **Yeni objektif eklerken** facet-parite
+  (`FACET_OBJECTIVE_MAP`↔registry 1:1) + `north_star_audit.OBJECTIVE_MANIFEST` partition + duplication (≥5-statement
+  blok) self-grade tripwire'larını UNUTMA — 9. turda document-signature bunların hepsini tetikledi.
 - **⚠️ FRESH-CONTAINER KAPI ÖN-KOŞULU (yeni oturum bunu OKUSUN):** Bulut klonu **shallow**
   gelir (~50 commit); karakterizasyon testleri `git show <eski-commit>^` ile snapshot
   stage eder → shallow'da **collection-error** (bu oturumda 7 chunk böyle kırıldı, dalga
@@ -273,14 +296,14 @@
 
 ## 3. SIRADAKİ İŞLER (öncelik sırası — saha testi gaplerine dayalı)
 
-**🆕 EN GÜNCEL SLATE (6. tur keşif denetçisi; grounded · dosya-ayrık · sound · anafikre-sadık — DURUM: ✅R7=A1∥B1∥C1 (a4e1fbe/7616f9a/13568e3), ✅R8=A2+B2 (b660971/1658f1d), ⛔D1 BLOKE (facet-parite), SIRADAKİ = D1-facet-kapsamlı + C2/doctest):**
+**🆕 EN GÜNCEL SLATE (6. tur keşif denetçisi; grounded · dosya-ayrık · sound · anafikre-sadık — DURUM: ✅R7=A1∥B1∥C1 (a4e1fbe/7616f9a/13568e3), ✅R8=A2+B2 (b660971/1658f1d), ✅R9=D1+CLI-flags (fde0f00/9e87325), SIRADAKİ = W9-3 doctest UÇTAN-UCA + C2):**
 - ✅ **A2 (8.tur `b660971`)** parametrize display tipleri + type-join. İNDİ.
 - ✅ **B2 (8.tur `1658f1d`)** `sorted(a)[k]` + `len(set(a))` (+ `set` sandbox under-count fix). İNDİ.
-- ⛔ **D1 (document-signature) BLOKE:** 1:1 objektif↔facet parite değişmezi → tek facet-kapsamlı dalga olarak yeniden gönder (yeni objektif + registration + `FACET_OBJECTIVE_MAP` girdisi + `idea_facets` ifadesi + testler).
+- ✅ **D1 (document-signature) İNDİ (9.tur `fde0f00`):** facet-kapsamlı dalga olarak çözüldü (objektif + `FACET_OBJECTIVE_MAP` + `idea_facets` + manifest). 9. CONCRETE objektif.
 - ✅ **A1 (7.tur `a4e1fbe`)** [`type_annotations.py`]: param tipi `assert isinstance(x,A) and isinstance(y,B)` (BoolOp-And → operand başına single-class). İNDİ.
 - ✅ **B1 (7.tur `7616f9a`)** [`stub_synthesis.py`]: `a.replace(k1,k2)` MADENLENMİŞ tek-çift, witness-doğrulamalı, ambiguity-refuse. İNDİ.
 - ✅ **C1 (7.tur `13568e3`)** [idea-bridge]: `dedup-total-return` & `dedup-parameterized` GROUNDED-köprülendi (7.+8. opt-in). İNDİ.
-- **C2/doctest** [`stub_synthesis.py`] (SIRADAKİ): witness'ları modül docstring `>>>` doctest'lerinden de madenle (`_witnesses_in_file` kardeşi). `fillable_stub_modules`'tan akar, köprü değişmez.
+- **W9-3 doctest-witness UÇTAN-UCA** [`stub_synthesis.py` + `objectives/implement_stub.py`] (SIRADAKİ — kod scratchpad `w9-3_*`): doctest `>>>` örneklerinden witness madenleme KODU yazıldı+doğrulandı (witness-soundness sağlam) AMA `/code-review` 2 sorun buldu → DÜŞÜRÜLDÜ: (1) hiçbir production caller `module_source` geçmiyor → ÖLÜ; (2) scan-only wiring over-count (`can_fill` True derken apply landleyemez, çünkü `pinned_test_files` yalnız `test_*.py`). UÇTAN-UCA gerekli: `module_has_fillable_stub`/`can_fill_stub_in_process` + `implement_stub` synth'e `module_source` THREAD ET **VE** apply yolunu doctest-only stub'ı doctest-verify ile landleyecek şekilde genişlet (scan↔apply ayni witness setinde anlaşsın). Ek: `# doctest:+SKIP` örneklerini hariç tut; `_literal_value`'nun `#`-stripping'i doctest-`want`'ta recall düşürüyor.
 - **D1** (YENİ yetenek, kendi dosyası) [`app/execution/objectives/document_signature.py` + küçük C-bağlama]: PEP 257 docstring İSKELETİ sentezle — param adları AST'ten (GERÇEK, çıkarım değil) + `Returns: <type>` SADECE `infer_annotations` dönüş-tipini kanıtladığında. North-Star "docstring ekle" sağlam yapılmış. Zaten-belgeli/fixture reddet. `infer_type_hints.py`+`docstring.py` aynala.
 - **DIŞLANAN (drift/unsound — YAPMA):** bare-Name/Call dönüşten çıkarım (non-local) · default'tan param · `==`/`<`→bool (override edilebilir dunder) · Div/Pow aynı-tip · `set(a)`/`list(set)` (PYTHONHASHSEED sıra) · daha fazla detektör/safety/honesty makinesi.
 
