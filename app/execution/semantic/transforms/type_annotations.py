@@ -165,6 +165,15 @@ def _literal_type(node: ast.expr) -> str | None:
         ``[1] + [2]`` ⇒ ``list``, ``(1,) + (2,)`` ⇒ ``tuple``. See
         :func:`_binop_same_type_literal` for the soundness rules (why
         ``/``/``**`` and ``bool`` and any non-literal operand are refused).
+      - a UNARY op on a NUMERIC literal ⇒ that numeric type: ``-1``/``+1`` ⇒
+        ``int``, ``-1.5``/``+1.5`` ⇒ ``float``, and ``~5`` ⇒ ``int`` (``~`` is
+        defined on ``int`` only — ``~1.5`` is a ``TypeError`` — so ``Invert``
+        accepts an ``int`` operand only). See :func:`_unaryop_numeric_literal`.
+      - a SEQUENCE/str ``*`` int literal ⇒ the sequence's type: ``'a' * 3`` ⇒
+        ``str``, ``b'x' * 3`` ⇒ ``bytes``, ``[0] * 3`` ⇒ ``list``, ``(0,) * 2``
+        ⇒ ``tuple`` (either operand order). This is a MIXED-type product (a
+        sequence times an ``int``), so the same-type rule correctly does not
+        cover it. See :func:`_mixed_sequence_int_mult`.
 
     Everything else (a name, call, attribute, subscript, etc.) is not
     statically certain ⇒ ``None`` (refuse)."""
@@ -179,6 +188,12 @@ def _literal_type(node: ast.expr) -> str | None:
         return "bool"
     if _str_method_call_returns_str(node):
         return "str"
+    unary = _unaryop_numeric_literal(node)
+    if unary is not None:
+        return unary
+    mixed = _mixed_sequence_int_mult(node)
+    if mixed is not None:
+        return mixed
     return _binop_same_type_literal(node)
 
 
@@ -274,6 +289,76 @@ def _binop_same_type_literal(node: ast.expr) -> str | None:
     if left is None or left == "bool":
         return None
     return left if _literal_type(node.right) == left else None
+
+
+# Unary operators whose result over a NUMERIC literal stays that numeric type.
+# ``-``/``+`` (USub/UAdd) preserve ``int``/``float``; ``~`` (Invert) is handled
+# separately because it is defined on ``int`` ONLY (``~1.5`` is a TypeError).
+_NUMERIC_SIGN_OPS: tuple[type[ast.unaryop], ...] = (ast.USub, ast.UAdd)
+
+
+def _unaryop_numeric_literal(node: ast.expr) -> str | None:
+    """The provable type NAME for ``<op> <numeric literal>`` (``ast.UnaryOp``),
+    or ``None`` when not provable.
+
+    Returns a type name ONLY for these shapes (operand must be a numeric
+    ``ast.Constant`` — never a name/call/attr, which are values, not type
+    bounds, the LOCKED refusal):
+      - ``USub``/``UAdd`` (``-x``/``+x``) on an ``int`` ⇒ ``int``, on a ``float``
+        ⇒ ``float`` (sign preserves the numeric type).
+      - ``Invert`` (``~x``) on an ``int`` ⇒ ``int`` ONLY. ``~`` is defined on
+        ``int`` and not on ``float`` (``~1.5`` raises ``TypeError``), so a
+        ``float`` operand under ``Invert`` is REFUSED.
+
+    Sound because an ``ast.Constant`` operand is a built-in ``int``/``float``
+    whose unary dunders (``__neg__``/``__pos__``/``__invert__``) are not
+    instance-overridable, so ``-1`` ⇒ ``int``, ``-1.5`` ⇒ ``float``, ``~5`` ⇒
+    ``int`` are PROVABLE. ``bool`` is excluded along with every non-``int``/
+    ``float`` constant (``_constant_type`` returns ``bool``/``str``/... there,
+    which is not in the numeric set)."""
+    if not isinstance(node, ast.UnaryOp):
+        return None
+    if not isinstance(node.operand, ast.Constant):
+        return None
+    operand_type = _constant_type(node.operand.value)
+    if isinstance(node.op, _NUMERIC_SIGN_OPS):
+        return operand_type if operand_type in ("int", "float") else None
+    if isinstance(node.op, ast.Invert):
+        return "int" if operand_type == "int" else None
+    return None
+
+
+# Literal node types that are SEQUENCES ``*``-repeatable by an ``int`` — the
+# product stays the sequence's own type. ``str``/``bytes`` are ``ast.Constant``
+# (resolved via ``_constant_type``); ``list``/``tuple`` are displays.
+_SEQUENCE_MULT_TYPES: frozenset[str] = frozenset({"str", "bytes", "list", "tuple"})
+
+
+def _mixed_sequence_int_mult(node: ast.expr) -> str | None:
+    """The provable type NAME for a SEQUENCE ``*`` int literal product
+    (``ast.BinOp`` with ``Mult``), or ``None`` when not provable.
+
+    Returns the sequence operand's type when ONE operand is a literal ``str``/
+    ``bytes``/``list``/``tuple`` and the OTHER is an ``int`` ``ast.Constant``
+    (EITHER order — ``'a' * 3`` and ``3 * 'a'`` both ⇒ ``str``). This is a
+    MIXED-type product (sequence × int), so the same-type rule in
+    :func:`_binop_same_type_literal` correctly does NOT cover it.
+
+    Sound because the sequence literal and the ``int`` constant are built-ins
+    whose ``__mul__``/``__rmul__`` are not instance-overridable: ``'a' * 3`` ⇒
+    ``str``, ``b'x' * 3`` ⇒ ``bytes``, ``[0] * 3`` ⇒ ``list``, ``(0,) * 2`` ⇒
+    ``tuple`` are PROVABLE (a non-positive count yields the same type, empty).
+    REFUSED: any non-literal operand (a name/call/attr — a value, not a type
+    bound), and ``int * int`` (the same-type rule owns it, not this one)."""
+    if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Mult):
+        return None
+    left = _literal_type(node.left)
+    right = _literal_type(node.right)
+    if left in _SEQUENCE_MULT_TYPES and right == "int":
+        return left
+    if right in _SEQUENCE_MULT_TYPES and left == "int":
+        return right
+    return None
 
 
 _CERTAIN_BOOL_CMP_OPS: tuple[type[ast.cmpop], ...] = (
