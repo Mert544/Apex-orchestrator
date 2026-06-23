@@ -11,6 +11,35 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (12. tur) — SIÇRAMA dalgası: Wilson-güven sıralaması (KARAR VERME) · str/bytes split/partition tipleri (SAF YETENEK); RÜYA dalgası fonksiyonel-DONE ama `/code-review`+grade ile ERTELENDİ (3 import cycle); full-gate yeşil, A+99, ~22.279 test:**
+- `36ef116` **feat(ascend): Wilson-güven alt sınırı ile sıralama (KARAR VERME)** — karar katmanının
+  `priority = pending*(1+payoff)*reliability` formülünde reliability artık ham `success_rate` yerine Wilson skor alt
+  sınırını (`_Stat.confidence`, zaten `confident_ranking` kullanıyor) okuyor → İZLENEN operatörler arasında kanıtlı
+  9/10 (lb≈0.60) ince-ama-kusursuz 2/2'yi (lb≈0.34) geçer: kanıt, şansı yener. `_MIN_SAMPLES`(=2) altı (1/1 dahil)
+  yine yoksun→nötr 1.0 (örnek-kapısı değişmedi); kanıtlı blocker yine `_RELIABILITY_FLOOR`'da. land_factors cc=3.
+  **`/code-review` dürüstlük açığı yakaladı:** docstring "1/1, 9/10'u geçemez" diye OVERCLAIM ediyordu — yanlış
+  (1/1 kapı-dışı→nötr 1.0→geçer); docstring/comment'ler düzeltildi (damping yalnız izlenen op'lar arasında).
+  1 karakterizasyon assertion'ı 1.0→5/5 Wilson lb 0.5655'e güncellendi (davranış-gerçeği, zayıflatma DEĞİL).
+- `2de1088` **feat(infer-type-hints): str/bytes `.split`/`.partition` tipleri (SAF YETENEK)** — kanıtlı str/bytes
+  alıcıda `.split`/`.rsplit`/`.splitlines`→`list`, `.partition`/`.rpartition`→`tuple` (`_SEQUENCE_RETURNING_METHODS`
+  tablosu + `_bytes_method_call_returns_type`'a tek dal, bytes-only guard'dan ÖNCE — 5 metot iki tipte de aynı
+  sonuç-KIND'ı verir). Konservatif: ÇIPLAK list/tuple (eleman tipi kanıtlanamaz); bilinmeyen-Name alıcı + kilitli
+  refüzler (==/<, Div/Pow, param-default) reddeder. 2 bayat assertion yeni-gerçeğe düzeltildi (kırmızı test
+  bırakma): `b"a".split()` refüz-loop'tan çıktı (artık list), `'s'.split(',')` `is None`→tam `-> list` güçlendirildi.
+- **RÜYA (`develop --from-dream`) — fonksiyonel DONE + 2× /code-review temiz, ama ERTELENDİ (PRENSİPLİ, grade-regresyonu yok):**
+  atıl-rüya açığını kapatıyordu (default dream'den LIVE landing + `sweep`) ve **`/code-review` GERÇEK never-fake-green
+  determinizm BLOCKER'ı yakaladı**: canlı yol `dream()` çağırıp journal/ledger YAZIYOR + streak ilerletiyordu → aynı
+  girdi farklı çıktı + kullanıcı reposunu kirletiyor (LOCKED "deterministic" ihlali). Düzeltildi: `dream(persist=False)`
+  salt-okunur yolu (streak'i on-disk journal'dan hesaplar, YAZMAZ) + sahte-yeşil determinizm testi gerçek invaryantla
+  (idempotent + no-write + sub-gate-asla-ilerlemez) değiştirildi → 2× re-review SHIP. ANCAK objective_compiler'ın yeni
+  ascend+dream import'ları **3 import cycle** yarattı → grade **B84 (-15 Architecture)**. Grade-regresyonu ASLA gönderilmez.
+  Düzeltme net ama line-targeted deep-mutation testlerini (L1005/L1006) etkileyen orta-ölçek refactor (yeni
+  `app/engine/dream_landing.py` modülü, tek-yön import) → ayrı temiz dalga olarak dönecek. İş kaydedildi: scratchpad
+  `dream_r12_deferred.patch` + `dream_r12_test.py` + `dream_r12_followup.md` (tam re-land planı + blast radius).
+- **Worktree HALA güvenilmez (PROGRESS §2 uyarısı doğrulandı):** 3 worktree de bayat tabanda (`54962d3`, ~1114 commit
+  geride; hedef dosyalar orada YOK) açıldı → mühendislere verdiğim stale-base guard'ı 3'ünü de TEMİZ iptal etti
+  (sıfır bozulma). Kod-yazan mühendisler ANA AĞAÇTA, disjoint-dosya + SIRALI koşturuldu (worktree değil).
+
 **BU OTURUM (11. tur) — doctest-pinli stub fill (W10-C ÇÖZÜLDÜ) · `apex auto` otonom sentez (cheap-default + `--deep`) · int/float/complex tipleri; `/code-review` 1 GERÇEK never-fake-green açığı yakaladı (full-gate yeşil, A+99, ~22.237 test):**
 - `ab9a852` **feat(stub-synthesis): doctest-pinli stub fill** — 10. turda ertelenen **W10-C ÇÖZÜLDÜ**: implement-stub artık bir
   fonksiyonun KENDİ docstring `>>>` örneklerinden witness madenliyor ve gövdeyi o örnekleri stdlib `doctest` ile KOŞARAK
@@ -297,12 +326,17 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**~22.237 test** + ruff), öz-not **A+99**
-  (11. turda `--chunks 16 -j 4` → 869s, 16/16 chunk + ruff PASS, exit 0). **Yeni objektif eklerken** facet-parite
+- **Kapı:** `python scripts/verify.py` → full green (**~22.279 test** + ruff), öz-not **A+99**
+  (12. turda `--chunks 16 -j 4` → 867s, 16/16 chunk + ruff PASS, exit 0). **Yeni objektif eklerken** facet-parite
   (`FACET_OBJECTIVE_MAP`↔registry 1:1) + `north_star_audit.OBJECTIVE_MANIFEST` partition + duplication (≥5-statement
   blok) self-grade tripwire'larını UNUTMA — 9. turda document-signature bunların hepsini tetikledi, **11. turda
   iki doctest-verifier ikizi duplication-tripwire'ı tetikledi** → `_doctests_pass` paylaşılan helper'ına extraction
   ile A+99 korundu (param_add/param_drop'taki tarihi 1 blok BASELINE; ona dokunmak A+100→pinned-test kırardı).
+  **⚠️ 12. turda IMPORT-CYCLE tripwire'ı vurdu (-5/cycle, en pahalısı):** bir modüle EKLENEN tek bir cross-module
+  import (fonksiyon-içi olsa BİLE — detektör onu da sayar) hedef modül geri-işaret ediyorsa cycle kapatır;
+  RÜYA'nın objective_compiler→ascend + objective_compiler→dream eklemeleri 3 cycle→**B84** yaptı. Yeni cross-module
+  import eklemeden önce `ProjectProfiler('.').profile().import_cycles` boş mu KONTROL ET; seam'i geri-işaret etmeyen
+  ayrı bir modüle koy (tek-yön import).
 - **⚠️ FRESH-CONTAINER KAPI ÖN-KOŞULU (yeni oturum bunu OKUSUN):** Bulut klonu **shallow**
   gelir (~50 commit); karakterizasyon testleri `git show <eski-commit>^` ile snapshot
   stage eder → shallow'da **collection-error** (bu oturumda 7 chunk böyle kırıldı, dalga
