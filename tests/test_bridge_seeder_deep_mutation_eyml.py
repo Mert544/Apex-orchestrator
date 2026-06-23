@@ -1163,6 +1163,12 @@ _FACT_EXPECTED = {
     # develop-core ``apply_rename`` path; PER-MODULE, its signal runs the MUTATION
     # ENGINE to find surviving mutants it can kill with a double-gated assertion.
     "strengthen-tests": ("strengthen_tests", True),
+    # modernize is the SIXTH broad opt-in objective (default off in the planner,
+    # gated by ``modernize=True``), delegated like cover-gaps to the develop-core
+    # ``apply_rename`` path; PER-MODULE and OBJECTIVE-COMPILER-driven, its signal
+    # (``modernize_plan``) chains the compiler's own behaviour-preserving idiom
+    # transforms (none-compare / dead fstring / collection literal) over the module.
+    "modernize": ("modernize", True),
 }
 
 

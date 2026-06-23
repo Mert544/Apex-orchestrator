@@ -85,6 +85,18 @@ Four signals, one per synthesis objective Apex offers:
     unsound (red) baseline, or a test/fixture target all yield an empty no-op plan
     and do not qualify — exactly the modules ``apex develop``'s strengthen-tests
     objective would touch, never an over-promise.
+  - :func:`modernizable_modules` — modernize. The one OBJECTIVE-COMPILER-driven
+    signal: ``modernize`` is not a single ``plan_*`` lander but a campaign of the
+    objective compiler's behaviour-preserving idiom transforms (``== None`` →
+    ``is None``, dead ``f`` prefixes, empty-constructor → collection literal).
+    :func:`modernize_plan` DELEGATES to those exact transforms
+    (``objective_compiler._tidy_transforms``) — chaining each over the module's own
+    source — and a module is kept only when the resulting plan has a non-empty
+    ``new_contents`` (the same "would this change anything?" gate the objective's
+    ``_modernize_candidates`` uses). So an already-modern module (every idiom
+    already in its tidy form), an unreadable file, or a syntax error all yield an
+    empty no-op plan and do not qualify — exactly the modules ``apex develop``'s
+    modernize objective would touch, never an over-promise.
 
 Pure: no writes, no pytest, no network. Deterministic: every result is sorted.
 Defensive: a missing / unreadable / syntactically-broken module, or a
@@ -118,6 +130,7 @@ __all__ = [
     "generate_usage_doc_packages",
     "tdd_implementable_symbols",
     "strengthenable_modules",
+    "modernizable_modules",
 ]
 
 
@@ -422,3 +435,79 @@ def strengthenable_modules(
     lander refuses (a test file, a dunder, a non-``.py`` target); each simply yields
     an empty plan and is dropped, so callers need not pre-filter."""
     return _qualifying(root, modules, _is_strengthenable, limit)
+
+
+def modernize_plan(root: str | Path, rel: str):
+    """The per-module ``modernize`` plan as a :class:`RenamePlan`, DELEGATING to the
+    objective compiler's OWN behaviour-preserving idiom transforms.
+
+    ``modernize`` is not a single ``plan_*`` lander; it is a campaign the objective
+    compiler composes from :func:`objective_compiler._tidy_transforms` (``== None`` →
+    ``is None``, dead ``f`` prefixes, empty-constructor → collection literal). This
+    chains those exact transforms over ``rel``'s own source — each transform re-reads
+    the accumulated text, so a module carrying several idioms is fully modernized in
+    one plan — and returns a plan whose ``new_contents`` holds the combined rewrite
+    ONLY when it differs from the original. A module the transforms would not change
+    (already modern), an unreadable file, or a syntax error (each transform returns
+    ``None``) all yield an empty no-op plan, so this is honest by construction — the
+    SAME "would this change anything?" gate the objective's ``_modernize_candidates``
+    uses. No transform logic is copied: the real ``apply`` functions decide the diff.
+
+    Shared by the grounding signal (:func:`modernizable_modules`) and the bridge's
+    delegated modernize lander, so the signal qualifies a module precisely when the
+    lander would land a change."""
+    from app.engine.objective_compiler import _tidy_transforms
+    from app.execution.cross_file_rename import RenamePlan
+
+    plan = RenamePlan(old=rel, new="modernize")
+    try:
+        source = (Path(root) / rel).read_text(encoding="utf-8")
+    except OSError:
+        return plan
+    current = source
+    edits = 0
+    for _op, label, apply_fn in _tidy_transforms():
+        try:
+            res = apply_fn(rel, current, label)
+        except Exception:
+            res = None
+        new = res.patch_requests[0].get("new_content", "") if (
+            res and getattr(res, "patch_requests", None)) else ""
+        if new and new != current:
+            current = new
+            edits += 1
+    if current != source:
+        plan.originals[rel] = source
+        plan.new_contents[rel] = current
+        plan.edits_by_file[rel] = edits
+    return plan
+
+
+def _is_modernizable(root_path: Path, rel: str) -> bool:
+    """True when :func:`modernize_plan` would REWRITE ``rel`` — i.e. the delegated
+    modernize plan has a non-empty ``new_contents``. This composes the objective
+    compiler's OWN idiom transforms (see :func:`modernize_plan`), so it is honest by
+    construction: an already-modern module, an unreadable file, or a syntax error all
+    yield an empty no-op plan and do not qualify, never an over-promise."""
+    return bool(modernize_plan(root_path, rel).new_contents)
+
+
+def modernizable_modules(
+    root: str | Path, modules: Iterable[str], limit: int | None = None
+) -> list[str]:
+    """The modules with a LANDABLE modernize idiom rewrite, sorted, capped.
+
+    Grounded on :func:`modernize_plan`, which DELEGATES to the objective compiler's
+    OWN behaviour-preserving tidy transforms (``objective_compiler._tidy_transforms``:
+    ``== None`` → ``is None``, dead ``f`` prefixes, empty-constructor → collection
+    literal): a module qualifies only when chaining the real transforms over its own
+    source yields a CHANGED result (the objective's own definition of "there is a
+    non-idiomatic construct here I can modernize"). An already-modern module, an
+    unreadable file, or a syntax error all produce an empty no-op plan and do not
+    qualify. This is exactly the set ``apex develop``'s modernize objective would
+    touch — never an over-promise.
+
+    Like every other per-module signal here, ``modules`` may freely mix paths the
+    objective refuses (a non-``.py`` target, a fixture); each simply yields an empty
+    plan and is dropped, so callers need not pre-filter."""
+    return _qualifying(root, modules, _is_modernizable, limit)
