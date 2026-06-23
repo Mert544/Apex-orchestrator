@@ -94,10 +94,12 @@ def test_infers_each_literal_kind():
         "return 's'": "-> str:",
         "return 1.5": "-> float:",
         "return b'a'": "-> bytes:",
-        "return [1]": "-> list:",
-        "return {1: 2}": "-> dict:",
-        "return {1}": "-> set:",
-        "return (1, 2)": "-> tuple:",
+        # Fully-literal displays now infer the PARAMETRIZED type (round 8): every
+        # element/key/value proves to one type via the recursive literal oracle.
+        "return [1]": "-> list[int]:",
+        "return {1: 2}": "-> dict[int, int]:",
+        "return {1}": "-> set[int]:",
+        "return (1, 2)": "-> tuple[int, int]:",
     }
     for body, expect in cases.items():
         out = infer_annotations(f"def f():\n    {body}\n")

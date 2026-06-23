@@ -17,7 +17,12 @@ What counts as PROVABLE (the only things ever annotated):
   - **Return type** from the function's ``return`` statements when every return
     yields a value of the SAME statically-certain concrete type:
     ``int``/``str``/``bool``/``float``/``list``/``dict``/``tuple``/``set``/
-    ``bytes`` constants and displays, an f-string (``JoinedStr`` ⇒ ``str``), a
+    ``bytes`` constants and displays — a fully-LITERAL display is PARAMETRIZED
+    (``[1, 2]`` ⇒ ``list[int]``, ``{1: 'a'}`` ⇒ ``dict[int, str]``, ``(1, 'a')``
+    ⇒ the fixed-length ``tuple[int, str]``) when every element/key/value proves
+    to a consistent type, else the BARE container (empty/mixed/non-literal —
+    ``[]`` ⇒ ``list``, ``[1, 'a']`` ⇒ ``list``) — an f-string (``JoinedStr`` ⇒
+    ``str``), a
     list/dict/set comprehension (⇒ ``list``/``dict``/``set``), a certainly-
     boolean expression (a comparison or ``not x`` ⇒ ``bool``), a SAME-TYPE-
     LITERAL binary op over a TYPE-CLOSED operator (``1 + 2`` ⇒ ``int``,
@@ -165,6 +170,116 @@ _DISPLAY_TYPES: dict[type[ast.expr], str] = {
 }
 
 
+# Single-element LITERAL display nodes whose container type takes ONE uniform
+# element parameter when every element proves to the SAME type: ``ast.List`` ⇒
+# ``list``, ``ast.Set`` ⇒ ``set``. (``ast.Dict`` and ``ast.Tuple`` are
+# parametrized by their own shapes — see :func:`_parametrized_display_type`.)
+_UNIFORM_PARAM_DISPLAYS: dict[type[ast.expr], str] = {
+    ast.List: "list",
+    ast.Set: "set",
+}
+
+
+def _element_provable_type(node: ast.expr) -> str | None:
+    """The provable type NAME for ONE element/key/value inside a literal display,
+    or ``None`` when not provable.
+
+    Tries the PARAMETRIZED display type FIRST (so a nested provable display lifts
+    — ``[[1]]`` ⇒ ``list[list[int]]``, ``{'a': [1]}`` ⇒ ``dict[str, list[int]]``),
+    then falls back to the pure context-free :func:`_literal_type` oracle for a
+    scalar/non-display element. Soundness is unchanged: every leaf still bottoms
+    out in :func:`_literal_type`, and a ``Name`` / non-literal element yields
+    ``None`` here and refuses its enclosing container."""
+    parametrized = _parametrized_display_type(node)
+    return parametrized if parametrized is not None else _literal_type(node)
+
+
+def _uniform_element_type(elts: list[ast.expr]) -> str | None:
+    """The single shared :func:`_element_provable_type` of EVERY element in
+    ``elts``, or ``None`` when ``elts`` is empty, any element is not provable, or
+    the elements disagree.
+
+    Recurses through :func:`_element_provable_type`, so a nested provable display
+    lifts too (``[[1], [2]]`` ⇒ ``list[list[int]]``); a ``Name`` or any
+    unprovable element yields ``None`` there and refuses the whole container."""
+    if not elts:
+        return None  # an empty display under-claims the bare container
+    first = _element_provable_type(elts[0])
+    if first is None:
+        return None
+    for elt in elts[1:]:
+        if _element_provable_type(elt) != first:
+            return None  # disagreeing element types -> bare container
+    return first
+
+
+def _parametrized_dict_type(node: ast.Dict) -> str | None:
+    """``dict[K, V]`` when EVERY key proves to ONE type ``K`` and EVERY value to
+    ONE type ``V`` (both via :func:`_uniform_element_type`), else ``None``.
+
+    A ``**spread`` entry has a ``None`` key (``node.keys`` carries ``None``
+    there); the uniform-key oracle cannot prove a ``None`` AST slot, so a spread
+    correctly forces the bare ``dict`` fallback."""
+    keys = [k for k in node.keys if k is not None]
+    if len(keys) != len(node.keys):
+        return None  # a ``**spread`` entry -> not a fixed key/value shape
+    key_type = _uniform_element_type(keys)
+    if key_type is None:
+        return None
+    value_type = _uniform_element_type(node.values)
+    return f"dict[{key_type}, {value_type}]" if value_type is not None else None
+
+
+def _parametrized_tuple_type(node: ast.Tuple) -> str | None:
+    """``tuple[T1, T2, ...]`` (a FIXED-length HETEROGENEOUS tuple — one slot per
+    element) when EVERY element independently proves via
+    :func:`_element_provable_type`, else ``None`` (empty tuple or any unprovable
+    element -> bare ``tuple``).
+
+    A ``*spread`` element is an ``ast.Starred`` that :func:`_literal_type`
+    refuses, so a variadic tuple correctly falls back to the bare container."""
+    if not node.elts:
+        return None  # empty tuple under-claims the bare container
+    parts: list[str] = []
+    for elt in node.elts:
+        elt_type = _element_provable_type(elt)
+        if elt_type is None:
+            return None
+        parts.append(elt_type)
+    return f"tuple[{', '.join(parts)}]"
+
+
+def _parametrized_display_type(node: ast.expr) -> str | None:
+    """A PARAMETRIZED PEP 585 builtin-generic type for a fully-LITERAL display,
+    or ``None`` when the display cannot be parametrized (and so should fall back
+    to its BARE container via :data:`_DISPLAY_TYPES`).
+
+    Parametrized ONLY when every part proves to a consistent type via the
+    recursive :func:`_element_provable_type` oracle (which bottoms out in
+    :func:`_literal_type`) — so this adds NO soundness surface:
+      - ``ast.List``/``ast.Set`` ⇒ ``list[T]``/``set[T]`` when all elements share
+        ONE type ``T`` (:func:`_uniform_element_type`);
+      - ``ast.Dict`` ⇒ ``dict[K, V]`` when all keys share ``K`` and all values
+        ``V`` (:func:`_parametrized_dict_type`);
+      - ``ast.Tuple`` ⇒ ``tuple[T1, ...]`` (fixed-length, heterogeneous — one
+        slot per element, :func:`_parametrized_tuple_type`).
+
+    UNDER-claims the bare container (never wrong) for an EMPTY display, a
+    MIXED-element display (``[1, 'a']`` ⇒ bare ``list``), or any non-literal
+    element. A COMPREHENSION is NOT a display node here (``ast.ListComp`` etc.
+    are absent), so it stays bare/unchanged — its element type is not statically
+    certain. PEP 585 builtin generics need NO import on the project's Python."""
+    if isinstance(node, (ast.List, ast.Set)):
+        uniform = _UNIFORM_PARAM_DISPLAYS[type(node)]
+        element = _uniform_element_type(node.elts)
+        return f"{uniform}[{element}]" if element is not None else None
+    if isinstance(node, ast.Dict):
+        return _parametrized_dict_type(node)
+    if isinstance(node, ast.Tuple):
+        return _parametrized_tuple_type(node)
+    return None
+
+
 def _literal_type(node: ast.expr) -> str | None:
     """The provable type NAME for a return expression, or ``None`` if the
     expression's type is not statically certain from the AST alone.
@@ -172,10 +287,15 @@ def _literal_type(node: ast.expr) -> str | None:
     Statically certain shapes (and ONLY these — never a guess):
       - constants: ``None``/``bool``/``int``/``float``/``str``/``bytes``;
       - an f-string (``JoinedStr``) ⇒ always ``str``;
-      - a display/comprehension literal ⇒ its container type
+      - a display/comprehension literal ⇒ its (BARE) container type
         (``list``/``dict``/``set``/``tuple``, ``ListComp``/``DictComp``/
         ``SetComp``); a ``GeneratorExp`` yields a generator, NOT a concrete
-        container, so it is refused;
+        container, so it is refused. (A fully-LITERAL display is PARAMETRIZED to
+        ``list[int]``/``dict[int, str]``/``tuple[int, str]`` only at the
+        return-value surface — :func:`_parametrized_display_type` via
+        :func:`_return_value_type` — so THIS context-free oracle, reused
+        recursively by the binop/sequence-mult/str-method rules, keeps returning
+        the bare container kind those rules compare on);
       - a CERTAINLY-boolean expression ⇒ ``bool``: an IDENTITY/MEMBERSHIP
         comparison (``x is None``, ``y in z`` — the ``is``/``is not``/``in``/
         ``not in`` operators always yield a ``bool``) or ``not x``. A rich
@@ -687,6 +807,56 @@ def _has_own_break(body: list[ast.stmt]) -> bool:
     return False
 
 
+# Builtin generic CONTAINERS join with another of the SAME base by keeping a
+# precise parameter ONLY when both sides match exactly, else WIDENING to the
+# sound bare base. A non-base (``int``/``str``/...) has no ``[``, so it only ever
+# joins with an identical self — never a lossy widen — which keeps cross-base and
+# container-vs-scalar pairs correctly un-joinable.
+def _type_base(name: str) -> str:
+    """The bare container/base of a (possibly parametrized) type NAME — the text
+    before the first ``[`` (``list[int]`` ⇒ ``list``, ``int`` ⇒ ``int``)."""
+    return name.split("[", 1)[0]
+
+
+def _join_types(a: str, b: str) -> str | None:
+    """The least-upper-bound annotation of two provable type NAMES, or ``None``
+    when they do not agree.
+
+    - IDENTICAL types keep their exact (possibly parametrized) form:
+      ``list[int]`` ⊔ ``list[int]`` = ``list[int]``, ``int`` ⊔ ``int`` = ``int``.
+    - SAME base but DIFFERING parameters (or one side bare) WIDEN to the sound
+      bare base: ``list[int]`` ⊔ ``list`` = ``list``, ``list[int]`` ⊔ ``list[str]``
+      = ``list``, ``tuple[int, str]`` ⊔ ``tuple[int, int]`` = ``tuple``.
+    - DIFFERENT bases (or a container vs a non-container like ``list[int]`` vs
+      ``int``) do NOT agree ⇒ ``None`` (refuse, unchanged).
+
+    Sound because the join only ever WIDENS a precise type to its OWN bare base
+    (every value of ``list[int]`` is a ``list``), so a folded annotation stays
+    true of every return; a single type folds to itself, retaining precision."""
+    if a == b:
+        return a  # identical (parametrized or scalar) — keep the exact form
+    base = _type_base(a)
+    if base == _type_base(b):
+        return base  # same container, differing params / a bare side -> widen
+    return None  # different base or container-vs-scalar — no agreement
+
+
+def _join_all_types(types: list[str]) -> str | None:
+    """Fold ``types`` (in collection order) under :func:`_join_types`, or
+    ``None`` if any pair fails to agree. ``types`` is never empty at the call
+    sites (each has at least one provable type); a single type folds to itself,
+    so its precise parametrized form is retained."""
+    if not types:
+        return None
+    joined = types[0]
+    for t in types[1:]:
+        result = _join_types(joined, t)
+        if result is None:
+            return None
+        joined = result
+    return joined
+
+
 def _infer_return_type(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
     """The provable return type for ``fn``, or ``None`` if not provable.
 
@@ -726,33 +896,48 @@ def _infer_return_type(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None
         return None
 
     assigned = _assigned_names_in_scope(fn)
-    types: set[str] = set()
+    types: list[str] = []
     for r in value_returns:
         t = _return_value_type(r.value, assigned)  # r.value is not None here
         if t is None:
             return None  # a non-provable return — not certain
-        types.add(t)
-    if len(types) != 1:
-        return None  # disagreeing types — ambiguous
-    return next(iter(types))
+        types.append(t)
+    # JOIN the (source-ordered) return types to a single least-upper-bound: a
+    # set of returns sharing one container agrees on the precise parametrized
+    # type when identical, else WIDENS to the bare base (``list[int]`` +
+    # bare ``list`` -> ``list``); differing bases still refuse (``None``).
+    return _join_all_types(types)
 
 
 def _return_value_type(node: ast.expr, assigned_names: frozenset[str]) -> str | None:
     """The provable type NAME for a single ``return <expr>`` value, or ``None``.
 
-    A literal/display/etc. (:func:`_literal_type`) takes precedence; failing
-    that, a FIXED-result ``<builtin>(...)`` call (:func:`_builtin_call_returns_type`,
-    with the shadowing guard ``assigned_names`` from the function's own scope);
-    failing that, a SAME-TYPE conditional expression
-    (:func:`_ifexp_same_type`, a ``X if C else Y`` whose branches both prove to
-    the SAME type by recursing through this very resolver). Kept separate from
-    :func:`_literal_type` on purpose: ``_literal_type`` is the pure context-free
-    literal oracle reused recursively by the binop/str-method/ sequence-mult
-    rules, and a builtin call is NOT a literal there (so ``len(x) + 1`` correctly
-    stays unprovable — the binop recursion never sees this builtin-call rule)."""
+    A fully-LITERAL display is PARAMETRIZED here first
+    (:func:`_parametrized_display_type` — ``[1, 2]`` ⇒ ``list[int]``, ``(1, 'a')``
+    ⇒ ``tuple[int, str]``), so the return surface lands the precise generic while
+    the bare-container fallback below still covers empty/mixed/comprehension
+    displays. Failing that, a literal/display/etc. (:func:`_literal_type`, the
+    pure context-free oracle — the BARE container for a display); failing that, a
+    FIXED-result ``<builtin>(...)`` call (:func:`_builtin_call_returns_type`, with
+    the shadowing guard ``assigned_names`` from the function's own scope); failing
+    that, a SAME-TYPE conditional expression (:func:`_ifexp_same_type`, a ``X if C
+    else Y`` whose branches both prove to the SAME type by recursing through this
+    very resolver — so a ternary of two ``list[int]`` branches lands ``list[int]``
+    while a ``list[int]`` vs bare-``list`` ternary disagrees and refuses).
+
+    Parametrization is deliberately confined to THIS return-value surface, NOT
+    pushed into :func:`_literal_type`: ``_literal_type`` stays the pure
+    context-free literal oracle reused recursively by the binop/str-method/
+    sequence-mult rules (which classify by the BARE container kind and compare
+    operand types), so those rules are unchanged; and a builtin call is NOT a
+    literal there (so ``len(x) + 1`` correctly stays unprovable — the binop
+    recursion never sees this builtin-call rule)."""
+    parametrized = _parametrized_display_type(node)
+    if parametrized is not None:
+        return parametrized  # a fully-literal display -> ``list[int]`` etc.
     literal = _literal_type(node)
     if literal is not None:
-        return literal
+        return literal  # empty/mixed/comprehension display -> bare container
     builtin = _builtin_call_returns_type(node, assigned_names)
     if builtin is not None:
         return builtin
@@ -784,7 +969,14 @@ def _ifexp_same_type(node: ast.expr, assigned_names: frozenset[str]) -> str | No
     body_type = _return_value_type(node.body, assigned_names)
     if body_type is None:
         return None
-    return body_type if _return_value_type(node.orelse, assigned_names) == body_type else None
+    else_type = _return_value_type(node.orelse, assigned_names)
+    if else_type is None:
+        return None
+    # JOIN the two branch types: identical parametrized branches keep the precise
+    # form (``[1] if c else [2]`` -> ``list[int]``), a parametrized vs a bare /
+    # differing-param branch of the SAME container WIDENS to the bare base
+    # (``[1] if c else []`` -> ``list``), and DIFFERENT bases still refuse.
+    return _join_types(body_type, else_type)
 
 
 # Bare type NAMES accepted as an isinstance guard's class. A guard is a runtime-

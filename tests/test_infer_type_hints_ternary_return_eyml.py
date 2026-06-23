@@ -157,7 +157,9 @@ def test_ifexp_refuses_when_a_branch_uses_shadowed_builtin():
 def test_return_value_type_routes_ifexp():
     # The new IfExp path lives INSIDE _return_value_type so it composes.
     node = ast.parse("[1] if c else [2]", mode="eval").body
-    assert _return_value_type(node, frozenset()) == "list"
+    # Both branches prove to list[int] and JOIN to the precise parametrized type
+    # (round 8); a mixed/empty branch would widen to bare `list`.
+    assert _return_value_type(node, frozenset()) == "list[int]"
 
 
 def test_infer_return_type_uses_ternary():
@@ -176,7 +178,8 @@ def test_ternary_annotation_reflects_real_inferred_type_not_hardcoded():
     str_out = infer_annotations(str_src)
     list_out = infer_annotations(list_src)
     assert str_out is not None and "-> str:" in str_out
-    assert list_out is not None and "-> list:" in list_out
+    # [1] if c else [2] -> both list[int] -> joins to the parametrized type.
+    assert list_out is not None and "-> list[int]:" in list_out
     assert str_out != list_out  # not a single hardcoded annotation
 
 
