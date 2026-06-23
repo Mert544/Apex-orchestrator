@@ -11,6 +11,36 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (4. tur) — 3 paralel sentez dalgası + paralel-kapı izolasyon düzeltmesi (full-gate yeşil, A+99):**
+- `806238a` **feat(infer-type-hints): aynı-tip ternary dönüş** — `return X if C else Y` (ast.IfExp), her İKİ
+  dal da AYNI sağlam tipe çözülürse o tip (`'a' if c else 'b'`→str, `[1] if c else []`→list). Kural
+  `_return_value_type` içinde (`_ifexp_same_type`, aynı oracle'a recursion) → fazladan üst-dallanma YOK; iç-içe
+  ternary recursion'la, karışık plain+ternary `_infer_return_type`'ın aynı-tip mutabakatıyla çözülür. KİLİTLİ
+  refüzler inşa-gereği korunur (dalda `==`/`/`/`**`/bare-name/unknown-call → None → tüm ternary reddedilir;
+  farklı-tip dallar reddedilir); koşul hiç incelenmez. 205 infer_type_hints testi yeşil.
+- `9d80107` **feat(stub-synthesis): 1-arg string-classification** — `return a.<method>()`; isdigit/isalpha/
+  isalnum/isupper/islower/isspace/istitle'dan HER witness bool'unu üreten TEK metot (gerçek str özelliği,
+  ezber-tablo DEĞİL — `is_num('123')==True,'12a'==False` → `s.isdigit()`). startswith/endswith kardeşi, aynı
+  `_string_templates` yoluna bağlı (type-exact accept-gate, off-witness str-canary, ≥2-distinct floor,
+  discriminating ≥1T∧≥1F değişmeden). NEVER-GUESS: yalnız TEK metot uyuyorsa emit (0 veya ≥2 → hiçbir şey).
+  262 komşu stub testi yeşil.
+- `05665bb` **feat(ideate): tdd-implement köprüsü** — develop hedefi `tdd-implement` artık ideate'te LANDABLE;
+  **4. opt-in** (varsayılan kapalı, `tdd_implement=True`) ve **ilk PER-SYMBOL** köprü. RED testin çağırdığı eksik
+  fonksiyonu sentezler (testi yeşile çeviren `def`). Sinyal `tdd_implementable_symbols` lander'ın KENDİ detektörünü
+  (`detect_missing_symbols`) bir kez koşar, sonra yalnız `plan_tdd_implement().new_contents` dolu olanı tutar
+  (lander'ın kendi kapısı; assertion-failure/zaten-test'li/şablon-uymayan reddedilir — over-promise yok). Target
+  `"<module>:<name>"`; `apply_step` implement-stub gibi `apply_rename(impact_scope=True)`'e delege. Flag bağımsız +
+  varsayılan plan **byte-identical**. 235 pinned + 194 bridge/ideate testi yeşil.
+- `0072a30` **test(characterization): volatile reflection-ledger bloğu normalize** — `test_main_byte_identical`
+  frozen↔live `main()`'i byte-byte karşılaştırır; `"reflection"` bloğu (total_runs/total_actions/success_rate/
+  false_positive_rate/top_false_positives) FeedbackLoop'un **cwd-göreli** `.apex/feedback_log.json`'undan gelir.
+  Harness cwd=REPO_ROOT koştuğundan **paralel kapıda** (`-j N`) başka süitlerin `main()`'i bu PAYLAŞILAN dosyayı
+  değiştirir → giriş-sayısı orig↔new okumaları arasında YARIŞIR (senaryo [4]: total_actions 90 vs 89, yalnız chunk
+  kompozisyonu bir yazıcıyı yanına koyunca; round-4 yeni test dosyaları 16-parça bölüşümünü kaydırıp açığa çıkardı).
+  `_normalize`'a bu volatile alanlar + top_false_positives listesi eklendi — previous_run_count/total/token/süre
+  gibi runtime-state, `main()` kontrol-akışı DEĞİL; 6000+ karakter kontrol-akışı karşılaştırması değişmedi (gerçek
+  sapma hâlâ patlar). Simüle yarış çifti normalize-eşit + süit yeşil. (KÖK: cwd-göreli `.apex` paralel paylaşımı.)
+
 **BU OTURUM (3. tur) — 3 paralel sentez dalgası + develop-loop determinizm KÖK-düzeltmesi (full-gate yeşil, A+99):**
 - `b7985f7` **fix(develop): determinist regresyon-backstop — bayat bytecode OKUMAZ** — oturum-sonu
   regresyon-backstop'u (ve move-başı impact-scoped kapı) projeyi alt-süreçte koşar; bir move modülü
@@ -124,8 +154,8 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**~21.834 test** + ruff), öz-not **A+99**
-  (bu oturumda `--chunks 16 -j 4` → 560s, 16/16 chunk + ruff PASS, exit 0).
+- **Kapı:** `python scripts/verify.py` → full green (**~21.888 test** + ruff), öz-not **A+99**
+  (bu oturumda `--chunks 16 -j 4` → 561s, 16/16 chunk + ruff PASS, exit 0).
 - **⚠️ FRESH-CONTAINER KAPI ÖN-KOŞULU (yeni oturum bunu OKUSUN):** Bulut klonu **shallow**
   gelir (~50 commit); karakterizasyon testleri `git show <eski-commit>^` ile snapshot
   stage eder → shallow'da **collection-error** (bu oturumda 7 chunk böyle kırıldı, dalga
@@ -142,6 +172,12 @@
   regresyonu NON-determinist kaçırır. Bu oturum `b7985f7` ile düzeltildi (`RunTestsSkill` +
   `cross_file_rename`; `import_oracle`/`test_shield` zaten set ediyordu). **Yeni bir proje-import eden
   alt-süreç eklersen DONTWRITE'ı UNUTMA** (yoksa determinizm/never-fake-green testleri flake olur).
+- **⚠️ PARALEL-KAPI PAYLAŞILAN-STATE TUZAĞI:** `verify.py -j N` chunk'ları **paylaşılan dosya sistemini**
+  (repo + `/tmp`) paylaşır; `main()` FeedbackLoop'a **cwd-göreli `.apex/feedback_log.json`** yazar. Byte-identical
+  bir karakterizasyon bu paylaşılan ledger'dan türeyen sayıları (reflection: total_actions vb.) pinlerse, başka
+  bir chunk'ın eşzamanlı `main()` yazısı onu **yarıştırır** → flake (4. tur `0072a30` ile bu testte `_normalize`
+  foldlandı). **Yeni test paylaşılan repo-state'i (`.apex`, scratch dosyaları) okuyan/yazana bir şey pinlemesin**;
+  ya runtime-state'i normalize et ya da per-test izole et. (CLAUDE.md "transient hazards" sınıfının paralel yüzü.)
 - **⚠️ Worktree izolasyonu GÜVENİLMEZ:** bu ortamda `isolation: worktree` bazen **eski tabandan**
   checkout açar (gözlemlendi: `54962d3`, HEAD'den 1114 commit geride → hedef dosya orada YOK;
   başka bir worktree doğru `4d9466c`'teydi — tutarsız). **Kod-yazan mühendisleri ANA AĞAÇTA**
