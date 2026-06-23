@@ -40,7 +40,6 @@ __all__ = [
     "bool_return_fitness", "magic_constant_fitness",
     "compile_objective", "compile_all", "available_objectives",
     "ALL_OBJECTIVES", "SESSION_OBJECTIVES",
-    "dream_confluence_modules", "compile_from_dream",
     "render_compile_markdown", "render_from_dream_markdown", "render_all_markdown",
     "resolve_objective", "objective_synonyms",
 ]
@@ -1052,45 +1051,12 @@ def render_compile_markdown(result: CompileResult) -> str:
     return "\n".join(lines)
 
 
-# --- Dream → action: act on the nightly structural discoveries ---------------
-
-def dream_confluence_modules(project_root: str | Path) -> list[str]:
-    """Modules the dream graduated as CONFLUENCES — files that carry many
-    structural signals at once (high churn × hub × co-change). Read from the
-    promotion store the dream writes (`.apex/dream-promotions.json`); these are
-    the organism's hardest-won, multi-night discoveries about where the risk
-    concentrates. Returns existing module paths only, sorted, deduplicated."""
-    import json
-
-    path = Path(project_root) / ".apex" / "dream-promotions.json"
-    try:
-        items = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    out: list[str] = []
-    for it in items if isinstance(items, list) else []:
-        key = it.get("key", "") if isinstance(it, dict) else ""
-        if key.startswith("confluence:"):
-            module = key.split(":", 1)[1].strip()
-            if module and (Path(project_root) / module).exists():
-                out.append(module)
-    return sorted(set(out))
-
-
-def compile_from_dream(project_root: str | Path, objective: str = "dead-params",
-                       max_steps: int = 25, verify: bool = True,
-                       apply: bool = True) -> list[CompileResult]:
-    """Run a scoped develop campaign on each module the dream flagged as a
-    confluence — the closed loop: a 20-night structural discovery becomes a
-    morning's verified cleanup, no human choosing the next move. One
-    CompileResult per confluence module (empty list when the dream named none)."""
-    results: list[CompileResult] = []
-    for module in dream_confluence_modules(project_root):
-        results.append(compile_objective(
-            project_root, objective=objective, max_steps=max_steps,
-            verify=verify, apply=apply, scope_module=module))
-    return results
-
+# --- Dream → action: render the dream-driven multi-module campaign -----------
+# The dream→landing SEAM itself (dream_confluence_modules / compile_from_dream
+# and their helpers) lives in ``app/engine/dream_landing.py`` so its imports of
+# ``ascend`` and ``dream`` flow ONE-WAY (no import cycle through this module).
+# Only this renderer stays here: it renders a CompileResult and pulls in nothing
+# from ascend/dream, so it carries no cycle.
 
 def render_from_dream_markdown(results: list[CompileResult],
                                modules: list[str]) -> str:

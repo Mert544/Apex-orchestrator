@@ -381,9 +381,9 @@ def test_develop_from_dream_apply_footer(tmp_path, capsys, monkeypatch):
         def to_dict(self):
             return {"steps": self.steps}
 
-    monkeypatch.setattr("app.engine.objective_compiler.dream_confluence_modules",
+    monkeypatch.setattr("app.engine.dream_landing.dream_confluence_modules",
                         lambda target: ["app/m.py"])
-    monkeypatch.setattr("app.engine.objective_compiler.compile_from_dream",
+    monkeypatch.setattr("app.engine.dream_landing.compile_from_dream",
                         lambda *a, **k: [_R()])
     monkeypatch.setattr("app.engine.objective_compiler.render_from_dream_markdown",
                         lambda results, modules: "# Dream")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from app.engine.dream_landing import dream_confluence_modules
 from app.engine.objective_compiler import (
     CompileResult,
     CompileStep,
@@ -11,7 +12,6 @@ from app.engine.objective_compiler import (
     comprehension_fitness,
     compile_all,
     compile_objective,
-    dream_confluence_modules,
     import_sort_fitness,
     render_all_markdown,
     render_compile_markdown,

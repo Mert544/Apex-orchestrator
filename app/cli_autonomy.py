@@ -757,9 +757,10 @@ def _develop_session(args, target, max_steps, verify, apply) -> int:
 
 def _develop_from_dream(args, target, objective, max_steps, verify, apply) -> int:
     """`apex develop --from-dream`: scope the campaign to dream-flagged confluences."""
-    from app.engine.objective_compiler import (
-        compile_from_dream, dream_confluence_modules, render_from_dream_markdown,
+    from app.engine.dream_landing import (
+        compile_from_dream, dream_confluence_modules,
     )
+    from app.engine.objective_compiler import render_from_dream_markdown
 
     modules = dream_confluence_modules(str(target))
     results = compile_from_dream(str(target), objective=objective,

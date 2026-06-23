@@ -17,7 +17,6 @@ Style mirrors ``test_objective_compiler.py`` / ``..._more_edges.py``: a tiny
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from app.engine.objective_compiler import (
@@ -33,9 +32,7 @@ from app.engine.objective_compiler import (
     _resolve_compile_target,
     _run_pass,
     compile_all,
-    compile_from_dream,
     compile_objective,
-    dream_confluence_modules,
     render_all_markdown,
     render_compile_markdown,
 )
@@ -513,45 +510,10 @@ def test_l967_render_compile_numbers_steps_from_one():
     assert "3. " not in md
 
 
-# --- L998: `key.split(":", 1)[1]` maxsplit matters at index [1] --------------
-
-def test_l998_confluence_key_keeps_full_module_path_after_first_colon(tmp_path):
-    # A confluence key may carry a module path; `split(":", 1)[1]` keeps
-    # EVERYTHING after the first colon. With a windows-style or namespaced module
-    # containing a second ':' the `1 -> 2` maxsplit mutant would truncate it.
-    _project(tmp_path, "x = 1\n", rel="app/a:b.py")
-    (tmp_path / ".apex").mkdir()
-    (tmp_path / ".apex" / "dream-promotions.json").write_text(
-        json.dumps([{"key": "confluence:app/a:b.py"}]), encoding="utf-8")
-    # maxsplit 1 -> "app/a:b.py" (the real file). maxsplit 2 -> "app/a" (missing).
-    assert dream_confluence_modules(str(tmp_path)) == ["app/a:b.py"]
-
-
-# --- L1005/L1006: compile_from_dream default flags ---------------------------
-
-def test_l1006_compile_from_dream_apply_defaults_true(tmp_path):
-    # `apply: bool = True` default -> the scoped campaign writes. The
-    # `True -> False` mutant would default to a dry run (applied=False).
-    _project(tmp_path, _THREE_DEAD)
-    (tmp_path / ".apex").mkdir()
-    (tmp_path / ".apex" / "dream-promotions.json").write_text(
-        json.dumps([{"key": "confluence:app/m.py"}]), encoding="utf-8")
-    results = compile_from_dream(str(tmp_path), objective="dead-params",
-                                 verify=False)
-    assert results
-    assert results[0].applied is True
-
-
-def test_l1005_compile_from_dream_verify_defaults_true(tmp_path):
-    # `verify: bool = True` default -> the scoped campaign suite-verifies each
-    # landed step. The `True -> False` mutant would default verify off.
-    _project(tmp_path, _THREE_DEAD)
-    (tmp_path / ".apex").mkdir()
-    (tmp_path / ".apex" / "dream-promotions.json").write_text(
-        json.dumps([{"key": "confluence:app/m.py"}]), encoding="utf-8")
-    results = compile_from_dream(str(tmp_path), objective="dead-params")
-    assert results and results[0].steps
-    assert all(s.verified is True for s in results[0].steps)
+# Note: the confluence-key maxsplit (`key.split(":", 1)[1]`) and the
+# ``compile_from_dream`` default flags moved with the dream→landing seam into
+# ``app/engine/dream_landing.py``; their line-targeted mutation tests live in
+# ``test_dream_landing_deep_mutation_eyml.py``, re-anchored to that module.
 
 
 # --- Equivalent mutants (documented, not tested) -----------------------------
@@ -597,11 +559,8 @@ def test_l1005_compile_from_dream_verify_defaults_true(tmp_path):
 #   constructible small fixture the verified/applied/rolled-back outcome is
 #   identical for False and True, so the default flip is not observable.
 #   EQUIVALENT-IN-PRACTICE (no deterministic, non-fragile discriminator exists).
-# * L1005 `max_steps: int = 25` default (compile_from_dream): this objective runs
-#   a SCOPED, per-module campaign — `max_steps` caps the moves landed in ONE
-#   module. No single module can realistically present > 25 simultaneously
-#   landable moves for one objective (modernize yields <= 3/module; the
-#   dead-param/import/bool detectors yield at most a handful), so the cap is never
-#   the binding constraint and 25 vs 26 is unobservable. The non-scoped 25-default
-#   IS pinned by L832 (compile_objective) and L913 (compile_all).
-#   EQUIVALENT-IN-PRACTICE.
+# * The ``compile_from_dream`` `max_steps: int = 25` default moved to
+#   ``app/engine/dream_landing.py``; its EQUIVALENT-IN-PRACTICE 25->26 reasoning
+#   lives with the seam in ``test_dream_landing_deep_mutation_eyml.py``. The
+#   non-scoped 25-default is still pinned here by L832 (compile_objective) and
+#   L913 (compile_all).

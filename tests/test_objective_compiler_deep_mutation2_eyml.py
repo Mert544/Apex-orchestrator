@@ -15,7 +15,7 @@ mutants that still survive after that combined suite:
     L891 bound  >= -> >    `if len(result.steps) >= max_steps: break`
     L904 bool   and->or    `if apply and result.steps:`
     L910 number  1 -> 2   `target.split(":", 1)[0]`
-    L1005 number 25 -> 26  `compile_from_dream(..., max_steps=25, ...)`
+    dream_landing L129 number 25 -> 26  `compile_from_dream(..., max_steps=25, ...)`
 
 Every one of these is an EQUIVALENT mutant: the flipped token cannot change any
 observable behaviour, so NO test can fail on the mutant without also failing on
@@ -33,6 +33,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.engine.composition_archive import record_campaign
+from app.engine.dream_landing import compile_from_dream
 from app.engine.objective_compiler import (
     CompileResult,
     Move,
@@ -40,7 +41,6 @@ from app.engine.objective_compiler import (
     _dedup_moves,
     _move_module,
     _move_module_from_target,
-    compile_from_dream,
     compile_objective,
 )
 
@@ -211,17 +211,17 @@ def test_l904_archive_campaign_empty_steps_writes_no_playbook(tmp_path):
     assert not playbook.exists()
 
 
-# --- L1005: `compile_from_dream(..., max_steps: int = 25, ...)` number 25->26 -
+# --- dream_landing L129: `compile_from_dream(..., max_steps: int = 25, ...)` 25->26
 #
-# EQUIVALENT-IN-PRACTICE. ``compile_from_dream`` runs a SCOPED, per-module
-# campaign and threads ``max_steps`` straight into ``compile_objective`` as that
-# module's cap. No single module realistically presents > 25 simultaneously
-# landable moves for one objective, so the cap is never the binding constraint
-# and 25 vs 26 is unobservable. The non-scoped 25-default is already pinned by
-# L832 (compile_objective) and L913 (compile_all) in the first deep-mutation
-# file. Here we pin that ``compile_from_dream`` over a dream that named NO
-# confluence yields no campaigns at all (the cap value is irrelevant), and that
-# a scoped run honours a low explicit cap.
+# EQUIVALENT-IN-PRACTICE. ``compile_from_dream`` (now in
+# ``app/engine/dream_landing.py``) runs a SCOPED, per-module campaign and threads
+# ``max_steps`` straight into ``compile_objective`` as that module's cap. No
+# single module realistically presents > 25 simultaneously landable moves for one
+# objective, so the cap is never the binding constraint and 25 vs 26 is
+# unobservable. The non-scoped 25-default is already pinned by L832
+# (compile_objective) and L913 (compile_all) in the first deep-mutation file.
+# Here we pin that ``compile_from_dream`` over a dream that named NO confluence
+# yields no campaigns at all (the cap value is irrelevant).
 
 def test_l1005_compile_from_dream_no_confluence_yields_no_results(tmp_path):
     _project(tmp_path, "x = 1\n")

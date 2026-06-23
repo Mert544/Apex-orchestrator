@@ -592,9 +592,9 @@ def test_develop_from_dream_no_apply_with_steps_omits_footer(
         def to_dict(self):
             return {"steps": self.steps}
 
-    monkeypatch.setattr("app.engine.objective_compiler.dream_confluence_modules",
+    monkeypatch.setattr("app.engine.dream_landing.dream_confluence_modules",
                         lambda target: ["app/m.py"])
-    monkeypatch.setattr("app.engine.objective_compiler.compile_from_dream",
+    monkeypatch.setattr("app.engine.dream_landing.compile_from_dream",
                         lambda *a, **k: [_R()])
     monkeypatch.setattr("app.engine.objective_compiler.render_from_dream_markdown",
                         lambda results, modules: "# Dream")
@@ -744,7 +744,7 @@ def test_develop_sparse_namespace_from_dream_default_false(tmp_path, monkeypatch
 
     def _boom(*a, **k):
         raise AssertionError("dream path must not run by default")
-    monkeypatch.setattr("app.engine.objective_compiler.compile_from_dream", _boom)
+    monkeypatch.setattr("app.engine.dream_landing.compile_from_dream", _boom)
     import io
     import contextlib
     buf = io.StringIO()
@@ -1800,9 +1800,9 @@ def test_develop_from_dream_json_indent(tmp_path, capsys, monkeypatch):
 
         def to_dict(self):
             return {"steps": []}
-    monkeypatch.setattr("app.engine.objective_compiler.dream_confluence_modules",
+    monkeypatch.setattr("app.engine.dream_landing.dream_confluence_modules",
                         lambda target: ["app/m.py"])
-    monkeypatch.setattr("app.engine.objective_compiler.compile_from_dream",
+    monkeypatch.setattr("app.engine.dream_landing.compile_from_dream",
                         lambda *a, **k: [_R()])
     monkeypatch.setattr("app.engine.objective_compiler.render_from_dream_markdown",
                         lambda results, modules: "# D")

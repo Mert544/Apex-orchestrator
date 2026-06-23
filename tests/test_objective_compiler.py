@@ -187,18 +187,18 @@ def _dream_project(tmp_path: Path) -> Path:
 
 
 def test_dream_confluence_modules_reads_promotions(tmp_path):
-    from app.engine.objective_compiler import dream_confluence_modules
+    from app.engine.dream_landing import dream_confluence_modules
     _dream_project(tmp_path)
     assert dream_confluence_modules(str(tmp_path)) == ["app/hub.py"]
 
 
 def test_dream_confluence_modules_empty_when_no_store(tmp_path):
-    from app.engine.objective_compiler import dream_confluence_modules
+    from app.engine.dream_landing import dream_confluence_modules
     assert dream_confluence_modules(str(tmp_path)) == []
 
 
 def test_dream_confluence_skips_nonexistent_modules(tmp_path):
-    from app.engine.objective_compiler import dream_confluence_modules
+    from app.engine.dream_landing import dream_confluence_modules
     (tmp_path / ".apex").mkdir()
     (tmp_path / ".apex" / "dream-promotions.json").write_text(
         _json.dumps([{"key": "confluence:app/ghost.py"}]), encoding="utf-8")
@@ -217,7 +217,7 @@ def test_scope_module_confines_the_campaign(tmp_path):
 
 
 def test_compile_from_dream_cleans_only_confluence_modules(tmp_path):
-    from app.engine.objective_compiler import compile_from_dream
+    from app.engine.dream_landing import compile_from_dream
     _dream_project(tmp_path)
     results = compile_from_dream(str(tmp_path), apply=True, verify=False)
     assert len(results) == 1               # one confluence module
@@ -228,16 +228,17 @@ def test_compile_from_dream_cleans_only_confluence_modules(tmp_path):
 
 
 def test_compile_from_dream_empty_when_no_confluence(tmp_path):
-    from app.engine.objective_compiler import compile_from_dream
+    from app.engine.dream_landing import compile_from_dream
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "m.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
     assert compile_from_dream(str(tmp_path), apply=False) == []
 
 
 def test_render_from_dream_markdown(tmp_path):
-    from app.engine.objective_compiler import (
-        compile_from_dream, dream_confluence_modules, render_from_dream_markdown,
+    from app.engine.dream_landing import (
+        compile_from_dream, dream_confluence_modules,
     )
+    from app.engine.objective_compiler import render_from_dream_markdown
     _dream_project(tmp_path)
     mods = dream_confluence_modules(str(tmp_path))
     md = render_from_dream_markdown(compile_from_dream(str(tmp_path), apply=False), mods)
@@ -415,7 +416,7 @@ def test_available_objectives_and_all_constant():
 
 
 def test_render_all_markdown_and_empty():
-    from app.engine.objective_compiler import compile_all, render_all_markdown
+    from app.engine.objective_compiler import render_all_markdown
     md = render_all_markdown([])
     assert "Nothing to do" in md
 

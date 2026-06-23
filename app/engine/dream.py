@@ -154,14 +154,16 @@ def _review_proof(root: Path, report: DreamReport) -> None:
             report.patterns.append(f"{n} steps blocked for the same reason: {reason}.")
 
 
-def _review_promises(root: Path, profile: Any, report: DreamReport) -> None:
+def _review_promises(root: Path, profile: Any, report: DreamReport,
+                     persist: bool = True) -> None:
     """The promise ledger — doc-drift, stretched across time (an Apex original).
 
     Doc-drift says whether the docs lie TODAY; the ledger remembers, so each
     dream can say which promise was KEPT (a broken reference fixed since the
     last dream) and which was newly BROKEN. The ledger is the dream's own
-    memory (like the journal), so it is always written; nothing user-owned
-    is touched.
+    memory (like the journal), normally written every run; nothing user-owned
+    is touched. With ``persist=False`` the ledger is READ but never written, so
+    a read-only dream computes the kept/broken patterns without mutating it.
     """
     ledger_path = root / ".apex" / "promise-ledger.json"
     previous: list[dict] = []
@@ -182,6 +184,8 @@ def _review_promises(root: Path, profile: Any, report: DreamReport) -> None:
         report.patterns.append(
             f"💔 promise broken: `{doc}` now references `{ref}`, which doesn't "
             "exist — fix the doc or build the promise.")
+    if not persist:
+        return  # read-only pass: patterns are computed above; never write the ledger
     try:
         ledger_path.parent.mkdir(parents=True, exist_ok=True)
         ledger_path.write_text(json.dumps(current, indent=1), encoding="utf-8")
@@ -237,13 +241,13 @@ def _review_discoveries(profile: Any, report: DreamReport) -> None:
         report.discovery_objs.append(d.to_dict())
 
 
-def _review_pulse(root: Path, report: DreamReport) -> None:
+def _review_pulse(root: Path, report: DreamReport, persist: bool = True) -> None:
     """Where the project is alive — churn, trends, knowledge, promises."""
     from app.tools.project_profile import ProjectProfiler
 
     profile = ProjectProfiler(root).profile()
     _review_pulse_signals(root, profile, report)
-    _review_promises(root, profile, report)
+    _review_promises(root, profile, report, persist)
     _review_discoveries(profile, report)
 
 
@@ -354,13 +358,14 @@ def _safe(call) -> None:
         pass
 
 
-def _run_reviews(root: Path, report: DreamReport, curate: bool) -> None:
+def _run_reviews(root: Path, report: DreamReport, curate: bool,
+                 persist: bool = True) -> None:
     """The full review sweep, each step isolated so one failure can't abort it."""
     _safe(lambda: _review_outcome_memory(root, report, curate))
     _safe(lambda: _review_briefs(root, report, curate))
     _safe(lambda: _review_proof(root, report))
-    _safe(lambda: _review_pulse(root, report))
-    _safe(lambda: _consolidate(root, report))
+    _safe(lambda: _review_pulse(root, report, persist))
+    _safe(lambda: _consolidate(root, report, persist))
     _safe(lambda: _promote(root, report, curate))
 
 
@@ -376,16 +381,24 @@ def _write_digest(root: Path, report: DreamReport) -> None:
 
 
 def dream(project_root: str | Path, write_digest: bool = True,
-          curate: bool = False) -> DreamReport:
+          curate: bool = False, persist: bool = True) -> DreamReport:
     """Run the full pass; returns what was noticed (and, with ``curate``, tidied).
 
     Like the real Dreams API, the default NEVER modifies the input stores —
     it reports what it would curate; ``curate=True`` applies it (the mode
     automation like the nightly dogfood runs in).
+
+    ``persist`` (default ``True``) controls the dream's OWN memory stores — the
+    append-only journal and the promise ledger, normally written every run so
+    streaks accumulate. With ``persist=False`` the pass is fully READ-ONLY: it
+    still computes the streaks from the on-disk journal (so ``report._streaks`` is
+    byte-for-byte what a persisting run would compute), but writes NOTHING — so a
+    caller can derive promotable confluences deterministically and idempotently,
+    without advancing the streak or touching any store.
     """
     root = Path(project_root)
     report = DreamReport()
-    _run_reviews(root, report, curate)
+    _run_reviews(root, report, curate, persist)
     if write_digest:
         _write_digest(root, report)
     return report
@@ -475,7 +488,7 @@ def _diff_since_last(history: list[Any], current: dict[str, str],
         report.resolved_since.append(prev[key] if isinstance(prev, dict) else key)
 
 
-def _consolidate(root: Path, report: DreamReport) -> None:
+def _consolidate(root: Path, report: DreamReport, persist: bool = True) -> None:
     """One journal, three jobs — streaks, the new/resolved flow, persistence.
 
     A single source of truth (the dream journal) drives everything, so a
@@ -484,6 +497,10 @@ def _consolidate(root: Path, report: DreamReport) -> None:
     and a standing item is by definition present in it. Entries are
     ``{key: text}`` maps so a resolved item can be shown with the words it
     had; legacy bare-list entries are still read.
+
+    The streak is computed from the on-disk history BEFORE this dream is appended,
+    so ``persist=False`` yields the identical ``report._streaks`` while writing
+    nothing — a read-only pass that never advances the journal.
     """
     journal_path = root / ".apex" / "dream-journal.json"
     history = _load_journal(journal_path)
@@ -491,6 +508,8 @@ def _consolidate(root: Path, report: DreamReport) -> None:
     report._streaks = streaks  # for promotion
     _diff_since_last(history, current, report)
 
+    if not persist:
+        return  # read-only pass: streaks/new-resolved are set above; never write
     history.append(current)
     try:
         journal_path.parent.mkdir(parents=True, exist_ok=True)
