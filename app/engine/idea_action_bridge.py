@@ -295,6 +295,23 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                      "`from .module import Name`) for the package {s} — emits "
                      "exactly the names a clean subprocess import proves resolve "
                      "(refuses an already-wired or namespace package)", True),
+    # generate-usage-doc is the SAME shape as wire-exports: NOT a
+    # SemanticPatchResult transform (it writes a package's sibling ``USAGE.md`` and
+    # its verify is impact-scoped), so ``apply_step`` delegates it to the
+    # develop-core ``apply_rename`` path (``plan_generate_usage_doc`` +
+    # ``apply_rename`` with ``impact_scope=True``). It is PURE + a DOCTEST ORACLE
+    # (no pytest): the real gate is that every ``>>>`` example copied from a
+    # docstring runs green against the imported package (an unproven example is
+    # omitted, never faked) and the rendered doc's code blocks parse. Surfaced
+    # executable ONLY for a package whose own ``plan_generate_usage_doc`` produces a
+    # non-empty ``new_contents`` (``generate_usage_doc_packages``), so the claim is
+    # honest by construction.
+    "generate-usage-doc": ("generate_usage_doc",
+                           "Generate USAGE.md from the public API of {s} — "
+                           "restates exactly the package's public functions/"
+                           "classes, their signatures, docstring summaries, and "
+                           "oracle-proven `>>>` examples (refuses a package with "
+                           "no public API or an already-current doc)", True),
 }
 
 
@@ -800,6 +817,13 @@ class IdeaActionBridge:
         # ``[step.target]``); the rewritten ``__init__.py`` is produced by
         # ``plan_wire_exports`` itself, not from here.
         "wire_exports": ["wire package public re-exports and __all__"],
+        # generate_usage_doc, like wire_exports, is NOT a SemanticPatchResult
+        # transform — ``apply_step`` delegates it to the develop-core
+        # ``apply_rename`` path. Listed here so ``_step_targets`` recognises it as a
+        # real transform objective (the package ``__init__.py`` IS a ``.py`` target
+        # → ``[step.target]``); the sibling ``USAGE.md`` the plan writes is produced
+        # by ``plan_generate_usage_doc`` itself, not from here.
+        "generate_usage_doc": ["generate USAGE.md from the public API"],
     }
 
     # Behaviour-preserving readability simplifications dispatched STRAIGHT to
@@ -1622,6 +1646,12 @@ class IdeaActionBridge:
     # oracle (already run inside ``plan_wire_exports``) is its real gate, and the
     # impact-scoped suite catches collateral breakage in tests that import the
     # wired package (falling back to the full suite when none do).
+    # generate_usage_doc is the SAME shape as wire_exports: it writes a package's
+    # sibling ``USAGE.md``; it is PURE + a DOCTEST ORACLE (no pytest), so it
+    # likewise lands through ``apply_rename`` with ``impact_scope=True`` — the
+    # oracle (already run inside ``plan_generate_usage_doc``) is its real gate, and
+    # the impact-scoped suite catches collateral breakage in tests that touch the
+    # package (falling back to the full suite when none do).
     @staticmethod
     def _plan_implement_stub_lander():
         from app.execution.objectives.implement_stub import plan_implement_stub
@@ -1637,6 +1667,13 @@ class IdeaActionBridge:
         from app.execution.objectives.wire_exports import plan_wire_exports
         return plan_wire_exports
 
+    @staticmethod
+    def _plan_generate_usage_doc_lander():
+        from app.execution.objectives.generate_usage_doc import (
+            plan_generate_usage_doc,
+        )
+        return plan_generate_usage_doc
+
     _DELEGATED_SYNTHESIS = {
         "implement_stub": (
             "_plan_implement_stub_lander",
@@ -1647,6 +1684,9 @@ class IdeaActionBridge:
         "wire_exports": (
             "_plan_wire_exports_lander",
             "no wire-export (already wired / namespace / oracle refused)"),
+        "generate_usage_doc": (
+            "_plan_generate_usage_doc_lander",
+            "no usage-doc (no public API / already current / oracle refused)"),
     }
 
     # The action types ``apply_step`` / ``_generate`` route to the develop-core
@@ -2252,14 +2292,24 @@ class IdeaActionBridge:
     # PACKAGES broadly (every wireable ``__init__.py`` in the candidate set), so —
     # like cover-gaps — it is opt-in lest it shift the default idea set. It is a
     # structure/clarity contribution that makes the package importable as designed,
-    # so it sits in Refine. Both are delegated (like implement_stub) to the
+    # so it sits in Refine. All three are delegated (like implement_stub) to the
     # develop-core ``apply_rename`` path, not the SemanticPatchResult gate.
+    #
+    # generate-usage-doc writes a package's sibling ``USAGE.md`` from its PUBLIC
+    # API. Like wire-exports it targets PACKAGES broadly (every documentable
+    # ``__init__.py`` in the candidate set), so it is opt-in lest it shift the
+    # default idea set. It is a documentation/clarity contribution (it restates,
+    # zero-token, exactly what the code declares), so it too sits in Refine.
     _OPTIN_SYNTHESIS_OBJECTIVES: dict[str, tuple[tuple[str, str, str, str], ...]] = {
         "cover_gaps": (
             ("cover_gaps_modules", "cover_gaps", "cover-gaps", "Stabilize"),
         ),
         "wire_exports": (
             ("wire_export_packages", "wire_exports", "wire-exports", "Refine"),
+        ),
+        "generate_usage_doc": (
+            ("generate_usage_doc_packages", "generate_usage_doc",
+             "generate-usage-doc", "Refine"),
         ),
     }
 
@@ -2285,14 +2335,17 @@ class IdeaActionBridge:
     @classmethod
     def _enabled_objectives(
         cls, cover_gaps: bool, wire_exports: bool,
+        generate_usage_doc: bool = False,
     ) -> tuple[tuple[str, str, str, str], ...]:
         """The default synthesis objectives plus each opt-in objective whose flag
         is True, assembled data-driven from ``_OPTIN_SYNTHESIS_OBJECTIVES``.
 
         Order is fixed (defaults first, then the opt-in table's insertion order),
         so the augmented plan is deterministic. With every flag False this is
-        exactly ``_SYNTHESIS_OBJECTIVES`` — the default plan never shifts."""
-        flags = {"cover_gaps": cover_gaps, "wire_exports": wire_exports}
+        exactly ``_SYNTHESIS_OBJECTIVES`` — the default plan never shifts. The three
+        opt-in flags are INDEPENDENT: enabling one never pulls in another."""
+        flags = {"cover_gaps": cover_gaps, "wire_exports": wire_exports,
+                 "generate_usage_doc": generate_usage_doc}
         objectives = cls._SYNTHESIS_OBJECTIVES
         for flag, rows in cls._OPTIN_SYNTHESIS_OBJECTIVES.items():
             if flags.get(flag):
@@ -2302,7 +2355,8 @@ class IdeaActionBridge:
     def _augment_synthesis_steps(self, steps: list[ActionStep],
                                  project_root: str,
                                  cover_gaps: bool = False,
-                                 wire_exports: bool = False) -> None:
+                                 wire_exports: bool = False,
+                                 generate_usage_doc: bool = False) -> None:
         """Append executable develop-grade synthesis steps for the qualifying
         candidate modules, in place (the caller then de-dups).
 
@@ -2315,9 +2369,10 @@ class IdeaActionBridge:
         change, so every appended step is genuinely executable — never a fake-green.
 
         The three default objectives qualify a narrow set; the BROAD opt-in
-        objectives in ``_OPTIN_SYNTHESIS_OBJECTIVES`` (cover-gaps, wire-exports) run
-        only when their flag (``cover_gaps`` / ``wire_exports``) is True, so a
-        default plan never shifts its existing idea set.
+        objectives in ``_OPTIN_SYNTHESIS_OBJECTIVES`` (cover-gaps, wire-exports,
+        generate-usage-doc) run only when their own flag (``cover_gaps`` /
+        ``wire_exports`` / ``generate_usage_doc``) is True, so a default plan never
+        shifts its existing idea set. The three flags are INDEPENDENT.
 
         Determinism / opt-in safety: on a project with NO synthesis-eligible
         module (or no ``project_root``), nothing is appended and the plan stays
@@ -2334,7 +2389,8 @@ class IdeaActionBridge:
             from app.engine import idea_synthesis_signals as sigs
         except Exception:  # pragma: no cover - defensive import guard
             return
-        objectives = self._enabled_objectives(cover_gaps, wire_exports)
+        objectives = self._enabled_objectives(cover_gaps, wire_exports,
+                                              generate_usage_doc)
         for signal_name, action_type, fact, phase in objectives:
             signal = getattr(sigs, signal_name)
             for module in signal(project_root, candidates,
@@ -2379,6 +2435,7 @@ class IdeaActionBridge:
         confluence_first: bool = False,
         cover_gaps: bool = False,
         wire_exports: bool = False,
+        generate_usage_doc: bool = False,
     ) -> ActionPlan:
         ideas = sorted(report.ideas, key=lambda i: i.value, reverse=True)
         if top is not None:
@@ -2389,7 +2446,8 @@ class IdeaActionBridge:
             steps.extend(self._expand_idea(i, project_root=root_for_checks))
         self._augment_synthesis_steps(steps, root_for_checks,
                                       cover_gaps=cover_gaps,
-                                      wire_exports=wire_exports)
+                                      wire_exports=wire_exports,
+                                      generate_usage_doc=generate_usage_doc)
         steps = self._dedupe_steps(steps)
         # Opt-in (default off, so existing plans are byte-identical): when the
         # top steps are a value near-tie, surface the subject with the most
@@ -2445,7 +2503,8 @@ class IdeaActionBridge:
     def _roadmap_steps(self, report: IdeaTreeReport, roadmap,
                        root_for_checks: str,
                        cover_gaps: bool = False,
-                       wire_exports: bool = False) -> list[ActionStep]:
+                       wire_exports: bool = False,
+                       generate_usage_doc: bool = False) -> list[ActionStep]:
         """Expand the roadmap's ideas into deduped, phase-ordered steps.
 
         Convergence ideas carry their own phased sub-steps (a Stabilize test
@@ -2453,9 +2512,9 @@ class IdeaActionBridge:
         the parent idea was placed; other ideas inherit the roadmap phase.
         The final stable sort by canonical phase puts every step in its true
         phase group — preserving test-before-harden order for free, since
-        Stabilize precedes Secure. ``cover_gaps`` / ``wire_exports`` opt their
-        broad synthesis objective in (default off — see
-        ``_augment_synthesis_steps``).
+        Stabilize precedes Secure. ``cover_gaps`` / ``wire_exports`` /
+        ``generate_usage_doc`` opt their broad synthesis objective in (default off,
+        independent — see ``_augment_synthesis_steps``).
         """
         idea_by_path = {i.branch_path: i for i in report.ideas}
         steps: list[ActionStep] = []
@@ -2468,7 +2527,8 @@ class IdeaActionBridge:
                                                project_root=root_for_checks))
         self._augment_synthesis_steps(steps, root_for_checks,
                                       cover_gaps=cover_gaps,
-                                      wire_exports=wire_exports)
+                                      wire_exports=wire_exports,
+                                      generate_usage_doc=generate_usage_doc)
         steps = self._dedupe_steps(steps)
         from app.engine.idea_roadmap import PHASE_ORDER
         phase_rank = {name: i for i, name in enumerate(PHASE_ORDER)}
@@ -2487,6 +2547,7 @@ class IdeaActionBridge:
         proof: bool = False,
         cover_gaps: bool = False,
         wire_exports: bool = False,
+        generate_usage_doc: bool = False,
     ) -> ActionPlan:
         """Plan actions in roadmap order (Stabilize→Secure→Evolve→Refine).
 
@@ -2494,8 +2555,9 @@ class IdeaActionBridge:
         roadmap's engineering phases so a guarded ``apply_plan`` builds the
         safety net before changing risky code. ``phase`` restricts the plan to a
         single phase; each step is tagged with the phase it came from.
-        ``cover_gaps`` / ``wire_exports`` opt their broad synthesis objective in
-        (default off, so the default plan's idea set is unchanged).
+        ``cover_gaps`` / ``wire_exports`` / ``generate_usage_doc`` opt their broad
+        synthesis objective in (default off, independent, so the default plan's idea
+        set is unchanged).
         """
         from app.engine.idea_roadmap import RoadmapSynthesizer
 
@@ -2503,7 +2565,8 @@ class IdeaActionBridge:
         steps = self._roadmap_steps(report, roadmap,
                                     project_root or report.project_root or "",
                                     cover_gaps=cover_gaps,
-                                    wire_exports=wire_exports)
+                                    wire_exports=wire_exports,
+                                    generate_usage_doc=generate_usage_doc)
         # The phase filter applies to each *step's own* phase, so a convergence
         # idea's Secure sub-step is kept under --phase=Secure even though its
         # parent sat in Stabilize (and vice-versa).

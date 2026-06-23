@@ -1149,6 +1149,10 @@ _FACT_EXPECTED = {
     # planner, gated by ``wire_exports=True``), delegated like cover-gaps to the
     # develop-core ``apply_rename`` path; pure + IMPORT ORACLE (no pytest).
     "wire-exports": ("wire_exports", True),
+    # generate-usage-doc is the THIRD broad opt-in objective (default off in the
+    # planner, gated by ``generate_usage_doc=True``), delegated like wire-exports to
+    # the develop-core ``apply_rename`` path; pure + DOCTEST ORACLE (no pytest).
+    "generate-usage-doc": ("generate_usage_doc", True),
 }
 
 

@@ -45,6 +45,18 @@ Four signals, one per synthesis objective Apex offers:
     -wired package, or a candidate that fails the oracle all yield an empty no-op
     plan and do not qualify — exactly the packages ``apex develop``'s wire-exports
     objective would touch, never an over-promise.
+  - :func:`generate_usage_doc_packages` — generate-usage-doc. Calls
+    :func:`app.execution.objectives.generate_usage_doc.plan_generate_usage_doc`
+    (the lander itself) on a candidate package ``__init__.py`` and keeps it only
+    when the plan has a non-empty ``new_contents`` — i.e. the lander would actually
+    write/refresh that package's sibling ``USAGE.md`` from its PUBLIC API. That gate
+    composes the lander's DOCTEST ORACLE (every ``>>>`` example is executed against
+    the imported package before it may stand) and the renderer's code-block parse
+    check, so a package with no public API, a refused test/fixture package, an
+    already-current ``USAGE.md`` (byte-identical idempotent no-op), or a doc whose
+    examples fail the oracle all yield an empty no-op plan and do not qualify —
+    exactly the packages ``apex develop``'s generate-usage-doc objective would
+    touch, never an over-promise.
 
 Pure: no writes, no pytest, no network. Deterministic: every result is sorted.
 Defensive: a missing / unreadable / syntactically-broken module, or a
@@ -59,6 +71,7 @@ from pathlib import Path
 
 from app.execution.cover_gaps import plan_cover_gaps
 from app.execution.dataclass_rewrite import rewrite_dataclasses
+from app.execution.objectives.generate_usage_doc import plan_generate_usage_doc
 from app.execution.objectives.wire_exports import plan_wire_exports
 from app.execution.semantic.transforms.type_annotations import infer_annotations
 from app.execution.stub_synthesis import module_has_fillable_stub
@@ -69,6 +82,7 @@ __all__ = [
     "inferable_return_modules",
     "cover_gaps_modules",
     "wire_export_packages",
+    "generate_usage_doc_packages",
 ]
 
 
@@ -243,3 +257,44 @@ def wire_export_packages(
     augmentation feeds it every ``.py`` target in the plan); a non-package target
     simply yields an empty plan and is dropped, so callers need not pre-filter."""
     return _qualifying(root, modules, _has_wire_export, limit)
+
+
+def _has_usage_doc(root_path: Path, rel: str) -> bool:
+    """True when :func:`plan_generate_usage_doc` would WRITE/REFRESH the package's
+    sibling ``USAGE.md`` for the ``__init__.py`` at ``rel`` — i.e. the lander's own
+    plan has a non-empty ``new_contents``. This calls the REAL lander, so it is
+    honest by construction: a non-``__init__.py`` target, a refused test/fixture
+    package, a package with no public API, an already-current ``USAGE.md``
+    (byte-identical idempotent no-op), or a doc whose ``>>>`` examples fail the
+    DOCTEST ORACLE / whose code blocks fail to parse all yield an empty no-op plan
+    (``new_contents`` is ``{}``) and do not qualify. ``plan_generate_usage_doc``
+    reads the source itself and returns an empty plan rather than raising on a bad
+    subject, so no extra guard is needed here — the shared ``_qualifying`` spine
+    swallows any leak anyway."""
+    return bool(plan_generate_usage_doc(root_path, rel).new_contents)
+
+
+def generate_usage_doc_packages(
+    root: str | Path, modules: Iterable[str], limit: int | None = None
+) -> list[str]:
+    """The package ``__init__.py`` paths with a LANDABLE generate-usage-doc, sorted,
+    capped.
+
+    Grounded on
+    :func:`app.execution.objectives.generate_usage_doc.plan_generate_usage_doc` —
+    the lander itself: a package's ``__init__.py`` qualifies only when running the
+    real plan yields a non-empty ``new_contents`` (the lander's own definition of
+    "there is a public API here whose ``USAGE.md`` I can generate/refresh"). That
+    gate already composes the DOCTEST ORACLE — every ``>>>`` example copied from a
+    docstring is executed against the imported package in a clean subprocess, and an
+    example that does not run green is omitted — plus the renderer's code-block parse
+    check, so a package with no public API, a refused test/fixture package, an
+    already-current ``USAGE.md`` (byte-identical idempotent no-op), or a doc whose
+    examples fail the oracle all produce an empty no-op plan and do not qualify.
+    This is exactly the set ``apex develop``'s generate-usage-doc objective would
+    touch — never an over-promise.
+
+    ``modules`` may freely mix non-``__init__.py`` paths in (the synthesis
+    augmentation feeds it every ``.py`` target in the plan); a non-package target
+    simply yields an empty plan and is dropped, so callers need not pre-filter."""
+    return _qualifying(root, modules, _has_usage_doc, limit)
