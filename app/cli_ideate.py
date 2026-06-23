@@ -302,6 +302,11 @@ def _ideate_action_plan(args, report, target):
     # The eight opt-in synthesis objectives (default off, independent). Inert
     # unless --actions augments the plan; threaded into BOTH plan paths.
     _synthesis = _optin_synthesis_kwargs(args)
+    # --auto (default off): autonomously enable EVERY opt-in objective at once,
+    # so a user need not name each flag — the bridge's grounding signals still
+    # filter to qualifying targets, so this surfaces exactly what applies. Read
+    # DEFENSIVELY so a Namespace predating the flag simply leaves auto off.
+    _auto = bool(getattr(args, "auto", False))
     if getattr(args, "roadmap", False):
         # Roadmap-ordered plan: apply Stabilize→Secure→Evolve→Refine, with an
         # optional --phase filter to act on a single phase.
@@ -313,6 +318,7 @@ def _ideate_action_plan(args, report, target):
             draft=_draft,
             project_root=str(target),
             proof=_prove,
+            auto=_auto,
             **_synthesis,
         )
     else:
@@ -323,6 +329,7 @@ def _ideate_action_plan(args, report, target):
             draft=_draft,
             project_root=str(target),
             proof=_prove,
+            auto=_auto,
             **_synthesis,
         )
     apply_results = None
@@ -578,6 +585,12 @@ def register_parsers(subparsers) -> None:
         dest="dedup_parameterized",
         help="Opt-in (with --actions): parameterize a near-duplicate group into "
         "one shared helper (differing constant/name leaves become parameters)",
+    )
+    ideate_parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="autonomously include every applicable synthesis objective — Apex's "
+        "grounding decides which apply; no need to name them",
     )
     ideate_parser.add_argument(
         "--apply",

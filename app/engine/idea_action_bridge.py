@@ -2653,14 +2653,20 @@ class IdeaActionBridge:
         modernize: bool = False,
         dedup_total_return: bool = False,
         dedup_parameterized: bool = False,
+        auto: bool = False,
     ) -> tuple[tuple[str, str, str, str], ...]:
         """The default synthesis objectives plus each opt-in objective whose flag
         is True, assembled data-driven from ``_OPTIN_SYNTHESIS_OBJECTIVES``.
 
         Order is fixed (defaults first, then the opt-in table's insertion order),
-        so the augmented plan is deterministic. With every flag False this is
-        exactly ``_SYNTHESIS_OBJECTIVES`` — the default plan never shifts. The
-        opt-in flags are INDEPENDENT: enabling one never pulls in another."""
+        so the augmented plan is deterministic. With every flag False (and
+        ``auto`` False) this is exactly ``_SYNTHESIS_OBJECTIVES`` — the default
+        plan never shifts. The opt-in flags are INDEPENDENT: enabling one never
+        pulls in another. ``auto`` enables EVERY opt-in objective (a union over
+        the whole table) so a user need not name each flag — and because each
+        objective's grounding signal still filters to qualifying targets, "enable
+        all" surfaces exactly the objectives that apply to this project. ``auto``
+        is idempotent with the individual flags (their union is still "all")."""
         flags = {"cover_gaps": cover_gaps, "wire_exports": wire_exports,
                  "generate_usage_doc": generate_usage_doc,
                  "tdd_implement": tdd_implement,
@@ -2670,7 +2676,7 @@ class IdeaActionBridge:
                  "dedup_parameterized": dedup_parameterized}
         objectives = cls._SYNTHESIS_OBJECTIVES
         for flag, rows in cls._OPTIN_SYNTHESIS_OBJECTIVES.items():
-            if flags.get(flag):
+            if auto or flags.get(flag):
                 objectives = objectives + rows
         return objectives
 
@@ -2683,7 +2689,8 @@ class IdeaActionBridge:
                                  strengthen_tests: bool = False,
                                  modernize: bool = False,
                                  dedup_total_return: bool = False,
-                                 dedup_parameterized: bool = False) -> None:
+                                 dedup_parameterized: bool = False,
+                                 auto: bool = False) -> None:
         """Append executable develop-grade synthesis steps for the qualifying
         candidate modules, in place (the caller then de-dups).
 
@@ -2701,7 +2708,10 @@ class IdeaActionBridge:
         their own flag (``cover_gaps`` / ``wire_exports`` / ``generate_usage_doc`` /
         ``tdd_implement`` / ``strengthen_tests`` / ``modernize``) is True, so a
         default plan never shifts its existing idea set. The opt-in flags are
-        INDEPENDENT.
+        INDEPENDENT. ``auto`` enables EVERY opt-in objective at once (so a user
+        need not name each flag); the grounding signals still filter to
+        qualifying targets, so it stays honest — only objectives that apply
+        surface.
 
         Determinism / opt-in safety: on a project with NO synthesis-eligible
         module (or no ``project_root``), nothing is appended and the plan stays
@@ -2722,7 +2732,7 @@ class IdeaActionBridge:
                                               generate_usage_doc, tdd_implement,
                                               strengthen_tests, modernize,
                                               dedup_total_return,
-                                              dedup_parameterized)
+                                              dedup_parameterized, auto)
         for signal_name, action_type, fact, phase in objectives:
             signal = getattr(sigs, signal_name)
             for module in signal(project_root, candidates,
@@ -2773,6 +2783,7 @@ class IdeaActionBridge:
         modernize: bool = False,
         dedup_total_return: bool = False,
         dedup_parameterized: bool = False,
+        auto: bool = False,
     ) -> ActionPlan:
         ideas = sorted(report.ideas, key=lambda i: i.value, reverse=True)
         if top is not None:
@@ -2789,7 +2800,8 @@ class IdeaActionBridge:
                                       strengthen_tests=strengthen_tests,
                                       modernize=modernize,
                                       dedup_total_return=dedup_total_return,
-                                      dedup_parameterized=dedup_parameterized)
+                                      dedup_parameterized=dedup_parameterized,
+                                      auto=auto)
         steps = self._dedupe_steps(steps)
         # Opt-in (default off, so existing plans are byte-identical): when the
         # top steps are a value near-tie, surface the subject with the most
@@ -2851,7 +2863,8 @@ class IdeaActionBridge:
                        strengthen_tests: bool = False,
                        modernize: bool = False,
                        dedup_total_return: bool = False,
-                       dedup_parameterized: bool = False) -> list[ActionStep]:
+                       dedup_parameterized: bool = False,
+                       auto: bool = False) -> list[ActionStep]:
         """Expand the roadmap's ideas into deduped, phase-ordered steps.
 
         Convergence ideas carry their own phased sub-steps (a Stabilize test
@@ -2881,7 +2894,8 @@ class IdeaActionBridge:
                                       strengthen_tests=strengthen_tests,
                                       modernize=modernize,
                                       dedup_total_return=dedup_total_return,
-                                      dedup_parameterized=dedup_parameterized)
+                                      dedup_parameterized=dedup_parameterized,
+                                      auto=auto)
         steps = self._dedupe_steps(steps)
         from app.engine.idea_roadmap import PHASE_ORDER
         phase_rank = {name: i for i, name in enumerate(PHASE_ORDER)}
@@ -2906,6 +2920,7 @@ class IdeaActionBridge:
         modernize: bool = False,
         dedup_total_return: bool = False,
         dedup_parameterized: bool = False,
+        auto: bool = False,
     ) -> ActionPlan:
         """Plan actions in roadmap order (Stabilize→Secure→Evolve→Refine).
 
@@ -2930,7 +2945,8 @@ class IdeaActionBridge:
                                     strengthen_tests=strengthen_tests,
                                     modernize=modernize,
                                     dedup_total_return=dedup_total_return,
-                                    dedup_parameterized=dedup_parameterized)
+                                    dedup_parameterized=dedup_parameterized,
+                                    auto=auto)
         # The phase filter applies to each *step's own* phase, so a convergence
         # idea's Secure sub-step is kept under --phase=Secure even though its
         # parent sat in Stabilize (and vice-versa).
