@@ -201,7 +201,8 @@ def land_factors(project_root: str | Path) -> dict[str, float]:
 
 def rank_objectives(project_root: str | Path,
                     objectives: list[str] | None = None,
-                    *, include_expensive: bool = False) -> list[GoalRanking]:
+                    *, include_expensive: bool = False,
+                    exclude: set[str] | None = None) -> list[GoalRanking]:
     """Every objective ranked by pending fixable debt AMPLIFIED by learned
     payoff, worst-and-most-profitable first.
 
@@ -210,7 +211,12 @@ def rank_objectives(project_root: str | Path,
     ``payoff_weights``) boosts its priority, so the organism climbs toward the
     debt that has paid off best before. Ties break by registration order, so the
     ranking is fully deterministic; with no history every payoff is 0 and the
-    order is exactly pending-descending (a fresh project is unchanged)."""
+    order is exactly pending-descending (a fresh project is unchanged).
+
+    ``exclude`` is the climb's within-run blocked set: objectives a prior round
+    proved cannot move (every candidate blocked) so the board stops re-ranking
+    them to the top each round. It only drops names — it never reorders the
+    survivors — and an empty/None set leaves the board byte-identical to before."""
     from app.engine.develop_registry import expensive_names
     from app.engine.objective_compiler import _objectives_map
 
@@ -226,6 +232,8 @@ def rank_objectives(project_root: str | Path,
         # explicitly or opted into via include_expensive (the --concrete flag).
         skip = set() if include_expensive else expensive_names()
         names = [n for n in available_objectives() if n not in skip]
+    if exclude:
+        names = [n for n in names if n not in exclude]
     order = {name: i for i, name in enumerate(available_objectives())}
     rankings: list[GoalRanking] = []
     for name in names:
@@ -253,6 +261,39 @@ def _goal_objectives(goal: str) -> list[str] | None:
     return resolve_goal(goal)
 
 
+def _take_first_landing_move(project_root: str | Path, ranked: list[GoalRanking],
+                             round_no: int, before: int, *, max_steps: int,
+                             verify: bool, scope_verify: bool,
+                             blocked_run: set[str]) -> AscendRound | None:
+    """Develop the worst fixable debt that can actually MOVE this round, and
+    report it as a round. An objective may carry pending debt the compiler can't
+    safely act on (every candidate blocked); rather than spin on it, fall through
+    to the next-worst until one lands a verified move.
+
+    Each objective that lands NOTHING this round (``moves == 0``) is added to
+    ``blocked_run`` — the climb's within-run blocked set — so later rounds stop
+    re-ranking a proven-immovable objective to the top and re-paying its
+    expensive compile scan. Returns the landed round, or None when nothing in
+    ``ranked`` could move (a develop fixpoint for the current tools)."""
+    from app.engine.dev_history import record_run
+
+    for choice in ranked:
+        campaign = compile_objective(project_root, objective=choice.objective,
+                                     max_steps=max_steps, verify=verify, apply=True,
+                                     scope_verify=scope_verify)
+        moves = len(campaign.steps)
+        if moves == 0:
+            blocked_run.add(choice.objective)
+            continue
+        after = _grade(project_root)
+        record_run(project_root, f"ascend:{choice.objective}", moves, before, after)
+        return AscendRound(
+            round_no=round_no, objective=choice.objective, goal=choice.goal,
+            moves=moves, grade_before=before, grade_after=after,
+            pending_before=choice.pending)
+    return None
+
+
 def ascend(project_root: str | Path, max_rounds: int = 4,
            target_score: int | None = None, apply: bool = True,
            verify: bool = True, goal: str = "", max_steps: int = 25,
@@ -265,8 +306,6 @@ def ascend(project_root: str | Path, max_rounds: int = 4,
     changing nothing. ``scope_verify`` gates each move against only the impacted
     tests (fast enough to climb a large project's OWN body); run the full suite
     afterwards as the backstop."""
-    from app.engine.dev_history import record_run
-
     restrict = _goal_objectives(goal)
     report = AscendReport(applied=apply, target_score=target_score)
 
@@ -277,32 +316,23 @@ def ascend(project_root: str | Path, max_rounds: int = 4,
         return report
 
     report.grade_start = _grade(project_root)
+    # The climb's within-run blocked set: objectives a round proves cannot move
+    # (every candidate blocked) are remembered here and excluded from later
+    # rounds' ranking, so the climb never re-pays an expensive compile scan it
+    # already proved can't progress. In-memory and per-run — fresh each call.
+    blocked_run: set[str] = set()
     for n in range(1, max_rounds + 1):
         ranked = [r for r in rank_objectives(project_root, restrict,
-                                              include_expensive=include_expensive)
+                                              include_expensive=include_expensive,
+                                              exclude=blocked_run)
                   if r.pending > 0]
         if not ranked:
             report.fixpoint = True
             break
         before = _grade(project_root)
-        landed: AscendRound | None = None
-        # Take the worst fixable debt that can actually MOVE this round. An
-        # objective may carry pending debt the compiler can't safely act on
-        # (every candidate blocked); rather than spin on it, fall through to the
-        # next-worst until one lands a verified move.
-        for choice in ranked:
-            campaign = compile_objective(project_root, objective=choice.objective,
-                                         max_steps=max_steps, verify=verify, apply=True,
-                                         scope_verify=scope_verify)
-            moves = len(campaign.steps)
-            if moves == 0:
-                continue
-            after = _grade(project_root)
-            landed = AscendRound(
-                round_no=n, objective=choice.objective, goal=choice.goal, moves=moves,
-                grade_before=before, grade_after=after, pending_before=choice.pending)
-            record_run(project_root, f"ascend:{choice.objective}", moves, before, after)
-            break
+        landed = _take_first_landing_move(
+            project_root, ranked, n, before, max_steps=max_steps, verify=verify,
+            scope_verify=scope_verify, blocked_run=blocked_run)
         if landed is None:
             # Pending debt remains, but nothing the compiler can safely move — a
             # develop fixpoint for this organism's current tools.
