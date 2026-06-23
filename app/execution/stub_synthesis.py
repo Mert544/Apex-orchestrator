@@ -632,8 +632,12 @@ def _string_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[st
     ]
     if not _string_floor_met(witnesses):
         return out  # single example — refuse the witness-derived replace/split
+    mined = _replace_templates(a, witnesses)
+    out.extend(mined)  # the grounded (old, new) wins — emitted FIRST, before the noise
     strings = _string_constants(witnesses)
     for old, new in _ordered_string_pairs(strings):
+        if mined:
+            continue  # a unique grounded pair fired — the literal cross-product DEFERS
         out.append((f"replace({old},{new})", f"{a}.replace({old}, {new})"))
         out.append((f"lower.replace({old},{new})",
                     f"{a}.lower().replace({old}, {new})"))
@@ -848,6 +852,145 @@ def _count_candidates(pairs: list[tuple[object, int]]) -> list[object]:
         return sorted(elements)
     except TypeError:
         return elements  # heterogeneous / non-orderable — first-seen order
+
+
+def _replace_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The 1-arg witness-DERIVED ``return a.replace(old, new)`` family: the ONE
+    constant ``(old, new)`` pair MINED from the input->output transformation that,
+    applied to EVERY witnessed input, reproduces EVERY expected output. ``slug('a b')
+    == 'a-b', slug('c d e') == 'c-d-e'`` lands ``s.replace(' ', '-')`` — the single
+    substitution the witnesses actually describe, derived (never the combinatorial
+    cross-product guess :func:`_ordered_string_pairs` makes) by reading the changed
+    span of a seed witness and INTERSECTING it across the rest.
+
+    Sibling of :func:`_count_templates`: the witness-DERIVED pair is baked into the
+    body, so it carries the same >=2-distinct-witness overfit floor
+    (:func:`_string_floor_met`, applied by the caller) and the same UNIQUE-survivor
+    discipline. The outputs must actually DIFFER from the inputs for at least one
+    witness (an ``out == in`` contract is the identity / another family — refused via
+    :func:`_replace_witness_pairs`), and the degenerate empty ``old`` (``replace('',
+    x)`` inserts everywhere) is excluded from the candidate pool.
+
+    AMBIGUITY: a pair is emitted ONLY when it is the UNIQUE survivor reproducing every
+    witness (:func:`_replace_pair_constant`). If TWO distinct ``(old, new)`` both
+    reproduce all witnesses (``f('cab') == 'ccb', f('dab') == 'dcb'`` admits both
+    ``'a'->'c'`` and ``'ab'->'cb'``), the witnesses cannot tell which span is meant, so
+    this family emits NOTHING rather than guess — the never-fake-green refusal the
+    count / classifier miners make. The chosen pair is still gated against all pinned
+    tests and the off-witness str canary (:func:`_str_canary_probes`) by the caller, so
+    a pair that merely coincides on the witnessed values but diverges elsewhere is
+    rejected, never landed. With NO witness list (the structural view) nothing is
+    mined. Deterministic: candidate olds mined in fixed (sorted) order, type-exact
+    (``str.replace`` gives ``str``); at most one body returned."""
+    pairs = _replace_witness_pairs(witnesses)
+    if pairs is None:
+        return []
+    found = _replace_pair_constant(pairs)
+    if found is None:
+        return []
+    old, new = found
+    return [(f"replace({old!r},{new!r})", f"{a}.replace({old!r}, {new!r})")]
+
+
+def _replace_witness_pairs(
+    witnesses: list[tuple[str, str]],
+) -> list[tuple[str, str]] | None:
+    """The ``(input_str, output_str)`` pairs for the replace miner, or ``None`` when
+    the family cannot be mined. Every witness must be ONE LITERAL ``str`` argument with
+    a LITERAL ``str`` expected value, and at least one output must DIFFER from its input
+    (an all-``out == in`` contract is the identity / a value-free chain another family
+    owns, refused here rather than mining a no-op ``replace``). A non-literal, multi-arg,
+    or non-``str`` shape yields ``None`` — never guessed. Deterministic: source order."""
+    out: list[tuple[str, str]] = []
+    for args_text, expected_text in witnesses:
+        value = _literal_tuple(args_text)
+        expected = _literal_value(expected_text)
+        if value is None or len(value) != 1 or not isinstance(value[0], str):
+            return None
+        if type(expected) is not str:
+            return None
+        out.append((value[0], expected))
+    if not any(inp != exp for inp, exp in out):
+        return None  # out == in for every witness -> identity, not a substitution
+    return out
+
+
+def _replace_pair_constant(pairs: list[tuple[str, str]]) -> tuple[str, str] | None:
+    """The single constant ``(old, new)`` for ``a.replace(old, new)``, or ``None`` when
+    no UNIQUE pair reproduces every witness. Candidates are mined from the seed (first)
+    witness's changed span (:func:`_replace_pair_candidates`) and each is VERIFIED to
+    satisfy ``inp.replace(old, new) == out`` for EVERY witness; only the survivors that
+    DISTINCTLY differ are weighed. Returns the lone survivor, or ``None`` when zero fit
+    (no real substitution explains the contract) OR >=2 distinct pairs fit (ambiguous —
+    the witnesses cannot tell which span is meant, so refuse rather than guess).
+    Deterministic, total — a pure scan in sorted candidate order, no clock/random."""
+    survivors = [
+        (old, new) for old, new in _replace_pair_candidates(pairs)
+        if all(inp.replace(old, new) == out for inp, out in pairs)
+    ]
+    distinct = sorted(set(survivors))
+    if len(distinct) != 1:
+        return None  # zero fits (no body) or >=2 fit (ambiguous) — refuse, never guess
+    return distinct[0]
+
+
+def _replace_pair_candidates(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The candidate ``(old, new)`` pairs for ``a.replace(old, new)``, mined from the
+    SEED (first) witness in a fixed (sorted) order: every NON-EMPTY contiguous substring
+    ``old`` of the seed input is paired with the ``new`` that segment-joining implies
+    (:func:`_replace_new_for_old`). The empty ``old`` is excluded — ``replace('', x)``
+    inserts ``x`` between every character, a degenerate non-substitution — and a no-op
+    ``new == old`` is dropped (it changes nothing). De-duplicated and sorted, so the
+    miner is deterministic. The candidates are only PROPOSED here; the caller verifies
+    each against EVERY witness before any survives."""
+    if not pairs:
+        return []
+    seed_in, seed_out = pairs[0]
+    olds = {seed_in[i:j] for i in range(len(seed_in))
+            for j in range(i + 1, len(seed_in) + 1)}
+    out: list[tuple[str, str]] = []
+    for old in sorted(olds):
+        if not old:
+            continue  # empty old -> degenerate insert-everywhere, excluded
+        new = _replace_new_for_old(seed_in, seed_out, old)
+        if new is not None and new != old:
+            out.append((old, new))
+    return out
+
+
+def _replace_new_for_old(inp: str, out: str, old: str) -> str | None:
+    """The unique ``new`` such that ``inp.replace(old, new) == out``, or ``None`` when no
+    single ``new`` reproduces ``out`` for this ``old``. ``inp.replace(old, new)`` is
+    ``new.join(inp.split(old))``: the fixed segments ``inp.split(old)`` must tile ``out``
+    in order, separated by a CONSTANT ``new`` whose length is fixed by the length budget
+    (``len(out) - sum(segment lengths)`` spread over the separators). When the segments
+    do not tile ``out``, the separators disagree, or the budget is negative / not evenly
+    divisible, no such ``new`` exists. Deterministic, total — a pure character walk, no
+    clock/random."""
+    if not old:
+        return None  # empty old -> degenerate insert-everywhere, never a substitution
+    segs = inp.split(old)
+    n_sep = len(segs) - 1
+    if n_sep < 1:
+        return None  # old absent from inp -> not a candidate here
+    budget = len(out) - sum(len(s) for s in segs)
+    if budget < 0 or budget % n_sep != 0:
+        return None
+    width = budget // n_sep
+    pos = 0
+    new: str | None = None
+    for i, seg in enumerate(segs):
+        if out[pos:pos + len(seg)] != seg:
+            return None  # a fixed segment does not appear where it must
+        pos += len(seg)
+        if i < n_sep:
+            gap = out[pos:pos + width]
+            if new is None:
+                new = gap
+            elif gap != new:
+                return None  # the separators between segments disagree
+            pos += width
+    return new if pos == len(out) else None
 
 
 def _discriminating_str_predicate_witnesses(
