@@ -93,8 +93,13 @@ class _FakeBridge:
         self.applied: list = []
 
     def plan_roadmap(self, report, mode="report", project_root="", proof=False,
-                     draft=False):
+                     draft=False, **synth_kwargs):
+        # `apex auto` passes the cheap synthesis opt-ins (and the expensive ones
+        # under --deep) into plan_roadmap autonomously; capture them so the auto
+        # tests can assert which objectives auto offers, while the maintain/develop
+        # callers (which never pass them) keep an empty dict.
         _FakeBridge.last_roadmap_kwargs = dict(mode=mode, proof=proof, draft=draft)
+        _FakeBridge.last_synth_kwargs = dict(synth_kwargs)
         return self._plan
 
     def prove_step(self, step, project_root):
@@ -1325,8 +1330,13 @@ def test_auto_recommend_json_indent(tmp_path, capsys):
 class _ActBridge:
     last: dict = {}
 
-    def plan_roadmap(self, report, mode="report", project_root="", draft=False):
+    def plan_roadmap(self, report, mode="report", project_root="", draft=False,
+                     **synth_kwargs):
+        # _auto_act now threads the cheap synthesis opt-ins (and the expensive
+        # ones under --deep) through plan_roadmap; record them so the act tests
+        # can assert what auto offers without reimplementing the real bridge.
         _ActBridge.last["draft"] = draft
+        _ActBridge.last["synth_kwargs"] = dict(synth_kwargs)
         return _plan([])
 
     def apply_plan(self, plan, root, mode="supervised", verify=True,
@@ -1389,7 +1399,10 @@ def _patch_cmd_auto(monkeypatch, decision, decide_seen, executable=0):
 
     class _Bridge:
         def plan_roadmap(self, report, mode="report", project_root="",
-                         draft=False, proof=False):
+                         draft=False, proof=False, **synth_kwargs):
+            # cmd_auto's scout now passes the cheap synthesis opt-ins (and the
+            # expensive ones under --deep); ignore them here (the real bridge
+            # accepts them) so the policy-forwarding assertions stay focused.
             return _Scout()
 
         def apply_plan(self, *a, **k):
@@ -1989,7 +2002,9 @@ def test_cmd_auto_scout_missing_stat_defaults_zero(tmp_path, monkeypatch):
 
     class _Bridge:
         def plan_roadmap(self, report, mode="report", project_root="",
-                         draft=False, proof=False):
+                         draft=False, proof=False, **synth_kwargs):
+            # cmd_auto's scout passes the cheap synthesis opt-ins autonomously;
+            # ignore them here (the real bridge accepts them).
             return _Scout()
     monkeypatch.setattr("app.engine.idea_action_bridge.IdeaActionBridge",
                         lambda *a, **k: _Bridge())

@@ -323,6 +323,40 @@ def _auto_memory_line(target) -> list[str]:
     return []
 
 
+# The cheap (AST-only grounding) synthesis opt-ins `apex auto` turns ON
+# autonomously: their grounding signals qualify ONLY targets the real lander
+# would land, so enabling them surfaces real, landable work without naming a
+# flag — honest by construction. The EXPENSIVE opt-ins (they run pytest/mutation
+# during grounding) stay behind `--deep` so cost is opt-in and disclosed.
+_AUTO_CHEAP_SYNTHESIS = ("modernize", "dedup_total_return", "dedup_parameterized")
+_AUTO_DEEP_SYNTHESIS = ("cover_gaps", "tdd_implement", "strengthen_tests",
+                        "wire_exports", "generate_usage_doc")
+
+
+def _auto_synthesis_kwargs(args) -> dict:
+    """The synthesis opt-in kwargs `apex auto` passes into ``plan_roadmap``.
+
+    The cheap opt-ins are always on (autonomous, AST-only grounding); the
+    expensive ones (pytest/mutation grounding) are added ONLY with ``--deep``.
+    A pure function of the parsed flags — no clock/random — so the same flags
+    always select the same objective set (determinism)."""
+    kwargs = {name: True for name in _AUTO_CHEAP_SYNTHESIS}
+    if getattr(args, "deep", False):
+        kwargs.update({name: True for name in _AUTO_DEEP_SYNTHESIS})
+    return kwargs
+
+
+def _auto_deep_disclosure(args) -> str:
+    """The one-line disclosure shown when ``--deep`` is OFF: deeper (pytest-cost)
+    synthesis is available, so the cost stays visible and opt-in (never silent).
+    Empty when ``--deep`` is already on (nothing left to disclose)."""
+    if getattr(args, "deep", False):
+        return ""
+    return ("_Deeper synthesis (cover-gaps, tdd-implement, strengthen-tests, "
+            "wire-exports, generate-usage-doc) runs pytest during grounding — "
+            "add `--deep` to include it._")
+
+
 def _auto_recommend(args, target, goal, shape, roadmap, sec_n,
                     executable, decision, emit_json) -> int:
     """The recommend path: never touch the tree, report what could be applied."""
@@ -336,13 +370,22 @@ def _auto_recommend(args, target, goal, shape, roadmap, sec_n,
         }, indent=2))
         return 0
     print(f"_Apex chose not to apply automatically: {decision.reason}._\n")
+    cap = (getattr(args, "max_apply", 0) or 8)
+    # Disclose the per-run apply cap so the recommend count and what `--apply`
+    # would actually land this run tell ONE honest story (the act path applies
+    # at most ``cap`` of these per run and you re-run for the rest).
+    capped = (f" (this run would apply up to {cap}; re-run to continue)"
+              if executable > cap else "")
     print(
-        f"I can safely apply **{executable}** of these (test-verified, "
+        f"I can safely apply **{executable}** of these{capped} (test-verified, "
         "auto-rolled-back). When you're ready:\n\n"
         "  • Apply now:            apex auto --apply\n"
         "  • Preview as diffs:     apex maintain --dry-run\n"
         "  • See the full roadmap: apex ideate --roadmap"
     )
+    disclosure = _auto_deep_disclosure(args)
+    if disclosure:
+        print(f"\n{disclosure}")
     return 0
 
 
@@ -351,11 +394,14 @@ def _auto_act(args, target, goal, bridge, engine, report, mode,
     """The act path: roadmap-ordered, verified, capped guarded apply + report."""
     from app.engine.idea_action_bridge import render_maintenance_markdown
 
-    plan = bridge.plan_roadmap(report, mode=mode, project_root=str(target), draft=True)
+    plan = bridge.plan_roadmap(report, mode=mode, project_root=str(target), draft=True,
+                               **_auto_synthesis_kwargs(args))
+    available = plan.stats.get("executable_steps", 0)
+    cap = (getattr(args, "max_apply", 0) or 8)
     summary = bridge.apply_plan(
         plan, str(target), mode=mode,
         verify=not getattr(args, "no_verify", False),
-        max_apply=(getattr(args, "max_apply", 0) or 8),
+        max_apply=cap,
         commit=commit,
     )
     from app.engine.idea_memory import IdeaMemory
@@ -375,11 +421,18 @@ def _auto_act(args, target, goal, bridge, engine, report, mode,
     else:
         print(f"_Apex is applying autonomously: {decision.reason}._\n")
         print(md)
+        # Disclose the per-run apply cap when there is more applicable work than
+        # this run will land (honest about both the cap and the remainder).
+        if available > cap:
+            print(f"\n_Applying {cap} of {available} this run; re-run for the rest._")
         if proof_path is not None:
             print(f"\n_Proof-of-fix evidence written to `{proof_path}`._")
         if not commit:
             print("\n_Applied to your working tree, not committed — "
                   "review with `git diff`, undo with `git checkout -- .`_")
+        disclosure = _auto_deep_disclosure(args)
+        if disclosure:
+            print(f"\n{disclosure}")
     if getattr(args, "out", ""):
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -427,8 +480,12 @@ def cmd_auto(args: argparse.Namespace) -> int:
     bridge = IdeaActionBridge()
     commit = getattr(args, "commit", False)
 
-    # How many safe, executable fixes are available, and is the tree clean?
-    scout = bridge.plan_roadmap(report, mode="report", project_root=str(target))
+    # How many safe, executable fixes are available, and is the tree clean? The
+    # scout enables the SAME synthesis opt-ins the act path will (cheap always,
+    # expensive under --deep), so the recommend count and what `--apply` would
+    # land tell one honest story.
+    scout = bridge.plan_roadmap(report, mode="report", project_root=str(target),
+                                **_auto_synthesis_kwargs(args))
     executable = scout.stats.get("executable_steps", 0)
     tree_clean = _working_tree_clean(target)
 
@@ -1358,6 +1415,12 @@ def register_parsers(subparsers) -> None:
         help="Override the execution mode (default: inferred / supervised)",
     )
     auto_parser.add_argument("--commit", action="store_true", help="Commit each applied fix (autonomous)")
+    auto_parser.add_argument(
+        "--deep", action="store_true", dest="deep",
+        help="Also include the EXPENSIVE synthesis objectives (cover-gaps, "
+             "tdd-implement, strengthen-tests, wire-exports, generate-usage-doc) "
+             "— these run pytest/mutation during grounding (slower).",
+    )
     auto_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
                              help="Skip test verification (not recommended)")
     auto_parser.add_argument("--max-apply", type=int, default=0, dest="max_apply",

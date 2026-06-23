@@ -89,7 +89,12 @@ class _FakeBridge:
     _apply_summary: dict = {"results": []}
     applied: list = []
 
-    def plan_roadmap(self, report, mode="report", project_root="", draft=False):
+    def plan_roadmap(self, report, mode="report", project_root="", draft=False,
+                     **synth_kwargs):
+        # `apex auto` now passes the cheap synthesis opt-ins (modernize /
+        # dedup_total_return / dedup_parameterized) here autonomously, and the
+        # expensive ones under --deep; this double ignores them (the real bridge
+        # accepts them) so these decision/narrative tests stay focused.
         return _FakeScout(self._executable)
 
     def apply_plan(self, plan, root, mode="supervised", verify=True,
