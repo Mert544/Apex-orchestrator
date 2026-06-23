@@ -447,6 +447,7 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
     out.extend(_slice_templates(a, witnesses))
     out.extend(_index_templates(a, witnesses))
     out.extend(_one_arg_builtin_templates(a, kind, witnesses))
+    out.extend(_compose_index_arith_templates(a, witnesses, simpler=out))
     if kind in (None, "int") and _recursion_allowed(witnesses):
         out.extend([
             ("factorial", f"1 if {a} <= 1 else {a} * __apex_self__({a} - 1)"),
@@ -1300,6 +1301,237 @@ def _index_witness_element(args_text: str, expected_text: str) -> object:
         return _NO_LITERAL
     element = seq[expected]
     return element if seq.index(element) == expected else _NO_LITERAL
+
+
+def _compose_index_arith_templates(
+    a: str, witnesses: list[tuple[str, str]],
+    simpler: list[tuple[str, str]] | None = None,
+) -> list[tuple[str, str]]:
+    """The 1-arg BOUNDED 1-LEVEL COMPOSITIONAL family: ``return a[k] <op> c`` (a
+    constant index followed by a scalar arithmetic op) or ``return len(a) <op> c``
+    (a length followed by the same), for the ONE composition that reproduces EVERY
+    witness's expected int. ``double_first([5, 9]) == 10, double_first([0, 1]) == 0,
+    double_first([7]) == 14`` lands ``return xs[0] * 2`` — a body neither the
+    constant-index atom (:func:`_constant_index_templates`) nor the scalar-arith atom
+    (:func:`_scalar_arith_templates`) can spell alone, because it is their COMPOSITION.
+
+    Composes the EXISTING sound atoms — the constant index ``a[k]`` over a BOUNDED
+    index set (:func:`_compose_index_set`: only indices valid for the shortest
+    witnessed sequence, plus ``0``/``1``/``-1``) and ``len(a)`` — with the scalar-arith
+    ``(op, c)`` derivation (:func:`_arith_survivors`), ``op`` restricted to ``+``/``-``
+    (collapsed into one additive family by sign) and ``*`` (NO ``/``, NO ``**`` — those
+    refusals stay locked). ``c`` is derived from the ATOM value the same way
+    :func:`_derived_constants` derives a scalar constant, bounded to the same window,
+    and the identity ``+ 0`` / ``* 1`` are never offered (they are the bare atom another
+    family owns, so a composition never shadows a simpler atom that already fit).
+
+    SOUNDNESS comes from witness-verification, not from trusting the composition: EVERY
+    candidate body is evaluated end-to-end against ALL witnesses before emit, type-exact
+    (``int`` only). Carries the same discipline as the count / index siblings — the
+    >=2-distinct-witness overfit floor (:func:`_string_floor_met`); the expected ints
+    must VARY (an all-equal contract collapses to a constant another family owns,
+    refused via :func:`_compose_witness_pairs`); a 1-arg ``str`` / ``list`` / ``tuple``
+    contract only (an int arg has no ``[k]`` / ``len``); an index out of range for some
+    witness is simply not a candidate (never an exception). AMBIGUITY: a body is emitted
+    ONLY when exactly one composition (distinct expr) survives — if two genuinely
+    different ``(k, op, c)`` both reproduce every witness, the family REFUSES rather than
+    guess. The chosen body is still gated against all pinned tests and the off-witness
+    sequence / str canary by the caller, never-fake-green. With NO witness list (the
+    structural view) nothing is mined. Deterministic: bounded indices and constants in
+    sorted order, at most one body.
+
+    NO-SHADOW: a composition is a LAST RESORT — it DEFERS to any simpler template
+    (``simpler``, the atoms already offered) that ALSO reproduces every witness. A
+    composition that merely COINCIDES with a simpler atom on a thin contract
+    (``total([1, 2, 3]) == 6, total([4]) == 4`` is ``sum(xs)``, but ``len(xs) + 3``
+    coincidentally fits the two points) would otherwise inject a rival shape that makes
+    the gate refuse the genuine atom — so when a simpler body already fits
+    (:func:`_simpler_template_fits`), this family abstains entirely and never
+    shadows/destabilizes it. The composition fires ONLY for a contract no atom solves
+    (the genuine ``double_first`` gap)."""
+    if not _string_floor_met(witnesses):
+        return []
+    pairs = _compose_witness_pairs(witnesses)
+    if pairs is None:
+        return []
+    survivors = _compose_arith_survivors(a, pairs)
+    distinct = {expr for _sig, expr in survivors}
+    if len(distinct) != 1:
+        return []  # zero fits (no body) or >=2 genuinely-different fit (ambiguous)
+    if _simpler_template_fits(a, simpler or [], witnesses):
+        return []  # a simpler atom already fits — never shadow/destabilize it
+    return [("compose", survivors[0][1])]
+
+
+def _simpler_template_fits(
+    a: str, simpler: list[tuple[str, str]], witnesses: list[tuple[str, str]],
+) -> bool:
+    """True when ANY already-offered (simpler) template reproduces EVERY witness in
+    process — the signal that the compositional family should DEFER (a composition must
+    never shadow a simpler atom that already fit, nor inject a rival shape that makes the
+    gate refuse the genuine atom). Each candidate expr is evaluated over the lone
+    parameter ``a`` bound to the witness's literal argument, type-exact, in the same
+    sandbox the accept-gate uses; a recursion marker (which cannot be eval'd here) or a
+    non-literal witness simply does not count as a fit. Deterministic, pure."""
+    evaluable: list[tuple[object, object]] = []
+    for args_text, expected_text in witnesses:
+        value = _literal_tuple(args_text)
+        expected = _literal_value(expected_text)
+        if value is None or len(value) != 1 or expected is _NO_LITERAL:
+            return False  # cannot judge fit -> stay conservative, do not abstain
+        evaluable.append((value[0], expected))
+    env_globals = {"__builtins__": _SAFE_BUILTINS}
+    for _label, expr in simpler:
+        if "__apex_self__" in expr:
+            continue
+        if all(_expr_yields(expr, a, arg, expected, env_globals)
+               for arg, expected in evaluable):
+            return True
+    return False
+
+
+def _expr_yields(
+    expr: str, a: str, arg: object, expected: object, env_globals: dict,
+) -> bool:
+    """True when ``expr`` over the lone parameter ``a`` bound to ``arg`` evaluates to
+    ``expected`` type-exactly in the sandbox (a raise / type-or-value mismatch is
+    False)."""
+    try:
+        value = eval(expr, env_globals, {a: arg})  # noqa: S307 - fixed templates only
+    except Exception:
+        return False
+    return type(value) is type(expected) and value == expected
+
+
+def _compose_witness_pairs(
+    witnesses: list[tuple[str, str]],
+) -> list[tuple[object, int]] | None:
+    """The ``(seq_arg, expected_int)`` pairs for the compositional miner, or ``None``
+    when the family cannot be mined. Every witness must be ONE LITERAL ``str`` /
+    ``list`` / ``tuple`` argument (it must support ``[k]`` and ``len``) with a LITERAL
+    ``int`` expected value (a ``bool`` is type-distinct — a scalar-arith result is a
+    plain ``int``), and the expected ints must VARY (not all equal, else the contract is
+    a constant another family owns). A non-literal, multi-arg, wrong-typed, or all-equal
+    shape yields ``None`` — never guessed. Deterministic: source order."""
+    out: list[tuple[object, int]] = []
+    for args_text, expected_text in witnesses:
+        value = _literal_tuple(args_text)
+        expected = _literal_value(expected_text)
+        if value is None or len(value) != 1 \
+                or not isinstance(value[0], (str, list, tuple)):
+            return None
+        if type(expected) is not int:
+            return None
+        out.append((value[0], expected))
+    if len({expected for _arg, expected in out}) < 2:
+        return None  # all-equal expected -> a constant, not a composition
+    return out
+
+
+def _compose_index_set(pairs: list[tuple[object, int]]) -> list[int]:
+    """The BOUNDED set of constant indices ``k`` to try in ``a[k] <op> c``: the indices
+    valid for the SHORTEST witnessed sequence (so no blowup with long inputs), unioned
+    with the anchors ``0`` / ``1`` / ``-1``, then KEPT only when ``k`` is in range for
+    EVERY witness (an out-of-range index is simply not a candidate, never an exception).
+    Deterministic: sorted, de-duplicated. An empty witness set yields ``[]``."""
+    if not pairs:
+        return []
+    shortest = min(len(arg) for arg, _e in pairs)  # type: ignore[arg-type]
+    candidates = set(range(shortest)) | {0, 1, -1}
+    return [k for k in sorted(candidates)
+            if all(-len(arg) <= k < len(arg) for arg, _e in pairs)]  # type: ignore[arg-type]
+
+
+def _compose_arith_survivors(
+    a: str, pairs: list[tuple[object, int]],
+) -> list[tuple[tuple, str]]:
+    """All ``(signature, expr)`` compositional survivors over the bounded index set
+    (:func:`_compose_index_set`) plus ``len(a)``, each VERIFIED against every witness.
+    ``signature`` is the output tuple over the witness atoms, so two spellings of one
+    function (``x + 1`` and ``x - -1``) collapse to one shape; genuinely different
+    shapes stay distinct and trip the ambiguity refusal upstream."""
+    out: list[tuple[tuple, str]] = []
+    for k in _compose_index_set(pairs):
+        out.extend(_arith_survivors(f"{a}[{k}]", _index_atom_values(k, pairs)))
+    out.extend(_arith_survivors(f"len({a})", _len_atom_values(pairs)))
+    return out
+
+
+def _index_atom_values(
+    k: int, pairs: list[tuple[object, int]],
+) -> list[tuple[int, int]] | None:
+    """The ``(a[k], expected)`` pairs, or ``None`` when any indexed element is not a
+    plain ``int`` (a non-int element has no sound ``<op> c`` over ``int`` — e.g. a
+    ``str`` element of a ``str`` arg, which ``len`` handles instead)."""
+    values: list[tuple[int, int]] = []
+    for arg, expected in pairs:
+        element = arg[k]  # type: ignore[index]
+        if type(element) is not int:
+            return None
+        values.append((element, expected))
+    return values
+
+
+def _len_atom_values(pairs: list[tuple[object, int]]) -> list[tuple[int, int]]:
+    """The ``(len(a), expected)`` pairs — ``len`` is always a plain ``int``."""
+    return [(len(arg), expected) for arg, expected in pairs]  # type: ignore[arg-type]
+
+
+def _arith_survivors(
+    prefix: str, values: list[tuple[int, int]] | None,
+) -> list[tuple[tuple, str]]:
+    """``(signature, expr)`` survivors for ``<prefix> <op> c`` over the atom ``values``:
+    the additive shape (``+``/``-`` collapsed by sign, :func:`_compose_add_offset`) then
+    the multiplicative shape (``*``, :func:`_compose_mul_factor`), each represented once
+    and VERIFIED against every pair (type-exact ``int``). ``None`` values (a non-int
+    atom) yield no survivor. The identity ``+ 0`` / ``* 1`` are excluded by the miners,
+    so a composition never duplicates the bare atom."""
+    if values is None:
+        return []
+    out: list[tuple[tuple, str]] = []
+    d = _compose_add_offset(values)
+    if d is not None and all(x + d == e for x, e in values):
+        out.append((("add", tuple(x + d for x, _e in values)),
+                    f"{prefix} {_render_add(d)}"))
+    c = _compose_mul_factor(values)
+    if c is not None and all(type(x * c) is int and x * c == e for x, e in values):
+        out.append((("mul", tuple(x * c for x, _e in values)), f"{prefix} * {c}"))
+    return out
+
+
+def _render_add(d: int) -> str:
+    """Render the additive constant ``d`` as ``+ d`` (or ``- |d|`` for a negative
+    offset) so ``x - 2`` reads naturally and ``+``/``-`` are one additive family."""
+    return f"+ {d}" if d >= 0 else f"- {-d}"
+
+
+def _compose_add_offset(values: list[tuple[int, int]]) -> int | None:
+    """The single consistent NON-ZERO additive offset ``d`` (``x + d == e`` for every
+    pair), bounded to the scalar-arith window, or ``None``. The identity ``+ 0`` is the
+    bare atom another family owns, so it is never returned; an inconsistent or
+    out-of-bound offset refuses (mirrors :func:`_derived_constants`)."""
+    offsets = {e - x for x, e in values}
+    if len(offsets) != 1:
+        return None
+    d = next(iter(offsets))
+    return d if d != 0 and -64 <= d <= 64 else None
+
+
+def _compose_mul_factor(values: list[tuple[int, int]]) -> int | None:
+    """The single consistent NON-UNIT multiplier ``c`` (``x * c == e``), derived from
+    the DETERMINATE pairs where ``x != 0`` (a degenerate ``0 * c == 0`` pins no ``c`` and
+    is left to the verify step), bounded to the scalar-arith window, or ``None``. The
+    identity ``* 1`` is the bare atom, so it is never returned."""
+    factors: set[int] = set()
+    for x, e in values:
+        if x != 0:
+            if e % x != 0:
+                return None  # this witness cannot be a clean multiple — no factor
+            factors.add(e // x)
+    if len(factors) != 1:
+        return None  # no determinate pair, or inconsistent multipliers -> refuse
+    c = next(iter(factors))
+    return c if c != 1 and -64 <= c <= 64 else None
 
 
 @dataclass(frozen=True)
