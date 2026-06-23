@@ -638,6 +638,7 @@ def _string_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[st
     for sep in strings:
         out.append((f"split({sep})", f"{a}.split({sep})"))
     out.extend(_str_predicate_templates(a, witnesses))
+    out.extend(_str_classification_templates(a, witnesses))
     return out
 
 
@@ -701,6 +702,63 @@ def _str_predicate_templates(a: str, witnesses: list[tuple[str, str]]) -> list[t
     if suffix is not None:
         out.append((f"endswith({suffix!r})", f"{a}.endswith({suffix!r})"))
     return out
+
+
+# The standard nullary ``str`` classifier methods, in FIXED order so the search is
+# deterministic. Each takes no argument and returns a real ``bool`` — the structure
+# a string-classification predicate (``is_num``, ``is_alpha``…) actually has, not a
+# memorized lookup. ``str.<name>()`` is the whole template space this family spans.
+_STR_CLASSIFIER_METHODS: tuple[str, ...] = (
+    "isdigit", "isalpha", "isalnum", "isupper", "islower", "isspace", "istitle",
+)
+
+
+def _str_classification_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The 1-arg STRING-CLASSIFICATION family: ``return a.<method>()`` for the ONE
+    nullary ``str`` classifier — ``isdigit`` / ``isalpha`` / ``isalnum`` / ``isupper``
+    / ``islower`` / ``isspace`` / ``istitle`` — that reproduces EVERY witness's
+    expected bool. ``is_num('123') == True, is_num('12a') == False, is_num('') ==
+    False`` lands ``s.isdigit()`` — the actual ``str`` property the witnesses
+    describe, found (never a memorized map) by testing each classifier against the
+    pairs.
+
+    Sibling of :func:`_str_predicate_templates`: same str-only family, same
+    DISCRIMINATING contract (at least one ``True`` AND one ``False`` —
+    :func:`_discriminating_str_predicate_witnesses`; an all-``True`` / all-``False``
+    contract collapses to a constant another family owns, refused here), and the
+    same >=2-distinct-witness overfit floor (:func:`_string_floor_met`). The body
+    returns a real ``bool``, so there is no domain/raise issue.
+
+    AMBIGUITY: a classifier is emitted ONLY when it is the UNIQUE method reproducing
+    every witness. If TWO different classifiers both fit all witnesses (e.g.
+    ``isdigit`` and ``isalnum`` on all-digit ``True`` strings), the witnesses cannot
+    tell which property is meant, so this family emits NOTHING rather than guess —
+    the never-fake-green refusal the prefix/suffix miner makes when no single ``k``
+    fits. The chosen method is still gated against all pinned tests and the
+    off-witness str canary (:func:`_str_canary_probes`) by the caller, so a
+    classifier that merely coincides on the witnesses but diverges elsewhere is
+    rejected, never landed. With NO witness list (the structural view) nothing is
+    mined — there is no expected bool to verify against. Deterministic: the methods
+    are tried in fixed order and at most one body is returned."""
+    if not _string_floor_met(witnesses):
+        return []
+    pairs = _discriminating_str_predicate_witnesses(witnesses)
+    if pairs is None:
+        return []
+    matches = [m for m in _STR_CLASSIFIER_METHODS if _classifier_reproduces_all(m, pairs)]
+    if len(matches) != 1:
+        return []  # zero fits (no body) or >=2 fit (ambiguous) — refuse, never guess
+    method = matches[0]
+    return [(f"{method}()", f"{a}.{method}()")]
+
+
+def _classifier_reproduces_all(method: str, pairs: list[tuple[str, bool]]) -> bool:
+    """True when the nullary ``str`` classifier ``method`` yields each pair's expected
+    bool for EVERY ``(str_arg, expected_bool)`` in ``pairs`` — the witness-true check
+    that lets one method be chosen. Pure and total: ``getattr(s, method)()`` of a
+    fixed classifier name on a ``str`` always returns a ``bool`` and never raises.
+    Deterministic — a value-free property read per witness, no clock/random."""
+    return all(getattr(s, method)() is expected for s, expected in pairs)
 
 
 def _discriminating_str_predicate_witnesses(
