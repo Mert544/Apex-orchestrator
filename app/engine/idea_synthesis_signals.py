@@ -57,6 +57,22 @@ Four signals, one per synthesis objective Apex offers:
     examples fail the oracle all yield an empty no-op plan and do not qualify —
     exactly the packages ``apex develop``'s generate-usage-doc objective would
     touch, never an over-promise.
+  - :func:`tdd_implementable_symbols` — tdd-implement. The one PER-SYMBOL signal:
+    a symbol target is ``"<module_rel>:<name>"`` (the same shape the objective's
+    ``moves`` emits). It runs the lander's OWN detector
+    :func:`app.execution.objectives.tdd_implement.detect_missing_symbols` once (the
+    project suite is harvested for deterministically-attributable missing-function
+    failures), then keeps a symbol only when
+    :func:`app.execution.objectives.tdd_implement.plan_tdd_implement` produces a
+    non-empty ``new_contents`` for it — the lander's OWN gate (``plan_tdd_implement``
+    synthesises a body that flips the RED test green, landing nothing when no fixed
+    template fits). This is exactly the objective's own ``_missing`` spine, so the
+    signal equals the set of symbols ``apex develop``'s tdd-implement objective would
+    land a function for — a fully-tested symbol, an assertion-failure (not a missing
+    symbol), or a symbol whose contract no template satisfies all yield no plan and
+    do not qualify, never an over-promise. Only symbols whose module is in the
+    candidate ``modules`` set are considered, so the signal stays tied to the plan's
+    own candidates.
 
 Pure: no writes, no pytest, no network. Deterministic: every result is sorted.
 Defensive: a missing / unreadable / syntactically-broken module, or a
@@ -72,6 +88,10 @@ from pathlib import Path
 from app.execution.cover_gaps import plan_cover_gaps
 from app.execution.dataclass_rewrite import rewrite_dataclasses
 from app.execution.objectives.generate_usage_doc import plan_generate_usage_doc
+from app.execution.objectives.tdd_implement import (
+    detect_missing_symbols,
+    plan_tdd_implement,
+)
 from app.execution.objectives.wire_exports import plan_wire_exports
 from app.execution.semantic.transforms.type_annotations import infer_annotations
 from app.execution.stub_synthesis import module_has_fillable_stub
@@ -83,6 +103,7 @@ __all__ = [
     "cover_gaps_modules",
     "wire_export_packages",
     "generate_usage_doc_packages",
+    "tdd_implementable_symbols",
 ]
 
 
@@ -298,3 +319,52 @@ def generate_usage_doc_packages(
     augmentation feeds it every ``.py`` target in the plan); a non-package target
     simply yields an empty plan and is dropped, so callers need not pre-filter."""
     return _qualifying(root, modules, _has_usage_doc, limit)
+
+
+def _symbol_target(name: str, module_rel: str) -> str:
+    """The ``"<module_rel>:<name>"`` target for one missing symbol — the SAME
+    shape the tdd-implement objective's ``moves`` emits, so a surfaced idea's
+    target round-trips back to its ``MissingSymbol`` for the delegated apply."""
+    return f"{module_rel}:{name}"
+
+
+def tdd_implementable_symbols(
+    root: str | Path, modules: Iterable[str], limit: int | None = None
+) -> list[str]:
+    """The ``"<module_rel>:<name>"`` symbol targets with a LANDABLE tdd-implement,
+    restricted to symbols whose module is in ``modules``, sorted, capped.
+
+    Grounded on the tdd-implement objective's OWN spine: run its real detector
+    :func:`detect_missing_symbols` once (the project suite is harvested for
+    deterministically-attributable missing-function failures), then keep a symbol
+    only when :func:`plan_tdd_implement` produces a non-empty ``new_contents`` for
+    it — i.e. a fixed template makes its RED test green and the lander would land a
+    real ``def`` (never a fake-green). This is exactly the objective's own
+    ``_missing`` predicate, so the signal equals the symbols ``apex develop``'s
+    tdd-implement objective would implement: a fully-tested symbol, an
+    assertion-failure (not a missing symbol), or a symbol whose contract no template
+    satisfies all yield an empty plan and do not qualify — never an over-promise.
+
+    ``modules`` is the plan's candidate ``.py`` targets; only a detected symbol
+    whose ``module_rel`` is in that set is considered, keeping the signal tied to
+    the plan's own candidates. The shared :func:`_qualifying` spine owns the sort,
+    de-duplication, ``limit`` cap and never-raise guarantee; the predicate
+    DELEGATES the membership decision to ``plan_tdd_implement`` (no copy of its
+    logic), keyed off the symbol re-derived once into ``by_target``."""
+    root_path = Path(root)
+    wanted = set(modules)
+    try:
+        detected = detect_missing_symbols(root_path)
+    except Exception:
+        return []  # detector failure (no suite, broken project) → nothing qualifies
+    by_target = {
+        _symbol_target(ms.name, ms.module_rel): ms
+        for ms in detected
+        if ms.module_rel in wanted
+    }
+
+    def _landable(rp: Path, target: str) -> bool:
+        ms = by_target[target]
+        return bool(plan_tdd_implement(rp, ms).new_contents)
+
+    return _qualifying(root_path, by_target.keys(), _landable, limit)

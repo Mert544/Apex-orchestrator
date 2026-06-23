@@ -1153,6 +1153,11 @@ _FACT_EXPECTED = {
     # planner, gated by ``generate_usage_doc=True``), delegated like wire-exports to
     # the develop-core ``apply_rename`` path; pure + DOCTEST ORACLE (no pytest).
     "generate-usage-doc": ("generate_usage_doc", True),
+    # tdd-implement is the FOURTH broad opt-in objective (default off in the
+    # planner, gated by ``tdd_implement=True``), delegated like implement-stub to
+    # the develop-core ``apply_rename`` path; PER-SYMBOL, its detector runs the
+    # suite to harvest the missing-function failures it can synthesise a body for.
+    "tdd-implement": ("tdd_implement", True),
 }
 
 
