@@ -441,6 +441,7 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
             ("mean", f"sum({a}) / len({a})"),
         ])
         out.extend(_reduction_join_templates(a, witnesses))
+        out.extend(_count_templates(a, witnesses))
     out.extend(_affine_string_templates(a, witnesses))
     out.extend(_constant_index_templates(a, witnesses))
     out.extend(_slice_templates(a, witnesses))
@@ -639,6 +640,7 @@ def _string_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[st
         out.append((f"split({sep})", f"{a}.split({sep})"))
     out.extend(_str_predicate_templates(a, witnesses))
     out.extend(_str_classification_templates(a, witnesses))
+    out.extend(_count_templates(a, witnesses))
     return out
 
 
@@ -759,6 +761,92 @@ def _classifier_reproduces_all(method: str, pairs: list[tuple[str, bool]]) -> bo
     fixed classifier name on a ``str`` always returns a ``bool`` and never raises.
     Deterministic — a value-free property read per witness, no clock/random."""
     return all(getattr(s, method)() is expected for s, expected in pairs)
+
+
+def _count_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The 1-arg OCCURRENCE-COUNT family: ``return a.count(k)`` for the ONE constant
+    sub-element / substring ``k`` whose ``.count`` reproduces EVERY witness's expected
+    int. ``n_l('hello') == 2, n_l('world') == 1, n_l('xyz') == 0`` lands
+    ``return s.count('l')`` — the element actually counted, MINED from the witness
+    inputs (every substring / element present) and VERIFIED against every pair, never a
+    memorized map. The arg may be a ``str`` (substring count) or a ``list`` / ``tuple``
+    (element count); both ``.count`` returns a real ``int``.
+
+    Sibling of :func:`_str_classification_templates`: the witness-DERIVED ``k`` is baked
+    into the body, so it carries the same >=2-distinct-witness overfit floor
+    (:func:`_string_floor_met`). The expected ints must VARY — an all-equal contract
+    (``f('a') == 1, f('b') == 1``) collapses to a constant the constant-last fallback
+    owns, so it is refused here rather than baking a coincidental ``k``.
+
+    AMBIGUITY: ``k`` is emitted ONLY when it is the UNIQUE survivor reproducing every
+    witness. If TWO distinct ``k`` both reproduce all witnesses, the witnesses cannot
+    tell which is meant, so this family emits NOTHING rather than guess — the
+    never-fake-green refusal the prefix/classifier miners make. The chosen ``k`` is
+    still gated against all pinned tests and the off-witness str / sequence canary
+    probes by the caller, so a ``k`` that merely coincides on the witnesses but diverges
+    elsewhere is rejected, never landed. With NO witness list (the structural view)
+    nothing is mined. Deterministic: candidates are mined in fixed (sorted) order and at
+    most one body is returned, type-exact (``str.count`` / ``list.count`` give ``int``)."""
+    if not _string_floor_met(witnesses):
+        return []
+    pairs = _count_witness_pairs(witnesses)
+    if pairs is None:
+        return []
+    survivors = [k for k in _count_candidates(pairs)
+                 if all(arg.count(k) == expected for arg, expected in pairs)]
+    if len(survivors) != 1:
+        return []  # zero fits (no body) or >=2 fit (ambiguous) — refuse, never guess
+    return [(f"count({survivors[0]!r})", f"{a}.count({survivors[0]!r})")]
+
+
+def _count_witness_pairs(
+    witnesses: list[tuple[str, str]],
+) -> list[tuple[object, int]] | None:
+    """The ``(arg, expected_int)`` pairs for the count miner, or ``None`` when the
+    family cannot be mined. Every witness must be ONE LITERAL ``str`` / ``list`` /
+    ``tuple`` argument with a LITERAL ``int`` expected value (a ``bool`` is
+    type-distinct — a ``.count`` result is a plain ``int``), and the expected ints must
+    VARY (not all equal, else the contract is a constant another family owns). A
+    non-literal, multi-arg, wrong-typed, or all-equal shape yields ``None`` — never
+    guessed. Deterministic: source order."""
+    out: list[tuple[object, int]] = []
+    for args_text, expected_text in witnesses:
+        value = _literal_tuple(args_text)
+        expected = _literal_value(expected_text)
+        if value is None or len(value) != 1 or not isinstance(value[0], (str, list, tuple)):
+            return None
+        if type(expected) is not int:
+            return None
+        out.append((value[0], expected))
+    if len({expected for _arg, expected in out}) < 2:
+        return None  # all-equal expected -> a constant, not a count
+    return out
+
+
+def _count_candidates(pairs: list[tuple[object, int]]) -> list[object]:
+    """The candidate ``k`` values for ``a.count(k)``, mined from the witness inputs in a
+    fixed (sorted) order: every NON-EMPTY contiguous substring of each witnessed string,
+    or every distinct element of each witnessed list / tuple. The empty substring is
+    excluded — ``s.count('') == len(s) + 1`` is degenerate, never a real occurrence.
+    De-duplicated; strings are sorted, sequence elements sorted when mutually orderable
+    (else left in first-seen order). Deterministic, total — a pure scan of the
+    witnessed values, no clock/random."""
+    if pairs and isinstance(pairs[0][0], str):
+        subs: set[str] = set()
+        for arg, _expected in pairs:
+            for i in range(len(arg)):
+                for j in range(i + 1, len(arg) + 1):
+                    subs.add(arg[i:j])
+        return sorted(subs)
+    elements: list[object] = []
+    for arg, _expected in pairs:
+        for el in arg:
+            if el not in elements:
+                elements.append(el)
+    try:
+        return sorted(elements)
+    except TypeError:
+        return elements  # heterogeneous / non-orderable — first-seen order
 
 
 def _discriminating_str_predicate_witnesses(
