@@ -50,6 +50,15 @@ instance of that class, so ``x: str`` / ``x: int`` RECORDS a runtime-ENFORCED
 fact (see :func:`_annotatable_params`). Strictly SINGLE bare-builtin class only
 (a tuple ``(int, float)`` would need a ``Union`` ⇒ refuse); the guard must be
 unconditional (not nested) and the parameter unused/unreassigned before it.
+A SINGLE CONJOINED guard binds EACH conjoined parameter: ``assert isinstance(x,
+A) and isinstance(y, B)`` ⇒ ``x: A, y: B`` and ``if not (isinstance(x, A) and
+isinstance(y, B)): raise`` ⇒ ``x: A, y: B`` (see :func:`_guard_test_bindings`).
+``and`` is SOUND because the guard raises unless EVERY conjunct holds, so past
+it each conjoined parameter has its proven type — identical runtime enforcement
+to the single-guard rule. ``or`` is REFUSED (an ``or`` guard proves NEITHER
+operand's type), and a conjunction with ANY non-single-class operand (a
+tuple-of-classes isinstance, a non-isinstance term) yields NO binding from the
+whole conjunction.
 
 Why NOT a parameter type from its default value: a default does NOT constrain
 the type a parameter accepts. ``def f(x=0)`` is routinely called ``f("s")`` or
@@ -821,39 +830,104 @@ def _isinstance_single_class(call: ast.expr) -> tuple[str, str] | None:
     return obj.id, cls.id
 
 
-def _if_negation_raises(stmt: ast.stmt) -> tuple[str, str] | None:
-    """``(param, class)`` for ``if not isinstance(p, Cls): raise ...`` (the
-    if-body raises on the NEGATION), else ``None``.
+def _guard_test_bindings(test: ast.expr) -> list[tuple[str, str]]:
+    """Every ``(param_name, class_name)`` a guard's TEST expression PROVES, or
+    ``[]`` when the test is not a recognised single-class isinstance guard
+    (possibly conjoined). The shared splitter behind the assert and the
+    ``if not (...): raise`` paths.
 
-    SOUND only when ALL hold: the test is ``not isinstance(p, Cls)`` (a single
-    ``UnaryOp``/``Not`` over an accepted single-class isinstance), there is NO
-    ``else`` branch, and the if-body is EXACTLY a single ``raise``. Requiring the
-    body to be one bare ``raise`` is conservative — it cannot fall through to
-    code that runs with ``p`` of the wrong type — so reaching past the guard
-    PROVES ``isinstance(p, Cls)`` held."""
+    Two recognised shapes:
+      - a SINGLE ``isinstance(p, Cls)`` (the existing leaf,
+        :func:`_isinstance_single_class`) ⇒ ``[(p, Cls)]``;
+      - a CONJUNCTION ``isinstance(a, A) and isinstance(b, B) and ...`` (an
+        ``ast.BoolOp`` with an ``ast.And`` op) ⇒ the concatenation of EACH
+        operand's single-class binding, in source order. EVERY operand must be a
+        recognised single-class isinstance guard; if ANY operand is not (an
+        ``or`` sub-term, a tuple-of-classes isinstance, a non-isinstance
+        comparison, ...), the WHOLE conjunction yields ``[]`` — no partial bind.
+
+    SOUND for ``and`` because the guard raises unless EVERY conjunct holds, so a
+    path that continues past it has PROVEN each conjoined parameter's type —
+    identical runtime enforcement to the single-guard leaf. ``or`` is REFUSED
+    (an ``ast.BoolOp``/``ast.Or`` falls through here to ``[]``): an ``or`` guard
+    proves NEITHER operand's type, so it binds nothing. A tuple-second-arg
+    isinstance stays a Union (refused by the leaf), so a conjunct using it
+    contributes no binding and thus refuses the whole conjunction."""
+    leaf = _isinstance_single_class(test)
+    if leaf is not None:
+        return [leaf]
+    if not (isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And)):
+        return []  # not a single guard and not an `and` — e.g. `or` ⇒ no bind
+    out: list[tuple[str, str]] = []
+    for operand in test.values:
+        operand_leaf = _isinstance_single_class(operand)
+        if operand_leaf is None:
+            return []  # any non-single-class conjunct voids the whole guard
+        out.append(operand_leaf)
+    return out
+
+
+def _if_negation_bindings(stmt: ast.stmt) -> list[tuple[str, str]]:
+    """Every ``(param, class)`` for ``if not (<guard test>): raise ...`` (the
+    if-body raises on the NEGATION of a recognised single-class isinstance guard,
+    possibly conjoined via :func:`_guard_test_bindings`), or ``[]``.
+
+    SOUND only when ALL hold: the test is ``not <guard>`` (a single
+    ``UnaryOp``/``Not`` over an accepted single-class isinstance or an ``and`` of
+    them), there is NO ``else`` branch, and the if-body is EXACTLY a single
+    ``raise``. Requiring the body to be one bare ``raise`` is conservative — it
+    cannot fall through to code that runs with a parameter of the wrong type — so
+    reaching past the guard PROVES every bound conjunct held. ``not (a or b)``
+    proves NEITHER (the splitter refuses ``or``), so it binds nothing."""
     if not isinstance(stmt, ast.If) or stmt.orelse:
-        return None
+        return []
     test = stmt.test
     if not (isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not)):
-        return None
+        return []
     if len(stmt.body) != 1 or not isinstance(stmt.body[0], ast.Raise):
-        return None
-    return _isinstance_single_class(test.operand)
+        return []
+    return _guard_test_bindings(test.operand)
+
+
+def _entry_guard_bindings(stmt: ast.stmt) -> list[tuple[str, str]]:
+    """Every ``(param, class)`` when ``stmt`` is an accepted runtime type guard,
+    or ``[]``.
+
+    Two forms, both of which ENFORCE the type(s) at run time so a path that
+    reaches past the guard PROVES every bound parameter is an instance of its
+    class:
+      - ``assert <guard test>`` (an optional message is ignored — the
+        ``Assert``'s ``msg`` does not affect the bound);
+      - ``if not (<guard test>): raise <...>`` (see
+        :func:`_if_negation_bindings`).
+
+    The ``<guard test>`` is a single ``isinstance(p, Cls)`` OR an ``and`` of
+    such single-class isinstance guards (split by :func:`_guard_test_bindings`),
+    so ``assert isinstance(x, A) and isinstance(y, B)`` binds both ``x`` and
+    ``y``. An ``or`` test binds nothing (it proves neither operand)."""
+    if isinstance(stmt, ast.Assert):
+        return _guard_test_bindings(stmt.test)
+    return _if_negation_bindings(stmt)
+
+
+def _if_negation_raises(stmt: ast.stmt) -> tuple[str, str] | None:
+    """``(param, class)`` for a SINGLE ``if not isinstance(p, Cls): raise ...``,
+    else ``None``. The single-binding view kept for backward compatibility;
+    :func:`_if_negation_bindings` is the conjunction-aware form the prologue
+    uses. Returns the lone binding only when the guard test binds EXACTLY one
+    parameter (a bare single-class isinstance)."""
+    bindings = _if_negation_bindings(stmt)
+    return bindings[0] if len(bindings) == 1 else None
 
 
 def _entry_guard_binding(stmt: ast.stmt) -> tuple[str, str] | None:
-    """``(param, class)`` when ``stmt`` is an accepted runtime type guard, else
-    ``None``.
-
-    Two forms, both of which ENFORCE the type at run time so a path that reaches
-    past the guard PROVES the parameter is an instance of the class:
-      - ``assert isinstance(p, Cls)`` (an optional message is ignored — the
-        ``Assert``'s ``msg`` does not affect the bound);
-      - ``if not isinstance(p, Cls): raise <...>`` (see
-        :func:`_if_negation_raises`)."""
-    if isinstance(stmt, ast.Assert):
-        return _isinstance_single_class(stmt.test)
-    return _if_negation_raises(stmt)
+    """``(param, class)`` when ``stmt`` is an accepted SINGLE-parameter runtime
+    type guard, else ``None``. The single-binding view kept for backward
+    compatibility (and direct unit checks); :func:`_entry_guard_bindings` is the
+    conjunction-aware form the prologue uses. Returns the lone binding only when
+    the guard binds EXACTLY one parameter."""
+    bindings = _entry_guard_bindings(stmt)
+    return bindings[0] if len(bindings) == 1 else None
 
 
 def _guard_prologue_bindings(
@@ -865,12 +939,18 @@ def _guard_prologue_bindings(
 
     Walks ``fn.body`` top-level statements in order, skipping ONE leading
     docstring, and stops at the FIRST statement that is not an accepted guard
-    (:func:`_entry_guard_binding`). Stopping there is what makes the result
+    (:func:`_entry_guard_bindings`). Stopping there is what makes the result
     sound: every collected guard runs UNCONDITIONALLY at entry (it is a direct
     body statement, never nested under another ``if``/``for``/``try``), and no
     non-guard statement has executed before it — so the parameter has NOT been
     reassigned or used and the guard binds the ORIGINAL parameter. The FIRST
-    guard for a name wins (a later re-guard cannot loosen it)."""
+    binding for a name wins (a later re-guard cannot loosen it).
+
+    A SINGLE statement may bind MULTIPLE parameters when its guard test is a
+    CONJUNCTION (``assert isinstance(x, A) and isinstance(y, B)`` ⇒ both ``x``
+    and ``y``); :func:`_entry_guard_bindings` returns each conjunct's binding in
+    source order, and within that one statement the first occurrence of a name
+    still wins."""
     bindings: dict[str, str] = {}
     body = fn.body
     start = 0
@@ -882,12 +962,12 @@ def _guard_prologue_bindings(
     ):
         start = 1  # skip a leading docstring; it may precede the first guard
     for stmt in body[start:]:
-        binding = _entry_guard_binding(stmt)
-        if binding is None:
+        stmt_bindings = _entry_guard_bindings(stmt)
+        if not stmt_bindings:
             break  # prologue ends — anything after is not an entry guard
-        name, class_name = binding
-        if name not in bindings:
-            bindings[name] = class_name
+        for name, class_name in stmt_bindings:
+            if name not in bindings:
+                bindings[name] = class_name
     return bindings
 
 
@@ -923,13 +1003,18 @@ def _annotatable_params(
     PROVEN ``x`` is an instance of that class. The annotation merely RECORDS that
     runtime-enforced fact; it changes no runtime value, so it cannot contradict
     the project's tests (any value the guard would reject already raises today).
+    A SINGLE CONJOINED guard binds EACH conjoined parameter
+    (``assert isinstance(x, A) and isinstance(y, B)`` ⇒ both), sound because the
+    guard raises unless EVERY conjunct holds (see :func:`_guard_test_bindings`);
+    an ``or`` guard proves neither operand and so binds nothing.
 
-    Soundness — all enforced by :func:`_guard_prologue_bindings` and
-    :func:`_isinstance_single_class`:
+    Soundness — all enforced by :func:`_guard_prologue_bindings`,
+    :func:`_guard_test_bindings`, and :func:`_isinstance_single_class`:
       - the guard is UNCONDITIONAL (a direct body statement in the contiguous
         entry prologue — never nested under another ``if``/``for``/``try``);
-      - SINGLE bare-``Name`` builtin class only (a tuple ``(int, float)`` would
-        need a ``Union`` ⇒ refuse; a dotted/complex class ⇒ refuse);
+      - each bound class is a SINGLE bare-``Name`` builtin (a tuple
+        ``(int, float)`` would need a ``Union`` ⇒ refuse; a dotted/complex class
+        ⇒ refuse), and a conjunction binds only when EVERY conjunct is one;
       - the parameter is NOT reassigned or used before its guard (the prologue is
         only guards, so the guard binds the ORIGINAL parameter);
       - the parameter has NO existing annotation (we never overwrite — checked
