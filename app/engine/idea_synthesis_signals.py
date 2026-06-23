@@ -73,6 +73,18 @@ Four signals, one per synthesis objective Apex offers:
     do not qualify, never an over-promise. Only symbols whose module is in the
     candidate ``modules`` set are considered, so the signal stays tied to the plan's
     own candidates.
+  - :func:`strengthenable_modules` — strengthen-tests. Calls
+    :func:`app.execution.strengthen_tests.plan_strengthen_tests` (the lander
+    itself) and keeps a module only when the plan has a non-empty ``new_contents``
+    — i.e. the lander would actually write/extend its ``tests/test_<stem>.py`` with
+    a mutant-killing assertion. That gate composes the lander's MUTATION ENGINE +
+    DOUBLE-GATE oracle (a survivor must exist and an assertion that passes on the
+    real code AND fails against that survivor must be synthesizable), so a module
+    whose tests already kill every mutant (saturated), one whose survivors can't be
+    killed with an honest literal oracle, a packaging ``__init__``/``__main__``, an
+    unsound (red) baseline, or a test/fixture target all yield an empty no-op plan
+    and do not qualify — exactly the modules ``apex develop``'s strengthen-tests
+    objective would touch, never an over-promise.
 
 Pure: no writes, no pytest, no network. Deterministic: every result is sorted.
 Defensive: a missing / unreadable / syntactically-broken module, or a
@@ -94,6 +106,7 @@ from app.execution.objectives.tdd_implement import (
 )
 from app.execution.objectives.wire_exports import plan_wire_exports
 from app.execution.semantic.transforms.type_annotations import infer_annotations
+from app.execution.strengthen_tests import plan_strengthen_tests
 from app.execution.stub_synthesis import module_has_fillable_stub
 
 __all__ = [
@@ -104,6 +117,7 @@ __all__ = [
     "wire_export_packages",
     "generate_usage_doc_packages",
     "tdd_implementable_symbols",
+    "strengthenable_modules",
 ]
 
 
@@ -368,3 +382,43 @@ def tdd_implementable_symbols(
         return bool(plan_tdd_implement(rp, ms).new_contents)
 
     return _qualifying(root_path, by_target.keys(), _landable, limit)
+
+
+def _is_strengthenable(root_path: Path, rel: str) -> bool:
+    """True when :func:`plan_strengthen_tests` would WRITE/EXTEND a mutant-killing
+    test for ``rel`` — i.e. the lander's own plan has a non-empty ``new_contents``.
+    This calls the REAL lander, so it is honest by construction: a module whose
+    tests already kill every mutant (saturated), one whose surviving mutants can't
+    be killed with an honest literal oracle, a packaging ``__init__``/``__main__``,
+    an unsound (red) mutation baseline, a non-``.py`` / test / fixture target, or a
+    degenerate render that would not re-parse all yield an empty no-op plan
+    (``new_contents`` is ``{}``) and do not qualify. ``plan_strengthen_tests`` reads
+    the source itself and returns an empty plan rather than raising on a bad
+    subject, so no extra guard is needed here — the shared ``_qualifying`` spine
+    swallows any leak anyway."""
+    return bool(plan_strengthen_tests(root_path, rel).new_contents)
+
+
+def strengthenable_modules(
+    root: str | Path, modules: Iterable[str], limit: int | None = None
+) -> list[str]:
+    """The modules with a LANDABLE strengthen-tests mutant-killing assertion,
+    sorted, capped.
+
+    Grounded on :func:`app.execution.strengthen_tests.plan_strengthen_tests` — the
+    lander itself: a module qualifies only when running the real plan yields a
+    non-empty ``new_contents`` (the lander's own definition of "there is a surviving
+    mutant here whose blind spot I can close with a double-gated assertion"). That
+    gate already composes the MUTATION ENGINE + DOUBLE-GATE oracle — a survivor must
+    exist and an assertion that PASSES on the real code AND FAILS against that
+    survivor must be synthesizable (never a fake-green) — so a module whose tests
+    already kill every mutant (saturated), one whose survivors can't be killed with
+    an honest literal oracle, a packaging ``__init__``/``__main__``, an unsound (red)
+    baseline, or a test/fixture target all produce an empty no-op plan and do not
+    qualify. This is exactly the set ``apex develop``'s strengthen-tests objective
+    would touch — never an over-promise.
+
+    Like every other per-module signal here, ``modules`` may freely mix paths the
+    lander refuses (a test file, a dunder, a non-``.py`` target); each simply yields
+    an empty plan and is dropped, so callers need not pre-filter."""
+    return _qualifying(root, modules, _is_strengthenable, limit)

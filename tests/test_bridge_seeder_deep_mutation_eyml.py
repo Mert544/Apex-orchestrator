@@ -1158,6 +1158,11 @@ _FACT_EXPECTED = {
     # the develop-core ``apply_rename`` path; PER-SYMBOL, its detector runs the
     # suite to harvest the missing-function failures it can synthesise a body for.
     "tdd-implement": ("tdd_implement", True),
+    # strengthen-tests is the FIFTH broad opt-in objective (default off in the
+    # planner, gated by ``strengthen_tests=True``), delegated like cover-gaps to the
+    # develop-core ``apply_rename`` path; PER-MODULE, its signal runs the MUTATION
+    # ENGINE to find surviving mutants it can kill with a double-gated assertion.
+    "strengthen-tests": ("strengthen_tests", True),
 }
 
 

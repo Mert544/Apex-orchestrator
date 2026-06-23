@@ -326,6 +326,21 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                       "— synthesise a `def` that flips its failing test green "
                       "(refuses an assertion failure or a contract no fixed "
                       "template satisfies)", True),
+    # strengthen-tests is the SAME delegated shape as cover-gaps (PER-MODULE): NOT a
+    # SemanticPatchResult transform (it writes/extends a module's
+    # ``tests/test_<stem>.py`` with a mutant-killing assertion and its verify MUST
+    # be impact-scoped), so ``apply_step`` delegates it to the develop-core
+    # ``apply_rename`` path (``plan_strengthen_tests`` + ``apply_rename`` with
+    # ``impact_scope=True``). Its synthesis runs the MUTATION ENGINE + a DOUBLE-GATE
+    # oracle (the appended assertion must pass on the real code AND fail against the
+    # specific surviving mutant it kills), so it is surfaced executable ONLY for a
+    # module whose own ``plan_strengthen_tests`` produces a non-empty ``new_contents``
+    # (``strengthenable_modules``), so the claim is honest by construction.
+    "strengthen-tests": ("strengthen_tests",
+                         "Strengthen the thin tests for {s} — append a "
+                         "double-gated assertion that KILLS a surviving mutant the "
+                         "current suite misses (refuses a saturated module or a "
+                         "survivor no honest literal oracle can kill)", True),
 }
 
 
@@ -845,6 +860,13 @@ class IdeaActionBridge:
         # the action is recognised as a real (delegated) transform objective. The
         # synthesised module source is produced by ``plan_tdd_implement`` itself.
         "tdd_implement": ["implement the missing function a RED test calls"],
+        # strengthen_tests, like cover_gaps, is NOT a SemanticPatchResult transform
+        # — ``apply_step`` delegates it to the develop-core ``apply_rename`` path.
+        # Listed here so ``_step_targets`` recognises it as a real transform
+        # objective (a ``.py`` target → ``[step.target]``); the extended
+        # ``tests/test_<stem>.py`` the plan writes is produced by
+        # ``plan_strengthen_tests`` itself, not from here.
+        "strengthen_tests": ["strengthen thin tests with mutant-killing assertions"],
     }
 
     # Behaviour-preserving readability simplifications dispatched STRAIGHT to
@@ -1725,6 +1747,24 @@ class IdeaActionBridge:
 
         return _plan
 
+    @staticmethod
+    def _plan_strengthen_tests_lander():
+        """The strengthen-tests lander adapted to the delegated ``(project_root,
+        target)`` shape every delegated synthesis uses.
+
+        strengthen-tests is PER-MODULE — its real lander is already
+        ``plan_strengthen_tests(root, module_rel) -> RenamePlan``, so the target a
+        surfaced step carries IS the module rel-path (exactly what the objective's
+        ``moves`` emits and what ``strengthenable_modules`` returns), and the lander
+        passes straight through. An unmatched / refused target — a non-``.py`` path,
+        a test/fixture, a dunder, a module whose tests already kill every mutant
+        (saturated), or one whose survivors can't be killed with an honest oracle —
+        is REFUSED by the lander itself with an empty no-op :class:`RenamePlan`
+        (``new_contents`` is ``{}``), so the delegated apply path honestly no-ops
+        rather than fakes a change (never a fake-green)."""
+        from app.execution.strengthen_tests import plan_strengthen_tests
+        return plan_strengthen_tests
+
     _DELEGATED_SYNTHESIS = {
         "implement_stub": (
             "_plan_implement_stub_lander",
@@ -1742,6 +1782,10 @@ class IdeaActionBridge:
             "_plan_tdd_implement_lander",
             "no tdd-implement (no missing symbol / assertion failure / "
             "no template fits the RED test)"),
+        "strengthen_tests": (
+            "_plan_strengthen_tests_lander",
+            "no strengthen-tests (saturated / no killable survivor / "
+            "red baseline / test or fixture target)"),
     }
 
     # The action types ``apply_step`` / ``_generate`` route to the develop-core
@@ -2363,6 +2407,15 @@ class IdeaActionBridge:
     # default idea set and add suite-run cost to a plain plan. Its signal returns
     # ``"<module>:<name>"`` symbol targets (not ``.py`` module paths), so its rows
     # are distinct from the package/module objectives above.
+    #
+    # strengthen-tests HARDENS an existing-but-thin test by appending a double-gated
+    # assertion that kills a surviving mutant the current suite misses. Like
+    # cover-gaps it is a test/safety-net contribution that targets MODULES broadly,
+    # so it belongs in Stabilize; and like every broad objective here it is opt-in
+    # (default off) lest it shift the default idea set — and its signal runs the
+    # MUTATION ENGINE per candidate (expensive), so a plain plan must not pay that
+    # cost. Its ``register`` spec is ``expensive=True, scope_verify=True``, so — like
+    # cover-gaps — it lands through ``apply_rename`` with ``impact_scope=True``.
     _OPTIN_SYNTHESIS_OBJECTIVES: dict[str, tuple[tuple[str, str, str, str], ...]] = {
         "cover_gaps": (
             ("cover_gaps_modules", "cover_gaps", "cover-gaps", "Stabilize"),
@@ -2377,6 +2430,10 @@ class IdeaActionBridge:
         "tdd_implement": (
             ("tdd_implementable_symbols", "tdd_implement", "tdd-implement",
              "Evolve"),
+        ),
+        "strengthen_tests": (
+            ("strengthenable_modules", "strengthen_tests", "strengthen-tests",
+             "Stabilize"),
         ),
     }
 
@@ -2404,6 +2461,7 @@ class IdeaActionBridge:
         cls, cover_gaps: bool, wire_exports: bool,
         generate_usage_doc: bool = False,
         tdd_implement: bool = False,
+        strengthen_tests: bool = False,
     ) -> tuple[tuple[str, str, str, str], ...]:
         """The default synthesis objectives plus each opt-in objective whose flag
         is True, assembled data-driven from ``_OPTIN_SYNTHESIS_OBJECTIVES``.
@@ -2414,7 +2472,8 @@ class IdeaActionBridge:
         opt-in flags are INDEPENDENT: enabling one never pulls in another."""
         flags = {"cover_gaps": cover_gaps, "wire_exports": wire_exports,
                  "generate_usage_doc": generate_usage_doc,
-                 "tdd_implement": tdd_implement}
+                 "tdd_implement": tdd_implement,
+                 "strengthen_tests": strengthen_tests}
         objectives = cls._SYNTHESIS_OBJECTIVES
         for flag, rows in cls._OPTIN_SYNTHESIS_OBJECTIVES.items():
             if flags.get(flag):
@@ -2426,7 +2485,8 @@ class IdeaActionBridge:
                                  cover_gaps: bool = False,
                                  wire_exports: bool = False,
                                  generate_usage_doc: bool = False,
-                                 tdd_implement: bool = False) -> None:
+                                 tdd_implement: bool = False,
+                                 strengthen_tests: bool = False) -> None:
         """Append executable develop-grade synthesis steps for the qualifying
         candidate modules, in place (the caller then de-dups).
 
@@ -2440,10 +2500,10 @@ class IdeaActionBridge:
 
         The three default objectives qualify a narrow set; the BROAD opt-in
         objectives in ``_OPTIN_SYNTHESIS_OBJECTIVES`` (cover-gaps, wire-exports,
-        generate-usage-doc, tdd-implement) run only when their own flag
-        (``cover_gaps`` / ``wire_exports`` / ``generate_usage_doc`` /
-        ``tdd_implement``) is True, so a default plan never shifts its existing idea
-        set. The opt-in flags are INDEPENDENT.
+        generate-usage-doc, tdd-implement, strengthen-tests) run only when their own
+        flag (``cover_gaps`` / ``wire_exports`` / ``generate_usage_doc`` /
+        ``tdd_implement`` / ``strengthen_tests``) is True, so a default plan never
+        shifts its existing idea set. The opt-in flags are INDEPENDENT.
 
         Determinism / opt-in safety: on a project with NO synthesis-eligible
         module (or no ``project_root``), nothing is appended and the plan stays
@@ -2461,7 +2521,8 @@ class IdeaActionBridge:
         except Exception:  # pragma: no cover - defensive import guard
             return
         objectives = self._enabled_objectives(cover_gaps, wire_exports,
-                                              generate_usage_doc, tdd_implement)
+                                              generate_usage_doc, tdd_implement,
+                                              strengthen_tests)
         for signal_name, action_type, fact, phase in objectives:
             signal = getattr(sigs, signal_name)
             for module in signal(project_root, candidates,
@@ -2508,6 +2569,7 @@ class IdeaActionBridge:
         wire_exports: bool = False,
         generate_usage_doc: bool = False,
         tdd_implement: bool = False,
+        strengthen_tests: bool = False,
     ) -> ActionPlan:
         ideas = sorted(report.ideas, key=lambda i: i.value, reverse=True)
         if top is not None:
@@ -2520,7 +2582,8 @@ class IdeaActionBridge:
                                       cover_gaps=cover_gaps,
                                       wire_exports=wire_exports,
                                       generate_usage_doc=generate_usage_doc,
-                                      tdd_implement=tdd_implement)
+                                      tdd_implement=tdd_implement,
+                                      strengthen_tests=strengthen_tests)
         steps = self._dedupe_steps(steps)
         # Opt-in (default off, so existing plans are byte-identical): when the
         # top steps are a value near-tie, surface the subject with the most
@@ -2578,7 +2641,8 @@ class IdeaActionBridge:
                        cover_gaps: bool = False,
                        wire_exports: bool = False,
                        generate_usage_doc: bool = False,
-                       tdd_implement: bool = False) -> list[ActionStep]:
+                       tdd_implement: bool = False,
+                       strengthen_tests: bool = False) -> list[ActionStep]:
         """Expand the roadmap's ideas into deduped, phase-ordered steps.
 
         Convergence ideas carry their own phased sub-steps (a Stabilize test
@@ -2587,8 +2651,9 @@ class IdeaActionBridge:
         The final stable sort by canonical phase puts every step in its true
         phase group — preserving test-before-harden order for free, since
         Stabilize precedes Secure. ``cover_gaps`` / ``wire_exports`` /
-        ``generate_usage_doc`` / ``tdd_implement`` opt their broad synthesis
-        objective in (default off, independent — see ``_augment_synthesis_steps``).
+        ``generate_usage_doc`` / ``tdd_implement`` / ``strengthen_tests`` opt their
+        broad synthesis objective in (default off, independent — see
+        ``_augment_synthesis_steps``).
         """
         idea_by_path = {i.branch_path: i for i in report.ideas}
         steps: list[ActionStep] = []
@@ -2603,7 +2668,8 @@ class IdeaActionBridge:
                                       cover_gaps=cover_gaps,
                                       wire_exports=wire_exports,
                                       generate_usage_doc=generate_usage_doc,
-                                      tdd_implement=tdd_implement)
+                                      tdd_implement=tdd_implement,
+                                      strengthen_tests=strengthen_tests)
         steps = self._dedupe_steps(steps)
         from app.engine.idea_roadmap import PHASE_ORDER
         phase_rank = {name: i for i, name in enumerate(PHASE_ORDER)}
@@ -2624,6 +2690,7 @@ class IdeaActionBridge:
         wire_exports: bool = False,
         generate_usage_doc: bool = False,
         tdd_implement: bool = False,
+        strengthen_tests: bool = False,
     ) -> ActionPlan:
         """Plan actions in roadmap order (Stabilize→Secure→Evolve→Refine).
 
@@ -2632,8 +2699,8 @@ class IdeaActionBridge:
         safety net before changing risky code. ``phase`` restricts the plan to a
         single phase; each step is tagged with the phase it came from.
         ``cover_gaps`` / ``wire_exports`` / ``generate_usage_doc`` /
-        ``tdd_implement`` opt their broad synthesis objective in (default off,
-        independent, so the default plan's idea set is unchanged).
+        ``tdd_implement`` / ``strengthen_tests`` opt their broad synthesis objective
+        in (default off, independent, so the default plan's idea set is unchanged).
         """
         from app.engine.idea_roadmap import RoadmapSynthesizer
 
@@ -2643,7 +2710,8 @@ class IdeaActionBridge:
                                     cover_gaps=cover_gaps,
                                     wire_exports=wire_exports,
                                     generate_usage_doc=generate_usage_doc,
-                                    tdd_implement=tdd_implement)
+                                    tdd_implement=tdd_implement,
+                                    strengthen_tests=strengthen_tests)
         # The phase filter applies to each *step's own* phase, so a convergence
         # idea's Secure sub-step is kept under --phase=Secure even though its
         # parent sat in Stabilize (and vice-versa).
