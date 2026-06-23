@@ -11,6 +11,23 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (7. tur) — conjoined-isinstance param · mined replace · dedup köprüleri (full-gate yeşil, A+99):**
+- `a4e1fbe` **feat(infer-type-hints): konjoine isinstance guard'dan param tipleri** — `assert isinstance(x,A) and
+  isinstance(y,B)` → `x:A, y:B` (ve `if not (...): raise` formu). `_guard_test_bindings` `ast.BoolOp(And)`'i
+  operand-başına single-class binding'e böler; bir statement artık çok param bağlar. Sağlam: `and` hepsi tutmazsa
+  raise → her konjoine param kanıtlı tip. `or` reddedilir; non-single-class operand (tuple-union/non-isinstance/
+  nested-or) tüm konjonksiyonu void eder; tekrar-ad → ilki kazanır. Singular wrapper'lar korundu. **286 yeşil.**
+- `7616f9a` **feat(stub-synthesis): witness-madenli `a.replace(old,new)`** — aday `old`=seed input substring'leri;
+  `new` segment-join cebriyle türetilir (`inp.replace(old,new)==new.join(inp.split(old))`); her aday HER witness'a
+  doğrulanır, tek survivor emit (0/≥2→refuse). Kombinatoryal literal-çarpım tahmin havuzu yerine grounded. No-shadow:
+  madenlenmiş gövde önce, yalnız önceden hiçbir şey inmeyen saf-ikame sözleşmelerinde çarpım rakiplerini bastırır;
+  case-fold (`'A B'→'a-b'`) madenci çekimser → `s.lower().replace(...)` korunur. Boş-`old` dışlanır.
+- `13568e3` **feat(ideate): dedup-total-return + dedup-parameterized köprüsü** — kayıtlı-ama-yüzeysizlenmemiş 2 hedef
+  artık **7. ve 8. grounded opt-in** (toplam 8). CROSS-MODULE (birim = modülleri kapsayan DuplicateBlock/
+  NearDuplicateGroup); sinyal her hedefin kendi actionable-unit kapısına (`_actionable_blocks`/
+  `plan_dedup_total_return`, `_actionable_groups`/`plan_near_dup_extract`) delege — tespit-edilmiş-ama-landable-değil
+  duplicate nitelenmiyor (over-promise yok). Flag'ler bağımsız, default-off byte-identical.
+
 **BU OTURUM (6. tur) — kompozisyonel sentez + modernize köprüsü + comprehension test-pin + buyer-proof (full-gate yeşil, A+99):**
 - `49e0011` **feat(stub-synthesis): sınırlı 1-seviye kompozisyonel gövdeler** — `return a[k] <op> c` (sabit-index
   sonra skaler-aritmetik) ve `return len(a) <op> c`; str/list/tuple, int çıktı, op∈{+,−,*}. **Buyer-proof boşluğunu
@@ -196,8 +213,8 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**~22.010 test** + ruff), öz-not **A+99**
-  (bu oturumda `--chunks 16 -j 4` → 772s, 16/16 chunk + ruff PASS, exit 0).
+- **Kapı:** `python scripts/verify.py` → full green (**~22.069 test** + ruff), öz-not **A+99**
+  (bu oturumda `--chunks 16 -j 4` → 793s, 16/16 chunk + ruff PASS, exit 0).
 - **⚠️ FRESH-CONTAINER KAPI ÖN-KOŞULU (yeni oturum bunu OKUSUN):** Bulut klonu **shallow**
   gelir (~50 commit); karakterizasyon testleri `git show <eski-commit>^` ile snapshot
   stage eder → shallow'da **collection-error** (bu oturumda 7 chunk böyle kırıldı, dalga
@@ -234,10 +251,10 @@
 
 ## 3. SIRADAKİ İŞLER (öncelik sırası — saha testi gaplerine dayalı)
 
-**🆕 EN GÜNCEL SLATE (6. tur keşif denetçisi; grounded · dosya-ayrık · sound · anafikre-sadık — PAKETLEME: R7 = A1∥B1∥C1, R8 = A2∥B2∥D1, R9 = C2/doctest):**
-- **A1** [`type_annotations.py`]: param tipi `assert isinstance(x,A) and isinstance(y,B)` (BoolOp-And → operand başına single-class guard'a böl; `_entry_guard_binding`/`_isinstance_single_class` besle). Sağlam: assert İKİSİ de tutmazsa raise eder; `or` dışlanır. Witness: `assert isinstance(x,int) and isinstance(y,str)` → `f(x:int, y:str)`.
-- **B1** [`stub_synthesis.py`]: `a.replace(k1,k2)` MADENLENMİŞ tek-çift (input→output ortak-altdizi diff'i), witness-doğrulamalı, ambiguity-refuse — bugünkü kombinatoryal literal çarpımı yerine. Witness: `slug("a b")=="a-b"` → `s.replace(' ','-')`.
-- **C1** [`idea_synthesis_signals.py`+`idea_action_bridge.py`]: `dedup-total-return` & `dedup-parameterized` objektiflerini GROUNDED-köprüle (KAYITLI ama yüzeysizlenmemiş — `app/execution/objectives/{dedup_total_return.py:62,dedup_parameterized.py:54}`; sinyal yok). `_is_strengthenable` desenini aynala (gate=non-empty `plan_*().new_contents`).
+**🆕 EN GÜNCEL SLATE (6. tur keşif denetçisi; grounded · dosya-ayrık · sound · anafikre-sadık — PAKETLEME: ✅R7=A1∥B1∥C1 İNDİ (a4e1fbe/7616f9a/13568e3), SIRADAKİ R8 = A2∥B2∥D1, R9 = C2/doctest):**
+- ✅ **A1 (7.tur `a4e1fbe`)** [`type_annotations.py`]: param tipi `assert isinstance(x,A) and isinstance(y,B)` (BoolOp-And → operand başına single-class). İNDİ.
+- ✅ **B1 (7.tur `7616f9a`)** [`stub_synthesis.py`]: `a.replace(k1,k2)` MADENLENMİŞ tek-çift, witness-doğrulamalı, ambiguity-refuse. İNDİ.
+- ✅ **C1 (7.tur `13568e3`)** [idea-bridge]: `dedup-total-return` & `dedup-parameterized` GROUNDED-köprülendi (7.+8. opt-in). İNDİ.
 - **A2** [`type_annotations.py`]: parametrize display tipleri — `{1:"a"}`→`dict[int,str]`, `[1,2]`→`list[int]`, `(1,"a")`→`tuple[int,str]` (her eleman `_literal_type`'la kanıtlı; karışık→bare; comp→bare). `_DISPLAY_TYPES.get` dalını `_parametrized_display_type` ile değiştir. (A1 ile aynı dosya → ayrı tur.)
 - **B2** [`stub_synthesis.py`]: `sorted(a)[k]` (k-inci küçük) + `len(set(a))` (distinct-sayım). sorted[k] her witness'ta 0≤k<len iken total; len(set) sayım (PYTHONHASHSEED yok). (B1 ile aynı dosya → ayrı tur.)
 - **C2/doctest** [`stub_synthesis.py`]: witness'ları modül docstring `>>>` doctest'lerinden de madenle (`_witnesses_in_file` kardeşi). `fillable_stub_modules`'tan akar, köprü değişmez.
