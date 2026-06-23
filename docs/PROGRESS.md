@@ -11,6 +11,24 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (10. tur) — OTONOM seçim: `ideate --auto` + `develop --auto` (full-gate yeşil, A+99); `/code-review` 1 gerçek bug yakaladı → W10-C ertelendi:**
+- `9f1b7cf` **feat(ideate-cli): `--auto`** — kullanıcı 8 bayrağı EZBERLEMESİN: `apex ideate --actions --auto`, Apex'in
+  uygulanabilir TÜM sentez hedeflerini kendi seçmesini sağlar (her hedefin grounding sinyali zaten yalnız landable
+  hedefleri niteler → "hepsini aç" = "neyin uyduğunu Apex bulur"). `auto` param plan_tree/plan_roadmap →
+  `_enabled_objectives`'e threaded (`if auto or flag`). Default byte-identical, honest (grounding filtreler),
+  `--auto ≡ 8-bayrak`. (Senin "komut ezberletme, otonom yap" isteğinin ideate ayağı.)
+- `25859c8` **feat(develop): `--auto`** — `apex develop --all` yalnız 6 sabit hedefi süpürüyordu; `--auto` artık
+  `rank_objectives` (plan/ascend board'u) ile **tüm registry'den** uygulanabilir (pending>0) hedefleri otonom
+  seçip suite-gated + auto-rollback ile landliyor. Pahalı (pytest) hedefler `--concrete` ile opt-in (plan/ascend
+  gibi); seçilen set raporlanıyor (dürüstlük). Mevcut cmd_develop davranışı byte-identical (preview-branch'ler
+  `_develop_preview_dispatch` helper'ına çıkarıldı, cc≤12). (Otonom-loop ayağı.)
+- **W10-C (doctest uçtan-uca) — `/code-review` GERÇEK over-count regresyonu yakaladı → ERTELENDİ:** doctest-witness
+  guard'ı pytest-pass'lerini HER doctest-stub'ında kapatıyordu; bir stub'ın doctest örneği VE fixture/non-literal
+  pinned-test'i olduğunda doctest-pass sentezleyemiyor + pytest-pass atlanıyor → **doğru bir doctest eklemek o
+  fonksiyonun landing'ini KALDIRIYORDU** (+ scan over-count). Düzeltme net (pytest-pass'i çalıştır, sonucunu
+  doctest-verify et — `verify_body_via_doctest`) ama never-fake-green yolunda cerrahi → temiz A+B gönderildi;
+  W10-C odaklı mühendisle düzeltilip dönecek (patch+test+intel scratchpad `w10-c_*`).
+
 **BU OTURUM (9. tur) — ideate-CLI opt-in bayrakları · document-signature (9. CONCRETE) · paylaşılan plan-helper; `/code-review` 2 GERÇEK bug yakaladı (full-gate yeşil, A+99):**
 - `9e87325` **feat(ideate-cli): 8 grounded opt-in bayrağı** — **kullanım-açığı KAPANDI**: bridge'in kabul ettiği ama
   CLI'da erişilemeyen 8 hedef (`--cover-gaps`/`--tdd-implement`/…) artık `apex ideate --actions` ile çağrılabilir
@@ -256,7 +274,7 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**~22.194 test** + ruff), öz-not **A+99**
+- **Kapı:** `python scripts/verify.py` → full green (**~22.223 test** + ruff), öz-not **A+99**
   (bu oturumda `--chunks 16 -j 4` → ~860s, 16/16 chunk + ruff PASS, exit 0). **Yeni objektif eklerken** facet-parite
   (`FACET_OBJECTIVE_MAP`↔registry 1:1) + `north_star_audit.OBJECTIVE_MANIFEST` partition + duplication (≥5-statement
   blok) self-grade tripwire'larını UNUTMA — 9. turda document-signature bunların hepsini tetikledi.
@@ -295,6 +313,29 @@
 ---
 
 ## 3. SIRADAKİ İŞLER (öncelik sırası — saha testi gaplerine dayalı)
+
+**🔭 ROUND-11 İNTEL (10. turun 2 keşifçisinden — EN GÜNCEL; otonomi + honesty + yetenek):**
+1. **W10-C FIX (re-dispatch, HAZIR):** doctest uçtan-uca, DÜZELTİLMİŞ guard'la. Patch+test+finding scratchpad
+   `w10-c_*` (759-satır patch). FIX: implement_stub.py'deki `if _has_doctest_witnesses: continue` (satır ~216 Pass2,
+   ~325 Pass1) pytest-pass'i TAMAMEN kapatmasın → pytest-pass'i ÇALIŞTIR, sonucunu doctest-verify et
+   (`verify_body_via_doctest(current, stub, expr)` — Pass1 temiz; Pass2 filled-source verify variant'ı gerekir).
+   Böylece doctest+fixture-test'li stub yine pytest yolundan inebilir AMA doctest'i ihlal eden gövde reddedilir
+   (fake-green deliği kapalı, regresyon yok). Reviewer'ın trigger'ı: `>>> f(2)\n4` + `test_f(val):assert f(val)==6`.
+2. **GERÇEK TEK-KOMUT OTONOMİ (scout-2 headline — `--auto`'nun derinleştirilmesi):** `apex auto` / çıplak `apex`
+   hâlâ 8 sentez ailesine OTONOM erişmiyor (synth kwarg geçmiyor; `cli_autonomy.py` cmd_auto:391/_auto_act:349).
+   YAP: 8 bayrağı sinyallerinden GROUND et (`flag = bool(signal(root,candidates))`) + plan_roadmap'e geçir; HEM de
+   `rank_objectives(include_expensive=True)` board'unu merge et (iki yüzeyi birleştir); maliyeti TİER+DISCLOSE
+   (ucuz vs pytest-pahalı), ucuz-varsayılan + pahalı tek-disclosed-opt-in. "Kullanıcı tek şey koşar, Apex karar verir."
+3. **HONESTY BUG'LARI (pre-existing):** (a) [YÜKSEK — MOAT] `fix-coverage --generate` `assert True` doğrulanmamış
+   stub yazıyor, pytest yok/rollback yok (`test_stub_agent.py:142`) — fake-green fabrikası → shield/cover_gaps
+   verified-lander'ına yönlendir VEYA "non-verifying" diye işaretle. (b) `apex auto` `_auto_recommend` (cli_autonomy:340)
+   kapaksız "{executable}" vaat ediyor ama `_auto_act` (:358) sessizce 8'de kapıyor → kapağı açıkla.
+4. **YETENEKLER (scout-1):** C1 [idea_synthesis_signals+idea_action_bridge] document-signature'ı ideate'e GROUND et
+   (registered ama signal/opt-in yok → `--auto` da kapsasın; 9. concrete). C2 [type_annotations] `int()/float()`'i
+   `_BUILTIN_CALL_RETURN_TYPES`'a ekle (kodun KENDİ yorumu öneriyor). C8 [YENİ `objectives/scaffold_protocol.py`]
+   Protocol/ABC'nin eksik metot stub'larını üret (sig+NotImplementedError) → implement-stub/tdd doldurur (pipeline).
+   C5 [SKEPTİK/atla] membership `a in {witness}` = lookup-table overfit (round-4'te reddedilmişti).
+   DIŞLA: param-from-default/callsite, ==/<→bool, Div/Pow, PYTHONHASHSEED-sıra, app/engine machinery polish.
 
 **🆕 EN GÜNCEL SLATE (6. tur keşif denetçisi; grounded · dosya-ayrık · sound · anafikre-sadık — DURUM: ✅R7=A1∥B1∥C1 (a4e1fbe/7616f9a/13568e3), ✅R8=A2+B2 (b660971/1658f1d), ✅R9=D1+CLI-flags (fde0f00/9e87325), SIRADAKİ = W9-3 doctest UÇTAN-UCA + C2):**
 - ✅ **A2 (8.tur `b660971`)** parametrize display tipleri + type-join. İNDİ.
