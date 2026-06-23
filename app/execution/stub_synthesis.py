@@ -444,6 +444,7 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
     out.extend(_affine_string_templates(a, witnesses))
     out.extend(_constant_index_templates(a, witnesses))
     out.extend(_slice_templates(a, witnesses))
+    out.extend(_index_templates(a, witnesses))
     out.extend(_one_arg_builtin_templates(a, kind, witnesses))
     if kind in (None, "int") and _recursion_allowed(witnesses):
         out.extend([
@@ -951,6 +952,115 @@ def _constant_index_constants(witnesses: list[tuple[str, str]]) -> list[int]:
         if not common:
             return []
     return sorted(idx for idx in (common or set()) if idx != 0)
+
+
+def _index_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The 1-arg INDEX-METHOD family: ``return a.index(k)`` for each fixed element ``k``
+    mined from the witnesses — the int POSITION at which the literal ``k`` FIRST occurs in
+    the sequence. ``find_three([5, 3, 9]) == 1, find_three([3, 8]) == 0`` lands
+    ``xs.index(3)`` — the place a known element sits, which is the INVERSE of the
+    constant-index family (``a[k]`` returns the element AT position ``k``; ``a.index(k)``
+    returns the POSITION of element ``k``), and a value no scalar / slice / reduction
+    template can spell.
+
+    Elements come from :func:`_index_method_constants` — the TYPE-EXACT intersection of the
+    elements ``k`` whose ``seq.index(k)`` equals that witness's expected int across EVERY
+    witness, so the body reproduces every witness by construction (the caller still gates it
+    against all pinned tests, never-fake-green; ``.index`` raises ``ValueError`` when ``k``
+    is absent, so a witness lacking ``k`` makes the candidate raise and the gate rejects it).
+
+    OVERFIT FLOOR: offered ONLY when at least TWO DISTINCT argument tuples witness the
+    contract (:func:`_string_floor_met`, the same floor the constant-index / slice / string
+    / numeric shapes use). A single witness cannot tell ``xs.index(3)`` from a bare
+    ``return 0`` (``find_three([3, 8]) == 0`` fits both), so with <2 distinct tuples no
+    element is mined. With NO witness list (the structural view) nothing is mined — there is
+    no literal to derive. Deterministic: elements in sorted order, de-duplicated. The
+    existing type-exact accept-gate and off-witness sequence-canary probes stay the sole
+    ambiguity arbiters."""
+    out: list[tuple[str, str]] = []
+    for k in _index_method_constants(witnesses):
+        out.append((f"index({k!r})", f"{a}.index({k!r})"))
+    return out
+
+
+def _index_method_constants(witnesses: list[tuple[str, str]]) -> list[object]:
+    """The fixed elements ``k`` to try in ``a.index(k)``, mined as the TYPE-EXACT
+    INTERSECTION over the witnesses of the elements whose ``seq.index(k)`` equals that
+    witness's expected int. ``find_three([5, 3, 9]) == 1`` contributes the element at
+    position ``1`` whose first occurrence is ``1`` (``3``); intersecting with
+    ``find_three([3, 8]) == 0``'s element at position ``0`` (``3``) yields ``[3]`` ->
+    ``xs.index(3)``.
+
+    Each witness must be a single SEQUENCE argument (``list`` / ``tuple`` / ``str``) with a
+    LITERAL ``int`` expected value (the position ``.index`` returns is always an ``int``; a
+    non-``int`` expected — or a ``bool``, which is type-distinct from ``int`` — can never be
+    an ``.index`` result and refuses the whole family). The candidate element for a witness
+    is ``seq[expected]``, but ONLY when its FIRST occurrence is exactly ``expected``
+    (``seq.index(el) == expected``) — an earlier duplicate would make ``.index`` return a
+    smaller position, so such an element is dropped rather than mined into a body the gate
+    would reject. A position out of range, a non-literal, multi-arg, or non-sequence shape
+    yields NO element — the family is mined, never guessed.
+
+    The element's TYPE must match its sequence slot exactly (``True`` is not mined for a
+    ``1`` slot), mirroring ``.index``'s ``==`` semantics so a mined element can never
+    resolve to a different position than the witness pins. Gated behind the
+    >=2-distinct-witness overfit floor (:func:`_string_floor_met`). Deterministic: sorted,
+    de-duplicated; an empty / single / non-sequence / non-int-expected witness set yields
+    ``[]``."""
+    if not _string_floor_met(witnesses):
+        return []
+    common: set | None = None
+    for args_text, expected_text in witnesses:
+        element = _index_witness_element(args_text, expected_text)
+        if element is _NO_LITERAL:
+            return []
+        candidates = {_Hashed(element)}
+        common = candidates if common is None else (common & candidates)
+        if not common:
+            return []
+    return sorted((h.value for h in (common or set())), key=repr)
+
+
+def _index_witness_element(args_text: str, expected_text: str) -> object:
+    """The single element ``k`` a witness supports for ``a.index(k)``, or the sentinel
+    ``_NO_LITERAL`` when the witness cannot be mined. The witness must be one LITERAL
+    SEQUENCE argument with a LITERAL ``int`` expected position in range; the element is
+    ``seq[expected]`` and is accepted ONLY when its FIRST occurrence is exactly
+    ``expected`` (``seq.index(element) == expected``), so an earlier duplicate — which
+    would make ``.index`` return a smaller position — refuses rather than mines a body
+    the gate would reject. ``bool`` is type-distinct from ``int`` (a position is always
+    an ``int``)."""
+    value = _literal_tuple(args_text)
+    expected = _literal_value(expected_text)
+    if value is None or len(value) != 1 or type(expected) is not int:
+        return _NO_LITERAL
+    seq = value[0]
+    if not isinstance(seq, (list, tuple, str)) or not 0 <= expected < len(seq):
+        return _NO_LITERAL
+    element = seq[expected]
+    return element if seq.index(element) == expected else _NO_LITERAL
+
+
+@dataclass(frozen=True)
+class _Hashed:
+    """A hashable, TYPE-EXACT wrapper for a mined element so it can intersect across
+    witnesses in a set even when the element is unhashable (a list ``str`` is hashable, but
+    a list element could be a list) and so ``1`` never collides with ``True``. Equality is
+    type-exact value equality; the hash falls back to the type when the value is unhashable
+    so distinct types stay distinct buckets."""
+
+    value: object
+
+    def __eq__(self, other: object) -> bool:
+        return (isinstance(other, _Hashed)
+                and type(self.value) is type(other.value)
+                and self.value == other.value)
+
+    def __hash__(self) -> int:
+        try:
+            return hash((type(self.value).__name__, self.value))
+        except TypeError:
+            return hash(type(self.value).__name__)
 
 
 def _slice_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
