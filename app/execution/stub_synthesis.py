@@ -36,6 +36,7 @@ by.
 from __future__ import annotations
 
 import ast
+import doctest
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -55,6 +56,8 @@ __all__ = [
     "module_has_fillable_stub",
     "fill_stub_body",
     "synthesize_stub_body",
+    "synthesize_doctest_body",
+    "verify_body_via_doctest",
     "AmbiguityDiagnosis",
     "ambiguity_reason",
     "render_ambiguity_reason",
@@ -2356,7 +2359,8 @@ def _ordered_string_pairs(strings: list[str]) -> list[tuple[str, str]]:
 
 
 def _function_witnesses(root: Path, test_files: list[str],
-                        stub: StubFunction) -> list[tuple[str, str]]:
+                        stub: StubFunction,
+                        module_source: str | None = None) -> list[tuple[str, str]]:
     """The ``(args_text, expected_text)`` pairs the pinned tests ENFORCEABLY
     assert for ``stub`` — every ``func(<args>) == <expected>`` in the test files
     that does NOT live inside a test function marked ``@pytest.mark.xfail`` /
@@ -2384,7 +2388,17 @@ def _function_witnesses(root: Path, test_files: list[str],
     ``symbol(n) == e`` text is non-literal and would otherwise poison the evaluable
     witness set); a DIRECT assert keeps the exact regex output, byte-for-byte as
     before. This only ADDS witnesses that were always there — the accept-gate is
-    unchanged, the ambiguity guard still applies, never-fake-green holds."""
+    unchanged, the ambiguity guard still applies, never-fake-green holds.
+
+    When ``module_source`` (the source of the module under fill) is supplied, the
+    stub's OWN docstring ``>>>`` examples are mined too (:func:`_doctest_witnesses`)
+    and APPENDED after the test-file witnesses, so a stub whose contract lives in
+    its docstring is fillable through the SAME machinery. A doctest ``>>> f(2)\\n6``
+    is the same kind of witness as ``assert f(2) == 6`` — it flows through the
+    identical accept-gate, canary, >=2-distinct floor and ambiguity guard. The
+    doctest pass is purely ADDITIVE: with ``module_source=None`` (every existing
+    caller) the output is byte-for-byte what it was. Deterministic: test files in
+    sorted order first, then the docstring examples in source order."""
     call_eq = re.compile(
         r"(?<![A-Za-z0-9_])" + re.escape(stub.name)
         + r"\s*\(([^()]*)\)\s*==\s*([^\n#]+)")
@@ -2395,6 +2409,8 @@ def _function_witnesses(root: Path, test_files: list[str],
         except OSError:
             continue
         out.extend(_witnesses_in_file(text, stub, call_eq))
+    if module_source is not None:
+        out.extend(_doctest_witnesses(module_source, stub))
     return out
 
 
@@ -2531,6 +2547,136 @@ def _render_call_args(call: ast.Call) -> str | None:
     if call.keywords or any(isinstance(a, ast.Starred) for a in call.args):
         return None
     return ", ".join(ast.unparse(a) for a in call.args)
+
+
+def _enforceable_doctest_examples(source: str,
+                                  stub: StubFunction) -> list[doctest.Example]:
+    """The ``>>>`` examples in ``stub``'s OWN docstring that the suite would
+    actually ENFORCE — every example EXCEPT one carrying a ``# doctest: +SKIP``
+    directive. A ``+SKIP`` example is never executed by ``doctest`` (the analogue
+    of an ``xfail``/``skip`` test assert), so it pins NO contract: mining it for a
+    witness or counting it toward verification would stamp an unenforced example
+    "verified", breaking never-fake-green. It is dropped here, the SINGLE place the
+    "which examples count" decision is made — so the witness miner and the
+    apply-path doctest verifier weigh exactly the same examples.
+
+    Fully guarded on a malformed source: a docstring that cannot be parsed yields
+    ``[]`` (never raises). Deterministic: examples in source order."""
+    docstring = _stub_docstring(source, stub)
+    if not docstring:
+        return []
+    try:
+        examples = doctest.DocTestParser().get_examples(docstring)
+    except (ValueError, RecursionError, MemoryError):
+        return []
+    return [ex for ex in examples if not ex.options.get(doctest.SKIP)]
+
+
+def has_enforceable_doctest_examples(source: str, stub: StubFunction) -> bool:
+    """True when ``stub`` has at least one ENFORCEABLE ``>>>`` example (``+SKIP``
+    excluded) — i.e. an example the apply-path doctest verifier would actually run.
+
+    This is the correct TRIGGER for doctest gating: it is keyed to the SAME set
+    (:func:`_enforceable_doctest_examples`) the verifier weighs, so the gate fires
+    for EVERY enforceable example, not only a mined literal-call witness. Using the
+    narrower ``_has_doctest_witnesses`` as the trigger let a comparison-style
+    example (``>>> f(2) == 4``) — enforceable but not a mined witness — escape
+    verification, so a doctest-violating body could land (a never-fake-green hole).
+    Gating on this predicate closes that gap. Never raises (delegates to the
+    fully-guarded example extractor)."""
+    return bool(_enforceable_doctest_examples(source, stub))
+
+
+def _doctest_witnesses(source: str, stub: StubFunction) -> list[tuple[str, str]]:
+    """The ``(args_text, expected_text)`` witnesses mined from ``stub``'s OWN
+    docstring ``>>>`` examples — a SECOND witness source besides the test files, so
+    a stub whose contract lives only in its doctests (``>>> double(3)\\n6``) is
+    fillable through the very same template machinery a ``assert double(3) == 6``
+    would feed. The mined pairs have the IDENTICAL shape the test-file extractor
+    yields, so they merge with (and are gated exactly like) the test witnesses —
+    the accept-gate, canary, >=2-distinct floor and never-fake-green are unchanged;
+    only a new witness SOURCE is added, no new template logic.
+
+    Conservative by construction, the SAME strictness as the test-file extractor:
+
+    * each example must be a single EXPRESSION that is a direct ``stub.name(...)``
+      call with a bare-``Name`` callee (``mode='eval'`` rejects assignments,
+      multi-statement examples and ``raise``; :func:`_is_symbol_call` rejects a
+      method call or any other expression);
+    * the args must be literal (re-using :func:`_literal_tuple`) and the expected
+      ``want`` must be a literal — a non-literal example (``>>> double(x)``), prose,
+      or an exception ``want`` (a Traceback) is simply IGNORED, never guessed;
+    * a ``# doctest: +SKIP`` example is dropped (:func:`_enforceable_doctest_examples`)
+      — an unenforced example is no contract;
+    * no keyword/starred argument (:func:`_render_call_args` returns ``None``).
+
+    Deterministic: examples are mined in docstring source order. A malformed /
+    un-parseable source or docstring raises NOTHING — it yields ``[]`` (the
+    >=2-distinct floor downstream still rejects a lone example on its own)."""
+    out: list[tuple[str, str]] = []
+    for ex in _enforceable_doctest_examples(source, stub):
+        pair = _doctest_example_witness(ex.source, ex.want, stub)
+        if pair is not None:
+            out.append(pair)
+    return out
+
+
+def _stub_docstring(source: str, stub: StubFunction) -> str | None:
+    """The docstring of the function ``stub`` denotes in ``source`` (matched by name
+    AND its 1-based ``lineno``, so an overload elsewhere is never confused for it),
+    or ``None`` when the source does not parse, the function is not found, or it
+    carries no docstring. Guarded: a malformed source raises nothing."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    for node in ast.walk(tree):
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == stub.name and node.lineno == stub.lineno):
+            return ast.get_docstring(node)
+    return None
+
+
+def _doctest_example_witness(example_src: str, want: str,
+                             stub: StubFunction) -> tuple[str, str] | None:
+    """One ``(args_text, expected_text)`` witness from a single doctest example —
+    its ``>>>`` source line(s) ``example_src`` and the expected output ``want`` — or
+    ``None`` when the example is not a literal call to ``stub.name``.
+
+    The expected text is ``want`` stripped and validated by :func:`_doctest_literal`
+    (NOT the test-file :func:`_literal_value`): a doctest's expected OUTPUT may
+    legitimately contain ``#`` inside a string repr (``>>> tag('x')`` -> ``'#x'``),
+    which the test-file path's trailing-comment stripping would wrongly truncate.
+    Only an example that survives every guard becomes a witness."""
+    try:
+        node = ast.parse(example_src.strip(), mode="eval").body
+    except (SyntaxError, ValueError):
+        return None  # a statement / multi-line / non-expression example — ignore
+    if not _is_symbol_call(node, stub.name):
+        return None  # not a direct call to the stub's own function
+    args_text = _render_call_args(node)
+    if args_text is None:
+        return None  # keyword / starred argument — unrecoverable, never guessed
+    if _literal_tuple(args_text) is None:
+        return None  # a non-literal argument (``double(x)``) — ignore, never guess
+    expected_text = want.strip()
+    if _doctest_literal(expected_text) is _NO_LITERAL:
+        return None  # prose / exception / non-literal expected output — ignore
+    return args_text, expected_text
+
+
+def _doctest_literal(want_text: str) -> object:
+    """Evaluate a doctest ``want`` (the expected printed output) to a literal, or
+    the sentinel ``_NO_LITERAL`` when it is not one. Unlike the test-file
+    :func:`_literal_value` this does NOT split on ``#`` before parsing: a doctest's
+    expected output is the WHOLE printed repr, so a ``#`` belongs to the value
+    (``'#tag'``), never a trailing comment — stripping it would corrupt the
+    literal. ``ast.literal_eval`` still ignores a genuine trailing ``# comment`` on
+    its own (the tokenizer drops it), so nothing legitimate is lost."""
+    try:
+        return ast.literal_eval(want_text.strip())
+    except (ValueError, SyntaxError, TypeError):
+        return _NO_LITERAL
 
 
 def _indirect_witnesses(text: str,
@@ -3369,6 +3515,113 @@ def _candidate_passes(root: Path, module_rel: str, candidate: str,
         _purge_pyc(target)
 
 
+def _doctests_pass(examples: list[doctest.Example], filled_source: str,
+                   stub: StubFunction) -> bool:
+    """Run already-picked enforceable ``examples`` against ``filled_source`` — the
+    source compiled into a FRESH namespace — accepting ONLY when every example
+    passes. The single place the compile-and-run verdict lives, shared by
+    :func:`verify_body_via_doctest` (which rewrites a bare return-expr into the
+    source first) and :func:`filled_source_passes_doctests` (whose source is already
+    filled). Conservative, never a fake-green: a source that fails to compile, or a
+    stub that is not a callable module global (e.g. a method whose ``self`` is not a
+    global), yields ``False``. Deterministic: fixed namespace, examples in source
+    order."""
+    namespace = _compiled_module_namespace(filled_source)
+    if namespace is None or stub.name not in namespace:
+        return False  # didn't compile, or stub isn't a callable module global
+    test = doctest.DocTest(examples, namespace, stub.name, None, 0, None)
+    runner = doctest.DocTestRunner(verbose=False)
+    try:
+        # ``out=`` discards the failure report: a mismatched candidate is expected
+        # during the search and must not spam stdout (it would corrupt a quiet
+        # develop-loop log). The verdict is ``result.failed``, not the text.
+        result = runner.run(test, out=lambda _s: None, clear_globs=False)
+    except Exception:
+        return False
+    return result.failed == 0
+
+
+def verify_body_via_doctest(module_source: str, stub: StubFunction,
+                            return_expr: str) -> bool:
+    """True when ``stub`` filled with ``return <return_expr>`` makes ALL of its OWN
+    enforceable docstring ``>>>`` examples pass, run by the stdlib :mod:`doctest`.
+
+    This is the never-fake-green gate for a stub whose contract lives (wholly or
+    partly) in its docstring rather than a ``test_*.py`` file: such a stub has no
+    pinned pytest file to gate it, so the apply path would otherwise have to either
+    refuse it (under-count vs the scan) or land it UNVERIFIED. Instead the body is
+    verified the way the contract is written — by re-running the function's own
+    examples. The scan oracle and the apply path BOTH consult this, so a doctest-
+    only stub the scan calls fillable is exactly one the apply can land and verify.
+
+    Mechanism (in-process, no pytest, no temp files): the stub's enforceable
+    examples (:func:`_enforceable_doctest_examples`, ``+SKIP`` excluded) are mined,
+    the body is filled with ``return <return_expr>``, and both are handed to the
+    shared verifier :func:`_doctests_pass` — which compiles the filled source into a
+    fresh namespace and runs the examples by a :class:`doctest.DocTestRunner`,
+    accepting ONLY when every example passed. A method stub (``self`` not a module
+    global), a body that fails to compile, or NO enforceable example all yield
+    ``False`` — conservative, never a fake-green. Deterministic: examples in source
+    order, fixed namespace."""
+    examples = _enforceable_doctest_examples(module_source, stub)
+    if not examples:
+        return False  # nothing enforceable to verify — never claim verified
+    filled = _rewrite_with_body(module_source, stub, return_expr)
+    if filled is None:
+        return False
+    return _doctests_pass(examples, filled, stub)
+
+
+def filled_source_passes_doctests(filled_source: str, stub: StubFunction) -> bool:
+    """True when ``stub``'s OWN enforceable docstring ``>>>`` examples all pass
+    against an ALREADY-FILLED module source, run by the stdlib :mod:`doctest`.
+
+    This is the never-fake-green gate the pytest-gated fixpoint pass needs for a
+    stub that ALSO carries doctest witnesses. The pytest pass works with a fully
+    composed ``new_source`` (a body chosen because it passes the pinned pytest
+    nodes), not a bare return-expr, so it cannot reuse
+    :func:`verify_body_via_doctest` (which re-derives the fill from an expr).
+    Instead both share the compile-and-run verdict in :func:`_doctests_pass`: this
+    function picks the contract examples with :func:`_enforceable_doctest_examples`
+    and hands them — with the ALREADY-FILLED source — straight to that shared
+    verifier, skipping the ``_rewrite_with_body`` step its twin needs first.
+
+    Conservative, never a fake-green: a stub with NO enforceable example, a source
+    that fails to compile, or a stub that is not a callable module global (e.g. a
+    method whose ``self`` is not a global) all yield ``False``. Deterministic:
+    examples in source order, fixed namespace."""
+    examples = _enforceable_doctest_examples(filled_source, stub)
+    if not examples:
+        return False  # nothing enforceable to verify — never claim verified
+    return _doctests_pass(examples, filled_source, stub)
+
+
+def _compiled_module_namespace(source: str) -> dict | None:
+    """Execute ``source`` in a FRESH module namespace and return it, or ``None`` if
+    it raises (a body whose import/definition side-effects fail is unverifiable, so
+    the caller refuses). Sandboxed only to the extent ``exec`` of the synthesized
+    module is — the body is a fixed template over the stub's own parameters, never
+    arbitrary user text, and it is the SAME source the verified-apply engine would
+    write to disk, so running it here mirrors the real outcome."""
+    namespace: dict = {}
+    try:
+        exec(compile(source, "<apex-doctest>", "exec"), namespace)  # noqa: S102
+    except Exception:
+        return None
+    return namespace
+
+
+def _has_doctest_witnesses(module_source: str | None,
+                           stub: StubFunction) -> bool:
+    """True when ``stub`` has at least one enforceable docstring ``>>>`` witness in
+    ``module_source`` — i.e. (part of) its contract is pinned by doctests, so any
+    body landed for it must be doctest-VERIFIED, not pytest-verified. ``False`` when
+    ``module_source`` is ``None`` (the doctest pass is opt-in) or no example mines."""
+    if module_source is None:
+        return False
+    return bool(_doctest_witnesses(module_source, stub))
+
+
 def _purge_pyc(module_path: Path) -> None:
     """Delete any cached bytecode for ``module_path`` so the next import always
     recompiles the just-written source. Removes both the legacy sibling ``.pyc``
@@ -3441,17 +3694,24 @@ def synthesize_stub_body(root: Path, module_rel: str, stub: StubFunction,
 
 
 def ordered_candidate_exprs(root: Path, test_files: list[str],
-                            stub: StubFunction) -> list[tuple[str, str]]:
+                            stub: StubFunction,
+                            module_source: str | None = None) -> list[tuple[str, str]]:
     """Public view of the fixed-order candidate list for ``stub`` — the
     parameter-shaped templates first, then the last-resort constant (when the
     tests pin one literal across >=2 distinct tuples). Used by the per-module
     batch planner to coordinate sibling stubs whose pinned tests share one file
-    (where no single stub goes green until the others are filled too)."""
-    return _ordered_candidates(root, test_files, stub)
+    (where no single stub goes green until the others are filled too).
+
+    ``module_source`` adds the stub's docstring ``>>>`` examples to the seeding
+    witness set, so a value-derived template can be proposed from a doctest-only
+    contract too. With it ``None`` (the default) the list is byte-for-byte as
+    before."""
+    return _ordered_candidates(root, test_files, stub, module_source)
 
 
 def synthesize_expr_from_witnesses(root: Path, test_files: list[str],
-                                   stub: StubFunction) -> str | None:
+                                   stub: StubFunction,
+                                   module_source: str | None = None) -> str | None:
     """The FIRST fixed-order candidate expr that satisfies ``stub``'s OWN pinned
     witnesses, evaluated in-process — or ``None`` when none does. This is the
     INDEPENDENT per-stub synthesis the mutual-stub planner relies on: a stub's
@@ -3470,25 +3730,38 @@ def synthesize_expr_from_witnesses(root: Path, test_files: list[str],
     path applies: an ``xfail``/``skip``-only contract is unenforceable (its
     witnesses are already dropped by :func:`_function_witnesses`, and an all-xfail
     test set is refused outright), and a contract that fits >=2 different-shape
-    templates is ambiguous, so we refuse rather than land an arbitrary first."""
+    templates is ambiguous, so we refuse rather than land an arbitrary first.
+
+    ``module_source`` (the module under fill) is threaded through so the stub's OWN
+    docstring ``>>>`` examples join the witness set — a doctest-only contract is
+    synthesizable through the same gate. When the chosen expr was determined with
+    doctest witnesses in play, it is additionally re-verified by RUNNING those
+    examples (:func:`verify_body_via_doctest`) so the scan never accepts a body the
+    doctest-verified apply could not land. With ``module_source`` ``None`` (the
+    default) the search is byte-for-byte the prior test-file-only behavior."""
     if not _has_enforceable_contract(root, test_files, stub):
         return None  # only xfail/skip tests pin this stub — no real contract
-    witnesses = _function_witnesses(root, test_files, stub)
+    witnesses = _function_witnesses(root, test_files, stub, module_source)
     if not witnesses:
         return None
     evaluable = _evaluable_witnesses(witnesses, stub)
     if evaluable is None:
         return None
-    if _is_ambiguous(root, test_files, stub):
+    if _is_ambiguous(root, test_files, stub, module_source):
         return None  # witnesses fit >=2 different-shape templates — under-specified
-    for _label, expr in _ordered_candidates(root, test_files, stub):
-        if _expr_matches_all(expr, stub, evaluable):
-            return expr
+    uses_doctest = _has_doctest_witnesses(module_source, stub)
+    for _label, expr in _ordered_candidates(root, test_files, stub, module_source):
+        if not _expr_matches_all(expr, stub, evaluable):
+            continue
+        if uses_doctest and not verify_body_via_doctest(module_source, stub, expr):
+            continue  # doctest-pinned: the apply gate runs the examples — agree
+        return expr
     return None
 
 
 def can_fill_stub_in_process(root: Path, test_files: list[str],
-                             stub: StubFunction) -> bool:
+                             stub: StubFunction,
+                             module_source: str | None = None) -> bool:
     """A CHEAP, in-process estimate of whether ``stub`` is fillable — no pytest.
 
     This is the fitness/move-scan oracle: it must be FAST (the develop loop
@@ -3516,71 +3789,139 @@ def can_fill_stub_in_process(root: Path, test_files: list[str],
     but the pytest-gated apply still might land a value-free template (e.g.
     ``s.lower()``). To stay safe (never under-count), such a stub is counted
     CONSERVATIVELY: the move is offered, and the real per-module pytest gate is the
-    authority on whether it actually lands (a no-op if it doesn't)."""
+    authority on whether it actually lands (a no-op if it doesn't).
+
+    ``module_source`` threads the stub's docstring ``>>>`` examples into the witness
+    set, so a doctest-only stub is correctly counted as fillable — but ONLY through
+    the in-process synth above, which doctest-VERIFIES the body it accepts (so the
+    scan agrees with the doctest-gated apply). The non-evaluable conservative branch
+    is justified solely by a real pytest gate, so it is SKIPPED when there are no
+    pinned ``test_*.py`` files (a doctest-only stub has no pytest path to fall back
+    on): it would otherwise over-count a doctest stub the apply could never land.
+    With ``module_source`` ``None`` (the default) the estimate is byte-for-byte the
+    prior test-file-only behavior."""
     if not _has_enforceable_contract(root, test_files, stub):
         return False  # only xfail/skip tests pin this stub — apply would refuse too
-    if synthesize_expr_from_witnesses(root, test_files, stub) is not None:
+    if synthesize_expr_from_witnesses(root, test_files, stub, module_source) is not None:
         return True
-    if _recursion_matches(root, test_files, stub):
+    if _recursion_matches(root, test_files, stub, module_source):
         return True
-    # In-process synthesis couldn't decide. If the witnesses aren't evaluable
-    # in-process (non-literal args/expected), the pytest gate might still land a
-    # value-free template — count it conservatively rather than under-count. If
-    # the witnesses ARE evaluable yet nothing matched, the apply path would refuse
-    # too (same templates, same gate), so it is honestly NOT counted.
-    return _has_pinned_but_non_evaluable_witnesses(root, test_files, stub)
+    # In-process synthesis couldn't decide. The conservative count below leans on
+    # the pytest apply gate to decide for real, so it only applies when a pinned
+    # test file actually exists; a doctest-ONLY stub has no such gate (its sole
+    # authority is the doctest verification the synth already ran), so counting it
+    # here would over-count. If the witnesses aren't evaluable in-process the pytest
+    # gate might still land a value-free template — count it conservatively rather
+    # than under-count. If the witnesses ARE evaluable yet nothing matched, the
+    # apply path would refuse too (same templates, same gate), so it is honestly NOT
+    # counted.
+    if not test_files:
+        return False
+    return _has_pinned_but_non_evaluable_witnesses(root, test_files, stub, module_source)
 
 
 def _has_pinned_but_non_evaluable_witnesses(root: Path, test_files: list[str],
-                                            stub: StubFunction) -> bool:
+                                            stub: StubFunction,
+                                            module_source: str | None = None) -> bool:
     """True when ``stub`` has enforceable pinned witnesses that the in-process
     evaluator CANNOT turn into literal ``(args, expected)`` pairs (a non-literal
     call site). Such a contract is undecidable in-process, so the cheap scan
     counts it conservatively (the pytest apply gate decides for real) rather than
     risk under-counting a stub the pytest path could still fill. A stub with no
-    enforceable witnesses at all is NOT counted (no contract to satisfy)."""
-    witnesses = _function_witnesses(root, test_files, stub)
+    enforceable witnesses at all is NOT counted (no contract to satisfy).
+    ``module_source`` adds the stub's docstring witnesses to the considered set."""
+    witnesses = _function_witnesses(root, test_files, stub, module_source)
     if not witnesses:
         return False
     return _evaluable_witnesses(witnesses, stub) is None
 
 
 def _recursion_matches(root: Path, test_files: list[str],
-                       stub: StubFunction) -> bool:
+                       stub: StubFunction,
+                       module_source: str | None = None) -> bool:
     """True when a recursion template (the ``__apex_self__`` shapes) reproduces
     every enforceable witness for ``stub``, evaluated AS a real recursive function
     in-process (no pytest). The pure-expression synth skips recursion because
     ``__apex_self__`` has no binding; here we wrap each recursion body in an
     actual ``def`` over the stub's parameters so factorial/fibonacci can be
     checked cheaply. Runs the same enforceable-contract / ambiguity floors first,
-    so it never offers a stub the apply path would refuse. Deterministic."""
+    so it never offers a stub the apply path would refuse. Deterministic.
+
+    ``module_source`` threads the stub's docstring witnesses into the checked set;
+    when those doctests are part of the contract the matched recursion body is
+    additionally re-run against the examples (:func:`verify_body_via_doctest`) so
+    the scan agrees with the doctest-gated apply."""
+    return _recursion_body(root, test_files, stub, module_source) is not None
+
+
+def _recursion_body(root: Path, test_files: list[str], stub: StubFunction,
+                    module_source: str | None = None) -> str | None:
+    """The recursion BODY expr (with the ``__apex_self__`` marker) that reproduces
+    every enforceable small-magnitude witness for ``stub`` evaluated as a real
+    recursive function in-process, or ``None`` when none does. The single source of
+    truth :func:`_recursion_matches` (the scan bool) wraps and the doctest-gated
+    apply lands, so the cheap recursion estimate and the doctest apply agree by
+    construction. Runs the same enforceable-contract / ambiguity floors first.
+
+    Evaluation is bounded to SMALL-magnitude witnesses: the fibonacci template is
+    EXPONENTIAL, so ``fib(95)`` would never terminate in-process. A recursion-shaped
+    contract is pinned by small base/step cases anyway (``fact(0)==1, fact(5)==120``),
+    so the bound keeps the check fast without missing a real recursion. A contract
+    whose ONLY witnesses are large yields no small witness, so recursion is honestly
+    not claimed. When the contract is doctest-pinned the matched body is also re-run
+    against the examples (:func:`verify_body_via_doctest`)."""
     if not _has_enforceable_contract(root, test_files, stub):
-        return False
-    witnesses = _function_witnesses(root, test_files, stub)
+        return None
+    witnesses = _function_witnesses(root, test_files, stub, module_source)
     evaluable = _evaluable_witnesses(witnesses, stub) if witnesses else None
     if not evaluable:
-        return False
-    if _is_ambiguous(root, test_files, stub):
-        return False
-    # Evaluate the recursion only against SMALL-magnitude witnesses: the fibonacci
-    # template is EXPONENTIAL, so ``fib(95)`` would never terminate in-process. A
-    # recursion-shaped contract is pinned by small base/step cases anyway
-    # (``fact(0)==1, fact(5)==120``), so bounding the evaluated witnesses keeps the
-    # cheap check fast without missing a real recursion. A contract whose ONLY
-    # witnesses are large (e.g. ``grade_letter(95)=='A'``) yields no small witness
-    # to check, so recursion is honestly not claimed — and such a contract is not a
-    # recursion shape anyway (its expected values are strings, not the recursion's
-    # ints). The explicit pytest-gated apply remains the authority for any genuine
-    # large-argument recursion that this cheap bound would skip.
+        return None
+    if _is_ambiguous(root, test_files, stub, module_source):
+        return None
     small = [(args, exp) for args, exp in evaluable
              if all(isinstance(a, int) and abs(a) <= _RECURSION_WITNESS_CAP
                     for a in args)]
     if len({args for args, _e in small}) < 2:
-        return False  # too few small witnesses to determine a recursion cheaply
-    for _label, expr in _ordered_candidates(root, test_files, stub):
-        if "__apex_self__" in expr and _recursive_expr_matches_all(expr, stub, small):
-            return True
-    return False
+        return None  # too few small witnesses to determine a recursion cheaply
+    candidates = _ordered_candidates(root, test_files, stub, module_source)
+    return _first_matching_recursion(candidates, stub, small, module_source)
+
+
+def _first_matching_recursion(candidates: list[tuple[str, str]], stub: StubFunction,
+                              small: list[tuple[tuple, object]],
+                              module_source: str | None) -> str | None:
+    """The first recursion-shaped (``__apex_self__``) ``candidates`` expr that
+    reproduces every ``small`` witness as a real recursive function, or ``None``.
+    When ``module_source`` carries doctest witnesses the match is additionally
+    re-run against the examples so the scan agrees with the doctest apply."""
+    uses_doctest = _has_doctest_witnesses(module_source, stub)
+    for _label, expr in candidates:
+        if "__apex_self__" not in expr:
+            continue
+        if not _recursive_expr_matches_all(expr, stub, small):
+            continue
+        if uses_doctest and not verify_body_via_doctest(module_source, stub, expr):
+            continue  # doctest-pinned: the apply runs the examples — agree
+        return expr
+    return None
+
+
+def synthesize_doctest_body(root: Path, test_files: list[str], stub: StubFunction,
+                            module_source: str | None) -> str | None:
+    """The body expr the DOCTEST-gated apply should land for a doctest-pinned
+    ``stub``, or ``None`` when it is not doctest-pinnable. This mirrors EXACTLY the
+    doctest acceptance of :func:`can_fill_stub_in_process` — the pure-expression
+    synth first (which doctest-verifies the expr it returns), then a doctest-verified
+    recursion body — so the scan and the apply land the identical set (the no-over/
+    under-count invariant). A stub WITHOUT a minable doctest witness yields ``None``
+    here: it is not this path's responsibility (the pytest-gated passes own it), so
+    the existing test-file-only behavior is untouched. Deterministic."""
+    if not _has_doctest_witnesses(module_source, stub):
+        return None  # not doctest-pinned — leave it to the pytest-gated passes
+    expr = synthesize_expr_from_witnesses(root, test_files, stub, module_source)
+    if expr is not None:
+        return expr  # already doctest-verified inside synthesize_expr_from_witnesses
+    return _recursion_body(root, test_files, stub, module_source)
 
 
 # Largest |arg| the in-process recursion check evaluates. Factorial (linear) and
@@ -3635,7 +3976,14 @@ def module_has_fillable_stub(root: Path, module_rel: str) -> bool:
     still runs the full pytest gate in ``plan_implement_stub`` — a stub this
     estimate counts but the gate later rejects simply no-ops at apply; a stub it
     accepts is exactly the set the apply path can land (it never under-counts a
-    landable stub, recursion included)."""
+    landable stub, recursion included).
+
+    The module ``source`` is forwarded to :func:`can_fill_stub_in_process` so a
+    stub whose contract lives in its docstring ``>>>`` examples (and so has NO
+    pinned ``test_*.py`` file) is also weighed — its doctest witnesses are mined and
+    the body the scan accepts is doctest-VERIFIED, so the doctest-gated apply lands
+    exactly the same set (no over-count). A stub with neither a pinned test nor a
+    minable doctest witness contributes nothing, as before."""
     if _is_test_or_fixture(module_rel):
         return False
     try:
@@ -3644,7 +3992,7 @@ def module_has_fillable_stub(root: Path, module_rel: str) -> bool:
         return False
     for stub in find_stub_functions(source):
         tests = pinned_test_files(root, module_rel, stub.name)
-        if tests and can_fill_stub_in_process(root, tests, stub):
+        if can_fill_stub_in_process(root, tests, stub, source):
             return True
     return False
 
@@ -3692,10 +4040,22 @@ def _literal_tuple(args_text: str) -> tuple | None:
 
 def _literal_value(expected_text: str) -> object:
     """Evaluate an expected-value fragment (the RHS of ``==``) to a literal, or the
-    sentinel ``_NO_LITERAL`` when it is not a literal."""
-    text = expected_text.strip().split("#")[0].strip()
+    sentinel ``_NO_LITERAL`` when it is not a literal.
+
+    The whole fragment is parsed FIRST: ``ast.literal_eval`` already ignores a
+    genuine trailing ``# comment`` (the tokenizer drops it), so a value that itself
+    contains ``#`` inside a string repr (``'#tag'`` — a merged doctest want) is no
+    longer truncated by the comment-strip below. Only if the whole-fragment parse
+    fails do we fall back to splitting on the first ``#`` and re-parsing — keeping
+    every previously-parseable input byte-for-byte identical (the fallback fires
+    only for inputs that did not literal-eval as written before either)."""
+    text = expected_text.strip()
     try:
         return ast.literal_eval(text)
+    except (ValueError, SyntaxError, TypeError):
+        pass
+    try:
+        return ast.literal_eval(text.split("#")[0].strip())
     except (ValueError, SyntaxError, TypeError):
         return _NO_LITERAL
 
@@ -3755,7 +4115,8 @@ class AmbiguityDiagnosis:
     values: tuple[str, str]
 
 
-def _is_ambiguous(root: Path, test_files: list[str], stub: StubFunction) -> bool:
+def _is_ambiguous(root: Path, test_files: list[str], stub: StubFunction,
+                  module_source: str | None = None) -> bool:
     """True when the stub's ENFORCEABLE witnesses are satisfied by >=2 templates
     that DISAGREE on some untested input — the witnesses don't determine intent,
     so any single pick would be an arbitrary guess stamped "verified".
@@ -3778,12 +4139,16 @@ def _is_ambiguous(root: Path, test_files: list[str], stub: StubFunction) -> bool
 
     A thin wrapper over :func:`_ambiguity_diagnosis`: the refuse DECISION is
     exactly "a diagnosis exists", so the same input lands the same nothing whether
-    or not the diagnosis is ever rendered (the disclosure is purely additive)."""
-    return _ambiguity_diagnosis(root, test_files, stub) is not None
+    or not the diagnosis is ever rendered (the disclosure is purely additive).
+
+    ``module_source`` threads the docstring witnesses into the weighed set, so a
+    doctest-only contract is checked for ambiguity exactly like a test-file one."""
+    return _ambiguity_diagnosis(root, test_files, stub, module_source) is not None
 
 
 def _ambiguity_diagnosis(root: Path, test_files: list[str],
-                         stub: StubFunction) -> AmbiguityDiagnosis | None:
+                         stub: StubFunction,
+                         module_source: str | None = None) -> AmbiguityDiagnosis | None:
     """The structured ambiguity finding for ``stub`` — ``None`` when the contract
     is NOT ambiguous, else the two representative competing exprs, the first
     discriminating canary input, and each expr's value there.
@@ -3793,12 +4158,13 @@ def _ambiguity_diagnosis(root: Path, test_files: list[str],
     excluded) the bool guard always did, then — instead of discarding everything
     but the verdict — keeps the FIRST pair whose fingerprints diverge and the
     EARLIEST canary at which they do. Deterministic throughout: candidates and
-    canaries are in their fixed order, so the chosen pair and input are stable."""
-    witnesses = _function_witnesses(root, test_files, stub)
+    canaries are in their fixed order, so the chosen pair and input are stable.
+    ``module_source`` threads the stub's docstring witnesses into the weighed set."""
+    witnesses = _function_witnesses(root, test_files, stub, module_source)
     evaluable = _evaluable_witnesses(witnesses, stub) if witnesses else None
     if not evaluable:
         return None
-    matching = _matching_shapes(root, test_files, stub, evaluable)
+    matching = _matching_shapes(root, test_files, stub, evaluable, module_source)
     if len(matching) < 2:
         return None
     canaries = _canary_inputs(evaluable)
@@ -3806,7 +4172,8 @@ def _ambiguity_diagnosis(root: Path, test_files: list[str],
 
 
 def _matching_shapes(root: Path, test_files: list[str], stub: StubFunction,
-                     evaluable: list[tuple[tuple, object]]) -> list[str]:
+                     evaluable: list[tuple[tuple, object]],
+                     module_source: str | None = None) -> list[str]:
     """The witness-passing templates, ONE per distinct semantic shape, in fixed
     candidate order — the competing intents the ambiguity guard weighs.
 
@@ -3821,7 +4188,7 @@ def _matching_shapes(root: Path, test_files: list[str], stub: StubFunction,
     only the genuine competing intents are weighed."""
     matching: list[str] = []
     seen_shapes: set[str] = set()
-    for label, expr in _ordered_candidates(root, test_files, stub):
+    for label, expr in _ordered_candidates(root, test_files, stub, module_source):
         if label == "constant" or "__apex_self__" in expr:
             continue
         if not _expr_matches_all(expr, stub, evaluable):
@@ -4315,7 +4682,8 @@ def fill_stub_body(source: str, stub: StubFunction, return_expr: str) -> str | N
 
 
 def _ordered_candidates(root: Path, test_files: list[str],
-                        stub: StubFunction) -> list[tuple[str, str]]:
+                        stub: StubFunction,
+                        module_source: str | None = None) -> list[tuple[str, str]]:
     """The full fixed-order candidate list: the parameter-shaped templates FIRST,
     then a constant-return as the LAST resort (and only when ``_expected_constant``
     is satisfied — at least two distinct argument tuples agree on one literal).
@@ -4328,8 +4696,12 @@ def _ordered_candidates(root: Path, test_files: list[str],
 
     Value-dependent templates (``n * k``, ``s.replace(a, b)``) are seeded from the
     witnesses parsed from the pinned tests; they only PROPOSE bodies — every one
-    is still gated against the tests before it lands."""
-    witnesses = _function_witnesses(root, test_files, stub)
+    is still gated against the tests before it lands. ``module_source`` adds the
+    stub's docstring ``>>>`` examples to the seeding witness set, so a value-derived
+    template (``n * 2``) can be proposed from a doctest-only contract too; the
+    constant last-resort still reads only the pinned test files (a doctest-only
+    constant-return is an honest under-claim, never landed unverified)."""
+    witnesses = _function_witnesses(root, test_files, stub, module_source)
     out: list[tuple[str, str]] = list(candidate_bodies(stub, witnesses))
     const = _expected_constant(root, test_files, stub)
     if const is not None:

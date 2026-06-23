@@ -32,12 +32,16 @@ from app.execution.stub_synthesis import (
     _purge_pyc,
     ambiguity_reason,
     fill_stub_body,
+    filled_source_passes_doctests,
+    has_enforceable_doctest_examples,
     find_stub_functions,
     module_has_fillable_stub,
     pinned_test_files,
     pinned_test_nodes,
+    synthesize_doctest_body,
     synthesize_expr_from_witnesses,
     synthesize_stub_body,
+    verify_body_via_doctest,
 )
 from app.skills.execution.run_tests import RunTestsSkill
 
@@ -195,6 +199,13 @@ def _fill_all_stubs(root: Path, module_rel: str,
     current = original
     filled: set[str] = set()
     try:
+        # Pass 0 (doctest): a stub whose contract lives in its docstring ``>>>``
+        # examples has NO pinned test file, so the pytest-gated passes below can
+        # never land it — yet the cheap scan (which mines those examples) counts it
+        # fillable. This pass closes that gap HONESTLY: it synthesizes such a stub's
+        # body from its doctest (and any test-file) witnesses and verifies it by
+        # RUNNING the examples, so the apply lands exactly the set the scan offered.
+        current = _fill_doctest_stubs(root, module_rel, current, filled)
         # Pass 1 (fast): independent per-witness synthesis + one union verify.
         current = _resolve_mutual_stubs(root, module_rel, current, filled, runner)
         # Pass 2: pytest-gated fixpoint for stubs in-process eval can't determine.
@@ -213,6 +224,23 @@ def _fill_all_stubs(root: Path, module_rel: str,
                 new_source = synthesize_stub_body(root, module_rel, stub, tests)
                 if new_source is None or new_source == current:
                     continue  # no template passes YET — retry next fixpoint pass
+                # A stub that ALSO carries doctest witnesses must satisfy its OWN
+                # examples too: a pytest-passing body that VIOLATES the doctests is
+                # a fake-green nobody re-ran, so re-run them on the filled source and
+                # refuse the fill this pass if they don't hold (never-fake-green).
+                # A stub with no doctest contract lands on the pytest gate alone, as
+                # before — so a doctest+fixture stub the pytest pass can satisfy now
+                # LANDS (closing the lost-landing regression of the upfront skip).
+                # NOTE (honest under-claim): this gates the FIRST pytest-passing
+                # candidate ``synthesize_stub_body`` returned; if THAT body violates
+                # the stub's own doctests it is refused this run, rather than
+                # searching for a later candidate that would satisfy BOTH gates. The
+                # refusal is always SAFE (never a fake-green); it can only land
+                # fewer, never a wrong body — so a doctest stub may be under-counted
+                # vs the scan in this narrow case (acceptable; never over-claimed).
+                if (has_enforceable_doctest_examples(current, stub)
+                        and not filled_source_passes_doctests(new_source, stub)):
+                    continue  # pytest-green but doctest-violating — skip this pass
                 current = new_source
                 filled.add(stub.name)
                 progress = True
@@ -220,6 +248,49 @@ def _fill_all_stubs(root: Path, module_rel: str,
     finally:
         target.write_text(original, encoding="utf-8")
     return (current, filled) if filled else (None, filled)
+
+
+def _fill_doctest_stubs(root: Path, module_rel: str, current: str,
+                        filled: set[str]) -> str:
+    """Fill every stub whose contract is (wholly or partly) pinned by its OWN
+    docstring ``>>>`` examples, verifying each landed body by RUNNING those
+    examples with the stdlib ``doctest`` — never by a pytest file (a doctest-only
+    stub has none). ``filled`` is updated in place with each stub that lands.
+
+    This is the apply-side twin of the scan's doctest acceptance: the body comes
+    from :func:`synthesize_doctest_body` (the SAME synth + doctest-verify the
+    scan's ``can_fill_stub_in_process`` uses), so the apply lands exactly the stubs
+    the scan called fillable — the no-over/under-count invariant. The body it
+    returns is already verified against ``current`` by re-running the examples, so
+    a body that does not reproduce them is never composed (never-fake-green). A
+    stub with NO minable doctest witness is left untouched here
+    (``synthesize_doctest_body`` returns ``None``), so the pytest-gated passes own
+    it and the existing test-file-only behavior is byte-identical.
+
+    Iterates to a FIXPOINT: a doctest example may call a SIBLING function, whose
+    body must already be in place for the example to pass, so a freshly-filled
+    sibling can unblock another's examples on the next pass — and because each fill
+    is verified against the partially-filled ``current``, a stub only lands once
+    every function its examples exercise is real. Deterministic: stubs in source
+    order, re-derived after each fill so shifted spans stay correct."""
+    progress = True
+    while progress:
+        progress = False
+        for stub in find_stub_functions(current):
+            if stub.name in filled:
+                continue
+            tests = pinned_test_files(root, module_rel, stub.name)
+            expr = synthesize_doctest_body(root, tests, stub, current)
+            if expr is None:
+                continue  # not doctest-pinnable now — pytest passes may own it
+            composed = fill_stub_body(current, stub, expr)
+            if composed is None or composed == current:
+                continue
+            current = composed
+            filled.add(stub.name)
+            progress = True
+            break  # re-derive: this fill shifted later stubs' line spans
+    return current
 
 
 def _resolve_mutual_stubs(root: Path, module_rel: str, current: str,
@@ -257,7 +328,17 @@ def _independent_assignment(root: Path, module_rel: str, current: str,
     first fixed-order candidate that matches every ``func(args) == expected``
     assertion in-process), or nothing when no template fits. Deterministic: the
     stubs are taken in source order, each synthesized from its own assertions
-    independently of the others."""
+    independently of the others.
+
+    A stub with enforceable DOCTEST witnesses must ALSO satisfy its own examples:
+    a body the test-file witnesses determine could pass the pytest gate yet VIOLATE
+    those examples (a fake-green nobody re-ran). So such a stub is NOT skipped here
+    (skipping it locked out any stub whose pytest witnesses are non-literal — e.g.
+    a fixture arg — even though the doctest pass declined it as non-evaluable,
+    losing the landing); instead its candidate ``expr`` is DOCTEST-verified before
+    it joins the assignment, so a body satisfying BOTH its pinned tests AND its
+    doctests lands, while a doctest-violating one is refused. A stub the doctest
+    pass already landed is in ``filled`` and skipped."""
     assignment: dict[str, str] = {}
     for stub in find_stub_functions(current):
         if stub.name in filled:
@@ -266,7 +347,13 @@ def _independent_assignment(root: Path, module_rel: str, current: str,
         if not tests:
             continue  # no spec — leave as-is
         expr = synthesize_expr_from_witnesses(root, tests, stub)
-        if expr is not None:
+        if expr is None:
+            continue
+        # Doctest-pinned: accept the test-witness-derived expr only when it also
+        # reproduces the stub's own examples (never-fake-green); a non-doctest stub
+        # is gated by its pinned tests alone, exactly as before.
+        if (not has_enforceable_doctest_examples(current, stub)
+                or verify_body_via_doctest(current, stub, expr)):
             assignment[stub.name] = expr
     return assignment
 
