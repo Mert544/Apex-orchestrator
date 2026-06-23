@@ -622,6 +622,56 @@ def _develop_all(args, target, grade_before, max_steps, verify, apply) -> int:
     return 0
 
 
+def _auto_selected_objectives(target, concrete: bool) -> list[str]:
+    """The objectives the autonomous develop sweep will pursue — chosen by each
+    objective's OWN fitness/grounding, not by name. Reuses the same fitness-ranked
+    board ``apex plan`` / ``apex ascend`` use (``rank_objectives``), keeping ONLY
+    the ones that carry qualifying targets right now (``pending > 0``). Off the
+    fast default board are the EXPENSIVE concrete objectives (implement-stub,
+    wire-exports, strengthen-tests, …); ``concrete=True`` opts them in, exactly as
+    ``--concrete`` does for plan/ascend. Deterministic: the board's order is a
+    fixed function of measured fitness — no clock/random."""
+    from app.engine.ascend import rank_objectives
+
+    return [r.objective for r in rank_objectives(str(target), include_expensive=concrete)
+            if r.pending > 0]
+
+
+def _develop_auto(args, target, grade_before, max_steps, verify, apply) -> int:
+    """`apex develop --auto`: AUTONOMOUSLY land everything-applicable — no
+    objective-naming. Selects the objectives that carry qualifying targets via the
+    fitness-ranked board (``_auto_selected_objectives``), then runs each through
+    the EXISTING ``compile_objective`` loop (suite-gated, auto-rollback) and emits
+    the same combined report as ``--all``.
+
+    Honest about cost: the EXPENSIVE concrete objectives (implement-stub,
+    wire-exports, strengthen-tests, … — they run pytest) are OFF by default and
+    only swept with ``--concrete``; either way the chosen objective set is
+    surfaced (the report's per-objective breakdown) so the run is never silent
+    about what it did. Default is a dry run; ``--apply`` writes."""
+    from app.engine.objective_compiler import compile_objective, render_all_markdown
+
+    concrete = getattr(args, "concrete", False)
+    selected = _auto_selected_objectives(target, concrete)
+    results = []
+    for objective in selected:
+        result = compile_objective(str(target), objective=objective,
+                                   max_steps=max_steps, verify=verify, apply=apply,
+                                   scope_verify=getattr(args, "fast", False))
+        if result.steps or result.fitness_start > 0:
+            results.append(result)
+    changed = apply and any(r.steps for r in results)
+    if args.json:
+        print(json.dumps([r.to_dict() for r in results], indent=2))
+    else:
+        print(render_all_markdown(results))
+        if changed:
+            print(_APPLIED_TREE_NOTE)
+    _print_grade_proof(str(target), grade_before, changed,
+                       objective="auto", moves=sum(len(r.steps) for r in results))
+    return 0
+
+
 def _develop_session(args, target, max_steps, verify, apply) -> int:
     """`apex develop session`: run the FIXED concrete-value-first objective
     sequence on the target in one motion and emit ONE combined verified diff.
@@ -688,6 +738,20 @@ def _develop_objective(args, target, objective, grade_before, max_steps, verify,
                  and any("unknown objective" in b for b in result.blocked)) else 0
 
 
+def _develop_preview_dispatch(args, target) -> int | None:
+    """The read-only preview sub-modes that short-circuit BEFORE any grade read:
+    ``--playbook`` / ``--history`` / ``--top``. Returns that helper's exit code,
+    or ``None`` when none applies so ``cmd_develop`` falls through to the campaign
+    paths. Dispatch order is load-bearing and unchanged."""
+    if getattr(args, "playbook", False):
+        return _develop_playbook(args, target)
+    if getattr(args, "history", False):
+        return _develop_history(args, target)
+    if getattr(args, "top", False):
+        return _develop_top(args, target)
+    return None
+
+
 def cmd_develop(args: argparse.Namespace) -> int:
     """Goal-directed composition: drive an OBJECTIVE metric to its target by
     composing verified transforms, each suite-gated with auto-rollback.
@@ -704,12 +768,9 @@ def cmd_develop(args: argparse.Namespace) -> int:
     verify = not getattr(args, "no_verify", False)
     apply = getattr(args, "apply", False)
 
-    if getattr(args, "playbook", False):
-        return _develop_playbook(args, target)
-    if getattr(args, "history", False):
-        return _develop_history(args, target)
-    if getattr(args, "top", False):
-        return _develop_top(args, target)
+    preview_rc = _develop_preview_dispatch(args, target)
+    if preview_rc is not None:
+        return preview_rc
 
     want_grade = getattr(args, "grade", False)
     grade_before = _grade_score(str(target)) if want_grade else None
@@ -724,6 +785,8 @@ def cmd_develop(args: argparse.Namespace) -> int:
     goal = getattr(args, "goal", "") or ""
     if goal:
         return _develop_goal(args, target, goal, max_steps, verify, apply)
+    if getattr(args, "auto", False):
+        return _develop_auto(args, target, grade_before, max_steps, verify, apply)
     if getattr(args, "all_objectives", False):
         return _develop_all(args, target, grade_before, max_steps, verify, apply)
     if getattr(args, "from_dream", False):
@@ -1368,6 +1431,19 @@ def register_parsers(subparsers) -> None:
     develop_parser.add_argument("--all", action="store_true", dest="all_objectives",
                                 help="Sweep EVERY objective in order (modernize, dead-params, "
                                      "shrink-functions, inline-helpers) — clean everything")
+    develop_parser.add_argument(
+        "--auto", action="store_true",
+        help="AUTONOMOUS: land everything-applicable with NO objective-naming — "
+             "pick the objectives that carry qualifying targets (by each "
+             "objective's own fitness) and run each suite-gated, auto-rolled-back. "
+             "Cheap objectives only by default; add --concrete to also sweep the "
+             "EXPENSIVE concrete ones (implement-stub, wire-exports, "
+             "strengthen-tests). Default dry run; --apply writes")
+    develop_parser.add_argument(
+        "--concrete", action="store_true",
+        help="With --auto: also sweep the EXPENSIVE concrete objectives "
+             "(implement-stub, wire-exports, strengthen-tests — they run pytest), "
+             "off the fast default board")
     develop_parser.add_argument("--grade", action="store_true",
                                 help="Measure the health grade before and after — prove the gain")
     develop_parser.add_argument("--history", action="store_true",
