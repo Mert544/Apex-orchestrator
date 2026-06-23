@@ -11,6 +11,29 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (6. tur) — kompozisyonel sentez + modernize köprüsü + comprehension test-pin + buyer-proof (full-gate yeşil, A+99):**
+- `49e0011` **feat(stub-synthesis): sınırlı 1-seviye kompozisyonel gövdeler** — `return a[k] <op> c` (sabit-index
+  sonra skaler-aritmetik) ve `return len(a) <op> c`; str/list/tuple, int çıktı, op∈{+,−,*}. **Buyer-proof boşluğunu
+  kapatır**: `double_first([5,9])=10,([0,1])=0,([7])=14` → `return xs[0] * 2`. Sağlamlık uçtan-uca
+  witness-doğrulamasından (kompozisyona güvenmekten DEĞİL): her (k,op,c) HER witness'a doğrulanır, sınırlı
+  (index = en-kısa-witness'ta geçerli ∪ {0,1,−1}; sabit −64..64), ≥2-distinct floor + type-exact gate + off-witness
+  canary, yalnız tek hayatta-kalan emit (ambiguity→refuse). KRİTİK **no-shadow**: bir atom zaten tüm witness'ları
+  üretiyorsa kompozisyon ERTELER → basit gövdeyi gölgelemez/bozmaz (2 regresyonu bu çözdü).
+- `57e344e` **feat(ideate): modernize köprüsü** — `modernize` artık **6. grounded opt-in** (varsayılan kapalı,
+  `modernize=True`), Refine fazı. objective-compiler-driven (tek plan_* değil); sinyal `modernizable_modules`
+  objektifin kendi `_tidy_transforms`'unu modül üstünde zincirleyip yalnız sonuç değişiyorsa nitelendirir
+  (`modernize_plan(...).new_contents` — lander'la tek kaynak). Zaten-modern modül no-op (over-promise yok).
+  Per-module; `apply_rename(impact_scope=True)`'e delege. Varsayılan plan **byte-identical**.
+- `31458c1` **test(infer-type-hints): comprehension/collection dönüş-tipi sabitleme** — comprehension (list/set/dict)
+  + constructor (list/dict/set/tuple/frozenset) çıkarımı ZATEN vardı (`_DISPLAY_TYPES`/`_BUILTIN_CALL_RETURN_TYPES`);
+  30-test adanmış süit tek yerde sabitler (accepts + kilitli refüzler: generator-exp, shadowed constructor;
+  eleman-tipi çıkarılmaz — bare list). Üretim değişikliği yok (mühendis keşifte dürüstçe raporladı).
+- **BUYER-PROOF** (commit edilmedi; canlı kanıt): `apex develop session --apply` bağımsız bir projeye uygulandı →
+  2-failed→**6-passed**, 5 katkı/4 dosya: `add`→a+b, `count_a`→`s.count('a')` [5.tur], `label`→`-> str` [4.tur],
+  `banner`→`-> bytes` [5.tur], Point→@dataclass, wire-exports; `shout` (param-alıcı) **sağlam reddedildi**;
+  wire-exports "**weak/uncovered**" diye dürüstçe işaretlendi; **iki bağımsız koşu byte-identical** (deterministik).
+  + **read-only keşif denetçisi** 7-9. turlar için dosya-ayrık slate çıkardı (§3'e işlendi).
+
 **BU OTURUM (5. tur) — 3 paralel dosya-ayrık dalga (bytes-tipi · count-stub · strengthen-tests köprüsü), full-gate yeşil, A+99:**
 - `b36ef48` **feat(infer-type-hints): sağlam `bytes` dönüş-tipi** — str-metot kuralının analoğu: `b"..."`→bytes,
   `<str-lit>.encode()`→bytes, `<bytes-lit>.decode()`→str, bytes-döndüren bytes-metot zinciri
@@ -173,8 +196,8 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**~21.944 test** + ruff), öz-not **A+99**
-  (bu oturumda `--chunks 16 -j 4` → 642s, 16/16 chunk + ruff PASS, exit 0).
+- **Kapı:** `python scripts/verify.py` → full green (**~22.010 test** + ruff), öz-not **A+99**
+  (bu oturumda `--chunks 16 -j 4` → 772s, 16/16 chunk + ruff PASS, exit 0).
 - **⚠️ FRESH-CONTAINER KAPI ÖN-KOŞULU (yeni oturum bunu OKUSUN):** Bulut klonu **shallow**
   gelir (~50 commit); karakterizasyon testleri `git show <eski-commit>^` ile snapshot
   stage eder → shallow'da **collection-error** (bu oturumda 7 chunk böyle kırıldı, dalga
@@ -210,6 +233,18 @@
 ---
 
 ## 3. SIRADAKİ İŞLER (öncelik sırası — saha testi gaplerine dayalı)
+
+**🆕 EN GÜNCEL SLATE (6. tur keşif denetçisi; grounded · dosya-ayrık · sound · anafikre-sadık — PAKETLEME: R7 = A1∥B1∥C1, R8 = A2∥B2∥D1, R9 = C2/doctest):**
+- **A1** [`type_annotations.py`]: param tipi `assert isinstance(x,A) and isinstance(y,B)` (BoolOp-And → operand başına single-class guard'a böl; `_entry_guard_binding`/`_isinstance_single_class` besle). Sağlam: assert İKİSİ de tutmazsa raise eder; `or` dışlanır. Witness: `assert isinstance(x,int) and isinstance(y,str)` → `f(x:int, y:str)`.
+- **B1** [`stub_synthesis.py`]: `a.replace(k1,k2)` MADENLENMİŞ tek-çift (input→output ortak-altdizi diff'i), witness-doğrulamalı, ambiguity-refuse — bugünkü kombinatoryal literal çarpımı yerine. Witness: `slug("a b")=="a-b"` → `s.replace(' ','-')`.
+- **C1** [`idea_synthesis_signals.py`+`idea_action_bridge.py`]: `dedup-total-return` & `dedup-parameterized` objektiflerini GROUNDED-köprüle (KAYITLI ama yüzeysizlenmemiş — `app/execution/objectives/{dedup_total_return.py:62,dedup_parameterized.py:54}`; sinyal yok). `_is_strengthenable` desenini aynala (gate=non-empty `plan_*().new_contents`).
+- **A2** [`type_annotations.py`]: parametrize display tipleri — `{1:"a"}`→`dict[int,str]`, `[1,2]`→`list[int]`, `(1,"a")`→`tuple[int,str]` (her eleman `_literal_type`'la kanıtlı; karışık→bare; comp→bare). `_DISPLAY_TYPES.get` dalını `_parametrized_display_type` ile değiştir. (A1 ile aynı dosya → ayrı tur.)
+- **B2** [`stub_synthesis.py`]: `sorted(a)[k]` (k-inci küçük) + `len(set(a))` (distinct-sayım). sorted[k] her witness'ta 0≤k<len iken total; len(set) sayım (PYTHONHASHSEED yok). (B1 ile aynı dosya → ayrı tur.)
+- **C2/doctest** [`stub_synthesis.py`]: witness'ları modül docstring `>>>` doctest'lerinden de madenle (`_witnesses_in_file` kardeşi). `fillable_stub_modules`'tan akar, köprü değişmez.
+- **D1** (YENİ yetenek, kendi dosyası) [`app/execution/objectives/document_signature.py` + küçük C-bağlama]: PEP 257 docstring İSKELETİ sentezle — param adları AST'ten (GERÇEK, çıkarım değil) + `Returns: <type>` SADECE `infer_annotations` dönüş-tipini kanıtladığında. North-Star "docstring ekle" sağlam yapılmış. Zaten-belgeli/fixture reddet. `infer_type_hints.py`+`docstring.py` aynala.
+- **DIŞLANAN (drift/unsound — YAPMA):** bare-Name/Call dönüşten çıkarım (non-local) · default'tan param · `==`/`<`→bool (override edilebilir dunder) · Div/Pow aynı-tip · `set(a)`/`list(set)` (PYTHONHASHSEED sıra) · daha fazla detektör/safety/honesty makinesi.
+
+**(ÖNCEKİ turlarda İNEN — referans):**
 
 1. ✅ **(TAMAM — `436e51b`) Reduction belirsizlik açıklaması.** Stub belirsiz witness yüzünden reddedilince neden+nasıl-düzelt bildiriliyor. **Kalan 1-satır follow-up:** SADECE belirsiz stub'ı olan bir modül honest-fitness ile move-enumerasyonundan eleniyor (`module_has_fillable_stub`→False), o yüzden all-ambiguous modülde sebep uçtan-uca yönlenmiyor; `objective_compiler.py`/`develop_session.py`'de bir disclosure-only refuse-move veya `render_session_markdown`'da `obj.blocked` render'ı gerekir.
 2. ✅ **(TAMAM — bu oturum, `4417d40`) Idea-motoru erişimi.** Sentez hedefleri
