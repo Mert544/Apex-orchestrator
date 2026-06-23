@@ -24,7 +24,11 @@ What counts as PROVABLE (the only things ever annotated):
     ``'a' + 'b'`` ⇒ ``str`` — see :func:`_binop_same_type_literal`), and a
     FIXED-RESULT ``<builtin>(...)`` call whose builtin's result type does not
     depend on its args and is NOT shadowed in the function's scope (``len(x)`` ⇒
-    ``int``, ``sorted(x)`` ⇒ ``list`` — see :func:`_builtin_call_returns_type`).
+    ``int``, ``sorted(x)`` ⇒ ``list`` — see :func:`_builtin_call_returns_type`),
+    and a SAME-TYPE conditional expression ``X if C else Y`` whose BOTH branches
+    independently prove to the SAME type (``'a' if c else 'b'`` ⇒ ``str`` — see
+    :func:`_ifexp_same_type`; the condition does not affect the result type and a
+    mismatched-branch ternary refuses).
     Or ``-> None`` when the function has no value-returning ``return`` and no
     ``yield`` (a pure procedure). REFUSED (left alone): mixed return types (e.g.
     ``int``+``float``), a generator expression (yields a generator, not a
@@ -654,16 +658,49 @@ def _return_value_type(node: ast.expr, assigned_names: frozenset[str]) -> str | 
 
     A literal/display/etc. (:func:`_literal_type`) takes precedence; failing
     that, a FIXED-result ``<builtin>(...)`` call (:func:`_builtin_call_returns_type`,
-    with the shadowing guard ``assigned_names`` from the function's own scope).
-    Kept separate from :func:`_literal_type` on purpose: ``_literal_type`` is the
-    pure context-free literal oracle reused recursively by the binop/str-method/
-    sequence-mult rules, and a builtin call is NOT a literal there (so
-    ``len(x) + 1`` correctly stays unprovable — the binop recursion never sees
-    this builtin-call rule)."""
+    with the shadowing guard ``assigned_names`` from the function's own scope);
+    failing that, a SAME-TYPE conditional expression
+    (:func:`_ifexp_same_type`, a ``X if C else Y`` whose branches both prove to
+    the SAME type by recursing through this very resolver). Kept separate from
+    :func:`_literal_type` on purpose: ``_literal_type`` is the pure context-free
+    literal oracle reused recursively by the binop/str-method/ sequence-mult
+    rules, and a builtin call is NOT a literal there (so ``len(x) + 1`` correctly
+    stays unprovable — the binop recursion never sees this builtin-call rule)."""
     literal = _literal_type(node)
     if literal is not None:
         return literal
-    return _builtin_call_returns_type(node, assigned_names)
+    builtin = _builtin_call_returns_type(node, assigned_names)
+    if builtin is not None:
+        return builtin
+    return _ifexp_same_type(node, assigned_names)
+
+
+def _ifexp_same_type(node: ast.expr, assigned_names: frozenset[str]) -> str | None:
+    """The provable type NAME for a conditional expression ``X if C else Y``
+    (``ast.IfExp``), or ``None`` when not provable.
+
+    A ternary's runtime value is EXACTLY one of its two branches — never the
+    condition — so its concrete type is provable IFF both branches PROVABLY
+    share the SAME type. Each branch (``node.body`` = ``X``, ``node.orelse`` =
+    ``Y``) is resolved by RECURSING through :func:`_return_value_type`, the same
+    full return-value oracle, so every existing soundness rule applies to each
+    branch unchanged and nested ternaries compose by recursion: ``a if c else
+    (b if d else e)`` proves only when every leaf agrees on type.
+
+    Returns that shared type ONLY when BOTH branches are non-``None`` AND equal;
+    otherwise ``None`` (refuse). The condition ``C`` is intentionally NOT
+    inspected — it does not contribute to the result's type. The LOCKED refusals
+    therefore hold automatically through the recursion: a branch that is an
+    unsound ``==`` comparison, a ``/``/``**`` binop, a bare name, or an unknown
+    call yields ``None`` for that branch and so refuses the whole ternary; and
+    two branches of DIFFERENT provable types (``1 if c else 'x'`` ⇒ ``int`` vs
+    ``str``) refuse as well."""
+    if not isinstance(node, ast.IfExp):
+        return None
+    body_type = _return_value_type(node.body, assigned_names)
+    if body_type is None:
+        return None
+    return body_type if _return_value_type(node.orelse, assigned_names) == body_type else None
 
 
 # Bare type NAMES accepted as an isinstance guard's class. A guard is a runtime-
