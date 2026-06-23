@@ -140,7 +140,8 @@ def _constant_type(value: object) -> str | None:
 
     ``bool`` is checked before ``int`` because ``True``/``False`` are
     ``ast.Constant`` with a ``bool`` value (and ``bool`` is a subclass of
-    ``int`` — we want the precise ``bool``)."""
+    ``int`` — we want the precise ``bool``). A ``complex`` literal (``3j``) has
+    a non-overridable type, so it classifies as ``complex``."""
     if value is None:
         return "None"
     if isinstance(value, bool):
@@ -149,6 +150,8 @@ def _constant_type(value: object) -> str | None:
         return "int"
     if isinstance(value, float):
         return "float"
+    if isinstance(value, complex):
+        return "complex"
     if isinstance(value, str):
         return "str"
     if isinstance(value, bytes):
@@ -285,7 +288,7 @@ def _literal_type(node: ast.expr) -> str | None:
     expression's type is not statically certain from the AST alone.
 
     Statically certain shapes (and ONLY these — never a guess):
-      - constants: ``None``/``bool``/``int``/``float``/``str``/``bytes``;
+      - constants: ``None``/``bool``/``int``/``float``/``complex``/``str``/``bytes``;
       - an f-string (``JoinedStr``) ⇒ always ``str``;
       - a display/comprehension literal ⇒ its (BARE) container type
         (``list``/``dict``/``set``/``tuple``, ``ListComp``/``DictComp``/
@@ -612,7 +615,10 @@ def _is_certain_bool(node: ast.expr) -> bool:
 # result type for readability; flattened into one lookup. Each entry is verified
 # to return the named type for EVERY argument it accepts (it may raise on bad
 # args, but if it RETURNS, the type is fixed):
-#   - int:  ``len``/``ord``/``id``/``hash`` always return a plain ``int``.
+#   - int:  ``len``/``ord``/``id``/``hash`` always return a plain ``int``, and
+#           ``int(...)`` always returns an ``int`` (``int('5')``/``int(3.9)``).
+#   - float: ``float(...)`` always returns a ``float`` (``float('1.5')``/
+#           ``float(2)``) — both are callable-fixed regardless of the argument.
 #   - str:  ``str``/``repr``/``ascii``/``hex``/``oct``/``bin``/``chr`` always
 #           return a ``str`` (``hex(255)`` ⇒ ``'0xff'``, ``chr(65)`` ⇒ ``'A'``).
 #   - bool: ``bool`` always returns a ``bool``.
@@ -621,13 +627,13 @@ def _is_certain_bool(node: ast.expr) -> bool:
 #
 # Deliberately EXCLUDED — result type is NOT fixed by the callable alone:
 #   - ``min``/``max``/``sum``/``abs``/``round``/``next`` (type depends on the
-#     argument values), ``int(...)``/``float(...)`` (fixed, but omitted as a
-#     conservative initial set; can be added later), ``open``/``iter``/``map``/
-#     ``filter``/``range``/``enumerate``/``zip``/``reversed`` (iterator/handle).
+#     argument values), ``open``/``iter``/``map``/``filter``/``range``/
+#     ``enumerate``/``zip``/``reversed`` (iterator/handle).
 # A bare-``ast.Name`` callee is required (an attribute like ``obj.len(...)`` or
 # ``m.sorted(...)`` is a DIFFERENT callable and must refuse).
 _BUILTIN_CALL_RETURN_TYPES: dict[str, str] = {
-    "len": "int", "ord": "int", "id": "int", "hash": "int",
+    "len": "int", "ord": "int", "id": "int", "hash": "int", "int": "int",
+    "float": "float",
     "str": "str", "repr": "str", "ascii": "str", "hex": "str",
     "oct": "str", "bin": "str", "chr": "str",
     "bool": "bool",
