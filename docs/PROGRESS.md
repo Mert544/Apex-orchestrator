@@ -5,11 +5,34 @@
 > kaldığı yerden devam edebilsin diye yazıldı. North Star/`CLAUDE.md` **kilitli
 > misyon**; bu dosya **operasyonel durum**dur (misyonu yeniden tartışmaz).
 >
-> **Branch:** `claude/apex-market-positioning-eyml1y` · **Son güncelleme:** 2026-06-23
+> **Branch:** `claude/blissful-mayer-aaqb3p` · **Son güncelleme:** 2026-06-23
 
 ---
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
+
+**BU OTURUM (11. tur) — doctest-pinli stub fill (W10-C ÇÖZÜLDÜ) · `apex auto` otonom sentez (cheap-default + `--deep`) · int/float/complex tipleri; `/code-review` 1 GERÇEK never-fake-green açığı yakaladı (full-gate yeşil, A+99, ~22.237 test):**
+- `ab9a852` **feat(stub-synthesis): doctest-pinli stub fill** — 10. turda ertelenen **W10-C ÇÖZÜLDÜ**: implement-stub artık bir
+  fonksiyonun KENDİ docstring `>>>` örneklerinden witness madenliyor ve gövdeyi o örnekleri stdlib `doctest` ile KOŞARAK
+  doğrulayıp landliyor (sözleşmesi yalnız doctest'te yaşayan stub fillable; scan↔apply AYNI kümede uzlaşır). never-fake-green:
+  inen gövde HEM pinned pytest HEM kendi doctest'lerini geçmeli. **`/code-review` GERÇEK açık yakaladı (Finding-1):** gate
+  TRIGGER'ı (`_has_doctest_witnesses`, yalnız madenli literal `f(...)`) VERIFIER'dan (tüm enforceable örnekler) DARDI →
+  karşılaştırma-tipi örnek (`>>> f(2) == 4`) gate'i atlayıp doctest-ihlali gövde landleyebilirdi (fake-green deliği) → TRIGGER
+  `has_enforceable_doctest_examples`'a (verifier'la AYNI küme; `+SKIP` hariç) çevrildi, regresyon testi pinledi. İki
+  doctest-verifier (return-expr `verify_body_via_doctest` + already-filled `filled_source_passes_doctests`) tek
+  `_doctests_pass` compile-and-run helper'ını paylaşıyor → yeni kod duplike blok EKLEMİYOR, **A+99 korundu** (self-grade
+  duplication-tripwire'ı tetiklenmişti → cerrahi extraction ile çözüldü; param_add/param_drop'taki tarihi 1 blok dokunulmadı).
+- `5057845` **feat(auto): `apex auto` otonom sentez** — pazarlanan tek-komut `apex auto` (ve çıplak `apex`) artık UCUZ sentez
+  opt-in'lerini (modernize, dedup-total-return, dedup-parameterized) **otonom** dahil ediyor (grounding yalnız landable işi
+  yüzeylediği için kullanıcı 8 bayrağı bilmek/yazmak zorunda DEĞİL — "komut ezberletme" isteğinin auto ayağı). PAHALI
+  (pytest-grounding) hedefler (cover-gaps, tdd-implement, strengthen-tests, wire-exports, generate-usage-doc) yeni `--deep`
+  arkasında, kapalıyken tek-satır disclosure (maliyet GÖRÜNÜR, sessiz değil). + count-cap honesty bug'ı: `_auto_recommend`
+  capsiz çalıştırılabilir sayı reklam ediyordu, `_auto_act` 8'de SESSİZ capliyordu → ikisi de aynı plan+kwargs'tan türeyip cap'i
+  açıklıyor ("N of M uygulanıyor; kalanı için tekrar koş"). Apply-gating/verify/rollback değişmedi; deterministik.
+- `c7236ba` **feat(infer-type-hints): int()/float()/complex dönüş tipleri** — `return int(x)`→`-> int`, `return float(x)`→
+  `-> float` (arg-BAĞIMSIZ-sonuç-tipli callable-fixed builtin'ler — kodun kendi yorumunun "addable" işaretlediği konservatif
+  küme), `return 3j`→`-> complex` (override-edilemez sabit tip). Mevcut resolver'lardan akıyor (shadowing-guard intact,
+  ternary/join kuralları ile kompoze); kilitli refüzler (==/<→bool, Div/Pow, param-from-default) DOKUNULMADI.
 
 **BU OTURUM (10. tur) — OTONOM seçim: `ideate --auto` + `develop --auto` (full-gate yeşil, A+99); `/code-review` 1 gerçek bug yakaladı → W10-C ertelendi:**
 - `9f1b7cf` **feat(ideate-cli): `--auto`** — kullanıcı 8 bayrağı EZBERLEMESİN: `apex ideate --actions --auto`, Apex'in
@@ -274,10 +297,12 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**~22.223 test** + ruff), öz-not **A+99**
-  (bu oturumda `--chunks 16 -j 4` → ~860s, 16/16 chunk + ruff PASS, exit 0). **Yeni objektif eklerken** facet-parite
+- **Kapı:** `python scripts/verify.py` → full green (**~22.237 test** + ruff), öz-not **A+99**
+  (11. turda `--chunks 16 -j 4` → 869s, 16/16 chunk + ruff PASS, exit 0). **Yeni objektif eklerken** facet-parite
   (`FACET_OBJECTIVE_MAP`↔registry 1:1) + `north_star_audit.OBJECTIVE_MANIFEST` partition + duplication (≥5-statement
-  blok) self-grade tripwire'larını UNUTMA — 9. turda document-signature bunların hepsini tetikledi.
+  blok) self-grade tripwire'larını UNUTMA — 9. turda document-signature bunların hepsini tetikledi, **11. turda
+  iki doctest-verifier ikizi duplication-tripwire'ı tetikledi** → `_doctests_pass` paylaşılan helper'ına extraction
+  ile A+99 korundu (param_add/param_drop'taki tarihi 1 blok BASELINE; ona dokunmak A+100→pinned-test kırardı).
 - **⚠️ FRESH-CONTAINER KAPI ÖN-KOŞULU (yeni oturum bunu OKUSUN):** Bulut klonu **shallow**
   gelir (~50 commit); karakterizasyon testleri `git show <eski-commit>^` ile snapshot
   stage eder → shallow'da **collection-error** (bu oturumda 7 chunk böyle kırıldı, dalga
