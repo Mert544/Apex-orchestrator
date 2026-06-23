@@ -357,6 +357,33 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                   "`is`/`is not`, drop dead `f` prefixes, and replace empty "
                   "`dict()`/`list()`/`tuple()` with their literals "
                   "(behaviour-preserving; refuses an already-modern module)", True),
+    # dedup-total-return is the SAME delegated shape as cover-gaps (it rewrites the
+    # modules carrying an exact-duplicate block whose EVERY exit path returns, lifting
+    # it verbatim into one returning helper and replacing each copy with ``return
+    # _shared_n(...)``). Its verify MUST be impact-scoped, so ``apply_step`` delegates
+    # it to the develop-core ``apply_rename`` path (its lander wrapper +
+    # ``apply_rename`` with ``impact_scope=True``). CROSS-MODULE: the target a surfaced
+    # step carries is a participating module, and the lander finds the actionable block
+    # touching it. Surfaced executable ONLY for a module the objective's OWN gate
+    # (``dedup_total_return_modules``) proves participates in a LANDABLE lift, so the
+    # claim is honest by construction.
+    "dedup-total-return": ("dedup_total_return",
+                           "Lift the always-returning exact-duplicate block "
+                           "touching {s} into one shared returning helper — each "
+                           "copy becomes `return _shared_n(...)` (refuses a "
+                           "non-total-return or unsafe block)", True),
+    # dedup-parameterized is the SAME delegated shape as dedup-total-return: it
+    # rewrites the modules carrying a NEAR-duplicate group (structurally identical,
+    # differing only at constant/free-name leaves) into one PARAMETERIZED helper. Its
+    # verify MUST be impact-scoped, so ``apply_step`` delegates it to the develop-core
+    # ``apply_rename`` path. CROSS-MODULE like dedup-total-return; surfaced executable
+    # ONLY for a module the objective's OWN gate (``dedup_parameterizable_modules``)
+    # proves participates in a LANDABLE lift, so the claim is honest by construction.
+    "dedup-parameterized": ("dedup_parameterized",
+                            "Parameterize the near-duplicate group touching {s} "
+                            "into one shared helper — its differing constant/name "
+                            "leaves become parameters (refuses a group no honest "
+                            "parameterization fits)", True),
 }
 
 
@@ -890,6 +917,15 @@ class IdeaActionBridge:
         # objective (a ``.py`` target → ``[step.target]``); the modernized module
         # source is produced by ``modernize_plan`` itself, not from here.
         "modernize": ["modernize idioms (none-compare / dead fstring / collection literal)"],
+        # dedup-total-return / dedup-parameterized, like modernize, are NOT
+        # SemanticPatchResult transforms — ``apply_step`` delegates each to the
+        # develop-core ``apply_rename`` path. Listed here so ``_step_targets``
+        # recognises each as a real transform objective (a ``.py`` target →
+        # ``[step.target]``); the multi-module rewrite is produced by the objective's
+        # own lander (``plan_dedup_total_return`` / ``plan_near_dup_extract``), not
+        # from here.
+        "dedup_total_return": ["lift always-returning exact-duplicate block to shared helper"],
+        "dedup_parameterized": ["parameterize near-duplicate group into shared helper"],
     }
 
     # Behaviour-preserving readability simplifications dispatched STRAIGHT to
@@ -1808,6 +1844,72 @@ class IdeaActionBridge:
         from app.engine.idea_synthesis_signals import modernize_plan
         return modernize_plan
 
+    @staticmethod
+    def _unit_touches(unit, target: str) -> bool:
+        """True when a dedup unit (a ``DuplicateBlock`` / ``NearDuplicateGroup``)
+        has an occurrence in ``target`` — i.e. the module rel-path is the module half
+        (``"module:lineno"``) of one of its occurrences. The shared occurrence-matcher
+        of the two CROSS-MODULE dedup lander wrappers."""
+        return any(
+            occ.split(":", 1)[0] == target
+            for occ in getattr(unit, "occurrences", []) or []
+        )
+
+    @classmethod
+    def _plan_dedup_total_return_lander(cls):
+        """The dedup-total-return lander adapted to the delegated ``(project_root,
+        target)`` shape every delegated synthesis uses.
+
+        dedup-total-return is CROSS-MODULE — its real lander is
+        ``plan_dedup_total_return(root, block: DuplicateBlock)``, not
+        ``(root, rel_path)`` (a duplicate spans several modules). The target a
+        surfaced step carries is a PARTICIPATING module (exactly what
+        ``dedup_total_return_modules`` returns), so this wrapper re-runs the objective's
+        OWN gate :func:`dedup_total_return._actionable_blocks`, matches the FIRST
+        actionable block whose occurrences touch that module, and DELEGATES to the real
+        ``plan_dedup_total_return``. An unmatched target (no actionable block touches
+        it — e.g. already lifted in a prior step) yields an empty no-op
+        :class:`RenamePlan`, so the delegated apply path honestly no-ops rather than
+        fakes a change (never a fake-green)."""
+        from app.execution.cross_file_rename import RenamePlan
+        from app.execution.dedup_total_return import plan_dedup_total_return
+        from app.execution.objectives.dedup_total_return import _actionable_blocks
+
+        def _plan(project_root: str, target: str) -> RenamePlan:
+            for block in _actionable_blocks(project_root):
+                if cls._unit_touches(block, target):
+                    return plan_dedup_total_return(project_root, block)
+            return RenamePlan(old=target, new="dedup-total-return")
+
+        return _plan
+
+    @classmethod
+    def _plan_dedup_parameterized_lander(cls):
+        """The dedup-parameterized lander adapted to the delegated ``(project_root,
+        target)`` shape every delegated synthesis uses.
+
+        dedup-parameterized is CROSS-MODULE — its real lander is
+        ``plan_near_dup_extract(root, group: NearDuplicateGroup)``, not
+        ``(root, rel_path)``. The target a surfaced step carries is a PARTICIPATING
+        module (exactly what ``dedup_parameterizable_modules`` returns), so this wrapper
+        re-runs the objective's OWN gate :func:`dedup_parameterized._actionable_groups`,
+        matches the FIRST actionable group whose occurrences touch that module, and
+        DELEGATES to the real ``plan_near_dup_extract``. An unmatched target (no
+        actionable group touches it) yields an empty no-op :class:`RenamePlan`, so the
+        delegated apply path honestly no-ops rather than fakes a change (never a
+        fake-green)."""
+        from app.execution.cross_file_rename import RenamePlan
+        from app.execution.near_dup_extract import plan_near_dup_extract
+        from app.execution.objectives.dedup_parameterized import _actionable_groups
+
+        def _plan(project_root: str, target: str) -> RenamePlan:
+            for group in _actionable_groups(project_root):
+                if cls._unit_touches(group, target):
+                    return plan_near_dup_extract(project_root, group)
+            return RenamePlan(old=target, new="dedup-parameterized")
+
+        return _plan
+
     _DELEGATED_SYNTHESIS = {
         "implement_stub": (
             "_plan_implement_stub_lander",
@@ -1832,6 +1934,14 @@ class IdeaActionBridge:
         "modernize": (
             "_plan_modernize_lander",
             "no modernize (already modern / unreadable / unparseable module)"),
+        "dedup_total_return": (
+            "_plan_dedup_total_return_lander",
+            "no dedup-total-return (no always-returning exact-duplicate block "
+            "touches this module / unsafe block)"),
+        "dedup_parameterized": (
+            "_plan_dedup_parameterized_lander",
+            "no dedup-parameterized (no parameterizable near-duplicate group "
+            "touches this module)"),
     }
 
     # The action types ``apply_step`` / ``_generate`` route to the develop-core
@@ -2472,6 +2582,17 @@ class IdeaActionBridge:
     # like the other delegated synthesis objectives it lands through ``apply_rename``
     # with ``impact_scope=True`` (its grounding ``modernize_plan`` chains the
     # objective compiler's own tidy transforms over the module).
+    #
+    # dedup-total-return / dedup-parameterized REDUCE cross-module DUPLICATION: each
+    # lifts a duplicate (an always-returning exact block / a near-duplicate group)
+    # into one shared helper. They are CROSS-MODULE — their grounding signals qualify a
+    # PARTICIPATING module, and their lander wrappers find the actionable block/group
+    # touching it — and target modules broadly, so — like cover-gaps — each is opt-in
+    # (default off) lest it shift the default idea set. Both are a structural REFINEMENT
+    # (they DRY up duplication while preserving behaviour), so each sits in Refine; and
+    # like every delegated synthesis objective each lands through ``apply_rename`` with
+    # ``impact_scope=True``. Their flags (``dedup_total_return`` / ``dedup_parameterized``)
+    # are INDEPENDENT of each other and of every other opt-in flag.
     _OPTIN_SYNTHESIS_OBJECTIVES: dict[str, tuple[tuple[str, str, str, str], ...]] = {
         "cover_gaps": (
             ("cover_gaps_modules", "cover_gaps", "cover-gaps", "Stabilize"),
@@ -2493,6 +2614,14 @@ class IdeaActionBridge:
         ),
         "modernize": (
             ("modernizable_modules", "modernize", "modernize", "Refine"),
+        ),
+        "dedup_total_return": (
+            ("dedup_total_return_modules", "dedup_total_return",
+             "dedup-total-return", "Refine"),
+        ),
+        "dedup_parameterized": (
+            ("dedup_parameterizable_modules", "dedup_parameterized",
+             "dedup-parameterized", "Refine"),
         ),
     }
 
@@ -2522,6 +2651,8 @@ class IdeaActionBridge:
         tdd_implement: bool = False,
         strengthen_tests: bool = False,
         modernize: bool = False,
+        dedup_total_return: bool = False,
+        dedup_parameterized: bool = False,
     ) -> tuple[tuple[str, str, str, str], ...]:
         """The default synthesis objectives plus each opt-in objective whose flag
         is True, assembled data-driven from ``_OPTIN_SYNTHESIS_OBJECTIVES``.
@@ -2534,7 +2665,9 @@ class IdeaActionBridge:
                  "generate_usage_doc": generate_usage_doc,
                  "tdd_implement": tdd_implement,
                  "strengthen_tests": strengthen_tests,
-                 "modernize": modernize}
+                 "modernize": modernize,
+                 "dedup_total_return": dedup_total_return,
+                 "dedup_parameterized": dedup_parameterized}
         objectives = cls._SYNTHESIS_OBJECTIVES
         for flag, rows in cls._OPTIN_SYNTHESIS_OBJECTIVES.items():
             if flags.get(flag):
@@ -2548,7 +2681,9 @@ class IdeaActionBridge:
                                  generate_usage_doc: bool = False,
                                  tdd_implement: bool = False,
                                  strengthen_tests: bool = False,
-                                 modernize: bool = False) -> None:
+                                 modernize: bool = False,
+                                 dedup_total_return: bool = False,
+                                 dedup_parameterized: bool = False) -> None:
         """Append executable develop-grade synthesis steps for the qualifying
         candidate modules, in place (the caller then de-dups).
 
@@ -2585,7 +2720,9 @@ class IdeaActionBridge:
             return
         objectives = self._enabled_objectives(cover_gaps, wire_exports,
                                               generate_usage_doc, tdd_implement,
-                                              strengthen_tests, modernize)
+                                              strengthen_tests, modernize,
+                                              dedup_total_return,
+                                              dedup_parameterized)
         for signal_name, action_type, fact, phase in objectives:
             signal = getattr(sigs, signal_name)
             for module in signal(project_root, candidates,
@@ -2634,6 +2771,8 @@ class IdeaActionBridge:
         tdd_implement: bool = False,
         strengthen_tests: bool = False,
         modernize: bool = False,
+        dedup_total_return: bool = False,
+        dedup_parameterized: bool = False,
     ) -> ActionPlan:
         ideas = sorted(report.ideas, key=lambda i: i.value, reverse=True)
         if top is not None:
@@ -2648,7 +2787,9 @@ class IdeaActionBridge:
                                       generate_usage_doc=generate_usage_doc,
                                       tdd_implement=tdd_implement,
                                       strengthen_tests=strengthen_tests,
-                                      modernize=modernize)
+                                      modernize=modernize,
+                                      dedup_total_return=dedup_total_return,
+                                      dedup_parameterized=dedup_parameterized)
         steps = self._dedupe_steps(steps)
         # Opt-in (default off, so existing plans are byte-identical): when the
         # top steps are a value near-tie, surface the subject with the most
@@ -2708,7 +2849,9 @@ class IdeaActionBridge:
                        generate_usage_doc: bool = False,
                        tdd_implement: bool = False,
                        strengthen_tests: bool = False,
-                       modernize: bool = False) -> list[ActionStep]:
+                       modernize: bool = False,
+                       dedup_total_return: bool = False,
+                       dedup_parameterized: bool = False) -> list[ActionStep]:
         """Expand the roadmap's ideas into deduped, phase-ordered steps.
 
         Convergence ideas carry their own phased sub-steps (a Stabilize test
@@ -2736,7 +2879,9 @@ class IdeaActionBridge:
                                       generate_usage_doc=generate_usage_doc,
                                       tdd_implement=tdd_implement,
                                       strengthen_tests=strengthen_tests,
-                                      modernize=modernize)
+                                      modernize=modernize,
+                                      dedup_total_return=dedup_total_return,
+                                      dedup_parameterized=dedup_parameterized)
         steps = self._dedupe_steps(steps)
         from app.engine.idea_roadmap import PHASE_ORDER
         phase_rank = {name: i for i, name in enumerate(PHASE_ORDER)}
@@ -2759,6 +2904,8 @@ class IdeaActionBridge:
         tdd_implement: bool = False,
         strengthen_tests: bool = False,
         modernize: bool = False,
+        dedup_total_return: bool = False,
+        dedup_parameterized: bool = False,
     ) -> ActionPlan:
         """Plan actions in roadmap order (Stabilize→Secure→Evolve→Refine).
 
@@ -2781,7 +2928,9 @@ class IdeaActionBridge:
                                     generate_usage_doc=generate_usage_doc,
                                     tdd_implement=tdd_implement,
                                     strengthen_tests=strengthen_tests,
-                                    modernize=modernize)
+                                    modernize=modernize,
+                                    dedup_total_return=dedup_total_return,
+                                    dedup_parameterized=dedup_parameterized)
         # The phase filter applies to each *step's own* phase, so a convergence
         # idea's Secure sub-step is kept under --phase=Secure even though its
         # parent sat in Stabilize (and vice-versa).

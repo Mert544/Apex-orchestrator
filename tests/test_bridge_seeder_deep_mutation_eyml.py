@@ -1169,6 +1169,13 @@ _FACT_EXPECTED = {
     # (``modernize_plan``) chains the compiler's own behaviour-preserving idiom
     # transforms (none-compare / dead fstring / collection literal) over the module.
     "modernize": ("modernize", True),
+    # dedup-total-return / dedup-parameterized are the SEVENTH/EIGHTH broad opt-in
+    # objectives (default off, gated by ``dedup_total_return=True`` /
+    # ``dedup_parameterized=True``), delegated like cover-gaps to the develop-core
+    # ``apply_rename`` path; CROSS-MODULE, each signal qualifies a PARTICIPATING module
+    # and its lander finds the actionable duplicate block/group touching it.
+    "dedup-total-return": ("dedup_total_return", True),
+    "dedup-parameterized": ("dedup_parameterized", True),
 }
 
 

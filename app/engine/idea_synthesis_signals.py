@@ -97,6 +97,27 @@ Four signals, one per synthesis objective Apex offers:
     already in its tidy form), an unreadable file, or a syntax error all yield an
     empty no-op plan and do not qualify — exactly the modules ``apex develop``'s
     modernize objective would touch, never an over-promise.
+  - :func:`dedup_total_return_modules` — dedup-total-return. The first of two
+    CROSS-MODULE signals (a duplicate spans several modules, so the unit is a
+    duplicate BLOCK, not a lone module). It DELEGATES wholesale to the objective's
+    OWN gate :func:`app.execution.objectives.dedup_total_return._actionable_blocks`
+    (which pairs the exact-duplicate detector with the real
+    :func:`app.execution.dedup_total_return.plan_dedup_total_return` and keeps only
+    blocks whose plan produces a non-empty ``new_contents``), then keeps a module
+    precisely when it PARTICIPATES in one of those actionable blocks. So a project
+    with no provably-safe always-returning duplicate, or a module that touches no
+    actionable block, yields nothing — exactly the modules ``apex develop``'s
+    dedup-total-return objective would rewrite, never an over-promise.
+  - :func:`dedup_parameterizable_modules` — dedup-parameterized. The second
+    CROSS-MODULE signal. It DELEGATES wholesale to the objective's OWN gate
+    :func:`app.execution.objectives.dedup_parameterized._actionable_groups` (which
+    pairs the near-duplicate detector with the real
+    :func:`app.execution.near_dup_extract.plan_near_dup_extract` and keeps only
+    groups whose plan produces a non-empty ``new_contents``), then keeps a module
+    precisely when it PARTICIPATES in one of those actionable near-duplicate groups.
+    So a project with no parameterizable near-duplicate, or a module that touches no
+    actionable group, yields nothing — exactly the modules ``apex develop``'s
+    dedup-parameterized objective would rewrite, never an over-promise.
 
 Pure: no writes, no pytest, no network. Deterministic: every result is sorted.
 Defensive: a missing / unreadable / syntactically-broken module, or a
@@ -131,6 +152,8 @@ __all__ = [
     "tdd_implementable_symbols",
     "strengthenable_modules",
     "modernizable_modules",
+    "dedup_total_return_modules",
+    "dedup_parameterizable_modules",
 ]
 
 
@@ -511,3 +534,79 @@ def modernizable_modules(
     objective refuses (a non-``.py`` target, a fixture); each simply yields an empty
     plan and is dropped, so callers need not pre-filter."""
     return _qualifying(root, modules, _is_modernizable, limit)
+
+
+def _modules_in_actionable_units(root: str | Path,
+                                 actionable_units: Callable[[Path], list]) -> set[str]:
+    """The set of module rel-paths that PARTICIPATE in one of the objective's own
+    actionable units (a :class:`~app.engine.dedup.DuplicateBlock` /
+    :class:`~app.engine.near_dup.NearDuplicateGroup`).
+
+    The cross-module dedup spine: a duplicate spans several modules, so the unit is
+    the BLOCK/GROUP, not a lone module. ``actionable_units(root_path)`` is the
+    objective's OWN gate (it already filters to units whose real plan would land a
+    change), and each unit's ``occurrences`` are ``"module:lineno"`` of every copy's
+    first statement — this peels off the module half of each occurrence. Run ONCE per
+    signal call (the detector is the expensive step), so the per-module predicate is a
+    cheap set membership. Defensive: any leak yields the empty set rather than
+    crashing the engine."""
+    touched: set[str] = set()
+    try:
+        for unit in actionable_units(Path(root)):
+            for occ in getattr(unit, "occurrences", []) or []:
+                module = occ.split(":", 1)[0]
+                if module:
+                    touched.add(module)
+    except Exception:
+        return set()  # broken/unreadable project → nothing actionable
+    return touched
+
+
+def dedup_total_return_modules(
+    root: str | Path, modules: Iterable[str], limit: int | None = None
+) -> list[str]:
+    """The modules participating in a LANDABLE dedup-total-return lift, sorted, capped.
+
+    Grounded on the objective's OWN gate
+    :func:`app.execution.objectives.dedup_total_return._actionable_blocks` — which
+    pairs the exact-duplicate detector with the real
+    :func:`app.execution.dedup_total_return.plan_dedup_total_return` and keeps only an
+    always-returning block whose plan produces a non-empty ``new_contents``. A module
+    qualifies only when it PARTICIPATES in one of those actionable blocks (its
+    rel-path is the module half of a block occurrence), so a project with no
+    provably-safe total-return duplicate, or a module touching no actionable block,
+    does not qualify — exactly the modules ``apex develop``'s dedup-total-return
+    objective would rewrite, never an over-promise.
+
+    The expensive detector runs ONCE (membership is delegated to the objective's gate,
+    never re-derived); ``modules`` may freely mix paths the objective never touches,
+    each simply absent from the participating set."""
+    from app.execution.objectives.dedup_total_return import _actionable_blocks
+
+    touched = _modules_in_actionable_units(root, _actionable_blocks)
+    return _qualifying(root, modules, lambda _rp, rel: rel in touched, limit)
+
+
+def dedup_parameterizable_modules(
+    root: str | Path, modules: Iterable[str], limit: int | None = None
+) -> list[str]:
+    """The modules participating in a LANDABLE dedup-parameterized lift, sorted, capped.
+
+    Grounded on the objective's OWN gate
+    :func:`app.execution.objectives.dedup_parameterized._actionable_groups` — which
+    pairs the near-duplicate detector with the real
+    :func:`app.execution.near_dup_extract.plan_near_dup_extract` and keeps only a
+    constant-only, signature-clean group whose plan produces a non-empty
+    ``new_contents``. A module qualifies only when it PARTICIPATES in one of those
+    actionable near-duplicate groups (its rel-path is the module half of a group
+    occurrence), so a project with no parameterizable near-duplicate, or a module
+    touching no actionable group, does not qualify — exactly the modules ``apex
+    develop``'s dedup-parameterized objective would rewrite, never an over-promise.
+
+    The expensive (memoized) detector runs ONCE (membership is delegated to the
+    objective's gate, never re-derived); ``modules`` may freely mix paths the
+    objective never touches, each simply absent from the participating set."""
+    from app.execution.objectives.dedup_parameterized import _actionable_groups
+
+    touched = _modules_in_actionable_units(root, _actionable_groups)
+    return _qualifying(root, modules, lambda _rp, rel: rel in touched, limit)
