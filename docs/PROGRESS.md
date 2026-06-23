@@ -30,7 +30,12 @@
   stub / real-logic class / unprovable return / güvenlik bulguları **doğru reddedildi**;
   byte-identical, `unshare -rn` offline, zero-token.
 
-**Aynı oturum — develop-core + dürüstlük dalgaları (üçü de birleşik full-gate yeşil, A+99):**
+**Aynı oturum — develop-core + dürüstlük dalgaları (full-gate yeşil, A+99):**
+- `f1b5a37`+`b882880`+`5d96388` **2. tur — 3 PARALEL ağır mühendis (manuel-worktree)** — builtin-call
+  dönüş-tipleri (shadow-guard: `len/str/bool/list/sorted...`) · `a.index(k)` stub (eleman-pozisyonu) ·
+  wire-exports idea-motoru köprüsü (2. bağımsız opt-in `wire_exports=False`). 6 hafif keşifçi gelecek
+  dalgaları haritaladı; `/code-review` skill = 0 bug; birleşik full-gate yeşil. **Dayanıklılık:** 2 mühendis
+  API-529-overload'a düştü (iş kaybı YOK, worktree temizdi) → retry'la döndü; never-fake-green korundu.
 - `13168c5` **feat(verify): pytest-not-importable distinct honest tier** — Apex'i çalıştıran
   yorumlayıcı pytest'e sahip değilse artık "suite RED" sanılmaz; ayrı `verification-unavailable`
   tier'ı (NO_SUITE'e KATILMADAN) + her giriş noktasında (develop/ideate/maintain) yüksek-sesli,
@@ -133,9 +138,12 @@ import çözümü (`1360346`).
   ayrı mı sayıyor — ÖNCE ampirik doğrula (scout buyer-proof'un bu iddiasını KISMEN çürüttü).
 
 **📋 SCOUT-HARİTALI DALGALAR (bu oturumun 8 keşifçisinden; soundness + insertion intel HAZIR):**
-**✅ İNDİ bu oturum (3 paralel mühendis):** cover-gaps köprüsü (`e7a964d`) · unary+seq×int (`964df1a`)
-· slicing (`4192d9a`). Aşağıdaki bullet'lardan KALAN follow-up'lar: cover-gaps→wire-exports/usage-doc/
-strengthen/tdd · type→builtin-call(shadow-guard)/isinstance-param · stub→`a.index(k)`/sol-sabit/ternary · JSDoc · #C.
+**✅ İNDİ bu oturum (2 tur × 3 paralel):** cover-gaps (`e7a964d`) · unary+seq×int (`964df1a`) · slicing
+(`4192d9a`) · builtin-call types (`f1b5a37`) · `a.index(k)` (`b882880`) · wire-exports köprüsü (`5d96388`).
+KALAN follow-up'lar (insertion-intel HAZIR, scout-haritalı): cover-gaps→**generate-usage-doc** /
+strengthen-tests / **tdd-implement** bridge'leri (usage-doc & tdd seam'leri tam çıkarıldı) · type→**isinstance-guard
+PARAM** (novel sağlam) / **ternary-return** (iki dal aynı tip) / bytes-method · stub→**startswith/endswith→bool** /
+sol-sabit / ternary · JSDoc lander · #C (JSON-şema `None`-default + rollback `.pyc`/boş-dir temizlik; sayaç=fix-gerekmez).
 - **Idea-reach v2 — cover-gaps'i ideate'e köprüle** (EN YÜKSEK; pure): yeni sinyal
   `cover_gaps_modules` (`plan_cover_gaps(root,rel).new_contents` gate'i — dürüst) + `_FACT_ACTIONS`
   + `_SYNTHESIS_OBJECTIVES` satırı + implement-stub gibi `apply_rename` delege (yeni `_apply_objective_via_develop_core`).
