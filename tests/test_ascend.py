@@ -255,7 +255,13 @@ def test_land_factors_reads_idea_memory(tmp_path):
         "by_label": {}}), encoding="utf-8")
     f = land_factors(str(tmp_path))
     assert f["sort-imports"] == 0.15        # proven blocker → floored
-    assert f["merge-isinstance"] == 1.0     # 100% land-rate → neutral
+    # land_factors now reads the Wilson lower bound (stat.confidence), not the raw
+    # success_rate, so even a perfect 5-of-5 (rate 1.000) is EVIDENCE-DAMPED to its
+    # lower bound (≈0.565): proven-but-thin evidence no longer claims a full 1.0.
+    # Updated from the old raw-rate expectation (1.0) — this IS the intended Wilson
+    # effect (a 9-of-10, lb≈0.596, ranks above this 5-of-5; a 1-of-1 is below
+    # _MIN_SAMPLES, gated out → neutral 1.0, so the damping is only among tracked ops).
+    assert round(f["merge-isinstance"], 4) == 0.5655
     assert "fix-not-in-is" not in f         # no samples → absent (neutral 1.0 by default)
 
 

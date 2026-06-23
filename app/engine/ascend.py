@@ -166,12 +166,24 @@ _RELIABILITY_FLOOR = 0.15  # a proven blocker is heavily damped, never fully era
 
 
 def land_factors(project_root: str | Path) -> dict[str, float]:
-    """What the organism DREAMED about each objective: its proven land-rate, from
-    the idea memory (the SAME store the nightly dream reads when it says
-    "`sort_imports` fixes land 100%" or "`harden` lands only 0%"). An objective
-    whose operator landed reliably keeps a factor of 1.0; one that mostly
-    blocked/rolled back is damped toward a floor, so the climb stops spending
-    rounds on a proven blocker. Too-few-samples / untracked → a neutral 1.0.
+    """What the organism DREAMED about each objective: its EVIDENCE-DAMPED proven
+    land-rate, from the idea memory (the SAME store the nightly dream reads when
+    it says "`sort_imports` fixes land 100%" or "`harden` lands only 0%"). An
+    objective whose operator landed reliably keeps a factor near 1.0; one that
+    mostly blocked/rolled back is damped toward a floor, so the climb stops
+    spending rounds on a proven blocker. Too-few-samples / untracked → a neutral
+    1.0.
+
+    The reliability term is the Wilson score lower bound (``stat.confidence``),
+    not the raw success rate — so among TRACKED operators a thin-but-perfect 2-of-2
+    (rate 1.000, lb≈0.34) cannot outrank a well-attested 9-of-10 (rate 0.900,
+    lb≈0.60): proven beats lucky. More samples at the same rate strictly raise the
+    bound, so accumulated evidence is never penalised. Reads are gated by
+    ``_MIN_SAMPLES`` (=2): an operator with fewer samples — including a single
+    1-of-1 — is absent here and ranks at the neutral 1.0 (the damping applies only
+    once there is enough evidence to trust), so the zero-sample bound (0.0) never
+    enters. A proven blocker's low bound is held at ``_RELIABILITY_FLOOR`` so it is
+    damped, never fully erased.
 
     An objective's operator is its name with hyphens as underscores — the
     convention every self-registering objective follows — which is exactly how the
@@ -183,7 +195,7 @@ def land_factors(project_root: str | Path) -> dict[str, float]:
     for name in available_objectives():
         stat = mem.by_operator.get(name.replace("-", "_"))
         if stat is not None and stat.total >= _MIN_SAMPLES:
-            out[name] = max(_RELIABILITY_FLOOR, stat.success_rate)
+            out[name] = max(_RELIABILITY_FLOOR, stat.confidence)
     return out
 
 
