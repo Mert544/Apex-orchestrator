@@ -48,6 +48,13 @@
   edilen modülü barındıran src/lib eklenir, bounded/sorted/saf-AST); collection-error → yanlış-RED
   → "hiç inmedi" kapanır. Gerçek öğrenci/şirket repolarında landing'i açar; #A'nın pytest-tespiti
   bozulmadan birleşti.
+- `e7a964d`+`964df1a`+`4192d9a` **3 PARALEL ağır mühendis (manuel-worktree, OOM tavanı=3)** —
+  cover-gaps idea-motoruna köprülendi (opt-in `cover_gaps=False`, `_apply_implement_stub`→tablo-sürücülü
+  `_DELEGATED_SYNTHESIS` genelleştirmesi) · unary-numeric + sequence×int tip-çıkarımı · slicing stub
+  şablonu `a[:k]`/`a[k:]`. Hepsi ayrık-dosya; **`/code-review` skill'i** (2 bulucu = `[]` bulgu);
+  birleşik full-gate yeşil. **Operasyonel ders:** auto-worktree eski-taban bozuk → **manuel
+  `git worktree add <path> HEAD`** doğru taban + import-izolasyon verir (kanıtlandı) → 3 paralel ağır
+  mühendis açar; ama bitince worktree'leri SİL (paylaşılan-`.git`, paralel git-testlerini flake yapar).
 
 **— önceki oturum —**
 
@@ -125,7 +132,10 @@ import çözümü (`1360346`).
   `.github/workflows/` kalıyor (`_restore_snapshot` ~1756) → temizle. (c) apply-sayacı sentezi
   ayrı mı sayıyor — ÖNCE ampirik doğrula (scout buyer-proof'un bu iddiasını KISMEN çürüttü).
 
-**📋 SCOUT-HARİTALI SIRADAKİ DALGALAR (bu oturumun 8 keşifçisinden; soundness + insertion intel HAZIR):**
+**📋 SCOUT-HARİTALI DALGALAR (bu oturumun 8 keşifçisinden; soundness + insertion intel HAZIR):**
+**✅ İNDİ bu oturum (3 paralel mühendis):** cover-gaps köprüsü (`e7a964d`) · unary+seq×int (`964df1a`)
+· slicing (`4192d9a`). Aşağıdaki bullet'lardan KALAN follow-up'lar: cover-gaps→wire-exports/usage-doc/
+strengthen/tdd · type→builtin-call(shadow-guard)/isinstance-param · stub→`a.index(k)`/sol-sabit/ternary · JSDoc · #C.
 - **Idea-reach v2 — cover-gaps'i ideate'e köprüle** (EN YÜKSEK; pure): yeni sinyal
   `cover_gaps_modules` (`plan_cover_gaps(root,rel).new_contents` gate'i — dürüst) + `_FACT_ACTIONS`
   + `_SYNTHESIS_OBJECTIVES` satırı + implement-stub gibi `apply_rename` delege (yeni `_apply_objective_via_develop_core`).
