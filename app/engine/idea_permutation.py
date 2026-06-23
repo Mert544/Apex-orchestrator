@@ -136,10 +136,23 @@ class IdeaPermutationEngine:
         self.budget = BudgetController(max_total_nodes=int(cfg.get("max_total_ideas", 40)))
         # When False, skip the security scan (e.g. tests/perf); weighting stays static.
         self.security_aware = bool(cfg.get("security_aware", True))
+        # Opt-in (DEFAULT FALSE = byte-identical scoring): when on, an idea whose
+        # subject module the cheap/pure ``idea_synthesis_signals`` prove LANDABLE
+        # (a real implement-stub / type-hint / dataclass / modernize / dedup diff
+        # is producible) earns a bounded scoring bonus, so a verifiable concrete
+        # contribution outranks a pure-analysis idea on the same budget. Off →
+        # ``_landable_subjects`` stays empty → the bonus is 0.0 for every node, so
+        # existing idea sets do not shift.
+        self.landability_aware = bool(cfg.get("landability_aware", False))
         # Opt-in: append fused cross-engine discovery leads as recommend-only
         # roots (default off = byte-identical seeding). Forwarded to the seeder.
         self.seed_discoveries = bool(cfg.get("seed_discoveries", False))
         self._security_pressure = 1.0
+        # The set of LANDABLE subject modules (computed ONCE per run in
+        # ``_begin_run`` when ``landability_aware`` is on). Initialized empty so a
+        # caller that drives ``_score`` directly without ``_begin_run`` (e.g. unit
+        # tests) sees the off-by-default behavior — an empty set → no bonus.
+        self._landable_subjects: frozenset[str] = frozenset()
         self._has_objective = False
 
     def _scan_security_pressure(self) -> float:
@@ -228,6 +241,14 @@ class IdeaPermutationEngine:
         # Security pressure: how strongly real findings should bias harden/test
         # weighting. Scales 1.0 (none) → up to 1.3 (many findings). Best-effort.
         self._security_pressure = self._scan_security_pressure()
+        # Landability set: which subject modules a verifiable concrete change can
+        # land on (cheap/pure synthesis signals only). Computed ONCE here so the
+        # per-node scoring stays a pure set membership; empty when the flag is off
+        # (→ byte-identical scoring) or the scan finds/yields nothing.
+        self._landable_subjects = (
+            self._scan_landable_subjects(profile)
+            if self.landability_aware else frozenset()
+        )
         # Learning memory: bounded feasibility nudges from past apply outcomes.
         if self.learning:
             from app.engine.idea_memory import IdeaMemory
@@ -401,6 +422,70 @@ class IdeaPermutationEngine:
         ("debt_marker_modules", 3, "debt-theme",
          "Clear the clustered TODO/FIXME debt across", "simplify"),
     ]
+
+    # Landability scan (opt-in, see ``landability_aware``). Probe at most this many
+    # candidate modules (bounds cost; matches the action bridge's own synthesis
+    # candidate cap) and only the CHEAP/PURE synthesis signals — each is a pure-
+    # source read that mirrors the lander's own gate. The suite-cost signals
+    # (cover-gaps / tdd / strengthen) are deliberately EXCLUDED so the scan never
+    # runs a test suite while merely ranking ideas.
+    _LANDABLE_CANDIDATE_LIMIT = 40
+    _LANDABLE_SIGNALS = (
+        "fillable_stub_modules", "inferable_return_modules",
+        "dataclassifiable_modules", "modernizable_modules",
+        "dedup_total_return_modules", "dedup_parameterizable_modules",
+    )
+
+    def _scan_landable_subjects(self, profile: ProjectProfile) -> frozenset[str]:
+        """The subject modules a verifiable concrete change can LAND on.
+
+        Reuses the existing honest ``idea_synthesis_signals`` (each returns only
+        modules whose REAL lander would produce a diff, so this never over-promises
+        a landability) over a bounded, deterministic candidate set drawn from the
+        profile. Pure and best-effort: any failure yields the empty set rather than
+        perturbing the run, and the inputs are sorted/capped so the result is
+        deterministic for a given repo state — no clock, no randomness.
+
+        GOTCHA: ``ProjectProfile`` has no single attribute enumerating every ``.py``
+        module, so the candidate set is the union of ``module_to_tests`` keys (the
+        full set of analyzed production modules) with every module-valued profile
+        list — a defensive superset that survives a profile variant leaving any one
+        of them empty.
+        """
+        candidates = self._landable_candidates(profile)
+        if not candidates:
+            return frozenset()
+        try:
+            from app.engine import idea_synthesis_signals as sigs
+
+            landable: set[str] = set()
+            for signal_name in self._LANDABLE_SIGNALS:
+                signal = getattr(sigs, signal_name)
+                for module in signal(self.project_root, candidates,
+                                     limit=self._LANDABLE_CANDIDATE_LIMIT):
+                    # Symbol signals (if any) return "<module>:<name>"; keep the
+                    # module half so the subject membership test matches a path.
+                    landable.add(module.split(":", 1)[0])
+            return frozenset(landable)
+        except Exception:
+            return frozenset()
+
+    @classmethod
+    def _landable_candidates(cls, profile: ProjectProfile) -> list[str]:
+        """The bounded, sorted ``.py`` candidate set the landability signals probe.
+
+        Union of ``module_to_tests`` keys with every module-valued profile list, so
+        a single empty attribute can't blind the scan; sorted + capped for
+        determinism and cost."""
+        mods: set[str] = set(getattr(profile, "module_to_tests", {}) or {})
+        for attr in ("untested_modules", "critical_untested_modules",
+                     "modernizable_modules", "mutable_default_modules",
+                     "debt_marker_modules", "shallow_tested_modules",
+                     "fragile_modules", "hotspot_modules",
+                     "security_finding_modules", "correctness_bug_modules"):
+            mods.update(getattr(profile, attr, None) or [])
+        mods.update(getattr(profile, "module_fanin", {}) or {})
+        return sorted(m for m in mods if m.endswith(".py"))[:cls._LANDABLE_CANDIDATE_LIMIT]
 
     def _thematic_ideas(
         self, profile: ProjectProfile, relevance: RelevanceScorer, graph: GraphStore
@@ -1080,6 +1165,15 @@ class IdeaPermutationEngine:
             bonus = _magnitude_bonus(node)
             if bonus:
                 value = round(min(1.0, value + bonus), 4)
+        # Landability bonus (opt-in; ``_landable_subjects`` is empty when off, so
+        # this is a no-op by default): an idea whose subject module a verifiable
+        # concrete change can land on outranks a pure-analysis idea. Applies at
+        # ALL depths — a permutation/facet child inherits its root's subject, so
+        # the whole branch off a landable module is lifted. Pair / abstract
+        # subjects (``A↔B``, "CI pipeline") don't name a ``.py`` module → no bonus.
+        bonus = _landability_bonus(node, self._landable_subjects)
+        if bonus:
+            value = round(min(1.0, value + bonus), 4)
         return value
 
     def _attach_caveats(self, node: IdeaNode) -> None:
@@ -1167,6 +1261,27 @@ def _magnitude_bonus(node: IdeaNode) -> float:
         if m:
             return round(_MAGNITUDE_CAP * min(1.0, int(m.group(1)) / saturation), 4)
     return 0.0
+
+
+# Landability is BINARY (a concrete change either lands on the subject or it
+# doesn't), so the bonus is a single flat lift — same shared cap as the other
+# scoring bonuses (convergence/evidence/magnitude) so no one mechanism dominates.
+_LANDABILITY_CAP = 0.08
+
+
+def _landability_bonus(node: IdeaNode, landable_subjects: frozenset[str]) -> float:
+    """Flat ``_LANDABILITY_CAP`` when the node's subject MODULE is landable, else 0.
+
+    Empty ``landable_subjects`` (the off-by-default case) short-circuits to 0.0, so
+    scoring is byte-identical. The subject is reduced to its bare module path before
+    the membership test: a facet's ``"mod.py :: phrase"`` and a symbol subject's
+    ``"mod.py::Class.f"`` both reduce to ``mod.py`` (so a child inherits its root's
+    landability), while a pair (``A↔B``) or abstract subject (``"CI pipeline"``)
+    reduces to itself, names no ``.py`` module, and earns nothing."""
+    if not landable_subjects:
+        return 0.0
+    base = node.subject.split(" :: ", 1)[0].split("::", 1)[0]
+    return _LANDABILITY_CAP if base in landable_subjects else 0.0
 
 
 _FACT_HINTS: dict[str, str] = {
