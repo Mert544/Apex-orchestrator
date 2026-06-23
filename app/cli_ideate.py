@@ -254,6 +254,34 @@ def _ideate_kind_view(args, report, target, kind: str) -> None:
             print(f"- `{i.branch_path}` [{i.operator}] {i.title}  (v {i.value}){caveat}")
 
 
+# The eight grounded opt-in synthesis objectives the bridge augments the
+# action plan with, mapped CLI-flag-attr -> plan_tree/plan_roadmap keyword. Each
+# is default OFF (so a plain --actions plan is byte-identical) and INDEPENDENT;
+# they augment the plan only when --actions is set. Single source of truth shared
+# by both the roadmap and non-roadmap plan paths.
+_OPTIN_SYNTHESIS_FLAGS = (
+    "cover_gaps",
+    "wire_exports",
+    "generate_usage_doc",
+    "tdd_implement",
+    "strengthen_tests",
+    "modernize",
+    "dedup_total_return",
+    "dedup_parameterized",
+)
+
+
+def _optin_synthesis_kwargs(args) -> dict[str, bool]:
+    """Collect the eight opt-in synthesis flags as ``{keyword: bool}``.
+
+    Read DEFENSIVELY via ``getattr(..., False)`` so a Namespace that predates
+    these flags (e.g. a test fake) simply sees every objective OFF — preserving
+    the byte-identical default plan. Passed unchanged to BOTH ``plan_tree`` and
+    ``plan_roadmap`` (their matching keyword args gate each objective per-flag).
+    """
+    return {name: bool(getattr(args, name, False)) for name in _OPTIN_SYNTHESIS_FLAGS}
+
+
 def _ideate_action_plan(args, report, target):
     """Build the optional action plan + optional apply, returning a pair.
 
@@ -271,6 +299,9 @@ def _ideate_action_plan(args, report, target):
     # steps so render_action_markdown emits a visible "proof:" line. Bounded
     # top-K in the bridge; recommend-only (no writes, no test runs).
     _prove = getattr(args, "prove", False)
+    # The eight opt-in synthesis objectives (default off, independent). Inert
+    # unless --actions augments the plan; threaded into BOTH plan paths.
+    _synthesis = _optin_synthesis_kwargs(args)
     if getattr(args, "roadmap", False):
         # Roadmap-ordered plan: apply Stabilize→Secure→Evolve→Refine, with an
         # optional --phase filter to act on a single phase.
@@ -282,6 +313,7 @@ def _ideate_action_plan(args, report, target):
             draft=_draft,
             project_root=str(target),
             proof=_prove,
+            **_synthesis,
         )
     else:
         action_plan = bridge.plan_tree(
@@ -291,6 +323,7 @@ def _ideate_action_plan(args, report, target):
             draft=_draft,
             project_root=str(target),
             proof=_prove,
+            **_synthesis,
         )
     apply_results = None
     # Strictly opt-in apply: only when --apply is passed; gated by mode + safety.
@@ -483,6 +516,68 @@ def register_parsers(subparsers) -> None:
         action="store_true",
         help="With --actions: attach proof lines (exact diff stat + re-parse "
         "verdict + impact) to the top runnable steps (recommend-only, never applied)",
+    )
+    # The eight grounded opt-in synthesis objectives the bridge can augment a
+    # --actions plan with (the develop-grade work `apex plan --concrete` already
+    # LANDS). Each is default OFF so a plain --actions plan is byte-identical, and
+    # INDEPENDENT (one never pulls in another). They are meaningful ONLY with
+    # --actions (they augment the action plan); without --actions they are simply
+    # inert — no error. argparse maps e.g. --dedup-total-return -> dedup_total_return.
+    ideate_parser.add_argument(
+        "--cover-gaps",
+        action="store_true",
+        dest="cover_gaps",
+        help="Opt-in (with --actions): write a characterization test for an "
+        "untested module (refuses an already-linked module)",
+    )
+    ideate_parser.add_argument(
+        "--wire-exports",
+        action="store_true",
+        dest="wire_exports",
+        help="Opt-in (with --actions): wire a package's public re-export surface "
+        "(`__all__` + `from .module import Name`, import-oracle proven)",
+    )
+    ideate_parser.add_argument(
+        "--generate-usage-doc",
+        action="store_true",
+        dest="generate_usage_doc",
+        help="Opt-in (with --actions): generate USAGE.md from a package's public "
+        "API (doctest-oracle-proven `>>>` examples)",
+    )
+    ideate_parser.add_argument(
+        "--tdd-implement",
+        action="store_true",
+        dest="tdd_implement",
+        help="Opt-in (with --actions): implement a missing function a RED test "
+        "calls — synthesise a `def` that flips its failing test green",
+    )
+    ideate_parser.add_argument(
+        "--strengthen-tests",
+        action="store_true",
+        dest="strengthen_tests",
+        help="Opt-in (with --actions): append a double-gated assertion that kills "
+        "a surviving mutant the current suite misses",
+    )
+    ideate_parser.add_argument(
+        "--modernize",
+        action="store_true",
+        dest="modernize",
+        help="Opt-in (with --actions): rewrite a module's stale idioms "
+        "(`== None`→`is None`, dead `f` prefixes, empty `dict()`→`{}`)",
+    )
+    ideate_parser.add_argument(
+        "--dedup-total-return",
+        action="store_true",
+        dest="dedup_total_return",
+        help="Opt-in (with --actions): lift an always-returning exact-duplicate "
+        "block into one shared returning helper",
+    )
+    ideate_parser.add_argument(
+        "--dedup-parameterized",
+        action="store_true",
+        dest="dedup_parameterized",
+        help="Opt-in (with --actions): parameterize a near-duplicate group into "
+        "one shared helper (differing constant/name leaves become parameters)",
     )
     ideate_parser.add_argument(
         "--apply",
