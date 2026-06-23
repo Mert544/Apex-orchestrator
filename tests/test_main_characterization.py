@@ -184,8 +184,27 @@ def _normalize(text: str, target: str) -> str:
         "previous_run_count",
         "memory_question_repeats_degraded",
         "memory_claim_repeats_degraded",
+        # The ``reflection`` block is computed from the shared
+        # ``.apex/feedback_log.json`` ledger (FeedbackLoop's cwd-relative default;
+        # both impls run with cwd=REPO_ROOT). Under the PARALLEL gate
+        # (``verify.py -j N``) other suites' ``main()`` runs append/trim that one
+        # shared file, so its entry-count-derived numbers race between the orig and
+        # new subprocess reads — runtime ledger state, NOT ``main()``'s control
+        # flow. Fold them (and the per-node list below) so a real control-flow or
+        # printed-literal divergence still fails, exactly as for the fields above.
+        "total_runs",
+        "total_actions",
+        "success_rate",
+        "false_positive_rate",
     ):
         text = re.sub(rf'("{key}":\s*)[-\d.eE+]+', r"\1<NUM>", text)
+    # ``top_false_positives`` is the same ledger's per-node digest: its float/int
+    # fields and even its membership/order shift by an entry under parallel load.
+    # Fold the whole list (its item objects contain no ``]``, so the non-greedy
+    # match ends at the list's own close) — the block's presence/structure is still
+    # verified, only the race-prone data is normalized.
+    text = re.sub(r'("top_false_positives":\s*)\[.*?\]', r"\1<LIST>", text,
+                  flags=re.DOTALL)
     return text
 
 
