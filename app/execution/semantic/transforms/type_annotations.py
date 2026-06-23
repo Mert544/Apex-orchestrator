@@ -337,6 +337,12 @@ def _literal_type(node: ast.expr) -> str | None:
         ⇒ ``tuple`` (either operand order). This is a MIXED-type product (a
         sequence times an ``int``), so the same-type rule correctly does not
         cover it. See :func:`_mixed_sequence_int_mult`.
+      - a printf-style ``<str|bytes> % x`` (``ast.Mod`` BinOp) ⇒ the LHS's type:
+        ``'%s' % x`` ⇒ ``str``, ``b'%s' % x`` ⇒ ``bytes``, ``'%d' % 5`` ⇒
+        ``str`` — when the LEFT operand is PROVABLY ``str``/``bytes`` (the RIGHT
+        is not inspected: ``str``/``bytes`` ``__mod__`` is a non-overridable
+        C-slot that always yields the LHS type). See :func:`_percent_format_type`
+        (a bare-``Name`` LHS like ``n % 2`` is not provably str/bytes ⇒ refuse).
 
     Everything else (a name, call, attribute, subscript, etc.) is not
     statically certain ⇒ ``None`` (refuse)."""
@@ -360,6 +366,9 @@ def _literal_type(node: ast.expr) -> str | None:
     mixed = _mixed_sequence_int_mult(node)
     if mixed is not None:
         return mixed
+    percent = _percent_format_type(node)
+    if percent is not None:
+        return percent
     return _binop_same_type_literal(node)
 
 
@@ -543,6 +552,32 @@ def _binop_same_type_literal(node: ast.expr) -> str | None:
     return left if _literal_type(node.right) == left else None
 
 
+def _percent_format_type(node: ast.expr) -> str | None:
+    """The provable type NAME for printf-style ``<str|bytes> % x`` (an
+    ``ast.Mod`` ``ast.BinOp``), or ``None`` when not provable.
+
+    Returns a type ONLY when the LEFT operand PROVABLY evaluates to ``str`` or
+    ``bytes`` via :func:`_literal_type` (a ``str``/``bytes`` constant, an
+    f-string, or a provably-``str``/``bytes`` sub-expression that recurses). The
+    RIGHT operand is DELIBERATELY NOT inspected — ``str.__mod__`` /
+    ``bytes.__mod__`` are non-overridable C-slot operations that ALWAYS return
+    the LHS's own type (``str``/``bytes``) when they return at all (a malformed
+    format string raises, a never-returns path that keeps a ``-> str``/``->
+    bytes`` sound). So ``'%s' % x`` ⇒ ``str``, ``b'%s' % x`` ⇒ ``bytes`` and
+    ``'%d' % 5`` ⇒ ``str`` regardless of the right-hand value.
+
+    This is DISJOINT from the same-type rule (:func:`_binop_same_type_literal`):
+    that rule needs BOTH operands provably the same type, so for an ``ast.Mod``
+    it only fires on ``int % int`` ⇒ ``int`` / ``str % str`` ⇒ ``str`` etc.,
+    whereas this handles the common ``str`` (or ``bytes``) ``%`` non-string
+    case. A bare-``ast.Name`` LHS (``n % 2``) is NOT provably ``str``/``bytes``
+    ⇒ ``None`` (refuse), and a non-``Mod`` BinOp is not this rule ⇒ ``None``."""
+    if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Mod):
+        return None
+    left = _literal_type(node.left)
+    return left if left in ("str", "bytes") else None
+
+
 # Unary operators whose result over a NUMERIC literal stays that numeric type.
 # ``-``/``+`` (USub/UAdd) preserve ``int``/``float``; ``~`` (Invert) is handled
 # separately because it is defined on ``int`` ONLY (``~1.5`` is a TypeError).
@@ -650,7 +685,12 @@ def _is_certain_bool(node: ast.expr) -> bool:
 #           ``float(2)``) — both are callable-fixed regardless of the argument.
 #   - str:  ``str``/``repr``/``ascii``/``hex``/``oct``/``bin``/``chr`` always
 #           return a ``str`` (``hex(255)`` ⇒ ``'0xff'``, ``chr(65)`` ⇒ ``'A'``).
-#   - bool: ``bool`` always returns a ``bool``.
+#   - bool: ``bool``/``callable``/``issubclass``/``isinstance``/``hasattr`` ALWAYS
+#           return a ``bool`` regardless of the argument(s) — each is a C-slot
+#           predicate (``isinstance(x, T)``/``issubclass(C, B)``/``callable(x)``/
+#           ``hasattr(o, n)``). A bad class arg (e.g. ``isinstance(x, 1)``) raises,
+#           which is a never-returns path and so leaves a ``-> bool`` sound (it
+#           only constrains a value that IS returned).
 #   - container: ``list``/``dict``/``set``/``tuple``/``frozenset`` each return
 #           their own type; ``sorted`` always returns a ``list``.
 #
@@ -665,7 +705,8 @@ _BUILTIN_CALL_RETURN_TYPES: dict[str, str] = {
     "float": "float",
     "str": "str", "repr": "str", "ascii": "str", "hex": "str",
     "oct": "str", "bin": "str", "chr": "str",
-    "bool": "bool",
+    "bool": "bool", "callable": "bool", "issubclass": "bool",
+    "isinstance": "bool", "hasattr": "bool",
     "list": "list", "dict": "dict", "set": "set", "tuple": "tuple",
     "frozenset": "frozenset", "sorted": "list",
 }
