@@ -19,10 +19,13 @@ What counts as PROVABLE (the only things ever annotated):
     ``int``/``str``/``bool``/``float``/``list``/``dict``/``tuple``/``set``/
     ``bytes`` constants and displays, an f-string (``JoinedStr`` ⇒ ``str``), a
     list/dict/set comprehension (⇒ ``list``/``dict``/``set``), a certainly-
-    boolean expression (a comparison or ``not x`` ⇒ ``bool``), and a SAME-TYPE-
+    boolean expression (a comparison or ``not x`` ⇒ ``bool``), a SAME-TYPE-
     LITERAL binary op over a TYPE-CLOSED operator (``1 + 2`` ⇒ ``int``,
-    ``'a' + 'b'`` ⇒ ``str`` — see :func:`_binop_same_type_literal`). Or
-    ``-> None`` when the function has no value-returning ``return`` and no
+    ``'a' + 'b'`` ⇒ ``str`` — see :func:`_binop_same_type_literal`), and a
+    FIXED-RESULT ``<builtin>(...)`` call whose builtin's result type does not
+    depend on its args and is NOT shadowed in the function's scope (``len(x)`` ⇒
+    ``int``, ``sorted(x)`` ⇒ ``list`` — see :func:`_builtin_call_returns_type`).
+    Or ``-> None`` when the function has no value-returning ``return`` and no
     ``yield`` (a pure procedure). REFUSED (left alone): mixed return types (e.g.
     ``int``+``float``), a generator expression (yields a generator, not a
     container) or ``and``/``or`` (returns an operand, not a bool), a ``/`` or
@@ -387,6 +390,66 @@ def _is_certain_bool(node: ast.expr) -> bool:
     return isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)
 
 
+# Built-in callables whose result type is FIXED regardless of the arguments
+# passed — ``builtin name -> the type name it always returns``. Grouped by
+# result type for readability; flattened into one lookup. Each entry is verified
+# to return the named type for EVERY argument it accepts (it may raise on bad
+# args, but if it RETURNS, the type is fixed):
+#   - int:  ``len``/``ord``/``id``/``hash`` always return a plain ``int``.
+#   - str:  ``str``/``repr``/``ascii``/``hex``/``oct``/``bin``/``chr`` always
+#           return a ``str`` (``hex(255)`` ⇒ ``'0xff'``, ``chr(65)`` ⇒ ``'A'``).
+#   - bool: ``bool`` always returns a ``bool``.
+#   - container: ``list``/``dict``/``set``/``tuple``/``frozenset`` each return
+#           their own type; ``sorted`` always returns a ``list``.
+#
+# Deliberately EXCLUDED — result type is NOT fixed by the callable alone:
+#   - ``min``/``max``/``sum``/``abs``/``round``/``next`` (type depends on the
+#     argument values), ``int(...)``/``float(...)`` (fixed, but omitted as a
+#     conservative initial set; can be added later), ``open``/``iter``/``map``/
+#     ``filter``/``range``/``enumerate``/``zip``/``reversed`` (iterator/handle).
+# A bare-``ast.Name`` callee is required (an attribute like ``obj.len(...)`` or
+# ``m.sorted(...)`` is a DIFFERENT callable and must refuse).
+_BUILTIN_CALL_RETURN_TYPES: dict[str, str] = {
+    "len": "int", "ord": "int", "id": "int", "hash": "int",
+    "str": "str", "repr": "str", "ascii": "str", "hex": "str",
+    "oct": "str", "bin": "str", "chr": "str",
+    "bool": "bool",
+    "list": "list", "dict": "dict", "set": "set", "tuple": "tuple",
+    "frozenset": "frozenset", "sorted": "list",
+}
+
+
+def _builtin_call_returns_type(node: ast.expr, assigned_names: frozenset[str]) -> str | None:
+    """The provable return type NAME for ``<builtin>(...)`` (``ast.Call``), or
+    ``None`` when not provable.
+
+    Returns a type name ONLY when ALL hold:
+      1. ``node`` is an ``ast.Call`` whose ``func`` is a bare ``ast.Name`` (an
+         ``ast.Attribute`` callee like ``obj.list(...)`` is a DIFFERENT,
+         user-defined method ⇒ refuse; any non-Name callee ⇒ refuse).
+      2. ``func.id`` is in :data:`_BUILTIN_CALL_RETURN_TYPES` — a builtin whose
+         result type is FIXED regardless of args. A user call (``user_fn(x)``)
+         is not in the set ⇒ refuse.
+      3. ``func.id`` is NOT in ``assigned_names`` — the SHADOWING GUARD. If the
+         function rebinds the name in its own scope (``len = ...`` then
+         ``return len(x)``), the call no longer resolves to the builtin, so its
+         result type is unknown ⇒ refuse. This keeps the inference SOUND even
+         when a local shadows a builtin.
+
+    Sound because a non-shadowed builtin's result type is fixed by the callable
+    itself (``len(...)`` ⇒ ``int``, ``sorted(...)`` ⇒ ``list``), independent of
+    the argument values; arguments are therefore not inspected (the call raises
+    on bad args, but a ``-> T`` only constrains a value that IS returned)."""
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    if not isinstance(func, ast.Name):
+        return None
+    if func.id in assigned_names:
+        return None  # shadowed in this scope — no longer the builtin
+    return _BUILTIN_CALL_RETURN_TYPES.get(func.id)
+
+
 def _own_returns(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Return]:
     """Every ``return`` that belongs to ``fn`` itself — descending into the body
     but NOT into a nested function/lambda, whose returns are their own."""
@@ -406,6 +469,34 @@ def _own_returns(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Return]
 
     walk(fn.body)
     return out
+
+
+def _assigned_names_in_scope(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
+    """Every NAME bound (``ast.Store``) in ``fn``'s OWN body — assignments,
+    ``for`` targets, ``with ... as`` targets, walrus, etc. — descending into the
+    body but NOT into a nested function/lambda (whose bindings are their own,
+    mirroring :func:`_own_returns`).
+
+    Used as the SHADOWING GUARD for :func:`_builtin_call_returns_type`: if a name
+    like ``len`` is rebound here, a ``len(...)`` call no longer resolves to the
+    builtin, so its result type is unknown and inference must refuse. Parameters
+    are intentionally NOT included — a parameter binding is not an ``ast.Store``
+    Name in the body; we treat the body's Store names as the shadow set, the
+    conservative, deterministic over-approximation a guard wants. A nested
+    function/lambda's OWN bindings are not ours (mirroring :func:`_own_returns`),
+    but a name bound directly in our body still shadows for the whole scope."""
+    names: set[str] = set()
+
+    def walk(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue  # a nested scope's bindings are its own
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+                names.add(child.id)
+            walk(child)
+
+    walk(fn)
+    return frozenset(names)
 
 
 def _has_own_yield(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -505,9 +596,12 @@ def _infer_return_type(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None
     - A generator (own ``yield``) is never inferred (its return is an iterator).
     - ``-> None`` when there is no value return (``return`` with no value, or no
       return at all) — a pure procedure.
-    - Otherwise every value return must be a literal of the SAME concrete type;
-      a bare ``return`` mixed with value returns, or differing literal types, or
-      any non-literal return, is ambiguous → ``None`` (skip).
+    - Otherwise every value return must be of the SAME concrete type — either a
+      literal (:func:`_literal_type`) or a FIXED-result ``<builtin>(...)`` call
+      (:func:`_builtin_call_returns_type`, guarded against a shadowed builtin via
+      the function's own bound names). A bare ``return`` mixed with value
+      returns, differing types, or any non-provable return is ambiguous →
+      ``None`` (skip).
     - And the body must PROVABLY terminate (cannot fall off the end): a function
       that can reach the end without an explicit ``return`` implicitly returns
       ``None``, so its true type is ``T | None``. Rather than guess the union we
@@ -534,15 +628,33 @@ def _infer_return_type(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None
         # ``T | None``. Refuse rather than land a wrong bare ``-> T``.
         return None
 
+    assigned = _assigned_names_in_scope(fn)
     types: set[str] = set()
     for r in value_returns:
-        t = _literal_type(r.value)  # r.value is not None here
+        t = _return_value_type(r.value, assigned)  # r.value is not None here
         if t is None:
-            return None  # a non-literal return — not provable
+            return None  # a non-provable return — not certain
         types.add(t)
     if len(types) != 1:
-        return None  # disagreeing literal types — ambiguous
+        return None  # disagreeing types — ambiguous
     return next(iter(types))
+
+
+def _return_value_type(node: ast.expr, assigned_names: frozenset[str]) -> str | None:
+    """The provable type NAME for a single ``return <expr>`` value, or ``None``.
+
+    A literal/display/etc. (:func:`_literal_type`) takes precedence; failing
+    that, a FIXED-result ``<builtin>(...)`` call (:func:`_builtin_call_returns_type`,
+    with the shadowing guard ``assigned_names`` from the function's own scope).
+    Kept separate from :func:`_literal_type` on purpose: ``_literal_type`` is the
+    pure context-free literal oracle reused recursively by the binop/str-method/
+    sequence-mult rules, and a builtin call is NOT a literal there (so
+    ``len(x) + 1`` correctly stays unprovable — the binop recursion never sees
+    this builtin-call rule)."""
+    literal = _literal_type(node)
+    if literal is not None:
+        return literal
+    return _builtin_call_returns_type(node, assigned_names)
 
 
 def _annotatable_params(

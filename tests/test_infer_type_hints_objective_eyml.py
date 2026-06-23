@@ -302,8 +302,13 @@ def test_refuses_name_return_even_amid_certain_returns():
     assert infer_annotations(src) is None
 
 
-def test_refuses_call_return():
-    assert infer_annotations("def f(x):\n    return len(x)\n") is None
+def test_infers_int_from_fixed_result_builtin_call_return():
+    # `len(x)` is a FIXED-result builtin (result is always int regardless of
+    # args) and `len` is not shadowed here -> provably `-> int`. (Previously
+    # this refused as a generic call; the builtin-call rule now proves it.
+    # A SHADOWED builtin still refuses — see the builtin-call suite.)
+    assert infer_annotations("def f(x):\n    return len(x)\n") == (
+        "def f(x) -> int:\n    return len(x)\n")
 
 
 def test_widened_inference_is_deterministic():
@@ -510,8 +515,10 @@ def test_skips_already_annotated_param():
 
 
 def test_skips_varargs_and_kwargs():
-    src = "def f(*args, **kwargs):\n    return len(args)\n"
-    # *args/**kwargs are never inferred; the return is non-literal -> no change.
+    # *args/**kwargs params are never annotated. The return is a subscript
+    # (non-provable, and NOT a fixed-result builtin call) -> nothing to add, so
+    # the function — params included — is left exactly as-is.
+    src = "def f(*args, **kwargs):\n    return args[0]\n"
     assert infer_annotations(src) is None
 
 
