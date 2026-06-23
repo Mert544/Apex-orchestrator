@@ -35,6 +35,16 @@ Four signals, one per synthesis objective Apex offers:
     subject, or a module nothing can be honestly characterized in all yield an
     empty no-op plan), so the signal equals exactly the modules ``apex develop``'s
     cover-gaps objective would touch — never an over-promise.
+  - :func:`wire_export_packages` — wire-exports. Calls
+    :func:`app.execution.objectives.wire_exports.plan_wire_exports` (the lander
+    itself) on a candidate package ``__init__.py`` and keeps it only when the plan
+    has a non-empty ``new_contents`` — i.e. the lander would actually rewrite that
+    ``__init__.py`` with a re-export surface + ``__all__``. That gate composes the
+    lander's IMPORT ORACLE (the candidate is subprocess-imported and every export
+    must resolve), so a refused test/fixture or namespace package, an already-fully
+    -wired package, or a candidate that fails the oracle all yield an empty no-op
+    plan and do not qualify — exactly the packages ``apex develop``'s wire-exports
+    objective would touch, never an over-promise.
 
 Pure: no writes, no pytest, no network. Deterministic: every result is sorted.
 Defensive: a missing / unreadable / syntactically-broken module, or a
@@ -49,6 +59,7 @@ from pathlib import Path
 
 from app.execution.cover_gaps import plan_cover_gaps
 from app.execution.dataclass_rewrite import rewrite_dataclasses
+from app.execution.objectives.wire_exports import plan_wire_exports
 from app.execution.semantic.transforms.type_annotations import infer_annotations
 from app.execution.stub_synthesis import module_has_fillable_stub
 
@@ -57,6 +68,7 @@ __all__ = [
     "dataclassifiable_modules",
     "inferable_return_modules",
     "cover_gaps_modules",
+    "wire_export_packages",
 ]
 
 
@@ -194,3 +206,40 @@ def cover_gaps_modules(
     plan, so none over-promise. This is exactly the set ``apex develop``'s
     cover-gaps objective would touch."""
     return _qualifying(root, modules, _has_cover_gap, limit)
+
+
+def _has_wire_export(root_path: Path, rel: str) -> bool:
+    """True when :func:`plan_wire_exports` would REWRITE the package ``__init__.py``
+    at ``rel`` — i.e. the lander's own plan has a non-empty ``new_contents``. This
+    calls the REAL lander, so it is honest by construction: a non-``__init__.py``
+    target, a refused test/fixture or PEP 420 namespace package, an already-fully
+    -wired package, or a candidate that fails the lander's IMPORT ORACLE (a name in
+    the emitted ``__all__`` that does not resolve when the package is
+    subprocess-imported) all yield an empty no-op plan (``new_contents`` is ``{}``)
+    and do not qualify. ``plan_wire_exports`` reads the source itself and never
+    raises on a bad subject (it returns an empty plan instead), so no extra guard
+    is needed here — the shared ``_qualifying`` spine swallows any leak anyway."""
+    return bool(plan_wire_exports(root_path, rel).new_contents)
+
+
+def wire_export_packages(
+    root: str | Path, modules: Iterable[str], limit: int | None = None
+) -> list[str]:
+    """The package ``__init__.py`` paths with a LANDABLE wire-exports surface,
+    sorted, capped.
+
+    Grounded on :func:`app.execution.objectives.wire_exports.plan_wire_exports` —
+    the lander itself: a package's ``__init__.py`` qualifies only when running the
+    real plan yields a non-empty ``new_contents`` (the lander's own definition of
+    "there is an unwired public surface here I can re-export + ``__all__``"). That
+    gate already composes the IMPORT ORACLE — the candidate ``__init__.py`` is
+    written to a throwaway copy and imported in a clean subprocess, and every name
+    in the new ``__all__`` must resolve — so an already-wired package, a refused
+    test/fixture or namespace package, or a candidate that fails the oracle all
+    produce an empty no-op plan and do not qualify. This is exactly the set
+    ``apex develop``'s wire-exports objective would touch — never an over-promise.
+
+    ``modules`` may freely mix non-``__init__.py`` paths in (the synthesis
+    augmentation feeds it every ``.py`` target in the plan); a non-package target
+    simply yields an empty plan and is dropped, so callers need not pre-filter."""
+    return _qualifying(root, modules, _has_wire_export, limit)

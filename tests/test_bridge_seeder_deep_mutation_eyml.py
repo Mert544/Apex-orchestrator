@@ -1145,6 +1145,10 @@ _FACT_EXPECTED = {
     "dataclassify": ("dataclassify", True),
     "implement-stub": ("implement_stub", True),
     "cover-gaps": ("cover_gaps", True),
+    # wire-exports is the SECOND broad opt-in objective (default off in the
+    # planner, gated by ``wire_exports=True``), delegated like cover-gaps to the
+    # develop-core ``apply_rename`` path; pure + IMPORT ORACLE (no pytest).
+    "wire-exports": ("wire_exports", True),
 }
 
 
