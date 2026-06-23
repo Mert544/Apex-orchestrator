@@ -24,6 +24,7 @@ import ast
 import difflib
 import keyword
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -74,6 +75,48 @@ class RenamePlan:
                 fromfile=f"a/{rel}", tofile=f"b/{rel}",
             )))
         return "\n".join(p for p in parts if p)
+
+
+def _is_fixture_path(path: str) -> bool:
+    """Test / fixture / example files are REFUSED — Apex never edits the suite it
+    is gated by. Shared by the single-file-rewrite objective plans."""
+    p = path.replace("\\", "/").lower()
+    name = Path(p).name
+    return (
+        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
+        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
+        or name.startswith("test_") or name.endswith("_test.py")
+        or name == "conftest.py"
+    )
+
+
+def plan_source_rewrite(
+    project_root: str | Path, module_rel: str, operator: str,
+    transform: Callable[[str], str | None],
+) -> RenamePlan:
+    """A :class:`RenamePlan` that applies a whole-module SOURCE ``transform``.
+
+    The shared shape of every single-file develop objective (infer-type-hints,
+    document-signature, …): refuse a test/fixture file, read the module, run
+    ``transform(source)``, and record the single rewrite with its original (so the
+    verified-apply engine can roll it back if the suite fails) when it changes
+    something — otherwise an empty no-op plan (``None``/unchanged ⇒ nothing
+    provable to do). One source of truth, so a new single-file objective is a
+    one-liner and the boilerplate is never re-copied."""
+    plan = RenamePlan(old=module_rel, new=operator)
+    if _is_fixture_path(module_rel):
+        return plan  # never touch a test/fixture file
+    try:
+        source = (Path(project_root) / module_rel).read_text(encoding="utf-8")
+    except OSError:
+        return plan  # unreadable — no-op
+    new_source = transform(source)
+    if new_source is None or new_source == source:
+        return plan  # nothing provable to do — no-op
+    plan.originals[module_rel] = source
+    plan.new_contents[module_rel] = new_source
+    plan.edits_by_file[module_rel] = 1
+    return plan
 
 
 def _py_files(root: Path) -> list[tuple[str, str]]:

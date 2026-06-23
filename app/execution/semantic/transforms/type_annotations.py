@@ -89,7 +89,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from app.execution.cross_file_rename import RenamePlan
+from app.execution.cross_file_rename import RenamePlan, plan_source_rewrite
 
 from ..result import SemanticPatchResult
 
@@ -1386,46 +1386,15 @@ def _header_colon_offset(
 
 # --- Develop-objective plan --------------------------------------------------
 
-def _is_fixture_path(path: str) -> bool:
-    """Example/test/fixture files are REFUSED — Apex never edits the suite it is
-    gated by (mirrors the existing 'would edit a test/fixture file' block). A
-    local copy on purpose: this transform stays a self-contained module."""
-    p = path.replace("\\", "/").lower()
-    return (
-        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
-        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
-        or Path(p).name.startswith("test_") or Path(p).name.endswith("_test.py")
-        or Path(p).name == "conftest.py"
-    )
-
-
 def plan_type_annotations(project_root: str | Path, module_rel: str) -> RenamePlan:
     """Build the provable-type-hint plan for one module, or an empty no-op plan.
 
     Annotates every function in ``module_rel`` whose return type is provable
     from the AST, plus each parameter whose type is provable from an
     unconditional entry ``isinstance`` guard (a default value is still NOT a
-    sound bound; see :func:`_annotatable_params`). Test/fixture files are refused
-    (empty plan). An empty plan means nothing provable to add — a no-op, not a
-    failure.
-    The single write goes in ``new_contents`` with the original in ``originals``
-    so the verified-apply engine can roll it back if the suite fails."""
-    plan = RenamePlan(old=module_rel, new="infer-type-hints")
-
-    if _is_fixture_path(module_rel):
-        return plan  # never touch a test/fixture file
-
-    path = Path(project_root) / module_rel
-    try:
-        source = path.read_text(encoding="utf-8")
-    except OSError:
-        return plan  # unreadable — no-op
-
-    new_source = infer_annotations(source)
-    if new_source is None or new_source == source:
-        return plan  # nothing provable to add — no-op
-
-    plan.originals[module_rel] = source
-    plan.new_contents[module_rel] = new_source
-    plan.edits_by_file[module_rel] = 1
-    return plan
+    sound bound; see :func:`_annotatable_params`), via :func:`infer_annotations`.
+    The shared single-file-rewrite plumbing — refuse a test/fixture file, read the
+    module, record the single rewrite with its original for rollback (or a no-op
+    when nothing is provable) — is delegated to :func:`plan_source_rewrite`."""
+    return plan_source_rewrite(
+        project_root, module_rel, "infer-type-hints", infer_annotations)
