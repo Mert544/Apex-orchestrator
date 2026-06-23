@@ -34,6 +34,14 @@ What counts as PROVABLE (the only things ever annotated):
     (name/call/attribute/subscript), a ``yield`` generator, or an existing
     ``-> T``.
 
+A parameter type from an UNCONDITIONAL runtime ``isinstance`` guard at entry:
+when ``assert isinstance(x, str)`` or ``if not isinstance(x, int): raise``
+opens a function body, every path that continues past it has PROVEN ``x`` is an
+instance of that class, so ``x: str`` / ``x: int`` RECORDS a runtime-ENFORCED
+fact (see :func:`_annotatable_params`). Strictly SINGLE bare-builtin class only
+(a tuple ``(int, float)`` would need a ``Union`` ⇒ refuse); the guard must be
+unconditional (not nested) and the parameter unused/unreassigned before it.
+
 Why NOT a parameter type from its default value: a default does NOT constrain
 the type a parameter accepts. ``def f(x=0)`` is routinely called ``f("s")`` or
 ``f([1])`` — the ``0`` is only the value used when the argument is omitted, not
@@ -41,9 +49,10 @@ a type bound. Inferring ``x: int`` from ``x=0`` is therefore UNSOUND: it can
 contradict the project's own passing tests (``add("ab")`` on ``def add(x=0)``)
 while still being stamped ``verified`` (an annotation changes no runtime value,
 so no test can ever catch the lie). That wrong-but-verified landing is exactly
-what Apex must never do, so the default-value → parameter-type path was REMOVED.
-Parameters are now left unannotated unless a future, genuinely TYPE-CONSTRAINING
-signal is added; a literal default is not one.
+what Apex must never do, so the default-value → parameter-type path stays
+REMOVED. A guard is sound where a default is not BECAUSE the guard enforces the
+type at run time — a value the guard rejects already raises today, so recording
+the bound cannot contradict any passing test.
 
 Never guesses: when a type is not provable from the AST the function is left
 exactly as it was — an honest under-claim. Annotations are behaviour-preserving:
@@ -657,36 +666,184 @@ def _return_value_type(node: ast.expr, assigned_names: frozenset[str]) -> str | 
     return _builtin_call_returns_type(node, assigned_names)
 
 
+# Bare type NAMES accepted as an isinstance guard's class. A guard is a runtime-
+# ENFORCED bound, so the inferred annotation is PROVABLE — but only when the
+# class is a well-known builtin type: a bare ``Name`` that is NOT a builtin could
+# be a locally rebound or user alias whose identity we cannot resolve from the
+# AST alone, so we refuse it (conservative, deterministic). ``bool`` is included
+# (``isinstance(x, bool)`` enforces the precise ``bool``, unlike a return-side
+# bool subtlety). Tuple-of-classes (``(int, float)``) is a DIFFERENT node (it
+# would need a ``Union``) and is refused by :func:`_isinstance_single_class`.
+_GUARD_CLASS_NAMES: frozenset[str] = frozenset({
+    "int", "float", "str", "bytes", "bool", "bytearray", "complex",
+    "list", "dict", "set", "frozenset", "tuple", "type", "object",
+})
+
+
+def _isinstance_single_class(call: ast.expr) -> tuple[str, str] | None:
+    """``(param_name, class_name)`` for ``isinstance(<Name>, <BareName>)``, else
+    ``None``.
+
+    Accepts ONLY the SINGLE-class shape: the first arg is a bare parameter
+    ``ast.Name`` and the second arg is a bare ``ast.Name`` whose ``id`` is a
+    known builtin type in :data:`_GUARD_CLASS_NAMES`. REFUSED conservatively:
+      - a non-``isinstance`` call, or wrong arg count / any keyword/star arg;
+      - a TUPLE second arg (``isinstance(x, (int, float))``) — that is a Union of
+        types, not a single bound, so we cannot name one type;
+      - a DOTTED / complex class expr (``numbers.Integral``) — an
+        ``ast.Attribute``/``ast.Subscript``/call is not a bare type Name;
+      - a class Name outside the known-builtin set (could be a user alias whose
+        identity is not AST-resolvable)."""
+    if not isinstance(call, ast.Call) or call.keywords:
+        return None
+    func = call.func
+    if not (isinstance(func, ast.Name) and func.id == "isinstance"):
+        return None
+    if len(call.args) != 2:
+        return None
+    obj, cls = call.args
+    if not (isinstance(obj, ast.Name) and isinstance(cls, ast.Name)):
+        return None
+    if cls.id not in _GUARD_CLASS_NAMES:
+        return None
+    return obj.id, cls.id
+
+
+def _if_negation_raises(stmt: ast.stmt) -> tuple[str, str] | None:
+    """``(param, class)`` for ``if not isinstance(p, Cls): raise ...`` (the
+    if-body raises on the NEGATION), else ``None``.
+
+    SOUND only when ALL hold: the test is ``not isinstance(p, Cls)`` (a single
+    ``UnaryOp``/``Not`` over an accepted single-class isinstance), there is NO
+    ``else`` branch, and the if-body is EXACTLY a single ``raise``. Requiring the
+    body to be one bare ``raise`` is conservative — it cannot fall through to
+    code that runs with ``p`` of the wrong type — so reaching past the guard
+    PROVES ``isinstance(p, Cls)`` held."""
+    if not isinstance(stmt, ast.If) or stmt.orelse:
+        return None
+    test = stmt.test
+    if not (isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not)):
+        return None
+    if len(stmt.body) != 1 or not isinstance(stmt.body[0], ast.Raise):
+        return None
+    return _isinstance_single_class(test.operand)
+
+
+def _entry_guard_binding(stmt: ast.stmt) -> tuple[str, str] | None:
+    """``(param, class)`` when ``stmt`` is an accepted runtime type guard, else
+    ``None``.
+
+    Two forms, both of which ENFORCE the type at run time so a path that reaches
+    past the guard PROVES the parameter is an instance of the class:
+      - ``assert isinstance(p, Cls)`` (an optional message is ignored — the
+        ``Assert``'s ``msg`` does not affect the bound);
+      - ``if not isinstance(p, Cls): raise <...>`` (see
+        :func:`_if_negation_raises`)."""
+    if isinstance(stmt, ast.Assert):
+        return _isinstance_single_class(stmt.test)
+    return _if_negation_raises(stmt)
+
+
+def _guard_prologue_bindings(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> dict[str, str]:
+    """``{param_name: class_name}`` from the UNCONDITIONAL guard prologue — the
+    contiguous run of entry guards that opens the body (an optional leading
+    docstring may precede them).
+
+    Walks ``fn.body`` top-level statements in order, skipping ONE leading
+    docstring, and stops at the FIRST statement that is not an accepted guard
+    (:func:`_entry_guard_binding`). Stopping there is what makes the result
+    sound: every collected guard runs UNCONDITIONALLY at entry (it is a direct
+    body statement, never nested under another ``if``/``for``/``try``), and no
+    non-guard statement has executed before it — so the parameter has NOT been
+    reassigned or used and the guard binds the ORIGINAL parameter. The FIRST
+    guard for a name wins (a later re-guard cannot loosen it)."""
+    bindings: dict[str, str] = {}
+    body = fn.body
+    start = 0
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        start = 1  # skip a leading docstring; it may precede the first guard
+    for stmt in body[start:]:
+        binding = _entry_guard_binding(stmt)
+        if binding is None:
+            break  # prologue ends — anything after is not an entry guard
+        name, class_name = binding
+        if name not in bindings:
+            bindings[name] = class_name
+    return bindings
+
+
+def _all_args(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.arg]:
+    """Every ``ast.arg`` of ``fn`` across all parameter kinds (posonly, normal,
+    ``*vararg``, kw-only, ``**kwarg``) — the candidates a guard might bind."""
+    args = fn.args
+    out: list[ast.arg] = [*args.posonlyargs, *args.args]
+    if args.vararg is not None:
+        out.append(args.vararg)
+    out.extend(args.kwonlyargs)
+    if args.kwarg is not None:
+        out.append(args.kwarg)
+    return out
+
+
 def _annotatable_params(
     fn: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> list[tuple[ast.arg, str]]:
-    """``(arg, type_name)`` for each parameter whose type is PROVABLE — currently
-    NONE, so always ``[]``.
+    """``(arg, type_name)`` for each parameter whose type is PROVABLE from an
+    UNCONDITIONAL runtime ``isinstance`` guard at function entry.
 
-    A parameter's DEFAULT value used to drive this (``def f(x=0)`` → ``x: int``),
-    but that is UNSOUND and was removed: a default is the value supplied when the
-    argument is OMITTED, not a bound on the type the parameter accepts. ``def
-    f(x=0)`` is legitimately called ``f("s")`` / ``f([1])``, so ``x: int`` can
-    flatly contradict the project's own passing tests — yet an annotation changes
-    no runtime value, so the suite still goes green and the wrong hint is stamped
-    ``verified`` (the wrong-but-verified failure this module exists to avoid).
+    A guard is a runtime-ENFORCED type bound — unlike a default value, which is
+    NOT a bound (``def f(x=0)`` is legitimately called ``f("s")``; inferring
+    ``x: int`` from ``x=0`` is the UNSOUND, wrong-but-verified landing this
+    module exists to avoid, so the default-value path stays REMOVED). A guard is
+    different: when
 
-    No other parameter signal is provable from the AST alone today, so this
-    returns ``[]``. The hook is kept (rather than deleted) so a future,
-    genuinely TYPE-CONSTRAINING source — never a literal default — has an
-    obvious, single place to land."""
-    return []
+      - ``assert isinstance(x, str)`` or
+      - ``if not isinstance(x, int): raise TypeError``
+
+    appears UNCONDITIONALLY at entry, every path that continues past it has
+    PROVEN ``x`` is an instance of that class. The annotation merely RECORDS that
+    runtime-enforced fact; it changes no runtime value, so it cannot contradict
+    the project's tests (any value the guard would reject already raises today).
+
+    Soundness — all enforced by :func:`_guard_prologue_bindings` and
+    :func:`_isinstance_single_class`:
+      - the guard is UNCONDITIONAL (a direct body statement in the contiguous
+        entry prologue — never nested under another ``if``/``for``/``try``);
+      - SINGLE bare-``Name`` builtin class only (a tuple ``(int, float)`` would
+        need a ``Union`` ⇒ refuse; a dotted/complex class ⇒ refuse);
+      - the parameter is NOT reassigned or used before its guard (the prologue is
+        only guards, so the guard binds the ORIGINAL parameter);
+      - the parameter has NO existing annotation (we never overwrite — checked
+        here against ``arg.annotation``).
+
+    Returns ``[]`` when no such guard is present (the honest no-op)."""
+    bindings = _guard_prologue_bindings(fn)
+    if not bindings:
+        return []
+    out: list[tuple[ast.arg, str]] = []
+    for arg in _all_args(fn):
+        if arg.annotation is not None:
+            continue  # never overwrite an existing annotation
+        class_name = bindings.get(arg.arg)
+        if class_name is not None:
+            out.append((arg, class_name))
+    return out
 
 
 def _function_edits(
     fn: ast.FunctionDef | ast.AsyncFunctionDef, source: str, line_starts: list[int]
 ) -> list[tuple[int, int, str]]:
-    """The ``(start, end, text)`` splice edits for one function: a `` -> T``
-    before the header colon when the return is provable. (Parameter edits are
-    currently never produced — see :func:`_annotatable_params` for why a default
-    value is not a sound type bound — but the loop is kept so a future sound
-    parameter signal needs no plumbing change.) Offsets are absolute into
-    ``source``."""
+    """The ``(start, end, text)`` splice edits for one function: a ``: T`` after
+    each parameter whose type is PROVABLE from an entry ``isinstance`` guard
+    (:func:`_annotatable_params`), plus a `` -> T`` before the header colon when
+    the return is provable. Offsets are absolute into ``source``."""
     edits: list[tuple[int, int, str]] = []
     for arg, type_name in _annotatable_params(fn):
         off = _end_offset(arg, line_starts)
@@ -857,8 +1014,9 @@ def plan_type_annotations(project_root: str | Path, module_rel: str) -> RenamePl
     """Build the provable-type-hint plan for one module, or an empty no-op plan.
 
     Annotates every function in ``module_rel`` whose return type is provable
-    from the AST (parameters are never inferred — a default value is not a sound
-    type bound; see :func:`_annotatable_params`). Test/fixture files are refused
+    from the AST, plus each parameter whose type is provable from an
+    unconditional entry ``isinstance`` guard (a default value is still NOT a
+    sound bound; see :func:`_annotatable_params`). Test/fixture files are refused
     (empty plan). An empty plan means nothing provable to add — a no-op, not a
     failure.
     The single write goes in ``new_contents`` with the original in ``originals``
