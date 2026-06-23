@@ -256,6 +256,18 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # campaign that makes ``from pkg import X`` work.
     "the public re-export surface to wire": "wire-exports",
 
+    # Undocumented public signature: the document lens's "signatures and types"
+    # aspect also names a public function that carries NO docstring. The
+    # document-signature objective LANDS exactly that — a docstring listing the
+    # parameter names (AST facts) plus a ``Returns: <type>`` line whose type is
+    # PROVEN by the existing return-type oracle (the same inference infer-type-hints
+    # lands as ``-> T``); it REFUSES when the return type is not provable (lands
+    # nothing, never a placeholder), and skips private/dunder/test names. So the
+    # "signature to document" facet becomes the campaign that documents the
+    # function's surface, honestly and for free. Its phrasing is not a substring of
+    # any other key (nor any of them of it), so its order is free.
+    "the public signature to document": "document-signature",
+
     # Missing usage doc: the document lens's "worked examples" aspect names the
     # package's USAGE.md — the minimal runnable examples a newcomer needs. The
     # generate-usage-doc objective LANDS exactly that — a USAGE.md generated from

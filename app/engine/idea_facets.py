@@ -331,7 +331,13 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # wire-exports develop objective wires it (`__init__`
                              # re-exports + `__all__`). Appended, so the originals
                              # still lead and emit in their existing order.
-                             "the public re-export surface to wire"],
+                             "the public re-export surface to wire",
+                             # added: a public function with NO docstring — the
+                             # document-signature develop objective lands one (param
+                             # names + a PROVEN `Returns: <type>`), refusing when
+                             # the return type is not provable. Appended, so the
+                             # originals still lead and emit in their order.
+                             "the public signature to document"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
     "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown",
                         # added: the package's USAGE.md generated from its public
