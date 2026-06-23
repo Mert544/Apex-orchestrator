@@ -11,6 +11,28 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (8. tur) — parametrize tipler+join · sequence-reduction stub'lar · `/code-review` skill GERÇEK bug yakaladı (full-gate yeşil, A+99):**
+- `b660971` **feat(infer-type-hints): parametrize konteyner tipleri + type-join** — tam-literal display artık
+  parametrize tip: `[1,2]`→`list[int]`, `{1:'a'}`→`dict[int,str]`, `(1,'a')`→`tuple[int,str]`, iç-içe
+  `[[1],[2]]`→`list[list[int]]`. `_return_value_type`'ta kuruldu (`_literal_type` DOKUNULMADI → binop/mult oracle
+  byte-identical). `_join_types` (least-upper-bound) çoklu-dönüş/ternary uzlaşmasında: birebir→kesin,
+  farklı-param/bare→ortak base, cross-base→refuse → `[1] if c else []` hâlâ `-> list` (regresyon ÖNLENDİ). Join
+  yalnız genişletir → her annotation doğru kalır; empty/mixed/comprehension bare'e düşer.
+- `1658f1d` **feat(stub-synthesis): sequence-reduction — `sorted(a)[k]`, `len(set(a))`** — k-inci küçük (sabit-k
+  madenlenir, her witness'ta 0≤k<len, min/max/a[k]'ye defer) + distinct-count (hash-order-BAĞIMSIZ sayım, dup-free'de
+  `len`'i gölgelemez). ≥2-distinct + type-exact + canary + ambiguity-refuse (k=1 vs k=-2 length-3'te). **+ `/code-review`
+  skill'inin yakaladığı GERÇEK bug:** `set`, in-process `_SAFE_BUILTINS`'te yoktu → `can_fill_stub_in_process`
+  `len(set(a))`'i NameError'la False sayıyordu → develop-loop move-scan distinct-count stub'ı HİÇ önermiyordu
+  (pytest-apply landing yapsa bile — **no-under-count invaryantı ihlali**). `set` eklendi (yalnız deterministik SAYIM
+  için; bare `set(a)` gövdesi hâlâ yasak), regresyon testi pinledi.
+- **D1 (document-signature) BLOKE — PRENSİPLİ:** mühendis sert bir 1:1 parite değişmezine çarptı (her kayıtlı
+  objektif bir facet ifadesinden erişilebilir olmalı; 48==48). 49. objektifi facet-bağlantısı olmadan kaydetmek 4
+  parite-assertion'ını kırardı; mühendis assertion'ı ZAYIFLATMADI / başka-dalga registry'sine DOKUNMADI, durdu.
+  **facet-kapsamlı tek dalga** olarak yeniden gönderilecek (yeni objektif + registration + `FACET_OBJECTIVE_MAP`
+  girdisi + `idea_facets` ifadesi + testler — tek writer).
+- **Claude skill kullanımı:** `/code-review --effort high` (2 read-only correctness reviewer) bu turun parçası oldu
+  ve B2'de gerçek bir oracle-under-count bug'ı yakaladı (trust foundation çalışıyor).
+
 **BU OTURUM (7. tur) — conjoined-isinstance param · mined replace · dedup köprüleri (full-gate yeşil, A+99):**
 - `a4e1fbe` **feat(infer-type-hints): konjoine isinstance guard'dan param tipleri** — `assert isinstance(x,A) and
   isinstance(y,B)` → `x:A, y:B` (ve `if not (...): raise` formu). `_guard_test_bindings` `ast.BoolOp(And)`'i
@@ -213,8 +235,8 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**~22.069 test** + ruff), öz-not **A+99**
-  (bu oturumda `--chunks 16 -j 4` → 793s, 16/16 chunk + ruff PASS, exit 0).
+- **Kapı:** `python scripts/verify.py` → full green (**~22.136 test** + ruff), öz-not **A+99**
+  (bu oturumda `--chunks 16 -j 4` → 773s, 16/16 chunk + ruff PASS, exit 0).
 - **⚠️ FRESH-CONTAINER KAPI ÖN-KOŞULU (yeni oturum bunu OKUSUN):** Bulut klonu **shallow**
   gelir (~50 commit); karakterizasyon testleri `git show <eski-commit>^` ile snapshot
   stage eder → shallow'da **collection-error** (bu oturumda 7 chunk böyle kırıldı, dalga
@@ -251,13 +273,14 @@
 
 ## 3. SIRADAKİ İŞLER (öncelik sırası — saha testi gaplerine dayalı)
 
-**🆕 EN GÜNCEL SLATE (6. tur keşif denetçisi; grounded · dosya-ayrık · sound · anafikre-sadık — PAKETLEME: ✅R7=A1∥B1∥C1 İNDİ (a4e1fbe/7616f9a/13568e3), SIRADAKİ R8 = A2∥B2∥D1, R9 = C2/doctest):**
+**🆕 EN GÜNCEL SLATE (6. tur keşif denetçisi; grounded · dosya-ayrık · sound · anafikre-sadık — DURUM: ✅R7=A1∥B1∥C1 (a4e1fbe/7616f9a/13568e3), ✅R8=A2+B2 (b660971/1658f1d), ⛔D1 BLOKE (facet-parite), SIRADAKİ = D1-facet-kapsamlı + C2/doctest):**
+- ✅ **A2 (8.tur `b660971`)** parametrize display tipleri + type-join. İNDİ.
+- ✅ **B2 (8.tur `1658f1d`)** `sorted(a)[k]` + `len(set(a))` (+ `set` sandbox under-count fix). İNDİ.
+- ⛔ **D1 (document-signature) BLOKE:** 1:1 objektif↔facet parite değişmezi → tek facet-kapsamlı dalga olarak yeniden gönder (yeni objektif + registration + `FACET_OBJECTIVE_MAP` girdisi + `idea_facets` ifadesi + testler).
 - ✅ **A1 (7.tur `a4e1fbe`)** [`type_annotations.py`]: param tipi `assert isinstance(x,A) and isinstance(y,B)` (BoolOp-And → operand başına single-class). İNDİ.
 - ✅ **B1 (7.tur `7616f9a`)** [`stub_synthesis.py`]: `a.replace(k1,k2)` MADENLENMİŞ tek-çift, witness-doğrulamalı, ambiguity-refuse. İNDİ.
 - ✅ **C1 (7.tur `13568e3`)** [idea-bridge]: `dedup-total-return` & `dedup-parameterized` GROUNDED-köprülendi (7.+8. opt-in). İNDİ.
-- **A2** [`type_annotations.py`]: parametrize display tipleri — `{1:"a"}`→`dict[int,str]`, `[1,2]`→`list[int]`, `(1,"a")`→`tuple[int,str]` (her eleman `_literal_type`'la kanıtlı; karışık→bare; comp→bare). `_DISPLAY_TYPES.get` dalını `_parametrized_display_type` ile değiştir. (A1 ile aynı dosya → ayrı tur.)
-- **B2** [`stub_synthesis.py`]: `sorted(a)[k]` (k-inci küçük) + `len(set(a))` (distinct-sayım). sorted[k] her witness'ta 0≤k<len iken total; len(set) sayım (PYTHONHASHSEED yok). (B1 ile aynı dosya → ayrı tur.)
-- **C2/doctest** [`stub_synthesis.py`]: witness'ları modül docstring `>>>` doctest'lerinden de madenle (`_witnesses_in_file` kardeşi). `fillable_stub_modules`'tan akar, köprü değişmez.
+- **C2/doctest** [`stub_synthesis.py`] (SIRADAKİ): witness'ları modül docstring `>>>` doctest'lerinden de madenle (`_witnesses_in_file` kardeşi). `fillable_stub_modules`'tan akar, köprü değişmez.
 - **D1** (YENİ yetenek, kendi dosyası) [`app/execution/objectives/document_signature.py` + küçük C-bağlama]: PEP 257 docstring İSKELETİ sentezle — param adları AST'ten (GERÇEK, çıkarım değil) + `Returns: <type>` SADECE `infer_annotations` dönüş-tipini kanıtladığında. North-Star "docstring ekle" sağlam yapılmış. Zaten-belgeli/fixture reddet. `infer_type_hints.py`+`docstring.py` aynala.
 - **DIŞLANAN (drift/unsound — YAPMA):** bare-Name/Call dönüşten çıkarım (non-local) · default'tan param · `==`/`<`→bool (override edilebilir dunder) · Div/Pow aynı-tip · `set(a)`/`list(set)` (PYTHONHASHSEED sıra) · daha fazla detektör/safety/honesty makinesi.
 
