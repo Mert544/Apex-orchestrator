@@ -361,8 +361,13 @@ def test_refuses_split_returns_list_not_str():
     assert infer_annotations("def f():\n    return 's'.split(',')\n") is None
 
 
-def test_refuses_encode_returns_bytes_not_str():
-    assert infer_annotations("def f():\n    return 's'.encode()\n") is None
+def test_encode_inferred_as_bytes_not_str():
+    # `str.encode(...)` returns BYTES unconditionally, so the round-5 bytes rule
+    # soundly annotates `'s'.encode()` as `-> bytes` — the one thing it must never
+    # do is claim the wrong `-> str`. (`split`/`find` above stay REFUSED: their
+    # result type is args-dependent, not a fixed bytes/str like encode/decode.)
+    assert infer_annotations("def f():\n    return 's'.encode()\n") == (
+        "def f() -> bytes:\n    return 's'.encode()\n")
 
 
 def test_refuses_find_returns_int_not_str():

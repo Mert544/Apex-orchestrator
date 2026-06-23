@@ -25,6 +25,11 @@ What counts as PROVABLE (the only things ever annotated):
     FIXED-RESULT ``<builtin>(...)`` call whose builtin's result type does not
     depend on its args and is NOT shadowed in the function's scope (``len(x)`` ⇒
     ``int``, ``sorted(x)`` ⇒ ``list`` — see :func:`_builtin_call_returns_type`),
+    and a FIXED-RESULT bytes/str method call ``<str-lit>.encode(...)`` ⇒
+    ``bytes`` / ``<bytes-lit>.decode(...)`` ⇒ ``str`` / a
+    ``<bytes-lit>.<bytes-method>(...)`` over a LITERAL receiver ⇒ ``bytes``
+    (``b'a'.upper()`` — see :func:`_bytes_method_call_returns_type`, the bytes
+    analog of the str-method rule),
     and a SAME-TYPE conditional expression ``X if C else Y`` whose BOTH branches
     independently prove to the SAME type (``'a' if c else 'b'`` ⇒ ``str`` — see
     :func:`_ifexp_same_type`; the condition does not affect the result type and a
@@ -175,6 +180,14 @@ def _literal_type(node: ast.expr) -> str | None:
         chains) and ``<method>`` is in :data:`_STR_RETURNING_METHODS` (str
         methods that ALWAYS return ``str``). See
         :func:`_str_method_call_returns_str` for the soundness rules.
+      - a FIXED-result bytes/str method call ⇒ ``bytes``/``str``:
+        ``<str-literal>.encode(...)`` ⇒ ``bytes``, ``<bytes-literal>.decode(...)``
+        ⇒ ``str``, and a ``<bytes-literal>.<method>(...)`` whose ``<method>`` is
+        in :data:`_BYTES_RETURNING_METHODS` (bytes methods that ALWAYS return
+        ``bytes``) ⇒ ``bytes`` — the receiver proved RECURSIVELY so chains like
+        ``b'a'.upper().strip()`` compose. See
+        :func:`_bytes_method_call_returns_type` for the soundness rules (a bare
+        ``Name`` receiver and an args-dependent method refuse).
       - a SAME-TYPE-LITERAL binary op ⇒ that type: ``<lit> <op> <lit>`` where
         BOTH operands are provably the SAME concrete type and ``<op>`` is in the
         type-closed safe set — ``1 + 2`` ⇒ ``int``, ``'a' + 'b'`` ⇒ ``str``,
@@ -204,6 +217,9 @@ def _literal_type(node: ast.expr) -> str | None:
         return "bool"
     if _str_method_call_returns_str(node):
         return "str"
+    method = _bytes_method_call_returns_type(node)
+    if method is not None:
+        return method
     unary = _unaryop_numeric_literal(node)
     if unary is not None:
         return unary
@@ -254,6 +270,65 @@ def _str_method_call_returns_str(node: ast.expr) -> bool:
     if func.attr not in _STR_RETURNING_METHODS:
         return False
     return _literal_type(func.value) == "str"
+
+
+# bytes methods that ALWAYS return ``bytes`` when they return at all — the
+# analog of :data:`_STR_RETURNING_METHODS`, verified to return ``bytes`` for
+# EVERY argument they accept (they may raise on bad args, but if they RETURN it
+# is ``bytes``). Excluded by design: ``decode`` (str — handled separately as the
+# str-producing rule), ``hex`` (str), ``split``/``rsplit``/``splitlines``/
+# ``partition``/``rpartition`` (list/tuple), ``find``/``rfind``/``index``/
+# ``count`` (int), and every predicate (``startswith``/``isdigit``/... ⇒ bool).
+# ``bytes`` has NO ``encode``/``casefold``/``format`` — those are str-only.
+_BYTES_RETURNING_METHODS: frozenset[str] = frozenset({
+    "upper", "lower", "strip", "lstrip", "rstrip", "replace", "title",
+    "capitalize", "swapcase", "center", "ljust", "rjust", "zfill",
+    "expandtabs", "translate", "removeprefix", "removesuffix", "join",
+})
+
+
+def _bytes_method_call_returns_type(node: ast.expr) -> str | None:
+    """The provable type NAME for a ``<receiver>.<method>(...)`` call whose
+    result type is FIXED by the bytes/str method involved, or ``None``.
+
+    Three sound shapes, each requiring a PROVABLE LITERAL receiver (resolved
+    RECURSIVELY via :func:`_literal_type`, so chains compose — e.g.
+    ``b'a'.upper().strip()`` proves because each step's receiver proves
+    ``bytes``):
+
+      1. ``<str>.encode(...)`` ⇒ ``bytes`` — ``str.encode`` ALWAYS returns
+         ``bytes`` regardless of its codec/errors args. The receiver must prove
+         ``str`` (``_literal_type(receiver) == "str"``: a str constant, an
+         f-string, or a provably-str method call). The mirror of the existing
+         ``str.<method>`` ⇒ ``str`` rule, on the bytes side.
+      2. ``<bytes>.decode(...)`` ⇒ ``str`` — ``bytes.decode`` ALWAYS returns
+         ``str`` regardless of args. The receiver must prove ``bytes``.
+      3. ``<bytes>.<method>(...)`` ⇒ ``bytes`` where ``<method>`` is in
+         :data:`_BYTES_RETURNING_METHODS` (a bytes method that ALWAYS returns
+         ``bytes``). The receiver must prove ``bytes``.
+
+    REFUSED (the LOCKED soundness rules, preserved): a bare ``ast.Name``
+    receiver (``x.encode()`` / ``x.decode()`` where ``x`` is a parameter of
+    UNKNOWN type — never assume a receiver's type), a ``.decode()`` on a
+    non-bytes/unprovable receiver, and any method whose result type is not
+    invariant of args for that receiver type (``split`` ⇒ list, ``hex`` ⇒ str,
+    ``count`` ⇒ int, predicates ⇒ bool — none are in the bytes-returning set).
+    Call ARGUMENTS are not inspected: the listed methods' result type is fixed
+    by the method, not the args (they raise on bad args, but a ``-> T`` only
+    constrains a value that IS returned)."""
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return None
+    receiver = _literal_type(func.value)
+    if func.attr == "encode":
+        return "bytes" if receiver == "str" else None
+    if receiver != "bytes":
+        return None
+    if func.attr == "decode":
+        return "str"
+    return "bytes" if func.attr in _BYTES_RETURNING_METHODS else None
 
 
 # Binary operators that are TYPE-CLOSED over same-type literal operands — the
