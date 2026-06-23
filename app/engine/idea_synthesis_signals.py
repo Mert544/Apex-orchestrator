@@ -9,7 +9,7 @@ approximating its logic. The signal is, by construction, EXACTLY the set the
 lander would touch (or a safe subset of it): if the lander refuses (ambiguous
 stub, non-boilerplate class, unprovable return), this layer refuses too.
 
-Three signals, one per synthesis objective Apex offers:
+Four signals, one per synthesis objective Apex offers:
 
   - :func:`fillable_stub_modules` — implement-stub. Calls
     :func:`app.execution.stub_synthesis.module_has_fillable_stub`, the lander's
@@ -27,6 +27,14 @@ Three signals, one per synthesis objective Apex offers:
     source — i.e. at least one function currently lacks a return annotation AND
     that return type is provable from the AST (the lander annotates no
     parameters, so a changed source always carries >=1 added ``-> T``).
+  - :func:`cover_gaps_modules` — cover-gaps. Calls
+    :func:`app.execution.cover_gaps.plan_cover_gaps` (the lander itself) and keeps
+    a module only when the plan has a non-empty ``new_contents`` — i.e. the lander
+    would actually write a brand-new characterization test for it. That is the
+    lander's OWN gate (an existing ``tests/test_<stem>.py``, a fixture/dunder
+    subject, or a module nothing can be honestly characterized in all yield an
+    empty no-op plan), so the signal equals exactly the modules ``apex develop``'s
+    cover-gaps objective would touch — never an over-promise.
 
 Pure: no writes, no pytest, no network. Deterministic: every result is sorted.
 Defensive: a missing / unreadable / syntactically-broken module, or a
@@ -39,6 +47,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
+from app.execution.cover_gaps import plan_cover_gaps
 from app.execution.dataclass_rewrite import rewrite_dataclasses
 from app.execution.semantic.transforms.type_annotations import infer_annotations
 from app.execution.stub_synthesis import module_has_fillable_stub
@@ -47,6 +56,7 @@ __all__ = [
     "fillable_stub_modules",
     "dataclassifiable_modules",
     "inferable_return_modules",
+    "cover_gaps_modules",
 ]
 
 
@@ -156,3 +166,31 @@ def inferable_return_modules(
     around it and would yield an identical decision on a readable module; the
     pure-source form is used so this layer stays a no-IO-beyond-read predicate."""
     return _qualifying(root, modules, _has_inferable_return, limit)
+
+
+def _has_cover_gap(root_path: Path, rel: str) -> bool:
+    """True when :func:`plan_cover_gaps` would WRITE a characterization test for
+    ``rel`` — i.e. the lander's own plan has a non-empty ``new_contents``. This
+    calls the REAL lander, so it is honest by construction: a fixture/dunder
+    subject, a module already covered by a ``tests/test_<stem>.py``, an
+    un-characterizable module, or a generated test that would not parse all yield
+    an empty no-op plan (``new_contents`` is ``{}``) and do not qualify.
+    ``plan_cover_gaps`` reads the source itself and never raises on a bad subject
+    (it records a blocker instead), so no extra guard is needed here."""
+    return bool(plan_cover_gaps(root_path, rel).new_contents)
+
+
+def cover_gaps_modules(
+    root: str | Path, modules: Iterable[str], limit: int | None = None
+) -> list[str]:
+    """The modules with a LANDABLE cover-gaps characterization test, sorted, capped.
+
+    Grounded on :func:`app.execution.cover_gaps.plan_cover_gaps` — the lander
+    itself: a module qualifies only when running the real plan yields a non-empty
+    ``new_contents`` (the lander's own definition of "there is an untested module
+    here I can write a brand-new characterization test for"). A module that
+    already has a linked ``tests/test_<stem>.py``, a fixture/test/dunder subject,
+    or one nothing can be honestly characterized in all produce an empty no-op
+    plan, so none over-promise. This is exactly the set ``apex develop``'s
+    cover-gaps objective would touch."""
+    return _qualifying(root, modules, _has_cover_gap, limit)

@@ -1135,13 +1135,16 @@ _FACT_EXPECTED = {
     "bool-comparison": ("simplify_bool_comparison", True),
     "or-default": ("or_default", True),
     "dead-parameter": ("design_task", False),
-    # The three develop-grade synthesis objectives surfaced by the action-plan
+    # The develop-grade synthesis objectives surfaced by the action-plan
     # augmentation (``_augment_synthesis_steps``). Not emitted by the seeder, but
     # routable through the standard fact path; each is executable (grounded on its
-    # lander's own predicate, so the claim is honest by construction).
+    # lander's own predicate, so the claim is honest by construction). cover-gaps
+    # is the broad opt-in objective (default off in the planner), delegated like
+    # implement-stub to the develop-core ``apply_rename`` path.
     "infer-type-hints": ("infer_type_hints", True),
     "dataclassify": ("dataclassify", True),
     "implement-stub": ("implement_stub", True),
+    "cover-gaps": ("cover_gaps", True),
 }
 
 

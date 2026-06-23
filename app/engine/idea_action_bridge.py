@@ -270,6 +270,17 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                        "Implement the test-pinned stub(s) in {s} — synthesise a "
                        "body that makes their pinned tests pass (refuses ambiguous "
                        "/ unpinned stubs)", True),
+    # cover-gaps is the SAME shape as implement-stub: NOT a SemanticPatchResult
+    # transform (it writes a brand-new ``tests/test_<stem>.py`` and its verify is
+    # impact-scoped), so ``apply_step`` delegates it to the develop-core
+    # ``apply_rename`` path (``plan_cover_gaps`` + ``apply_rename`` with
+    # ``impact_scope=True``). It is surfaced executable ONLY for a module whose own
+    # ``plan_cover_gaps`` produces a non-empty ``new_contents`` (``cover_gaps_modules``),
+    # so the claim is honest by construction.
+    "cover-gaps": ("cover_gaps",
+                   "Write a characterization test for the untested module {s} — "
+                   "pins its CURRENT behaviour as a safety net (refuses a module "
+                   "that already has a linked test)", True),
 }
 
 
@@ -762,6 +773,12 @@ class IdeaActionBridge:
         "infer_type_hints": ["infer provable return type hints"],
         "dataclassify": ["convert boilerplate init to dataclass"],
         "implement_stub": ["implement test-pinned stub body"],
+        # cover-gaps, like implement_stub, is NOT a SemanticPatchResult transform
+        # — ``apply_step`` delegates it to the develop-core ``apply_rename`` path.
+        # Listed here so ``_step_targets`` recognises it as a real transform
+        # objective (a ``.py`` target → ``[step.target]``); the new test file the
+        # plan writes is resolved by ``plan_cover_gaps`` itself, not from here.
+        "cover_gaps": ["write characterization test for untested module"],
     }
 
     # Behaviour-preserving readability simplifications dispatched STRAIGHT to
@@ -1239,13 +1256,14 @@ class IdeaActionBridge:
         if target_files is None:
             return None
 
-        # ``implement_stub`` does NOT fit the SemanticPatchResult gate: its
-        # synthesis runs pytest internally and its verify MUST be impact-scoped,
-        # so ``apply_step`` delegates it to the develop-core ``apply_rename`` path
-        # instead. The SemanticPatchResult-based ``_generate`` (used by
-        # draft_patch / attach_proofs) has no patch to offer here — return None so
-        # those preview surfaces show nothing rather than fabricating one.
-        if step.action_type == "implement_stub":
+        # ``implement_stub`` / ``cover_gaps`` do NOT fit the SemanticPatchResult
+        # gate: each is delegated to the develop-core ``apply_rename`` path instead
+        # (implement_stub's synthesis runs pytest and its verify must be
+        # impact-scoped; cover_gaps writes a brand-new test file with an
+        # impact-scoped verify). The SemanticPatchResult-based ``_generate`` (used
+        # by draft_patch / attach_proofs) has no patch to offer here — return None
+        # so those preview surfaces show nothing rather than fabricating one.
+        if step.action_type in self._DELEGATED_ACTIONS:
             return None
 
         # ``add_ci`` is not an AST rewrite of an existing file — it scaffolds a
@@ -1510,11 +1528,13 @@ class IdeaActionBridge:
         fails — every changed file is restored to its pre-patch content
         (automatic rollback). Returns a result dict describing what happened.
 
-        ``implement_stub`` is the one action NOT routed through the
-        SemanticPatchResult gate: its synthesis runs pytest internally and its
-        verify must be impact-scoped, so it is DELEGATED to the proven
-        develop-core ``apply_rename`` path (the same one ``objective_compiler``
-        uses), which restores the tree itself and never double-applies.
+        ``implement_stub`` and ``cover_gaps`` are the actions NOT routed through
+        the SemanticPatchResult gate (``_DELEGATED_ACTIONS``): implement_stub's
+        synthesis runs pytest internally and cover_gaps writes a brand-new test
+        file, and both need impact-scoped verify, so each is DELEGATED to the
+        proven develop-core ``apply_rename`` path (the same one
+        ``objective_compiler`` uses), which restores the tree itself and never
+        double-applies.
         """
         from app.policies.mode_policy import ModePolicy, mode_from_string
 
@@ -1523,11 +1543,12 @@ class IdeaActionBridge:
         if not perms.can_patch:
             return {"applied": False, "reason": f"mode '{mode}' is read-only (cannot patch)"}
 
-        # ``implement_stub`` does not fit the in-memory patch gate (it runs pytest
-        # during synthesis and needs impact-scoped verify); delegate it to the
+        # ``implement_stub`` / ``cover_gaps`` do not fit the in-memory patch gate
+        # (implement_stub runs pytest during synthesis; cover_gaps writes a
+        # brand-new test file — both need impact-scoped verify); delegate to the
         # develop-core apply path, which owns its own snapshot/verify/rollback.
-        if step.action_type == "implement_stub":
-            return self._apply_implement_stub(step, project_root, verify)
+        if step.action_type in self._DELEGATED_ACTIONS:
+            return self._apply_delegated_synthesis(step, project_root, verify)
 
         result = self._generate(step, project_root)
         if result is None:
@@ -1565,43 +1586,74 @@ class IdeaActionBridge:
                                         patch_requests, applied,
                                         tier_for(step.action_type))
 
-    def _apply_implement_stub(self, step: ActionStep, project_root: str,
-                              verify: bool) -> dict:
-        """Delegate an ``implement_stub`` step to the develop-core apply path.
+    # The develop-core synthesis objectives that do NOT fit the in-memory
+    # SemanticPatchResult gate and are DELEGATED to the proven ``apply_rename``
+    # path (the one ``objective_compiler`` uses), keyed by action_type ->
+    # (``plan_*`` importer, empty-plan reason). Each importer returns the public
+    # ``plan_<name>(project_root, target) -> RenamePlan`` lander; the bridge lands
+    # the plan with ``impact_scope=True`` and stamps the action as transform_type.
+    # implement_stub's synthesis runs pytest and needs impact-scoped verify;
+    # cover_gaps writes a brand-new ``tests/test_<stem>.py`` (purely additive) and
+    # its impact-scoped verify runs exactly that new characterization test.
+    @staticmethod
+    def _plan_implement_stub_lander():
+        from app.execution.objectives.implement_stub import plan_implement_stub
+        return plan_implement_stub
 
-        Mirrors ``objective_compiler._apply_one_move``: build the one-module
-        plan with :func:`plan_implement_stub`, then land it through
-        :func:`apply_rename` with ``impact_scope=True`` (the synthesis already
-        restored the tree, so this is the single real write; the gate runs the
-        impacted tests and rolls back on any regression). The ``apply_rename``
-        result is translated into the bridge's ``apply_step`` result shape.
+    @staticmethod
+    def _plan_cover_gaps_lander():
+        from app.execution.cover_gaps import plan_cover_gaps
+        return plan_cover_gaps
+
+    _DELEGATED_SYNTHESIS = {
+        "implement_stub": (
+            "_plan_implement_stub_lander",
+            "no synthesizable stub (unpinned / ambiguous / non-stub)"),
+        "cover_gaps": (
+            "_plan_cover_gaps_lander",
+            "no cover-gap (already linked test / not characterizable)"),
+    }
+
+    # The action types ``apply_step`` / ``_generate`` route to the develop-core
+    # delegation instead of the SemanticPatchResult gate (the table's keys).
+    _DELEGATED_ACTIONS = frozenset(_DELEGATED_SYNTHESIS)
+
+    def _apply_delegated_synthesis(self, step: ActionStep, project_root: str,
+                                   verify: bool) -> dict:
+        """Delegate a develop-core synthesis step to the ``apply_rename`` path.
+
+        Shared by ``implement_stub`` and ``cover_gaps`` (see ``_DELEGATED_SYNTHESIS``).
+        Mirrors ``objective_compiler._apply_one_move``: build the one-module plan
+        with the objective's own ``plan_<name>(project_root, target)`` lander, then
+        land it through :func:`apply_rename` with ``impact_scope=True`` (the gate
+        runs the impacted tests and rolls back on any regression). The result is
+        translated into the bridge's ``apply_step`` result shape.
 
         Honesty: an EMPTY plan (``not plan.new_contents``) means nothing here is
-        synthesizable — never a fake-green — so it returns a non-applied result
+        producible — never a fake-green — so it returns a non-applied result
         (carrying any disclosed blocker reason) and writes nothing.
         """
         from app.execution.cross_file_rename import apply_rename
-        from app.execution.objectives.implement_stub import plan_implement_stub
 
-        plan = plan_implement_stub(project_root, step.target)
+        lander_name, default_reason = self._DELEGATED_SYNTHESIS[step.action_type]
+        plan = getattr(self, lander_name)()(project_root, step.target)
         if not plan.new_contents:
-            reason = ("; ".join(plan.blockers)
-                      or "no synthesizable stub (unpinned / ambiguous / non-stub)")
-            return {"applied": False, "transform_type": "implement_stub",
+            reason = "; ".join(plan.blockers) or default_reason
+            return {"applied": False, "transform_type": step.action_type,
                     "reason": reason}
         res = apply_rename(project_root, plan, verify=verify, impact_scope=True)
-        return self._implement_stub_result(res)
+        return self._delegated_synthesis_result(step.action_type, res)
 
     @staticmethod
-    def _implement_stub_result(res: dict) -> dict:
+    def _delegated_synthesis_result(transform_type: str, res: dict) -> dict:
         """Translate an ``apply_rename`` result into the ``apply_step`` shape.
 
         Carries ``applied``/``rolled_back``/``changed_files``/``verified``/
         ``coverage``/``reason`` through verbatim where present so the maintenance
         report and the autonomous-commit gate read it exactly like any other
-        applied/rolled-back step. ``transform_type`` is stamped ``implement_stub``
-        so the report names the synthesis that landed."""
-        out: dict = {"transform_type": "implement_stub", **res}
+        applied/rolled-back step. ``transform_type`` names the synthesis that
+        landed (``implement_stub`` / ``cover_gaps``)."""
+        out: dict = {"transform_type": transform_type, **res}
         out["applied"] = bool(res.get("applied"))
         if "verified" in res:
             out["suite_green"] = bool(res.get("verified"))
@@ -2146,6 +2198,20 @@ class IdeaActionBridge:
         ("dataclassifiable_modules", "dataclassify", "dataclassify", "Refine"),
     )
 
+    # OPT-IN synthesis objectives (default OFF): these share the idea budget but
+    # qualify a BROAD set of modules, so enabling them by default would shift
+    # existing idea sets. They run only when the caller passes ``cover_gaps=True``
+    # (threaded ``plan_tree``/``plan_roadmap`` → ``_augment_synthesis_steps``), so
+    # a default plan stays byte-identical to before this objective existed.
+    #
+    # cover-gaps writes a brand-new safety-net characterization test for ANY
+    # untested module — the same "build the net first" move as create_test_stub —
+    # so it belongs in Stabilize. Delegated (like implement_stub) to the
+    # develop-core ``apply_rename`` path, not the SemanticPatchResult gate.
+    _OPTIN_SYNTHESIS_OBJECTIVES = (
+        ("cover_gaps_modules", "cover_gaps", "cover-gaps", "Stabilize"),
+    )
+
     # Cost ceiling: at most this many candidate modules are probed per signal
     # (the signals each read + parse a file), keeping augmentation cheap on a
     # large plan. Deterministic — the sorted candidate prefix is used.
@@ -2166,7 +2232,8 @@ class IdeaActionBridge:
         return sorted(mods)[:cls._SYNTHESIS_CANDIDATE_LIMIT]
 
     def _augment_synthesis_steps(self, steps: list[ActionStep],
-                                 project_root: str) -> None:
+                                 project_root: str,
+                                 cover_gaps: bool = False) -> None:
         """Append executable develop-grade synthesis steps for the qualifying
         candidate modules, in place (the caller then de-dups).
 
@@ -2176,6 +2243,10 @@ class IdeaActionBridge:
         whose ``(target, action_type)`` is not already present. The signal only
         returns a module when the REAL lander would land a change, so every
         appended step is genuinely executable — never a fake-green.
+
+        The three default objectives qualify a narrow set; the BROAD opt-in
+        objectives in ``_OPTIN_SYNTHESIS_OBJECTIVES`` (cover-gaps) run only when
+        ``cover_gaps=True`` so a default plan never shifts its existing idea set.
 
         Determinism / opt-in safety: on a project with NO synthesis-eligible
         module (or no ``project_root``), nothing is appended and the plan stays
@@ -2192,7 +2263,10 @@ class IdeaActionBridge:
             from app.engine import idea_synthesis_signals as sigs
         except Exception:  # pragma: no cover - defensive import guard
             return
-        for signal_name, action_type, fact, phase in self._SYNTHESIS_OBJECTIVES:
+        objectives = self._SYNTHESIS_OBJECTIVES
+        if cover_gaps:
+            objectives = objectives + self._OPTIN_SYNTHESIS_OBJECTIVES
+        for signal_name, action_type, fact, phase in objectives:
             signal = getattr(sigs, signal_name)
             for module in signal(project_root, candidates,
                                  limit=self._SYNTHESIS_CANDIDATE_LIMIT):
@@ -2234,6 +2308,7 @@ class IdeaActionBridge:
         project_root: str | None = None,
         proof: bool = False,
         confluence_first: bool = False,
+        cover_gaps: bool = False,
     ) -> ActionPlan:
         ideas = sorted(report.ideas, key=lambda i: i.value, reverse=True)
         if top is not None:
@@ -2242,7 +2317,7 @@ class IdeaActionBridge:
         steps: list[ActionStep] = []
         for i in ideas:
             steps.extend(self._expand_idea(i, project_root=root_for_checks))
-        self._augment_synthesis_steps(steps, root_for_checks)
+        self._augment_synthesis_steps(steps, root_for_checks, cover_gaps=cover_gaps)
         steps = self._dedupe_steps(steps)
         # Opt-in (default off, so existing plans are byte-identical): when the
         # top steps are a value near-tie, surface the subject with the most
@@ -2296,7 +2371,8 @@ class IdeaActionBridge:
                 step.patch_preview = self.draft_patch(step, root)
 
     def _roadmap_steps(self, report: IdeaTreeReport, roadmap,
-                       root_for_checks: str) -> list[ActionStep]:
+                       root_for_checks: str,
+                       cover_gaps: bool = False) -> list[ActionStep]:
         """Expand the roadmap's ideas into deduped, phase-ordered steps.
 
         Convergence ideas carry their own phased sub-steps (a Stabilize test
@@ -2304,7 +2380,8 @@ class IdeaActionBridge:
         the parent idea was placed; other ideas inherit the roadmap phase.
         The final stable sort by canonical phase puts every step in its true
         phase group — preserving test-before-harden order for free, since
-        Stabilize precedes Secure.
+        Stabilize precedes Secure. ``cover_gaps`` opts the broad cover-gaps
+        synthesis objective in (default off — see ``_augment_synthesis_steps``).
         """
         idea_by_path = {i.branch_path: i for i in report.ideas}
         steps: list[ActionStep] = []
@@ -2315,7 +2392,7 @@ class IdeaActionBridge:
                     continue
                 steps.extend(self._expand_idea(idea, default_phase=ph.name,
                                                project_root=root_for_checks))
-        self._augment_synthesis_steps(steps, root_for_checks)
+        self._augment_synthesis_steps(steps, root_for_checks, cover_gaps=cover_gaps)
         steps = self._dedupe_steps(steps)
         from app.engine.idea_roadmap import PHASE_ORDER
         phase_rank = {name: i for i, name in enumerate(PHASE_ORDER)}
@@ -2332,6 +2409,7 @@ class IdeaActionBridge:
         draft: bool = False,
         project_root: str | None = None,
         proof: bool = False,
+        cover_gaps: bool = False,
     ) -> ActionPlan:
         """Plan actions in roadmap order (Stabilize→Secure→Evolve→Refine).
 
@@ -2339,12 +2417,15 @@ class IdeaActionBridge:
         roadmap's engineering phases so a guarded ``apply_plan`` builds the
         safety net before changing risky code. ``phase`` restricts the plan to a
         single phase; each step is tagged with the phase it came from.
+        ``cover_gaps`` opts the broad cover-gaps synthesis objective in (default
+        off, so the default plan's idea set is unchanged).
         """
         from app.engine.idea_roadmap import RoadmapSynthesizer
 
         roadmap = roadmap or RoadmapSynthesizer().build(report)
         steps = self._roadmap_steps(report, roadmap,
-                                    project_root or report.project_root or "")
+                                    project_root or report.project_root or "",
+                                    cover_gaps=cover_gaps)
         # The phase filter applies to each *step's own* phase, so a convergence
         # idea's Secure sub-step is kept under --phase=Secure even though its
         # parent sat in Stabilize (and vice-versa).
