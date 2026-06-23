@@ -368,6 +368,14 @@ def _verify_scoped(root: Path, plan: RenamePlan) -> tuple[bool, dict] | None:
          *deselect, *impacted],
         cwd=str(root), capture_output=True, text=True, env={
             **os.environ,
+            # Never write ``.pyc`` for the project under test. CPython's default
+            # bytecode invalidation is whole-SECOND granular, so a module this gate
+            # imports while still at its pre-change bytes, then rewritten and
+            # re-tested within the same second, can be served STALE on the next
+            # run — making the end-of-session regression backstop read pre-change
+            # behaviour and miss a real regression NON-deterministically. Mirrors
+            # the import-oracle / test-shield probes, which already set this.
+            "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONPATH": str(root) + os.pathsep + os.environ.get("PYTHONPATH", "")})
     ok = proc.returncode == 0
     return ok, {"scoped": True, "tests": impacted,

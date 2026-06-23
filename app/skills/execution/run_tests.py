@@ -95,6 +95,17 @@ class RunTestsSkill:
         env["PYTHONPATH"] = os.pathsep.join(self._import_roots(root))
         # Force the subprocess to start in the target dir, not inherit ours.
         env.pop("PYTEST_ADDOPTS", None)
+        # DETERMINISM: never write ``.pyc`` for the project under test. CPython's
+        # default (timestamp) bytecode invalidation stores the source mtime as a
+        # WHOLE-SECOND integer, so a file rewritten and re-tested within the same
+        # second as a cached ``.pyc`` is served STALE bytecode. The develop-loop
+        # does exactly that — a move rewrites a module, then the end-of-session
+        # regression backstop re-runs the suite — so a stale read could make a
+        # real regression INTERMITTENTLY invisible (the rollback fires on one run
+        # and not the next on byte-identical input). Writing no cache means every
+        # run compiles from the CURRENT source: same input -> same result, and we
+        # never litter the user's project with Apex's bytecode either.
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
 
         # PROACTIVE verification-availability probe. When the selected command is
         # a ``<python> -m pytest`` invocation, confirm pytest is importable under
