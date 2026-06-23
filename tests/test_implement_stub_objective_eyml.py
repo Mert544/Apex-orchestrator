@@ -1153,3 +1153,32 @@ def test_zero_param_method_constant_gating_is_deterministic(tmp_path: Path):
     a = plan_implement_stub(str(tmp_path), "app/r.py").new_contents.get("app/r.py")
     b = plan_implement_stub(str(tmp_path), "app/r.py").new_contents.get("app/r.py")
     assert a is None and b is None and a == b
+
+
+def test_distinct_count_stub_offered_by_in_process_scan(tmp_path: Path):
+    # REGRESSION: the cheap move-scan oracle ``can_fill_stub_in_process`` must NOT
+    # under-count a stub the pytest-gated apply would land. The distinct-count body
+    # ``len(set(a))`` evaluates ``set`` inside the in-process sandbox; ``set`` was
+    # missing from ``_SAFE_BUILTINS``, so the sandbox eval raised NameError, the
+    # oracle returned False, and the develop loop never OFFERED a distinct-count
+    # stub even though ``plan_implement_stub`` lands it. Pin that it is now offered.
+    from app.execution.objectives.implement_stub import plan_implement_stub
+    from app.execution.stub_synthesis import (
+        can_fill_stub_in_process, pinned_test_files)
+
+    _write(tmp_path, "lib/__init__.py", "")
+    _write(tmp_path, "lib/m.py",
+           "def n_unique(a):\n    raise NotImplementedError\n")
+    _write(tmp_path, "tests/test_m.py",
+           "from lib.m import n_unique\n"
+           "def test_counts():\n"
+           "    assert n_unique([1, 2, 2]) == 2\n"
+           "    assert n_unique([5, 5, 5, 6]) == 2\n"
+           "    assert n_unique([7, 8, 9]) == 3\n")
+    test_files = pinned_test_files(tmp_path, "lib/m.py", "n_unique")
+    stub = StubFunction("n_unique", ("a",), 1, 2, "", False)
+    # The scan oracle now agrees with the pytest-gated apply (which lands
+    # ``return len(set(a))``); before the ``set`` fix it under-counted to False.
+    assert can_fill_stub_in_process(tmp_path, test_files, stub) is True
+    landed = plan_implement_stub(str(tmp_path), "lib/m.py").new_contents.get("lib/m.py")
+    assert landed is not None and "len(set(a))" in landed

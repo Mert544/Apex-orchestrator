@@ -448,6 +448,7 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
     out.extend(_index_templates(a, witnesses))
     out.extend(_one_arg_builtin_templates(a, kind, witnesses))
     out.extend(_compose_index_arith_templates(a, witnesses, simpler=out))
+    out.extend(_sorted_index_templates(a, witnesses, simpler=out))
     if kind in (None, "int") and _recursion_allowed(witnesses):
         out.extend([
             ("factorial", f"1 if {a} <= 1 else {a} * __apex_self__({a} - 1)"),
@@ -1506,6 +1507,111 @@ def _compose_index_arith_templates(
     return [("compose", survivors[0][1])]
 
 
+def _sorted_index_templates(
+    a: str, witnesses: list[tuple[str, str]],
+    simpler: list[tuple[str, str]] | None = None,
+) -> list[tuple[str, str]]:
+    """The 1-arg ORDER-STATISTIC family: ``return sorted(a)[k]`` for the ONE constant
+    index ``k`` whose ``sorted(a)[k]`` reproduces EVERY witness — the k-th SMALLEST
+    element (``k == 0`` min, ``k == -1`` max, ``k == 1`` second-smallest, etc.).
+    ``second_smallest([3, 1, 2]) == 2, second_smallest([5, 9, 1]) == 5,
+    second_smallest([8, 4, 6, 2]) == 4`` lands ``return sorted(xs)[1]`` — a value
+    neither the constant index ``a[k]`` (the element AT a position) nor ``min`` / ``max``
+    (the endpoints only) can spell: an INTERIOR order statistic over the SORTED sequence.
+
+    Mines ``k`` over a BOUNDED index set (:func:`_sorted_index_set`: indices valid for
+    the SHORTEST witnessed sequence, unioned with the anchors ``0`` / ``1`` / ``-1`` /
+    ``-2``, kept only when in range for EVERY witness — an out-of-range ``k`` is simply
+    not a candidate, never an exception). SOUNDNESS is by witness-verification, not by
+    trusting the shape: every ``k`` is VERIFIED with ``sorted(seq)[k] == expected``
+    type-exact across all witnesses before emit, so a coincidental ``k`` is dropped.
+
+    GUARDS — the same discipline as the count / index / compositional siblings: every
+    witnessed sequence must be ORDERABLE (``sorted`` must not raise; a mixed-type sequence
+    refuses the whole family via :func:`_sorted_index_pairs`); the expected values must
+    VARY (an all-equal contract collapses to a constant the constant-last fallback owns);
+    the >=2-distinct-witness overfit floor (:func:`_string_floor_met`). AMBIGUITY: a body
+    is emitted ONLY when exactly one ``k`` survives — if two distinct indices both
+    reproduce every witness (a thin contract cannot tell min from second-smallest), the
+    family REFUSES rather than guess. NO-SHADOW: a sorted-index body is a LAST RESORT — it
+    DEFERS to any simpler offered template (``simpler``) that ALSO fits, so ``min(a)`` /
+    ``a[0]`` win over ``sorted(a)[0]`` on a contract they already solve (they coincide
+    when ``a`` is pre-sorted), and the genuine new value (an interior ``k`` no atom
+    spells) is the only case that fires. The chosen body is still gated against all pinned
+    tests and the off-witness sequence canary by the caller, never-fake-green. With NO
+    witness list (the structural view) nothing is mined. Deterministic: bounded indices in
+    sorted order, at most one body."""
+    if not _string_floor_met(witnesses):
+        return []
+    pairs = _sorted_index_pairs(witnesses)
+    if pairs is None:
+        return []
+    survivors = [k for k in _sorted_index_set(pairs)
+                 if _sorted_index_holds(k, pairs)]
+    if len(survivors) != 1:
+        return []  # zero fits (no body) or >=2 fit (ambiguous) — refuse, never guess
+    if _simpler_template_fits(a, simpler or [], witnesses):
+        return []  # a simpler atom (min/max/a[k]) already fits — never shadow it
+    return [(f"sorted[{survivors[0]}]", f"sorted({a})[{survivors[0]}]")]
+
+
+def _sorted_index_pairs(
+    witnesses: list[tuple[str, str]],
+) -> list[tuple[object, object]] | None:
+    """The ``(seq, expected)`` pairs for the sorted-index miner, or ``None`` when the
+    family cannot be mined. Every witness must be ONE LITERAL ``list`` / ``tuple`` /
+    ``str`` argument that is ORDERABLE (``sorted`` must not raise — a mixed-type sequence
+    such as ``[1, 'a']`` refuses the whole family) with a LITERAL expected value, and the
+    expected values must VARY (an all-equal contract is a constant another family owns).
+    A non-literal, multi-arg, non-sequence, unorderable, or all-equal shape yields
+    ``None`` — never guessed. Deterministic: source order."""
+    out: list[tuple[object, object]] = []
+    for args_text, expected_text in witnesses:
+        value = _literal_tuple(args_text)
+        expected = _literal_value(expected_text)
+        if value is None or len(value) != 1 \
+                or not isinstance(value[0], (list, tuple, str)):
+            return None
+        if expected is _NO_LITERAL:
+            return None
+        try:
+            sorted(value[0])
+        except TypeError:
+            return None  # an unorderable / mixed-type sequence — refuse the family
+        out.append((value[0], expected))
+    if len({repr(expected) for _seq, expected in out}) < 2:
+        return None  # all-equal expected -> a constant, not an order statistic
+    return out
+
+
+def _sorted_index_set(pairs: list[tuple[object, object]]) -> list[int]:
+    """The BOUNDED set of constant indices ``k`` to try in ``sorted(a)[k]``: the indices
+    valid for the SHORTEST witnessed sequence (so no blowup with long inputs), unioned
+    with the anchors ``0`` / ``1`` / ``-1`` / ``-2`` (min, second-smallest, max,
+    second-largest), then KEPT only when ``k`` is in range for EVERY witness (an
+    out-of-range index is simply not a candidate, never an exception). Deterministic:
+    sorted, de-duplicated. An empty witness set yields ``[]``."""
+    if not pairs:
+        return []
+    shortest = min(len(seq) for seq, _e in pairs)  # type: ignore[arg-type]
+    candidates = set(range(shortest)) | {0, 1, -1, -2}
+    return [k for k in sorted(candidates)
+            if all(-len(seq) <= k < len(seq) for seq, _e in pairs)]  # type: ignore[arg-type]
+
+
+def _sorted_index_holds(k: int, pairs: list[tuple[object, object]]) -> bool:
+    """True when ``sorted(seq)[k]`` equals the expected value TYPE-EXACTLY for EVERY
+    witness — the verification that makes a mined index sound (``sorted(seq)[k]`` cannot
+    raise here: ``k`` came from :func:`_sorted_index_set`, in range for every witness,
+    and the sequences are orderable, checked by :func:`_sorted_index_pairs`). Type-exact
+    mirrors the accept-gate so a mined index can never imply a value the gate rejects."""
+    for seq, expected in pairs:
+        element = sorted(seq)[k]  # type: ignore[index]
+        if type(element) is not type(expected) or element != expected:
+            return False
+    return True
+
+
 def _simpler_template_fits(
     a: str, simpler: list[tuple[str, str]], witnesses: list[tuple[str, str]],
 ) -> bool:
@@ -1922,7 +2028,10 @@ def _one_arg_builtin_templates(
 
     ``abs`` / ``len`` / ``sorted`` / ``sum`` already appear earlier in
     :func:`_one_arg_templates`, so they are not repeated here. Order is fixed and
-    value-independent, preserving determinism."""
+    value-independent, preserving determinism. The witness-DERIVED distinct-count
+    shape ``len(set(a))`` is appended last among the sequence projections, only when
+    :func:`_distinct_count_applicable` clears it (a hashable sequence whose distinct
+    count VARIES and genuinely differs from a plain ``len`` — never a shadow)."""
     out: list[tuple[str, str]] = []
     if kind in (None, "int", "float"):
         out.append(("neg", f"-{a}"))
@@ -1937,9 +2046,76 @@ def _one_arg_builtin_templates(
         if not _has_set_arg(witnesses):
             out.append(("list", f"list({a})"))
             out.append(("tuple", f"tuple({a})"))
+        if _distinct_count_applicable(witnesses):
+            out.append(("distinct_count", f"len(set({a}))"))
     out.append(("str", f"str({a})"))
     out.append(("not", f"not {a}"))
     out.append(("bool", f"bool({a})"))
+    return out
+
+
+def _distinct_count_applicable(witnesses: list[tuple[str, str]] | None) -> bool:
+    """True when the witness-DERIVED ``len(set(a))`` DISTINCT-count shape may be
+    OFFERED for a single-sequence contract. ``n_unique([1, 2, 2]) == 2,
+    n_unique([5, 5, 5, 6]) == 2, n_unique([7, 8, 9]) == 3`` clears it — the body
+    returns the number of DISTINCT elements, a value no other 1-arg shape spells
+    (``len`` counts WITH duplicates; ``set(a)`` itself is forbidden — its iteration
+    order is hash-seed-dependent — but its CARDINALITY is a deterministic ``int``,
+    PYTHONHASHSEED-safe, so ``len(set(a))`` is sound to land).
+
+    Every witness must be ONE LITERAL ``list`` / ``tuple`` / ``str`` of HASHABLE
+    elements (so ``set`` cannot raise; a witness with an unhashable element refuses
+    the whole family) with a LITERAL ``int`` expected value (a ``bool`` is
+    type-distinct — a count is a plain ``int``). The expected ints must VARY (an
+    all-equal contract collapses to a constant the constant-last fallback owns), and
+    every witness must satisfy ``len(set(seq)) == expected`` (the shape is mined and
+    VERIFIED, never guessed; the caller still gates it against the pinned tests).
+
+    NO-SHADOW: withheld when a plain ``len(a)`` ALREADY reproduces every witness —
+    i.e. every witnessed sequence is duplicate-free, so ``len(set(a)) == len(a)`` and
+    the earlier, simpler ``len`` body would win. At least one witness must carry a
+    DUPLICATE (``len(set(seq)) < len(seq)``) for the distinct count to be genuinely
+    new value, so it never shadows ``len``. Carries the >=2-distinct-witness overfit
+    floor (:func:`_string_floor_met`). With NO witness list (the structural view) it
+    is withheld — there is no literal to verify against. Deterministic, pure."""
+    if not _string_floor_met(witnesses):
+        return False
+    pairs = _distinct_count_pairs(witnesses or [])
+    if pairs is None:
+        return False
+    if not all(len(set(seq)) == expected for seq, expected in pairs):
+        return False  # not a distinct-count contract — do not offer
+    # NO-SHADOW: if every witnessed sequence is duplicate-free, plain ``len`` fits
+    # and would win; the distinct count is only NEW value when a duplicate exists.
+    return any(len(set(seq)) != len(seq) for seq, expected in pairs)
+
+
+def _distinct_count_pairs(
+    witnesses: list[tuple[str, str]],
+) -> list[tuple[object, int]] | None:
+    """The ``(seq, expected_int)`` pairs for the distinct-count miner, or ``None``
+    when the family cannot be mined. Every witness must be ONE LITERAL ``list`` /
+    ``tuple`` / ``str`` argument of HASHABLE elements (an unhashable element refuses —
+    ``set`` would raise) with a LITERAL ``int`` expected value (a ``bool`` is
+    type-distinct), and the expected ints must VARY (an all-equal contract is a
+    constant another family owns). A non-literal, multi-arg, wrong-typed, unhashable,
+    or all-equal shape yields ``None`` — never guessed. Deterministic: source order."""
+    out: list[tuple[object, int]] = []
+    for args_text, expected_text in witnesses:
+        value = _literal_tuple(args_text)
+        expected = _literal_value(expected_text)
+        if value is None or len(value) != 1 \
+                or not isinstance(value[0], (list, tuple, str)):
+            return None
+        if type(expected) is not int:
+            return None
+        try:
+            set(value[0])
+        except TypeError:
+            return None  # an unhashable element — ``set`` cannot be formed soundly
+        out.append((value[0], expected))
+    if len({expected for _seq, expected in out}) < 2:
+        return None  # all-equal expected -> a constant, not a distinct count
     return out
 
 
@@ -3528,6 +3704,14 @@ _SAFE_BUILTINS = {
     "len": len, "min": min, "max": max, "sorted": sorted, "sum": sum,
     "abs": abs, "round": round, "str": str, "int": int, "float": float,
     "bool": bool, "list": list, "tuple": tuple,
+    # ``set`` is present ONLY so the in-process matcher can evaluate the
+    # DETERMINISTIC count ``len(set(a))`` (the distinct-count family). Without it
+    # the sandbox eval raises NameError, ``can_fill_stub_in_process`` under-counts,
+    # and the develop-loop move-scan never offers a distinct-count stub the
+    # pytest-gated apply would actually land (breaking the documented no-under-count
+    # invariant). A bare value-returning ``set(a)`` body stays forbidden upstream
+    # (hash-seed-dependent order), so adding ``set`` here introduces no unsound body.
+    "set": set,
 }
 
 
