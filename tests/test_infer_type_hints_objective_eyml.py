@@ -357,17 +357,22 @@ def test_refuses_str_method_on_name_receiver():
     assert infer_annotations("def f(name):\n    return name.strip()\n") is None
 
 
-def test_refuses_split_returns_list_not_str():
-    # `s.split(',')` returns a LIST; even with a str-literal-looking receiver,
-    # `split` is not in the str-returning whitelist -> refuse.
-    assert infer_annotations("def f():\n    return 's'.split(',')\n") is None
+def test_split_inferred_as_list_not_str():
+    # `s.split(',')` returns a LIST, never a str: `split` is excluded from the
+    # str-returning whitelist, so it must NOT claim `-> str`. On a PROVABLE str
+    # receiver the splitter rule soundly annotates the BARE `-> list` (the result
+    # KIND is fixed for every arg; the element type is not proved) — see
+    # `test_infer_type_hints_split_partition_eyml`.
+    assert infer_annotations("def f():\n    return 's'.split(',')\n") == (
+        "def f() -> list:\n    return 's'.split(',')\n")
 
 
 def test_encode_inferred_as_bytes_not_str():
     # `str.encode(...)` returns BYTES unconditionally, so the round-5 bytes rule
     # soundly annotates `'s'.encode()` as `-> bytes` — the one thing it must never
-    # do is claim the wrong `-> str`. (`split`/`find` above stay REFUSED: their
-    # result type is args-dependent, not a fixed bytes/str like encode/decode.)
+    # do is claim the wrong `-> str`. (`find` above stays REFUSED — it returns an
+    # int, not a fixed str/bytes; `split` is now a BARE `-> list`, its result KIND
+    # being fixed for every arg even though the element type is not proved.)
     assert infer_annotations("def f():\n    return 's'.encode()\n") == (
         "def f() -> bytes:\n    return 's'.encode()\n")
 

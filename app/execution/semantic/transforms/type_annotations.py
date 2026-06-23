@@ -312,14 +312,16 @@ def _literal_type(node: ast.expr) -> str | None:
         chains) and ``<method>`` is in :data:`_STR_RETURNING_METHODS` (str
         methods that ALWAYS return ``str``). See
         :func:`_str_method_call_returns_str` for the soundness rules.
-      - a FIXED-result bytes/str method call ⇒ ``bytes``/``str``:
-        ``<str-literal>.encode(...)`` ⇒ ``bytes``, ``<bytes-literal>.decode(...)``
-        ⇒ ``str``, and a ``<bytes-literal>.<method>(...)`` whose ``<method>`` is
-        in :data:`_BYTES_RETURNING_METHODS` (bytes methods that ALWAYS return
-        ``bytes``) ⇒ ``bytes`` — the receiver proved RECURSIVELY so chains like
-        ``b'a'.upper().strip()`` compose. See
-        :func:`_bytes_method_call_returns_type` for the soundness rules (a bare
-        ``Name`` receiver and an args-dependent method refuse).
+      - a FIXED-result bytes/str method call ⇒ ``bytes``/``str``/``list``/
+        ``tuple``: ``<str-literal>.encode(...)`` ⇒ ``bytes``,
+        ``<bytes-literal>.decode(...)`` ⇒ ``str``, a ``<bytes-literal>.<method>(...)``
+        whose ``<method>`` is in :data:`_BYTES_RETURNING_METHODS` ⇒ ``bytes``,
+        and a ``<str-or-bytes>.<method>(...)`` whose ``<method>`` is in
+        :data:`_SEQUENCE_RETURNING_METHODS` ⇒ ``list``/``tuple`` (``split`` ⇒
+        list, ``partition`` ⇒ tuple) — the receiver proved RECURSIVELY so chains
+        like ``b'a'.upper().strip()`` and ``'a,b'.strip().split(',')`` compose.
+        See :func:`_bytes_method_call_returns_type` for the soundness rules (a
+        bare ``Name`` receiver and an args-dependent method refuse).
       - a SAME-TYPE-LITERAL binary op ⇒ that type: ``<lit> <op> <lit>`` where
         BOTH operands are provably the SAME concrete type and ``<op>`` is in the
         type-closed safe set — ``1 + 2`` ⇒ ``int``, ``'a' + 'b'`` ⇒ ``str``,
@@ -419,6 +421,24 @@ _BYTES_RETURNING_METHODS: frozenset[str] = frozenset({
 })
 
 
+# str/bytes methods whose result is ALWAYS a fixed BARE CONTAINER, identical for
+# a ``str`` and a ``bytes`` receiver (both types expose every name below with the
+# same result kind): ``split``/``rsplit``/``splitlines`` ⇒ ``list`` and
+# ``partition``/``rpartition`` ⇒ ``tuple``, for EVERY accepted argument (they may
+# raise on bad args, but a ``-> T`` only constrains a value that IS returned).
+# The element type is NOT proved — ``'a,b'.split(',')`` is a ``list[str]`` but
+# ``'a'.split` on a bytes receiver is ``list[bytes]``, and a non-literal receiver
+# leaves elements unknowable — so the BARE container is emitted, matching how
+# every other rule here (displays, sequence-mult, binops) emits a bare kind to
+# the recursive oracle. Excluded — args-dependent or wrong kind: every method in
+# :data:`_STR_RETURNING_METHODS`/:data:`_BYTES_RETURNING_METHODS` (⇒ str/bytes),
+# ``find``/``count`` (int), predicates (bool).
+_SEQUENCE_RETURNING_METHODS: dict[str, str] = {
+    "split": "list", "rsplit": "list", "splitlines": "list",
+    "partition": "tuple", "rpartition": "tuple",
+}
+
+
 def _bytes_method_call_returns_type(node: ast.expr) -> str | None:
     """The provable type NAME for a ``<receiver>.<method>(...)`` call whose
     result type is FIXED by the bytes/str method involved, or ``None``.
@@ -438,16 +458,23 @@ def _bytes_method_call_returns_type(node: ast.expr) -> str | None:
       3. ``<bytes>.<method>(...)`` ⇒ ``bytes`` where ``<method>`` is in
          :data:`_BYTES_RETURNING_METHODS` (a bytes method that ALWAYS returns
          ``bytes``). The receiver must prove ``bytes``.
+      4. ``<str-or-bytes>.<method>(...)`` ⇒ ``list``/``tuple`` where ``<method>``
+         is in :data:`_SEQUENCE_RETURNING_METHODS` — ``split``/``rsplit``/
+         ``splitlines`` ⇒ ``list`` and ``partition``/``rpartition`` ⇒ ``tuple``,
+         on a receiver that proves EITHER ``str`` OR ``bytes`` (both types share
+         these methods with the same result kind). The BARE container is emitted
+         (element type is not proved — see the set's docstring), composing with
+         the recursion so ``'a,b'.strip().split(',')`` ⇒ ``list``.
 
     REFUSED (the LOCKED soundness rules, preserved): a bare ``ast.Name``
-    receiver (``x.encode()`` / ``x.decode()`` where ``x`` is a parameter of
-    UNKNOWN type — never assume a receiver's type), a ``.decode()`` on a
-    non-bytes/unprovable receiver, and any method whose result type is not
-    invariant of args for that receiver type (``split`` ⇒ list, ``hex`` ⇒ str,
-    ``count`` ⇒ int, predicates ⇒ bool — none are in the bytes-returning set).
-    Call ARGUMENTS are not inspected: the listed methods' result type is fixed
-    by the method, not the args (they raise on bad args, but a ``-> T`` only
-    constrains a value that IS returned)."""
+    receiver (``x.encode()`` / ``x.split()`` where ``x`` is a parameter of
+    UNKNOWN type — never assume a receiver's type), a ``.decode()``/``.split()``
+    on a non-str/bytes/unprovable receiver, and any method whose result type is
+    not invariant of args for that receiver type (``hex`` ⇒ str, ``count`` ⇒
+    int, predicates ⇒ bool — none are in the handled sets). Call ARGUMENTS are
+    not inspected: the listed methods' result type is fixed by the method, not
+    the args (they raise on bad args, but a ``-> T`` only constrains a value
+    that IS returned)."""
     if not isinstance(node, ast.Call):
         return None
     func = node.func
@@ -456,6 +483,8 @@ def _bytes_method_call_returns_type(node: ast.expr) -> str | None:
     receiver = _literal_type(func.value)
     if func.attr == "encode":
         return "bytes" if receiver == "str" else None
+    if receiver in ("str", "bytes") and func.attr in _SEQUENCE_RETURNING_METHODS:
+        return _SEQUENCE_RETURNING_METHODS[func.attr]
     if receiver != "bytes":
         return None
     if func.attr == "decode":

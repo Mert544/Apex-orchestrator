@@ -121,11 +121,12 @@ def test_refuses_decode_on_unknown_receiver():
 
 
 def test_refuses_bytes_method_whose_type_is_not_provable():
-    # ``split`` returns a list, ``hex`` a str, ``count`` an int — none are in the
-    # bytes-returning set, so each refuses (a method whose type we cannot prove
-    # to be invariant of args for the receiver).
+    # ``hex`` returns a str, ``count`` an int — neither is in the bytes-returning
+    # set NOR the sequence-returning set, so each refuses (a method whose type we
+    # cannot prove to be invariant of args for the receiver). (``split`` ⇒ a BARE
+    # ``list`` is now PROVABLE on a str/bytes receiver — see
+    # ``test_infer_type_hints_split_partition_eyml`` — so it is no longer here.)
     for src in (
-        'def f():\n    return b"a".split()\n',
         'def f():\n    return b"a".hex()\n',
         'def f():\n    return b"a".count(b"a")\n',
     ):
