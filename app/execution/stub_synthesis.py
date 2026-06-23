@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -442,6 +443,7 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
         out.extend(_reduction_join_templates(a, witnesses))
     out.extend(_affine_string_templates(a, witnesses))
     out.extend(_constant_index_templates(a, witnesses))
+    out.extend(_slice_templates(a, witnesses))
     out.extend(_one_arg_builtin_templates(a, kind, witnesses))
     if kind in (None, "int") and _recursion_allowed(witnesses):
         out.extend([
@@ -949,6 +951,179 @@ def _constant_index_constants(witnesses: list[tuple[str, str]]) -> list[int]:
         if not common:
             return []
     return sorted(idx for idx in (common or set()) if idx != 0)
+
+
+def _slice_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The 1-arg SLICE family: ``return a[i:j]`` / ``a[:k]`` / ``a[k:]`` for fixed
+    bounds mined from the witnesses. ``head([3, 1, 2, 4]) == [3, 1],
+    head([5, 9, 1]) == [5, 9]`` lands ``xs[:2]`` — the prefix length that reproduces
+    EVERY witnessed expected slice from that witness's own sequence literal. This
+    spells a contiguous sub-sequence body (a prefix, a suffix, or an interior
+    window) that no scalar index or reduction template can.
+
+    Three sub-families, each TYPE-EXACT and reproducing every witness by construction
+    (the caller still gates against all pinned tests, never-fake-green):
+
+    * PREFIX ``a[:k]`` — :func:`_prefix_bounds`, the bounds ``k`` where ``seq[:k]``
+      equals the expected slice for every witness;
+    * SUFFIX ``a[k:]`` — :func:`_suffix_bounds`, the bounds ``k`` where ``seq[k:]``
+      equals it (a suffix runs to each sequence's OWN end, so varying-length tails
+      are reproduced by one ``k``);
+    * CLOSED ``a[i:j]`` — :func:`_closed_bounds`, the finite ``(i, j)`` pairs where
+      ``seq[i:j]`` equals it across every witness (an absolute ``j`` consistent for
+      all).
+
+    OVERFIT FLOOR: offered ONLY when at least TWO DISTINCT argument tuples witness
+    the contract (:func:`_string_floor_met`, the same floor the constant-index /
+    string / numeric shapes use). A single witness cannot tell ``xs[:2]`` from a
+    bare constant (``head([3, 1, 2]) == [3, 1]`` fits both ``xs[:2]`` and a literal
+    return), so with <2 distinct tuples no slice is mined. The identity slice
+    ``a[:]`` and any EMPTY slice are dropped — passthrough already spells the whole
+    sequence and an empty result needs no slice. With NO witness list (the
+    structural view) nothing is mined. Deterministic: prefixes then suffixes then
+    closed windows, each in sorted bound order, de-duplicated."""
+    out: list[tuple[str, str]] = []
+    for k in _prefix_bounds(witnesses):
+        out.append((f"slice[:{k}]", f"{a}[:{k}]"))
+    for k in _suffix_bounds(witnesses):
+        out.append((f"slice[{k}:]", f"{a}[{k}:]"))
+    for start, stop in _closed_bounds(witnesses):
+        out.append((f"slice[{start}:{stop}]", f"{a}[{start}:{stop}]"))
+    return out
+
+
+def _slice_witness_seqs(
+    witnesses: list[tuple[str, str]],
+) -> list[tuple[list | tuple | str, object]] | None:
+    """The ``(sequence, expected)`` pairs to mine slice bounds from, or ``None`` when
+    the family cannot be mined. Gated behind the >=2-distinct-witness overfit floor
+    (:func:`_string_floor_met`). Every witness must be a single SEQUENCE argument
+    (``list`` / ``tuple`` / ``str``) with a LITERAL expected value of the SAME type
+    (a slice preserves its sequence's type, so a witness whose expected type differs
+    can never be a slice and refuses the whole family). A non-literal, multi-arg, or
+    non-sequence shape yields ``None`` — the family is mined, never guessed."""
+    if not _string_floor_met(witnesses):
+        return None
+    pairs: list[tuple[list | tuple | str, object]] = []
+    for args_text, expected_text in witnesses:
+        value = _literal_tuple(args_text)
+        expected = _literal_value(expected_text)
+        if value is None or len(value) != 1 or expected is _NO_LITERAL:
+            return None
+        seq = value[0]
+        if not isinstance(seq, (list, tuple, str)):
+            return None
+        if type(expected) is not type(seq):
+            return None
+        pairs.append((seq, expected))
+    return pairs
+
+
+def _prefix_bounds(witnesses: list[tuple[str, str]]) -> list[int]:
+    """The bounds ``k`` for ``a[:k]`` (non-identity, non-empty prefixes), mined as the
+    INTERSECTION over the witnesses of the lengths ``k`` where ``seq[:k]`` equals the
+    expected slice. ``k`` ranges over ``1 .. len(seq) - 1`` per witness, so the empty
+    prefix (``k == 0``) and the whole-sequence identity (``k >= len(seq)``, which
+    passthrough already covers) are never mined. Deterministic: sorted, de-duplicated;
+    a non-sequence / single / empty witness set yields ``[]``."""
+    return _intersect_slice_bounds(witnesses, _prefix_positions)
+
+
+def _suffix_bounds(witnesses: list[tuple[str, str]]) -> list[int]:
+    """The bounds ``k`` for ``a[k:]`` (non-identity, non-empty suffixes), mined as the
+    INTERSECTION over the witnesses of the starts ``k`` where ``seq[k:]`` equals the
+    expected slice. ``k`` ranges over ``1 .. len(seq) - 1`` per witness, so the whole
+    sequence (``k == 0``, passthrough's job) and the empty suffix (``k >= len(seq)``)
+    are never mined; one ``k`` reproduces tails of DIFFERING length because ``k:`` runs
+    to each sequence's own end. Deterministic: sorted, de-duplicated; ``[]`` for a
+    non-sequence / single / empty witness set."""
+    return _intersect_slice_bounds(witnesses, _suffix_positions)
+
+
+def _closed_bounds(witnesses: list[tuple[str, str]]) -> list[tuple[int, int]]:
+    """The finite ``(start, stop)`` pairs for ``a[start:stop]`` (non-identity,
+    non-empty interior windows), mined as the INTERSECTION over the witnesses of the
+    pairs where ``seq[start:stop]`` equals the expected slice. Both bounds are finite
+    and ``0 <= start < stop <= len(seq)`` per witness, so empty windows are excluded;
+    a pair is mined only when its ABSOLUTE ``stop`` reproduces every witness (the
+    open-ended ``a[:k]`` / ``a[k:]`` families own the prefix / suffix shapes whose end
+    or start floats per witness). Deterministic: sorted, de-duplicated; ``[]`` for a
+    non-sequence / single / empty witness set."""
+    return _intersect_slice_bounds(witnesses, _closed_positions)
+
+
+def _intersect_slice_bounds(
+    witnesses: list[tuple[str, str]],
+    positions: Callable[[list | tuple | str, object], set],
+) -> list:
+    """Intersect a per-witness bound set across all witnesses, deterministically
+    sorted. ``positions(seq, expected)`` returns the bounds that reproduce one
+    witness (an empty set short-circuits to ``[]``); the result is their common
+    intersection. Returns ``[]`` when the family cannot be mined
+    (:func:`_slice_witness_seqs` -> ``None``)."""
+    pairs = _slice_witness_seqs(witnesses)
+    if pairs is None:
+        return []
+    common: set | None = None
+    for seq, expected in pairs:
+        bounds = positions(seq, expected)
+        common = bounds if common is None else (common & bounds)
+        if not common:
+            return []
+    return sorted(common or set())
+
+
+def _prefix_positions(seq: list | tuple | str, expected: object) -> set[int]:
+    """The lengths ``k`` in ``1 .. len(seq) - 1`` where ``seq[:k]`` reproduces
+    ``expected`` (TYPE-EXACT — slicing preserves type, so the comparison is on equal
+    types). Excludes ``k == 0`` (empty) and ``k == len(seq)`` (identity passthrough),
+    and — for a ``str`` sequence — any length-1 prefix (:func:`_min_slice_len`: a
+    single character is the index family's job, never a slice's)."""
+    lo = _min_slice_len(seq)
+    return {k for k in range(1, len(seq)) if k >= lo and seq[:k] == expected}
+
+
+def _suffix_positions(seq: list | tuple | str, expected: object) -> set[int]:
+    """The starts ``k`` in ``1 .. len(seq) - 1`` where ``seq[k:]`` reproduces
+    ``expected``. Excludes ``k == 0`` (identity passthrough) and ``k == len(seq)``
+    (empty), and — for a ``str`` sequence — any length-1 suffix (the suffix length is
+    ``len(seq) - k``; :func:`_min_slice_len` keeps single-char tails for the index
+    family)."""
+    lo = _min_slice_len(seq)
+    n = len(seq)
+    return {k for k in range(1, n) if (n - k) >= lo and seq[k:] == expected}
+
+
+def _closed_positions(
+    seq: list | tuple | str, expected: object,
+) -> set[tuple[int, int]]:
+    """The finite ``(start, stop)`` pairs with ``0 <= start < stop <= len(seq)`` where
+    ``seq[start:stop]`` reproduces ``expected``, EXCLUDING the prefixes (``start == 0``)
+    and suffixes (``stop == len(seq)``) the open-ended families already own, the empty
+    windows (``start == stop`` cannot occur since ``start < stop``), and — for a ``str``
+    sequence — any length-1 window (``stop - start == 1``; :func:`_min_slice_len`)."""
+    n = len(seq)
+    lo = _min_slice_len(seq)
+    return {
+        (start, stop)
+        for start in range(1, n)
+        for stop in range(start + 1, n)
+        if (stop - start) >= lo and seq[start:stop] == expected
+    }
+
+
+def _min_slice_len(seq: list | tuple | str) -> int:
+    """The minimum RESULT length a mined slice may have for ``seq``: ``2`` for a
+    ``str``, ``1`` otherwise. A length-1 ``str`` slice (``s[i:i+1]``) is value- AND
+    type-identical to the character index ``s[i]`` on every non-empty input yet
+    DIVERGES on the empty-string canary (the index raises, the slice yields ``''``),
+    which would make the slice family compete with — and steal the contract from — the
+    constant-index / endpoint families for what is really single-character extraction.
+    Excluding length-1 str slices keeps that extraction the index family's domain (the
+    #D family) and leaves the slice family to genuine multi-char sub-strings. A
+    length-1 ``list``/``tuple`` slice returns a length-1 SEQUENCE, a different type
+    from the element the index returns, so it never competes — those stay allowed."""
+    return 2 if isinstance(seq, str) else 1
 
 
 def _has_set_arg(witnesses: list[tuple[str, str]] | None) -> bool:
