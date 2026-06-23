@@ -5,11 +5,41 @@
 > kaldığı yerden devam edebilsin diye yazıldı. North Star/`CLAUDE.md` **kilitli
 > misyon**; bu dosya **operasyonel durum**dur (misyonu yeniden tartışmaz).
 >
-> **Branch:** `claude/apex-market-positioning-eyml1y` · **Son güncelleme:** 2026-06-22
+> **Branch:** `claude/apex-market-positioning-eyml1y` · **Son güncelleme:** 2026-06-23
 
 ---
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
+
+**BU OTURUM (3. tur) — 3 paralel sentez dalgası + develop-loop determinizm KÖK-düzeltmesi (full-gate yeşil, A+99):**
+- `b7985f7` **fix(develop): determinist regresyon-backstop — bayat bytecode OKUMAZ** — oturum-sonu
+  regresyon-backstop'u (ve move-başı impact-scoped kapı) projeyi alt-süreçte koşar; bir move modülü
+  yeniden yazıp **aynı tam-SANİYE** içinde tekrar koşulunca CPython'un saniye-granüler pyc-invalidation'ı
+  **bayat `.pyc`** servis ediyordu → gerçek regresyon ~%15 **GÖRÜLMÜYOR** (`regression_rolled_back` byte-aynı
+  girdide False; auto-rollback bir koşuda fire ediyor, diğerinde etmiyor). Düzeltme: DONTWRITE'ı eksik olan
+  iki alt-sürece `PYTHONDONTWRITEBYTECODE=1` — `RunTestsSkill` (ana koşucu + backstop **okuyucusu**) ve
+  `cross_file_rename`'in impact-scoped move-kapısı (bayat cache'in **YAZICISI**). import-oracle/test-shield
+  zaten set ediyordu; artık HİÇBİR Apex alt-süreci kullanıcının projesine bytecode yazmaz → her oturum-içi
+  tekrar GÜNCEL kaynaktan derler (same input → same rollback). **Kanıt:** düzeltme sonrası **0/30** develop-session
+  flake (önce 3/20), modül **5/5** yeşil, minimal aynı-saniye-rewrite repro mekanizmayı+düzeltmeyi doğruladı.
+  Önceden izole geçen ama modülde flake olan determinizm + transitive-rollback testlerini sabitler.
+- `3fe52cc` **feat(ideate): generate-usage-doc köprüsü** — develop hedefi `generate-usage-doc` artık
+  `apex ideate --actions`'ta LANDABLE; **3. geniş opt-in** hedef (varsayılan kapalı, `generate_usage_doc=True`).
+  Paketin PUBLIC API'sinden (public top-level fonksiyon/sınıf imzaları, ilk docstring satırı, mevcut `>>>`
+  doctest'ler) determinist `USAGE.md` yazar; PURE + **DOCTEST ORACLE** (her `>>>` temiz alt-süreçte koşar,
+  yeşil koşmayan örnek atlanır = dürüst eksik-iddia). wire-exports gibi develop-core `apply_rename`'e delege.
+  Grounding sinyali `generate_usage_doc_packages` == lander'ın KENDİ kapısı (`plan_generate_usage_doc().new_contents`);
+  varsayılan plan (flag kapalı) **byte-identical**.
+- `8fac0f8` **feat(infer-type-hints): giriş isinstance-guard'ından sağlam PARAMETRE tipi** — koşulsuz
+  `assert isinstance(x, str)` / `if not isinstance(x, int): raise ...` gövde-girişinde her devam-eden yol
+  `x`'in o sınıf örneği olduğunu KANITLAR → `x: str`/`x: int` zaten runtime'ın dayattığı bir olguyu yazar.
+  Default-değerden çıkarım **REDDİ** kilidini gevşetmez (default = atlanmış-arg değeri, tip-sınırı değil →
+  reddedilmeye devam). Reddedilen sağlamlık-koşulları sabit: koşullu guard, sınıf TUPLE'ı (Union gerekir),
+  guard'tan önce yeniden-atanmış/kullanılmış param, zaten-anotasyonlu param, dotted/bilinmeyen sınıf. Fake-green canary.
+- `7cc3445` **feat(stub-synthesis): 1-arg string-predicate (startswith/endswith)** — `return a.startswith(k)` /
+  `return a.endswith(k)`; `k` = True-bekleyen witness string'lerinin ortak prefix'i (resp. suffix), HER witness'ın
+  beklenen bool'unu üretmesi DOĞRULANDIKTAN sonra emit edilir. Tip-tam accept-gate + off-witness str-canary
+  tek hakem (never-fake-green). Sözleşme AYIRT etmeli (≥1 True ∧ ≥1 False, yoksa sabit→başka aile), ≥2-distinct-witness tabanı.
 
 **BU OTURUM — Idea-motoru erişimi: sentez hedefleri artık `apex ideate`'te LANDABLE:**
 - `4417d40` **feat(ideate): surface synthesis objectives as executable ideas** — yeni
@@ -94,8 +124,8 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**~21.591 test** + ruff), öz-not **A+99**
-  (bu oturumda `--chunks 16 -j 4` → 647s, 16/16 chunk + ruff PASS, exit 0).
+- **Kapı:** `python scripts/verify.py` → full green (**~21.834 test** + ruff), öz-not **A+99**
+  (bu oturumda `--chunks 16 -j 4` → 560s, 16/16 chunk + ruff PASS, exit 0).
 - **⚠️ FRESH-CONTAINER KAPI ÖN-KOŞULU (yeni oturum bunu OKUSUN):** Bulut klonu **shallow**
   gelir (~50 commit); karakterizasyon testleri `git show <eski-commit>^` ile snapshot
   stage eder → shallow'da **collection-error** (bu oturumda 7 chunk böyle kırıldı, dalga
@@ -105,7 +135,13 @@
   kırıklarını full suite koşmadan yakalar).
   - **HIZLI (yerel, 32GB/Core Ultra 9):** `python scripts/verify.py --chunks 16 -j 8` (~6-10 dk).
   - Burada (4 çekirdek/15GB) `-j 2` ile ~30 dk, tepe RAM 2.8GB. Varsayılan sıralı = OOM-güvenli.
-    Bu oturum `-j 4` ile ~650s, sorunsuz.
+    Bu oturum `-j 4` ile ~560s, sorunsuz.
+- **⚠️ DETERMİNİZM İNVARYANTI (pyc):** Apex'in projeyi **import eden / test koşan HER alt-süreci**
+  `PYTHONDONTWRITEBYTECODE=1` set ETMELİ. CPython'un pyc-invalidation'ı **tam-saniye** granüler →
+  aynı-saniye içinde rewrite+rerun **bayat `.pyc`** okur → develop-loop'un regresyon-backstop'u gerçek
+  regresyonu NON-determinist kaçırır. Bu oturum `b7985f7` ile düzeltildi (`RunTestsSkill` +
+  `cross_file_rename`; `import_oracle`/`test_shield` zaten set ediyordu). **Yeni bir proje-import eden
+  alt-süreç eklersen DONTWRITE'ı UNUTMA** (yoksa determinizm/never-fake-green testleri flake olur).
 - **⚠️ Worktree izolasyonu GÜVENİLMEZ:** bu ortamda `isolation: worktree` bazen **eski tabandan**
   checkout açar (gözlemlendi: `54962d3`, HEAD'den 1114 commit geride → hedef dosya orada YOK;
   başka bir worktree doğru `4d9466c`'teydi — tutarsız). **Kod-yazan mühendisleri ANA AĞAÇTA**
