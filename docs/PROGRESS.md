@@ -11,6 +11,25 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (5. tur) — 3 paralel dosya-ayrık dalga (bytes-tipi · count-stub · strengthen-tests köprüsü), full-gate yeşil, A+99:**
+- `b36ef48` **feat(infer-type-hints): sağlam `bytes` dönüş-tipi** — str-metot kuralının analoğu: `b"..."`→bytes,
+  `<str-lit>.encode()`→bytes, `<bytes-lit>.decode()`→str, bytes-döndüren bytes-metot zinciri
+  (`b"a".upper().strip()`)→bytes. `_bytes_method_call_returns_type` `_literal_type`'a bağlı → ternary+recursion
+  ile kompoze. Yalnız LİTERAL alıcı + arg-BAĞIMSIZ-sonuç-tipli metotlar; bare-Name alıcı, bilinmeyen/str alıcıda
+  `.decode()`, arg-bağımlı metotlar (split/find/count) reddedilir. Stale `'s'.encode()` assertion'ı güncellendi
+  (artık sağlam `-> bytes`; encode HEP bytes döndürür — yanlış str değil).
+- `5dc6af2` **feat(stub-synthesis): 1-arg occurrence-count (`a.count(k)`)** — str/list/tuple üzerinde
+  `(arg, beklenen_int)` witness'ları sabit `k`'nin sayımıysa `return a.count(k)`. `k` witness-input'tan madenlenir
+  (str için substring, sequence için distinct eleman), HER witness'ı üretmesi doğrulanır, yalnız TEK `k` hayatta
+  kalırsa emit (ambiguity→refuse). Type-exact int (bool reddedilir), off-witness canary, ≥2-distinct floor;
+  non-varying all-equal contract + boş-substring (`count('')`) reddedilir. Never-fake-green.
+- `9ba9d28` **feat(ideate): strengthen-tests köprüsü** — develop hedefi `strengthen-tests` artık ideate'te
+  LANDABLE; **5. opt-in** (varsayılan kapalı, `strengthen_tests=True`), Stabilize fazı. Çift-gate mutant-öldüren
+  assertion lander'ı (survivor VAR ∧ gerçek-kodda geçip mutantta düşen assertion sentezlenebilir). Sinyal
+  `strengthenable_modules` lander'ın KENDİ kapısına (`plan_strengthen_tests().new_contents`) delege; saturated/
+  öldürülemez-survivor/red-baseline reddedilir (over-promise yok). Per-module (cover-gaps şekli);
+  `apply_rename(impact_scope=True)`'e delege. Varsayılan plan **byte-identical**, flag bağımsız.
+
 **BU OTURUM (4. tur) — 3 paralel sentez dalgası + paralel-kapı izolasyon düzeltmesi (full-gate yeşil, A+99):**
 - `806238a` **feat(infer-type-hints): aynı-tip ternary dönüş** — `return X if C else Y` (ast.IfExp), her İKİ
   dal da AYNI sağlam tipe çözülürse o tip (`'a' if c else 'b'`→str, `[1] if c else []`→list). Kural
@@ -154,8 +173,8 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**~21.888 test** + ruff), öz-not **A+99**
-  (bu oturumda `--chunks 16 -j 4` → 561s, 16/16 chunk + ruff PASS, exit 0).
+- **Kapı:** `python scripts/verify.py` → full green (**~21.944 test** + ruff), öz-not **A+99**
+  (bu oturumda `--chunks 16 -j 4` → 642s, 16/16 chunk + ruff PASS, exit 0).
 - **⚠️ FRESH-CONTAINER KAPI ÖN-KOŞULU (yeni oturum bunu OKUSUN):** Bulut klonu **shallow**
   gelir (~50 commit); karakterizasyon testleri `git show <eski-commit>^` ile snapshot
   stage eder → shallow'da **collection-error** (bu oturumda 7 chunk böyle kırıldı, dalga
