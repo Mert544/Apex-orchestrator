@@ -11,6 +11,34 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (17. tur) — add-final (14.) + wire-module-exports (15.) CONCRETE; add-override ERTELENDİ (review YAPISAL unsoundness yakaladı) + SHIPPED freeze-dataclass'ta latent delik kapatıldı; full-gate yeşil, A+99, 22.691 test, CONCRETE 13→15:**
+- `36be2fb` **add-final (14. CONCRETE)** — asla-subclasslanmamış sınıfa `@typing.final` (runtime NO-OP → davranış değişmez;
+  false-final riski YAPISAL kapanır — suite değil, tüm-proje subclass taraması). Reddeder: subclasslanmış (bare/dotted/
+  GENERIC base), zaten-@final, Protocol/ABC/Enum/ABCMeta, `final` ispatlanamaz-binding (round-16 provenance dersi),
+  test/fixture. 3.10 floor'da çalışır; parantezli/yorumlu/aliaslı `from typing import (...)` ele alınır (fresh-line fallback).
+- `36be2fb` **wire-module-exports (15. CONCRETE)** — `__all__`'ı olmayan yaprak modüle modül-düzeyi `__all__` == mevcut
+  default star-import seti (davranış-AYNI; yalnız `import *` `__all__`'a bakar). wire-exports'tan FARKLI (paket `__init__`).
+  Reddeder: zaten-`__all__`, `from x import *`, WALRUS (`:=`) binding (AST-target taraması kaçırır → tüm modülü reddet),
+  modellenmemiş top-level binder, public-isim-yok, test/fixture. Suite-BAĞIMSIZ yapısal soundness.
+- `2d57389` **fix(freeze-dataclass) — SUBSCRIPTED base deliği (SHIPPED objektifte latent fake-green):** review, round-16'da
+  inen freeze-dataclass'ın `_base_name`'inin SUBSCRIPTED base'i (`class Sub(Base[int])`) görmediğini → `Base`'in
+  used-as-base'e girmediğini → yanlış dondurulup importer'ı kırdığını (TypeError) buldu. `_base_name` artık Subscript
+  head'ini çıkarır (hem freeze hem add-final sertleşti). 3 yeni freeze testi.
+- **🔎 review = MOAT İŞ BAŞINDA (3 "A+99, test-yeşil" objektiften 1'i YAPISAL unsound çıktı):** her objektife code-review
+  (5 finder açısı) — `65 yeşil test'in add-override'ı kurtarmadığını` kanıtladı: bare-isim base resolution (3rd-party/local
+  isim çakışması → false @override), nested-class indexleme, non-method üye eşleşmesi, version-gate `>3.11`→3.11.1 admits
+  (PEP 440). **add-override ERTELENDİ (round 18) — yamayla değil REDESIGN ile** (binding-aware resolution + top-level-only
+  index + method-only match + version-gate fix). Sahte-yeşil göndermektense GÖNDERMEDİK. Gate AYRICA `_clean_project`
+  fixture'ının wire-module-exports'a göre yalnız EKSİK-temiz olduğunu yakaladı (genuinely-clean için `__all__` eklendi).
+- **🚀 PARALEL-AĞIR:** 3 kod-yazan mühendis (add-final ∥ wire ∥ add-override) izole kopyalarda eşzamanlı + 1 fix-mühendisi;
+  gate+review eşzamanlı (gamble: review bug buldu → re-gate, ama COMMIT'TEN ÖNCE). add-override izole geri-alındı (parity 15).
+- **⏭️ ROUND-18/19 PIPELINE:** round-18 = add-override REDESIGN; round-19 = seal-final-method (HAZIR, method-düzeyi @final,
+  aynı taramayı kullanır), pin-cli-help (HAZIR, argparse --help snapshot), merge-duplicate-imports (HAZIR, TIDY);
+  add-functools-wraps NEEDS-DESIGN. Specs scratchpad `spec_r19_concrete_pipeline.md`.
+- **📋 ERTELENEN (somut değil — taşınıyor):** paylaşılan `rejoin_guarded` CRLF sertleştirme; O(M²) parse verimi;
+  wire-module-exports'un genişlik/değer kalibrasyonu (her modüle `__all__` — round-18'de opt-in mi düşün); string-ClassVar
+  over-count; single-module fallback.
+
 **BU OTURUM (16. tur) — freeze-dataclass (13. CONCRETE) + HIGH-EFFORT code-review 3 SAĞLAMLIK DELİĞİ yakaladı+düzeltti (moat iş başında); full-gate yeşil, A+99, 22.595 test, CONCRETE 12→13:**
 - `e87101a` **freeze-dataclass (13. CONCRETE)** — alanları HİÇ mutasyona uğramayan `@dataclass`'a `frozen=True`
   landliyor (immutable+hashable; linter FLAG'ler, Apex YAZAR). **Tüm-proje muhafazakâr mutasyon over-approx'u**
@@ -452,8 +480,8 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**22.595 test** + ruff), öz-not **A+99**
-  (16. turda `--chunks 16 -j 4` → 798s, 16/16 chunk + ruff PASS, exit 0; CONCRETE objektif 12→13).
+- **Kapı:** `python scripts/verify.py` → full green (**22.691 test** + ruff), öz-not **A+99**
+  (17. turda `--chunks 16 -j 4` → 791s, 16/16 chunk + ruff PASS, exit 0; CONCRETE objektif 13→15).
   **PARALEL-AĞIR:** worktree bozuk → izole `cp` kopyaları (`/tmp/apex-eng-*`, scratchpad `parallel_heavy_harness.sh`);
   STEP-0 `import app` izolasyon-assert'i zorunlu (kopyanın app/'i editable-install'ı yener); entegrasyon `cp`-back
   (ayrık-dosya). RAM-bütçe: targeted-test düşük RAM, ≤11GB peak ile ~5-6 eşzamanlı ağır mümkün ("5=OOM" full-suite içindi). **Yeni objektif eklerken** facet-parite
@@ -502,26 +530,33 @@
 
 ## 3. SIRADAKİ İŞLER (öncelik sırası — saha testi gaplerine dayalı)
 
-**🔭 ROUND-17 SLATE (16. turdan sonra — EN GÜNCEL; capability DOYDU, yön = SOMUT objektif + buyer-proof):**
+**🔭 ROUND-18 SLATE (17. turdan sonra — EN GÜNCEL; capability DOYDU, yön = SOMUT objektif + buyer-proof):**
 > **ANA KURAL (anti-drift #1):** sentez/tip-çıkarımı motoru DOYDU — **yeni kural EKLEME** (drift). Yön: yeni
 > CONCRETE objektif (gerçek diff landler), buyer-proof, ve yalnız bir concrete'i güvenilir kılacak kadar honesty.
-> **REGISTRY tek-yazar:** her CONCRETE objektif 3 paylaşılan kayıt dosyasına (facet/ladder/manifest) EKLEMELİ girer →
-> paralel mühendislerde orkestratör eklemeli girdileri main'de BİRLEŞTİRİR (çakışma değil); birleşim sonrası parity+substring testleri.
-1. **add-final (HAZIR ★ — en güçlü soundness):** asla-subclasslanmamış sınıfa `@typing.final`. Tüm-proje bare-Name+DOTTED
-   base taraması (freeze-dataclass'ın `_used_as_base_names`'ini yeniden kullan — NOKTALI base dahil). `@final` runtime
-   no-op → davranış DEĞİŞMEZ; false-"final" riski YAPISAL kapanır (suite değil). 3.10 floor'da çalışır. Spec `spec_r16_concrete_pipeline.md`.
-2. **wire-module-exports (HAZIR ★ — round-18 scout):** yaprak `.py`'ye modül-düzeyi `__all__` (intended public == default
-   star-import set → davranış-aynı, yalnız `from m import *` etkilenir; suite-BAĞIMSIZ yapısal soundness). wire-exports'tan
-   FARKLI (o paket `__init__` re-export yazar). Spec `spec_r18_concrete_pipeline.md`.
-3. **add-override (HAZIR — designed):** provably-overriding metoda `@typing.override`; DETERMINISTIK 3.12-hedef-kapısı
-   (pyproject `requires-python` / `typing_extensions` fallback; el-yazımı stdlib PEP440 parser). Spec `spec_r17_add_override.md`.
-- ❌ **add-slots REDDEDİLDİ-KANITLA:** 485 sınıfta "güvenli ∩ gerçek-fayda = boş"; soundness suite'e dayanıyor (yapısal değil)
-  → North-Star bar'ı geçmez; add-final aynı "sınıfı mühürle" niyetini sıfır-riskle karşılar. Spec `spec_r17_add_slots.md`.
-- ⏳ **add-functools-wraps NEEDS-DESIGN** (gözlemlenebilir → "call-preserving, metadata-repairing" diye DÜRÜST çerçevele; dar detektör).
-- ✅ **freeze-dataclass İNDİ (16.tur `e87101a`):** 13. CONCRETE. ✅ **buyer-proof tazelendi (16.tur, bağımsız src-layout gym).**
-- **📋 ERTELENEN (somut değil — sıraya alındı):** paylaşılan `rejoin_guarded` CRLF satır-sonu sertleştirme (dataclassify +
-  add-from-future'ı da etkiler → ayrı review+gate); O(M²) parse verimi (parsed_modules cache + sweep-memoize); string-form
-  `'ClassVar'` over-count (güvenli); single-module fallback (repo idiom'u, gate-backstopped).
+> **REGISTRY tek-yazar:** her CONCRETE objektif 3 paylaşılan kayıt dosyasına EKLEMELİ girer → orkestratör main'de BİRLEŞTİRİR.
+> **DERS (17. tur):** review'i HER objektife uygula — 3 "A+99 test-yeşil" objektiften 1'i (add-override) YAPISAL unsound çıktı.
+1. **add-override REDESIGN (round-17'de ERTELENDİ — review yapısal unsoundness buldu):** provably-overriding metoda
+   `@typing.override`. DÜZELTİLECEK 5 delik: (a) binding-aware base resolution (çocuğun modülü base-ismi gerçekten o
+   in-project sınıfa BAĞLIYOR mu — yalnız "aynı-isimli ClassDef var" YETMEZ; 3rd-party/local çakışması → false @override);
+   (b) yalnız TOP-LEVEL sınıf indexle (ast.walk nested'i bare-isimle indexliyor); (c) yalnız base üyesi `def` ise eşle
+   (class-var değil); (d) version-gate: `>`/`>=` iff (major,minor)>=(3,12) — `>3.11` 3.11.1 admits (PEP 440) → REDDET;
+   (e) parantezli `from typing import (...)` widening. Sound parçalar korunur. Spec: task-18 + `spec_r17_add_override.md`.
+2. **seal-final-method (HAZIR — round-19 scout):** asla-override-edilmeyen METODA `@typing.final` (add-final'ın sınıf-düzeyi
+   kardeşi; aynı subclass/used-as-base taramasını + freeze'in mutasyon-over-approx'unu yeniden kullanır). YAPISAL soundness
+   (suite değil). Spec `spec_r19_concrete_pipeline.md`.
+3. **pin-cli-help (HAZIR — round-19 scout):** argparse CLI'nin `--help`/literal-flag yüzeyini snapshotlayan yeni
+   `tests/test_<stem>_cli_help.py` (pin-doctest türü; green-before-land oracle; ürün kodu değişmez). v1: argparse + literal
+   flags; click/typer/subparser reddet. CONCRETE (pin-doctest gibi sınıflandır).
+4. **merge-duplicate-imports (HAZIR, TIDY — round-19 scout):** aynı modülden çok `from m import` satırını tek satıra topla
+   (binding-multiset değişmez; __future__/star/noqa/alias-çakışması reddet). TIDY bucket (concrete-ratio dürüstlüğü).
+- ⏳ **add-functools-wraps NEEDS-DESIGN** (gözlemlenebilir → "call-preserving, metadata-repairing" diye DÜRÜST çerçevele).
+- ❌ **add-slots REDDEDİLDİ-KANITLA** (güvenli ∩ fayda = boş); **strip-redundant-object-base NEEDS-DESIGN (TIDY, en az on-mission).**
+- ✅ **add-final + wire-module-exports İNDİ (17.tur `36be2fb`); freeze-dataclass SUBSCRIPTED-base sertleştirildi (`2d57389`).**
+  ✅ **freeze-dataclass İNDİ (16.tur `e87101a`); buyer-proof tazelendi (16.tur, bağımsız src-layout gym).**
+- **📋 ERTELENEN (somut değil — taşınıyor):** paylaşılan `rejoin_guarded` CRLF sertleştirme (dataclassify+add-from-future+
+  add-final'ı etkiler → ayrı review+gate); O(M²) parse verimi; **wire-module-exports genişlik/değer kalibrasyonu** (her
+  modüle `__all__` landler → cheap-board'u domine eder; round-18'de opt-in/threshold-gate düşün); parenthesized-import recall
+  (add-override'a da gerekecek); string-form `'ClassVar'` over-count (güvenli); single-module fallback (gate-backstopped).
 - **DIŞLA (drift):** daha fazla sentez/tip kuralı · detektör/safety/honesty makinesi cilası · değer/default→tip çıkarımı.
 
 **🔭 ROUND-11 İNTEL (10. turun 2 keşifçisinden — otonomi + honesty + yetenek; ÇOĞU İNDİ):**
