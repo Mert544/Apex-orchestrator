@@ -297,6 +297,19 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # the redundant ``__init__``, behaviour-equivalent and suite-gated. So the
     # "boilerplate constructor" facet becomes the campaign that modernizes it.
     "a boilerplate constructor to make a dataclass": "dataclassify",
+
+    # Unimplemented protocol: the generalize lens's "the shared interface to
+    # extract" aspect names a ``typing.Protocol`` the project declares but has NO
+    # concrete implementer for — the interface is shelf-ware until a class
+    # satisfies it. The scaffold-from-protocol objective LANDS exactly that — a NEW
+    # ``<pkgdir>/<stem>_impl.py`` with ``class <P>Impl(<P>):`` redeclaring each
+    # fillable member with a ``...`` body (decorators preserved, ``@abstractmethod``
+    # dropped, annotations stripped), gated by an INSTANTIATION ORACLE (``<P>Impl()``
+    # must construct in a clean subprocess — a missed abstract member is refused) and
+    # the suite. So the "protocol stub to scaffold" facet becomes the campaign that
+    # gives the interface a runnable implementer to fill in. Its phrasing is not a
+    # substring of any other key (nor any of them of it), so its order is free.
+    "the protocol stub to scaffold": "scaffold-from-protocol",
 }
 
 

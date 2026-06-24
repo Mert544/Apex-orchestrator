@@ -197,7 +197,10 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                                       "the call sites to thread it through"],
     "the shared interface to extract": ["the common method signatures",
                                         "the protocol or abstract base",
-                                        "the implementations to conform"],
+                                        "the implementations to conform",
+                                        # added: scaffold a concrete implementer
+                                        # for a declared-but-unimplemented Protocol.
+                                        "the protocol stub to scaffold"],
     "lift the common helper": ["the duplicated block to name",
                                "where the helper should live",
                                "the parameters that capture the variants"],
