@@ -335,6 +335,72 @@ def test_end_to_end_lands_scaffold_and_keeps_green(tmp_path: Path):
     # and constructs it) passed under the apply gate above — never-fake-green.
 
 
+def _src_layout_project(tmp_path: Path) -> Path:
+    """A standard ``src/``-layout suite project: ``pyproject.toml`` declares
+    ``pythonpath=['src']`` so the package imports WITHOUT the ``src`` prefix
+    (``mylib.greeter``, not ``src.mylib.greeter``) — exactly the layout whose impl
+    module the oracle could not import until ``root/src`` was put on its path."""
+    (tmp_path / "src" / "mylib").mkdir(parents=True)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "mylib" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='mylib'\nversion='0'\n\n"
+        "[tool.pytest.ini_options]\npythonpath=['src']\n", encoding="utf-8")
+    (tmp_path / "src" / "mylib" / "greeter.py").write_text(_PROTO, encoding="utf-8")
+    return tmp_path
+
+
+def test_src_layout_protocol_lands_and_instantiates(tmp_path: Path):
+    # NIT-1: on a ``src/`` layout the dotted-path picker selects ``mylib.greeter``
+    # (sorted before ``src.mylib.greeter``), so the oracle must import
+    # ``mylib.greeter_impl`` with ``root/src`` on its path. Before the fix the
+    # oracle saw only ``root`` -> import failure -> empty plan on EVERY src project.
+    _src_layout_project(tmp_path)
+    plan = plan_scaffold_from_protocol(str(tmp_path), "src/mylib/greeter.py")
+    assert plan.ok  # the oracle actually imported + INSTANTIATED GreeterImpl
+    impl_rel = "src/mylib/greeter_impl.py"
+    gen = plan.new_contents[impl_rel]
+    # The scaffold imports the package under its REAL top-level name (src stripped).
+    assert "from mylib.greeter import Greeter" in gen
+    assert "class GreeterImpl(Greeter):" in gen
+    assert plan.edits_by_file[impl_rel] == 3
+
+
+def test_src_layout_end_to_end_lands_and_stays_green(tmp_path: Path):
+    # The full apply gate on a src/ layout: a pre-existing test imports + constructs
+    # the about-to-land impl under ``mylib.greeter_impl``; a green suite proves the
+    # scaffold genuinely instantiates (never-fake-green) on this layout too.
+    _src_layout_project(tmp_path)
+    (tmp_path / "tests" / "test_uses_impl.py").write_text(
+        "def test_constructs():\n"
+        "    from mylib.greeter_impl import GreeterImpl\n"
+        "    assert GreeterImpl() is not None\n", encoding="utf-8")
+    plan = plan_scaffold_from_protocol(str(tmp_path), "src/mylib/greeter.py")
+    result = apply_rename(str(tmp_path), plan, verify=True, impact_scope=False)
+    assert result.get("applied") is True
+    assert result.get("rolled_back") in (False, None)
+    landed = tmp_path / "src" / "mylib" / "greeter_impl.py"
+    assert landed.exists()
+    assert "class GreeterImpl(Greeter):" in landed.read_text(encoding="utf-8")
+
+
+def test_atexit_print_does_not_break_the_oracle(tmp_path: Path):
+    # NIT-2: a protocol module that registers an ``atexit`` print emits a trailing
+    # non-JSON line on the probe's stdout AFTER the probe's ``{"ok": true}`` verdict
+    # (atexit fires at interpreter shutdown). The oracle must scan for the LAST
+    # valid JSON OBJECT, not literally the last line, or it spuriously refuses an
+    # otherwise-instantiable scaffold. The scaffold still LANDS here.
+    noisy = (
+        "import atexit\n"
+        "atexit.register(lambda: print('shutdown banner -- not json'))\n" + _PROTO)
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "greeter.py").write_text(noisy, encoding="utf-8")
+    plan = plan_scaffold_from_protocol(str(tmp_path), "app/greeter.py")
+    assert plan.ok  # the trailing atexit line did not defeat the oracle's JSON parse
+    gen = plan.new_contents["app/greeter_impl.py"]
+    assert "class GreeterImpl(Greeter):" in gen
+
+
 def test_end_to_end_auto_rollback_when_scaffold_breaks_suite(tmp_path: Path):
     # never-fake-green at the engine level: if the protocol module is mutated AFTER
     # the plan is built so the landed scaffold's ``from app.greeter import Greeter``

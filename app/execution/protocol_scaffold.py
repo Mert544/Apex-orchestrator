@@ -328,13 +328,53 @@ def scaffold_instantiates(project_root: str | Path, impl_rel: str,
                 pass
 
 
+def _probe_path_roots(root: Path) -> list[str]:
+    """Every directory the oracle subprocess must put on ``sys.path`` to import the
+    impl module: the project ROOT plus each source root under it (``root/src`` and
+    any pyproject-declared root). A ``src/`` (or pyproject) layout makes
+    ``src/mylib/greeter.py`` importable as ``mylib.greeter`` — which the dotted-path
+    picker selects — so without ``root/src`` on the path the import would fail and
+    EVERY src-layout project be silently skipped. Deterministic (source roots are
+    sorted; only existing dirs are added); a flat/nested layout adds only ``root``,
+    keeping its behaviour byte-identical."""
+    from app.engine.source_roots import source_roots
+
+    entries = [str(root)]
+    for source_root in source_roots(root):
+        candidate = root / source_root
+        if candidate.is_dir():
+            entries.append(str(candidate))
+    return entries
+
+
+def _last_json_object(stdout: str) -> dict | None:
+    """The LAST stdout line that parses as a JSON object, or ``None`` if none do.
+    The probe prints its ``{"ok": ...}`` verdict last, but an import-time
+    ``atexit``/``print`` in the project can append trailing noise — so scanning for
+    the last valid JSON object (not literally the last line) keeps the oracle from
+    a spurious refuse on an otherwise-instantiable scaffold. Deterministic."""
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
 def _run_probe(root: Path, dotted: str, impl_name: str) -> bool:
     """Run the instantiation probe in a clean subprocess; True iff it constructed
     ``impl_name()`` without raising."""
+    path_roots = _probe_path_roots(root)
     env = {
         **os.environ,
         "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPATH": str(root) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        "PYTHONPATH": os.pathsep.join(
+            [*path_roots, os.environ.get("PYTHONPATH", "")]),
     }
     try:
         proc = subprocess.run(
@@ -345,8 +385,7 @@ def _run_probe(root: Path, dotted: str, impl_name: str) -> bool:
         return False
     if proc.returncode != 0:
         return False
-    try:
-        result = json.loads(proc.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError):
+    result = _last_json_object(proc.stdout)
+    if result is None:
         return False
     return bool(result.get("ok"))
