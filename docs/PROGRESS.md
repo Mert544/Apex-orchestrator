@@ -5,11 +5,39 @@
 > kaldığı yerden devam edebilsin diye yazıldı. North Star/`CLAUDE.md` **kilitli
 > misyon**; bu dosya **operasyonel durum**dur (misyonu yeniden tartışmaz).
 >
-> **Branch:** `claude/blissful-mayer-aaqb3p` · **Son güncelleme:** 2026-06-23
+> **Branch:** `claude/blissful-mayer-aaqb3p` · **Son güncelleme:** 2026-06-24
 
 ---
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
+
+**BU OTURUM (13. tur) — SIÇRAMA TAMAMLANDI: 5 alanın HEPSİ indi. RÜYA temiz re-land (cycle-free) + 4 yeni yetenek; full-gate yeşil, A+99, ~22.376 test, CONCRETE 9→10:**
+- `a16c254` **RÜYA — `develop --from-dream` DEFAULT dream'den landliyor (cycle-free)** — 12. turda ertelenen iş indi:
+  seam yeni `app/engine/dream_landing.py` modülüne taşındı (tek-yön import → **0 import cycle**, A+99 korundu;
+  objective_compiler→ascend/dream döngüleri kalktı). Salt-okunur `dream(persist=False)` (journal/ledger YAZMAZ,
+  streak ilerletmez → idempotent, deterministik). 2× /code-review + 1× re-review (relocation + line-targeted test
+  re-anchor MUTATION-doğrulandı) SHIP. **Rüya artık ATIL DEĞİL** (en on-mission açık kapandı).
+- `b2bbcbc` **SAF YETENEK — infer-type-hints: printf `%` + always-bool builtin'ler** — `'%s'%x→str`, `b'%s'%x→bytes`
+  (override-edilemez `__mod__`, LHS kanıtlı, RHS denetlenmez; `int%int→int`, `name%2` reddedilir);
+  `callable/issubclass/isinstance/hasattr→bool` (shadow-guard'lı; kilitli `==`/`<`→bool reddi DOKUNULMADI).
+  `/code-review` 7×7 disjointness doğruladı. 40 yeni test.
+- `e24fdb1` **KARAR VERME — ascend within-run blocked-set** — her adayı bloklanan objektif o tırmanışta dışlanıyor
+  (re-scan israfı bitti). Complexity-12 için iç döngü `_take_first_landing_move`'a çıkarıldı (ascend() **12→10**
+  branch-node). Default byte-identical (`exclude=None/empty` no-op), per-run set (her çağrıda taze). `/code-review`
+  extraction'ı MUTATION ile behavior-identical doğruladı.
+- `06e3443` **ZEKA — landability-aware ranking (opt-in)** — `_score_value`'ya default-off `landability_aware`
+  bonusu (+0.08): landable (gerçek diff üretilebilen) modüldeki fikir saf-analiz fikrini geçer; mevcut honest
+  `idea_synthesis_signals`'tan beslenir (**yeni detektör YOK**). **Default BYTE-IDENTICAL** (3 SHA-256 snapshot
+  digest değişmedi). `/code-review` SHIP.
+- `bfa92e6` **PROJE GELİŞTİRME — pin-doctest objektifi (10. CONCRETE)** — bir fonksiyonun suite'in çalıştırmadığı
+  GEÇEN `>>>` örneklerini koşan yeni gating test (`tests/test_<stem>_doctest.py`) landliyor → belge = suite-kapılı
+  sözleşme. never-fake-green: yalnız örnekler BUGÜN geçiyor + üretilen kaynak derleniyor + suite yeşil kalıyorsa
+  (apply_rename gate+rollback). Reddeder: enforceable-yok / +SKIP-only / fixture / already-enforced /
+  `--doctest-modules` config (proje-genelinde zaten enforced → duplicate basmaz, **EN BÜYÜK RİSK kapatıldı**). 1:1
+  facet-parity (4 girdi) korundu. 24 test. `/code-review` SHIP (red-body taze-süreçte gerçekten FAIL — tautoloji değil).
+- **Worktree HÂLÂ bozuk** (DREAM re-land dahil tüm kod-yazan mühendisler ana-ağaç SIRALI; paralel = read-only scout/
+  review filosu — bu turda ~14 ajan). **§2 import-cycle dersi uygulandı:** cross-cutting seam'i geri-işaret etmeyen
+  AYRI modüle koy (dream_landing.py) — fonksiyon-içi import bile cycle sayılır. Round-12 defer→round-13 reland arkı kanıt.
 
 **BU OTURUM (12. tur) — SIÇRAMA dalgası: Wilson-güven sıralaması (KARAR VERME) · str/bytes split/partition tipleri (SAF YETENEK); RÜYA dalgası fonksiyonel-DONE ama `/code-review`+grade ile ERTELENDİ (3 import cycle); full-gate yeşil, A+99, ~22.279 test:**
 - `36ef116` **feat(ascend): Wilson-güven alt sınırı ile sıralama (KARAR VERME)** — karar katmanının
@@ -326,8 +354,8 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**~22.279 test** + ruff), öz-not **A+99**
-  (12. turda `--chunks 16 -j 4` → 867s, 16/16 chunk + ruff PASS, exit 0). **Yeni objektif eklerken** facet-parite
+- **Kapı:** `python scripts/verify.py` → full green (**~22.376 test** + ruff), öz-not **A+99**
+  (13. turda `--chunks 16 -j 4` → ~690s, 16/16 chunk + ruff PASS, exit 0; CONCRETE objektif 9→10). **Yeni objektif eklerken** facet-parite
   (`FACET_OBJECTIVE_MAP`↔registry 1:1) + `north_star_audit.OBJECTIVE_MANIFEST` partition + duplication (≥5-statement
   blok) self-grade tripwire'larını UNUTMA — 9. turda document-signature bunların hepsini tetikledi, **11. turda
   iki doctest-verifier ikizi duplication-tripwire'ı tetikledi** → `_doctests_pass` paylaşılan helper'ına extraction
