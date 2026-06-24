@@ -256,6 +256,12 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # campaign that makes ``from pkg import X`` work.
     "the public re-export surface to wire": "wire-exports",
 
+    # Leaf module with no __all__ whose public surface is implicit: wire-module-exports
+    # declares an explicit __all__ == the current default star set (behaviour-identical;
+    # only ``from m import *`` consults __all__) — distinct from wire-exports' package
+    # __init__ re-export surface. Phrasing is substring-order-safe vs every other key.
+    "the module public surface to declare": "wire-module-exports",
+
     # Undocumented public signature: the document lens's "signatures and types"
     # aspect also names a public function that carries NO docstring. The
     # document-signature objective LANDS exactly that — a docstring listing the
@@ -309,6 +315,12 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # makes it immutable. Its phrasing is not a substring of the dataclassify key
     # above (nor it of this), so their relative order is free.
     "a never-mutated dataclass to freeze": "freeze-dataclass",
+
+    # A leaf class proven never subclassed anywhere: add-final seals it with
+    # @typing.final (a type-checker-only no-op — behaviour-preserving; the false-final
+    # risk is closed STRUCTURALLY by the whole-project subclass scan, not the suite).
+    # Phrasing is substring-order-safe vs every other key.
+    "a class to seal as final": "add-final",
 
     # Missing lazy-annotation import: the document lens's "signatures and types"
     # aspect names a module that USES type annotations (a return type, an

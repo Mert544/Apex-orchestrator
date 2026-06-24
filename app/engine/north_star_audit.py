@@ -81,6 +81,8 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "pin-doctest",
         "cover-gaps",
         "scaffold-from-protocol",
+        "add-final",
+        "wire-module-exports",
         # NOTE: "fix-docstrings" was REMOVED here — it is a standalone CLI
         # subcommand (`apex fix-docstrings`), NOT a registered develop objective,
         # so it never appears in ``available_objectives()``. Listing it left the

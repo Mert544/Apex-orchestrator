@@ -32,8 +32,12 @@ def _debt_project(tmp_path: Path) -> Path:
 def _clean_project(tmp_path: Path) -> Path:
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
+    # `__all__` is declared so the project is genuinely clean w.r.t. EVERY objective,
+    # including wire-module-exports (which would otherwise land an explicit `__all__`
+    # on this public-but-undeclared module — a real, behaviour-preserving improvement,
+    # so the fixture was only INcompletely clean before).
     (tmp_path / "app" / "m.py").write_text(
-        "def add(a, b):\n    return a + b\n", encoding="utf-8")
+        '__all__ = ["add"]\n\n\ndef add(a, b):\n    return a + b\n', encoding="utf-8")
     (tmp_path / "tests" / "test_m.py").write_text(
         "from app.m import add\ndef test_a():\n    assert add(1, 2) == 3\n", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text("[project]\nname='m'\nversion='0'\n", encoding="utf-8")

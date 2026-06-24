@@ -188,7 +188,12 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                    "lift the common helper"],
     "extension points": ["the hook interface", "registration", "a default no-op",
                          # added: the seam that lets callers vary behaviour.
-                         "a strategy for the difference", "the variation point to name"],
+                         "a strategy for the difference", "the variation point to name",
+                         # added: the INVERSE of an extension point — a class PROVABLY
+                         # never subclassed (a leaf), which add-final seals with
+                         # `@typing.final` to document/enforce the intent. Appended,
+                         # originals still lead.
+                         "a class to seal as final"],
     "sensible defaults": ["the safe default", "the override path", "documented rationale"],
     # generalize L3 ladders — the appended L2 moves decompose once more into the
     # concrete edits an engineer performs, then bottom out in the case split.
@@ -354,7 +359,11 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # one-line lazy-annotation import (insert fresh, or
                              # widen an existing `__future__` import). Appended, so
                              # the originals still lead and emit in their order.
-                             "annotations to make lazy with a future import"],
+                             "annotations to make lazy with a future import",
+                             # added: a leaf module with no `__all__` — wire-module-exports
+                             # declares `__all__` == the current default star set
+                             # (behaviour-identical). Appended, originals still lead.
+                             "the module public surface to declare"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
     "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown",
                         # added: the package's USAGE.md generated from its public
