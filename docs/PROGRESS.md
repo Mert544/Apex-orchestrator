@@ -11,6 +11,32 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (18. tur) — seal-final-method (16.) + merge-duplicate-imports (TIDY); SHIPPED add-final'da latent false-seal kapatıldı; pin-cli-help ERTELENDİ; review 3/3 objektifte GERÇEK bug yakaladı; full-gate yeşil, A+99, 22.802 test, CONCRETE 15→16:**
+- `7971b06` **seal-final-method (16. CONCRETE)** — asla-override-edilmeyen METODA `@typing.final` (runtime NO-OP; false-final
+  YAPISAL kapanır — tüm-proje transitif subclass-method over-approx'u, belirsizlikte REDDEDER → güvenli, add-override'ın zor
+  binding-resolution'ına gerek YOK). Reddeder: override-edilmiş / zaten-@final / dunder / property/static/class/overload/
+  abstractmethod / Protocol-ABC / ispatlanamaz-final-binding / test-fixture. add-final'ın @final makinesini + freeze taramasını kullanır.
+- `7971b06` **merge-duplicate-imports (TIDY)** — aynı modülden çok `from m import` satırını tek satıra topla (binding-multiset
+  AYNI). **Review GERÇEK bug yakaladı:** araya giren AYNI-İSMİ rebind eden import'un üzerinden taşımak final binding'i ÇEVİRİYORDU
+  (`y` str→module kanıtlandı) → grup ismi araya-giren import'la rebind ediliyorsa REDDET; gap'teki comment / __future__ / star /
+  incompatible-alias da reddedilir. Runtime oracle testi her ismin aynı objeye çözüldüğünü kanıtlar.
+- `e0cdd9c` **fix(@final) — SHIPPED add-final'da latent FALSE-SEAL kapatıldı:** review, add-final + seal'ın used-as-base
+  taramasının (a) ALIASED base'i (`from m import C as H; class Sub(H)` → 'H' kaydeder, 'C' değil) ve (b) TEST-dosyası subclass'ını
+  (tests/ hariç tutuluyordu) kaçırdığını → yanlış @final mührü (type-checker hatası, suite ASLA yakalayamaz) buldu. FIX: within-module
+  alias-map (`_used_as_base_names`) + tests-DAHİL `all_module_sources` (add-final + seal kullanır; freeze hariç — onun yanlış-freeze'i
+  runtime'da suite-yakalanır). + paylaşılan `_insert_decorator` extraction (dedup → A+99).
+- **🔎 review = MOAT (3/3 objektifte GERÇEK bug):** her objektife finder → merge binding-flip, seal test-exclusion+alias, pin-cli-help
+  SUBSET-oracle INCOMPLETE pin + env-fragility. 3 "A+99 test-yeşil" objektifin HİÇBİRİ tek başına sağlam değildi; review commit'ten önce yakaladı.
+- **⏭️ pin-cli-help ERTELENDİ (round 19):** subset-only oracle EKSİK CLI sözleşmesi sabitliyor (add_argument_group/parents flag'leri
+  kaçar → sessiz drift) + conditional/env flag'i pinleyince test başka makinede FUTURE-RED. FIX (round 19): oracle = COMPLETENESS
+  (declared−help == pinned) + conditional/env builder REDDET. Dar erişim (Apex'te 0 pinnable). Kopya `/tmp/apex-eng-clihelp` korundu.
+- **🚀 PARALEL + 529 dayanıklılığı:** 3 mühendis (seal ∥ pin ∥ merge) + 3 fix-mühendisi izole kopyalarda; transient 529 ilk 2 fix-mühendisini
+  öldürdü → merge bitmişti (cosmetic), seal re-launch ile bitirildi. Bağımsız re-verify + full-gate her zaman main'de.
+- **⏭️ ROUND-19/20 PIPELINE:** round-19 = pin-cli-help fix + add-override redesign; round-20 scout READY: enforce-enum-unique (CONCRETE,
+  `@enum.unique` tüm-literal-distinct enum'a), sort-dunder-all (TIDY, mevcut `__all__` sırala+dedup). Specs `spec_r20_concrete_pipeline.md`.
+- **📋 ERTELENEN (somut değil):** paylaşılan `rejoin_guarded` CRLF; O(M²) parse; wire-module-exports genişlik kalibrasyonu;
+  pin-cli-help dotted-path[0]; ABC-by-NotImplementedError soft over-recall (seal/add-final).
+
 **BU OTURUM (17. tur) — add-final (14.) + wire-module-exports (15.) CONCRETE; add-override ERTELENDİ (review YAPISAL unsoundness yakaladı) + SHIPPED freeze-dataclass'ta latent delik kapatıldı; full-gate yeşil, A+99, 22.691 test, CONCRETE 13→15:**
 - `36be2fb` **add-final (14. CONCRETE)** — asla-subclasslanmamış sınıfa `@typing.final` (runtime NO-OP → davranış değişmez;
   false-final riski YAPISAL kapanır — suite değil, tüm-proje subclass taraması). Reddeder: subclasslanmış (bare/dotted/
@@ -480,8 +506,8 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**22.691 test** + ruff), öz-not **A+99**
-  (17. turda `--chunks 16 -j 4` → 791s, 16/16 chunk + ruff PASS, exit 0; CONCRETE objektif 13→15).
+- **Kapı:** `python scripts/verify.py` → full green (**22.802 test** + ruff), öz-not **A+99**
+  (18. turda `--chunks 16 -j 4` → 879s, 16/16 chunk + ruff PASS, exit 0; CONCRETE objektif 15→16).
   **PARALEL-AĞIR:** worktree bozuk → izole `cp` kopyaları (`/tmp/apex-eng-*`, scratchpad `parallel_heavy_harness.sh`);
   STEP-0 `import app` izolasyon-assert'i zorunlu (kopyanın app/'i editable-install'ı yener); entegrasyon `cp`-back
   (ayrık-dosya). RAM-bütçe: targeted-test düşük RAM, ≤11GB peak ile ~5-6 eşzamanlı ağır mümkün ("5=OOM" full-suite içindi). **Yeni objektif eklerken** facet-parite
@@ -530,33 +556,28 @@
 
 ## 3. SIRADAKİ İŞLER (öncelik sırası — saha testi gaplerine dayalı)
 
-**🔭 ROUND-18 SLATE (17. turdan sonra — EN GÜNCEL; capability DOYDU, yön = SOMUT objektif + buyer-proof):**
+**🔭 ROUND-19 SLATE (18. turdan sonra — EN GÜNCEL; capability DOYDU, yön = SOMUT objektif + buyer-proof):**
 > **ANA KURAL (anti-drift #1):** sentez/tip-çıkarımı motoru DOYDU — **yeni kural EKLEME** (drift). Yön: yeni
-> CONCRETE objektif (gerçek diff landler), buyer-proof, ve yalnız bir concrete'i güvenilir kılacak kadar honesty.
-> **REGISTRY tek-yazar:** her CONCRETE objektif 3 paylaşılan kayıt dosyasına EKLEMELİ girer → orkestratör main'de BİRLEŞTİRİR.
-> **DERS (17. tur):** review'i HER objektife uygula — 3 "A+99 test-yeşil" objektiften 1'i (add-override) YAPISAL unsound çıktı.
-1. **add-override REDESIGN (round-17'de ERTELENDİ — review yapısal unsoundness buldu):** provably-overriding metoda
-   `@typing.override`. DÜZELTİLECEK 5 delik: (a) binding-aware base resolution (çocuğun modülü base-ismi gerçekten o
-   in-project sınıfa BAĞLIYOR mu — yalnız "aynı-isimli ClassDef var" YETMEZ; 3rd-party/local çakışması → false @override);
-   (b) yalnız TOP-LEVEL sınıf indexle (ast.walk nested'i bare-isimle indexliyor); (c) yalnız base üyesi `def` ise eşle
-   (class-var değil); (d) version-gate: `>`/`>=` iff (major,minor)>=(3,12) — `>3.11` 3.11.1 admits (PEP 440) → REDDET;
-   (e) parantezli `from typing import (...)` widening. Sound parçalar korunur. Spec: task-18 + `spec_r17_add_override.md`.
-2. **seal-final-method (HAZIR — round-19 scout):** asla-override-edilmeyen METODA `@typing.final` (add-final'ın sınıf-düzeyi
-   kardeşi; aynı subclass/used-as-base taramasını + freeze'in mutasyon-over-approx'unu yeniden kullanır). YAPISAL soundness
-   (suite değil). Spec `spec_r19_concrete_pipeline.md`.
-3. **pin-cli-help (HAZIR — round-19 scout):** argparse CLI'nin `--help`/literal-flag yüzeyini snapshotlayan yeni
-   `tests/test_<stem>_cli_help.py` (pin-doctest türü; green-before-land oracle; ürün kodu değişmez). v1: argparse + literal
-   flags; click/typer/subparser reddet. CONCRETE (pin-doctest gibi sınıflandır).
-4. **merge-duplicate-imports (HAZIR, TIDY — round-19 scout):** aynı modülden çok `from m import` satırını tek satıra topla
-   (binding-multiset değişmez; __future__/star/noqa/alias-çakışması reddet). TIDY bucket (concrete-ratio dürüstlüğü).
-- ⏳ **add-functools-wraps NEEDS-DESIGN** (gözlemlenebilir → "call-preserving, metadata-repairing" diye DÜRÜST çerçevele).
-- ❌ **add-slots REDDEDİLDİ-KANITLA** (güvenli ∩ fayda = boş); **strip-redundant-object-base NEEDS-DESIGN (TIDY, en az on-mission).**
-- ✅ **add-final + wire-module-exports İNDİ (17.tur `36be2fb`); freeze-dataclass SUBSCRIPTED-base sertleştirildi (`2d57389`).**
-  ✅ **freeze-dataclass İNDİ (16.tur `e87101a`); buyer-proof tazelendi (16.tur, bağımsız src-layout gym).**
-- **📋 ERTELENEN (somut değil — taşınıyor):** paylaşılan `rejoin_guarded` CRLF sertleştirme (dataclassify+add-from-future+
-  add-final'ı etkiler → ayrı review+gate); O(M²) parse verimi; **wire-module-exports genişlik/değer kalibrasyonu** (her
-  modüle `__all__` landler → cheap-board'u domine eder; round-18'de opt-in/threshold-gate düşün); parenthesized-import recall
-  (add-override'a da gerekecek); string-form `'ClassVar'` over-count (güvenli); single-module fallback (gate-backstopped).
+> CONCRETE objektif, buyer-proof, minimal honesty. **REGISTRY tek-yazar:** orkestratör eklemeli girdileri main'de BİRLEŞTİRİR.
+> **DERS (17-18. tur):** review'i HER objektife uygula — 18. turda 3/3 objektifte GERÇEK soundness bug çıktı (commit'ten ÖNCE yakalandı).
+> Tercih: **REFUSE-on-ambiguity** (seal-final-method gibi — yanlış sonuç REDDETMEdir), **land-on-PROOF DEĞİL** (add-override gibi — yanlış sonuç kötü-land).
+1. **enforce-enum-unique (HAZIR ★ — round-20 scout, CONCRETE):** tüm üyeleri DISTINCT literal olan Enum'a `@enum.unique`. TOTAL
+   decidable (literal value-set distinctness AST'ten); `@enum.unique` yalnız value-alias'ta class-def'te raise eder, yoksa no-op →
+   proven-distinct enum'da davranış-korur. REFUSE: non-literal value (`auto()`/call/expr) / unprovable Enum. "complete-enum"den FARKLI
+   (o üye DOLDURUR). freeze provenance + add-final import-helper'ı yeniden kullanır. Spec `spec_r20_concrete_pipeline.md`.
+2. **sort-dunder-all (HAZIR — round-20 scout, TIDY):** mevcut modül `__all__`'ını alfabetik sırala + dedup (sıra GÖZLENMEZ →
+   davranış-AYNI, suite-bağımsız). wire-module-exports'un sıra-kardeşi. REFUSE: non-literal eleman / comment / çoklu `__all__`.
+3. **pin-cli-help fix+ship (round-18'de ERTELENDİ):** oracle = COMPLETENESS (`declared−help == pinned`, group/parents'i auto-refuse)
+   + conditional/env builder REDDET (if/for/try içi add_argument · os.environ/sys.platform/version ref) + dotted-path[0]. Kopya
+   `/tmp/apex-eng-clihelp` korundu. Dar erişim (Apex'te 0 pinnable) → düşük öncelik.
+4. **add-override REDESIGN (round-17'de ERTELENDİ):** binding-aware base resolution + top-level-only index + method-only match +
+   version-gate (`>`/`>=` iff (major,minor)>=(3,12)) + parantezli import. EN ZOR + yalnız >=3.12 erişir → EN DÜŞÜK öncelik. `spec_r17_add_override.md`.
+- ⏳ add-functools-wraps NEEDS-DESIGN; ❌ add-slots/add-staticmethod REDDEDİLDİ; strip-redundant-object-base NEEDS-DESIGN (TIDY).
+- ✅ **18.tur İNDİ:** seal-final-method (`7971b06`, 16. CONCRETE) + merge-duplicate-imports (`7971b06`, TIDY); add-final @final-scan
+  SERTLEŞTİRİLDİ (`e0cdd9c` — alias-resolution + test-inclusion, latent false-seal kapandı). ✅ 17.tur: add-final+wire (`36be2fb`).
+- **📋 ERTELENEN (somut değil — taşınıyor):** paylaşılan `rejoin_guarded` CRLF sertleştirme; O(M²) parse verimi; **wire-module-exports
+  genişlik/değer kalibrasyonu** (her modüle `__all__` → cheap-board domine; opt-in/threshold düşün); ABC-by-NotImplementedError soft
+  over-recall (seal/add-final); string-form `'ClassVar'` over-count (güvenli); single-module fallback (gate-backstopped).
 - **DIŞLA (drift):** daha fazla sentez/tip kuralı · detektör/safety/honesty makinesi cilası · değer/default→tip çıkarımı.
 
 **🔭 ROUND-11 İNTEL (10. turun 2 keşifçisinden — otonomi + honesty + yetenek; ÇOĞU İNDİ):**
