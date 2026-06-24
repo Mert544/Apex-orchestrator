@@ -11,6 +11,17 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (20. tur) — F1-F5 KÖR-NOKTA FIX'LERİ + 2 YENİ OBJEKTİF + KALICI SOUNDNESS DENETÇİSİ: derin re-audit'in 5 bulgusu kapatıldı, wire-v2 docstring kalıntısı (pilot) düzeltildi, enforce-enum-unique (17. CONCRETE) + sort-dunder-all (TIDY), `apex self-audit --soundness` indi; 6-mühendis ordusu izole kopyalarda (1 mühendis 529-öldü ama işi tamamdı→bağımsız doğrulandı); full-gate yeşil (17 step, 1002s), A+99, 23.115 test, CONCRETE 16→17:**
+- `119393b` **fix(add-final/seal/freeze) — public-API REDDİ (F1/F2/F3, HIGH, `ascend`-otonom):** @final/freeze, DIŞ subclasser'ı görünmeyen PUBLIC kütüphane sınıf/metoduna iniyordu (suite ASLA yakalayamaz — @final runtime no-op; freeze __hash__/immutability ekler). Pilot boltons'ta ~73 @final landing doğruladı. FIX: paylaşılan `module_public_surface` (`__all__` varsa listesi; yoksa TÜM top-level non-underscore = default-PUBLIC, __init__.py-gating YOK — PEP-420 namespace paketleri + plan-layer zaten non-library dosyaları eler). Public yüzeyi REDDEDER, yalnız PRIVATE/internal'ı mühürler.
+- `864b14c` **fix(plan) — non-library dosya dışlama (F4, BROAD-LAND):** paylaşılan tek-dosya makinesi setup.py/conf.py/noxfile.py/shebang'ı elemiyordu (docs/conf.py sınıfına @final kanıtlandı). FIX: `_SCRIPT_DENYLIST` (cross_file_rename) → plan_source_rewrite reddeder + SourceIndex.build dışlar. **DENYLIST-ONLY** (auditor'ın __init__.py kuralı DEĞİL): Apex PEP-420 namespace paketleri kullanıyor → __init__.py kuralı 21 gerçek modülü objektiflerden VE kalite-tarama indeksinden düşürürdü. Mühendis bu kalibrasyonu kendi buldu+belgeledi.
+- `0fcf934` **fix(wire-module-exports) — docstring koruma (SHIPPED v2 kalıntısı, 2 pilot bağımsız yakaladı):** yorum/lisans başlığı + docstring olan modülde `__all__` line-0'a, docstring'in üstüne iniyordu → `module.__doc__`=None (boltons 5/6, verified-yeşil ship çünkü __doc__ assert eden test yok). Round-19 wire fix'i EKSİKMİŞ. FIX: `_safe_insertion_index` AST-tabanlı — docstring node end_lineno'sundan SONRA iner; v1 canonical spot byte-aynı. 14 yeni test.
+- `281c14d` **enforce-enum-unique (17. CONCRETE) + sort-dunder-all (TIDY):** enum-unique = tüm üyeleri DISTINCT (materialised value + `==`; 1==True==1.0 footgun yakalanır → çakışan enum'a @enum.unique import-crash'ini önler) Enum'a @unique. sort-dunder-all = mevcut literal `__all__` sırala+dedup. Facet 1:1 parity (3 dosya); self-audit CONCRETE 16→17, TIDY 41→42. 78 test.
+- `8cfc6d9` **feat(self-audit) — `apex self-audit --soundness` (F3/K4, denetçi KALICI):** elle-yazdığımız soundness desenini (env-üretilebilirlik + star-tüketici + used-as-base + transitif-subclass) tek otomatik repo-invariant'a genelleştirir, mevcut engine reuse, yeni safety makinesi YOK. Layer A (tek-gated-writer + SOUNDNESS_STRATEGY manifest + tripwire), Layer B (10 kütüphane-şekilli adversarial fixture → her objektif REDDET-veya-davranış-aynı), determinism harness (her objektif 2× varyasyonlu env'de byte-aynı). Canlı registry'yi gezer. Round-19 bug sınıflarını planted fixture'da YAKALADIĞI doğrulandı. 48 test, 59/59 strateji.
+- `9d613ce` **fix(cover-gaps/document-signature) — hedef-seçimi (pilot #3):** cover-gaps trivia (docs/conf.py/_version.py/private) yerine gerçek public modülü seçer; document-signature content-free docstring'i REDDEDER (template hep imza-tekrarı → dürüst no-op; makine geleceğe korundu).
+- **🔎 PİLOT = DENETÇİ İŞ BAŞINDA (ship-SONRASI yakaladı):** 2 genişleme pilotu (6 yeni dış repo) SHIPPED wire-v2 docstring kalıntısını BAĞIMSIZ buldu — iç gate (Apex bir UYGULAMA) yorum-başlıklı+docstring modül şekline sahip değil → YAPISAL kaçırdı. Determinizm/rollback/never-fake-green/env-gate hepsi dış kodda PASS, 0 çökme. K1 metriği `docs/rnd/apex-k1-value-metric.md` (8 lib/9 sweep, `f73f649`).
+- **🚀 PARALEL + 529-dayanıklılık:** 6 ağır mühendis izole kopyalarda + 4 light tasarım ajanı; pubapi 529-öldü (çıktı 3.35sa eski) AMA işini yazmıştı → kopyasını BAĞIMSIZ doğruladım (213 test, A+99, default-public namespace-safe) → re-launch'a gerek YOK. Mid-flight SendMessage ile namespace-package default-public'e yönlendirdim. Paylaşılan `test_add_final` 4-bölge 3-way merge (pubapi private-class + nonlib core.py-rename).
+- **⏭️ ROUND-21 SLATE:** F5 add-from-future reflective-tüketici gate; strengthen-tests/cover-gaps 600s timeout (per-module budget); `--json` stdout izolasyonu; add-override redesign + pin-cli-help fix hâlâ ertelenmiş; F4 JS/TS beachhead.
+
 **BU OTURUM (19. tur) — KÖR-NOKTA + GERÇEK-REPO DALGASI: K2 re-audit + 3 dış-OSS pilotu 4 SHIPPED objektifte latent fake-green/gürültü buldu → FIX; güven-temeli DIŞ kodda doğrulandı; DERİN re-audit 5 yeni bulgu (F1-F5, `ascend`-broad-land); full-gate yeşil (17 step, 897s), A+99, 22.915 test:**
 - `0f99134` **fix(dataclassify) — identity-eq flip + import-crash:** `__eq__`'su olmayan boilerplate sınıf düz `@dataclass`(eq=True)'ya dönüşünce `==` identity→value KAYIYOR + `__hash__`=None (dataclassify SESSION_OBJECTIVES'te → manşet artifact'la inebilir). FIX: `__eq__` yoksa `@dataclass(eq=False)` (4 eq/hash vakası CPython `_hash_action` tablosuna karşı türetildi); boş-olmayan mutable default REDDEDİLİR (import-crash). 15 yeni test.
 - `c89b94b` **fix(test-shield) — env/clock/order-fragile oracle REDDİ:** cover-gaps/strengthen-tests/pin-doctest, `os.getcwd()`/`mkdtemp()`/`time()`/`expanduser('~')`/imprecise-float/set-dict-repr gibi makineye-göre-değişen değerleri pinliyordu → başka makinede FUTURE-RED. FIX: paylaşılan çok-eksenli kapı (`_env_is_reproducible`) — temiz alt-süreçte cwd/$HOME/$TZ/$TMPDIR/PYTHONHASHSEED + >1s wall-clock varyasyonu, byte-aynı değilse reddet (skaler dahil); float guard (0.1+0.2 / 1/3 reddet, 0.1/2.5/42.0 tut). **Production root/dotted'ı HER ZAMAN besler → kapı asla atlanmaz.** 32 yeni test.
@@ -516,9 +527,10 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**22.915 test** + ruff), öz-not **A+99**
-  (19. turda `--chunks 16 -j 4` → 897s, 17 step + ruff PASS, exit 0; 3 fix-commit: dataclassify
-  eq/hash+mutable, env-fragility kapısı, wire-module-exports v2; CONCRETE 16 sabit, dup baseline-only).
+- **Kapı:** `python scripts/verify.py` → full green (**23.115 test** + ruff), öz-not **A+99**
+  (20. turda `--chunks 16 -j 4` → 1002s, 17 step + ruff PASS, exit 0; 6 commit: public-API reddi
+  F1/F2/F3, non-library dışlama F4, wire docstring, enum-unique+dunder-all, `--soundness`, targeting;
+  CONCRETE 16→17, TIDY 41→42, dup baseline-only). **Yeni:** `apex self-audit --soundness` (objektif-soundness kalıcı denetçisi).
   **PARALEL-AĞIR:** worktree bozuk → izole `cp` kopyaları (`/tmp/apex-eng-*`, scratchpad `parallel_heavy_harness.sh`);
   STEP-0 `import app` izolasyon-assert'i zorunlu (kopyanın app/'i editable-install'ı yener); entegrasyon `cp`-back
   (ayrık-dosya). RAM-bütçe: targeted-test düşük RAM, ≤11GB peak ile ~5-6 eşzamanlı ağır mümkün ("5=OOM" full-suite içindi). **Yeni objektif eklerken** facet-parite
@@ -592,6 +604,9 @@
 4. **add-override REDESIGN (round-17'de ERTELENDİ):** binding-aware base resolution + top-level-only index + method-only match +
    version-gate (`>`/`>=` iff (major,minor)>=(3,12)) + parantezli import. EN ZOR + yalnız >=3.12 erişir → EN DÜŞÜK öncelik. `spec_r17_add_override.md`.
 - ⏳ add-functools-wraps NEEDS-DESIGN; ❌ add-slots/add-staticmethod REDDEDİLDİ; strip-redundant-object-base NEEDS-DESIGN (TIDY).
+- ✅ **20.tur İNDİ:** 6 commit — public-API reddi F1/F2/F3 (`119393b`), non-library dışlama F4 (`864b14c`), wire docstring (`0fcf934`),
+  enforce-enum-unique+sort-dunder-all (`281c14d`), `apex self-audit --soundness` (`8cfc6d9`), cover-gaps/document-signature targeting (`9d613ce`).
+  Derin re-audit'in F1-F5'i kapandı; wire-v2 docstring kalıntısı (2 pilot) düzeldi; soundness denetçisi kalıcı oldu. CONCRETE 16→17.
 - ✅ **19.tur İNDİ:** 3 fix — dataclassify eq/hash+mutable (`0f99134`), env-fragility kapısı (`c89b94b`), wire-module-exports v2 (`9881c00`);
   K2 re-audit + 3-repo pilot (inflection/funcy/humanize) 4 latent fake-green/gürültü buldu+kapattı; güven-temeli DIŞ kodda doğrulandı.
 - ✅ **18.tur İNDİ:** seal-final-method (`7971b06`, 16. CONCRETE) + merge-duplicate-imports (`7971b06`, TIDY); add-final @final-scan
