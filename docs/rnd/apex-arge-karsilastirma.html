@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Apex Orchestrator — Ar-Ge İlerleme & Karşılaştırma</title>
+<style>
+:root{
+  --bg:#070a12; --card:rgba(20,28,48,.62); --line:rgba(86,116,178,.28);
+  --ink:#eaf0ff; --muted:#93a4c8; --dim:#5b6b8c;
+  --blue:#58a6ff; --purple:#bc8cff; --teal:#41d6c3; --gold:#e3b341; --green:#3fb950; --red:#ff7b72;
+}
+[data-theme="light"]{
+  --bg:#f4f7ff; --card:rgba(255,255,255,.86); --line:rgba(40,70,130,.20);
+  --ink:#0e1730; --muted:#41557f; --dim:#7488ad;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);overflow:hidden;
+  font-family:-apple-system,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.orb{position:fixed;border-radius:50%;filter:blur(70px);opacity:.32;pointer-events:none;z-index:0}
+.orb.a{width:560px;height:560px;left:-160px;top:-180px;background:radial-gradient(circle,#1d3a7a,transparent 70%);animation:drift 16s ease-in-out infinite alternate}
+.orb.b{width:480px;height:480px;right:-140px;bottom:-160px;background:radial-gradient(circle,#3c2a86,transparent 70%);animation:drift 19s ease-in-out infinite alternate-reverse}
+@keyframes drift{from{transform:translate3d(0,0,0) scale(1)}to{transform:translate3d(60px,40px,0) scale(1.12)}}
+.sidenav{position:fixed;left:0;top:0;bottom:0;width:248px;overflow-y:auto;z-index:8;
+  background:rgba(7,10,18,.82);border-right:1px solid var(--line);backdrop-filter:blur(8px);padding:16px 0 60px}
+[data-theme="light"] .sidenav{background:rgba(244,247,255,.9)}
+.sidenav .brand{font-weight:800;font-size:14px;letter-spacing:.5px;padding:6px 18px 12px;color:var(--ink)}
+.sidenav .brand b{background:linear-gradient(100deg,var(--teal),var(--blue) 45%,var(--purple) 85%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.sidenav .act{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);padding:14px 18px 4px}
+.navitem{display:flex;gap:9px;align-items:baseline;padding:6px 18px;font-size:12.5px;color:var(--muted);cursor:pointer;border-left:2px solid transparent;line-height:1.3}
+.navitem:hover{color:var(--ink);background:rgba(88,166,255,.07)}
+.navitem.on{color:var(--ink);border-left-color:var(--blue);background:rgba(88,166,255,.10)}
+.navitem .num{color:var(--dim);font-size:11px;min-width:16px}
+.navtoggle{display:none;position:fixed;top:12px;left:12px;z-index:9;background:var(--card);border:1px solid var(--line);
+  color:var(--ink);border-radius:10px;padding:7px 11px;font-size:13px;cursor:pointer}
+.themebtn{position:fixed;top:12px;right:14px;z-index:9;background:var(--card);border:1px solid var(--line);
+  color:var(--ink);border-radius:10px;padding:6px 11px;font-size:12px;cursor:pointer}
+.stage{position:fixed;inset:0;left:248px}
+.slide{position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;z-index:1;
+  padding:6vh 6vw 7vh;overflow-y:auto;
+  background:radial-gradient(900px 520px at 72% -12%, rgba(88,166,255,.10), transparent 60%),
+             radial-gradient(720px 520px at 8% 112%, rgba(137,87,229,.10), transparent 60%)}
+.slide.on{display:flex;animation:enter .4s ease-out}
+@keyframes enter{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.eyebrow{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+h1{font-size:clamp(32px,4.6vw,60px);letter-spacing:-1.4px;line-height:1.05;font-weight:800}
+h2{font-size:clamp(22px,3.1vw,38px);letter-spacing:-.8px;margin-bottom:12px;font-weight:800}
+.gx{background:linear-gradient(100deg,var(--teal),var(--blue) 45%,var(--purple) 85%);-webkit-background-clip:text;background-clip:text;color:transparent}
+p.lead{font-size:clamp(15px,1.6vw,20px);color:var(--ink);opacity:.92;max-width:960px;margin-top:12px;line-height:1.5}
+p.sub{font-size:clamp(12.5px,1.2vw,15px);color:var(--muted);margin-top:14px;max-width:1040px;line-height:1.55}
+ul.big{margin:14px 0 0;list-style:none;max-width:1060px}
+ul.big li{font-size:clamp(13.5px,1.4vw,17.5px);color:var(--ink);opacity:.92;padding:7px 0 7px 30px;position:relative;line-height:1.45}
+ul.big li::before{content:"▸";position:absolute;left:6px;color:var(--purple)}
+ul.big li b{opacity:1}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:13px;margin-top:16px;max-width:1220px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:15px 17px}
+.card h3{font-size:15px;margin:2px 0 6px}
+.card p{font-size:12.7px;color:var(--muted);line-height:1.5}
+.card .tag{display:inline-block;margin-top:9px;font-size:11px;color:var(--teal);border:1px solid rgba(65,214,195,.35);border-radius:99px;padding:2px 9px}
+.card .num{font-size:11px;color:var(--dim);font-weight:700;letter-spacing:.1em}
+.kpis{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:13px 20px;text-align:center;min-width:128px}
+.kpi b{display:block;font-size:clamp(20px,2.5vw,30px);letter-spacing:-1px}
+.kpi .was{font-size:12px;color:var(--dim);text-decoration:line-through;opacity:.8}
+.kpi .arrow{color:var(--teal);font-weight:800}
+.kpi span{font-size:11.5px;color:var(--muted);display:block;margin-top:2px}
+.kpi.up b{color:var(--teal)}
+table{border-collapse:collapse;margin-top:14px;font-size:clamp(11.5px,1.1vw,13.5px);width:100%;max-width:1280px}
+.tw{overflow-x:auto;max-width:100%}
+th,td{padding:8px 11px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase;position:sticky;top:0;background:var(--bg)}
+td b{color:var(--ink)}
+td{color:var(--ink);opacity:.9}
+.y{color:var(--green);font-weight:700}.n{color:var(--red);font-weight:700}.m{color:var(--gold);font-weight:700}
+.newrow td{background:rgba(65,214,195,.08)}.newrow td b{color:var(--teal)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px;max-width:1220px}
+.col{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:15px 18px}
+.col.then{border-left:3px solid var(--dim)}.col.now{border-left:3px solid var(--teal)}
+.col h3{font-size:14px;margin-bottom:8px}.col.then h3{color:var(--muted)}.col.now h3{color:var(--teal)}
+.col ul{list-style:none}.col li{font-size:12.8px;color:var(--ink);opacity:.9;padding:4px 0 4px 18px;position:relative;line-height:1.42}
+.col li::before{content:"•";position:absolute;left:4px;color:var(--dim)}.col.now li::before{color:var(--teal)}
+.flow{display:flex;gap:0;align-items:stretch;flex-wrap:wrap;margin-top:16px;max-width:1280px}
+.fstep{flex:1;min-width:175px;background:var(--card);border:1px solid var(--line);border-radius:13px;padding:14px;margin:6px;position:relative}
+.fstep h3{font-size:14px;margin:6px 0 4px}.fstep p{font-size:12px;color:var(--muted);line-height:1.45}
+.fstep .n{position:absolute;top:-11px;left:13px;background:linear-gradient(100deg,var(--blue),var(--purple));color:#06101f;font-weight:800;font-size:11px;border-radius:99px;padding:2px 9px}
+.fstep .bs{display:block;margin-top:7px;font-size:11px;color:var(--gold)}
+.idea{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--teal);border-radius:12px;padding:13px 16px}
+.idea h3{font-size:14px;margin-bottom:4px;color:var(--teal)}.idea p{font-size:12.5px;color:var(--muted);line-height:1.48}
+.idea .why{display:block;margin-top:6px;font-size:11.5px;color:var(--blue)}
+.blind{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--red);border-radius:12px;padding:13px 16px}
+.blind h3{font-size:14px;margin-bottom:4px;color:var(--red)}.blind p{font-size:12.5px;color:var(--muted);line-height:1.48}
+.blind .mit{display:block;margin-top:6px;font-size:11.5px;color:var(--gold)}
+.note{margin-top:12px;font-size:11.5px;color:var(--dim);max-width:1100px}
+.bar{position:fixed;top:0;left:0;height:3px;background:linear-gradient(90deg,var(--teal),var(--blue),var(--purple));z-index:9;transition:width .3s}
+.pager{position:fixed;bottom:12px;right:18px;color:var(--dim);font-size:12px;z-index:6}
+.hint{position:fixed;bottom:12px;left:264px;color:var(--dim);font-size:11.5px;z-index:6}
+@media(max-width:900px){
+  .sidenav{transform:translateX(-100%);transition:transform .25s}
+  body.navopen .sidenav{transform:none}
+  .navtoggle{display:block}.stage{left:0}.hint{left:14px;bottom:42px}
+  .two{grid-template-columns:1fr}
+}
+@media print{
+  .orb,.sidenav,.navtoggle,.themebtn,.bar,.pager,.hint{display:none!important}
+  .stage{position:static;left:0}
+  .slide{display:flex!important;position:relative;inset:auto;min-height:100vh;page-break-after:always;overflow:visible}
+  body{overflow:visible;height:auto;background:#fff;color:#0e1730}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
+</style>
+</head>
+<body>
+<div class="orb a"></div><div class="orb b"></div>
+<div class="bar" id="bar"></div>
+<button class="navtoggle" onclick="document.body.classList.toggle('navopen')">☰ Bölümler</button>
+<button class="themebtn" id="themebtn">☀︎ / ☾</button>
+
+<nav class="sidenav" id="sidenav">
+  <div class="brand">APEX <b>ORCHESTRATOR</b><br/><span style="font-weight:500;font-size:11px;color:var(--dim)">Ar-Ge İlerleme · Karşılaştırma</span></div>
+  <div id="navlist"></div>
+</nav>
+
+<div class="stage">
+
+<!-- 1 KAPAK -->
+<section class="slide" data-act="Özet" data-title="Kapak">
+  <div class="eyebrow">Faaliyet-içi Ar-Ge · İlerleme Güncellemesi</div>
+  <h1>Önceki Ar-Ge <span class="gx">→</span> Şimdi</h1>
+  <p class="lead">Bir önceki Ar-Ge sunumu bir <b>tez + anlık-görüntü</b>ydü (≈8. tur). Aradan geçen <b>10 turda</b>
+  Apex o tezi <i>kanıtladı ve büyüttü</i>. Bu deste, <b>o zaman → şimdi</b> karşılaştırmasını yapar ve asıl değeri
+  çıkarır: <b>ne öğrendik (fikirler)</b> ve <b>neyi hâlâ göremiyoruz (kör noktalar)</b>.</p>
+  <div class="kpis">
+    <div class="kpi up"><b><span class="was">8</span> <span class="arrow">→</span> 16</b><span>somut hedef (×2)</span></div>
+    <div class="kpi"><b><span class="was" style="font-size:14px">21.270</span> → 22.802</b><span>çevrimdışı test</span></div>
+    <div class="kpi"><b>A+ 99</b><span>10 tur hiç düşmedi</span></div>
+    <div class="kpi"><b>0</b><span>token (değişmedi)</span></div>
+  </div>
+  <p class="sub mono">Sayılar bu repodan (PROGRESS.md tur-tur + git + self-audit). Rakip/pazar tezleri önceki sunumla aynı.</p>
+</section>
+
+<!-- 2 YÖNETİCİ ÖZETİ -->
+<section class="slide" data-act="Özet" data-title="Tek Cümle">
+  <div class="eyebrow">Yönetici Özeti</div>
+  <h2>Tek cümlelik <span class="gx">ilerleme tezi</span></h2>
+  <p class="lead">Önceki Ar-Ge'nin en büyük dürüst zayıflığı — <i>"kapsam dar ve sonlu"</i> — doğrudan saldırıldı:
+  <b>somut kod-indirme hedefleri ikiye katlandı (8→16)</b>, kalite tavanı <b>A+99 hiç bozulmadan</b> korundu, ve
+  "asla sahte-yeşil" sloganı <b>2-turluk bir demodan, her turda gerçek hata yakalayan kalıcı bir mekanizmaya</b> dönüştü.</p>
+  <ul class="big" style="margin-top:14px">
+    <li><b>İlerleme gerçek:</b> ürün yüzeyi 2×, kalite sabit, moat fiilen güçlendi.</li>
+    <li><b>Tez iyileşerek doğrulandı:</b> bir stratejik varsayım dürüstçe güncellendi (sentez doydu → somut objektife pivot).</li>
+    <li><b>Sınırlar silinmedi:</b> dil genişliği, yaratıcı-kod, yerleşik-savunulabilirlik — hâlâ açık (kör noktalar bölümü).</li>
+  </ul>
+</section>
+
+<!-- 3 KPI KARŞILAŞTIRMA -->
+<section class="slide" data-act="Karşılaştırma" data-title="KPI: O zaman / Şimdi">
+  <div class="eyebrow">Manşet metrikler — o zaman vs şimdi</div>
+  <h2>10 turda <span class="gx">ne değişti</span></h2>
+  <div class="tw"><table>
+    <tr><th>Metrik</th><th>Önceki Ar-Ge (≈8. tur)</th><th>Bugün (18. tur)</th><th>Delta</th></tr>
+    <tr class="newrow"><td><b>Somut (CONCRETE) hedef</b></td><td>8</td><td><b>16</b></td><td class="y">×2 KATLANDI</td></tr>
+    <tr><td>Çevrimdışı test</td><td>21.270</td><td><b>22.802</b></td><td class="y">+1.532</td></tr>
+    <tr><td>Öz-not (kendi rubriği)</td><td>A+ 99</td><td><b>A+ 99</b></td><td class="y">10 tur korundu</td></tr>
+    <tr><td>Python dosya</td><td>~1.509</td><td><b>1.597</b></td><td class="m">+88</td></tr>
+    <tr><td>Token maliyeti</td><td>0</td><td><b>0</b></td><td class="m">— (ürünün özü)</td></tr>
+    <tr><td>Denetçi (north-star)</td><td>PASS</td><td><b>PASS · drift=False</b></td><td class="y">SAFETY=0</td></tr>
+    <tr><td>Moat öz-testi</td><td>2 tur / ~7 bulgu</td><td><b>her tur / sürekli</b></td><td class="y">disipline döndü</td></tr>
+  </table></div>
+  <p class="note">Okuma: sayı büyürken kalite tavanı hiç düşmedi — bu, "hızlı büyüme" değil <b>disiplinli olgunlaşma</b>nın imzasıdır.</p>
+</section>
+
+<!-- 4 SOMUT HEDEFLER ×2 -->
+<section class="slide" data-act="Karşılaştırma" data-title="Somut Hedefler 8→16">
+  <div class="eyebrow">En büyük ilerleme — sunumun #1 zayıflığı kapatıldı</div>
+  <h2>8 somut hedefe <span class="gx">8 yenisi</span> eklendi</h2>
+  <div class="tw"><table>
+    <tr><th>#</th><th>Yeni hedef</th><th>Ne LANDLİYOR (gerçek kod)</th><th>Tur</th></tr>
+    <tr class="newrow"><td>9</td><td><b>document-signature</b></td><td>Belgesiz public fonksiyona kanıtlı <code>Args:/Returns:</code> docstring</td><td>9</td></tr>
+    <tr class="newrow"><td>10</td><td><b>pin-doctest</b></td><td>Suite'in koşmadığı geçen <code>&gt;&gt;&gt;</code> örneklerini koşan gating test</td><td>13</td></tr>
+    <tr class="newrow"><td>11</td><td><b>scaffold-from-protocol</b></td><td>İmplementer'ı olmayan <code>Protocol</code> → <code>class &lt;P&gt;Impl</code> + instantiation oracle</td><td>14</td></tr>
+    <tr class="newrow"><td>12</td><td><b>add-from-future-annotations</b></td><td>Tipli ama lazy-olmayan modüle <code>from __future__ import annotations</code></td><td>15</td></tr>
+    <tr class="newrow"><td>13</td><td><b>freeze-dataclass</b></td><td>Mutasyona uğramayan <code>@dataclass</code>'a <code>frozen=True</code> (tüm-proje tarama)</td><td>16</td></tr>
+    <tr class="newrow"><td>14</td><td><b>add-final</b></td><td>Asla subclasslanmamış sınıfa <code>@typing.final</code> (yapısal soundness)</td><td>17</td></tr>
+    <tr class="newrow"><td>15</td><td><b>wire-module-exports</b></td><td>Modüle, star-import setine eşit <code>__all__</code> (davranış-aynı)</td><td>17</td></tr>
+    <tr class="newrow"><td>16</td><td><b>seal-final-method</b></td><td>Asla override-edilmeyen metoda <code>@typing.final</code></td><td>18</td></tr>
+  </table></div>
+  <p class="note">Hepsi aynı disiplinle: belirsizlik = blokaj · uygulama = testle doğrulama · kızaran süit = byte-for-byte geri sarma · deterministik · sıfır-token.</p>
+</section>
+
+<!-- 5 STRATEJİK DÖNÜŞ -->
+<section class="slide" data-act="Karşılaştırma" data-title="Stratejik Dönüş">
+  <div class="eyebrow">Dürüst güncelleme — bir varsayım değişti</div>
+  <h2>Sentez <span class="gx">DOYDU</span> → somut objektife pivot</h2>
+  <div class="two">
+    <div class="col then"><h3>Önceki Ar-Ge'nin tezi (≈8. tur)</h3><ul>
+      <li>Yön #1: <b>"sentez uzayını genişlet"</b> — daha çok deterministik şablon.</li>
+      <li>Risk #1: <b>"şablon-hızı"</b> — yeni yetenek elle eklenir, rakip daha hızlı eklerse fark erir.</li>
+      <li>Örtük varsayım: büyüme = daha çok sentez şablonu.</li>
+    </ul></div>
+    <div class="col now"><h3>14. turda kanıtlanan gerçek</h3><ul>
+      <li>Bir keşif ajanı her aday sentez kuralını kodla denetledi → <b>landlenecek 0 sağlam kural kaldı</b>.</li>
+      <li>Sentez/tip-çıkarımı motoru <b>doğal doyma</b> noktasında — "sınır" değil, <b>tamamlanmış iş</b>.</li>
+      <li>Büyüme daha zengin eksene kaydı: <b>somut develop OBJEKTİFLERİ</b> (şablon değil — tüm-proje analiz + deterministik dönüşüm + oracle/suite-kapısı).</li>
+    </ul></div>
+  </div>
+  <p class="sub">Sonuç: sunumun "Direction #1" ✅ tamamlandı; gerçek büyüme ekseni "somut objektif" oldu — sunum bunu öngörmemişti.
+  Bu, tezin <b>iyileşerek</b> doğrulanması: her yeni objektif yapısal olarak kanıtlanabilir, hızı insan-mühendisliğine değil sağlam-fırsat sayısına bağlı.</p>
+</section>
+
+<!-- 6 MOAT BATTLE-TESTED -->
+<section class="slide" data-act="Karşılaştırma" data-title="Moat Kanıtlandı">
+  <div class="eyebrow">En güçlü ilerleme — moat artık slogan değil</div>
+  <h2>2-turluk demo <span class="gx">→ her-tur disiplin</span></h2>
+  <p class="lead">Önceki sunum "moat'ı kırmaya çalıştık" diyordu — 2 tur, ~7 bulgu. Aradan geçen turlarda
+  <code>/code-review</code> her objektifi commit'TEN ÖNCE denetledi ve <b>defalarca yeşil test süitlerinin kaçırdığı GERÇEK
+  sağlamlık hataları</b> yakaladı — hatta <b>zaten İNMİŞ kodda latent hatalar</b>.</p>
+  <div class="tw"><table>
+    <tr><th>Tur</th><th>Review'in commit'ten ÖNCE yakaladığı</th><th>Önemi</th></tr>
+    <tr><td>16</td><td>freeze-dataclass'ta <b>3 sağlamlık deliği</b> (kwargs-collision import'ta çöker; <b>noktalı-base importer'ı kırar</b>; pydantic/local yanlış dondurulur)</td><td class="n">52 yeşil testin kaçırdığı</td></tr>
+    <tr><td>17</td><td>add-override <b>YAPISAL unsound</b> (false @override) → <b>ertelendi</b>; + SHIPPED freeze-dataclass subscripted-base latent deliği</td><td class="n">65 yeşil testin kaçırdığı</td></tr>
+    <tr><td>18</td><td><b>3/3 objektifte gerçek bug:</b> merge binding-flip · seal test-exclusion+alias · pin-cli-help eksik-pin+env-fragility; + SHIPPED add-final latent false-seal</td><td class="n">hepsi commit'ten önce</td></tr>
+  </table></div>
+  <p class="sub">İki nitel sıçrama: (1) moat artık <b>kendi geçmiş kararlarını da</b> denetliyor; (2) <b>"REFUSE-on-ambiguity"</b> ilkesi olgunlaştı —
+  "belirsizlikte reddet" (seal) modeli "kanıtla-yoksa-yanlış-land" (add-override) modelinden yapısal olarak güvenli. <b>Taklit edilmesi en pahalı moat bileşeni fiilen güçlendi.</b></p>
+</section>
+
+<!-- 7 6 YÖN KARNESİ -->
+<section class="slide" data-act="Karşılaştırma" data-title="6 Yön — İlerleme Karnesi">
+  <div class="eyebrow">Sunumun 6 geliştirme yönü — bugünkü karne</div>
+  <h2>Yol haritası <span class="gx">karnesi</span></h2>
+  <div class="tw"><table>
+    <tr><th>Yön (sunum)</th><th>Durum</th><th>Kanıt</th></tr>
+    <tr><td>1. Sentez uzayını genişlet</td><td class="y">✅ DOYDU + pivot</td><td>sentez doydu; 8 yeni somut objektif indi</td></tr>
+    <tr><td>2. Çok-dilli dedektör (JS/TS)</td><td class="n">⏳ açık (0 ilerleme)</td><td>hâlâ Python-odaklı</td></tr>
+    <tr><td>3. Idea motorunu güçlendir</td><td class="m">🟡 ilerledi</td><td>landability-aware ranking · Wilson-güven · dream-landing</td></tr>
+    <tr><td>4. Regüle/denetim hikâyesi</td><td class="m">🟡 temel sağlam</td><td>kanıt-artefaktı + denetçi mevcut; sertifika açık</td></tr>
+    <tr><td>5. Opsiyonel yerel-LLM</td><td class="m">⏳ açık (bilinçli)</td><td>çekirdek sıfır-token kaldı</td></tr>
+    <tr><td>6. Sürekli adversaryal öz-test</td><td class="y">✅✅ GÜÇLÜ</td><td>2-tur → her-tur; latent shipped-kod hataları da yakalanıyor</td></tr>
+  </table></div>
+  <p class="note">İki yön kapatıldı/derinleşti (#1, #6); üçü kısmen ilerledi (#3, #4, #5); biri hiç başlamadı (#2 — en büyük açık).</p>
+</section>
+
+<!-- 8 FİKİRLER -->
+<section class="slide" data-act="Çıkarım" data-title="FİKİRLER (ne yapmalı)">
+  <div class="eyebrow">Karşılaştırmanın verdiği FİKİRLER — ne inşa etmeli</div>
+  <h2>İlerleme deseninin <span class="gx">önerdiği yönler</span></h2>
+  <div class="grid">
+    <div class="idea"><span class="num">F1</span><h3>Somut-objektif boru hattını sürdür</h3><p>8→16 kanıtladı: değer burada birikiyor. Hazır kuyruk: enforce-enum-unique, sort-dunder-all, add-functools-wraps.<span class="why">çünkü: kanıtlanmış büyüme motoru</span></p></div>
+    <div class="idea"><span class="num">F2</span><h3>"REFUSE-on-ambiguity"yi tasarım ilkesi yap</h3><p>Başarısızlık-modu "reddet" olan objektifler (seal/add-final/freeze) "kanıtla-yoksa-yanlış" (add-override) olanlardan kategorik daha ucuz+güvenli. Önceliklendirmeyi buna göre kur.<span class="why">çünkü: 17-18. turda kanıtlandı</span></p></div>
+    <div class="idea"><span class="num">F3</span><h3>Review'i deterministik "objektif-soundness lint"e çevir</h3><p>Yakalanan delikler TEKRAR EDEN desen: aliased-base, test-exclusion, env-fragility, binding-reorder. Bunları kodla bir öz-denetçiye → moat sertleşir + <b>ürün özelliği</b> olabilir.<span class="why">çünkü: aynı sınıf hata 3 turda tekrar çıktı</span></p></div>
+    <div class="idea"><span class="num">F4</span><h3>Çok-dil kama (JS/TS beachhead)</h3><p>Python somut-objektifleri olgunlaştı; en büyük dokunulmamış büyüme kolu. JSDoc-only lander ile sağlam ilk adım.<span class="why">çünkü: TAM'ı genişletir, #2 yönü</span></p></div>
+    <div class="idea"><span class="num">F5</span><h3>Buyer-proof'u "senin repon üzerinde demo"ya çevir</h3><p>Bağımsız projede N objektif + kanıt = tekrarlanabilir satış/onboarding aracı. Maliyet avantajı demoda görünür kılınmalı.<span class="why">çünkü: maliyet avantajı anlatılmazsa görünmez</span></p></div>
+    <div class="idea"><span class="num">F6</span><h3>Eski objektifleri yeni merceklerle re-audit et</h3><p>Latent shipped-bug bulguları (freeze/add-final) gösterdi: eski objektifler (implement-stub, cover-gaps) güncel review-merceklerinden geçmedi. Periyodik re-audit sweep.<span class="why">çünkü: kaç eski delik daha var, bilmiyoruz</span></p></div>
+  </div>
+</section>
+
+<!-- 9 KÖR NOKTALAR -->
+<section class="slide" data-act="Çıkarım" data-title="KÖR NOKTALAR">
+  <div class="eyebrow">Karşılaştırmanın açığa çıkardığı KÖR NOKTALAR — yumuşatılmamış</div>
+  <h2>Neyi hâlâ <span class="gx">göremiyoruz</span></h2>
+  <div class="grid">
+    <div class="blind"><span class="num">K1</span><h3>Sayıyı ölçüyoruz, DEĞER'i değil</h3><p>8→16 ama bazı yeni objektifler dar-erişimli: pin-cli-help Apex'te 0 pinnable, add-override yalnız ≥3.12, wire-module-exports ~her modül. "Tipik alıcı reposunda her objektif gerçekte ne kadar kod indiriyor?" ölçülmüyor.<span class="mit">azalt: gerçek-repo "value-landed" metriği ekle</span></p></div>
+    <div class="blind"><span class="num">K2</span><h3>Re-audit edilmemiş eski objektifler</h3><p>Review 3/3 yeni + 2 latent shipped bug yakaladı → eski objektifler keşfedilmemiş sağlamlık delikleri taşıyabilir. Yalnız freeze+add-final re-denetlendi.<span class="mit">azalt: F6 (re-audit sweep)</span></p></div>
+    <div class="blind"><span class="num">K3</span><h3>Tek-dil tavanı kırılmadı</h3><p>10 turda çok-dil = SIFIR ilerleme. Deck'in TAM-sınırlayan zayıflığı aynen açık; tüm büyüme Python derinliğine gitti, genişliğe değil.<span class="mit">azalt: F4 (JS/TS beachhead)</span></p></div>
+    <div class="blind"><span class="num">K4</span><h3>Otonomi yanılsaması — orkestratör darboğazı</h3><p>Paralel-ordu throughput'u, her ajanın BAĞIMSIZ re-verify edilmesine bağlı (mühendisler "A+99" derken A+98 çıktı; 529 ajanları öldürdü). Bu, "otonom"a ölçeklenmeyen bir döngü-içi bottleneck.<span class="mit">azalt: F3'ün lint'i + otomatik grade/dup kapısı her ajanda</span></p></div>
+    <div class="blind"><span class="num">K5</span><h3>Sıfır dış-dünya adopsiyon sinyali</h3><p>Tüm kanıt öz-üretilmiş (gym projeleri, self-audit). Gerçek bir alıcı henüz koşmadı; "alıcı değer görür" iddiası test edilmedi.<span class="mit">azalt: 1-2 gerçek OSS repoda pilot</span></p></div>
+    <div class="blind"><span class="num">K6</span><h3>Somut-objektif doyması da yaklaşıyor olabilir</h3><p>Marjinal objektif (sort-dunder-all=TIDY, dar) erken olanlardan (implement-stub) düşük-değerli. 8→16 katlanması, eşit-değerli bir 16→32 ile eşleşmeyebilir — azalan marjinal değer.<span class="mit">azalt: değer-eşiği + K3 (yeni dil = yeni bereketli alan)</span></p></div>
+  </div>
+  <p class="note">Bu kör noktalar sunumun risklerini (özellik-mi-şirket-mi, replikasyon, yerleşik-savunulabilirlik) çürütmüyor — onlara <b>10-tur sonrası daha keskin, ölçüm-temelli</b> bir form veriyor.</p>
+</section>
+
+<!-- 10 NET DEĞERLENDİRME -->
+<section class="slide" data-act="Çıkarım" data-title="Net Değerlendirme">
+  <div class="eyebrow">Net değerlendirme — dengeli kapanış</div>
+  <h2>Ne kadar ilerledik, <span class="gx">nereye gidiyoruz</span></h2>
+  <ul class="big">
+    <li><b>Ürün yüzeyi 2× büyüdü</b> (8→16 somut hedef) — sunumun #1 zayıflığına doğrudan cevap.</li>
+    <li><b>Kalite tavanı (A+99) 10 tur hiç düşmeden</b> korundu — olgunluk kanıtı, hız değil disiplin.</li>
+    <li><b>En değerli moat bileşeni (doğrulama-motoru) fiilen güçlendi</b> — slogandan, kendi geçmiş kodunu bile denetleyen kanıtlanmış sürece.</li>
+    <li><b>Bir stratejik varsayım dürüstçe güncellendi</b> (sentez doydu → somut objektif) — tez iyileşerek doğrulandı.</li>
+    <li><b>Pipeline canlı:</b> round-19/20 hazır (enforce-enum-unique, sort-dunder-all, pin-cli-help fix, add-override redesign).</li>
+  </ul>
+  <p class="sub">Aksiyon sırası (fikirlerden): <b>F1 (boru hattı sürdür) + F3 (soundness-lint) yakın vade</b> · <b>F4 (JS/TS) orta vade</b> ·
+  <b>K1 (değer-metriği) + K5 (gerçek pilot) en kritik kör-nokta kapatma.</b></p>
+  <p class="sub mono">Kaynak: bu repo (docs/PROGRESS.md tur-tur · git · apex self-audit --north-star). Önceki sunum: docs/rnd/apex-arge-sunum.html · Tam rapor: docs/rnd/apex-arge-ilerleme-raporu.md</p>
+</section>
+
+</div><!-- /stage -->
+
+<div class="pager" id="pager"></div>
+<div class="hint">← → / yan menü / tıkla</div>
+
+<script>
+const slides=[...document.querySelectorAll('.slide')];
+const navlist=document.getElementById('navlist');
+let lastAct='';
+slides.forEach((s,i)=>{
+  const act=s.dataset.act, title=s.dataset.title;
+  if(act!==lastAct){const a=document.createElement('div');a.className='act';a.textContent=act;navlist.appendChild(a);lastAct=act;}
+  const it=document.createElement('div');it.className='navitem'+(i===0?' on':'');
+  it.innerHTML='<span class="num">'+(i+1)+'</span><span>'+title+'</span>';
+  it.onclick=()=>{go(i);document.body.classList.remove('navopen');};
+  navlist.appendChild(it);
+});
+const navitems=[...document.querySelectorAll('.navitem')];
+let cur=0;
+function go(i){
+  if(i<0||i>=slides.length)return;
+  slides[cur].classList.remove('on'); navitems[cur].classList.remove('on');
+  cur=i;
+  slides[cur].classList.add('on'); navitems[cur].classList.add('on');
+  slides[cur].scrollTop=0;
+  navitems[cur].scrollIntoView({block:'nearest'});
+  document.getElementById('pager').textContent=(cur+1)+' / '+slides.length;
+  document.getElementById('bar').style.width=((cur+1)/slides.length*100)+'%';
+  location.hash='s'+(i+1);
+}
+const h=parseInt((location.hash||'').replace('#s',''));
+go(Number.isFinite(h)&&h>=1&&h<=slides.length?h-1:0);
+addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT')return;
+  if(e.key==='ArrowRight'||e.key==='PageDown')go(cur+1);
+  if(e.key==='ArrowLeft'||e.key==='PageUp')go(cur-1);
+  if(e.key==='Home')go(0); if(e.key==='End')go(slides.length-1);
+});
+let tx=null;
+addEventListener('touchstart',e=>tx=e.touches[0].clientX);
+addEventListener('touchend',e=>{if(tx===null)return;const dx=e.changedTouches[0].clientX-tx;if(Math.abs(dx)>60)go(dx<0?cur+1:cur-1);tx=null;});
+document.getElementById('themebtn').onclick=()=>{
+  const r=document.documentElement;
+  r.setAttribute('data-theme', r.getAttribute('data-theme')==='light'?'':'light');
+};
+</script>
+</body>
+</html>
