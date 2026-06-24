@@ -449,6 +449,7 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
         out.extend(_count_templates(a, witnesses))
     out.extend(_affine_string_templates(a, witnesses))
     out.extend(_constant_index_templates(a, witnesses))
+    out.extend(_dict_index_templates(a, witnesses))
     out.extend(_slice_templates(a, witnesses))
     out.extend(_index_templates(a, witnesses))
     out.extend(_one_arg_builtin_templates(a, kind, witnesses))
@@ -1365,6 +1366,141 @@ def _constant_index_constants(witnesses: list[tuple[str, str]]) -> list[int]:
     return sorted(idx for idx in (common or set()) if idx != 0)
 
 
+def _dict_index_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The 1-arg DICT-KEY family: ``return a[k]`` for a fixed mapping KEY ``k`` mined
+    from the witnesses — the value stored under a CONSTANT key in EVERY witnessed
+    ``dict``. ``port({'host': 'a', 'port': 80}) == 80, port({'host': 'b', 'port': 443})
+    == 443`` lands ``return d['port']`` — a value no sequence index, slice, or
+    reduction template can spell (the argument is a mapping, not a sequence). It is the
+    mapping counterpart of the sequence :func:`_constant_index_templates`, and the two
+    are MUTUALLY EXCLUSIVE: the sequence miner rejects a ``dict`` argument (its type gate
+    is ``list`` / ``tuple`` / ``str``) and this miner rejects a non-``dict`` argument, so
+    a given witness set feeds at most one of them.
+
+    Keys come from :func:`_dict_index_constants` — the TYPE-EXACT intersection of the
+    keys whose value reproduces that witness's expected value, restricted to ``str`` /
+    ``int`` keys (a ``bool`` is excluded — type-distinct from ``int``). The mined key
+    reproduces every witness by construction (the caller still gates it against all
+    pinned tests, never-fake-green).
+
+    HASHSEED-SAFE: ``d[k]`` reads ONE key by hash lookup and NEVER iterates the mapping,
+    so its value is independent of ``PYTHONHASHSEED`` — UNLIKE the forbidden ``set(a)`` /
+    ``list(set(a))`` shapes (whose iteration order is hash-seed-dependent and therefore
+    non-deterministic). Landing ``d[k]`` is sound under the determinism invariant.
+
+    OVERFIT FLOOR + two never-fake-green guards live in :func:`_dict_index_constants`:
+    the >=2-distinct-witness floor (:func:`_string_floor_met`), a VARY-VALUES guard (the
+    mined key's value must DIFFER across witnesses, else the contract is a constant the
+    constant-last fallback owns — and a ``dict`` arg has an EMPTY canary set, so this
+    ambiguity is invisible to the off-witness guard and MUST be refused at mine time),
+    and a UNIQUE-survivor guard (>1 surviving key -> refuse: the witnesses cannot tell
+    which key is meant). Deterministic: at most one key, ``repr``-sorted."""
+    out: list[tuple[str, str]] = []
+    for k in _dict_index_constants(witnesses):
+        out.append((f"dict_index[{k!r}]", f"{a}[{k!r}]"))
+    return out
+
+
+def _dict_index_survivor(common: "set[_Hashed] | None") -> list[object]:
+    """The single surviving mined dict key as a one-element list, or ``[]``.
+
+    GUARD 2 — UNIQUE survivor: more than one key surviving the type-exact
+    intersection means the witnesses cannot tell which key is meant, so NOTHING
+    is mined (parity with the unique-survivor discipline; never a guess).
+    Deterministic: ``repr``-sorted."""
+    survivors = sorted((h.value for h in (common or set())), key=repr)
+    return survivors if len(survivors) == 1 else []
+
+
+def _dict_index_constants(witnesses: list[tuple[str, str]]) -> list[object]:
+    """The fixed mapping keys ``k`` to try in ``a[k]``, mined as the TYPE-EXACT
+    INTERSECTION over the witnesses of the ``str`` / ``int`` keys whose value equals that
+    witness's expected value. ``port({'host': 'a', 'port': 80}) == 80`` contributes the
+    key ``'port'`` (the only key whose value type-exactly equals ``80``); intersecting
+    with ``port({'host': 'b', 'port': 443}) == 443``'s ``{'port'}`` yields ``['port']``
+    -> ``d['port']``.
+
+    Each witness must be a single ``dict`` argument (the type gate FLIPS relative to the
+    sequence :func:`_constant_index_constants`, making the two mutually exclusive) with a
+    LITERAL expected value; any witness that is not (a non-literal, multi-arg, or
+    non-``dict`` shape) yields NO key — the family cannot be mined then, never guessed. A
+    key counts only when it is a ``str`` or ``int`` (a ``bool`` key is excluded — it is
+    type-distinct from ``int``) AND its value's TYPE matches the expected value's type
+    exactly (``1`` does not match ``True``), mirroring the accept-gate's type-exact
+    comparison so a mined key can never imply a value the gate would reject. ``_Hashed``
+    wraps each key so a type-exact set intersection is sound (``1`` never collides with
+    ``True``, and an unhashable-looking key stays in its own type bucket).
+
+    GUARD 1 — VARY-VALUES: the expected values must VARY across the witnesses (mirroring
+    :func:`_count_witness_pairs` / :func:`_compose_witness_pairs`). An all-equal-value
+    contract is a CONSTANT the constant-last fallback owns; landing ``a[k]`` over it would
+    be fake-green — and crucially a ``dict`` argument has an EMPTY off-witness canary set
+    (:func:`_single_arg_canary_probes`), so this ambiguity is INVISIBLE to the ambiguity
+    guard and MUST be refused here, at mine time.
+
+    GUARD 2 — UNIQUE survivor: if MORE THAN ONE key survives the intersection, the
+    witnesses cannot tell which key is meant (parity with the unique-survivor discipline
+    in :func:`_count_templates`), so NOTHING is mined — never a guess.
+
+    Gated behind the >=2-distinct-witness overfit floor (:func:`_string_floor_met`).
+    Deterministic: ``repr``-sorted; an empty / single / non-``dict`` witness set, an
+    all-equal-value contract, or a >1-key intersection all yield ``[]``."""
+    if not _string_floor_met(witnesses):
+        return []
+    pairs = _dict_index_pairs(witnesses)
+    if pairs is None:
+        return []  # un-mineable shape, or GUARD 1 (all-equal value) fired in the helper
+    common: set[_Hashed] | None = None
+    for mapping, expected in pairs:
+        keys = {
+            _Hashed(key) for key, val in mapping.items()
+            if _dict_key_kind_ok(key)
+            and type(val) is type(expected) and val == expected
+        }
+        common = keys if common is None else (common & keys)
+        if not common:
+            return []
+    return _dict_index_survivor(common)  # GUARD 2: unique survivor or []
+
+
+def _dict_index_pairs(
+    witnesses: list[tuple[str, str]],
+) -> list[tuple[dict, object]] | None:
+    """The ``(mapping, expected)`` pairs for the dict-key miner, or ``None`` when the
+    family cannot be mined. Every witness must be ONE LITERAL ``dict`` argument (the
+    type gate FLIPS relative to the sequence miner) with a LITERAL expected value; a
+    non-literal, multi-arg, or non-``dict`` shape yields ``None`` — never guessed.
+
+    GUARD 1 (VARY-VALUES) lives here: the expected values must VARY across the witnesses
+    (mirroring :func:`_count_witness_pairs`). An all-equal-value contract is a CONSTANT
+    the constant-last fallback owns; since a ``dict`` argument has an EMPTY off-witness
+    canary set, that ambiguity is invisible to the guard and MUST be refused at mine time
+    (``None``), else the dict-index body would be stamped fake-green over a real constant.
+    Deterministic: source order."""
+    out: list[tuple[dict, object]] = []
+    for args_text, expected_text in witnesses:
+        value = _literal_tuple(args_text)
+        expected = _literal_value(expected_text)
+        if value is None or len(value) != 1 or expected is _NO_LITERAL:
+            return None
+        if not isinstance(value[0], dict):
+            return None
+        out.append((value[0], expected))
+    if len({_Hashed(e) for _m, e in out}) < 2:
+        return None  # GUARD 1: all-equal value -> a constant, not a dict-key read
+    return out
+
+
+def _dict_key_kind_ok(key: object) -> bool:
+    """True when ``key`` is a mineable dict key for ``a[k]``: a ``str`` or a non-``bool``
+    ``int``. A ``bool`` is excluded — it is type-distinct from ``int`` (mirroring the
+    type-exact accept gate), and any other key type (``float`` / ``tuple`` / ``None``) is
+    out of scope for this family. Deterministic, total."""
+    if isinstance(key, bool):
+        return False
+    return isinstance(key, (str, int))
+
+
 def _index_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """The 1-arg INDEX-METHOD family: ``return a.index(k)`` for each fixed element ``k``
     mined from the witnesses — the int POSITION at which the literal ``k`` FIRST occurs in
@@ -2015,15 +2151,34 @@ def _one_arg_builtin_templates(
     view). The shapes:
 
     * ``-{a}`` (negation), ``int({a})`` — numeric coercions (int/float args);
-    * ``{a}[0]`` / ``{a}[-1]`` (first/last), ``list({a})`` / ``tuple({a})`` — sequence
+    * ``hex({a})`` / ``oct({a})`` / ``bin({a})`` / ``chr({a})`` — value-free, TOTAL
+      int->str maps (int args only): the three radix formatters and the
+      codepoint->char map. No floor (pure totals like ``neg``); the int canaries
+      already split the radices and ``chr`` from one another and from ``str(n)``, so
+      an under-specified ``hex`` vs ``str`` contract is refused. ``chr`` on an
+      out-of-range codepoint RAISES -> gate rejects;
+    * ``ord({a})`` — the value-free length-1-str->codepoint map (str args only), the
+      inverse of ``chr``; a non-length-1 str RAISES -> gate rejects;
+    * ``{a}[0]`` / ``{a}[-1]`` (first/last), ``{a}[::-1]`` (reverse),
+      ``list({a})`` / ``tuple({a})``, ``bytes({a})`` / ``bytearray({a})`` — sequence
       projections (iterable / str args, where indexing and materialization are
       meaningful); ``tuple`` differs from ``list`` only in RESULT TYPE, which the
       type-exact accept-gate distinguishes, so the right one lands on its witnesses.
-      ``list({a})`` / ``tuple({a})`` are WITHHELD when a witnessed argument is a
-      ``set``/``frozenset``: materializing an unordered collection of non-int
-      elements yields a PYTHONHASHSEED-dependent order, the same non-deterministic
-      value oracle that already excludes ``set({a})`` — landing such a body would
-      break the determinism invariant;
+      ``{a}[::-1]`` reverses the whole sequence, VALUE-FREE and TYPE-PRESERVING
+      (``str[::-1]`` -> ``str``, ``list[::-1]`` -> ``list``), so like ``first`` /
+      ``last`` it carries no witness literal and no overfit floor; the off-witness
+      canaries split it from passthrough / ``sorted`` (a list/tuple via the reversed
+      sequence-canary probe, a ``str`` via the whitespace-padded ``str`` canaries —
+      a palindrome / already-sorted-descending witness where the reverse coincides
+      with passthrough / ``sorted`` is honestly REFUSED).
+      ``list({a})`` / ``tuple({a})`` / ``bytes({a})`` / ``bytearray({a})`` are
+      WITHHELD when a witnessed argument is a ``set``/``frozenset``: materializing an
+      unordered collection yields a PYTHONHASHSEED-dependent order, the same
+      non-deterministic value oracle that already excludes ``set({a})`` — landing
+      such a body would break the determinism invariant. ``frozenset({a})`` is
+      deliberately NOT offered as a body at all: it is the SAME hash-iteration-order
+      determinism class as the forbidden ``set({a})`` (sound only as an INFERRED type
+      name, never as a value-returning stub);
     * ``str({a})``, ``not {a}``, ``bool({a})`` — type-agnostic, offered for every
       kind (any value can be stringified or truth-tested). ``set({a})`` is
       deliberately NOT offered: a ``set`` return is hash-iteration-order-sensitive,
@@ -2045,12 +2200,44 @@ def _one_arg_builtin_templates(
     # which ``int`` cannot coerce, prunes it.
     if kind in (None, "int", "float", "str"):
         out.append(("int", f"int({a})"))
+    if kind in (None, "int"):
+        # Value-free int-to-str radix formatters + the codepoint->char map. Each is
+        # a pure TOTAL function on the int domain (``hex``/``oct``/``bin`` accept any
+        # int; ``chr`` accepts ``0..0x10FFFF``), so no overfit floor is needed — just
+        # like ``neg``. They are pruned to a pure-int arg (a ``float`` cannot radix-
+        # format and ``chr`` rejects it), and the int-canary probes already split
+        # ``hex``/``oct``/``bin``/``chr`` from one another and from ``str(n)`` (the
+        # radices diverge on the anchor probes), so an under-specified ``hex`` vs
+        # ``str`` contract is honestly refused by the ambiguity guard. ``chr`` on an
+        # out-of-range / negative codepoint RAISES, which the accept-gate rejects.
+        out.append(("hex", f"hex({a})"))
+        out.append(("oct", f"oct({a})"))
+        out.append(("bin", f"bin({a})"))
+        out.append(("chr", f"chr({a})"))
+    if kind in (None, "str"):
+        # ``ord(s)`` maps a length-1 ``str`` to its int codepoint — value-free, pure,
+        # the inverse of ``chr``. Offered for a str arg (a non-length-1 str RAISES,
+        # which the gate rejects); the str canaries split it from the other str shapes.
+        out.append(("ord", f"ord({a})"))
     if kind in (None, "str", "iterable"):
         out.append(("first", f"{a}[0]"))
         out.append(("last", f"{a}[-1]"))
+        out.append(("reverse", f"{a}[::-1]"))
         if not _has_set_arg(witnesses):
             out.append(("list", f"list({a})"))
             out.append(("tuple", f"tuple({a})"))
+            # ``bytes(a)``/``bytearray(a)`` materialize an iterable of ints (or encode
+            # a str) into a bytes container — VALUE-FREE and order-PRESERVING for a
+            # list/tuple/str arg, so they are HASHSEED-SAFE and need no floor (the
+            # gate's type-exact accept keeps the right one — ``bytes`` vs ``bytearray``
+            # differ only in result type). They share the ``_has_set_arg`` gate with
+            # ``list``/``tuple``: a ``set`` arg would order its elements by hash, making
+            # the bytes value PYTHONHASHSEED-dependent (the same non-determinism that
+            # withholds ``set(a)``/``list(a)`` for a set witness). ``frozenset(a)`` is
+            # deliberately NOT offered as a body — it is the same hash-iteration-order
+            # determinism class as the forbidden ``set(a)``.
+            out.append(("bytes", f"bytes({a})"))
+            out.append(("bytearray", f"bytearray({a})"))
         if _distinct_count_applicable(witnesses):
             out.append(("distinct_count", f"len(set({a}))"))
     out.append(("str", f"str({a})"))
@@ -4116,6 +4303,19 @@ _SAFE_BUILTINS = {
     "len": len, "min": min, "max": max, "sorted": sorted, "sum": sum,
     "abs": abs, "round": round, "str": str, "int": int, "float": float,
     "bool": bool, "list": list, "tuple": tuple,
+    # Value-free int->str maps (the radix formatters + ``chr``) and the
+    # str->codepoint ``ord``, present so the in-process matcher / fingerprint can
+    # evaluate the ``hex``/``oct``/``bin``/``chr`` int templates and the ``ord`` str
+    # template; without them the sandbox eval raises NameError and
+    # ``can_fill_stub_in_process`` under-counts (the develop-loop move-scan would
+    # never offer a body the pytest-gated apply lands). Each is a pure total function
+    # on its domain (PYTHONHASHSEED-independent), so adding them lands no unsound body.
+    "hex": hex, "oct": oct, "bin": bin, "chr": chr, "ord": ord,
+    # ``bytes``/``bytearray`` materialize an iterable-of-ints / str into a bytes
+    # container — value-free and order-preserving for a list/tuple/str arg
+    # (hashseed-safe); a ``set`` arg is gated out upstream (``_has_set_arg``) exactly
+    # as ``list``/``tuple`` are, and ``frozenset`` is never offered as a body.
+    "bytes": bytes, "bytearray": bytearray,
     # ``set`` is present ONLY so the in-process matcher can evaluate the
     # DETERMINISTIC count ``len(set(a))`` (the distinct-count family). Without it
     # the sandbox eval raises NameError, ``can_fill_stub_in_process`` under-counts,
