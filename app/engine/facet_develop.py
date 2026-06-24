@@ -83,6 +83,11 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # (remove-unused-imports); an unordered import block is sorted (sort-imports).
     "an unused import": "remove-unused-imports",
     "an unsorted import block": "sort-imports",
+    # Repeated `from <same-module> import ...` lines collapse into one, first-
+    # appearance order, binding-multiset-identical (refuses on any rebind-reorder,
+    # comment/noqa loss, or incompatible alias). The "import direction" sub-aspect's
+    # third tidy. Phrasing is substring-order-safe vs every other key.
+    "the duplicate from-imports to merge": "merge-duplicate-imports",
 
     # Signatures / API surface: the concern is the parameter list itself.
     "unused parameter": "dead-params",
@@ -321,6 +326,14 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # risk is closed STRUCTURALLY by the whole-project subclass scan, not the suite).
     # Phrasing is substring-order-safe vs every other key.
     "a class to seal as final": "add-final",
+
+    # A method proven never overridden anywhere: seal-final-method seals it with
+    # @typing.final (the method-level sibling of add-final — a type-checker-only
+    # no-op, behaviour-preserving; the false-final risk is closed STRUCTURALLY by a
+    # whole-project, transitive subclass-method scan, not the suite). Phrasing is
+    # substring-order-safe vs every other key (it shares no whole key with "a class
+    # to seal as final" in either direction).
+    "the method to seal as final": "seal-final-method",
 
     # Missing lazy-annotation import: the document lens's "signatures and types"
     # aspect names a module that USES type annotations (a return type, an

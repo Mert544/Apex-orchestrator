@@ -82,6 +82,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "cover-gaps",
         "scaffold-from-protocol",
         "add-final",
+        "seal-final-method",
         "wire-module-exports",
         # NOTE: "fix-docstrings" was REMOVED here — it is a standalone CLI
         # subcommand (`apex fix-docstrings`), NOT a registered develop objective,
@@ -131,6 +132,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "percent-to-fstring",
         "set-literal",
         "use-enumerate",
+        "merge-duplicate-imports",
     }),
     "SAFETY": frozenset(),
 }

@@ -193,7 +193,12 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                          # never subclassed (a leaf), which add-final seals with
                          # `@typing.final` to document/enforce the intent. Appended,
                          # originals still lead.
-                         "a class to seal as final"],
+                         "a class to seal as final",
+                         # added: the method-level sibling — a METHOD provably never
+                         # overridden anywhere, which seal-final-method seals with
+                         # `@typing.final` (the per-method inverse of an extension
+                         # point). Appended, originals still lead.
+                         "the method to seal as final"],
     "sensible defaults": ["the safe default", "the override path", "documented rationale"],
     # generalize L3 ladders — the appended L2 moves decompose once more into the
     # concrete edits an engineer performs, then bottom out in the case split.
@@ -425,7 +430,11 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     # L3 phrases route (via FACET_OBJECTIVE_MAP) to the import-hygiene develop
     # objectives (remove-unused-imports, sort-imports), so a zoom here lands on a
     # real campaign rather than the generic case split.
-    "import direction": ["an unused import", "an unsorted import block"],
+    "import direction": ["an unused import", "an unsorted import block",
+                         # added: repeated from-same-module imports the
+                         # merge-duplicate-imports objective collapses into one
+                         # (binding-identical). Appended, originals still lead.
+                         "the duplicate from-imports to merge"],
     # decouple — the constructive "break the knot" lens. Its two structural L1
     # aspects ("dependency inversion", "seam interface") previously had NO L2
     # vocabulary, so zooming "Decouple X → dependency inversion" fell straight to
