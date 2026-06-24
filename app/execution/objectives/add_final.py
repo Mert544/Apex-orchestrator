@@ -13,12 +13,17 @@ The detection + minimal rewrite live in :mod:`app.execution.final_marker`
 (``add_final_decorator``); this module only names it as a develop objective and
 registers itself with the develop registry. UNLIKE the standard single-file
 objectives, add-final needs WHOLE-PROJECT context (the conservative used-as-base
-over-approximation spans every own module), so — like freeze-dataclass — its
-transform is a closure that gathers the project's own sources as the subclass scan
-set before running the marker. It still reuses the shared single-file
-``plan_source_rewrite`` (refuse test/fixture, read, run the transform, record the
-one in-place rewrite with its original so the suite-gated apply engine can roll it
-back). The transform refuses (an honest no-op) a module with no finalizable class:
+over-approximation spans EVERY module — tests and fixtures INCLUDED, via
+``all_module_sources``, NOT the tests-excluding ``project_sources``), so its
+transform is a closure that gathers all the project's sources as the subclass scan
+set before running the marker. Tests must be in scope because ``@typing.final`` is
+a pure runtime no-op: a class subclassed ONLY in a test (a mock / fake) is a REAL
+subclass a TYPE CHECKER rejects once the class is sealed, yet the pytest suite can
+NEVER catch that false "final" — so excluding tests would silently mis-seal it. It
+still reuses the shared single-file ``plan_source_rewrite`` (refuse test/fixture,
+read, run the transform, record the one in-place rewrite with its original so the
+suite-gated apply engine can roll it back). The transform refuses (an honest no-op)
+a module with no finalizable class:
 the class is subclassed (incl. via a dotted base), already ``@final``, an abstract
 base / protocol / enum, the name ``final`` cannot be bound unambiguously to
 ``typing.final``, or the module does not parse.
@@ -33,7 +38,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.execution.cross_file_rename import RenamePlan, plan_source_rewrite
-from app.execution.final_marker import add_final_decorator, project_sources
+from app.execution.final_marker import add_final_decorator
+from app.execution.freeze_dataclass import all_module_sources
 from app.execution.objectives._base import register_module_objective
 
 
@@ -44,14 +50,16 @@ def plan_add_final(project_root: str | Path, module_rel: str) -> RenamePlan:
     read, run the transform, record the one in-place rewrite with its original so
     the verified-apply engine can roll it back). The one twist over the standard
     single-file shape: its transform needs WHOLE-PROJECT context — the conservative
-    used-as-base over-approximation spans every own module — so the transform is a
-    closure that, given the module's source, gathers the project's own sources and
+    used-as-base over-approximation spans every module, tests and fixtures INCLUDED
+    (via ``all_module_sources``), because a class subclassed only in a test is a
+    real subclass a type checker rejects once it is sealed — so the transform is a
+    closure that, given the module's source, gathers all the project's sources and
     runs ``add_final_decorator`` with that scan set. An empty plan means nothing to
     do here — no finalizable class, or the module does not parse — a no-op, not a
     failure."""
 
     def _transform(source: str) -> str | None:
-        sources = project_sources(project_root, module_rel, source)
+        sources = all_module_sources(project_root, module_rel, source)
         return add_final_decorator(source, sources)
 
     return plan_source_rewrite(project_root, module_rel, "add_final", _transform)

@@ -294,12 +294,19 @@ def _class_def_index(cls: ast.ClassDef) -> int:
     return cls.lineno - 1
 
 
-def _insert_decorator(lines: list[str], cls: ast.ClassDef, text: str) -> list[str]:
-    """Insert the ``@final`` decorator line directly above ``cls``'s ``class``
-    header, preserving the header's leading indentation (so a nested-but-top-level
-    class — none here, but harmless — keeps its column) and leaving any existing
-    decorators in place above it."""
-    idx = _class_def_index(cls)
+def _insert_decorator(
+    lines: list[str],
+    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+    text: str,
+) -> list[str]:
+    """Insert the ``@final`` decorator line directly above ``node``'s definition
+    header (a ``class`` or ``def`` / ``async def``), preserving the header's leading
+    indentation (so a method keeps its column, and a nested-but-top-level class —
+    none here, but harmless — keeps its) and leaving any existing decorators in
+    place above it. Shared by add-final (class headers) and seal-final-method
+    (method headers): ``node.lineno - 1`` is the 0-based index of the header line
+    just below any decorator list for both node kinds."""
+    idx = node.lineno - 1
     header = lines[idx]
     indent = header[: len(header) - len(header.lstrip())]
     out = list(lines)

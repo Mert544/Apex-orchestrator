@@ -558,3 +558,44 @@ def test_fixC_alias_on_single_line_typing_import_is_preserved_when_widened():
     ns: dict[str, object] = {}
     exec(compile(out, "<fixC4>", "exec"), ns)  # noqa: S102 - test-only
     assert ns["C"].__final__ is True
+
+
+# --- FIX 1: a TEST-FILE subclass is a REAL one @final breaks for a type checker --
+
+def test_fix1_not_sealed_when_subclassed_only_in_a_test_file(tmp_path: Path):
+    # FIX 1 (soundness, test-INCLUSIVE scan). ``@typing.final`` is a pure runtime
+    # no-op, so a class subclassed ONLY in a test (a mock / fake) stays GREEN even
+    # though a TYPE CHECKER would reject that subclass once the class is sealed — a
+    # false "final" the pytest suite can NEVER catch. The plan now scans EVERY
+    # module (``all_module_sources``), tests INCLUDED, so the test-only subclass is
+    # seen and the seal is REFUSED. (Under the old tests-EXCLUDING ``project_sources``
+    # scan the mock was invisible and ``Config`` was wrongly sealed.)
+    _project(tmp_path, "app/conf.py", "class Config:\n    value = 1\n")
+    _project(tmp_path, "tests/test_conf.py",
+             "from app.conf import Config\n\n\nclass FakeConfig(Config):\n    pass\n")
+    plan = plan_add_final(str(tmp_path), "app/conf.py")
+    assert not plan.new_contents  # the test-only subclass forbids the seal
+
+
+def test_fix1_leaf_with_no_test_subclass_still_seals(tmp_path: Path):
+    # FIX 1 must not over-refuse: a genuine leaf — used (not subclassed) in a test —
+    # STILL seals under the test-inclusive scan. The test file merely constructs the
+    # class, so it contributes no used-as-base name.
+    _project(tmp_path, "app/conf.py", _LEAF)
+    _project(tmp_path, "tests/test_conf.py",
+             "from app.conf import Config\n\n\ndef test_v():\n    assert Config().value == 1\n")
+    plan = plan_add_final(str(tmp_path), "app/conf.py")
+    assert plan.ok
+    assert "@final" in plan.new_contents["app/conf.py"]
+
+
+def test_fix1_all_module_sources_includes_test_files():
+    # FIX 1, the helper directly: ``all_module_sources`` is the test-INCLUSIVE
+    # sibling of ``project_sources`` — it returns this_source even with no real
+    # project shape (the single-module conservative floor), and is a public,
+    # ``__all__``-exported name.
+    import app.execution.freeze_dataclass as fz
+
+    assert "all_module_sources" in fz.__all__
+    only = fz.all_module_sources(".", "app/x.py", "class X:\n    pass\n")
+    assert "class X:\n    pass\n" in only  # this_source always present

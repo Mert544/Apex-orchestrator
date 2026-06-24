@@ -71,6 +71,7 @@ __all__ = [
     "dataclass_field_names",
     "is_frozen_dataclass_decorator",
     "project_sources",
+    "all_module_sources",
 ]
 
 
@@ -497,6 +498,39 @@ def project_sources(project_root, module_rel: str, this_source: str) -> list[str
         from app.engine.objective_compiler import _own_modules
 
         sources = {rel: src for rel, src in _own_modules(project_root)}
+    except Exception:
+        sources = {}
+    sources[module_rel] = this_source
+    return list(sources.values())
+
+
+def all_module_sources(project_root, module_rel: str, this_source: str) -> list[str]:
+    """Every ``.py`` source text in the project — INCLUDING tests and fixtures —
+    for a whole-project subclass / used-as-base scan, with ``module_rel``'s text
+    guaranteed to be ``this_source`` (the exact bytes being rewritten, so the scan
+    is consistent with the rewrite).
+
+    The tests-INCLUSIVE sibling of :func:`project_sources`. The ``@final`` family
+    (add-final, seal-final-method) uses THIS, not ``project_sources``: a class
+    subclassed — or a method overridden — ONLY in a test file (a mock / fake /
+    stub) is a REAL subclass/override that ``@typing.final`` breaks for a TYPE
+    CHECKER, and a pytest suite can NEVER catch that (the decorator is a pure
+    runtime no-op). Excluding tests would make such a subject look like a leaf and
+    wrongly seal it — a false "final" the suite cannot see. So the scan must span
+    every module, tests included. freeze-dataclass deliberately does NOT use this:
+    its wrong-freeze is a RUNTIME ``TypeError`` / ``FrozenInstanceError`` the suite
+    DOES catch (and roll back), so it keeps the tighter own-module ``project_sources``
+    scan.
+
+    Falls back to JUST ``this_source`` when the file walk is unavailable (e.g. a
+    bare directory with no project shape) — then the scan is single-module, which
+    is STILL sound for an in-module subclass/override and is the conservative floor."""
+    from pathlib import Path
+
+    try:
+        from app.engine.source_index import _py_files
+
+        sources = {rel: src for rel, src in _py_files(Path(project_root))}
     except Exception:
         sources = {}
     sources[module_rel] = this_source
