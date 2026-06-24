@@ -1,23 +1,42 @@
 """document-signature develop objective — land a PROVEN docstring on an
-undocumented public function.
+undocumented public function, BUT REFUSE a content-free restatement.
 
 Covers: objective registration / reachability (a facet phrase routes to it and
-the facet-map↔registry parity invariant still holds); the transform documents a
-public undocumented function ONLY when its return type is PROVABLE (param names
-as AST facts + a ``Returns: <type>`` line from the existing return-type oracle,
-or from an existing ``-> T`` annotation); the CRITICAL GATE — when the return
-type is NOT provable it lands NOTHING (never a placeholder skeleton); every
-refusal (already-documented, private/dunder, ``test_*``, test/fixture file); the
-docstring is behaviour-preserving (the function still parses and runs) and the
-``__doc__`` is set; idempotency (a second run is a byte-identical no-op); and
-determinism (same input -> same output).
+the facet-map↔registry parity invariant still holds); the per-fact building
+blocks the generator can still mint (param names as AST facts, a ``Returns:
+<type>`` line from the existing return-type oracle or an existing ``-> T``
+annotation); the CRITICAL GATE — when the return type is NOT provable it lands
+NOTHING (never a placeholder skeleton); the CONTENT-FREE refusal — under the
+current name+params+return template every generatable docstring merely restates
+the signature, so ``document_signatures`` is a deliberate honest NO-OP (it lands
+nothing rather than noise a maintainer rejects); every other refusal
+(already-documented, private/dunder, ``test_*``, test/fixture file); idempotency
+(a second run is a byte-identical no-op); and determinism (same input -> same
+output).
+
+NOTE (justification for this file's shape vs. the pre-fix version): the prior
+tests asserted ``document_signatures(...)`` LANDED a docstring such as
+``\"\"\"size. Args: xs Returns: int\"\"\"``. The pilot (DELIVERABLE B.2,
+spec_pilot_revalidation_and_targeting.md) confirmed across funcy/humanize/
+inflection that EVERY such docstring is a pure RESTATEMENT of the signature —
+content-free noise a maintainer rejects. The fix adds ``_adds_semantic_content``
+(always ``False`` under the current template) so the objective now REFUSES every
+content-free docstring. These tests were updated to assert that honest no-op
+while still proving the underlying per-fact machinery is intact (so the moment a
+real prose source is wired the objective re-enables for content-FUL cases).
 """
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 from app.execution.objectives.document_signature import (
+    _adds_semantic_content,
+    _docstring_lines,
+    _is_public_undocumented,
+    _param_names,
+    _provable_return_type,
     document_signatures,
     plan_document_signature,
 )
@@ -40,7 +59,9 @@ def test_objective_spec_is_callable():
 
 def test_objective_is_reachable_from_a_facet():
     # A facet phrase must route to it, else `apex objectives` shows it as
-    # unreachable and the facet/objective integrity test fails.
+    # unreachable and the facet/objective integrity test fails. (Refusing to land
+    # content-free docstrings does NOT remove the objective — it stays registered
+    # and reachable, ready to land the moment a real prose source exists.)
     from app.engine.facet_develop import facet_to_objective
 
     assert facet_to_objective(
@@ -49,7 +70,8 @@ def test_objective_is_reachable_from_a_facet():
 
 def test_facet_reachability_parity_invariant_holds():
     # The standing 1:1 invariant: the facet map reaches EXACTLY the registered
-    # objectives. Adding document-signature to BOTH sides keeps the equality.
+    # objectives. The content-free refusal adds/removes no objective, so the
+    # equality is unchanged.
     from app.engine.facet_develop import FACET_OBJECTIVE_MAP
     from app.engine.objective_compiler import available_objectives
 
@@ -66,91 +88,104 @@ def test_facet_phrase_lives_in_the_signatures_and_types_ladder():
     assert ladder[0] == "parameter meanings"  # originals still lead
 
 
-# --- accepts: a proven docstring lands ---------------------------------------
+# --- the per-fact building blocks are still intact (proven facts) -------------
+# These prove the machinery the objective REUSES once a prose source lands; they
+# do not assert the objective lands anything (it refuses — see the next section).
 
-def test_documents_public_fn_with_provable_int_return():
-    out = document_signatures("def size(xs):\n    return len(xs)\n")
-    assert out is not None
-    assert '"""size.' in out          # name-derived summary (a fact)
-    assert "Args:" in out and "xs" in out  # param name listed (an AST fact)
-    assert "Returns: int" in out       # proven type from the oracle
-
-
-def test_documents_pure_procedure_with_returns_none():
-    # A pure procedure provably returns None (the oracle proves ``"None"``), so
-    # it is documented with ``Returns: None`` — not refused.
-    out = document_signatures("def emit(msg, level):\n    print(msg)\n")
-    assert out is not None
-    assert "Returns: None" in out
-    assert "msg" in out and "level" in out
+def test_provable_return_type_oracle_still_proves_int():
+    fn = ast.parse("def size(xs):\n    return len(xs)\n").body[0]
+    assert _provable_return_type(fn) == "int"
 
 
-def test_documents_no_param_function_without_args_block():
-    # No parameters -> the docstring omits the Args block entirely (no empty
-    # section), still carrying the proven Returns line.
-    out = document_signatures("def origin():\n    return 0\n")
-    assert out is not None
-    assert "Returns: int" in out
-    assert "Args:" not in out
+def test_provable_return_type_proves_pure_procedure_none():
+    fn = ast.parse("def emit(msg, level):\n    print(msg)\n").body[0]
+    assert _provable_return_type(fn) == "None"
 
 
-def test_uses_existing_return_annotation_as_proven_fact():
-    # The function already declares ``-> list[int]`` (an author-declared fact)
-    # but has no docstring; the annotation is read verbatim for the Returns line
-    # even though the oracle refuses an already-annotated function.
-    out = document_signatures(
-        "def parse(text) -> list[int]:\n    return decode(text)\n")
-    assert out is not None
-    assert "Returns: list[int]" in out
-    assert "text" in out
+def test_provable_return_type_reads_existing_annotation_verbatim():
+    fn = ast.parse("def parse(text) -> list[int]:\n    return decode(text)\n").body[0]
+    assert _provable_return_type(fn) == "list[int]"
 
 
-def test_documents_each_provable_return_kind():
-    cases = {
-        "return 's'": "Returns: str",
-        "return True": "Returns: bool",
-        "return 1.5": "Returns: float",
-        "return [1]": "Returns: list[int]",
-        "return {1: 2}": "Returns: dict[int, int]",
-    }
-    for body, expect in cases.items():
-        out = document_signatures(f"def f(a):\n    {body}\n")
-        assert out is not None and expect in out, body
+def test_provable_return_type_refuses_when_not_provable():
+    fn = ast.parse("def combine(a, b):\n    return a + b\n").body[0]
+    assert _provable_return_type(fn) is None
 
 
-def test_documents_method_with_correct_indentation():
-    out = document_signatures(
-        "class C:\n    def area(self, w, h):\n        return 1\n")
-    assert out is not None
-    # The docstring is indented to the method body (8 spaces), not column 0.
-    assert '        """area.' in out
-    assert "        Returns: int" in out
+def test_param_names_are_pure_ast_facts():
+    fn = ast.parse("def f(a, b, *args, c, **kw):\n    return 1\n").body[0]
+    assert _param_names(fn) == ["a", "b", "*args", "c", "**kw"]
 
 
-def test_documented_function_still_parses_and_runs():
-    # Behaviour-preserving: docstring TEXT only — the function still runs and
-    # returns the same value, and __doc__ is now set.
-    out = document_signatures("def doubled(xs):\n    return len(xs)\n")
-    assert out is not None
-    ns: dict = {}
-    exec(out, ns)  # noqa: S102 - executing our own generated, proven-safe code
-    assert ns["doubled"]([1, 2, 3]) == 3
-    assert ns["doubled"].__doc__.startswith("doubled.")
+def test_docstring_lines_template_is_name_params_return_only():
+    # The generated body carries EXACTLY name + param names + return type — no
+    # prose source — which is precisely why it is content-free (the next section).
+    fn = ast.parse("def size(xs):\n    return len(xs)\n").body[0]
+    body = "".join(_docstring_lines(fn, "", "int"))
+    assert "size." in body and "Args:" in body and "xs" in body
+    assert "Returns: int" in body
 
 
-def test_generated_docstring_has_no_trailing_whitespace():
-    # Landed code must stay lint-clean: blank separator lines are emitted empty.
-    out = document_signatures("def f(a, b):\n    return len(a)\n")
-    assert out is not None
-    for line in out.splitlines():
-        assert line == line.rstrip(), repr(line)
+# --- the CONTENT-FREE refusal: a pure signature restatement -> land NOTHING ---
+
+def test_adds_semantic_content_is_false_under_current_template():
+    # The minimal, exact predicate (spec B.2(a)): the current name+params+return
+    # template is ALWAYS a pure restatement, so this is False for every function
+    # -> the objective is a deliberate honest no-op until a prose source lands.
+    fn = ast.parse("def size(xs):\n    return len(xs)\n").body[0]
+    assert _adds_semantic_content(fn, "int") is False
+
+
+def test_refuses_content_free_pilot_invalidate_case():
+    # The exact pilot case: the only generatable docstring is
+    # `\"\"\"invalidate. Args: *args **kwargs Returns: None\"\"\"` — a pure
+    # restatement of the signature -> REFUSED (content-free), no-op.
+    assert document_signatures(
+        "def invalidate(*args, **kwargs):\n    memory.pop()\n") is None
+
+
+def test_refuses_content_free_even_with_provable_int_return():
+    # Was the standout "accept" before the fix: provable return + a param name is
+    # STILL only a restatement of the signature -> refuse.
+    assert document_signatures("def size(xs):\n    return len(xs)\n") is None
+
+
+def test_refuses_content_free_pure_procedure_returns_none():
+    assert document_signatures("def emit(msg, level):\n    print(msg)\n") is None
+
+
+def test_refuses_content_free_no_param_function():
+    assert document_signatures("def origin():\n    return 0\n") is None
+
+
+def test_refuses_content_free_get_translation_case():
+    # humanize i18n: `\"\"\"get_translation. Returns: gettext...NullTranslations\"\"\"`
+    # — content-free even with a return type -> refuse.
+    assert document_signatures(
+        "def get_translation() -> X:\n    return X()\n") is None
+
+
+def test_refuses_content_free_with_existing_annotation():
+    assert document_signatures(
+        "def parse(text) -> list[int]:\n    return decode(text)\n") is None
+
+
+def test_refuses_every_provable_return_kind_as_content_free():
+    # Each was an "accept" before; each is now a content-free restatement.
+    for body in ("return 's'", "return True", "return 1.5",
+                 "return [1]", "return {1: 2}"):
+        assert document_signatures(f"def f(a):\n    {body}\n") is None, body
+
+
+def test_refuses_content_free_method():
+    assert document_signatures(
+        "class C:\n    def area(self, w, h):\n        return 1\n") is None
 
 
 # --- the CRITICAL GATE: not provable -> land NOTHING (no placeholder) ---------
+# (Independently still holds — the return-type gate fires before the content gate.)
 
 def test_refuses_when_return_type_not_provable():
-    # ``a + b`` is a BinOp over names — not statically certain -> the oracle
-    # refuses, so this objective lands NOTHING (no placeholder skeleton).
     assert document_signatures("def combine(a, b):\n    return a + b\n") is None
 
 
@@ -159,14 +194,11 @@ def test_refuses_bare_name_return():
 
 
 def test_refuses_fall_through_value_return():
-    # Reaches the end -> implicit ``return None`` -> true type is ``int | None``;
-    # the oracle refuses rather than guess, so nothing is documented.
     src = "def code(ok):\n    if ok:\n        return 200\n"
     assert document_signatures(src) is None
 
 
 def test_refuses_generator():
-    # A generator returns an iterator, not a named concrete type -> refuse.
     assert document_signatures("def gen(xs):\n    yield 1\n") is None
 
 
@@ -175,11 +207,17 @@ def test_refuses_mixed_return_types():
     assert document_signatures(src) is None
 
 
-# --- refusals: who never gets a docstring ------------------------------------
+# --- refusals: who never gets a docstring (gates BELOW the content-free one) --
 
 def test_refuses_already_documented_function():
     src = 'def f(x):\n    """Existing."""\n    return 1\n'
     assert document_signatures(src) is None
+
+
+def test_is_public_undocumented_skips_already_documented():
+    # The gate that makes the pass idempotent is unchanged.
+    fn = ast.parse('def f(x):\n    """Doc."""\n    return 1\n').body[0]
+    assert _is_public_undocumented(fn) is False
 
 
 def test_refuses_private_function():
@@ -195,29 +233,24 @@ def test_refuses_test_function():
     assert document_signatures("def test_thing():\n    return 1\n") is None
 
 
-def test_documents_only_qualifying_in_a_mixed_module():
-    # public+provable -> documented; private and non-provable -> left alone.
+def test_mixed_module_is_a_full_noop():
+    # public+provable, private, and non-provable: NONE qualifies now (the
+    # public+provable one is content-free), so the whole module is a no-op.
     src = (
         "def good(xs):\n    return len(xs)\n\n"
         "def _hidden(a):\n    return 1\n\n"
         "def murky(a, b):\n    return a + b\n"
     )
-    out = document_signatures(src)
-    assert out is not None
-    assert '"""good.' in out
-    # The two non-qualifying functions gained no docstring.
-    assert "_hidden." not in out.replace("def _hidden", "")
-    assert '"""murky.' not in out
+    assert document_signatures(src) is None
 
 
-# --- idempotency / determinism -----------------------------------------------
+# --- idempotency / determinism (now: a stable no-op) --------------------------
 
-def test_idempotent_second_run_is_a_noop():
+def test_noop_is_idempotent():
     src = "def size(xs):\n    return len(xs)\n"
-    once = document_signatures(src)
-    assert once is not None
-    # The function now HAS a docstring -> a second run refuses (byte-identical).
-    assert document_signatures(once) is None
+    assert document_signatures(src) is None
+    # A second run on the (unchanged) source is the same byte-identical no-op.
+    assert document_signatures(src) is None
 
 
 def test_deterministic_across_two_runs():
@@ -229,7 +262,7 @@ def test_unparseable_source_is_none():
     assert document_signatures("def (:\n") is None
 
 
-# --- plan layer: refusal, no-op, determinism, rollback capture ---------------
+# --- plan layer: refusal, no-op, determinism, no crash -----------------------
 
 def _project(tmp_path: Path, rel: str, src: str) -> Path:
     (tmp_path / Path(rel).parent).mkdir(parents=True, exist_ok=True)
@@ -237,14 +270,13 @@ def _project(tmp_path: Path, rel: str, src: str) -> Path:
     return tmp_path
 
 
-def test_plan_lands_proven_docstring(tmp_path: Path):
+def test_plan_is_noop_on_content_free_module(tmp_path: Path):
+    # What used to land a docstring is now an EMPTY plan (content-free refusal):
+    # no write, no blocker — an honest no-op, not a failure.
     _project(tmp_path, "app/m.py", "def size(xs):\n    return len(xs)\n")
     plan = plan_document_signature(str(tmp_path), "app/m.py")
-    landed = plan.new_contents["app/m.py"]
-    assert "Returns: int" in landed and '"""size.' in landed
+    assert not plan.new_contents
     assert not plan.blockers
-    # The original is captured so the verified-apply engine can roll it back.
-    assert plan.originals["app/m.py"] == "def size(xs):\n    return len(xs)\n"
 
 
 def test_plan_refuses_when_not_provable_no_placeholder(tmp_path: Path):
@@ -279,10 +311,9 @@ def test_plan_is_noop_when_already_documented(tmp_path: Path):
 def test_plan_is_deterministic_across_two_runs(tmp_path: Path):
     src = "def a(xs):\n    return len(xs)\n\ndef b():\n    return 's'\n"
     _project(tmp_path, "app/m.py", src)
-    one = plan_document_signature(str(tmp_path), "app/m.py").new_contents.get("app/m.py")
-    two = plan_document_signature(str(tmp_path), "app/m.py").new_contents.get("app/m.py")
-    assert one == two and one is not None
-    assert "Returns: int" in one and "Returns: str" in one
+    one = plan_document_signature(str(tmp_path), "app/m.py").new_contents
+    two = plan_document_signature(str(tmp_path), "app/m.py").new_contents
+    assert one == two == {}  # a stable, byte-identical no-op
 
 
 def test_plan_unreadable_path_is_noop(tmp_path: Path):
@@ -297,7 +328,8 @@ def test_plan_unreadable_path_is_noop(tmp_path: Path):
 def test_engine_emits_phrase_reachable_to_document_signature(tmp_path: Path):
     # Close the loop: the document lens's zoom EMITS the new phrase, and the
     # emitted phrase routes to this objective — proving the wiring connects
-    # end-to-end, not just in isolation.
+    # end-to-end, not just in isolation. (Unaffected by the content-free refusal:
+    # the objective is still registered and reachable.)
     from app.engine.facet_develop import facet_to_objective
     from app.engine.idea_permutation import (
         DEVELOPMENT_OPERATORS,
@@ -333,7 +365,7 @@ def test_engine_emits_phrase_reachable_to_document_signature(tmp_path: Path):
     assert "document-signature" in reachable
 
 
-# --- end-to-end: gated apply, real landing, auto-rollback --------------------
+# --- end-to-end: the objective is an HONEST NO-OP (content-free everywhere) --
 
 def _suite_project(tmp_path: Path) -> Path:
     (tmp_path / "app").mkdir()
@@ -344,68 +376,43 @@ def _suite_project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_end_to_end_lands_docstring_and_keeps_green(tmp_path: Path):
+def test_end_to_end_lands_nothing_content_free_is_honest_noop(tmp_path: Path):
+    # Was "lands docstring and keeps green"; under the content-free refusal the
+    # objective lands NOTHING (the docstring it could mint is a restatement) and
+    # leaves the source byte-for-byte untouched — the honest no-op the North Star
+    # prefers over maintainer-rejectable noise.
     from app.engine.objective_compiler import compile_objective
 
     _suite_project(tmp_path)
-    (tmp_path / "app" / "calc.py").write_text(
+    original = (
         "def total(items):\n    return len(items)\n\n"
-        "def murky(a, b):\n    return a + b\n", encoding="utf-8")
+        "def murky(a, b):\n    return a + b\n"
+    )
+    (tmp_path / "app" / "calc.py").write_text(original, encoding="utf-8")
     (tmp_path / "tests" / "test_calc.py").write_text(
         "from app.calc import total\n"
         "def test_it():\n    assert total([1, 2]) == 2\n", encoding="utf-8")
 
     result = compile_objective(str(tmp_path), objective="document-signature",
                                apply=True, verify=True)
-    assert result.steps  # a verified move landed
-    assert result.steps[0].verified is True
+    assert not result.steps        # nothing landed (honest no-op)
+    assert not result.blocked      # nothing attempted -> nothing to block
 
     text = (tmp_path / "app" / "calc.py").read_text()
-    assert '"""total.' in text          # proven docstring landed
-    assert "Returns: int" in text
-    assert '"""murky.' not in text       # non-provable function untouched
-
-    # Behaviour preserved: the suite still imports and runs.
-    import ast as _ast
-    _ast.parse(text)
+    assert text == original        # byte-for-byte untouched, no docstring
+    assert '"""total.' not in text and '"""murky.' not in text
+    ast.parse(text)
 
 
-def test_end_to_end_auto_rollback_on_docstring_rejecting_suite(tmp_path: Path):
-    from app.engine.objective_compiler import compile_objective
+# --- single-line-body def: still a no-op (was a regression guard) ------------
 
-    _suite_project(tmp_path)
-    original = "def code():\n    return 7\n"
-    (tmp_path / "app" / "mod.py").write_text(original, encoding="utf-8")
-    # A suite that REJECTS the docstring: when it lands, __doc__ becomes non-None
-    # and this test fails, so the verified apply must roll the file back.
-    (tmp_path / "tests" / "test_mod.py").write_text(
-        "from app.mod import code\n"
-        "def test_undocumented():\n    assert code() == 7\n"
-        "    assert code.__doc__ is None\n", encoding="utf-8")
-
-    result = compile_objective(str(tmp_path), objective="document-signature",
-                               apply=True, verify=True)
-    assert not result.steps          # nothing landed
-    assert result.blocked            # the move was blocked (rolled back)
-    # The file is byte-for-byte restored — never-fake-green.
-    assert (tmp_path / "app" / "mod.py").read_text() == original
-
-
-def test_single_line_body_def_does_not_suppress_the_rest_of_the_module():
-    # REGRESSION: a same-line-body def (`def f(): return 1`) makes the shared
-    # `_body_insertion` report the HEADER text as the docstring "indent", which
-    # corrupts the insertion. That corrupt placement used to fail the module's
-    # batch self-validation and return None — silently dropping the docstrings of
-    # EVERY OTHER function in the module. The single-line def must now be SKIPPED
-    # (its indent is not pure whitespace), leaving its siblings documentable.
+def test_single_line_body_def_is_a_noop():
+    # REGRESSION (still holds, now for the additional content-free reason): a
+    # same-line-body def must never corrupt its siblings. Under the content-free
+    # refusal NOTHING is documented anyway, so the result is a clean no-op — the
+    # one-liner and its siblings are left exactly as-is, never corrupted.
     src = ("def flag(): return True\n\n\n"
            "def compute(a, b):\n    return [a, b]\n")
-    out = document_signatures(src)
-    assert out is not None                       # the batch is NOT dropped
-    assert "def compute(a, b):" in out and "Returns: list" in out  # sibling documented
-    # The one-liner is left exactly as-is (skipped, never corrupted) and the
-    # result carries exactly one docstring (compute's), so flag was not touched.
-    assert "def flag(): return True" in out
-    assert out.count('"""') == 2
-    # A lone single-line def documents nothing (no-op), never corruption.
+    assert document_signatures(src) is None
+    # A lone single-line def documents nothing either (no-op), never corruption.
     assert document_signatures("def f(): return 1\n") is None

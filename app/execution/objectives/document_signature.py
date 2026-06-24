@@ -1,7 +1,8 @@
 """Self-registering develop objective: document-signature.
 
 Land a docstring on an UNDOCUMENTED public function — but ONLY when every line
-of that docstring states a PROVEN fact, never a guess. The generated docstring
+of that docstring states a PROVEN fact, never a guess, AND that docstring carries
+a fact the signature does not already make obvious. The docstring it can mint
 carries exactly two kinds of fact:
 
   - the function's PARAMETER NAMES, read straight off the AST (an ``Args:``
@@ -13,6 +14,21 @@ carries exactly two kinds of fact:
     pure-procedure-``None`` inference the ``infer-type-hints`` objective lands as
     ``-> T``), or, when the function already carries an explicit ``-> T``
     annotation, that author-declared annotation itself (also a proven fact).
+
+CONTENT-FREE REFUSAL (the honest-no-op-beats-noise gate). A docstring built from
+ONLY the function name, its parameter names, and its return type is a pure
+RESTATEMENT of the signature — the pilot's
+``\"\"\"invalidate. Args: *args **kwargs Returns: None\"\"\"`` — and adds NO
+semantic information a maintainer would value. Because the generator
+(``_docstring_lines``) mints exactly those three facts by construction, EVERY
+docstring it can produce today is content-free, so this objective is presently a
+deliberate honest NO-OP (``_adds_semantic_content`` ⇒ ``False`` for every
+function). It lands a docstring ONLY when it would carry a fact the signature does
+not already state — never under the current template; flipping
+``_adds_semantic_content`` re-enables landing the moment a real prose source (a
+documented raised exception, a proven parameter type, a unit) is wired in. The
+machinery is kept whole, not deleted: it removes a low-value diff source, not a
+capability.
 
 CRITICAL GATE — emit ONLY when the return type is PROVABLE. If the oracle
 refuses (an ambiguous / non-literal / fall-through return), this objective
@@ -125,6 +141,34 @@ def _docstring_lines(
     return out
 
 
+def _adds_semantic_content(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef, return_type: str,
+) -> bool:
+    """True when a generated docstring would carry information the signature does
+    NOT already state.
+
+    A docstring built from ONLY the function name, its parameter names, and its
+    return type is a pure RESTATEMENT of the signature — the pilot's
+    ``\"\"\"invalidate. Args: *args **kwargs Returns: None\"\"\"`` — and adds no
+    semantic content, so we REFUSE it (an honest no-op beats noise a maintainer
+    rejects). :func:`_docstring_lines` only ever mints exactly those three facts
+    (name + param names + return type) by construction, so this returns ``False``
+    for EVERY function under the current template: document-signature is presently
+    a deliberate honest no-op, kept whole so the moment a real prose source is
+    wired (a documented raised exception, a proven parameter type, a unit) this
+    flips to ``True`` for exactly the content-FUL cases.
+
+    This is the minimal, exact statement of "the current template is content-free"
+    (spec B.2 formulation (a)). The future-proof generalization (formulation (b))
+    is an information-SUBSET test: tokenize the generated body and the tokens
+    derivable from the signature (``fn.name`` and each param name split on
+    snake_case/camelCase, plus the return-type words and the fixed ``Args``/
+    ``Returns`` headers) and return ``not body_tokens <= signature_tokens`` — which
+    reduces to this under today's template but keeps working automatically once the
+    body can carry a real sentence. Ship (a) now; lift to (b) when prose lands."""
+    return False
+
+
 def _documentable_target(
     fn: ast.FunctionDef | ast.AsyncFunctionDef, lines: list[str],
 ) -> tuple[int, list[str]] | None:
@@ -133,15 +177,18 @@ def _documentable_target(
 
     Applies, in order: the public/undocumented/non-test gate
     (:func:`_is_public_undocumented`), the PROVABLE-return-type gate
-    (:func:`_provable_return_type` — ``None`` ⇒ refuse, the critical gate), and
-    a usable docstring insertion point (:func:`_body_insertion` from the shared
-    docstring transform, which yields the line index + body indent and handles
-    multi-line signatures)."""
+    (:func:`_provable_return_type` — ``None`` ⇒ refuse, the critical gate), the
+    CONTENT-FREE refusal (:func:`_adds_semantic_content` — a docstring that merely
+    restates name+params+return adds nothing, so refuse it), and a usable docstring
+    insertion point (:func:`_body_insertion` from the shared docstring transform,
+    which yields the line index + body indent and handles multi-line signatures)."""
     if not _is_public_undocumented(fn):
         return None
     return_type = _provable_return_type(fn)
     if return_type is None:
         return None  # critical gate: no provable return type -> land nothing
+    if not _adds_semantic_content(fn, return_type):
+        return None  # content-free restatement of the signature -> refuse
     spot = _body_insertion(fn, lines)
     if spot is None:
         return None

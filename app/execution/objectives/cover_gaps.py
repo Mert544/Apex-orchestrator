@@ -11,6 +11,34 @@ import re
 from pathlib import Path
 
 from app.engine.develop_registry import ObjectiveSpec, register
+# Reuse the wave's single source of truth for "importable library module, not a
+# packaging/config/generated script" — NOT a copy. A direct objective->objective
+# import is safe here (both are leaf objective modules; neither imports the other,
+# and wire_module_exports does not import cover_gaps), verified by
+# ``python -c "import app.execution.objectives.cover_gaps"``. If a cycle ever
+# appears, lift _is_library_module/_SCRIPT_DENYLIST into a shared
+# app/execution/library_module.py and import THAT from both.
+from app.execution.objectives.wire_module_exports import _is_library_module
+
+
+def _is_coverable_target(project_root: Path, rel: str) -> bool:
+    """True when ``rel`` is a PUBLIC LIBRARY module worth a characterization test.
+
+    Reuses the wire-module-exports library-module eligibility (skips packaging /
+    config / generated scripts — ``setup.py``, ``conf.py``, ``conftest.py``,
+    ``_version.py``, ``version.py``, ``manage.py``, ``noxfile.py``, ``tasks.py`` —
+    and any module whose containing directory has no ``__init__.py``) and
+    additionally skips a PRIVATE module (basename starts with ``_``). A generated
+    test pinning a private/config/generated module's incidental behaviour is the
+    low-value noise the pilot found on mature repos (``docs.conf``,
+    ``funcy._inspect``, ``humanize._version``): a maintainer rejects it. A
+    non-eligible module is simply not a candidate — an honest no-op, never a
+    blocker. The ``_``-prefix test also subsumes the old ``__init__.py`` /
+    ``__main__.py`` package-marker skip (covering a package marker is low value)."""
+    name = Path(rel).name
+    if name.startswith("_"):  # private module OR __init__/__main__/_version etc.
+        return False
+    return _is_library_module(project_root, rel)
 
 
 def _test_sources(root: Path) -> str:
@@ -45,8 +73,13 @@ def _untested_own_modules(project_root: str | Path) -> list[str]:
     tests = _test_sources(root)
     untested: list[str] = []
     for rel, _src in indexed_project(root).own_sources():
-        if Path(rel).name == "__init__.py":
-            continue  # package markers aren't a testable unit
+        # Selection policy: only PUBLIC LIBRARY modules are candidates — drop
+        # packaging/config/generated scripts, modules with no package __init__,
+        # and any `_`-prefixed (private) module (which also covers __init__.py /
+        # __main__.py package markers). Done FIRST: an ineligible module is never
+        # a candidate (cheaper, intent reads clearly), an honest no-op.
+        if not _is_coverable_target(root, rel):
+            continue
         dotted = rel[:-3].replace("/", ".") if rel.endswith(".py") else rel
         # Form A: `import a.b.foo` / `from a.b.foo import …` — the dotted path
         # appears verbatim (word-bounded, so `foo` ≠ `foobar`).
