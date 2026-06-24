@@ -69,6 +69,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -381,6 +382,44 @@ def _canonical_repr(value: object) -> str:
     return repr(value)
 
 
+def _is_fragile_float(value: float) -> bool:
+    """``True`` when ``value`` is a float whose decimal repr betrays floating-point
+    IMPRECISION — an arithmetic result like ``0.1 + 0.2`` (``0.30000000000000004``)
+    or ``1 / 3`` (``0.3333333333333333``) — so pinning its full-precision literal is
+    a portability/run hazard.
+
+    A float is honest to PIN only when it has a SHORT exact decimal form: rounding it
+    to 12 significant figures must not change its value. ``0.1 + 0.2`` rounds to
+    ``0.3`` (a different double) -> fragile; a clean ``42.0`` / ``2.5`` / ``0.1``
+    round-trips unchanged -> fine. ``NaN``/``inf`` (already rejected upstream by
+    :func:`_is_simple_literal`) are treated as fragile defensively. Deterministic:
+    pure arithmetic on the value, no environment read."""
+    if value != value or value in (float("inf"), float("-inf")):  # NaN / inf
+        return True
+    return float(f"{value:.12g}") != value
+
+
+def _contains_fragile_float(value: object) -> bool:
+    """``True`` when ``value`` IS, or (recursively) CONTAINS, a fragile float
+    (:func:`_is_fragile_float`).
+
+    Recurses through list/tuple/set/frozenset members and dict keys+values so a
+    float hidden inside a container (``[0.1 + 0.2]``, ``{"x": 1 / 3}``) is caught
+    too. ``bool`` is a subclass of ``int``, never ``float``, so it is unaffected.
+    Pure and deterministic."""
+    t = type(value)
+    if t is float:
+        return _is_fragile_float(value)  # type: ignore[arg-type]
+    if t in (list, tuple, set, frozenset):
+        return any(_contains_fragile_float(item) for item in value)  # type: ignore[union-attr]
+    if t is dict:
+        return any(
+            _contains_fragile_float(k) or _contains_fragile_float(v)
+            for k, v in value.items()  # type: ignore[union-attr]
+        )
+    return False
+
+
 def _captured_oracle(repr_text: str, value: object) -> str | None:
     """A re-importable, DETERMINISTIC source literal of ``value``, or ``None``.
 
@@ -392,6 +431,11 @@ def _captured_oracle(repr_text: str, value: object) -> str | None:
     re-validated the same way, so the landed literal is byte-stable across hash
     seeds; if canonical rendering ever fails to round-trip equal we return
     ``None`` (smoke fallback) — never a wrong oracle.
+
+    A value carrying a FRAGILE float (:func:`_contains_fragile_float` — e.g.
+    ``0.1 + 0.2``'s ``0.30000000000000004``) is declined here too: its
+    full-precision literal is a portability/run hazard, so the call falls back to the
+    honest smoke assertion rather than pinning an imprecise float.
     """
     try:
         round_tripped = ast.literal_eval(repr_text)
@@ -402,6 +446,8 @@ def _captured_oracle(repr_text: str, value: object) -> str | None:
             return None
     except Exception:
         return None
+    if _contains_fragile_float(value):
+        return None  # imprecise float -> portability/run hazard, never pin it
     canon = _canonical_repr(value)
     try:
         if ast.literal_eval(canon) == value:
@@ -475,6 +521,88 @@ except BaseException:  # noqa: BLE001 - any failure -> decline (no oracle)
     sys.exit(0)
 """
 
+# The TIME probe: capture the canonical literal TWICE in one fresh interpreter,
+# separated by a real ``> 1s`` sleep, and report whether the two captures are
+# byte-identical. A value that reads the wall clock (``int(time.time())``,
+# ``time.time()``, ``datetime.now()`` ...) advances across the gap and the two
+# captures DIFFER, so the caller declines it; a stable value is identical on both
+# captures. The ``> 1s`` gap makes an ``int(time.time())`` floor advance by at
+# least one DETERMINISTICALLY (the check always declines a clock value and always
+# accepts a stable one), so the gate stays deterministic. argv as the main probe.
+_TIME_PROBE = r"""
+import ast, json, sys, time
+root, dotted, name, call_args = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+sys.path.insert(0, root)
+try:
+    import importlib
+    from app.execution.test_shield import _canonical_repr, _eval_call_args, _is_simple_literal
+    mod = importlib.import_module(dotted)
+    fn = getattr(mod, name, None)
+    if not callable(fn):
+        print(json.dumps({"ok": False}))
+        sys.exit(0)
+    args, kwargs = _eval_call_args(call_args)
+    first = fn(*args, **kwargs)
+    if not _is_simple_literal(first):
+        print(json.dumps({"ok": False}))
+        sys.exit(0)
+    canon_first = _canonical_repr(first)
+    time.sleep(1.1)
+    second = fn(*args, **kwargs)
+    if not _is_simple_literal(second):
+        print(json.dumps({"ok": False}))
+        sys.exit(0)
+    stable = canon_first == _canonical_repr(second)
+    print(json.dumps({"ok": True, "stable": stable, "canon": canon_first}))
+except BaseException:  # noqa: BLE001 - any failure -> decline (no oracle)
+    print(json.dumps({"ok": False}))
+    sys.exit(0)
+"""
+
+
+def _run_recapture_probe(
+    project_root: Path, dotted: str, name: str, call_args: str,
+    env_overrides: dict[str, str], cwd: str | None,
+) -> str | None:
+    """Re-capture ``dotted.name(call_args)``'s canonical literal in a CLEAN
+    subprocess under the given ``env_overrides`` (layered on the parent env) and
+    working directory ``cwd``, or ``None`` on ANY failure.
+
+    The single subprocess primitive shared by the hash-seed gate and the env-axis
+    gate: a fresh interpreter (bytecode off, project root on ``sys.path`` and
+    ``PYTHONPATH``) re-runs the exact same call and renders the result through the
+    project's own :func:`_canonical_repr`. ``cwd``/``HOME``/``TZ``/``TMPDIR``/
+    ``PYTHONHASHSEED`` are whatever the caller's overrides set, so a value that
+    reads any of those (``os.getcwd()``, ``expanduser('~')``, a hash-seed-derived
+    order, ...) re-renders DIFFERENT bytes here. Any subprocess error/crash/
+    timeout, or a child that itself declines, yields ``None`` (the caller then
+    declines too — never an unverified oracle)."""
+    env = {
+        **os.environ,
+        **env_overrides,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": str(project_root) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+    }
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _RECAPTURE_PROBE,
+             str(project_root), dotted, name, call_args],
+            cwd=cwd if cwd is not None else str(project_root),
+            capture_output=True, text=True, env=env, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        result = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return None
+    if not result.get("ok"):
+        return None
+    canon = result.get("canon")
+    return canon if isinstance(canon, str) else None
+
 
 def _recapture_canonical(
     project_root: Path, dotted: str, name: str, call_args: str, hashseed: str
@@ -491,31 +619,8 @@ def _recapture_canonical(
     error/crash/timeout, or a child that itself declines, yields ``None`` (the
     caller then declines too — never an unverified oracle).
     """
-    env = {
-        **os.environ,
-        "PYTHONHASHSEED": hashseed,
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPATH": str(project_root) + os.pathsep + os.environ.get("PYTHONPATH", ""),
-    }
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _RECAPTURE_PROBE,
-             str(project_root), dotted, name, call_args],
-            cwd=str(project_root), capture_output=True, text=True,
-            env=env, timeout=60,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
-        return None
-    try:
-        result = json.loads(proc.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        return None
-    if not result.get("ok"):
-        return None
-    canon = result.get("canon")
-    return canon if isinstance(canon, str) else None
+    return _run_recapture_probe(
+        project_root, dotted, name, call_args, {"PYTHONHASHSEED": hashseed}, None)
 
 
 def _order_is_reproducible(
@@ -548,6 +653,117 @@ def _order_is_reproducible(
     return True
 
 
+# Distinct, fixed values for each environment axis a captured value might read.
+# Used to build TWO independent variation environments below: a value that reads
+# ANY of these axes (cwd via ``os.getcwd()``; ``$HOME`` via ``expanduser('~')``;
+# ``$TZ``; ``$TMPDIR``; ``PYTHONHASHSEED`` via a set/dict-derived order) renders
+# different bytes under at least one variation. The values are pinned literals so
+# the env-axis gate is itself DETERMINISTIC (same variations every run). The cwd
+# and dir-valued axes are filled with REAL temp directories at call time (a
+# non-existent cwd would make every child fail and spuriously decline).
+_ENV_VARIATION_SEEDS = (
+    {"name": "alpha", "TZ": "America/New_York", "PYTHONHASHSEED": "1"},
+    {"name": "beta", "TZ": "Asia/Tokyo", "PYTHONHASHSEED": "424242"},
+)
+
+
+def _env_recapture_matches(
+    project_root: Path, dotted: str, name: str, call_args: str,
+    in_process_canon: str, stack,
+) -> bool:
+    """Re-capture under each environment variation; ``True`` iff EVERY variation
+    re-renders byte-identically to ``in_process_canon``.
+
+    For each spec in :data:`_ENV_VARIATION_SEEDS` a fresh temp cwd, ``$HOME`` and
+    ``$TMPDIR`` are created (registered on the caller's ``ExitStack`` ``stack`` so
+    they are cleaned up) and the producing call is re-run there with that spec's
+    distinct ``$TZ``/``PYTHONHASHSEED``. A value that reads cwd/HOME/TMPDIR/TZ or a
+    hash-seed-derived order diverges under at least one variation and yields
+    ``False``; a child that fails/declines also yields ``False`` (refuse, never an
+    unverified oracle)."""
+    for spec in _ENV_VARIATION_SEEDS:
+        base = stack.enter_context(tempfile.TemporaryDirectory(prefix="apex_env_"))
+        var_cwd = os.path.join(base, "cwd")
+        var_home = os.path.join(base, "home")
+        var_tmp = os.path.join(base, "tmp")
+        for d in (var_cwd, var_home, var_tmp):
+            os.makedirs(d, exist_ok=True)
+        overrides = {
+            "HOME": var_home, "TMPDIR": var_tmp, "TEMP": var_tmp, "TMP": var_tmp,
+            "TZ": spec["TZ"], "PYTHONHASHSEED": spec["PYTHONHASHSEED"],
+        }
+        child_canon = _run_recapture_probe(
+            project_root, dotted, name, call_args, overrides, var_cwd)
+        if child_canon is None or child_canon != in_process_canon:
+            return False
+    return True
+
+
+def _time_recapture_is_stable(
+    project_root: Path, dotted: str, name: str, call_args: str,
+    in_process_canon: str,
+) -> bool:
+    """``True`` iff the value is stable across a wall-clock gap (the time axis).
+
+    Runs :data:`_TIME_PROBE`: one child captures the canonical literal twice,
+    separated by a ``> 1s`` sleep. A value that reads the clock (``int(time.time())``
+    ...) advances and the two captures differ -> ``False``; we ALSO require the
+    child's first capture to match ``in_process_canon`` so a value that already
+    diverged from the parent is refused. A child that fails/declines -> ``False``."""
+    env = {
+        **os.environ,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": str(project_root) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+    }
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _TIME_PROBE,
+             str(project_root), dotted, name, call_args],
+            cwd=str(project_root), capture_output=True, text=True,
+            env=env, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        result = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return False
+    if not result.get("ok") or not result.get("stable"):
+        return False
+    return result.get("canon") == in_process_canon
+
+
+def _env_is_reproducible(
+    project_root: Path, dotted: str, name: str, call_args: str,
+    in_process_canon: str,
+) -> bool:
+    """The multi-AXIS environment-reproducibility gate (the honest env gate).
+
+    A captured value is honest to PIN only if re-running the producing call under a
+    VARIED environment re-renders the SAME canonical literal. We re-capture in clean
+    subprocesses under distinct cwd / ``$HOME`` / ``$TZ`` / ``$TMPDIR`` /
+    ``PYTHONHASHSEED`` variations (:func:`_env_recapture_matches`) AND across a
+    wall-clock gap (:func:`_time_recapture_is_stable`), accepting the value ONLY when
+    it is byte-identical (``_canonical_repr``) across ALL of them. This applies to
+    SCALARS too (no early-return for non-list/tuple): a function returning
+    ``os.getcwd()``, ``tempfile.mkdtemp()``, ``int(time.time())``, ``expanduser('~')``
+    or a float like ``0.1 + 0.2`` (whose env-stable repr is still re-checked) is
+    REFUSED unless it survives every axis. Conservative by construction: any child
+    that fails/declines makes this ``False`` — over-refusal is safe, a future-red
+    pinned test is not. Deterministic: the variation values are pinned, so the same
+    input yields the same decision every run."""
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        if not _env_recapture_matches(
+                project_root, dotted, name, call_args, in_process_canon, stack):
+            return False
+    return _time_recapture_is_stable(
+        project_root, dotted, name, call_args, in_process_canon)
+
+
 def _stale_module_names(dotted: str, module_names: list[str]) -> list[str]:
     """The cached module names that shadow ``dotted`` (it, or a package prefix).
 
@@ -573,13 +789,17 @@ def _capture_one_oracle(
     a non-literal return, or a ``repr`` that does not round-trip) so the caller
     falls back to the "callable & runs" smoke assertion.
 
-    When the captured value contains a ``list``/``tuple`` (an ORDER-sensitive
-    value) and ``project_root``/``dotted`` are supplied, the producing call is
-    re-captured in a subprocess under a DIFFERENT fixed ``PYTHONHASHSEED`` and the
-    oracle is DECLINED unless the re-rendered canonical literal is byte-identical
-    — so a list whose order came from set iteration (genuinely flaky:
-    ``fn() == [set-derived order]`` fails under a different seed) is never landed,
-    while a deterministically-ordered list still lands its oracle.
+    When ``project_root``/``dotted`` are supplied the producing call is re-captured
+    in clean subprocesses under VARIED environments — distinct cwd / ``$HOME`` /
+    ``$TZ`` / ``$TMPDIR`` / ``PYTHONHASHSEED`` and a wall-clock gap
+    (:func:`_env_is_reproducible`) — and the oracle is DECLINED unless the
+    re-rendered canonical literal is byte-identical under EVERY variation. This
+    catches a value that reads the environment or clock (``os.getcwd()``,
+    ``tempfile.mkdtemp()``, ``int(time.time())``, ``expanduser('~')`` ...) AND a
+    list/tuple whose order came from set iteration — none of which is honest to PIN
+    — while a genuinely stable value still lands its oracle. The list/tuple-specific
+    multi-seed order gate (:func:`_order_is_reproducible`) is ALSO applied for the
+    extra seed coverage it adds on order-sensitive values.
     """
     try:
         args, kwargs = _eval_call_args(call_args)
@@ -597,10 +817,18 @@ def _capture_one_oracle(
     oracle = _captured_oracle(repr(value), value)
     if oracle is None:
         return None
-    # ORDER-sensitivity gate: a list/tuple whose order is set-iteration-derived is
-    # genuinely flaky (can't be sorted — that would change the value), so decline
-    # unless a different-hash-seed subprocess re-renders byte-identically.
     if project_root is not None and dotted is not None:
+        # ENV-axis gate (applies to SCALARS too): decline any value that varies
+        # with cwd/HOME/TZ/TMPDIR/hash-seed/clock — it would be green here and RED
+        # on another machine or run.
+        if not _env_is_reproducible(
+            project_root, dotted, name, call_args, oracle
+        ):
+            return None
+        # ORDER-sensitivity gate: a list/tuple whose order is set-iteration-derived
+        # is genuinely flaky (can't be sorted — that would change the value), so
+        # decline unless several different-hash-seed subprocesses re-render
+        # byte-identically (extra seed coverage on top of the env gate).
         if not _order_is_reproducible(
             project_root, dotted, name, call_args, value, oracle
         ):

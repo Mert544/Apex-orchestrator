@@ -60,6 +60,7 @@ from app.engine.mutation_tester import (
 from app.execution.cross_file_rename import RenamePlan
 from app.execution.test_shield import (
     _captured_oracle,
+    _env_is_reproducible,
     _is_simple_literal,
     _safe_call,
 )
@@ -223,7 +224,8 @@ def _probe_combinations(arity: int):
 
 
 def _killing_assertion(real_module: object, mutant_module: object, call_target: str,
-                       fn_name: str, arity: int) -> str | None:
+                       fn_name: str, arity: int,
+                       root: Path | None = None, dotted: str | None = None) -> str | None:
     """A double-gated ``call_target(args) == <captured>`` assertion line, or ``None``.
 
     ``call_target`` is the exact callable expression the rendered test will use
@@ -242,6 +244,19 @@ def _killing_assertion(real_module: object, mutant_module: object, call_target: 
     * gate (b) — the SAME call against the mutated source diverges, so the
       assertion fails on the mutant (it provably kills it).
 
+    A THIRD gate guards never-fake-green across MACHINES/RUNS when ``root``/``dotted``
+    address the real ON-DISK module (the production path always supplies them): the
+    producing call is re-captured under a VARIED environment — distinct cwd /
+    ``$HOME`` / ``$TZ`` / ``$TMPDIR`` / ``PYTHONHASHSEED`` and a wall-clock gap
+    (:func:`_env_is_reproducible`) — and the assertion is DECLINED unless the
+    canonical literal is byte-identical under every variation. A value reading the
+    environment or clock (``os.getcwd()``, ``int(time.time())``, ``expanduser('~')``
+    ...) would pass both double-gates here yet be RED elsewhere, so it is never
+    pinned. The env gate is SKIPPED only when ``root``/``dotted`` are omitted (a
+    direct unit call exercising the in-process double-gate against a throwaway module
+    that has no on-disk path); the imprecise-float guard in :func:`_captured_oracle`
+    still applies on every path.
+
     Returns the assertion for the first qualifying tuple, or ``None`` when no
     probe input kills this mutant honestly — the survivor is then left unkilled,
     never a fabricated oracle."""
@@ -255,12 +270,30 @@ def _killing_assertion(real_module: object, mutant_module: object, call_target: 
             continue  # real call raises / non-literal return -> no oracle here
         oracle = _captured_oracle(repr(real_value), real_value)
         if oracle is None:
-            continue  # repr does not round-trip -> try the next probe
+            continue  # repr does not round-trip (or imprecise float) -> next probe
         if not _diverges(real_value, mutant_module, fn_name, values):
             continue  # mutant agrees on these inputs -> not a kill, keep searching
         call_args = ", ".join(combo)
+        if not _env_gate_passes(root, dotted, fn_name, call_args, oracle):
+            continue  # env/clock-dependent value -> future-red, never pin it
         return f"assert {call_target}({call_args}) == {oracle}"
     return None
+
+
+def _env_gate_passes(root: Path | None, dotted: str | None, fn_name: str,
+                     call_args: str, oracle: str) -> bool:
+    """Does the captured ``oracle`` survive the env-reproducibility gate?
+
+    ``True`` when ``root``/``dotted`` are omitted (a direct unit call against a
+    throwaway in-process module that has no on-disk path — the env gate is then a
+    no-op and only the in-process double-gate + the imprecise-float guard apply), or
+    when re-running the producing call under a VARIED environment re-renders the SAME
+    canonical literal (:func:`_env_is_reproducible`). ``False`` for a value that
+    reads the environment/clock — it would be RED on another machine/run, so the
+    assertion is declined."""
+    if root is None or dotted is None:
+        return True
+    return _env_is_reproducible(root, dotted, fn_name, call_args, oracle)
 
 
 def _alias_for(fn_name: str) -> str:
@@ -403,7 +436,7 @@ def _survivor_assertions(root: Path, module_rel: str, source: str,
         emit_import, verify_import, call_target = _binding_for(
             fn_name, dotted, module_prefixes, fn_bindings)
         line = _killing_assertion(
-            real_module, mutant_module, call_target, fn_name, arity)
+            real_module, mutant_module, call_target, fn_name, arity, root, dotted)
         if line is None:
             continue
         if not _import_call_resolves(root, dotted, verify_import, line):

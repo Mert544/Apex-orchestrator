@@ -3814,25 +3814,114 @@ def enforceable_examples_for_function(source: str, fn_name: str,
     return _enforceable_doctest_examples(source, _named_stub(fn_name, fn_lineno))
 
 
+# The pin-doctest gate-1 probe: re-run a function's enforceable doctest examples
+# under a PINNED ``PYTHONHASHSEED`` in a clean subprocess and report the verdict.
+# Mirrors :mod:`app.execution.doctest_oracle`'s discipline: a function whose
+# example's expected output is a ``set``/``dict`` repr is otherwise scored
+# green-or-red by the PARENT's RANDOMIZED seed, so the pinned-seed child makes the
+# gate-1 verdict deterministic (the LANDED test's own runtime safety is handled
+# separately by pin-doctest refusing set/dict-repr + env-dependent examples).
+# argv: source path, fn_name, fn_lineno.
+_EXAMPLES_PASS_PROBE = r"""
+import json, sys
+src_path, fn_name, fn_lineno = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    from app.execution.stub_synthesis import (
+        _doctests_pass, _enforceable_doctest_examples, _named_stub)
+    source = open(src_path, encoding="utf-8").read()
+    stub = _named_stub(fn_name, fn_lineno)
+    examples = _enforceable_doctest_examples(source, stub)
+    ok = bool(examples) and _doctests_pass(examples, source, stub)
+    print(json.dumps({"ok": True, "passed": ok}))
+except BaseException:  # noqa: BLE001 - any failure -> refuse (never a fake green)
+    print(json.dumps({"ok": False}))
+    sys.exit(0)
+"""
+
+
 def examples_pass(source: str, fn_name: str, fn_lineno: int) -> bool:
     """True when EVERY enforceable ``>>>`` example of the function ``fn_name`` at
     1-based ``fn_lineno`` PASSES against ``source`` itself (the function's REAL,
-    already-implemented body), run by the stdlib :mod:`doctest`.
+    already-implemented body), run by the stdlib :mod:`doctest` UNDER A PINNED
+    ``PYTHONHASHSEED``.
 
     This is the pin-doctest gate-1 oracle: the objective never pins a RED contract,
     so it only lands a gating test when the examples are GREEN today. It mines the
     enforceable examples (:func:`enforceable_examples_for_function`) and hands them —
     with the unmodified ``source`` — to the shared compile-and-run verdict
-    :func:`_doctests_pass`, accepting ONLY when every example passes. Conservative,
-    never a fake-green: NO enforceable example, a source that fails to compile, or a
-    function that is not a callable module global (e.g. a method whose ``self`` is
-    not a global) all yield ``False``. Deterministic: examples in source order,
-    fixed namespace."""
+    :func:`_doctests_pass`, accepting ONLY when every example passes.
+
+    The verdict is taken in a CLEAN subprocess with ``PYTHONHASHSEED`` pinned to
+    ``0`` (mirroring :mod:`app.execution.doctest_oracle`): an example whose expected
+    output is a ``set``/``dict`` repr would otherwise pass-or-fail by the parent's
+    RANDOMIZED hash seed, making this gate flip run-to-run. The pinned seed keeps the
+    generation-time decision deterministic. If the subprocess cannot be run (an
+    OSError spawning it) the in-process verdict is used as a fallback — conservative
+    and never a fake-green either way. Conservative: NO enforceable example, a source
+    that fails to compile, or a function that is not a callable module global all
+    yield ``False``. Deterministic: examples in source order, fixed namespace,
+    pinned seed."""
     stub = _named_stub(fn_name, fn_lineno)
     examples = _enforceable_doctest_examples(source, stub)
     if not examples:
         return False  # nothing enforceable to check — never claim it passes
-    return _doctests_pass(examples, source, stub)
+    verdict = _examples_pass_seeded(source, fn_name, fn_lineno)
+    if verdict is not None:
+        return verdict
+    return _doctests_pass(examples, source, stub)  # subprocess unavailable -> in-proc
+
+
+def _examples_pass_seeded(source: str, fn_name: str, fn_lineno: int) -> bool | None:
+    """Run :func:`examples_pass`'s verdict in a clean ``PYTHONHASHSEED=0`` subprocess.
+
+    Returns ``True``/``False`` for the pinned-seed verdict, or ``None`` when the
+    subprocess could not be run/parsed (so the caller falls back to the in-process
+    verdict). Writes ``source`` to a temp file the child reads — the child re-mines
+    the same enforceable examples and applies the same shared verdict, but under the
+    fixed seed. Deterministic: same source -> same child decision."""
+    import json
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    root = _repo_root_on_path()
+    env = {
+        **os.environ,
+        "PYTHONHASHSEED": "0",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": root + os.pathsep + os.environ.get("PYTHONPATH", ""),
+    }
+    with tempfile.TemporaryDirectory(prefix="apex_examples_pass_") as tmp:
+        src_path = os.path.join(tmp, "src.py")
+        with open(src_path, "w", encoding="utf-8") as fh:
+            fh.write(source)
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", _EXAMPLES_PASS_PROBE,
+                 src_path, fn_name, str(fn_lineno)],
+                capture_output=True, text=True, env=env, timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+    if proc.returncode != 0:
+        return None
+    try:
+        result = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return None
+    if not result.get("ok"):
+        return None
+    return bool(result.get("passed"))
+
+
+def _repo_root_on_path() -> str:
+    """The directory that makes ``import app`` resolve for a child subprocess — the
+    parent of this module's own ``app`` package. Pure: derived from ``__file__``."""
+    import os
+
+    # .../app/execution/stub_synthesis.py -> three parents up is the repo root.
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _compiled_module_namespace(source: str) -> dict | None:
