@@ -11,6 +11,36 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (14. tur) — PARALEL-AĞIR MÜHENDİS sıçraması (3 eşzamanlı izole-kopya) + capability DOYDU bulgusu; full-gate yeşil, A+99, ~22.494 test, CONCRETE 10→11:**
+- `c0f994b` **RÜYA-SWEEP — `develop --from-dream --deep` ranked board (marquee tamamlandı) + render bug fix** — `--deep`
+  bayrağı (default OFF, `--auto --deep` disiplinine uygun) her confluence'a `rank_objectives`-sıralı objektif tahtasını
+  landliyor (dead-params yerine). **`/code-review` GERÇEK render bug yakaladı:** `render_from_dream_markdown` `zip(modules,
+  results)` kullanıyordu → sweep'te (modül×objektif) sonuçta zip ilk-haricini DÜŞÜRÜYOR + ≥2 modülde yanlış atfediyordu
+  (JSON doğruydu, yalnız markdown yalan söylüyordu) → `sweep=` param + module-outer slice ile düzeltildi. NIT'ler: boş-vaka
+  test düzeltildi (confluence seed + strict >), disclosure wording. Default byte-identical.
+- `72d5e6f` **stub-synthesis — reverse-slice + dict-key (2 mine-time guard) + hex/oct/bin/chr/ord + bytes/bytearray** —
+  `a[::-1]` (tip-koruyan, palindrom/azalan reddeder); dict-key `a[k]` (str/int, type-exact intersection) **2 ZORUNLU
+  never-fake-green guard**: VARY-values (all-equal → constant'a düşer, dict-arg canary'si BOŞ olduğundan mine-time'da
+  reddedilmeli) + UNIQUE-survivor; value-free hex/oct/bin/chr (int) / ord (str); bytes/bytearray (set-arg gated; frozenset
+  ASLA body değil — hashseed). `_dict_index_survivor` extraction'ı cc 13→10 (her iki metrikte). Byte-identical default.
+- `c34f577` **scaffold-from-protocol (11. CONCRETE)** — implementer'ı olmayan `typing.Protocol` → `class <P>Impl(<P>)` stub
+  (decorator korunur, `@abstractmethod` düşürülür, annotation strip). never-fake-green: **subprocess instantiation oracle**
+  (import + `<P>Impl()`; eksik abstract → `TypeError`→reddet; forged `{"ok":true}` kandıramaz — probe verdict'i son satır) +
+  suite-gate + delete-on-rollback. 1:1 facet-parity (4 girdi). 24 test. (`src/`-layout = round-15 follow-up.)
+- `515999c` **infer-type-hints — divmod/complex/bytearray + 1-tuple isinstance** — callable-fixed sonuç tipi (divmod→tuple
+  BARE, complex→complex, bytearray→bytearray); `isinstance(x,(T,))` strict 1-elemanlı tuple → x:T (multi-elem Union reddeder).
+  Kilitli refüzler dokunulmadı.
+- **🚀 PARALEL-AĞIR MÜHENDİS MEKANİZMASI (worktree-bozuk çözümü):** git worktree bu ortamda eski-taban açtığından, ağır
+  (pytest-koşan) mühendisleri **izole DOSYA-KOPYALARINDA** (`/tmp/apex-eng-<ad>`, cp ile, .git hariç) paralel koşturdum —
+  `import app` izolasyonu KANITLANDI (kopyanın app/'i editable-install'ı yener; her mühendiste STEP-0 assert guard'ı
+  yanlış-ağaç testini temiz iptale çevirir). 3 ayrık-dosyalı ağır mühendis (scaffold ∥ typeinfer ∥ stub) AYNI ANDA koştu;
+  entegrasyon `cp`-back ile (dosyalar ayrık → temiz). **RAM-bütçe modeli:** targeted-test → düşük RAM (peak ~1.5GB/15GB),
+  "5=OOM" eski kuralı full-suite içindi; ≤11GB peak'le ~5-6 eşzamanlı ağır mümkün.
+- **🔎 DENETÇİ BULGUSU — CAPABILITY DOYDU (anti-drift):** round-15 capability scout'u her aday kuralı kodla denetledi →
+  **landlenecek 0 sağlam yetenek kaldı** (hepsi inmiş/unsound/gözlemlenemez). Sentez/tip-çıkarımı motoru DOĞAL DOYMA
+  noktasında. North Star anti-drift #1 gereği daha çok kural = DRIFT → round-15+ **somut objektif + buyer-proof**a pivot
+  (scratchpad `STRATEGY_capability_saturated.md`).
+
 **BU OTURUM (13. tur) — SIÇRAMA TAMAMLANDI: 5 alanın HEPSİ indi. RÜYA temiz re-land (cycle-free) + 4 yeni yetenek; full-gate yeşil, A+99, ~22.376 test, CONCRETE 9→10:**
 - `a16c254` **RÜYA — `develop --from-dream` DEFAULT dream'den landliyor (cycle-free)** — 12. turda ertelenen iş indi:
   seam yeni `app/engine/dream_landing.py` modülüne taşındı (tek-yön import → **0 import cycle**, A+99 korundu;
@@ -354,8 +384,11 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**~22.376 test** + ruff), öz-not **A+99**
-  (13. turda `--chunks 16 -j 4` → ~690s, 16/16 chunk + ruff PASS, exit 0; CONCRETE objektif 9→10). **Yeni objektif eklerken** facet-parite
+- **Kapı:** `python scripts/verify.py` → full green (**~22.494 test** + ruff), öz-not **A+99**
+  (14. turda `--chunks 16 -j 4` → 968s, 16/16 chunk + ruff PASS, exit 0; CONCRETE objektif 10→11).
+  **PARALEL-AĞIR:** worktree bozuk → izole `cp` kopyaları (`/tmp/apex-eng-*`, scratchpad `parallel_heavy_harness.sh`);
+  STEP-0 `import app` izolasyon-assert'i zorunlu (kopyanın app/'i editable-install'ı yener); entegrasyon `cp`-back
+  (ayrık-dosya). RAM-bütçe: targeted-test düşük RAM, ≤11GB peak ile ~5-6 eşzamanlı ağır mümkün ("5=OOM" full-suite içindi). **Yeni objektif eklerken** facet-parite
   (`FACET_OBJECTIVE_MAP`↔registry 1:1) + `north_star_audit.OBJECTIVE_MANIFEST` partition + duplication (≥5-statement
   blok) self-grade tripwire'larını UNUTMA — 9. turda document-signature bunların hepsini tetikledi, **11. turda
   iki doctest-verifier ikizi duplication-tripwire'ı tetikledi** → `_doctests_pass` paylaşılan helper'ına extraction
