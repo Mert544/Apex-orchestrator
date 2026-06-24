@@ -691,8 +691,11 @@ def _is_certain_bool(node: ast.expr) -> bool:
 #           ``hasattr(o, n)``). A bad class arg (e.g. ``isinstance(x, 1)``) raises,
 #           which is a never-returns path and so leaves a ``-> bool`` sound (it
 #           only constrains a value that IS returned).
-#   - container: ``list``/``dict``/``set``/``tuple``/``frozenset`` each return
-#           their own type; ``sorted`` always returns a ``list``.
+#   - container: ``list``/``dict``/``set``/``tuple``/``frozenset``/``bytearray``
+#           each return their own type; ``sorted`` always returns a ``list`` and
+#           ``divmod`` always returns a ``tuple`` (a 2-tuple, regardless of args).
+#   - complex: ``complex`` always returns a ``complex`` (``complex(1, 2)`` /
+#           ``complex('1j')`` ⇒ ``complex``), independent of the argument values.
 #
 # Deliberately EXCLUDED — result type is NOT fixed by the callable alone:
 #   - ``min``/``max``/``sum``/``abs``/``round``/``next`` (type depends on the
@@ -707,8 +710,10 @@ _BUILTIN_CALL_RETURN_TYPES: dict[str, str] = {
     "oct": "str", "bin": "str", "chr": "str",
     "bool": "bool", "callable": "bool", "issubclass": "bool",
     "isinstance": "bool", "hasattr": "bool",
+    "complex": "complex",
     "list": "list", "dict": "dict", "set": "set", "tuple": "tuple",
-    "frozenset": "frozenset", "sorted": "list",
+    "frozenset": "frozenset", "sorted": "list", "divmod": "tuple",
+    "bytearray": "bytearray",
 }
 
 
@@ -1061,8 +1066,9 @@ def _ifexp_same_type(node: ast.expr, assigned_names: frozenset[str]) -> str | No
 # be a locally rebound or user alias whose identity we cannot resolve from the
 # AST alone, so we refuse it (conservative, deterministic). ``bool`` is included
 # (``isinstance(x, bool)`` enforces the precise ``bool``, unlike a return-side
-# bool subtlety). Tuple-of-classes (``(int, float)``) is a DIFFERENT node (it
-# would need a ``Union``) and is refused by :func:`_isinstance_single_class`.
+# bool subtlety). A MULTI-element tuple-of-classes (``(int, float)``) would need a
+# ``Union`` and is refused by :func:`_isinstance_single_class`, but a STRICT
+# one-element tuple (``(int,)``) is just that single class and is accepted there.
 _GUARD_CLASS_NAMES: frozenset[str] = frozenset({
     "int", "float", "str", "bytes", "bool", "bytearray", "complex",
     "list", "dict", "set", "frozenset", "tuple", "type", "object",
@@ -1074,11 +1080,17 @@ def _isinstance_single_class(call: ast.expr) -> tuple[str, str] | None:
     ``None``.
 
     Accepts ONLY the SINGLE-class shape: the first arg is a bare parameter
-    ``ast.Name`` and the second arg is a bare ``ast.Name`` whose ``id`` is a
-    known builtin type in :data:`_GUARD_CLASS_NAMES`. REFUSED conservatively:
+    ``ast.Name`` and the second arg names exactly ONE known builtin type in
+    :data:`_GUARD_CLASS_NAMES` — either a bare ``ast.Name`` (``isinstance(x,
+    int)``) or a strict ONE-element tuple of one bare ``ast.Name``
+    (``isinstance(x, (int,))`` ≡ ``isinstance(x, int)``, a single bound). REFUSED
+    conservatively:
       - a non-``isinstance`` call, or wrong arg count / any keyword/star arg;
-      - a TUPLE second arg (``isinstance(x, (int, float))``) — that is a Union of
-        types, not a single bound, so we cannot name one type;
+      - a MULTI-element tuple second arg (``isinstance(x, (int, float))``) — that
+        is a Union of types, not a single bound, so we cannot name one type (an
+        EMPTY tuple ``()`` binds nothing either) — strict ``len == 1``;
+      - a one-element tuple whose sole element is NOT a bare ``ast.Name``
+        (``isinstance(x, (numbers.Integral,))``);
       - a DOTTED / complex class expr (``numbers.Integral``) — an
         ``ast.Attribute``/``ast.Subscript``/call is not a bare type Name;
       - a class Name outside the known-builtin set (could be a user alias whose
@@ -1091,6 +1103,12 @@ def _isinstance_single_class(call: ast.expr) -> tuple[str, str] | None:
     if len(call.args) != 2:
         return None
     obj, cls = call.args
+    # A strict ONE-element tuple ``(int,)`` is exactly the single class ``int``;
+    # any other tuple length (0, or 2+ ⇒ Union) stays refused below.
+    if isinstance(cls, ast.Tuple):
+        if len(cls.elts) != 1:
+            return None
+        cls = cls.elts[0]
     if not (isinstance(obj, ast.Name) and isinstance(cls, ast.Name)):
         return None
     if cls.id not in _GUARD_CLASS_NAMES:
@@ -1118,9 +1136,10 @@ def _guard_test_bindings(test: ast.expr) -> list[tuple[str, str]]:
     path that continues past it has PROVEN each conjoined parameter's type —
     identical runtime enforcement to the single-guard leaf. ``or`` is REFUSED
     (an ``ast.BoolOp``/``ast.Or`` falls through here to ``[]``): an ``or`` guard
-    proves NEITHER operand's type, so it binds nothing. A tuple-second-arg
-    isinstance stays a Union (refused by the leaf), so a conjunct using it
-    contributes no binding and thus refuses the whole conjunction."""
+    proves NEITHER operand's type, so it binds nothing. A MULTI-element
+    tuple-second-arg isinstance stays a Union (refused by the leaf), so a conjunct
+    using it contributes no binding and thus refuses the whole conjunction (a
+    strict one-element tuple is the single class and binds via the leaf)."""
     leaf = _isinstance_single_class(test)
     if leaf is not None:
         return [leaf]
