@@ -11,6 +11,40 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (16. tur) — freeze-dataclass (13. CONCRETE) + HIGH-EFFORT code-review 3 SAĞLAMLIK DELİĞİ yakaladı+düzeltti (moat iş başında); full-gate yeşil, A+99, 22.595 test, CONCRETE 12→13:**
+- `e87101a` **freeze-dataclass (13. CONCRETE)** — alanları HİÇ mutasyona uğramayan `@dataclass`'a `frozen=True`
+  landliyor (immutable+hashable; linter FLAG'ler, Apex YAZAR). **Tüm-proje muhafazakâr mutasyon over-approx'u**
+  (4 mutasyon şekli: Store/Del Attribute + literal `setattr`; tuple/for/with/starred/comprehension store hepsi
+  yakalanır; alakasız aynı-adlı attribute → GÜVENLİ false-refuse). never-fake-green: re-`ast.parse` + suite-gate
+  + byte-for-byte rollback (pinned FrozenInstanceError rollback testi). Paylaşılan `rejoin_guarded`/`_node_line_span`
+  yeniden kullanır. 1:1 facet-parity (4 girdi). 58 test.
+- **🔎 HIGH-EFFORT `/code-review` (5 finder açısı) — 3 SAĞLAMLIK DELİĞİ + 3 temiz düzeltme (COMMIT'TEN ÖNCE):** review
+  gate'i commit'ten önce çalıştı, **52 yeşil test'in YETMEDİĞİNİ** kanıtladı (hiçbiri bu uçları kapsamıyordu):
+  (1) `@dataclass(**opts)` `**`-unpacking → `frozen=True` ekleyince `TypeError: multiple values` — re-parse guard'ı
+  ATLATIR (parse eder, import'ta çöker) → `**`-unpacking decorator REDDEDİLİR; (2) NOKTALI base `class D(pkg.C)`
+  `_used_as_base_names`'te görünmüyordu → C donar → importer çöker → Attribute base'leri `.attr` ile toplanır;
+  (3) PROVENANCE — `_is_dataclass_name` HER `dataclass`'ı eşliyordu → `pydantic`/local/aliased `dataclass` yanlış
+  donardı (repo pydantic KULLANIYOR) → modül stdlib `dataclasses` binding'ini KANITLAMALI. + 3 temiz: setattr
+  yalnız builtin Name-formu, `project_sources` public, çok-satırlı/yorumlu decorator REDDEDİLİR (yorum/format
+  kaybı yok). Hepsi fail-before/pass-after testli. **Moat çalıştı: asla sahte-yeşil, review commit'ten önce.**
+- **🚀 PARALEL-AĞIR (devam):** kod-yazan mühendisler izole `cp`-kopyalarında (`/tmp/apex-eng-freeze`,
+  `apex-eng-freezefix`; worktree-bozuk çözümü). Entegrasyon disjoint `cp`-back. Bağımsız re-verify (ben) +
+  full-gate her zaman main'de.
+- **🧾 ROUND-16 DESTEK FİLOSU (read-only paralel):** (a) **buyer-proof** bağımsız src-layout gym projesinde 3 round-15
+  yeteneğini GERÇEK diff'le ateşledi (add-from-future + pin-doctest + scaffold src-layout) + determinizm/canlı-rollback/
+  dürüst-refüz/zero-token; (b) **denetçi** North-Star — round-15 PASS, drift=False (12. concrete kanıt-taşıyıcı doğrulandı);
+  (c) **round-17 scout** — `add-final` HAZIR (en güçlü soundness; @typing.final no-op), `add-slots` REDDEDİLDİ-KANITLA
+  (485 sınıfta "güvenli ∩ fayda = boş"), `add-override` 3.12-kapısıyla tasarlandı; (d) **round-18 scout** —
+  `wire-module-exports` HAZIR (modül `__all__` == star-import seti, suite-bağımsız), `add-functools-wraps` needs-design;
+  raise-from/open-encoding/percent-fstring ZATEN VAR diye yakaladı.
+- **⏭️ ROUND-17 PIPELINE HAZIR (3 READY concrete):** add-final + wire-module-exports + add-override — hepsi
+  freeze-dataclass'ın subclass/base-taramasını yeniden kullanır; 3 paylaşılan kayıt dosyasında "tek-yazar" →
+  orkestratör eklemeli girdileri birleştirir.
+- **📋 ROUND-16 ERTELENEN takip (somut değil — sıraya alındı):** paylaşılan `rejoin_guarded` CRLF satır-sonu churn'ü
+  (dataclassify + add-from-future'ı da etkiler → ayrı paylaşılan-helper sertleştirme, kendi review+gate'i); O(M²)
+  parse verimliliği (parsed_modules cache'ini tüket + sweep-memoize); string-form `'ClassVar'` over-count (etkiler güvenli);
+  single-module fallback (repo idiom'una uygun, gate-backstopped).
+
 **BU OTURUM (15. tur) — CAPABILITY-DOYDU PİVOTU UYGULANDI: 3 eşzamanlı izole-kopya ağır mühendis, HEPSİ somut/karar/fix (SIFIR yeni sentez/tip kuralı — anti-drift #1'e sadık) + bağımsız-proje BUYER-PROOF; full-gate yeşil, A+99, 22.537 test, CONCRETE 11→12:**
 - `bd7a9cf` **add-from-future-annotations (12. CONCRETE)** — tipli ama lazy-OLMAYAN modüle `from __future__ import
   annotations` (PEP 563) landliyor: docstring sonrası taze insert YA DA mevcut `from __future__ import ...`'ı yerinde
@@ -418,8 +452,8 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**22.537 test** + ruff), öz-not **A+99**
-  (15. turda `--chunks 16 -j 4` → 994s, 16/16 chunk + ruff PASS, exit 0; CONCRETE objektif 11→12).
+- **Kapı:** `python scripts/verify.py` → full green (**22.595 test** + ruff), öz-not **A+99**
+  (16. turda `--chunks 16 -j 4` → 798s, 16/16 chunk + ruff PASS, exit 0; CONCRETE objektif 12→13).
   **PARALEL-AĞIR:** worktree bozuk → izole `cp` kopyaları (`/tmp/apex-eng-*`, scratchpad `parallel_heavy_harness.sh`);
   STEP-0 `import app` izolasyon-assert'i zorunlu (kopyanın app/'i editable-install'ı yener); entegrasyon `cp`-back
   (ayrık-dosya). RAM-bütçe: targeted-test düşük RAM, ≤11GB peak ile ~5-6 eşzamanlı ağır mümkün ("5=OOM" full-suite içindi). **Yeni objektif eklerken** facet-parite
@@ -468,19 +502,26 @@
 
 ## 3. SIRADAKİ İŞLER (öncelik sırası — saha testi gaplerine dayalı)
 
-**🔭 ROUND-16 SLATE (15. turdan sonra — EN GÜNCEL; capability DOYDU, yön = SOMUT objektif + buyer-proof):**
+**🔭 ROUND-17 SLATE (16. turdan sonra — EN GÜNCEL; capability DOYDU, yön = SOMUT objektif + buyer-proof):**
 > **ANA KURAL (anti-drift #1):** sentez/tip-çıkarımı motoru DOYDU — **yeni kural EKLEME** (drift). Yön: yeni
 > CONCRETE objektif (gerçek diff landler), buyer-proof, ve yalnız bir concrete'i güvenilir kılacak kadar honesty.
-1. **freeze-dataclass (YENİ CONCRETE, ŞİMDİ AÇIK):** mutasyona uğramayan bir `@dataclass`'a `frozen=True` ekle —
-   round-15'te add-from-future ile registry çakışması (facet-parite/manifest tek-yazar) yüzünden ERTELENMİŞTİ; o
-   indiği için artık çakışma yok. Soundness kapısı: alan ASLA `self.x = ...` ile yeniden atanmıyor (AST kanıtı; setattr/
-   `__post_init__` reassign → reddet), zaten frozen değil. never-fake-green: full-suite gate (frozen bir mutasyonu kırarsa
-   kırmızı → rollback). 1:1 facet-parite (4 girdi) + manifest CONCRETE. Spec: scratchpad `spec_r15_concrete_objectives.md`.
-2. **BUYER-PROOF tazele (15. sonrası):** bağımsız projede add-from-future-annotations + pin-doctest + scaffold-from-protocol
-   (artık src-layout) ATEŞLEDİĞİNİ gerçek diff'lerle göster — satış kanıtı round-15 yeteneklerini henüz içermiyor.
-3. **never-fake-green sertleştirme (opsiyonel, honesty—yalnız concrete'i korur):** top-level yan-etkili modülde doctest
-   stub senaryosu için bir pin testi (deliği yok ama regresyon kalkanı).
-- ✅ **scaffold-from-protocol `src/`-layout follow-up İNDİ (15.tur `0ca4494`):** round-14'te tracked-follow-up'tı; çözüldü.
+> **REGISTRY tek-yazar:** her CONCRETE objektif 3 paylaşılan kayıt dosyasına (facet/ladder/manifest) EKLEMELİ girer →
+> paralel mühendislerde orkestratör eklemeli girdileri main'de BİRLEŞTİRİR (çakışma değil); birleşim sonrası parity+substring testleri.
+1. **add-final (HAZIR ★ — en güçlü soundness):** asla-subclasslanmamış sınıfa `@typing.final`. Tüm-proje bare-Name+DOTTED
+   base taraması (freeze-dataclass'ın `_used_as_base_names`'ini yeniden kullan — NOKTALI base dahil). `@final` runtime
+   no-op → davranış DEĞİŞMEZ; false-"final" riski YAPISAL kapanır (suite değil). 3.10 floor'da çalışır. Spec `spec_r16_concrete_pipeline.md`.
+2. **wire-module-exports (HAZIR ★ — round-18 scout):** yaprak `.py`'ye modül-düzeyi `__all__` (intended public == default
+   star-import set → davranış-aynı, yalnız `from m import *` etkilenir; suite-BAĞIMSIZ yapısal soundness). wire-exports'tan
+   FARKLI (o paket `__init__` re-export yazar). Spec `spec_r18_concrete_pipeline.md`.
+3. **add-override (HAZIR — designed):** provably-overriding metoda `@typing.override`; DETERMINISTIK 3.12-hedef-kapısı
+   (pyproject `requires-python` / `typing_extensions` fallback; el-yazımı stdlib PEP440 parser). Spec `spec_r17_add_override.md`.
+- ❌ **add-slots REDDEDİLDİ-KANITLA:** 485 sınıfta "güvenli ∩ gerçek-fayda = boş"; soundness suite'e dayanıyor (yapısal değil)
+  → North-Star bar'ı geçmez; add-final aynı "sınıfı mühürle" niyetini sıfır-riskle karşılar. Spec `spec_r17_add_slots.md`.
+- ⏳ **add-functools-wraps NEEDS-DESIGN** (gözlemlenebilir → "call-preserving, metadata-repairing" diye DÜRÜST çerçevele; dar detektör).
+- ✅ **freeze-dataclass İNDİ (16.tur `e87101a`):** 13. CONCRETE. ✅ **buyer-proof tazelendi (16.tur, bağımsız src-layout gym).**
+- **📋 ERTELENEN (somut değil — sıraya alındı):** paylaşılan `rejoin_guarded` CRLF satır-sonu sertleştirme (dataclassify +
+  add-from-future'ı da etkiler → ayrı review+gate); O(M²) parse verimi (parsed_modules cache + sweep-memoize); string-form
+  `'ClassVar'` over-count (güvenli); single-module fallback (repo idiom'u, gate-backstopped).
 - **DIŞLA (drift):** daha fazla sentez/tip kuralı · detektör/safety/honesty makinesi cilası · değer/default→tip çıkarımı.
 
 **🔭 ROUND-11 İNTEL (10. turun 2 keşifçisinden — otonomi + honesty + yetenek; ÇOĞU İNDİ):**
