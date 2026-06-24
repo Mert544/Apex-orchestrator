@@ -215,6 +215,22 @@ def cmd_self_audit(args: argparse.Namespace) -> int:
             print(render_markdown(report, ns_target))
         return 1 if report["drift"] else 0
 
+    if getattr(args, "soundness", False):
+        from app.engine.soundness_audit import render_markdown, repo_root, soundness_report
+
+        # The subject is Apex's OWN objective registry + the in-repo corpus, so the
+        # repo root (derived from the package location, robust to cwd) is used — NOT
+        # --target, which names an arbitrary project for the legacy audit. The corpus
+        # path resolves relative to it.
+        sound_root = repo_root()
+        report = soundness_report(
+            str(sound_root), with_determinism=getattr(args, "determinism", False))
+        if args.format == "json":
+            print(json.dumps(report, indent=2, default=str))
+        else:
+            print(render_markdown(report, sound_root))
+        return 1 if report["violations"] else 0
+
     from app.agents.skills.self_audit_agent import SelfAuditAgent
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
@@ -552,6 +568,16 @@ def register_parsers(subparsers) -> None:
     self_audit_parser.add_argument(
         "--commits", type=int, default=20,
         help="Commit-subject window size for North Star drift detection",
+    )
+    self_audit_parser.add_argument(
+        "--soundness", action="store_true",
+        help="Run the deterministic objective-soundness denetçi (routing invariants + "
+             "adversarial-corpus refuse/behavior-identical + determinism); exits non-zero on any violation",
+    )
+    self_audit_parser.add_argument(
+        "--determinism", action="store_true",
+        help="With --soundness: also run the heavy §4 determinism sweep (each objective "
+             "twice under varied PYTHONHASHSEED/cwd/TZ; spawns interpreters)",
     )
     self_audit_parser.set_defaults(func=cmd_self_audit)
 
