@@ -74,6 +74,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "wire-exports",
         "infer-type-hints",
         "dataclassify",
+        "add-from-future-annotations",
         "generate-usage-doc",
         "document-signature",
         "pin-doctest",

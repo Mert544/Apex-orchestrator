@@ -305,6 +305,25 @@ def _rewrite_one_class(cls: ast.ClassDef, lines: list[str]) -> tuple[
     return cls_start, cls_end, new_lines, needs_field, needs_any
 
 
+def rejoin_guarded(source: str, out_lines: list[str]) -> str | None:
+    """Re-join ``out_lines`` into module text (preserving ``source``'s trailing
+    newline), then the standard never-land-broken-Python epilogue: ``None`` when
+    the result is byte-identical to ``source`` (no change) or when it does not
+    ``ast.parse`` (a malformed rewrite is dropped, not landed). The single source
+    of truth for the "splice, preserve newline, re-parse guard" tail every
+    line-splicing rewrite shares (``rewrite_dataclasses`` and
+    :mod:`app.execution.future_annotations`)."""
+    trailing = "\n" if source.endswith("\n") else ""
+    result_text = "\n".join(out_lines) + trailing
+    if result_text == source:
+        return None
+    try:
+        ast.parse(result_text)
+    except (SyntaxError, ValueError):
+        return None  # never land broken Python
+    return result_text
+
+
 def _node_line_span(node: ast.AST) -> tuple[int, int]:
     """The 0-based ``[start, end)`` line slice a node occupies."""
     start = node.lineno - 1  # type: ignore[attr-defined]
@@ -522,16 +541,7 @@ def rewrite_dataclasses(source: str) -> str | None:
         out_lines[start:end] = new_lines
 
     out_lines = _ensure_imports(out_lines, needs_field, needs_any)
-
-    trailing = "\n" if source.endswith("\n") else ""
-    result_text = "\n".join(out_lines) + trailing
-    if result_text == source:
-        return None
-    try:
-        ast.parse(result_text)
-    except (SyntaxError, ValueError):
-        return None  # never land broken Python
-    return result_text
+    return rejoin_guarded(source, out_lines)
 
 
 def _existing_typing_any(lines: list[str]) -> bool:

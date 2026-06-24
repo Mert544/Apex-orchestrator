@@ -298,6 +298,18 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # "boilerplate constructor" facet becomes the campaign that modernizes it.
     "a boilerplate constructor to make a dataclass": "dataclassify",
 
+    # Missing lazy-annotation import: the document lens's "signatures and types"
+    # aspect names a module that USES type annotations (a return type, an
+    # annotated param, an ``x: T`` assignment) but lacks ``from __future__ import
+    # annotations`` — so every annotation is eagerly evaluated at import time. The
+    # add-from-future-annotations objective LANDS exactly that one-line, lazy-by-
+    # default modernization (insert a fresh ``__future__`` import, or widen an
+    # existing one to add ``annotations``), behaviour-preserving and suite-gated.
+    # So the "annotations to make lazy" facet becomes the campaign that defers
+    # them. Its phrasing is not a substring of any other key (nor any of them of
+    # it), so its insertion order is free.
+    "annotations to make lazy with a future import": "add-from-future-annotations",
+
     # Unimplemented protocol: the generalize lens's "the shared interface to
     # extract" aspect names a ``typing.Protocol`` the project declares but has NO
     # concrete implementer for — the interface is shelf-ware until a class

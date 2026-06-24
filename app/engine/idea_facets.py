@@ -340,7 +340,14 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # names + a PROVEN `Returns: <type>`), refusing when
                              # the return type is not provable. Appended, so the
                              # originals still lead and emit in their order.
-                             "the public signature to document"],
+                             "the public signature to document",
+                             # added: a module that USES type annotations but lacks
+                             # `from __future__ import annotations` — the
+                             # add-from-future-annotations objective lands the
+                             # one-line lazy-annotation import (insert fresh, or
+                             # widen an existing `__future__` import). Appended, so
+                             # the originals still lead and emit in their order.
+                             "annotations to make lazy with a future import"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
     "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown",
                         # added: the package's USAGE.md generated from its public
