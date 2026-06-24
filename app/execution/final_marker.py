@@ -59,7 +59,11 @@ import ast
 from typing import NamedTuple
 
 from app.execution.dataclass_rewrite import _import_insertion_index, rejoin_guarded
-from app.execution.freeze_dataclass import _used_as_base_names, project_sources
+from app.execution.freeze_dataclass import (
+    _used_as_base_names,
+    is_public_name,
+    project_sources,
+)
 
 __all__ = [
     "add_final_decorator",
@@ -240,20 +244,30 @@ def _final_binding(tree: ast.AST) -> _FinalBinding:
 
 class _ModuleContext(NamedTuple):
     """Per-module facts the finalizability gate needs beyond the class: the
-    module's physical source ``lines`` (for the splice), the proven ``binding`` of
+    module's raw ``source`` and physical ``lines`` (for the public-surface check
+    and the splice), whether to apply the public-surface ``refuse_public`` gate (set
+    by the objective; off for in-isolation reasoning), the proven ``binding`` of
     ``typing.final``, and the whole-project ``used_as_base`` over-approximation."""
 
+    source: str
     lines: list[str]
+    refuse_public: bool
     binding: _FinalBinding
     used_as_base: set[str]
 
 
-def _module_context(source: str, scan_sources: list[str]) -> _ModuleContext:
+def _module_context(
+    source: str, scan_sources: list[str], *, refuse_public: bool = False
+) -> _ModuleContext:
     """Build the :class:`_ModuleContext` for ``source`` whose used-as-base scan
     spans ``scan_sources``. ``source`` must already parse (the caller guards this);
-    its ``final``/``typing`` bindings come from its OWN tree."""
+    its ``final``/``typing`` bindings come from its OWN tree. ``refuse_public`` turns
+    on the public-surface refusal (default ``False`` for in-isolation reasoning,
+    where "public API" is undefined without an importable-module context)."""
     return _ModuleContext(
+        source=source,
         lines=source.splitlines(),
+        refuse_public=refuse_public,
         binding=_final_binding(ast.parse(source)),
         used_as_base=_used_as_base_names(scan_sources),
     )
@@ -262,13 +276,20 @@ def _module_context(source: str, scan_sources: list[str]) -> _ModuleContext:
 def _is_finalizable(cls: ast.ClassDef, ctx: _ModuleContext) -> bool:
     """True when ``cls`` is a top-level class safe to seal ``@final``.
 
-    Gates (all must hold): no existing ``@final`` decorator; the name is NOT used
-    as a base anywhere in the project; ``cls`` is not an abstract base / protocol /
-    enum (nor an ``ABCMeta`` metaclass); and ``typing.final`` is provably spellable
-    in the module (bare ``@final`` already importable, a dotted ``@typing.final``
-    provable, or a fresh ``from typing import final`` safely addable)."""
+    Gates (all must hold): no existing ``@final`` decorator; (when
+    ``ctx.refuse_public``) ``cls``'s name is NOT part of the module's PUBLIC SURFACE
+    (an ``__all__``-listed name, or — with no ``__all__`` — a top-level non-underscore
+    export: out-of-project code may subclass it, which ``@final`` would break for a
+    type checker, and the project-own scan cannot see that, so refuse); the name is
+    NOT used as a base anywhere in the project; ``cls`` is not an abstract base /
+    protocol / enum (nor an ``ABCMeta`` metaclass); and ``typing.final`` is provably
+    spellable in the module (bare ``@final`` already importable, a dotted
+    ``@typing.final`` provable, or a fresh ``from typing import final`` safely
+    addable)."""
     if class_has_final_decorator(cls):
         return False
+    if ctx.refuse_public and is_public_name(cls.name, ctx.source):
+        return False  # public API — an external subclass we cannot see may exist
     if cls.name in ctx.used_as_base:
         return False
     if _is_abstract_or_special_base(cls):
@@ -419,10 +440,12 @@ def finalizable_classes(source: str) -> list[str]:
     considered IN ISOLATION (single-module subclass scan).
 
     Convenience for tests / single-file reasoning: ``source`` is its own whole
-    project, so the used-as-base scan sees only this module. Sorted by source
-    order. Returns ``[]`` on a syntax error. The objective's real plan uses the
-    WHOLE project, which can only ADD refusals (more base uses), never remove
-    them."""
+    project, so the used-as-base scan sees only this module, and the public-surface
+    refusal is OFF (``refuse_public=False`` — "public API" is undefined without a
+    real project context; the objective turns it on). Sorted by source order.
+    Returns ``[]`` on a syntax error. The objective's real plan uses the WHOLE
+    project, which can only ADD refusals (more base uses, the public-surface
+    refusal), never remove them."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
@@ -441,26 +464,35 @@ def _finalizable_class_nodes(
 
 
 def add_final_decorator(
-    source: str, project_sources: list[str] | None = None
+    source: str,
+    project_sources: list[str] | None = None,
+    *,
+    refuse_public: bool = False,
 ) -> str | None:
     """Add ``@typing.final`` to every finalizable top-level class in ``source``, or
     ``None`` when nothing changes.
 
     ``project_sources`` is the whole-project source set the used-as-base
     over-approximation scans (it MUST include ``source`` itself); when ``None``,
-    ``source`` is scanned in isolation (the conservative single-module floor).
-    Classes are decorated in REVERSE source order so earlier line spans stay valid,
-    then the ``from typing import final`` import is ensured once (only when the bare
-    ``@final`` form needs it). Deterministic and idempotent (an already-``@final``
-    class is not re-touched); the result is re-``ast.parse``d before return, so a
-    malformed rewrite yields ``None`` rather than landing broken Python."""
+    ``source`` is scanned in isolation (the conservative single-module floor). When
+    ``refuse_public`` is set (the objective sets it — the file reaching it is a real
+    importable module), a PUBLIC-surface class (an ``__all__``-listed name, or — with
+    no ``__all__`` — a top-level non-underscore export) is REFUSED: external code we
+    cannot see may subclass it, and ``@final`` would make a type checker reject that
+    subclass — a false "final" the project-own scan and the (no-op-decorator) suite
+    can never catch. Classes are decorated in REVERSE source order so earlier line
+    spans stay valid, then the ``from typing import final`` import is ensured once
+    (only when the bare ``@final`` form needs it). Deterministic and idempotent (an
+    already-``@final`` class is not re-touched); the result is re-``ast.parse``d
+    before return, so a malformed rewrite yields ``None`` rather than landing broken
+    Python."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return None
 
     scan_sources = [source] if project_sources is None else project_sources
-    ctx = _module_context(source, scan_sources)
+    ctx = _module_context(source, scan_sources, refuse_public=refuse_public)
 
     nodes = _finalizable_class_nodes(tree, ctx)
     if not nodes:

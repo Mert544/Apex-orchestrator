@@ -463,13 +463,30 @@ def test_facet_phrase_lives_in_the_no_op_statements_ladder():
 
 # --- the plan: a never-mutated dataclass gets frozen=True --------------------
 
+# A PRIVATE never-mutated dataclass: not public surface, so the objective (which
+# turns the public-surface refusal ON) still freezes it.
+_UNFROZEN_PRIV = (
+    "from dataclasses import dataclass\n"
+    "\n"
+    "\n"
+    "@dataclass\n"
+    "class _Point:\n"
+    "    x: int\n"
+    "    y: int\n"
+    "\n"
+    "\n"
+    "def total(p: _Point) -> int:\n"
+    "    return p.x + p.y\n"
+)
+
+
 def test_plan_lands_frozen(tmp_path: Path):
-    _project(tmp_path, "app/point.py", _UNFROZEN)
+    _project(tmp_path, "app/point.py", _UNFROZEN_PRIV)
     plan = plan_freeze_dataclass(str(tmp_path), "app/point.py")
     assert plan.ok
     new = plan.new_contents["app/point.py"]
     assert "@dataclass(frozen=True)" in new
-    assert plan.originals["app/point.py"] == _UNFROZEN  # original captured for rollback
+    assert plan.originals["app/point.py"] == _UNFROZEN_PRIV  # captured for rollback
     assert plan.edits_by_file["app/point.py"] == 1
 
 
@@ -525,14 +542,31 @@ def test_plan_unreadable_path_is_noop(tmp_path: Path):
 # --- end-to-end: gated apply, real landing, suite stays green ----------------
 
 def test_end_to_end_lands_frozen_and_keeps_green(tmp_path: Path):
+    # A PRIVATE (underscore-prefixed) dataclass in a package module: NOT public
+    # surface, so the project-own mutation/used-as-base scan is authoritative and the
+    # freeze lands. (The public-surface refusal — added below — protects only
+    # published API dataclasses external consumers might mutate or subclass.)
     _suite_project(tmp_path)
-    (tmp_path / "app" / "point.py").write_text(_UNFROZEN, encoding="utf-8")
+    src = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "\n"
+        "@dataclass\n"
+        "class _Point:\n"
+        "    x: int\n"
+        "    y: int\n"
+        "\n"
+        "\n"
+        "def total(p: _Point) -> int:\n"
+        "    return p.x + p.y\n"
+    )
+    (tmp_path / "app" / "point.py").write_text(src, encoding="utf-8")
     (tmp_path / "tests" / "test_point.py").write_text(
-        "from app.point import Point, total\n"
+        "from app.point import _Point, total\n"
         "def test_total():\n"
-        "    assert total(Point(2, 3)) == 5\n"
+        "    assert total(_Point(2, 3)) == 5\n"
         "def test_hashable():\n"
-        "    assert hash(Point(1, 2)) == hash(Point(1, 2))\n",
+        "    assert hash(_Point(1, 2)) == hash(_Point(1, 2))\n",
         encoding="utf-8")
 
     plan = plan_freeze_dataclass(str(tmp_path), "app/point.py")
@@ -544,7 +578,7 @@ def test_end_to_end_lands_frozen_and_keeps_green(tmp_path: Path):
     assert "@dataclass(frozen=True)" in landed  # the freeze LANDED
     # Behaviour preserved: construction + read still work (proven green by the
     # apply gate running the test above), and the class is now hashable.
-    assert "class Point:" in landed
+    assert "class _Point:" in landed
 
 
 def test_end_to_end_auto_rollback_when_untested_mutation_breaks_frozen(tmp_path: Path):
@@ -564,11 +598,11 @@ def test_end_to_end_auto_rollback_when_untested_mutation_breaks_frozen(tmp_path:
         "\n"
         "\n"
         "@dataclass\n"
-        "class Counter:\n"
+        "class _Counter:\n"  # private: not public surface, so the freeze is proposed
         "    value: int\n"
         "\n"
         "\n"
-        "def bump(c: Counter) -> None:\n"
+        "def bump(c: _Counter) -> None:\n"
         "    # DYNAMIC setattr — the attribute name is a runtime variable, so the\n"
         "    # static field-name scan cannot tie it to ``value`` and (wrongly)\n"
         "    # proposes the freeze; the suite below catches the runtime break.\n"
@@ -578,9 +612,9 @@ def test_end_to_end_auto_rollback_when_untested_mutation_breaks_frozen(tmp_path:
     target = tmp_path / "app" / "counter.py"
     target.write_text(risky, encoding="utf-8")
     (tmp_path / "tests" / "test_counter.py").write_text(
-        "from app.counter import Counter, bump\n"
+        "from app.counter import _Counter, bump\n"
         "def test_bump():\n"
-        "    c = Counter(0)\n"
+        "    c = _Counter(0)\n"
         "    bump(c)\n"  # frozen -> dynamic setattr raises FrozenInstanceError -> red
         "    assert c.value == 1\n",
         encoding="utf-8")

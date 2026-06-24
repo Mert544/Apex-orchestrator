@@ -15,10 +15,18 @@ WHOLE-PROJECT context (the conservative mutation / used-as-base over-approximati
 spans every own module), so it builds its own ``RenamePlan`` — refusing
 test/fixture, reading the target, running the transform with the project's own
 sources as the mutation scan, and recording the one in-place rewrite with its
-original so the suite-gated apply engine can roll it back. The transform refuses
-(an honest no-op) a module with no freezable dataclass: already frozen, has a
-base / is subclassed elsewhere, a field mutated anywhere, no fields, or
-unparseable source.
+original so the suite-gated apply engine can roll it back. The transform ALSO
+REFUSES a PUBLIC-surface dataclass — one listed in ``__all__``, or (with no
+``__all__``) a top-level non-underscore export: external (out-of-project) consumers
+may mutate or subclass that published class, and freezing it adds a real ``__hash__``
++ immutability contract change Apex's project-own scan cannot prove safe (a private /
+underscore-prefixed dataclass, where the project scan is authoritative, is still
+frozen). This is REFUSE-on-ambiguity (default-public): the plan layer already filters
+true non-importable files, so any module reaching the transform is a real importable
+one — including a PEP-420 NAMESPACE-package module with no ``__init__.py``. The
+transform refuses (an honest no-op) a module with no freezable dataclass: it is
+public-surface API, already frozen, has a base / is subclassed elsewhere, a field
+mutated anywhere, no fields, or unparseable source.
 
 The soundness story — why a green suite ALONE is not enough, and why the static
 whole-project over-approximation is required — is documented in the engine module.
@@ -51,12 +59,16 @@ def plan_freeze_dataclass(project_root: str | Path, module_rel: str) -> RenamePl
     — the conservative mutation / used-as-base over-approximation spans every own
     module — so the transform is a closure that, given the module's source,
     gathers the project's own sources and runs ``freeze_dataclass_decorator`` with
-    that scan set. An empty plan means nothing to do here — no freezable dataclass,
-    or the module does not parse — a no-op, not a failure."""
+    that scan set. The public-surface refusal — a PUBLIC dataclass (an
+    ``__all__``-listed name, or, with no ``__all__``, a top-level non-underscore
+    export) whose external consumers the project-own scan cannot see — is enforced
+    inside the transform from the module's own source. An empty plan means nothing to
+    do here — no freezable dataclass, or the module does not parse — a no-op, not a
+    failure."""
 
     def _transform(source: str) -> str | None:
         sources = project_sources(project_root, module_rel, source)
-        return freeze_dataclass_decorator(source, sources)
+        return freeze_dataclass_decorator(source, sources, refuse_public=True)
 
     return plan_source_rewrite(
         project_root, module_rel, "freeze_dataclass", _transform)

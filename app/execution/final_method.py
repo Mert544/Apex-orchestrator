@@ -79,7 +79,11 @@ from app.execution.final_marker import (
     _insert_decorator,
     _needs_import,
 )
-from app.execution.freeze_dataclass import _base_name, project_sources
+from app.execution.freeze_dataclass import (
+    _base_name,
+    is_public_name,
+    project_sources,
+)
 
 __all__ = [
     "add_final_method_decorator",
@@ -259,21 +263,32 @@ def subclass_method_names(target: str, sources: list[str]) -> set[str]:
 
 class _ModuleContext(NamedTuple):
     """Per-module facts the finalizability gate needs beyond the method/class: the
-    module's physical source ``lines`` (for the splice), the proven ``binding`` of
+    module's raw ``source`` and physical ``lines`` (for the public-surface check and
+    the splice), whether to apply the public-surface ``refuse_public`` gate (set by
+    the objective; off for in-isolation reasoning), the proven ``binding`` of
     ``typing.final`` (final_marker's ``_FinalBinding``), and the whole-project
     ``facts`` the subclass scan reads."""
 
+    source: str
     lines: list[str]
+    refuse_public: bool
     binding: object  # final_marker._FinalBinding
     facts: _ClassFacts
 
 
-def _module_context(source: str, scan_sources: list[str]) -> _ModuleContext:
+def _module_context(
+    source: str, scan_sources: list[str], *, refuse_public: bool = False
+) -> _ModuleContext:
     """Build the :class:`_ModuleContext` for ``source`` whose subclass scan spans
     ``scan_sources``. ``source`` must already parse (the caller guards this); its
-    ``final``/``typing`` bindings come from its OWN tree via final_marker."""
+    ``final``/``typing`` bindings come from its OWN tree via final_marker.
+    ``refuse_public`` turns on the public-surface refusal (default ``False`` for
+    in-isolation reasoning, where "public API" is undefined without an
+    importable-module context)."""
     return _ModuleContext(
+        source=source,
         lines=source.splitlines(),
+        refuse_public=refuse_public,
         binding=_final_binding(ast.parse(source)),
         facts=_collect_class_facts(scan_sources),
     )
@@ -316,9 +331,16 @@ def _sealable_methods_in_class(
 ) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
     """Every sealable plain instance method of ``cls``, in source order, or ``[]``
     when ``cls`` is an abstract base (Protocol / ABC / ABCMeta) — whose methods are
-    meant to be overridden — or when ``typing.final`` cannot be proven spellable."""
+    meant to be overridden — when ``cls`` is PUBLIC SURFACE (an ``__all__``-listed
+    name, or — with no ``__all__`` — a top-level non-underscore class: external code
+    may subclass that published class and override the method, which ``@final`` would
+    break for a type checker, and the project-own scan cannot see that) — or when
+    ``typing.final`` cannot be proven spellable. The public-surface gate is applied
+    only when ``ctx.refuse_public`` (the objective sets it)."""
     if _is_abstract_base_class(cls):
         return []
+    if ctx.refuse_public and is_public_name(cls.name, ctx.source):
+        return []  # public class — an external subclass may override its methods
     if not _binding_allows_final(ctx.binding):
         return []
     return [stmt for stmt in cls.body
@@ -343,10 +365,12 @@ def finalizable_methods(source: str) -> list[str]:
     ISOLATION (single-module subclass scan).
 
     Convenience for tests / single-file reasoning: ``source`` is its own whole
-    project, so the subclass scan sees only this module. Sorted by source order.
+    project, so the subclass scan sees only this module, and the public-surface
+    refusal is OFF (``refuse_public=False`` — "public API" is undefined without a
+    real project context; the objective turns it on). Sorted by source order.
     Returns ``[]`` on a syntax error. The objective's real plan uses the WHOLE
     project, which can only ADD refusals (more potential subclasses defining the
-    method), never remove them."""
+    method, the public-surface refusal), never remove them."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
@@ -362,26 +386,35 @@ def finalizable_methods(source: str) -> list[str]:
 
 
 def add_final_method_decorator(
-    source: str, project_sources: list[str] | None = None
+    source: str,
+    project_sources: list[str] | None = None,
+    *,
+    refuse_public: bool = False,
 ) -> str | None:
     """Seal ``@typing.final`` on every sealable method in ``source``, or ``None``
     when nothing changes.
 
     ``project_sources`` is the whole-project source set the subclass
     over-approximation scans (it MUST include ``source`` itself); when ``None``,
-    ``source`` is scanned in isolation (the conservative single-module floor).
-    Methods are decorated in REVERSE source order so earlier line spans stay valid,
-    then the ``from typing import final`` import is ensured once (only when the bare
-    ``@final`` form needs it). Deterministic and idempotent (an already-``@final``
-    method is not re-touched); the result is re-``ast.parse``d before return, so a
-    malformed rewrite yields ``None`` rather than landing broken Python."""
+    ``source`` is scanned in isolation (the conservative single-module floor). When
+    ``refuse_public`` is set (the objective sets it — the file reaching it is a real
+    importable module), a method of a PUBLIC-surface CLASS (an ``__all__``-listed
+    name, or — with no ``__all__`` — a top-level non-underscore class) is REFUSED:
+    external code we cannot see may subclass the class and override the method, which
+    ``@final`` would make a type checker reject — a false "final" the project-own scan
+    and the (no-op-decorator) suite can never catch. Methods are decorated in REVERSE
+    source order so earlier line spans stay valid, then the ``from typing import
+    final`` import is ensured once (only when the bare ``@final`` form needs it).
+    Deterministic and idempotent (an already-``@final`` method is not re-touched); the
+    result is re-``ast.parse``d before return, so a malformed rewrite yields ``None``
+    rather than landing broken Python."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return None
 
     scan_sources = [source] if project_sources is None else project_sources
-    ctx = _module_context(source, scan_sources)
+    ctx = _module_context(source, scan_sources, refuse_public=refuse_public)
 
     methods = _all_sealable_methods(tree, ctx)
     if not methods:

@@ -596,14 +596,26 @@ def test_facet_phrase_lives_in_the_extension_points_ladder():
 
 # --- the plan: a never-overridden method gets @final -------------------------
 
+# A PRIVATE class with one method: not public surface, so the objective (which turns
+# the public-surface refusal ON) still seals the method.
+_LEAF_PRIV = (
+    '"""A service module."""\n'
+    "\n"
+    "\n"
+    "class _Service:\n"
+    "    def commit(self) -> int:\n"
+    "        return 1\n"
+)
+
+
 def test_plan_lands_final(tmp_path: Path):
-    _project(tmp_path, "app/svc.py", _LEAF)
+    _project(tmp_path, "app/svc.py", _LEAF_PRIV)
     plan = plan_seal_final_method(str(tmp_path), "app/svc.py")
     assert plan.ok
     new = plan.new_contents["app/svc.py"]
     assert "    @final" in new
     assert "from typing import final" in new
-    assert plan.originals["app/svc.py"] == _LEAF  # original captured for rollback
+    assert plan.originals["app/svc.py"] == _LEAF_PRIV  # original captured for rollback
     assert plan.edits_by_file["app/svc.py"] == 1
 
 
@@ -649,14 +661,26 @@ def test_plan_unreadable_path_is_noop(tmp_path: Path):
 # --- end-to-end: gated apply, real landing, suite stays green ----------------
 
 def test_end_to_end_lands_final_and_keeps_green(tmp_path: Path):
+    # A method of a PRIVATE (underscore-prefixed) class in a package module: the
+    # class is NOT public surface, so the project-own subclass scan is authoritative
+    # and the method seal lands. (The public-surface refusal — added below — protects
+    # only methods of published API classes.)
     _suite_project(tmp_path)
-    (tmp_path / "app" / "svc.py").write_text(_LEAF, encoding="utf-8")
+    src = (
+        '"""A service module."""\n'
+        "\n"
+        "\n"
+        "class _Service:\n"
+        "    def commit(self) -> int:\n"
+        "        return 1\n"
+    )
+    (tmp_path / "app" / "svc.py").write_text(src, encoding="utf-8")
     (tmp_path / "tests" / "test_svc.py").write_text(
-        "from app.svc import Service\n"
+        "from app.svc import _Service\n"
         "def test_commit():\n"
-        "    assert Service().commit() == 1\n"
+        "    assert _Service().commit() == 1\n"
         "def test_final_flag():\n"
-        "    assert Service.commit.__final__ is True\n",
+        "    assert _Service.commit.__final__ is True\n",
         encoding="utf-8")
 
     plan = plan_seal_final_method(str(tmp_path), "app/svc.py")
@@ -677,26 +701,27 @@ def test_never_fake_green_overridden_method_is_not_sealed(tmp_path: Path):
     # runtime no-op, so sealing an OVERRIDDEN method would NOT break the suite — it
     # would stay green on a FALSE "final" claim (a type checker would later reject
     # the override). The honesty guard is therefore the whole-project subclass-method
-    # scan, not the suite: ``Base.run`` is provably overridden by ``Sub.run``, so the
-    # engine REFUSES to seal it. The no-op decorator can never land on a
-    # wrongly-claimed-final method.
+    # scan, not the suite: ``_Base.run`` is provably overridden by ``_Sub.run``, so
+    # the engine REFUSES to seal it. The no-op decorator can never land on a
+    # wrongly-claimed-final method. (PRIVATE classes, so the public-surface refusal
+    # does not also fire — this test isolates the OVERRIDE guard.)
     src = (
-        "class Base:\n"
+        "class _Base:\n"
         "    def run(self):\n"
         "        return 1\n"
         "\n"
         "\n"
-        "class Sub(Base):\n"
+        "class _Sub(_Base):\n"
         "    def run(self):\n"
         "        return 2\n"
     )
     _project(tmp_path, "app/hier.py", src)
     plan = plan_seal_final_method(str(tmp_path), "app/hier.py")
-    # A rewrite IS proposed (the leaf ``Sub.run`` is sealable) ...
+    # A rewrite IS proposed (the leaf ``_Sub.run`` is sealable) ...
     assert plan.ok
     landed = plan.new_contents["app/hier.py"]
-    # ... but ``Base.run`` (overridden) is NEVER sealed — only the leaf method is.
-    assert _final_method_names(landed) == {"Sub.run"}
+    # ... but ``_Base.run`` (overridden) is NEVER sealed — only the leaf method is.
+    assert _final_method_names(landed) == {"_Sub.run"}
     assert "@final\n    def run(self):\n        return 1" not in landed  # false claim never lands
 
 
@@ -747,13 +772,14 @@ def test_fix1_not_sealed_when_overridden_only_in_a_test_file(tmp_path: Path):
 
 
 def test_fix1_method_with_no_test_override_still_seals(tmp_path: Path):
-    # FIX 1 must not over-refuse: a method merely CALLED (not overridden) in a test
-    # STILL seals under the test-inclusive scan — the test file contributes no
-    # overriding subclass, so no override name is recorded.
-    _project(tmp_path, "app/svc.py", _LEAF)
+    # FIX 1 must not over-refuse: a (PRIVATE-class) method merely CALLED (not
+    # overridden) in a test STILL seals under the test-inclusive scan — the test file
+    # contributes no overriding subclass, so no override name is recorded. (Private
+    # class, so the public-surface refusal does not fire either.)
+    _project(tmp_path, "app/svc.py", _LEAF_PRIV)
     _project(tmp_path, "tests/test_svc.py",
-             "from app.svc import Service\n\n\n"
-             "def test_commit():\n    assert Service().commit() == 1\n")
+             "from app.svc import _Service\n\n\n"
+             "def test_commit():\n    assert _Service().commit() == 1\n")
     plan = plan_seal_final_method(str(tmp_path), "app/svc.py")
     assert plan.ok
     assert "@final" in plan.new_contents["app/svc.py"]

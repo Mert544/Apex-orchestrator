@@ -333,31 +333,46 @@ def test_facet_phrase_lives_in_the_extension_points_ladder():
 
 # --- the plan: a never-subclassed class gets @final --------------------------
 
+# A PRIVATE leaf class: not public surface, so the objective (which turns the
+# public-surface refusal ON) still seals it.
+_LEAF_PRIV = (
+    '"""A leaf module."""\n'
+    "\n"
+    "\n"
+    "class _Config:\n"
+    "    value = 1\n"
+    "\n"
+    "\n"
+    "def make() -> _Config:\n"
+    "    return _Config()\n"
+)
+
+
 def test_plan_lands_final(tmp_path: Path):
-    _project(tmp_path, "app/conf.py", _LEAF)
-    plan = plan_add_final(str(tmp_path), "app/conf.py")
+    _project(tmp_path, "app/core.py", _LEAF_PRIV)
+    plan = plan_add_final(str(tmp_path), "app/core.py")
     assert plan.ok
-    new = plan.new_contents["app/conf.py"]
+    new = plan.new_contents["app/core.py"]
     assert "@final" in new
     assert "from typing import final" in new
-    assert plan.originals["app/conf.py"] == _LEAF  # original captured for rollback
-    assert plan.edits_by_file["app/conf.py"] == 1
+    assert plan.originals["app/core.py"] == _LEAF_PRIV  # original captured for rollback
+    assert plan.edits_by_file["app/core.py"] == 1
 
 
 def test_plan_uses_whole_project_used_as_base_scan(tmp_path: Path):
     # The class is never subclassed in its OWN module, but a SIBLING module
     # subclasses it — the whole-project scan must refuse.
-    _project(tmp_path, "app/conf.py", _LEAF)
+    _project(tmp_path, "app/core.py", _LEAF)
     _project(tmp_path, "app/other.py",
-             "from app.conf import Config\n\n\nclass Sub(Config):\n    pass\n")
-    plan = plan_add_final(str(tmp_path), "app/conf.py")
+             "from app.core import Config\n\n\nclass Sub(Config):\n    pass\n")
+    plan = plan_add_final(str(tmp_path), "app/core.py")
     assert not plan.new_contents  # refused by the cross-module subclass
 
 
 def test_plan_refuses_already_final(tmp_path: Path):
-    _project(tmp_path, "app/conf.py",
+    _project(tmp_path, "app/core.py",
              "from typing import final\n\n\n@final\nclass Config:\n    pass\n")
-    assert not plan_add_final(str(tmp_path), "app/conf.py").new_contents
+    assert not plan_add_final(str(tmp_path), "app/core.py").new_contents
 
 
 def test_plan_refuses_protocol_in_module(tmp_path: Path):
@@ -376,6 +391,20 @@ def test_plan_refuses_fixture_file_input(tmp_path: Path):
     assert not plan_add_final(str(tmp_path), "fixtures/sample.py").new_contents
 
 
+def test_plan_refuses_non_library_config_file(tmp_path: Path):
+    # Round-19 re-audit F4 (the CONFIRMED bug): ``@final`` had landed on a class in
+    # ``docs/conf.py``. The shared single-file gate now refuses a NON-LIBRARY
+    # packaging / config / task script (denylisted basename at ANY path) — nobody
+    # imports ``docs/conf.py`` for an API, so sealing a class there is noise. An
+    # honest no-op, no blocker. (``setup.py`` at the root is refused the same way.)
+    _project(tmp_path, "docs/conf.py", _LEAF)
+    _project(tmp_path, "setup.py", _LEAF)
+    conf = plan_add_final(str(tmp_path), "docs/conf.py")
+    setup = plan_add_final(str(tmp_path), "setup.py")
+    assert not conf.new_contents and not conf.blockers
+    assert not setup.new_contents and not setup.blockers
+
+
 def test_plan_unreadable_path_is_noop(tmp_path: Path):
     plan = plan_add_final(str(tmp_path), "app/missing.py")
     assert not plan.new_contents
@@ -385,27 +414,41 @@ def test_plan_unreadable_path_is_noop(tmp_path: Path):
 # --- end-to-end: gated apply, real landing, suite stays green ----------------
 
 def test_end_to_end_lands_final_and_keeps_green(tmp_path: Path):
+    # A PRIVATE (underscore-prefixed) class in a package module: NOT public surface,
+    # so the project-own subclass scan is authoritative and the seal lands. (The
+    # public-surface refusal — added below — protects only published API names.)
     _suite_project(tmp_path)
-    (tmp_path / "app" / "conf.py").write_text(_LEAF, encoding="utf-8")
-    (tmp_path / "tests" / "test_conf.py").write_text(
-        "from app.conf import Config, make\n"
+    src = (
+        '"""A leaf module."""\n'
+        "\n"
+        "\n"
+        "class _Config:\n"
+        "    value = 1\n"
+        "\n"
+        "\n"
+        "def make() -> _Config:\n"
+        "    return _Config()\n"
+    )
+    (tmp_path / "app" / "core.py").write_text(src, encoding="utf-8")
+    (tmp_path / "tests" / "test_core.py").write_text(
+        "from app.core import _Config, make\n"
         "def test_make():\n"
         "    assert make().value == 1\n"
         "def test_final_flag():\n"
-        "    assert Config.__final__ is True\n",
+        "    assert _Config.__final__ is True\n",
         encoding="utf-8")
 
-    plan = plan_add_final(str(tmp_path), "app/conf.py")
+    plan = plan_add_final(str(tmp_path), "app/core.py")
     result = apply_rename(str(tmp_path), plan, verify=True, impact_scope=False)
     assert result.get("applied") is True
     assert result.get("rolled_back") in (False, None)
 
-    landed = (tmp_path / "app" / "conf.py").read_text(encoding="utf-8")
+    landed = (tmp_path / "app" / "core.py").read_text(encoding="utf-8")
     assert "@final" in landed  # the decorator LANDED
     assert "from typing import final" in landed
     # Behaviour preserved (proven green by the apply gate running the tests above):
     # the class still constructs and now carries ``__final__``.
-    assert "class Config:" in landed
+    assert "class _Config:" in landed
 
 
 def test_never_fake_green_subclassed_class_is_not_finalized(tmp_path: Path):
@@ -413,27 +456,29 @@ def test_never_fake_green_subclassed_class_is_not_finalized(tmp_path: Path):
     # so adding it to a SUBCLASSED class would NOT break the suite — the suite would
     # stay green on a FALSE "final" claim (a type checker would later reject the
     # subclass). The honesty guard is therefore the whole-project subclass scan, not
-    # the suite: ``Base`` is provably subclassed, so the engine REFUSES to finalize
+    # the suite: ``_Base`` is provably subclassed, so the engine REFUSES to finalize
     # it. The no-op decorator can never be landed on a wrongly-claimed-final class.
+    # (PRIVATE names, so the public-surface refusal does not also fire — this test
+    # isolates the SUBCLASS guard.)
     src = (
-        "class Base:\n"
+        "class _Base:\n"
         "    pass\n"
         "\n"
         "\n"
-        "class Sub(Base):\n"
+        "class _Sub(_Base):\n"
         "    pass\n"
     )
     _project(tmp_path, "app/hier.py", src)
     plan = plan_add_final(str(tmp_path), "app/hier.py")
-    # A rewrite IS proposed (the leaf ``Sub`` is finalizable) ...
+    # A rewrite IS proposed (the leaf ``_Sub`` is finalizable) ...
     assert plan.ok
     landed = plan.new_contents["app/hier.py"]
-    # ... but ``Base`` (subclassed) is NEVER marked @final — only the leaf is.
+    # ... but ``_Base`` (subclassed) is NEVER marked @final — only the leaf is.
     tree = ast.parse(landed)
     finals = {n.name for n in tree.body
               if isinstance(n, ast.ClassDef) and class_has_final_decorator(n)}
-    assert finals == {"Sub"}, finals
-    assert "@final\nclass Base:" not in landed  # the false claim is never landed
+    assert finals == {"_Sub"}, finals
+    assert "@final\nclass _Base:" not in landed  # the false claim is never landed
 
 
 # --- CONFIRMED code-review fixes (one regression test per soundness hole) ----
@@ -570,23 +615,24 @@ def test_fix1_not_sealed_when_subclassed_only_in_a_test_file(tmp_path: Path):
     # module (``all_module_sources``), tests INCLUDED, so the test-only subclass is
     # seen and the seal is REFUSED. (Under the old tests-EXCLUDING ``project_sources``
     # scan the mock was invisible and ``Config`` was wrongly sealed.)
-    _project(tmp_path, "app/conf.py", "class Config:\n    value = 1\n")
-    _project(tmp_path, "tests/test_conf.py",
-             "from app.conf import Config\n\n\nclass FakeConfig(Config):\n    pass\n")
-    plan = plan_add_final(str(tmp_path), "app/conf.py")
+    _project(tmp_path, "app/core.py", "class Config:\n    value = 1\n")
+    _project(tmp_path, "tests/test_core.py",
+             "from app.core import Config\n\n\nclass FakeConfig(Config):\n    pass\n")
+    plan = plan_add_final(str(tmp_path), "app/core.py")
     assert not plan.new_contents  # the test-only subclass forbids the seal
 
 
 def test_fix1_leaf_with_no_test_subclass_still_seals(tmp_path: Path):
-    # FIX 1 must not over-refuse: a genuine leaf — used (not subclassed) in a test —
-    # STILL seals under the test-inclusive scan. The test file merely constructs the
-    # class, so it contributes no used-as-base name.
-    _project(tmp_path, "app/conf.py", _LEAF)
-    _project(tmp_path, "tests/test_conf.py",
-             "from app.conf import Config\n\n\ndef test_v():\n    assert Config().value == 1\n")
-    plan = plan_add_final(str(tmp_path), "app/conf.py")
+    # FIX 1 must not over-refuse: a genuine (PRIVATE) leaf — used (not subclassed) in
+    # a test — STILL seals under the test-inclusive scan. The test file merely
+    # constructs the class, so it contributes no used-as-base name. (Private name, so
+    # the public-surface refusal does not fire either.)
+    _project(tmp_path, "app/core.py", _LEAF_PRIV)
+    _project(tmp_path, "tests/test_core.py",
+             "from app.core import _Config\n\n\ndef test_v():\n    assert _Config().value == 1\n")
+    plan = plan_add_final(str(tmp_path), "app/core.py")
     assert plan.ok
-    assert "@final" in plan.new_contents["app/conf.py"]
+    assert "@final" in plan.new_contents["app/core.py"]
 
 
 def test_fix1_all_module_sources_includes_test_files():

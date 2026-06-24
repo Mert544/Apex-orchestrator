@@ -72,6 +72,8 @@ __all__ = [
     "is_frozen_dataclass_decorator",
     "project_sources",
     "all_module_sources",
+    "module_public_surface",
+    "is_public_name",
 ]
 
 
@@ -433,25 +435,36 @@ def _rewrite_decorator(dec: ast.expr, lines: list[str]) -> tuple[int, int, list[
 
 class _ModuleContext(NamedTuple):
     """The per-module facts the freezability gate needs beyond the class itself:
-    the module's physical source ``lines`` (for the single-line-rewrite check),
-    the proven stdlib bindings ``bare_ok`` / ``dotted_ok``, and the whole-project
+    the module's raw ``source`` and physical ``lines`` (for the public-surface
+    check and the single-line-rewrite check), whether to apply the public-surface
+    ``refuse_public`` gate (set by the objective, which knows the file is a real
+    importable module; off for single-module/in-isolation reasoning), the proven
+    stdlib bindings ``bare_ok`` / ``dotted_ok``, and the whole-project
     ``used_as_base`` / ``mutated`` over-approximations."""
 
+    source: str
     lines: list[str]
+    refuse_public: bool
     bare_ok: bool
     dotted_ok: bool
     used_as_base: set[str]
     mutated: set[str]
 
 
-def _module_context(source: str, scan_sources: list[str]) -> _ModuleContext:
+def _module_context(
+    source: str, scan_sources: list[str], *, refuse_public: bool = False
+) -> _ModuleContext:
     """Build the :class:`_ModuleContext` for ``source`` whose mutation /
     used-as-base scans span ``scan_sources``. ``source`` must already parse (the
     caller guards this); its proven stdlib ``dataclass`` bindings are read from
-    its OWN module tree, not the cross-module scan set."""
+    its OWN module tree, not the cross-module scan set. ``refuse_public`` turns on
+    the public-surface refusal (default ``False`` for in-isolation reasoning, where
+    "public API" is undefined without a real project / importable-module context)."""
     bare_ok, dotted_ok = _stdlib_dataclass_binding(ast.parse(source))
     return _ModuleContext(
+        source=source,
         lines=source.splitlines(),
+        refuse_public=refuse_public,
         bare_ok=bare_ok,
         dotted_ok=dotted_ok,
         used_as_base=_used_as_base_names(scan_sources),
@@ -464,15 +477,20 @@ def _is_freezable(cls: ast.ClassDef, ctx: _ModuleContext) -> ast.expr | None:
     fails ANY soundness gate.
 
     Gates (all must hold): a not-yet-frozen, PROVABLY-stdlib ``@dataclass``
-    decorator on a SINGLE uncommented physical line is present; ``cls`` has only
-    the implicit ``object`` base and no class keywords; ``cls``'s name is not used
-    as a base elsewhere; ``cls`` has >= 1 field; and NONE of its field names
-    appears in the whole-project ``mutated`` set."""
+    decorator on a SINGLE uncommented physical line is present; (when
+    ``ctx.refuse_public``) ``cls``'s name is NOT part of the module's PUBLIC SURFACE
+    (an ``__all__``-listed name, or — with no ``__all__`` — a top-level non-underscore
+    export an external consumer could mutate or subclass; we cannot prove no such
+    use, so refuse); ``cls`` has only the implicit ``object`` base and no class
+    keywords; ``cls``'s name is not used as a base elsewhere; ``cls`` has >= 1 field;
+    and NONE of its field names appears in the whole-project ``mutated`` set."""
     dec = _dataclass_decorator(cls, ctx.bare_ok, ctx.dotted_ok)
     if dec is None:
         return None
     if not _is_single_line_rewritable(dec, ctx.lines):
         return None  # multi-line / commented decorator — refuse (would lose content)
+    if ctx.refuse_public and is_public_name(cls.name, ctx.source):
+        return None  # public API — an external consumer may mutate/subclass it
     if not _class_only_object_base(cls):
         return None
     if cls.name in ctx.used_as_base:
@@ -535,6 +553,143 @@ def all_module_sources(project_root, module_rel: str, this_source: str) -> list[
         sources = {}
     sources[module_rel] = this_source
     return list(sources.values())
+
+
+def _all_assignment_value(tree: ast.Module) -> ast.expr | None:
+    """The value expression of a top-level ``__all__ = ...`` (plain or annotated
+    WITH a value), or ``None`` when the module declares no ``__all__``. Mirrors the
+    ``__all__``-detection shape of :func:`app.execution.module_exports.has_module_all`
+    (a ``Name`` target ``__all__`` on an ``Assign`` / ``AnnAssign``), returning the
+    bound value so its listed names can be read."""
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
+        ):
+            return node.value
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "__all__"
+            and node.value is not None
+        ):
+            return node.value
+    return None
+
+
+def _literal_all_names(value: ast.expr) -> set[str] | None:
+    """The string names a LITERAL ``__all__`` list/tuple lists, or ``None`` when
+    ``value`` is not a plain literal of string constants.
+
+    ``["A", "B"]`` / ``("A", "B")`` -> ``{"A", "B"}``. A computed / concatenated /
+    non-string ``__all__`` (``_BASE + ["X"]``, ``[*other]``, a name) is unknowable
+    statically and returns ``None`` — the caller then treats EVERY top-level public
+    name as exported (REFUSE-on-ambiguity: when we cannot prove a name is absent
+    from the public API, default to refusing the contract change)."""
+    if not isinstance(value, (ast.List, ast.Tuple)):
+        return None
+    names: set[str] = set()
+    for elt in value.elts:
+        if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+            names.add(elt.value)
+        else:
+            return None  # a non-string-literal element — cannot enumerate cleanly
+    return names
+
+
+def _top_level_bound_names(node: ast.stmt) -> list[str]:
+    """The names a SINGLE top-level statement binds that could be ``import *``-ed: a
+    ``def`` / ``async def`` / ``class`` name, or the simple ``Name`` targets of an
+    ``Assign`` / ``AnnAssign``-WITH-a-value. Other statements (imports, bare
+    expressions, control flow) bind nothing here."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, ast.Assign):
+        return [t.id for t in node.targets if isinstance(t, ast.Name)]
+    if isinstance(node, ast.AnnAssign) and node.value is not None:
+        return [node.target.id] if isinstance(node.target, ast.Name) else []
+    return []
+
+
+def _top_level_public_names(tree: ast.Module) -> set[str]:
+    """The non-underscore names ``tree`` BINDS at top level via a ``def`` /
+    ``async def`` / ``class`` / simple ``Assign`` / ``AnnAssign``-WITH-a-value.
+
+    This is the default ``from module import *`` surface a module exposes when it
+    declares no ``__all__`` — every top-level class/def/assignment name a published
+    consumer could import. A leading-underscore name is never public. (We query
+    only top-level class names here, which are always bound by a ``ClassDef``, so
+    this set always contains the names the public-surface gate asks about.)"""
+    names: set[str] = set()
+    for node in tree.body:
+        for name in _top_level_bound_names(node):
+            if not name.startswith("_"):
+                names.add(name)
+    return names
+
+
+def module_public_surface(source: str) -> set[str]:
+    """The PUBLIC-API surface of ``source``: the names a published consumer may
+    legitimately import.
+
+    Definition (per the public-surface refusal): when the module declares
+    ``__all__`` -> the names it lists (a computed / non-literal ``__all__`` cannot
+    be enumerated, so EVERY top-level public name is treated as exported —
+    REFUSE-on-ambiguity); else -> the module's top-level non-underscore names (the
+    default ``import *`` surface). No ``__init__.py`` library-module check is applied
+    — Apex runs over PEP-420 namespace packages too, and the plan layer already
+    refuses non-importable files before the transform, so any module reaching here is
+    a real importable one. Returns ``set()`` on a syntax error (an unparseable module
+    is refused by the transform's own parse guard regardless)."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return set()
+    all_value = _all_assignment_value(tree)
+    if all_value is not None:
+        names = _literal_all_names(all_value)
+        if names is not None:
+            return names
+        return _top_level_public_names(tree)  # computed __all__ — refuse-all
+    return _top_level_public_names(tree)
+
+
+def is_public_name(name: str, source: str) -> bool:
+    """True when ``name`` is part of ``source``'s PUBLIC API — a class/method Apex
+    must NOT seal ``@final`` / freeze, because external (out-of-project) code we
+    cannot see may subclass or mutate it.
+
+    The rule (DEFAULT-PUBLIC — REFUSE-on-ambiguity):
+
+      - a leading-underscore name is NEVER public (an internal/private class is
+        authoritatively covered by the whole-project scan — keep sealing it);
+      - if the module declares ``__all__`` -> public iff ``name`` is in
+        :func:`module_public_surface` (the listed names; a computed ``__all__``
+        makes every top-level public name public);
+      - else (no ``__all__``) -> public iff ``name`` is a top-level non-underscore
+        name. We do NOT gate this on an ``__init__.py`` library-module check: Apex
+        runs over PEP-420 NAMESPACE packages too (a public module's dir may carry no
+        ``__init__.py``), and the plan layer already refuses true non-importable
+        files (``setup.py`` / ``conf.py`` / ``conftest.py`` / …) BEFORE the
+        transform — so any module reaching here is a real importable one whose
+        top-level non-underscore names ARE its default ``import *`` public API.
+
+    Whenever ``name`` is (or might be) published API, return ``True`` so the caller
+    refuses — an honest no-op beats an unprovable contract change. Parses ``source``
+    once; an unparseable module returns ``False`` (its own transform parse-guard
+    refuses it anyway)."""
+    if not name or name.startswith("_"):
+        return False
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+    all_value = _all_assignment_value(tree)
+    if all_value is not None:
+        names = _literal_all_names(all_value)
+        if names is None:
+            return True  # computed __all__ — cannot prove name absent → refuse
+        return name in names
+    return name in _top_level_public_names(tree)
 
 
 def _base_name(base: ast.expr) -> str | None:
@@ -631,7 +786,10 @@ def _collect_freeze_edits(
 
 
 def freeze_dataclass_decorator(
-    source: str, project_sources: list[str] | None = None
+    source: str,
+    project_sources: list[str] | None = None,
+    *,
+    refuse_public: bool = False,
 ) -> str | None:
     """Add ``frozen=True`` to every freezable ``@dataclass`` in ``source``, or
     ``None`` when nothing changes.
@@ -639,17 +797,22 @@ def freeze_dataclass_decorator(
     ``project_sources`` is the whole-project source set the mutation /
     used-as-base over-approximation scans (it MUST include ``source`` itself); when
     ``None``, ``source`` is scanned in isolation (the conservative single-module
-    floor). Classes are rewritten in REVERSE source order so earlier line spans
-    stay valid. Deterministic and idempotent (an already-frozen dataclass is not
-    re-touched); the result is re-``ast.parse``d before return, so a malformed
-    rewrite yields ``None`` rather than landing broken Python."""
+    floor). When ``refuse_public`` is set (the objective sets it — the file reaching
+    it is a real importable module), a PUBLIC-surface dataclass (an ``__all__``-listed
+    name, or — with no ``__all__`` — a top-level non-underscore export) is REFUSED: an
+    external consumer Apex cannot see may mutate or subclass it, and freezing adds a
+    real ``__hash__`` + immutability contract change we cannot prove safe. Classes
+    are rewritten in REVERSE source order so earlier line spans stay valid.
+    Deterministic and idempotent (an already-frozen dataclass is not re-touched); the
+    result is re-``ast.parse``d before return, so a malformed rewrite yields ``None``
+    rather than landing broken Python."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return None
 
     scan_sources = [source] if project_sources is None else project_sources
-    ctx = _module_context(source, scan_sources)
+    ctx = _module_context(source, scan_sources, refuse_public=refuse_public)
 
     edits = _collect_freeze_edits(tree, ctx)
     if not edits:

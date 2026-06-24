@@ -22,11 +22,20 @@ subclass a TYPE CHECKER rejects once the class is sealed, yet the pytest suite c
 NEVER catch that false "final" — so excluding tests would silently mis-seal it. It
 still reuses the shared single-file ``plan_source_rewrite`` (refuse test/fixture,
 read, run the transform, record the one in-place rewrite with its original so the
-suite-gated apply engine can roll it back). The transform refuses (an honest no-op)
-a module with no finalizable class:
-the class is subclassed (incl. via a dotted base), already ``@final``, an abstract
-base / protocol / enum, the name ``final`` cannot be bound unambiguously to
-``typing.final``, or the module does not parse.
+suite-gated apply engine can roll it back). The transform ALSO REFUSES a
+PUBLIC-surface class — one listed in ``__all__``, or (with no ``__all__``) a
+top-level non-underscore name: a published library API whose EXTERNAL
+(out-of-project) subclassers Apex's project-own scan cannot see, so sealing it
+``@final`` would be an unprovable contract change a type checker could later reject (a
+private / underscore-prefixed class, where the project scan is authoritative, is still
+sealed). This is REFUSE-on-ambiguity (default-public): the plan layer already filters
+true non-importable files (``setup.py`` / ``conf.py`` / ``conftest.py`` / …), so any
+module reaching the transform is a real importable one — including a PEP-420
+NAMESPACE-package module with no ``__init__.py``, whose public names are still its
+API. The transform refuses (an honest no-op) a module with no finalizable class: the
+class is public-surface API, subclassed (incl. via a dotted base), already ``@final``,
+an abstract base / protocol / enum, the name ``final`` cannot be bound unambiguously
+to ``typing.final``, or the module does not parse.
 
 ``typing.final`` exists since Python 3.8, so this lands on the 3.10 floor with NO
 version gate. Deterministic, stdlib-only, zero-token, idempotent (a second run sees
@@ -54,13 +63,16 @@ def plan_add_final(project_root: str | Path, module_rel: str) -> RenamePlan:
     (via ``all_module_sources``), because a class subclassed only in a test is a
     real subclass a type checker rejects once it is sealed — so the transform is a
     closure that, given the module's source, gathers all the project's sources and
-    runs ``add_final_decorator`` with that scan set. An empty plan means nothing to
-    do here — no finalizable class, or the module does not parse — a no-op, not a
-    failure."""
+    runs ``add_final_decorator`` with that scan set. The public-surface refusal — a
+    PUBLIC class (an ``__all__``-listed name, or, with no ``__all__``, a top-level
+    non-underscore export) whose external subclassers the project-own scan cannot see
+    — is enforced inside the transform from the module's own source. An empty plan
+    means nothing to do here — no finalizable class, or the module does not parse —
+    a no-op, not a failure."""
 
     def _transform(source: str) -> str | None:
         sources = all_module_sources(project_root, module_rel, source)
-        return add_final_decorator(source, sources)
+        return add_final_decorator(source, sources, refuse_public=True)
 
     return plan_source_rewrite(project_root, module_rel, "add_final", _transform)
 
