@@ -81,7 +81,12 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                             # added: a seeded fault the suite still passes on — a
                             # real blind spot the strengthen-tests objective closes
                             # with a double-gated mutant-killing assertion.
-                            "a surviving mutant the tests miss"],
+                            "a surviving mutant the tests miss",
+                            # added: an Enum whose member values are PROVABLY all
+                            # distinct — enforce-enum-unique locks that invariant with
+                            # @enum.unique (a no-op today, a loud import-time error on a
+                            # future duplicate alias). Appended, originals still lead.
+                            "an enum to enforce unique values on"],
     # simplify
     "dead code": ["unreferenced symbols", "unreachable branches", "redundant guards"],
     "duplicated logic": ["extract a shared helper", "parameterize the variants", "single source of truth"],
@@ -434,7 +439,11 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                          # added: repeated from-same-module imports the
                          # merge-duplicate-imports objective collapses into one
                          # (binding-identical). Appended, originals still lead.
-                         "the duplicate from-imports to merge"],
+                         "the duplicate from-imports to merge",
+                         # added: an existing module-level __all__ whose names are out
+                         # of order — sort-dunder-all sorts + de-duplicates it
+                         # (behaviour-identical). Appended, originals still lead.
+                         "the module __all__ to sort"],
     # decouple — the constructive "break the knot" lens. Its two structural L1
     # aspects ("dependency inversion", "seam interface") previously had NO L2
     # vocabulary, so zooming "Decouple X → dependency inversion" fell straight to

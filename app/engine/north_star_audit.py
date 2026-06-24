@@ -83,6 +83,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "scaffold-from-protocol",
         "add-final",
         "seal-final-method",
+        "enforce-enum-unique",
         "wire-module-exports",
         # NOTE: "fix-docstrings" was REMOVED here — it is a standalone CLI
         # subcommand (`apex fix-docstrings`), NOT a registered develop objective,
@@ -103,6 +104,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "extract-constant",
         "remove-unused-imports",
         "sort-imports",
+        "sort-dunder-all",
         "remove-dead-code",
         "remove-double-negation",
         "remove-pointless-pass",

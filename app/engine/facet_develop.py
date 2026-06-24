@@ -267,6 +267,13 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # __init__ re-export surface. Phrasing is substring-order-safe vs every other key.
     "the module public surface to declare": "wire-module-exports",
 
+    # An existing module-level __all__ list whose names are out of order: sort-dunder-all
+    # sorts + de-duplicates it (behaviour-identical — __all__ order never affects
+    # import *). DISTINCT from wire-module-exports above, which CREATES a missing
+    # __all__; this SORTS an existing one (the two never act on the same module).
+    # Phrasing is substring-order-safe vs every other key.
+    "the module __all__ to sort": "sort-dunder-all",
+
     # Undocumented public signature: the document lens's "signatures and types"
     # aspect also names a public function that carries NO docstring. The
     # document-signature objective LANDS exactly that — a docstring listing the
@@ -334,6 +341,13 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # substring-order-safe vs every other key (it shares no whole key with "a class
     # to seal as final" in either direction).
     "the method to seal as final": "seal-final-method",
+
+    # An Enum whose members are PROVEN all-distinct simple literals: enforce-enum-unique
+    # seals it with @enum.unique (a no-op TODAY that locks the invariant — it raises
+    # ValueError only on a future duplicate-value alias). Behaviour-preserving; the
+    # false-enforce risk is closed STATICALLY (refuse unless every value is a distinct
+    # literal), not by the suite. Phrasing is substring-order-safe vs every other key.
+    "an enum to enforce unique values on": "enforce-enum-unique",
 
     # Missing lazy-annotation import: the document lens's "signatures and types"
     # aspect names a module that USES type annotations (a return type, an
