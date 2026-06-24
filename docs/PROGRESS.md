@@ -11,6 +11,40 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (15. tur) — CAPABILITY-DOYDU PİVOTU UYGULANDI: 3 eşzamanlı izole-kopya ağır mühendis, HEPSİ somut/karar/fix (SIFIR yeni sentez/tip kuralı — anti-drift #1'e sadık) + bağımsız-proje BUYER-PROOF; full-gate yeşil, A+99, 22.537 test, CONCRETE 11→12:**
+- `bd7a9cf` **add-from-future-annotations (12. CONCRETE)** — tipli ama lazy-OLMAYAN modüle `from __future__ import
+  annotations` (PEP 563) landliyor: docstring sonrası taze insert YA DA mevcut `from __future__ import ...`'ı yerinde
+  genişlet (isimler sıralı, ASLA 2. `__future__` satırı). Linter yalnız FLAG'ler — Apex YAZAR. never-fake-green: sonuç
+  re-`ast.parse`lenir (bozuk splice düşer) + TEK runtime riski (import-time eager `typing.get_type_hints()` lazy
+  annotation'la `NameError`) full-suite gate + byte-for-byte rollback'le yakalanır (**pinned e2e rollback testi**:
+  eager modül kırmızıya döner → in-place rewrite byte-for-byte geri alınır). Reddeder: annotation-yok / zaten-var /
+  parse-etmez / test-fixture. **Paylaşılan epilogue tek `dataclass_rewrite.rejoin_guarded`'a çıkarıldı** (splice +
+  trailing-newline + re-parse guard; `rewrite_dataclasses` byte-identical delege eder, future aynı helper'ı çağırır;
+  `_import_insertion_index` yeniden kullanımı → taze `__future__` satırı dataclass import'la placement-identical) — bu
+  extraction grade'i 98'den A+99'a geri çekti (dup-tripwire). 1:1 facet-parity (3 girdi, substring-order-safe). 35 test.
+- `0ca4494` **scaffold-from-protocol src/-layout fix + robust oracle JSON** — round-14 scaffold-from-protocol'ün takip
+  işi: instantiation oracle PYTHONPATH'e yalnız ROOT koyuyordu ama `_dotted_pair` src-stripped dotted path (`mylib.iface`)
+  seçtiğinden **src-layout projede BOŞ plan** üretiyordu (öğrenci kitlesinin yaygın layout'u) → `_probe_path_roots` TÜM
+  source root'ları (root + `source_roots(root)`) koyar (flat/nested yalnız root → byte-identical). `_last_json_object`
+  stdout'u TERSTEN tarayıp son JSON-object satırını parse eder (import-time atexit/print artık sahte refüz yaratmaz).
+  never-fake-green korundu (oracle hâlâ gerçekten import+instantiate eder). 27 test (24+3).
+- `6323287` **ascend cost-aware tiebreak (KARAR VERME)** — climb priority'ye göre sıralayıp tie'ı registration-index ile
+  kırıyordu (cost-kör) → registry'de erken duran PAHALI objektif (ağır fitness scan) tie'ı kazanıp ucuz doğrulanmış
+  kazanca varmadan boşa compile-scan ödüyordu; her fitness int SAYI döndürdüğünden `--concrete` tahtasında priority-tie
+  YAYGIN. `GoalRanking.expensive` bayrağı (priority'den AYRI — yalnız tie kırar, skoru DEĞİŞTİRMEZ), sort key
+  `(-priority, expensive, reg_index)`: eşit priority'de ucuz (False) pahalıdan (True) önce. Default board expensive'ı
+  filtrelediğinden middle key sabit False → **default BYTE-IDENTICAL**. 5 test (ucuz-önce, expensive-priority'yi-asla-ezmez,
+  byte-identical default-board sırası).
+- **🚀 PARALEL-AĞIR DEVAM (≤11GB RAM-bütçe, kullanıcı direktifi):** 3 kod-yazan ağır mühendis (decision ∥ scaffoldfix ∥
+  future) izole DOSYA-KOPYALARINDA (`/tmp/apex-eng-<ad>`, STEP-0 izolasyon-assert guard'lı) AYNI ANDA koştu; entegrasyon
+  ayrık-dosya `cp`-back. Worktree HÂLÂ bozuk (eski-taban) — kopya mekanizması round-14'ten kanıtlı şekilde devam.
+- **🔎 DENETÇİ — PİVOT UYGULANDI (drift YOK):** round-14'ün "capability DOYDU" bulgusu bu turda EYLEME döküldü — 3 dalganın
+  hepsi somut objektif / karar-verme / fix; **sıfır yeni sentez veya tip-çıkarımı kuralı** eklendi. Anti-drift #1 ("her
+  dalga somut geliştirme değeri") sağlandı: 12. CONCRETE indi.
+- **🧾 BUYER-PROOF (bağımsız proje):** Apex `develop` döngüsü harici bir gym projesinde **9 objektif** landledi —
+  byte-identical determinizm + canlı auto-rollback + dürüst refüzler + zero-token; round-14 yetenekleri (divmod/complex
+  tipleri, scaffold-from-protocol) de gerçek diff'lerle ateşledi (scratchpad `BUYER_PROOF_r15.md`).
+
 **BU OTURUM (14. tur) — PARALEL-AĞIR MÜHENDİS sıçraması (3 eşzamanlı izole-kopya) + capability DOYDU bulgusu; full-gate yeşil, A+99, ~22.494 test, CONCRETE 10→11:**
 - `c0f994b` **RÜYA-SWEEP — `develop --from-dream --deep` ranked board (marquee tamamlandı) + render bug fix** — `--deep`
   bayrağı (default OFF, `--auto --deep` disiplinine uygun) her confluence'a `rank_objectives`-sıralı objektif tahtasını
@@ -384,8 +418,8 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**~22.494 test** + ruff), öz-not **A+99**
-  (14. turda `--chunks 16 -j 4` → 968s, 16/16 chunk + ruff PASS, exit 0; CONCRETE objektif 10→11).
+- **Kapı:** `python scripts/verify.py` → full green (**22.537 test** + ruff), öz-not **A+99**
+  (15. turda `--chunks 16 -j 4` → 994s, 16/16 chunk + ruff PASS, exit 0; CONCRETE objektif 11→12).
   **PARALEL-AĞIR:** worktree bozuk → izole `cp` kopyaları (`/tmp/apex-eng-*`, scratchpad `parallel_heavy_harness.sh`);
   STEP-0 `import app` izolasyon-assert'i zorunlu (kopyanın app/'i editable-install'ı yener); entegrasyon `cp`-back
   (ayrık-dosya). RAM-bütçe: targeted-test düşük RAM, ≤11GB peak ile ~5-6 eşzamanlı ağır mümkün ("5=OOM" full-suite içindi). **Yeni objektif eklerken** facet-parite
@@ -434,7 +468,22 @@
 
 ## 3. SIRADAKİ İŞLER (öncelik sırası — saha testi gaplerine dayalı)
 
-**🔭 ROUND-11 İNTEL (10. turun 2 keşifçisinden — EN GÜNCEL; otonomi + honesty + yetenek):**
+**🔭 ROUND-16 SLATE (15. turdan sonra — EN GÜNCEL; capability DOYDU, yön = SOMUT objektif + buyer-proof):**
+> **ANA KURAL (anti-drift #1):** sentez/tip-çıkarımı motoru DOYDU — **yeni kural EKLEME** (drift). Yön: yeni
+> CONCRETE objektif (gerçek diff landler), buyer-proof, ve yalnız bir concrete'i güvenilir kılacak kadar honesty.
+1. **freeze-dataclass (YENİ CONCRETE, ŞİMDİ AÇIK):** mutasyona uğramayan bir `@dataclass`'a `frozen=True` ekle —
+   round-15'te add-from-future ile registry çakışması (facet-parite/manifest tek-yazar) yüzünden ERTELENMİŞTİ; o
+   indiği için artık çakışma yok. Soundness kapısı: alan ASLA `self.x = ...` ile yeniden atanmıyor (AST kanıtı; setattr/
+   `__post_init__` reassign → reddet), zaten frozen değil. never-fake-green: full-suite gate (frozen bir mutasyonu kırarsa
+   kırmızı → rollback). 1:1 facet-parite (4 girdi) + manifest CONCRETE. Spec: scratchpad `spec_r15_concrete_objectives.md`.
+2. **BUYER-PROOF tazele (15. sonrası):** bağımsız projede add-from-future-annotations + pin-doctest + scaffold-from-protocol
+   (artık src-layout) ATEŞLEDİĞİNİ gerçek diff'lerle göster — satış kanıtı round-15 yeteneklerini henüz içermiyor.
+3. **never-fake-green sertleştirme (opsiyonel, honesty—yalnız concrete'i korur):** top-level yan-etkili modülde doctest
+   stub senaryosu için bir pin testi (deliği yok ama regresyon kalkanı).
+- ✅ **scaffold-from-protocol `src/`-layout follow-up İNDİ (15.tur `0ca4494`):** round-14'te tracked-follow-up'tı; çözüldü.
+- **DIŞLA (drift):** daha fazla sentez/tip kuralı · detektör/safety/honesty makinesi cilası · değer/default→tip çıkarımı.
+
+**🔭 ROUND-11 İNTEL (10. turun 2 keşifçisinden — otonomi + honesty + yetenek; ÇOĞU İNDİ):**
 1. **W10-C FIX (re-dispatch, HAZIR):** doctest uçtan-uca, DÜZELTİLMİŞ guard'la. Patch+test+finding scratchpad
    `w10-c_*` (759-satır patch). FIX: implement_stub.py'deki `if _has_doctest_witnesses: continue` (satır ~216 Pass2,
    ~325 Pass1) pytest-pass'i TAMAMEN kapatmasın → pytest-pass'i ÇALIŞTIR, sonucunu doctest-verify et
