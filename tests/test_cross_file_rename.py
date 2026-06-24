@@ -5,7 +5,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from app.execution.cross_file_rename import RenamePlan, apply_rename, plan_rename
+from app.execution.cross_file_rename import (
+    RenamePlan,
+    _is_non_library_file,
+    apply_rename,
+    plan_rename,
+    plan_source_rewrite,
+)
 
 
 def _project(tmp_path: Path) -> Path:
@@ -288,3 +294,79 @@ def test_characterization_invalid_name_blocker_pinned(tmp_path):
         "'for' is not a valid identifier"]
     assert plan_rename(tmp_path, "compute", "compute").blockers == [
         "old and new names are identical"]
+
+
+# --- the shared single-file rewrite: non-library + test/fixture refusal -------
+# ``plan_source_rewrite`` is the one shared shape every single-file develop
+# objective (add-final, freeze-dataclass, document-signature, infer-type-hints, …)
+# reuses. The round-19 re-audit F4 found the WHOLE family could fire on packaging /
+# config / task scripts (``@final`` had landed on a class in ``docs/conf.py``); the
+# gate below is the single place that now stops all of them.
+
+def _upper(source: str) -> str:
+    """A trivial always-changing transform — proves the rewrite actually ran."""
+    return source.upper()
+
+
+def test_is_non_library_file_denylist_only():
+    # Denylisted packaging / config / task / generated basenames are non-library at
+    # ANY path (root OR inside a package) ...
+    for rel in ("setup.py", "conf.py", "docs/conf.py", "noxfile.py", "conftest.py",
+                "manage.py", "tasks.py", "pkg/_version.py", "a/b/version.py"):
+        assert _is_non_library_file(rel), rel
+    # ... but a real module is a library file even with NO ``__init__.py`` beside it
+    # (a PEP-420 namespace package, or a loose top-level module). The gate is
+    # deliberately denylist-only so it never drops genuine source.
+    for rel in ("app/core.py", "app/intent/parser.py", "loose.py",
+                "scripts/tool.py", "pkg/__init__.py"):
+        assert not _is_non_library_file(rel), rel
+
+
+def test_plan_source_rewrite_skips_non_library_file(tmp_path):
+    # A denylisted config file is a HONEST no-op — read AND transform are skipped, so
+    # even though ``_upper`` would change every byte, nothing is recorded.
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "conf.py").write_text("project = 'x'\n", encoding="utf-8")
+    (tmp_path / "setup.py").write_text("from setuptools import setup\n", encoding="utf-8")
+    for rel in ("docs/conf.py", "setup.py"):
+        plan = plan_source_rewrite(tmp_path, rel, "upper", _upper)
+        assert not plan.new_contents and not plan.originals and not plan.blockers
+
+
+def test_plan_source_rewrite_processes_real_library_module(tmp_path):
+    # A real package module (``pkg/__init__.py`` present) IS processed ...
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "module.py").write_text("x = 1\n", encoding="utf-8")
+    plan = plan_source_rewrite(tmp_path, "pkg/module.py", "upper", _upper)
+    assert plan.new_contents == {"pkg/module.py": "X = 1\n"}
+    assert plan.edits_by_file == {"pkg/module.py": 1}
+
+    # ... and so is a PEP-420 namespace-package module (NO ``__init__.py`` beside it)
+    # — the gate must not refuse genuine source just because the dir lacks one.
+    (tmp_path / "ns").mkdir()
+    (tmp_path / "ns" / "leaf.py").write_text("y = 2\n", encoding="utf-8")
+    nsplan = plan_source_rewrite(tmp_path, "ns/leaf.py", "upper", _upper)
+    assert nsplan.new_contents == {"ns/leaf.py": "Y = 2\n"}
+
+
+def test_plan_source_rewrite_still_refuses_test_and_fixture(tmp_path):
+    # The pre-existing test/fixture refusal is intact, layered beside the new gate.
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "fixtures").mkdir()
+    (tmp_path / "fixtures" / "sample.py").write_text("y = 2\n", encoding="utf-8")
+    assert not plan_source_rewrite(tmp_path, "tests/test_x.py", "upper", _upper).new_contents
+    assert not plan_source_rewrite(tmp_path, "fixtures/sample.py", "upper", _upper).new_contents
+
+
+def test_plan_source_rewrite_unchanged_and_unreadable_are_noops(tmp_path):
+    # A transform that returns the source unchanged, or returns None, or an
+    # unreadable path: all honest no-ops (empty plan, no blocker).
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "m.py").write_text("x = 1\n", encoding="utf-8")
+    assert not plan_source_rewrite(tmp_path, "pkg/m.py", "id", lambda s: s).new_contents
+    assert not plan_source_rewrite(tmp_path, "pkg/m.py", "none", lambda s: None).new_contents
+    missing = plan_source_rewrite(tmp_path, "pkg/gone.py", "upper", _upper)
+    assert not missing.new_contents and not missing.blockers

@@ -90,6 +90,51 @@ def _is_fixture_path(path: str) -> bool:
     )
 
 
+# Known NON-LIBRARY scripts, by BASENAME at ANY path: packaging / Sphinx /
+# task-runner / framework-manage / generated version files. Nobody ``import``s them
+# for an API — a single-file rewrite there (``@final``, ``__all__``, ``@dataclass``,
+# …) is config / side-effect / generated-file noise (round-19 re-audit F4: ``@final``
+# landed on a class in ``docs/conf.py``). The CANONICAL copy lives here, on the
+# shared single-file path, so EVERY single-file objective skips them; the round-19
+# ``objectives/wire_module_exports.py`` (``_is_library_module`` + ``_SCRIPT_DENYLIST``)
+# carries its own copy of the same names (it cannot import from here without a cycle
+# — that objective imports ``plan_source_rewrite`` FROM this module). Kept
+# deliberately small and explicit.
+#
+# DELIBERATELY DENYLIST-ONLY (a documented NARROWING of the auditor's proposed
+# ``_is_library_module``): the auditor also proposed gating on "the containing dir
+# has an ``__init__.py``". That over-excludes in THIS repo — Apex ships many real,
+# imported PEP-420 NAMESPACE packages with NO ``__init__.py`` (``app/intent/``,
+# ``app/k8s/``, ``app/metrics/``, ``app/plugins/``, ``app/benchmarking/``,
+# ``app/validation/``, ``app/integrations/``, plus every ``scripts/*.py``). The
+# ``__init__.py`` test would (1) make the broad-land family REFUSE ~21 genuine
+# library modules it can and should rewrite, and (2) drop those same modules from
+# the quality-scan index (dedup / complexity / dead-code — the grader's backbone),
+# HIDING real findings in them. Every CONFIRMED F4 case (``docs/conf.py``,
+# ``setup.py``, ``noxfile.py``, ``conftest.py``) is a denylisted BASENAME, so the
+# denylist closes the proven hole with ZERO collateral damage; the ``__init__.py``
+# heuristic is the part that was too broad, so it is dropped.
+_SCRIPT_DENYLIST = frozenset({
+    "setup.py", "conf.py", "conftest.py", "manage.py",
+    "noxfile.py", "tasks.py", "_version.py", "version.py",
+})
+
+
+def _is_non_library_file(module_rel: str) -> bool:
+    """True when ``module_rel`` is a NON-LIBRARY file a single-file objective must
+    skip — a packaging / config / task / generated script nobody imports as an API.
+
+    Pure BASENAME test against :data:`_SCRIPT_DENYLIST` (``setup.py``, ``conf.py``,
+    ``conftest.py``, ``manage.py``, ``noxfile.py``, ``tasks.py``, ``_version.py``,
+    ``version.py``) at ANY path — so ``docs/conf.py`` (the confirmed round-19 F4
+    bug), a root ``setup.py``, and a ``noxfile.py`` are all refused, while a genuine
+    ``app/intent/parser.py`` (a real PEP-420 namespace-package module with no
+    ``__init__.py``) is KEPT. Deterministic, no filesystem touch. See the
+    ``_SCRIPT_DENYLIST`` note for why this is intentionally denylist-only rather than
+    also requiring an ``__init__.py``."""
+    return Path(module_rel.replace("\\", "/")).name in _SCRIPT_DENYLIST
+
+
 def plan_source_rewrite(
     project_root: str | Path, module_rel: str, operator: str,
     transform: Callable[[str], str | None],
@@ -97,15 +142,25 @@ def plan_source_rewrite(
     """A :class:`RenamePlan` that applies a whole-module SOURCE ``transform``.
 
     The shared shape of every single-file develop objective (infer-type-hints,
-    document-signature, …): refuse a test/fixture file, read the module, run
-    ``transform(source)``, and record the single rewrite with its original (so the
-    verified-apply engine can roll it back if the suite fails) when it changes
-    something — otherwise an empty no-op plan (``None``/unchanged ⇒ nothing
-    provable to do). One source of truth, so a new single-file objective is a
-    one-liner and the boilerplate is never re-copied."""
+    document-signature, …): refuse a test/fixture file AND a non-library file
+    (packaging / config / task / generated script — ``setup.py``, ``docs/conf.py``,
+    ``noxfile.py``, ``conftest.py``, …), read the module, run ``transform(source)``,
+    and record the single rewrite with its original (so the verified-apply engine
+    can roll it back if the suite fails) when it changes something — otherwise an
+    empty no-op plan (``None``/unchanged ⇒ nothing provable to do). One source of
+    truth, so a new single-file objective is a one-liner and the boilerplate is
+    never re-copied.
+
+    The non-library gate (alongside the test/fixture refusal) is what stops the
+    WHOLE broad-land single-file family — add-final, freeze-dataclass,
+    document-signature, … — from firing on files nobody imports as an API (the
+    round-19 re-audit caught ``@final`` landing on a class in ``docs/conf.py``). A
+    skipped non-library file is an honest no-op, not a failure."""
     plan = RenamePlan(old=module_rel, new=operator)
     if _is_fixture_path(module_rel):
         return plan  # never touch a test/fixture file
+    if _is_non_library_file(module_rel):
+        return plan  # packaging / config / task script — nobody imports it as an API
     try:
         source = (Path(project_root) / module_rel).read_text(encoding="utf-8")
     except OSError:

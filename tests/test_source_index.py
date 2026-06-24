@@ -42,6 +42,31 @@ def test_build_indexes_own_modules_and_excludes_fixtures(tmp_path: Path) -> None
     assert index.get("test_top.py") is None
 
 
+def test_build_excludes_non_library_scripts(tmp_path: Path) -> None:
+    # NON-LIBRARY packaging / config / task scripts are NOT indexed — the shared
+    # denylist gate (round-19 F4: ``@final`` had landed on a class in ``docs/conf.py``).
+    # The check is by BASENAME at ANY path, so a denylisted name is dropped both at
+    # the repo root AND inside a package (``docs/conf.py``, ``pkg/conftest.py``).
+    _make_project(tmp_path)
+    (tmp_path / "setup.py").write_text("from setuptools import setup\nsetup()\n",
+                                       encoding="utf-8")
+    (tmp_path / "noxfile.py").write_text("def lint(s):\n    pass\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "conf.py").write_text("project = 'x'\n", encoding="utf-8")
+    (tmp_path / "pkg" / "conftest.py").write_text("import pytest\n", encoding="utf-8")
+    index = SourceIndex.build(tmp_path)
+
+    rels = {m.rel for m in index.modules}
+    assert "setup.py" not in rels  # packaging script
+    assert "noxfile.py" not in rels  # task runner
+    assert "docs/conf.py" not in rels  # Sphinx config (the confirmed F4 file)
+    assert "pkg/conftest.py" not in rels  # denylisted even inside a package
+    # The genuine library modules are STILL indexed — including a loose top-level
+    # module: the denylist is basename-only, so it never drops real (namespace-
+    # package or top-level) source that the quality scans must keep seeing.
+    assert {"pkg/a.py", "pkg/b.py", "broken.py"} <= rels
+
+
 def test_broken_module_is_indexed_unparsed(tmp_path: Path) -> None:
     _make_project(tmp_path)
     index = SourceIndex.build(tmp_path)

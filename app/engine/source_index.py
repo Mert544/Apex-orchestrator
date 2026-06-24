@@ -24,7 +24,11 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.execution.cross_file_rename import _SKIPPED_DIRS, _py_files
+from app.execution.cross_file_rename import (
+    _SKIPPED_DIRS,
+    _is_non_library_file,
+    _py_files,
+)
 
 
 def _is_fixture_path(path: str) -> bool:
@@ -67,12 +71,24 @@ class SourceIndex:
         """Enumerate, read, and parse the project's own non-fixture modules once.
 
         Modules are enumerated via :func:`_py_files` (which already skips agent
-        worktrees, ``.git``, virtualenvs, etc.), fixtures/tests are dropped, each
-        source is read once and parsed once (``SyntaxError`` → ``tree=None``), and
-        the result is stored in deterministic sorted ``rel`` order."""
+        worktrees, ``.git``, virtualenvs, etc.), fixtures/tests are dropped, and
+        NON-LIBRARY files (packaging / config / task / generated scripts —
+        ``setup.py``, ``docs/conf.py``, ``noxfile.py``, ``conftest.py``, …) are
+        dropped via the shared
+        :func:`~app.execution.cross_file_rename._is_non_library_file` denylist gate
+        (the same gate the single-file objectives use to refuse them) so a config /
+        packaging script is never indexed as project source. Each source is read
+        once and parsed once (``SyntaxError`` → ``tree=None``), and the result is
+        stored in deterministic sorted ``rel`` order.
+
+        The gate is BASENAME-only on purpose (see ``_is_non_library_file``): real
+        PEP-420 namespace-package modules with no ``__init__.py`` (``app/intent``,
+        ``app/k8s``, ``scripts/*.py``, …) stay indexed, so the duplication /
+        complexity / dead-code scans built on this index keep seeing them."""
+        root = Path(project_root)
         modules: list[IndexedModule] = []
-        for rel, source in _py_files(Path(project_root)):
-            if _is_fixture_path(rel):
+        for rel, source in _py_files(root):
+            if _is_fixture_path(rel) or _is_non_library_file(rel):
                 continue
             try:
                 tree: ast.Module | None = ast.parse(source)
