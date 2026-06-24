@@ -277,6 +277,18 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # campaign that documents how to call the package, honestly and for free.
     "the package usage doc to generate": "generate-usage-doc",
 
+    # Unenforced worked examples: the document lens's "worked examples" aspect also
+    # names a function whose ``>>>`` docstring examples are a CONTRACT a reader
+    # trusts but NOTHING in the suite runs — documentation that can silently rot to
+    # red. The pin-doctest objective LANDS exactly that — a new
+    # ``tests/test_<stem>_doctest.py`` that EXECUTES those (already-green) examples
+    # so the project's own test run keeps them honest; it refuses when the examples
+    # are already enforced (a pinned test, or ``pytest --doctest-modules``) or are
+    # red today. So the "examples to pin" facet becomes the campaign that turns the
+    # worked examples into a suite-enforced contract. Its phrasing is not a substring
+    # of any other key (nor any of them of it), so its insertion order is free.
+    "the unenforced doctest examples to pin": "pin-doctest",
+
     # Boilerplate constructor: the "unreachable or no-op statements" simplify
     # sub-aspect names a hand-written ``__init__`` that does nothing but copy its
     # parameters onto ``self`` — pure ceremony. The dataclassify objective LANDS

@@ -58,6 +58,8 @@ __all__ = [
     "synthesize_stub_body",
     "synthesize_doctest_body",
     "verify_body_via_doctest",
+    "enforceable_examples_for_function",
+    "examples_pass",
     "AmbiguityDiagnosis",
     "ambiguity_reason",
     "render_ambiguity_reason",
@@ -3594,6 +3596,56 @@ def filled_source_passes_doctests(filled_source: str, stub: StubFunction) -> boo
     if not examples:
         return False  # nothing enforceable to verify — never claim verified
     return _doctests_pass(examples, filled_source, stub)
+
+
+def _named_stub(fn_name: str, fn_lineno: int) -> StubFunction:
+    """A minimal :class:`StubFunction` carrying only the (name, 1-based lineno)
+    identity the doctest layer keys on. ``_stub_docstring`` matches a function by
+    ``name`` AND ``lineno`` (so a same-named overload is never confused for it) and
+    ``_doctests_pass`` looks the function up in the compiled namespace by ``name``;
+    neither reads ``params``/``end_lineno``/``indent``/``is_method``. This lets the
+    pin-doctest objective reuse the verified doctest extractor and verdict for a
+    FINISHED function (which has no ``StubFunction`` of its own) addressed by its
+    name+lineno alone."""
+    return StubFunction(name=fn_name, params=(), lineno=fn_lineno,
+                        end_lineno=fn_lineno, indent="", is_method=False)
+
+
+def enforceable_examples_for_function(source: str, fn_name: str,
+                                      fn_lineno: int) -> list[doctest.Example]:
+    """The ENFORCEABLE ``>>>`` examples in the docstring of the function ``fn_name``
+    at 1-based ``fn_lineno`` in ``source`` — every example EXCEPT a ``# doctest:
+    +SKIP`` one (which ``doctest`` never runs, so it pins no contract).
+
+    A by-(name, lineno) sibling of :func:`_enforceable_doctest_examples` (which
+    takes a :class:`StubFunction`): pin-doctest addresses an ALREADY-IMPLEMENTED
+    function — which has no stub record — so it identifies the function the same way
+    ``_stub_docstring`` does, by name AND lineno, and reuses the SAME "which examples
+    count" decision the witness miner and apply-path verifier use. Fully guarded: a
+    malformed source, a missing function, or a function with no docstring yields
+    ``[]`` (never raises). Deterministic: examples in source order."""
+    return _enforceable_doctest_examples(source, _named_stub(fn_name, fn_lineno))
+
+
+def examples_pass(source: str, fn_name: str, fn_lineno: int) -> bool:
+    """True when EVERY enforceable ``>>>`` example of the function ``fn_name`` at
+    1-based ``fn_lineno`` PASSES against ``source`` itself (the function's REAL,
+    already-implemented body), run by the stdlib :mod:`doctest`.
+
+    This is the pin-doctest gate-1 oracle: the objective never pins a RED contract,
+    so it only lands a gating test when the examples are GREEN today. It mines the
+    enforceable examples (:func:`enforceable_examples_for_function`) and hands them —
+    with the unmodified ``source`` — to the shared compile-and-run verdict
+    :func:`_doctests_pass`, accepting ONLY when every example passes. Conservative,
+    never a fake-green: NO enforceable example, a source that fails to compile, or a
+    function that is not a callable module global (e.g. a method whose ``self`` is
+    not a global) all yield ``False``. Deterministic: examples in source order,
+    fixed namespace."""
+    stub = _named_stub(fn_name, fn_lineno)
+    examples = _enforceable_doctest_examples(source, stub)
+    if not examples:
+        return False  # nothing enforceable to check — never claim it passes
+    return _doctests_pass(examples, source, stub)
 
 
 def _compiled_module_namespace(source: str) -> dict | None:

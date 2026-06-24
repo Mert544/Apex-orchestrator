@@ -76,6 +76,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "dataclassify",
         "generate-usage-doc",
         "document-signature",
+        "pin-doctest",
         "cover-gaps",
         # NOTE: "fix-docstrings" was REMOVED here — it is a standalone CLI
         # subcommand (`apex fix-docstrings`), NOT a registered develop objective,
