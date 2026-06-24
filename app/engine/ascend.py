@@ -45,6 +45,7 @@ class GoalRanking:
     goal: str               # the nearest goal in the fractal tree it rolls up to
     payoff: float = 0.0     # learned health-gain per move from past campaigns
     reliability: float = 1.0  # the organism's DREAMED land-rate for this objective
+    expensive: bool = False  # a heavy fitness scan (only on the --concrete board)
 
     @property
     def priority(self) -> float:
@@ -223,6 +224,7 @@ def rank_objectives(project_root: str | Path,
     table = _objectives_map()
     weights = payoff_weights(project_root)
     reliab = land_factors(project_root)
+    exp = expensive_names()  # computed once: the skip gate AND the cost-tiebreak stamp
     if objectives is not None:
         names = objectives
     else:
@@ -230,7 +232,7 @@ def rank_objectives(project_root: str | Path,
         # near-dup scan, and the high-value concrete moves implement-stub /
         # wire-exports / strengthen-tests) so plan/ascend stay fast; they're run
         # explicitly or opted into via include_expensive (the --concrete flag).
-        skip = set() if include_expensive else expensive_names()
+        skip = set() if include_expensive else exp
         names = [n for n in available_objectives() if n not in skip]
     if exclude:
         names = [n for n in names if n not in exclude]
@@ -247,8 +249,13 @@ def rank_objectives(project_root: str | Path,
         rankings.append(GoalRanking(objective=name, pending=pending,
                                     goal=objective_parent(name),
                                     payoff=weights.get(name, 0.0),
-                                    reliability=reliab.get(name, 1.0)))
-    rankings.sort(key=lambda r: (-r.priority, order.get(r.objective, 0)))
+                                    reliability=reliab.get(name, 1.0),
+                                    expensive=name in exp))
+    # Highest priority first; among ties the cheaper objective (expensive=False)
+    # banks before an expensive rollback-prone scan; then registration index. On
+    # the default board the survivors are all cheap, so this middle key is a
+    # constant False and the order is byte-identical to before.
+    rankings.sort(key=lambda r: (-r.priority, r.expensive, order.get(r.objective, 0)))
     return rankings
 
 
