@@ -22,10 +22,12 @@ proposed ONLY when ALL of these hold (otherwise an honest no-op):
     not inherit from (nor be inherited by) a non-frozen one;
   - the class's NAME is NOT used as a base anywhere in the project — subclassing
     a now-frozen dataclass with a non-frozen one is a ``TypeError`` at
-    class-definition time. Both a simple ``Name`` base and a dotted
-    ``Attribute`` base (``pkg.C``, matched by its final ``.attr``) count, so a
-    dotted subclass is caught too — a conservative over-approximation that may
-    refuse an unrelated same-named class (soundness over recall);
+    class-definition time. A simple ``Name`` base, a dotted ``Attribute`` base
+    (``pkg.C``, matched by its final ``.attr``), AND a subscripted base
+    (``class Sub(C[int])`` / ``pkg.C[int]``, matched by the subscript's head name)
+    all count, so a generic-subscript subclass is caught too — a conservative
+    over-approximation that may refuse an unrelated same-named class (soundness
+    over recall);
   - NONE of the class's field NAMES appears as an attribute STORE TARGET anywhere
     in the project's own source — the conservative whole-project over-approximation
     covering ``<expr>.<field> = ...`` (``ast.Attribute`` in ``Store`` context),
@@ -503,13 +505,21 @@ def project_sources(project_root, module_rel: str, this_source: str) -> list[str
 
 def _base_name(base: ast.expr) -> str | None:
     """The bare name a BASE expression contributes to the used-as-base set: the
-    ``id`` of a simple ``Name`` base, or the FINAL ``.attr`` of a dotted
-    ``Attribute`` base (so ``pkg.C`` contributes ``"C"``). Any other base form
-    (a subscript, a call) contributes nothing."""
+    ``id`` of a simple ``Name`` base, the FINAL ``.attr`` of a dotted ``Attribute``
+    base (so ``pkg.C`` contributes ``"C"``), or — for a SUBSCRIPTED base ``H[...]``
+    (``Foo[int]``, ``pkg.Foo[int]``) — the head name of ``H`` (``"Foo"``). The
+    subscript head matters for soundness: ``class Sub(Foo[int])`` really subclasses
+    ``Foo``, so ``Foo`` must be recorded as used-as-base — otherwise freeze-dataclass
+    would wrongly freeze it (a non-frozen subclass of a frozen dataclass is a
+    ``TypeError`` at definition time) and add-final would wrongly seal it. A call or
+    any other base form contributes nothing. Mirrors
+    :func:`app.execution.final_marker._subscript_head_name`."""
     if isinstance(base, ast.Name):
         return base.id
     if isinstance(base, ast.Attribute):
         return base.attr
+    if isinstance(base, ast.Subscript):
+        return _base_name(base.value)
     return None
 
 
@@ -519,10 +529,11 @@ def _used_as_base_names(sources: list[str]) -> set[str]:
     A class subclassed anywhere cannot be frozen (a non-frozen subclass of a
     frozen dataclass is a ``TypeError`` at definition time). A simple ``Name``
     base is resolved by its ``id``; a dotted ``Attribute`` base (``pkg.C``) is
-    over-approximated by its FINAL ``.attr`` (``"C"``). This may refuse an
-    unrelated, same-named class — a SAFE over-refusal (soundness over recall) —
-    but never misses the real subclass-of-a-dotted-import case, whose freeze
-    would otherwise raise ``TypeError`` at the subclass's import."""
+    over-approximated by its FINAL ``.attr`` (``"C"``); a subscripted base
+    (``C[int]`` / ``pkg.C[int]``) is resolved by its head name (``"C"``). This may
+    refuse an unrelated, same-named class — a SAFE over-refusal (soundness over
+    recall) — but never misses the real subclass case (bare, dotted, or generic),
+    whose freeze would otherwise raise ``TypeError`` at the subclass's import."""
     names: set[str] = set()
     for src in sources:
         try:

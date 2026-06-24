@@ -733,3 +733,67 @@ def test_fix6_refuses_multiline_and_commented_decorators():
     )
     out = freeze_dataclass_decorator(single)
     assert out is not None and "@dataclass(frozen=True)" in out
+
+
+def test_fix7_refuses_class_subclassed_via_subscripted_base():
+    # FIX A (soundness, shared used-as-base helper): a SUBSCRIPTED base
+    # ``class Sub(Base[int])`` really subclasses ``Base`` — the base expr is an
+    # ``ast.Subscript`` whose head ``Base`` must be recorded as used-as-base.
+    # Freezing ``Base`` would make ``class Sub(Base[int])`` a
+    # ``TypeError: cannot inherit non-frozen dataclass from a frozen one`` at the
+    # subclass's definition time, so the whole-project scan must see the subscript
+    # head and REFUSE. (Previously ``_base_name`` returned None for a Subscript, so
+    # the head was never recorded and the freeze wrongly landed.)
+    base_src = (
+        "from dataclasses import dataclass\n"
+        "from typing import Generic, TypeVar\n"
+        "T = TypeVar('T')\n"
+        "@dataclass\n"
+        "class Base:\n"
+        "    x: int = 0\n"
+    )
+    sub_src = (
+        "from m import Base\n"
+        "from typing import Generic\n"
+        "\n"
+        "\n"
+        "class Sub(Base[int]):\n"
+        "    pass\n"
+    )
+    # ``Base`` is freezable in isolation (its own module never subclasses it) ...
+    assert freezable_classes(base_src) == ["Base"]
+    # ... but the whole-project scan sees ``class Sub(Base[int])`` (a Subscript base
+    # whose head is ``Base``) and refuses — freezing ``Base`` would make defining
+    # ``Sub`` a TypeError.
+    assert freeze_dataclass_decorator(base_src, [base_src, sub_src]) is None
+
+
+def test_fix7_refuses_class_subclassed_via_dotted_subscripted_base():
+    # FIX A: the dotted-AND-subscripted form ``class Sub(pkg.Base[int])`` — the
+    # subscript head is itself a dotted ``Attribute`` (``pkg.Base``), resolved to
+    # its final ``.attr`` ``"Base"``. Must also be recorded as used-as-base.
+    base_src = (
+        "from dataclasses import dataclass\n"
+        "@dataclass\n"
+        "class Base:\n"
+        "    x: int = 0\n"
+    )
+    sub_src = (
+        "import pkg\n"
+        "from typing import Any\n"
+        "class Sub(pkg.Base[Any]):\n"
+        "    pass\n"
+    )
+    assert freezable_classes(base_src) == ["Base"]
+    assert freeze_dataclass_decorator(base_src, [base_src, sub_src]) is None
+
+
+def test_fix7_subscripted_base_recorded_in_used_as_base_names():
+    # FIX A, the helper directly: a subscripted base contributes its head name to
+    # the used-as-base set (the bug was a silent omission here).
+    from app.execution.freeze_dataclass import _used_as_base_names
+
+    names = _used_as_base_names(["class Sub(Base[int]):\n    pass\n"])
+    assert "Base" in names
+    dotted = _used_as_base_names(["class Sub(pkg.Base[int]):\n    pass\n"])
+    assert "Base" in dotted
