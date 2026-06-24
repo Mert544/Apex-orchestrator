@@ -60,7 +60,7 @@ def test_target_score_garbage_is_none():
 def _dev_ns(tmp_path, **over):
     base = dict(target=str(tmp_path), objective="dead-params", goal="",
                 all_objectives=False, grade=False, history=False, from_dream=False,
-                playbook=False, apply=False, max_steps=3, no_verify=True,
+                deep=False, playbook=False, apply=False, max_steps=3, no_verify=True,
                 fast=True, json=True)
     base.update(over)
     return _ns(**base)
@@ -149,6 +149,45 @@ def test_develop_from_dream_markdown(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert out.strip()
+
+
+def test_develop_from_dream_deep(tmp_path, capsys, monkeypatch):
+    # --deep flips compile_from_dream to the ranked sweep. Seed a confluence (a
+    # stored promotion wins the graduation gate, so `modules` is non-empty) and
+    # pin the swept board to TWO objectives — the deep run then lands strictly
+    # MORE campaigns (modules×2) than the default single-objective scope. A fresh
+    # project graduates no confluence, so without this seeding the assertion would
+    # be the vacuous 0>=0 and would pass even if `sweep=deep` were never threaded.
+    _project(tmp_path)
+    (tmp_path / ".apex").mkdir()
+    (tmp_path / ".apex" / "dream-promotions.json").write_text(
+        json.dumps([{"key": "confluence:app/m.py", "kind": "confluence",
+                     "streak": 20}]), encoding="utf-8")
+    import app.engine.dream_landing as dl
+    monkeypatch.setattr(dl, "_dream_sweep_objectives",
+                        lambda root: ["dead-params", "modernize"])
+
+    rc = cmd_develop(_dev_ns(tmp_path, from_dream=True))
+    base = json.loads(capsys.readouterr().out)
+    rc_deep = cmd_develop(_dev_ns(tmp_path, from_dream=True, deep=True))
+    deep = json.loads(capsys.readouterr().out)
+
+    assert rc == 0 and rc_deep == 0
+    assert deep["modules"] == base["modules"] == ["app/m.py"]
+    # Non-vacuous: 1 confluence module × the 2-objective board = 2 deep campaigns,
+    # vs the default 1 — the sweep STRICTLY widened the set (proves it reached the seam).
+    assert len(base["campaigns"]) == 1
+    assert len(deep["campaigns"]) == 2
+
+
+def test_develop_from_dream_deep_markdown(tmp_path, capsys):
+    # The disclosure rides the default (non-deep) markdown path only; with --deep
+    # on, the sweep renderer must NOT print the "add --deep" cost note again.
+    _project(tmp_path)
+    rc = cmd_develop(_dev_ns(tmp_path, from_dream=True, deep=True, json=False))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "`--deep` lands the ranked board" not in out
 
 
 def test_develop_playbook_markdown(tmp_path, capsys):

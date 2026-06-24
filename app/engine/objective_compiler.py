@@ -1059,14 +1059,31 @@ def render_compile_markdown(result: CompileResult) -> str:
 # from ascend/dream, so it carries no cycle.
 
 def render_from_dream_markdown(results: list[CompileResult],
-                               modules: list[str]) -> str:
-    """Render the dream-driven multi-module campaign."""
+                               modules: list[str], sweep: bool = False) -> str:
+    """Render the dream-driven multi-module campaign.
+
+    With ``sweep=False`` there is one result per module, so each module zips to
+    its single CompileResult. With ``sweep=True`` :func:`compile_from_dream`
+    emits ``len(modules)×len(objectives)`` results (module-outer, objective-
+    inner), so a flat ``zip`` would drop every objective past the first and
+    mis-attribute results once there are ≥2 modules — instead each module owns
+    its contiguous slice of the ranked board."""
     if not modules:
         return ("# Develop from dream\n\n_The dream has graduated no confluence "
                 "yet — run `apex dream --curate` over more nights first._\n")
     lines = [f"# Develop from dream — {len(modules)} confluence module(s)", "",
              "_The nightly dream flagged these files as risk confluences; "
              "here is the verified cleanup it composed for each._", ""]
+    if sweep:
+        # compile_from_dream applies the SAME objective list to every module, so
+        # results is a rectangular len(modules)×len(objectives) grid in module-outer
+        # order — n is the per-module board size, exact by construction.
+        n = len(results) // len(modules) if modules else 0
+        for i, module in enumerate(modules):
+            lines.append(f"## `{module}`")
+            for result in results[i * n:(i + 1) * n]:
+                lines.append(render_compile_markdown(result))
+        return "\n".join(lines)
     for module, result in zip(modules, results):
         lines.append(f"## `{module}`")
         lines.append(render_compile_markdown(result))

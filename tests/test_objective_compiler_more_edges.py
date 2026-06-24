@@ -198,6 +198,33 @@ def test_render_from_dream_markdown_lists_each_module():
     assert "`app/hub.py`" in md
 
 
+def test_render_from_dream_markdown_sweep_emits_section_per_objective():
+    # Regression guard for the zip-desync: under sweep one module owns N ranked
+    # results. The old flat zip(modules, results) would drop every objective past
+    # the first; the slice path must render a section (header) for each.
+    objectives = ["dead-params", "sort-imports", "remove-unused-imports"]
+    results = [CompileResult(objective=o, fitness_start=1.0, fitness_end=0.0)
+               for o in objectives]
+    md = render_from_dream_markdown(results, ["app/hub.py"], sweep=True)
+    for o in objectives:
+        assert f"`{o}`" in md
+    # The buggy zip path would have rendered only the first objective's section.
+    assert md.count("# Objective compile") == len(objectives)
+
+
+def test_render_from_dream_markdown_sweep_attributes_results_per_module():
+    # ≥2 modules is exactly where the old zip mis-attributed results. With the
+    # module-outer/objective-inner ordering each module must get its own slice.
+    objectives = ["dead-params", "sort-imports"]
+    modules = ["app/hub.py", "app/spoke.py"]
+    results = [CompileResult(objective=o, fitness_start=1.0, fitness_end=0.0)
+               for _ in modules for o in objectives]
+    md = render_from_dream_markdown(results, modules, sweep=True)
+    for m in modules:
+        assert f"`{m}`" in md
+    assert md.count("# Objective compile") == len(modules) * len(objectives)
+
+
 # --- dataclass serialization + improved property -----------------------------
 
 def test_compile_step_to_dict_roundtrips_fields():

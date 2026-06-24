@@ -260,7 +260,7 @@ def _top_ns(tmp_path, **over):
     base = dict(
         target=str(tmp_path), objective="dead-params", goal="",
         all_objectives=False, grade=False, history=False, from_dream=False,
-        playbook=False, top=True, force=False, apply=False, max_steps=3,
+        deep=False, playbook=False, top=True, force=False, apply=False, max_steps=3,
         no_verify=True, fast=True, json=False, shield=False,
     )
     base.update(over)
@@ -553,7 +553,7 @@ def test_top_prove_step_falls_back_when_no_diff_key():
 def _dev_ns(tmp_path, **over):
     base = dict(target=str(tmp_path), objective="dead-params", goal="",
                 all_objectives=False, grade=False, history=False,
-                from_dream=False, playbook=False, top=False, apply=False,
+                from_dream=False, deep=False, playbook=False, top=False, apply=False,
                 max_steps=3, no_verify=True, fast=False, json=False)
     base.update(over)
     return _ns(**base)
@@ -597,7 +597,7 @@ def test_develop_from_dream_no_apply_with_steps_omits_footer(
     monkeypatch.setattr("app.engine.dream_landing.compile_from_dream",
                         lambda *a, **k: [_R()])
     monkeypatch.setattr("app.engine.objective_compiler.render_from_dream_markdown",
-                        lambda results, modules: "# Dream")
+                        lambda results, modules, sweep=False: "# Dream")
     rc = cmd_develop(_dev_ns(tmp_path, from_dream=True))
     out = capsys.readouterr().out
     assert rc == 0
@@ -1805,7 +1805,7 @@ def test_develop_from_dream_json_indent(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr("app.engine.dream_landing.compile_from_dream",
                         lambda *a, **k: [_R()])
     monkeypatch.setattr("app.engine.objective_compiler.render_from_dream_markdown",
-                        lambda results, modules: "# D")
+                        lambda results, modules, sweep=False: "# D")
     rc = cmd_develop(_dev_ns(tmp_path, from_dream=True, json=True))
     out = capsys.readouterr().out
     assert rc == 0

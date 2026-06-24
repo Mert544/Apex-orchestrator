@@ -762,14 +762,20 @@ def _develop_from_dream(args, target, objective, max_steps, verify, apply) -> in
     )
     from app.engine.objective_compiler import render_from_dream_markdown
 
+    deep = getattr(args, "deep", False)
     modules = dream_confluence_modules(str(target))
     results = compile_from_dream(str(target), objective=objective,
-                                 max_steps=max_steps, verify=verify, apply=apply)
+                                 max_steps=max_steps, verify=verify, apply=apply,
+                                 sweep=deep)
     if args.json:
         print(json.dumps({"modules": modules,
                           "campaigns": [r.to_dict() for r in results]}, indent=2))
     else:
-        print(render_from_dream_markdown(results, modules))
+        print(render_from_dream_markdown(results, modules, sweep=deep))
+        if not deep and modules:
+            print("\n_`--deep` lands the ranked board of fitness-applicable "
+                  "objectives on each confluence (runs more campaigns) — "
+                  "default scopes to the single objective only._")
         if apply and any(r.steps for r in results):
             print(_APPLIED_TREE_NOTE)
     return 0
@@ -1515,6 +1521,11 @@ def register_parsers(subparsers) -> None:
     develop_parser.add_argument("--from-dream", action="store_true", dest="from_dream",
                                 help="Scope the campaign to the modules the nightly "
                                      "dream flagged as confluences (dream → action)")
+    develop_parser.add_argument(
+        "--deep", action="store_true", dest="deep",
+        help="With --from-dream: land the RANKED BOARD of fitness-applicable "
+             "objectives on each flagged confluence (not just dead-params) — "
+             "more work per module")
     develop_parser.add_argument("--playbook", action="store_true",
                                 help="Show the learned composition playbook (best verified "
                                      "recipe per objective) and exit")
