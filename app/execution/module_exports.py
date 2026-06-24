@@ -32,8 +32,11 @@ Emitting ``defined_publics`` alone DROPS ``imported_publics`` from the star set.
 The defined-public set is computed from the AST: every module-level name bound by
 a ``def`` / ``async def`` / ``class``, or a plain ``Assign`` / ``AnnAssign``-WITH-
 a-value target, that does NOT start with ``_``. Sorted (deterministic), inserted
-AFTER a leading shebang and PEP-263 coding line, the module docstring, and the
-``__future__`` / import block (see :func:`_safe_insertion_index`).
+AFTER a leading shebang and PEP-263 coding line, ANY leading comment / license
+header, the module docstring, and the leading ``__future__`` imports — and BEFORE
+the first real statement (see :func:`_safe_insertion_index`, which is AST-based so
+``module.__doc__`` is always preserved even when a comment header precedes the
+docstring).
 
 It REFUSES (returns ``None`` — an honest no-op, lands nothing) whenever the change
 cannot be PROVEN safe or would be noise:
@@ -59,8 +62,9 @@ The result is re-``ast.parse``d before it is returned (via ``rejoin_guarded``), 
 a malformed splice is dropped rather than landed. Deterministic (pure AST walk +
 line splice, no clock/random), stdlib-only, zero-token, idempotent. Reuses
 :mod:`app.execution.dataclass_rewrite` helpers ``_import_insertion_index`` (wrapped
-LOCALLY by :func:`_safe_insertion_index`, never modified) and ``rejoin_guarded``,
-and :func:`app.execution.freeze_dataclass.all_module_sources` for the whole-project
+LOCALLY by :func:`_line_based_insertion_index`, the parse-failure fallback for
+:func:`_safe_insertion_index`, never modified) and ``rejoin_guarded``, and
+:func:`app.execution.freeze_dataclass.all_module_sources` for the whole-project
 star-consumer scan.
 """
 
@@ -415,24 +419,122 @@ def _prologue_length(lines: list[str]) -> int:
     return prologue
 
 
-def _safe_insertion_index(lines: list[str]) -> int:
-    """Where the ``__all__`` block may land — the shared ``_import_insertion_index``
-    spot, but RELATIVE TO and never above a leading shebang / PEP-263 coding line.
+def _line_based_insertion_index(lines: list[str]) -> int:
+    """The pre-AST line-based spot — the shared ``_import_insertion_index`` run
+    RELATIVE TO and never above a leading shebang / PEP-263 coding line.
 
-    LOCAL fix for pilot defect #3 (wrapping, never modifying, the shared
-    ``_import_insertion_index`` another engineer owns): a leading ``#!`` shebang
-    (physical line 1) and a PEP-263 coding line (line 1 or 2) MUST stay at the top
-    of the file. ``_import_insertion_index`` does not know about them — given a
-    shebang on line 1 it returns 0 (the shebang is neither blank nor a docstring
-    quote), so the block would land ABOVE required line-1/2 content. We therefore
-    run ``_import_insertion_index`` on the lines BELOW the prologue and add the
-    prologue length back: the docstring / ``__future__`` / import block is then
-    located correctly relative to the prologue, and the result always sits at or
-    after the prologue. Idempotent and deterministic."""
+    Wraps (never modifies) the shared ``_import_insertion_index`` another engineer
+    owns: a leading ``#!`` shebang (physical line 1) and a PEP-263 coding line
+    (line 1 or 2) MUST stay at the top of the file. ``_import_insertion_index`` does
+    not know about them — given a shebang on line 1 it returns 0 (the shebang is
+    neither blank nor a docstring quote), so the block would land ABOVE required
+    line-1/2 content. We therefore run it on the lines BELOW the prologue and add
+    the prologue length back. Used ONLY as the fallback when the source fails to
+    parse (:func:`_safe_insertion_index` is AST-based on parseable source)."""
     prologue = _prologue_length(lines)
     if prologue == 0:
         return _import_insertion_index(lines)  # byte-identical to the bare helper
     return prologue + _import_insertion_index(lines[prologue:])
+
+
+def _is_docstring_node(node: ast.stmt) -> bool:
+    """True when ``node`` is a module-docstring expression — a bare ``Expr`` whose
+    value is a string ``Constant`` (the same shape ``ast.get_docstring`` reads)."""
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
+
+
+def _is_future_import(node: ast.stmt) -> bool:
+    """True for a ``from __future__ import ...`` statement (a leading ``__future__``
+    import is skipped over so ``__all__`` lands after it, matching v1's spot)."""
+    return isinstance(node, ast.ImportFrom) and node.module == "__future__"
+
+
+def _docstring_end_index(body: list[ast.stmt], prologue: int) -> int:
+    """The 0-based line index just PAST the module docstring, or ``prologue`` when
+    the module has no docstring.
+
+    ``body[0].end_lineno`` is the docstring's last physical line (1-based), which is
+    exactly the 0-based index of the line AFTER it. Robust to any leading comment /
+    license header before the docstring — the comments are not AST statements, so
+    ``body[0]`` is still the docstring node. (Fix for the shipped-v2 defect where a
+    comment header before the docstring made ``_import_insertion_index`` return 0 —
+    placing ``__all__`` above the docstring and nulling ``module.__doc__``.)"""
+    if body and _is_docstring_node(body[0]):
+        return body[0].end_lineno or prologue  # type: ignore[attr-defined]
+    return prologue
+
+
+def _future_end_index(body: list[ast.stmt]) -> int:
+    """The 0-based line index just past the LAST leading ``from __future__`` import
+    (those that lead the body, after any docstring), or 0 when there are none.
+
+    Only ``__future__`` imports are stepped over — regular ``import``/``from`` are
+    NOT, so ``__all__`` keeps landing BEFORE them, byte-identical to v1's canonical
+    spot. The scan stops at the first non-docstring, non-``__future__`` statement."""
+    end = 0
+    for node in body:
+        if _is_docstring_node(node):
+            continue
+        if _is_future_import(node):
+            end = max(end, node.end_lineno or end)  # type: ignore[attr-defined]
+            continue
+        break  # the first real statement ends the leading __future__ run
+    return end
+
+
+def _first_code_line_index(body: list[ast.stmt], prologue: int) -> int:
+    """The 0-based line index of the first statement that is NOT the docstring and
+    NOT a leading ``__future__`` import — the ceiling ``__all__`` must not cross.
+
+    Returns ``prologue`` when there is no such statement (an empty / docstring-only /
+    ``__future__``-only module), so the caller never advances into nothing."""
+    for node in body:
+        if _is_docstring_node(node) or _is_future_import(node):
+            continue
+        return (node.lineno or prologue) - 1  # type: ignore[attr-defined]
+    return prologue
+
+
+def _skip_header_filler(lines: list[str], start: int, ceiling: int) -> int:
+    """Advance ``start`` past blank lines and standalone ``#`` comment lines up to
+    (never reaching) ``ceiling`` — so ``__all__`` lands right before the first real
+    statement, after any trailing header comments / blanks. Pure index walk."""
+    index = start
+    while index < ceiling and (
+        not lines[index].strip() or lines[index].lstrip().startswith("#")
+    ):
+        index += 1
+    return index
+
+
+def _safe_insertion_index(lines: list[str]) -> int:
+    """Where the ``__all__`` block may land — AFTER any shebang / PEP-263 coding
+    line, the module docstring, and the leading ``from __future__`` imports, and
+    BEFORE the first real statement, regardless of a leading comment / license
+    header above the docstring.
+
+    AST-based (the fix for the shipped-v2 residual defect): the pre-AST line walk
+    skipped a shebang + coding line but NOT a general leading comment block, so a
+    ``# license`` header before the docstring made ``_import_insertion_index``
+    return 0 — splicing ``__all__`` as the module's FIRST statement and nulling
+    ``module.__doc__``. We instead parse the source and read the docstring's
+    ``end_lineno`` directly (comments are not statements, so the docstring is still
+    located), take the max of the prologue, the docstring end, and the last leading
+    ``__future__`` import end, then skip trailing header filler up to the first
+    real statement. The result never sits above the prologue and never crosses into
+    code. Falls back to the line-based spot ONLY when the source fails to parse
+    (never rewrite broken Python). Deterministic and idempotent."""
+    prologue = _prologue_length(lines)
+    try:
+        body = ast.parse("\n".join(lines)).body
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return _line_based_insertion_index(lines)  # unparseable — line-based floor
+    anchor = max(prologue, _docstring_end_index(body, prologue), _future_end_index(body))
+    return _skip_header_filler(lines, anchor, _first_code_line_index(body, prologue))
 
 
 def _insert_all_block(lines: list[str], names: list[str]) -> list[str]:
