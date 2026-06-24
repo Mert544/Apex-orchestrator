@@ -298,6 +298,18 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # "boilerplate constructor" facet becomes the campaign that modernizes it.
     "a boilerplate constructor to make a dataclass": "dataclassify",
 
+    # Never-mutated dataclass: the same "unreachable or no-op statements" simplify
+    # sub-aspect also names a ``@dataclass`` whose fields are NEVER mutated anywhere
+    # in the project's own source — its mutability is dead surface. The
+    # freeze-dataclass objective LANDS exactly that modernization: it adds
+    # ``frozen=True`` (immutable + hashable, behaviour-preserving), proving across
+    # the WHOLE project that no field is ever assigned/augmented/deleted/``setattr``-ed
+    # before touching the decorator, and is suite-gated + auto-rollback for the
+    # dynamic residual. So the "dataclass to freeze" facet becomes the campaign that
+    # makes it immutable. Its phrasing is not a substring of the dataclassify key
+    # above (nor it of this), so their relative order is free.
+    "a never-mutated dataclass to freeze": "freeze-dataclass",
+
     # Missing lazy-annotation import: the document lens's "signatures and types"
     # aspect names a module that USES type annotations (a return type, an
     # annotated param, an ``x: T`` assignment) but lacks ``from __future__ import

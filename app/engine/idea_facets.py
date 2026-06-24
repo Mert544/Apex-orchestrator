@@ -327,7 +327,14 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                                         # dataclassify objective collapses it to a
                                         # @dataclass (behaviour-equivalent). Appended,
                                         # so the originals still lead and emit first.
-                                        "a boilerplate constructor to make a dataclass"],
+                                        "a boilerplate constructor to make a dataclass",
+                                        # added: a @dataclass whose fields are NEVER
+                                        # mutated anywhere — the freeze-dataclass
+                                        # objective adds frozen=True (immutable +
+                                        # hashable, behaviour-preserving), proving no
+                                        # whole-project mutation first. Appended, so
+                                        # the originals still lead and emit first.
+                                        "a never-mutated dataclass to freeze"],
     # document ladder
     "signatures and types": ["parameter meanings", "return type and None", "raised exceptions list",
                              # added: the package's public re-export surface — the
