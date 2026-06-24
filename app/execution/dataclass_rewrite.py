@@ -22,13 +22,26 @@ x`` constructor is provably reproduced by ``@dataclass``:
   - no base classes (a non-dataclass base breaks the generated ``__init__``);
   - no class-level decorator already present (a decorator may conflict, and an
     existing ``@dataclass`` is left alone — idempotent);
-  - a mutable literal default (``[]`` / ``{}`` / ``set()``) becomes
+  - an EMPTY mutable literal default (``[]`` / ``{}`` / ``set()``) becomes
     ``field(default_factory=...)`` so per-instance state stays correct (the
-    classic dataclass footgun handled for the user).
+    classic dataclass footgun handled for the user); a NON-EMPTY mutable default
+    (``[1, 2]``, ``{1: 2}``, ``list([1])`` …) is REFUSED — emitting it verbatim
+    is invalid (a dataclass raises ``ValueError`` for a mutable default at
+    import) and a ``default_factory`` rewrite would drop its contents and change
+    shared-default into fresh-per-instance, so neither preserves behaviour.
+
+Equality/hashing are preserved exactly. ``@dataclass`` defaults to ``eq=True``,
+which would give a previously-identity class value-``==`` AND make it unhashable
+(``__hash__`` set to ``None``) — a behaviour change a green suite can miss. So a
+class that defines NO ``__eq__`` is emitted as ``@dataclass(eq=False)`` (identity
+``==`` and hashability preserved); a class that defines its own ``__eq__`` keeps
+the default ``@dataclass`` because a dataclass never overwrites a user-defined
+``__eq__``/``__hash__`` (the converter deletes only the boilerplate ``__init__``).
 
 Behaviour-equivalent: positional construction, keyword construction, defaults,
-and attribute access all survive because ``@dataclass`` regenerates the same
-``__init__`` the boilerplate spelled out by hand. Deterministic (AST-only,
+attribute access, ``==``, and ``hash()`` all survive because ``@dataclass``
+regenerates the same ``__init__`` the boilerplate spelled out by hand (and the
+``eq=`` argument keeps equality identical). Deterministic (AST-only,
 stable source order, no clock/random), stdlib-only, zero-token, idempotent (an
 already-``@dataclass`` class — or any class that is not pure boilerplate — is a
 byte-identical no-op). The result is re-``ast.parse``d before it is returned.
@@ -151,6 +164,31 @@ def _class_body_names(stmt: ast.stmt) -> list[str]:
     return names
 
 
+def _class_defines_eq(cls: ast.ClassDef) -> bool:
+    """True when ``cls`` defines ``__eq__`` ITSELF — as a method (sync/async) or
+    a class-body binding (``__eq__ = ...``).
+
+    Drives the decorator's ``eq=`` argument so ``==`` is preserved exactly:
+
+      - a class with NO ``__eq__`` has IDENTITY equality and is hashable
+        (Python's default), so it must become ``@dataclass(eq=False)`` — the
+        generated ``eq=True`` would flip ``==`` from identity to value-equality
+        AND set ``__hash__ = None`` (unhashable), an observable change;
+      - a class that DOES define ``__eq__`` keeps the default ``@dataclass``
+        (``eq=True``): a dataclass never overwrites a user-defined ``__eq__`` (or
+        ``__hash__``), so its ``==``/``hash()`` survive verbatim — the converter
+        deletes only the boilerplate ``__init__``, never ``__eq__``/``__hash__``.
+    """
+    for stmt in cls.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+            stmt.name == "__eq__"
+        ):
+            return True
+        if "__eq__" in _class_body_names(stmt):
+            return True
+    return False
+
+
 def _class_body_is_field_safe(
     cls: ast.ClassDef, init: ast.FunctionDef, param_names: set[str]
 ) -> bool:
@@ -173,21 +211,74 @@ def _class_body_is_field_safe(
     return True
 
 
+# Sentinel: the default is NOT a mutable container, so it is reproduced verbatim
+# (kept distinct from ``None``, which means "mutable but unsafe — refuse").
+_NOT_MUTABLE = object()
+
+
+def _is_empty_container_literal(default: ast.expr) -> bool | None:
+    """Whether ``default`` is an EMPTY container literal/constructor, or ``None``
+    if it is not a container at all. ``True`` -> safe ``default_factory``;
+    ``False`` -> a NON-EMPTY mutable default (refuse); ``None`` -> not a
+    container (caller reproduces it verbatim).
+
+    Empty: ``[]`` / ``{}`` / ``set()`` / ``list()`` / ``dict()``. Non-empty:
+    ``[1]`` / ``{1: 2}`` / ``{1, 2}`` (a set literal is always non-empty — there
+    is no empty-set literal) / ``list([1])`` / ``dict(a=1)``."""
+    if isinstance(default, ast.List):
+        return not default.elts
+    if isinstance(default, ast.Dict):
+        return not default.keys
+    if isinstance(default, ast.Set):
+        return False  # no empty-set literal exists; a non-empty one is mutable
+    if isinstance(default, ast.Call) and isinstance(default.func, ast.Name):
+        if default.func.id in _EMPTY_FACTORY:
+            return not default.args and not default.keywords
+    return None
+
+
+def _mutable_default_field(default: ast.expr) -> str | None | object:
+    """For a mutable-container default: the ``field(default_factory=...)`` text
+    when EMPTY, ``None`` when NON-EMPTY (refuse — see :func:`_default_field_text`),
+    or :data:`_NOT_MUTABLE` when ``default`` is not a container at all."""
+    empty = _is_empty_container_literal(default)
+    if empty is None:
+        return _NOT_MUTABLE
+    if not empty:
+        return None  # non-empty mutable default — neither verbatim nor factory
+    factory = _factory_name(default)
+    return f"field(default_factory={factory})"
+
+
+def _factory_name(default: ast.expr) -> str:
+    """The ``default_factory`` name for an EMPTY container default (``list`` /
+    ``dict`` / ``set``)."""
+    if isinstance(default, ast.List):
+        return "list"
+    if isinstance(default, ast.Dict):
+        return "dict"
+    if isinstance(default, ast.Set):
+        return "set"
+    func = default.func  # type: ignore[attr-defined]
+    return _EMPTY_FACTORY[func.id]
+
+
 def _default_field_text(default: ast.expr) -> str | None:
     """The source text for a parameter default, or ``None`` if it cannot be
-    safely reproduced. A mutable literal (``[]``/``{}``/``set()``) becomes
-    ``field(default_factory=...)``; any other default is emitted via
-    ``ast.unparse`` verbatim."""
-    if isinstance(default, ast.List) and not default.elts:
-        return "field(default_factory=list)"
-    if isinstance(default, ast.Dict) and not default.keys:
-        return "field(default_factory=dict)"
-    if isinstance(default, ast.Set):
-        return "field(default_factory=set)"  # no empty-set literal exists
-    if isinstance(default, ast.Call) and isinstance(default.func, ast.Name):
-        factory = _EMPTY_FACTORY.get(default.func.id)
-        if factory is not None and not default.args and not default.keywords:
-            return f"field(default_factory={factory})"
+    safely reproduced.
+
+    An EMPTY mutable literal (``[]``/``{}``/``set()``/``list()``/``dict()``)
+    becomes ``field(default_factory=...)`` so per-instance state stays correct.
+    A NON-EMPTY mutable literal (``[1, 2]``, ``{1: 2}``, ``{1, 2}``,
+    ``list([1])`` …) is REFUSED (``None``): emitting it verbatim is invalid (a
+    dataclass raises ``ValueError`` for a mutable default AT IMPORT), and
+    converting it to ``default_factory`` would drop its contents AND change
+    shared-mutable-default behaviour into fresh-per-instance — neither is
+    behaviour-preserving, so the whole class is refused. Any other (immutable)
+    default is emitted via ``ast.unparse`` verbatim."""
+    mutable = _mutable_default_field(default)
+    if mutable is not _NOT_MUTABLE:
+        return mutable  # type: ignore[return-value]
     try:
         return ast.unparse(default)
     except (ValueError, AttributeError):
@@ -291,7 +382,11 @@ def _rewrite_one_class(cls: ast.ClassDef, lines: list[str]) -> tuple[
     doc_lines, body_start = _leading_docstring_lines(cls, lines, body_first)
     above = _body_lines_excluding(lines, cls, init, body_start, init_start, init_end)
 
-    new_lines = [f"{decorator_indent}@dataclass"]
+    # ``eq=False`` preserves identity-``==`` + hashability when the class has no
+    # ``__eq__``; a class that defines its own ``__eq__`` keeps the default
+    # ``@dataclass`` (a dataclass never overwrites a user ``__eq__``/``__hash__``).
+    decorator = "@dataclass" if _class_defines_eq(cls) else "@dataclass(eq=False)"
+    new_lines = [f"{decorator_indent}{decorator}"]
     new_lines.extend(pre)
     new_lines.extend(doc_lines)  # docstring stays at body position 0
     new_lines.extend(field_lines)

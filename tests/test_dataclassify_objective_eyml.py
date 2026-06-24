@@ -247,11 +247,14 @@ def test_no_docstring_output_is_byte_identical_to_unconverted_shape():
         "        self.x = x\n"
         "        self.y = y\n"
     )
+    # These classes define no ``__eq__`` -> ``@dataclass(eq=False)`` to preserve
+    # identity-``==`` and hashability (the equality-soundness fix; see the
+    # ``test_eq_*`` battery below).
     assert rewrite_dataclasses(fields_only) == (
         "from typing import Any\n"
         "from dataclasses import dataclass\n"
         "\n"
-        "@dataclass\n"
+        "@dataclass(eq=False)\n"
         "class P:\n"
         "    x: Any\n"
         "    y: Any = 0\n"
@@ -270,7 +273,7 @@ def test_no_docstring_output_is_byte_identical_to_unconverted_shape():
         "from typing import Any\n"
         "from dataclasses import dataclass\n"
         "\n"
-        "@dataclass\n"
+        "@dataclass(eq=False)\n"
         "class Box:\n"
         "    w: Any\n"
         "    h: Any\n"
@@ -323,6 +326,273 @@ def test_mutable_dict_and_set_defaults_become_factories():
     out = rewrite_dataclasses(src)
     assert "d: Any = field(default_factory=dict)" in out
     assert "s: Any = field(default_factory=set)" in out
+
+
+# --- equality / hashing soundness: ``==`` and ``hash()`` preserved EXACTLY ----
+# BUG 1: @dataclass defaults to eq=True, which gives a previously-identity class
+# VALUE-equality AND makes it unhashable (__hash__ = None). That flips
+# ``Token(1) == Token(1)`` False->True and breaks ``hash(Token(1))`` — a
+# behaviour change a green suite can miss. The converter must preserve == / hash
+# for EVERY converted class (emit eq=False when the class has no __eq__).
+
+def _eq_hash(cls, sample=1) -> tuple[bool, bool]:
+    """``(two distinct instances compare equal, an instance is hashable)`` for a
+    class — the two observable facts the conversion must not change."""
+    equal = cls(sample) == cls(sample)
+    try:
+        hash(cls(sample))
+        hashable = True
+    except TypeError:
+        hashable = False
+    return equal, hashable
+
+
+def _eq_hash_before_after(src: str, name: str) -> tuple[tuple, tuple, str]:
+    """Build ``name`` from ``src`` and from its dataclassified form; return
+    ``((eq,hash) before, (eq,hash) after, converted_source)``. Asserts the class
+    really converted (so the parity claim is about the LANDED form)."""
+    ns_before: dict = {}
+    exec(src, ns_before)
+    before = _eq_hash(ns_before[name])
+
+    out = rewrite_dataclasses(src)
+    assert out is not None and "@dataclass" in out  # it really converted
+    ns_after: dict = {}
+    exec(out, ns_after)
+    after = _eq_hash(ns_after[name])
+    return before, after, out
+
+
+def test_no_eq_class_keeps_identity_equality_and_hashability():
+    # The confirmed repro: a boilerplate class with NO __eq__ has identity
+    # equality and is hashable; after conversion both must be UNCHANGED.
+    src = (
+        "class Token:\n"
+        "    def __init__(self, v):\n"
+        "        self.v = v\n"
+    )
+    before, after, out = _eq_hash_before_after(src, "Token")
+    assert before == (False, True)   # distinct instances NOT equal; hashable
+    assert after == before           # identical after conversion
+    assert "@dataclass(eq=False)" in out
+
+
+def test_no_eq_class_two_instances_are_distinct_after_convert():
+    # End-to-end on the LANDED source: two Token(1) are not equal and a Token is
+    # usable as a set/dict key (would TypeError if eq=True had been emitted).
+    src = (
+        "class Token:\n"
+        "    def __init__(self, v):\n"
+        "        self.v = v\n"
+    )
+    out = rewrite_dataclasses(src)
+    ns: dict = {}
+    exec(out, ns)
+    Token = ns["Token"]
+    assert Token(1) != Token(1)            # identity, not value, equality
+    assert len({Token(1), Token(1)}) == 2  # distinct -> two set members
+    assert Token(1) in {Token(1): "x"} or True  # hashable as a dict key
+
+
+def test_user_defined_eq_and_hash_are_preserved_verbatim():
+    # A class that defines its OWN value-__eq__ + __hash__: dataclass never
+    # overwrites them, so the default @dataclass (eq=True) is correct and == /
+    # hash are unchanged. The converter keeps __eq__/__hash__ (deletes only
+    # __init__).
+    src = (
+        "class T:\n"
+        "    def __init__(self, v):\n"
+        "        self.v = v\n"
+        "    def __eq__(self, other):\n"
+        "        return isinstance(other, T) and self.v == other.v\n"
+        "    def __hash__(self):\n"
+        "        return hash(self.v)\n"
+    )
+    before, after, out = _eq_hash_before_after(src, "T")
+    assert before == (True, True)            # value equality + hashable
+    assert after == before                   # preserved exactly
+    assert "@dataclass(eq=False)" not in out  # default @dataclass kept
+    assert "def __eq__" in out and "def __hash__" in out  # methods survive
+
+
+def test_user_hash_only_keeps_identity_eq_and_custom_hash():
+    # __hash__ defined, NO __eq__ -> identity equality + custom hash. Emitting
+    # default eq=True would flip == to value-equality; eq=False preserves it.
+    src = (
+        "class H:\n"
+        "    def __init__(self, v):\n"
+        "        self.v = v\n"
+        "    def __hash__(self):\n"
+        "        return hash(self.v)\n"
+    )
+    before, after, out = _eq_hash_before_after(src, "H")
+    assert before == (False, True)  # identity ==, hashable via custom __hash__
+    assert after == before
+    assert "@dataclass(eq=False)" in out
+
+
+def test_user_eq_only_class_stays_unhashable_as_before():
+    # __eq__ defined, NO __hash__ -> Python already set __hash__ = None
+    # (unhashable) and value equality. The default @dataclass preserves both.
+    src = (
+        "class E:\n"
+        "    def __init__(self, v):\n"
+        "        self.v = v\n"
+        "    def __eq__(self, other):\n"
+        "        return isinstance(other, E) and self.v == other.v\n"
+    )
+    before, after, out = _eq_hash_before_after(src, "E")
+    assert before == (True, False)  # value equality, already UNHASHABLE
+    assert after == before
+    assert "@dataclass(eq=False)" not in out  # default @dataclass kept
+
+
+def test_eq_assigned_in_class_body_keeps_default_dataclass():
+    # __eq__ bound by assignment (not a def) still counts as user-defined -> the
+    # default @dataclass is kept (no eq=False), so the binding is honoured.
+    src = (
+        "class A:\n"
+        "    def __init__(self, v):\n"
+        "        self.v = v\n"
+        "    __eq__ = object.__eq__\n"
+    )
+    out = rewrite_dataclasses(src)
+    assert out is not None and "@dataclass(eq=False)" not in out
+    assert "__eq__ = object.__eq__" in out
+
+
+def test_end_to_end_gated_apply_preserves_equality(tmp_path: Path):
+    # The behaviour-equivalence contract proven through the gated engine: a test
+    # asserting identity equality + hashability passes before AND after the
+    # conversion, so dataclassify lands the @dataclass(eq=False) form.
+    from app.engine.objective_compiler import compile_objective
+
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "models.py").write_text(
+        "class Token:\n"
+        "    def __init__(self, v):\n"
+        "        self.v = v\n",
+        encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_token.py").write_text(
+        "from app.models import Token\n"
+        "def test_identity_and_hash():\n"
+        "    assert Token(1) != Token(1)         # identity equality\n"
+        "    assert len({Token(1), Token(1)}) == 2  # hashable + distinct\n",
+        encoding="utf-8")
+
+    result = compile_objective(str(tmp_path), objective="dataclassify",
+                               apply=True, verify=True)
+    assert result.steps and result.steps[0].verified is True
+    text = (tmp_path / "app" / "models.py").read_text()
+    assert "@dataclass(eq=False)" in text
+    assert "def __init__" not in text
+
+
+# --- BUG 2: a NON-EMPTY mutable default is REFUSED (never land invalid code) ---
+# `_default_field_text` converts EMPTY []/{}/set() to field(default_factory=...);
+# a NON-EMPTY mutable literal emitted verbatim crashes at import (ValueError:
+# mutable default ... is not allowed), and a default_factory rewrite would drop
+# its contents + change shared->fresh. Neither is behaviour-preserving -> refuse.
+
+def test_refuses_non_empty_list_default():
+    src = (
+        "class C:\n"
+        "    def __init__(self, items=[1, 2]):\n"
+        "        self.items = items\n"
+    )
+    assert rewrite_dataclasses(src) is None
+
+
+def test_refuses_non_empty_dict_default():
+    src = (
+        "class C:\n"
+        "    def __init__(self, d={1: 2}):\n"
+        "        self.d = d\n"
+    )
+    assert rewrite_dataclasses(src) is None
+
+
+def test_refuses_non_empty_set_default():
+    src = (
+        "class C:\n"
+        "    def __init__(self, s={1, 2}):\n"
+        "        self.s = s\n"
+    )
+    assert rewrite_dataclasses(src) is None
+
+
+def test_refuses_list_call_with_args_default():
+    src = (
+        "class C:\n"
+        "    def __init__(self, x=list([1])):\n"
+        "        self.x = x\n"
+    )
+    assert rewrite_dataclasses(src) is None
+
+
+def test_refuses_dict_call_with_kwargs_default():
+    src = (
+        "class C:\n"
+        "    def __init__(self, d=dict(a=1)):\n"
+        "        self.d = d\n"
+    )
+    assert rewrite_dataclasses(src) is None
+
+
+def test_non_empty_default_class_does_not_block_a_clean_sibling():
+    # A clean sibling class in the same module still converts; the class with the
+    # non-empty mutable default is simply skipped (not landed, not crashing).
+    src = (
+        "class Bad:\n"
+        "    def __init__(self, items=[1, 2]):\n"
+        "        self.items = items\n"
+        "\n"
+        "\n"
+        "class Good:\n"
+        "    def __init__(self, x):\n"
+        "        self.x = x\n"
+    )
+    out = rewrite_dataclasses(src)
+    assert out is not None
+    ns: dict = {}
+    exec(out, ns)
+    assert ns["Good"](5).x == 5
+    # Bad was refused -> still a plain class with its boilerplate __init__.
+    assert "items=[1, 2]" in out
+
+
+def test_non_empty_default_plan_is_empty_no_op(tmp_path: Path):
+    # The plan layer surfaces the refusal as an EMPTY plan (honest no-op), never
+    # a write that would crash at import.
+    rel = "app/cfg.py"
+    (tmp_path / "app").mkdir()
+    (tmp_path / rel).write_text(
+        "class C:\n"
+        "    def __init__(self, items=[1, 2]):\n"
+        "        self.items = items\n",
+        encoding="utf-8",
+    )
+    plan = plan_dataclassify(str(tmp_path), rel)
+    assert not plan.new_contents and not plan.blockers
+
+
+def test_empty_mutable_default_still_converts():
+    # The EMPTY-default -> default_factory behaviour is unchanged (regression
+    # guard for BUG 2's fix: only NON-EMPTY literals are newly refused).
+    src = (
+        "class C:\n"
+        "    def __init__(self, items=[]):\n"
+        "        self.items = items\n"
+    )
+    out = rewrite_dataclasses(src)
+    assert out is not None
+    assert "field(default_factory=list)" in out
+    ns: dict = {}
+    exec(out, ns)
+    a, b = ns["C"](), ns["C"]()
+    a.items.append(1)
+    assert b.items == []  # fresh per instance, no shared-default bug
 
 
 # --- refusals: only PURE boilerplate qualifies (honest, never a guess) -------
