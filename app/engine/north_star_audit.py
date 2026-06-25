@@ -70,6 +70,8 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
     "CONCRETE": frozenset({
         "implement-stub",
         "tdd-implement",
+        "implement-from-doctest",
+        "js-tdd-implement",
         "strengthen-tests",
         "wire-exports",
         "infer-type-hints",

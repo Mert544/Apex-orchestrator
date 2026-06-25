@@ -64,6 +64,8 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                                               # test already calls but that does
                                               # not exist yet (tdd-implement).
                                               "the function the red test calls",
+                                              "the failing jest test whose function to write",
+                                              "the worked example to satisfy",
                                               "the consumers to update"],
     "the new return shape": ["the additive field or variant",
                              "the empty and error result",

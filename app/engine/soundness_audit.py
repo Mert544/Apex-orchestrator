@@ -125,6 +125,8 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "cover-gaps": "additive+env-reproducible-oracle-gate",
     "implement-stub": "additive-fill+impact-scoped-suite-gate",
     "tdd-implement": "additive-fill+impact-scoped-suite-gate",
+    "implement-from-doctest": "additive-fill+doctest-oracle+impact-scoped-suite-gate",
+    "js-tdd-implement": "js-failing-test-RED→GREEN-or-refuse+byte-rollback",
     "enforce-enum-unique": "runtime-noop(@unique)+static-value-collision-refusal",
     # --- TIDY: behavior-preserving idiom rewrites ---------------------------
     "modernize": "behavior-preserving-idiom",
@@ -182,6 +184,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
 # ``scope_verify=True`` objective NOT listed here is a FAIL.
 SCOPE_VERIFY_ALLOWLIST: frozenset[str] = frozenset({
     "implement-stub", "tdd-implement", "strengthen-tests", "wire-exports",
+    "implement-from-doctest", "js-tdd-implement",
 })
 
 
