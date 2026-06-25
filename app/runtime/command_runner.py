@@ -44,6 +44,7 @@ class CommandRunner:
         "ruff",
         "mypy",
         "uv",
+        "node",
         "npm",
         "pnpm",
         "yarn",
