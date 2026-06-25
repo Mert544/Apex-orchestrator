@@ -28,11 +28,15 @@ from app.runtime.command_runner import CommandResult, CommandRunner, CommandSpec
 __all__ = [
     "JsStub",
     "JsWitness",
+    "JsDocTarget",
     "DRIVER",
     "global_node_modules",
     "scan_stubs",
     "mine_witnesses",
     "fill_body",
+    "doc_targets",
+    "exported_names",
+    "reparse_exports_identical",
 ]
 
 # The bundled driver checked into this package — never a string Apex generates.
@@ -59,6 +63,22 @@ class JsWitness:
 
     args: tuple[str, ...]
     expected: str
+
+
+@dataclass(frozen=True)
+class JsDocTarget:
+    """One EXPORTED, JSDoc-less function/const-arrow the driver found, with the
+    proven AST facts a minimal JSDoc is built from: its declared parameter
+    ``names`` (in order), the ``return_type`` text read VERBATIM off a TS return
+    annotation (``None`` for plain JS / no annotation — the honesty gate refuses
+    those, a name+param-only JSDoc restating the signature adds nothing), and the
+    byte ``insert_offset`` of the statement start (BEFORE any ``export`` keyword,
+    so the JSDoc splices in as leading trivia)."""
+
+    name: str
+    params: tuple[str, ...]
+    return_type: str | None
+    insert_offset: int
 
 
 @lru_cache(maxsize=1)
@@ -134,3 +154,55 @@ def fill_body(root: Path, rel: str, name: str, body: str) -> bool:
     :class:`RenamePlan` and applied by the gated/rollback writer, never here."""
     res = _run_driver(["fill", str(root / rel), name, body], root)
     return bool(res is not None and res.ok)
+
+
+def doc_targets(root: Path, rel: str) -> list[JsDocTarget]:
+    """The EXPORTED, JSDoc-less function/const-arrow targets in ``root/rel`` (empty
+    on refuse). Conservative: a file that does not parse, has no such target, or
+    that the driver declines yields ``[]`` — nothing to document, never a guess.
+
+    Deterministic source order, exactly as the driver's ``doc-targets`` emits."""
+    data = _driver_json(["doc-targets", str(root / rel)], root)
+    if not isinstance(data, list):
+        return []
+    return [JsDocTarget(name=d["name"], params=tuple(d["params"]),
+                        return_type=d["returnType"], insert_offset=d["insertOffset"])
+            for d in data]
+
+
+def exported_names(root: Path, rel: str) -> frozenset[str] | None:
+    """The set of EXPORTED function/const-arrow names ``root/rel`` declares, or
+    ``None`` when the driver could not parse it (its conservative-refuse path).
+
+    This is the behaviour-identical oracle's witness — see
+    :func:`reparse_exports_identical`."""
+    data = _driver_json(["doc-verify", str(root / rel)], root)
+    if not isinstance(data, dict) or not isinstance(data.get("names"), list):
+        return None
+    return frozenset(data["names"])
+
+
+def reparse_exports_identical(root: Path, rel: str, new_source: str) -> bool:
+    """The behaviour-identical oracle for a JSDoc splice: ``True`` iff ``new_source``
+    (the JSDoc-spliced bytes of ``root/rel``) RE-PARSES cleanly AND carries the
+    EXACT same exported-name set as the on-disk original.
+
+    A JSDoc is leading trivia — it changes ZERO runtime bytes — so the exported
+    surface is unchanged BY CONSTRUCTION; this check proves the splice did not
+    corrupt the file (a broken splice would fail to re-parse, the driver would
+    exit 2, and ``exported_names`` would return ``None``). The probe writes
+    ``new_source`` to a THROWAWAY file (the real tree is never touched here) and
+    asks the driver for its exported names. Conservative: any driver failure (a
+    parse diagnostic, missing node) yields ``None`` and we refuse (return
+    ``False``) rather than land an unverified change."""
+    import tempfile
+
+    before = exported_names(root, rel)
+    if before is None:
+        return False
+    suffix = Path(rel).suffix or ".js"
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = Path(tmp) / ("probe" + suffix)
+        probe.write_text(new_source, encoding="utf-8")
+        after = exported_names(Path(tmp), probe.name)
+    return after is not None and after == before

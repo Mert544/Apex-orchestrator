@@ -426,3 +426,255 @@ def test_end_to_end_auto_rollback_when_scaffold_breaks_suite(tmp_path: Path):
     surviving = landed.read_text(encoding="utf-8") if landed.exists() else ""
     assert "class GreeterImpl" not in surviving
     assert surviving == ""
+
+
+# --- proof-depth: derived-from impact-scope on a multi-module RED baseline ----
+#
+# The unblock: a CREATED file (``<stem>_impl.py``) has no importing test yet, so
+# ``impacted_test_files(list(plan.new_contents))`` is empty and the impact-scope
+# gate would degrade to the FULL suite — on a multi-module RED baseline an
+# UNRELATED still-red module then vetoes the oracle-proven scaffold. The plan now
+# carries the protocol module in ``derived_from``, so the scope is seeded from the
+# protocol's own importing tests, and the unrelated red module can no longer veto.
+
+def _red_baseline_two_module_project(tmp_path: Path) -> Path:
+    """A flat-layout 2-module project with a legitimately RED baseline.
+
+    Module A = ``app/greeter.py`` (the protocol), exercised by a GREEN
+    ``tests/test_greeter.py`` that imports the protocol AND constructs the
+    about-to-land ``GreeterImpl``. Module B = ``app/broken.py`` whose
+    ``tests/test_broken.py`` FAILS (an unimplemented function) — the unrelated
+    still-red module. So the FULL suite is RED, but the protocol's own tests pass
+    once the scaffold lands."""
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "greeter.py").write_text(_PROTO, encoding="utf-8")
+    # GREEN test for the protocol module — imports app.greeter (so derived_from
+    # seeds the scope to it) and constructs the about-to-land GreeterImpl (a green
+    # suite proves the scaffold genuinely constructs, mirroring the oracle).
+    (tmp_path / "tests" / "test_greeter.py").write_text(
+        "from app.greeter import Greeter\n"
+        "from app.greeter_impl import GreeterImpl\n\n"
+        "def test_impl_constructs():\n"
+        "    assert Greeter is not None\n"
+        "    assert GreeterImpl() is not None\n", encoding="utf-8")
+    # UNRELATED module B with a RED test — never imports the protocol.
+    (tmp_path / "app" / "broken.py").write_text(
+        "def unfinished():\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_broken.py").write_text(
+        "from app.broken import unfinished\n\n"
+        "def test_unfinished():\n    assert unfinished() == 42\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_plan_carries_protocol_module_as_derived_from(tmp_path: Path):
+    # The provenance: the created impl is derived FROM the protocol source module,
+    # so the plan records exactly that one existing file in ``derived_from``.
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "greeter.py").write_text(_PROTO, encoding="utf-8")
+    plan = plan_scaffold_from_protocol(str(tmp_path), "app/greeter.py")
+    assert plan.ok
+    assert plan.derived_from == ["app/greeter.py"]
+
+
+def test_derived_from_unblocks_landing_on_red_baseline(tmp_path: Path):
+    # THE UNBLOCK PROOF: with impact_scope=True the gate seeds scope from the
+    # protocol's importing tests (via derived_from), so the unrelated still-red
+    # module B does NOT veto the oracle-proven scaffold — it LANDS, scoped against
+    # exactly the protocol's own (green) test.
+    _red_baseline_two_module_project(tmp_path)
+    plan = plan_scaffold_from_protocol(str(tmp_path), "app/greeter.py")
+    assert plan.ok and plan.derived_from == ["app/greeter.py"]
+    result = apply_rename(str(tmp_path), plan, verify=True, impact_scope=True)
+    assert result.get("applied") is True
+    assert result.get("rolled_back") in (False, None)
+    ev = result["test_evidence"]
+    assert ev["scoped"] is True
+    # The scope is the protocol's own test, NOT the unrelated red module's test.
+    assert "tests/test_greeter.py" in ev["tests"]
+    assert "tests/test_broken.py" not in ev["tests"]
+    # The implementer genuinely LANDED on disk.
+    landed = tmp_path / "app" / "greeter_impl.py"
+    assert landed.exists()
+    assert "class GreeterImpl(Greeter):" in landed.read_text(encoding="utf-8")
+
+
+def test_derived_from_scope_still_catches_a_genuine_regression(tmp_path: Path):
+    # never-fake-green REGRESSION-CATCH: if the protocol's own test would FAIL
+    # against the scaffolded impl (here the test asserts behavior a bare ...-body
+    # cannot satisfy), the derived-from-scoped gate catches it, rolls back, and the
+    # created impl file is unlinked — the scope is a real backstop, not a rubber
+    # stamp. The unrelated red module is irrelevant to this verdict.
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "greeter.py").write_text(_PROTO, encoding="utf-8")
+    # A protocol test that DEMANDS behavior the generated ``...``-body cannot give:
+    # GreeterImpl().greet(...) returns None (the ... body), so == 'hi alice' fails.
+    (tmp_path / "tests" / "test_greeter.py").write_text(
+        "from app.greeter_impl import GreeterImpl\n\n"
+        "def test_greet_behaves():\n"
+        "    assert GreeterImpl().greet('alice') == 'hi alice'\n", encoding="utf-8")
+    plan = plan_scaffold_from_protocol(str(tmp_path), "app/greeter.py")
+    assert plan.ok  # the oracle only proves CONSTRUCTION, not behavior
+    result = apply_rename(str(tmp_path), plan, verify=True, impact_scope=True)
+    assert result.get("applied") is False
+    assert result.get("rolled_back") is True
+    # The created impl was rolled back (unlinked) — no scaffold survives.
+    landed = tmp_path / "app" / "greeter_impl.py"
+    surviving = landed.read_text(encoding="utf-8") if landed.exists() else ""
+    assert "class GreeterImpl" not in surviving
+    assert surviving == ""
+
+
+def test_byte_identical_scope_seed_for_a_plan_without_derived_from(
+        tmp_path: Path, monkeypatch):
+    # OFF-BY-DEFAULT BYTE-IDENTITY: for any plan with the default derived_from=[],
+    # _verify_scoped must seed the scope from EXACTLY list(plan.new_contents) —
+    # no extra entries — so every other objective is unchanged. We record the
+    # changed_files argument impacted_test_files is called with (patched at its
+    # import source, since _verify_scoped imports it lazily by name).
+    import subprocess
+
+    import app.engine.test_impact as ti
+    import app.execution.cross_file_rename as cfr
+
+    seen: dict[str, list[str]] = {}
+
+    def _spy(root, changed_files):
+        seen["changed_files"] = list(changed_files)
+        # Return non-empty so _verify_scoped proceeds to (a stubbed) subprocess.
+        return ["tests/test_x.py"]
+
+    monkeypatch.setattr(ti, "impacted_test_files", _spy)
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc())
+
+    plan = cfr.RenamePlan(old="x", new="y")
+    plan.new_contents = {"app/mod.py": "x = 1\n"}
+    # default derived_from == []
+    assert plan.derived_from == []
+    cfr._verify_scoped(tmp_path, plan)
+    assert seen["changed_files"] == ["app/mod.py"]  # NO extra derived-from entry
+
+
+def test_derived_from_widens_scope_seed_for_scaffold(tmp_path: Path, monkeypatch):
+    # The dual of the byte-identity test: when derived_from IS set, the scope seed
+    # is exactly list(new_contents) + derived_from (so the protocol module is
+    # included). Pins the one-line concatenation in _verify_scoped.
+    import subprocess
+
+    import app.engine.test_impact as ti
+    import app.execution.cross_file_rename as cfr
+
+    seen: dict[str, list[str]] = {}
+
+    def _spy(root, changed_files):
+        seen["changed_files"] = list(changed_files)
+        return ["tests/test_greeter.py"]
+
+    monkeypatch.setattr(ti, "impacted_test_files", _spy)
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc())
+
+    plan = cfr.RenamePlan(old="app/greeter.py", new="scaffold-from-protocol")
+    plan.new_contents = {"app/greeter_impl.py": "x = 1\n"}
+    plan.derived_from = ["app/greeter.py"]
+    cfr._verify_scoped(tmp_path, plan)
+    assert seen["changed_files"] == ["app/greeter_impl.py", "app/greeter.py"]
+
+
+def test_idempotent_noop_plan_has_no_derived_from(tmp_path: Path):
+    # IDEMPOTENCE PRESERVED: a second run after the impl exists is a byte-identical
+    # no-op (empty new_contents, plan.ok False) AND derived_from is irrelevant —
+    # the new field is set only on the assignment path that also fills new_contents,
+    # so the no-op path leaves it at the default []. Confirms the field does not
+    # perturb the idempotent path.
+    _suite_project(tmp_path)
+    (tmp_path / "app" / "greeter.py").write_text(_PROTO, encoding="utf-8")
+    first = plan_scaffold_from_protocol(str(tmp_path), "app/greeter.py")
+    impl_rel = "app/greeter_impl.py"
+    (tmp_path / impl_rel).write_text(first.new_contents[impl_rel], encoding="utf-8")
+    again = plan_scaffold_from_protocol(str(tmp_path), "app/greeter.py")
+    assert not again.new_contents
+    assert again.ok is False
+    assert again.derived_from == []
+
+
+# --- proof-depth: the soundness denetçi blesses the widened allowlist ---------
+
+def test_scaffold_opts_into_scope_verify():
+    from app.engine.develop_registry import registered_specs
+
+    spec = registered_specs()["scaffold-from-protocol"]
+    assert spec.scope_verify is True
+
+
+def test_scope_verify_allowlist_passes_with_scaffold():
+    # The denetçi A3 check: scaffold-from-protocol now sets scope_verify=True AND is
+    # in the audited allowlist, so check_scope_verify_allowlist is clean.
+    from app.engine.soundness_audit import check_scope_verify_allowlist
+
+    ok, reasons = check_scope_verify_allowlist()
+    assert ok and reasons == []
+
+
+def test_scope_verify_allowlist_would_fail_if_scaffold_delisted():
+    # NEGATIVE CONTROL: an off-list objective that sets scope_verify=True is a FAIL.
+    # Inject a spec mapping where scaffold-from-protocol still sets the flag but is
+    # NOT in the allowlist (simulated by checking against a planted spec that is not
+    # in SCOPE_VERIFY_ALLOWLIST), proving the allowlist edit is load-bearing.
+    from app.engine.develop_registry import ObjectiveSpec
+    from app.engine.soundness_audit import check_scope_verify_allowlist
+
+    planted = {
+        "scaffold-from-protocol": ObjectiveSpec(
+            name="scaffold-from-protocol",
+            fitness=lambda r: 0.0, moves=lambda r: [], scope_verify=True),
+        "not-on-the-allowlist": ObjectiveSpec(
+            name="not-on-the-allowlist",
+            fitness=lambda r: 0.0, moves=lambda r: [], scope_verify=True),
+    }
+    ok, reasons = check_scope_verify_allowlist(planted)
+    assert ok is False
+    assert any("not-on-the-allowlist" in r for r in reasons)
+    # scaffold-from-protocol, being ON the allowlist, is NOT flagged.
+    assert not any("scaffold-from-protocol" in r for r in reasons)
+
+
+def test_strategy_completeness_reflects_impact_scoped_gate():
+    from app.engine.objective_compiler import available_objectives
+    from app.engine.soundness_audit import (
+        SOUNDNESS_STRATEGY,
+        strategy_completeness,
+    )
+
+    # The forward tripwire does not raise (every live objective has a strategy).
+    table = strategy_completeness(available_objectives())
+    assert "scaffold-from-protocol" in table
+    # The manifest stays TRUTHFUL: the strategy now names BOTH the instantiation
+    # oracle (the independent correctness proof) and the impact-scoped derived-from
+    # gate (the regression backstop).
+    strat = SOUNDNESS_STRATEGY["scaffold-from-protocol"]
+    assert "instantiation-oracle" in strat
+    assert "impact-scoped-derived-from-gate" in strat
+
+
+def test_scaffold_plan_new_contents_unchanged_by_derived_from(tmp_path: Path):
+    # DETERMINISM / new_contents untouched: the determinism harness hashes ONLY
+    # plan.new_contents. Adding derived_from must not perturb it — two runs produce
+    # byte-identical new_contents, and derived_from is a separate, fixed echo.
+    _project(tmp_path, "app/greeter.py", _PROTO)
+    one = plan_scaffold_from_protocol(str(tmp_path), "app/greeter.py")
+    two = plan_scaffold_from_protocol(str(tmp_path), "app/greeter.py")
+    assert one.new_contents == two.new_contents
+    assert one.derived_from == two.derived_from == ["app/greeter.py"]
+    # derived_from is NOT folded into new_contents (the hashed surface).
+    assert "app/greeter.py" not in one.new_contents

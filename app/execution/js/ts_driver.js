@@ -24,6 +24,17 @@
 //                             write <file> in place, print the touched span.
 //                             Exit 2 (REFUSE) when <name> is not defined exactly
 //                             once as a fillable stub.
+//   doc-targets <file>     -> JSON: every EXPORTED function/const-arrow in <file>
+//                             with NO leading JSDoc, as [{name, params,
+//                             returnType|null, insertOffset}] — the facts the
+//                             document-export-jsdoc objective splices a minimal
+//                             JSDoc from (pure AST). Exit 2 (REFUSE) on parse error.
+//   doc-verify <file>      -> JSON: {names:[...]} the sorted EXPORTED-name set of
+//                             <file>. The behaviour-identical oracle for a JSDoc
+//                             splice: a leading comment changes ZERO runtime bytes,
+//                             so the spliced file must re-parse (exit 2 if not) AND
+//                             carry the same exported names — Python compares the
+//                             pre/post sets and refuses on any drift.
 //
 // Determinism: no clock, no randomness; functions are reported in source order;
 // JSON keys are emitted in a fixed order. A byte-span splice (getStart/getEnd),
@@ -149,6 +160,96 @@ function mineWitnesses(sf, name) {
   return witnesses;
 }
 
+// True when `node` carries an ES `export` modifier — the only export form
+// document-export-jsdoc documents in v0 (a trailing `module.exports`/`export {`
+// is out of scope, kept provable). Uses `ts.getModifiers` when present (newer
+// TS) and falls back to `node.modifiers` so the same walk works across compiler
+// versions.
+function isExported(node) {
+  const mods = ts.getModifiers ? ts.getModifiers(node) : node.modifiers;
+  if (!mods) return false;
+  return mods.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+}
+
+// True when `node` already carries a leading `/** ... */` JSDoc block — read
+// straight off the source's leading comment trivia. A node that is already
+// documented is SKIPPED (idempotence: a second run finds it documented and
+// emits nothing), exactly as document-signature refuses an already-docstringed
+// function.
+function hasLeadingJSDoc(node, sf) {
+  const full = sf.getFullText();
+  const ranges = ts.getLeadingCommentRanges(full, node.getFullStart());
+  if (!ranges) return false;
+  return ranges.some((r) => full.slice(r.pos, r.end).startsWith("/**"));
+}
+
+// One documentable target: an EXPORTED, JSDoc-less function/const-arrow with its
+// declared param names, its DECLARED return-type text (verbatim, or null), and
+// the byte offset of its statement start (BEFORE the `export` keyword, so the
+// JSDoc lands as leading trivia). `params` reuses `paramNames`, so a node with a
+// non-identifier param (destructuring/rest/default) yields null and is SKIPPED —
+// we never invent a `@param` name we cannot read off the AST.
+function docTargetFor(name, fnNode, stmtNode, sf) {
+  if (!isExported(stmtNode) || hasLeadingJSDoc(stmtNode, sf)) return null;
+  const params = paramNames(fnNode);
+  if (params === null) return null;
+  return {
+    name: name,
+    params: params,
+    returnType: fnNode.type ? fnNode.type.getText(sf).trim() : null,
+    insertOffset: stmtNode.getStart(sf),
+  };
+}
+
+// Collect the documentable targets of a source file, in source order: an
+// exported `function foo(...) {...}` declaration, or an exported
+// `const foo = (...) => ...` / `const foo = function (...) {...}` initializer.
+// The insertion offset is the STATEMENT start so the spliced JSDoc precedes the
+// `export` keyword. Deterministic (source order), pure AST.
+function collectDocTargets(sf) {
+  const out = [];
+  for (const stmt of sf.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name) {
+      const t = docTargetFor(stmt.name.text, stmt, stmt, sf);
+      if (t !== null) out.push(t);
+    } else if (ts.isVariableStatement(stmt)) {
+      for (const decl of stmt.declarationList.declarations) {
+        const init = decl.initializer;
+        if (!init || !ts.isIdentifier(decl.name)) continue;
+        if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) {
+          const t = docTargetFor(decl.name.text, init, stmt, sf);
+          if (t !== null) out.push(t);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// The SET of exported function/const-arrow names a source file declares, sorted.
+// This is the behaviour-identical oracle's witness: a JSDoc is leading trivia and
+// changes ZERO runtime bytes, so splicing one must leave this set unchanged. The
+// re-parse path (`doc-verify`) emits it after a clean parse; Python compares the
+// pre/post sets and refuses on any drift (it can never differ for a comment
+// insert, so a difference means a corrupt splice — refuse rather than land).
+function exportedNames(sf) {
+  const names = [];
+  for (const stmt of sf.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name && isExported(stmt)) {
+      names.push(stmt.name.text);
+    } else if (ts.isVariableStatement(stmt) && isExported(stmt)) {
+      for (const decl of stmt.declarationList.declarations) {
+        const init = decl.initializer;
+        if (init && ts.isIdentifier(decl.name)
+            && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
+          names.push(decl.name.text);
+        }
+      }
+    }
+  }
+  return names.sort();
+}
+
 function fail(message) {
   process.stderr.write(String(message) + "\n");
   process.exit(REFUSE);
@@ -198,13 +299,28 @@ function cmdFill(file, name, body) {
   }));
 }
 
+function cmdDocTargets(file) {
+  const { sf } = readSource(file);
+  process.stdout.write(JSON.stringify(collectDocTargets(sf)));
+}
+
+function cmdDocVerify(file) {
+  const { sf } = readSource(file);
+  // readSource already refused (exit 2) on any parse diagnostic, so reaching here
+  // proves the file parses; emit its exported-name set for the Python oracle.
+  process.stdout.write(JSON.stringify({ names: exportedNames(sf) }));
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const sub = argv[0];
   if (sub === "scan" && argv.length === 2) return cmdScan(argv[1]);
   if (sub === "mine" && argv.length === 3) return cmdMine(argv[1], argv[2]);
   if (sub === "fill" && argv.length === 4) return cmdFill(argv[1], argv[2], argv[3]);
-  fail("usage: ts_driver.js scan <file> | mine <file> <name> | fill <file> <name> <body>");
+  if (sub === "doc-targets" && argv.length === 2) return cmdDocTargets(argv[1]);
+  if (sub === "doc-verify" && argv.length === 2) return cmdDocVerify(argv[1]);
+  fail("usage: ts_driver.js scan <file> | mine <file> <name> | fill <file> <name> <body> "
+       + "| doc-targets <file> | doc-verify <file>");
 }
 
 main();

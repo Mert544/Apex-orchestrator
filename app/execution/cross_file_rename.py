@@ -61,6 +61,18 @@ class RenamePlan:
     # whole-file behavior, byte-identical to before. Sorted/deterministic.
     scoped_test_nodes: list[str] = field(default_factory=list)
     scoped_excluded_nodes: list[str] = field(default_factory=list)
+    # The EXISTING source files this plan's CREATED files are DERIVED FROM — used
+    # ONLY to seed the impact scope when a created file has no importing test yet.
+    # A brand-new file (e.g. scaffold-from-protocol's ``<stem>_impl.py``) is not
+    # imported by any test, so ``impacted_test_files(new_contents)`` is empty and
+    # the impact-scope gate degrades to the FULL suite — re-introducing the very
+    # cross-module deadlock ``scope_verify`` exists to kill. The correct proof
+    # scope for a created file is the impacted tests of the file(s) it derives from
+    # (for scaffold-from-protocol, the PROTOCOL module: any test that exercises it
+    # exercises the concrete implementer too). Default ``[]`` => the scope seed
+    # ``list(new_contents) + []`` is identical to today for every other plan, so
+    # ``_verify_scoped`` is byte-for-byte unchanged. Sorted/deterministic.
+    derived_from: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -448,7 +460,7 @@ def _verify_scoped(root: Path, plan: RenamePlan) -> tuple[bool, dict] | None:
 
     from app.engine.test_impact import impacted_test_files
 
-    impacted = impacted_test_files(root, list(plan.new_contents))
+    impacted = impacted_test_files(root, list(plan.new_contents) + plan.derived_from)
     if not impacted:
         return None
     # Default scope: the whole impacted test files, byte-identical to before. When

@@ -381,7 +381,15 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # added: a leaf module with no `__all__` — wire-module-exports
                              # declares `__all__` == the current default star set
                              # (behaviour-identical). Appended, originals still lead.
-                             "the module public surface to declare"],
+                             "the module public surface to declare",
+                             # added: an EXPORTED JS/TS function/const-arrow with no
+                             # leading JSDoc — the document-export-jsdoc objective
+                             # lands a minimal JSDoc (`@param` names + a TS
+                             # `@returns {T}` read verbatim), the JS/TS sibling of
+                             # document-signature, refusing a name+param-only
+                             # restatement. Appended, so the originals still lead
+                             # and emit in their order.
+                             "the exported signature to document in jsdoc"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
     "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown",
                         # added: the package's USAGE.md generated from its public

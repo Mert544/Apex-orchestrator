@@ -9,10 +9,13 @@ keeps honest — for free, deterministically, no LLM.
 
 The contribution is a NEW file ``tests/test_<stem>_doctest.py`` (additive — it
 never edits the module or the existing suite), one test function per qualifying
-function, each rebuilding the function's ENFORCEABLE examples from the live
-``__doc__`` and asserting the stdlib :mod:`doctest` runner reports zero failures.
-The examples are user-authored and already green, so the claim is near-zero
-over-claim: the test only restates a contract the code already satisfies.
+SYMBOL — a top-level function, a public class (its docstring), or a public method —
+each rebuilding the symbol's ENFORCEABLE examples from the live ``__doc__`` and
+asserting the stdlib :mod:`doctest` runner reports zero failures. The examples are
+user-authored and already green, so the claim is near-zero over-claim: the test
+only restates a contract the code already satisfies. Descent into public class
+methods and class docstrings only generalizes NAME RESOLUTION (function ->
+``Class`` / ``Class.method``); every symbol clears the SAME gates below.
 
 Three gates keep it never-fake-green (mirrored on
 :mod:`app.execution.objectives.generate_usage_doc`):
@@ -41,21 +44,52 @@ generated test file and produces a byte-identical no-op).
 from __future__ import annotations
 
 import ast
+import doctest
 import json
 import os
 import subprocess
 import sys
 import tempfile
+from collections import Counter
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from app.execution.cross_file_rename import RenamePlan, _is_fixture_path
 from app.execution.objectives._base import register_module_objective
 from app.execution.stub_synthesis import (
+    _compiled_module_namespace,
     _module_dotted_paths,
     enforceable_examples_for_function,
     examples_pass,
     pinned_test_files,
 )
+
+
+@dataclass(frozen=True)
+class _Symbol:
+    """One doctest-bearing SYMBOL pin-doctest can land a gating test for: a
+    top-level function, a public class (its docstring), or a public method.
+
+    The fields carry everything the per-symbol gates and the test renderer need,
+    so descending from functions into class docstrings and methods changes only
+    name RESOLUTION (function -> ``Class`` / ``Class.method``), never the gates:
+
+      * ``bare_name``/``lineno`` address the def/class node for the
+        :func:`~app.execution.stub_synthesis.enforceable_examples_for_function`
+        and :func:`examples_pass` extractors (which key on name AND 1-based
+        lineno, so a same-named sibling is never confused for it);
+      * ``dotted`` is the access path UNDER THE MODULE (``"f"`` | ``"Counter"`` |
+        ``"Counter.value"``) the env-stability probe resolves by successive
+        ``getattr``;
+      * ``test_name``/``access_expr`` are the generated test's function name and
+        the expression that fetches the live object whose ``__doc__`` is run.
+    """
+
+    bare_name: str
+    lineno: int
+    dotted: str
+    test_name: str
+    access_expr: str
 
 # pytest doctest opt-ins to scan config files for. Any of these means the project
 # already EXECUTES module docstrings suite-wide, so a per-function gating test
@@ -128,17 +162,25 @@ def _function_has_unordered_want(source: str, name: str, lineno: int) -> bool:
 # project root on ``sys.path``, examples rebuilt from the live ``__doc__`` (``+SKIP``
 # dropped) and run in the module's namespace. A green verdict under a DIFFERENT cwd
 # / ``$HOME`` / ``$TZ`` / ``$TMPDIR`` / ``PYTHONHASHSEED`` proves the example is not
-# environment-dependent. argv: project root, dotted module, function name.
+# environment-dependent. argv: project root, dotted module, symbol name — the last
+# may be a single component (a function) or a DOTTED access path (``Class`` /
+# ``Class.method``), resolved by successive ``getattr`` while the doctest globals
+# stay ``module.__dict__`` (so a method example reading ``Counter().m()`` resolves
+# the class). A single-component name resolves identically to the original
+# ``getattr(module, fn_name)``, so the function path is byte-identical.
 _ENV_DOCTEST_PROBE = r"""
 import doctest, importlib, json, sys
 root, dotted, fn_name = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, root)
 try:
     module = importlib.import_module(dotted)
-    func = getattr(module, fn_name, None)
-    if func is None:
-        print(json.dumps({"ok": False}))
-        sys.exit(0)
+    obj = module
+    for _part in fn_name.split("."):
+        obj = getattr(obj, _part, None)
+        if obj is None:
+            print(json.dumps({"ok": False}))
+            sys.exit(0)
+    func = obj
     examples = [
         ex for ex in doctest.DocTestParser().get_examples(func.__doc__ or "")
         if not ex.options.get(doctest.SKIP)
@@ -258,15 +300,218 @@ def _function_qualifies(root: Path, module_rel: str, source: str,
     return True
 
 
-def _render_doctest_test(dotted: str, stem: str,
-                         functions: list[tuple[str, int]]) -> str:
+# === descent into PUBLIC classes: class docstrings + public methods ============
+# The function path above pins ONLY top-level ``tree.body`` functions, so a worked
+# example living in a class docstring or a method docstring is run by nothing. The
+# helpers below collect those SYMBOLS and clear the SAME prove-or-refuse gates,
+# generalizing name resolution from a module global to ``Class`` / ``Class.method``.
+
+
+def _class_docstring_examples(source: str, classname: str) -> list[doctest.Example]:
+    """The ENFORCEABLE ``>>>`` examples in the docstring of the top-level class
+    ``classname`` in ``source`` (``# doctest: +SKIP`` dropped — those pin no
+    contract). Extracted LOCALLY via :func:`ast.get_docstring` because the shared
+    :func:`~app.execution.stub_synthesis.enforceable_examples_for_function` matches
+    only ``FunctionDef``/``AsyncFunctionDef`` (it skips ``ClassDef``), so it returns
+    ``[]`` for a class. Same ``+SKIP``-aware rule as everywhere else. Fully guarded:
+    a malformed source or a missing/docstring-less class yields ``[]``."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == classname:
+            text = ast.get_docstring(node) or ""
+            return [ex for ex in doctest.DocTestParser().get_examples(text)
+                    if not ex.options.get(doctest.SKIP)]
+    return []
+
+
+def _examples_green_in_namespace(source: str, name: str,
+                                 examples: list[doctest.Example]) -> bool:
+    """True iff ``examples`` all PASS when run against the WHOLE compiled module
+    namespace of ``source`` — the in-process gate-1 verdict for a method or class
+    docstring. Mirrors :func:`~app.execution.stub_synthesis._doctests_pass` EXACTLY
+    except the example is resolved against the full module namespace (where the
+    class lives, so a method example ``Counter().value()`` references it) instead of
+    requiring ``name`` to itself be a module global. Conservative, never a
+    fake-green: no example, an un-compilable source, or any runner error yields
+    ``False``. Determinism note: the sole seed-sensitive shape (a ``set``/``dict``
+    repr) is independently REFUSED by the unordered-want gate, so running this
+    in-process under the parent seed is safe."""
+    if not examples:
+        return False
+    ns = _compiled_module_namespace(source)
+    if ns is None:
+        return False
+    test = doctest.DocTest(examples, ns, name, None, 0, None)
+    runner = doctest.DocTestRunner(verbose=False)
+    try:
+        result = runner.run(test, out=lambda _s: None, clear_globs=False)
+    except Exception:
+        return False
+    return result.failed == 0 and result.attempted > 0
+
+
+def _symbol_examples_pass(source: str, bare_name: str, lineno: int) -> bool:
+    """The method GATE-1 verdict: ``bare_name``'s enforceable examples all pass when
+    resolved against the module namespace. (The shared :func:`examples_pass` cannot
+    be reused for a method — it looks ``bare_name`` up as a module global, which a
+    method name is not.) Tiny wrapper over :func:`_examples_green_in_namespace`."""
+    return _examples_green_in_namespace(
+        source, bare_name,
+        enforceable_examples_for_function(source, bare_name, lineno))
+
+
+def _class_doc_examples_pass(source: str, classname: str) -> bool:
+    """The class-docstring GATE-1 verdict: the class's docstring examples all pass
+    when resolved against the module namespace (the class name IS a global there).
+    Tiny wrapper over :func:`_examples_green_in_namespace`."""
+    return _examples_green_in_namespace(
+        source, classname, _class_docstring_examples(source, classname))
+
+
+def _class_doc_has_unordered_want(source: str, classname: str) -> bool:
+    """True when ANY class-docstring example of ``classname`` has a ``set``/``dict``-
+    repr expected output — the hash-seed-fragile shape pin-doctest refuses. The
+    method/function path reuses :func:`_function_has_unordered_want`; a class
+    docstring is not function-addressable, so it scans its own examples here."""
+    return any(_want_is_unordered_repr(ex.want)
+               for ex in _class_docstring_examples(source, classname))
+
+
+def _iter_candidate_symbols(tree: ast.Module) -> list[_Symbol]:
+    """Every doctest-bearing SYMBOL inside a top-level PUBLIC class, in deterministic
+    order: for each public ``ClassDef`` (name not starting ``_``) in source order,
+    the class-docstring symbol FIRST (when its docstring carries an enforceable
+    example) then each public method (name not starting ``_``, plus ``__init__``) in
+    source (lineno) order whose docstring carries an enforceable example. No
+    pre-walk of foreign nodes, no clock/random — purely ``tree.body`` order. The
+    per-symbol gates downstream decide; this only enumerates the candidates."""
+    out: list[_Symbol] = []
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or node.name.startswith("_"):
+            continue
+        out.extend(_class_symbols(node))
+    return out
+
+
+def _class_symbols(node: ast.ClassDef) -> list[_Symbol]:
+    """The candidate :class:`_Symbol` records for ONE public class ``node``: its
+    docstring symbol (when example-bearing) first, then its example-bearing public
+    methods in source order. Kept tiny so the iterator stays well under the
+    complexity ceiling."""
+    out: list[_Symbol] = []
+    cls = node.name
+    doc = ast.get_docstring(node) or ""
+    if any(not ex.options.get(doctest.SKIP)
+           for ex in doctest.DocTestParser().get_examples(doc)):
+        out.append(_Symbol(cls, node.lineno, cls, f"test_{cls}",
+                           f"_module.{cls}"))
+    for child in node.body:
+        if _is_pinnable_method(child):
+            out.append(_method_symbol(cls, child))
+    return out
+
+
+def _is_pinnable_method(child: ast.stmt) -> bool:
+    """True when ``child`` is a method pin-doctest may descend into: a
+    ``def``/``async def`` that is public (name not starting ``_``) OR is exactly
+    ``__init__``, and whose docstring carries at least one enforceable example."""
+    if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    if child.name.startswith("_") and child.name != "__init__":
+        return False
+    doc = ast.get_docstring(child) or ""
+    return any(not ex.options.get(doctest.SKIP)
+               for ex in doctest.DocTestParser().get_examples(doc))
+
+
+def _method_symbol(cls: str, child: ast.FunctionDef | ast.AsyncFunctionDef) -> _Symbol:
+    """The :class:`_Symbol` for one public method ``child`` of class ``cls``. The
+    generated test fetches the live function via ``getattr(_module.Cls, "m")`` so
+    its ``__doc__`` examples run in the module namespace (where the class lives)."""
+    m = child.name
+    return _Symbol(m, child.lineno, f"{cls}.{m}", f"test_{cls}_{m}",
+                   f"getattr(_module.{cls}, {m!r})")
+
+
+def _symbol_qualifies(root: Path, module_rel: str, source: str,
+                      dotted: str | None, sym: _Symbol) -> bool:
+    """Does the class/method ``sym`` pass EVERY pin-doctest gate? Parallel to
+    :func:`_function_qualifies` but with name resolution generalized to a class /
+    method. A class symbol's ``bare_name == dotted`` (the leaf class name); a method
+    symbol's ``dotted`` is ``Class.method``, so ``sym.bare_name != sym.dotted``
+    selects the gate-1 verdict and key set without branching on a type tag.
+
+    All gates must hold: gate-1 green TODAY (the docstring examples pass in the
+    module namespace — class via :func:`_class_doc_examples_pass`, method via
+    :func:`_symbol_examples_pass`); NOT already pinned (DUAL KEY — refuse if a
+    ``test_*.py`` importing the module references the leaf name OR, for a method,
+    the class name); NO ``set``/``dict``-repr expected output (hash-seed-fragile);
+    and — when ``dotted`` is given — the examples stay GREEN under a VARIED
+    environment (the probe resolves ``sym.dotted``). Conservative, deterministic."""
+    is_class = sym.bare_name == sym.dotted
+    if is_class:
+        gate1 = _class_doc_examples_pass(source, sym.bare_name)
+        unordered = _class_doc_has_unordered_want(source, sym.bare_name)
+    else:
+        gate1 = _symbol_examples_pass(source, sym.bare_name, sym.lineno)
+        unordered = _function_has_unordered_want(source, sym.bare_name, sym.lineno)
+    if not gate1:
+        return False  # RED today (in the module namespace) — never pin a failure
+    if _symbol_already_pinned(root, module_rel, sym, is_class):
+        return False  # a test already exercises the leaf (or its class) — no dup
+    if unordered:
+        return False  # set/dict-repr expected output — hash-seed-fragile, refuse
+    if dotted is not None and not _examples_env_stable(root, dotted, sym.dotted):
+        return False  # example varies with the environment — future-red, refuse
+    return True
+
+
+def _symbol_already_pinned(root: Path, module_rel: str, sym: _Symbol,
+                           is_class: bool) -> bool:
+    """The DUAL-KEY duplicate refusal: a method is already pinned if a ``test_*.py``
+    importing the module references EITHER its leaf method name OR its class name (a
+    test exercising the class likely covers the method's contract); a class symbol
+    keys on its own name alone. Conservative — never a duplicate gate."""
+    if pinned_test_files(root, module_rel, sym.bare_name):
+        return True
+    if is_class:
+        return False
+    classname = sym.dotted.split(".", 1)[0]
+    return bool(pinned_test_files(root, module_rel, classname))
+
+
+def _doctest_name_expr(has_objects: bool) -> str:
+    """The DocTest ``name`` argument for the generated ``_run_enforceable`` helper.
+
+    For a function-only module the helper keeps the EXACT current text
+    ``func.__name__`` (so the generated file is byte-for-byte what it is today). The
+    moment a class or method symbol is present the name is fetched safely with
+    ``getattr(func, "__name__", "doctest")`` — a class object and a bound function
+    both have ``__name__``, but the getattr-safe form makes the helper robust for
+    any resolved object. This single conditional is the ONLY thing that changes the
+    generated bytes, and only for modules that actually have qualifying
+    methods/classes — off-by-default byte-identity is preserved."""
+    return 'getattr(func, "__name__", "doctest")' if has_objects else "func.__name__"
+
+
+def _render_doctest_test(dotted: str, stem: str, symbols: list[_Symbol],
+                         has_objects: bool = False) -> str:
     """Render the ``tests/test_<stem>_doctest.py`` source: one test per qualifying
-    function, each rebuilding the function's ENFORCEABLE examples from its live
-    ``__doc__`` (``+SKIP`` excluded, the same set Apex verified) and asserting the
-    stdlib :mod:`doctest` runner reports zero failures. The example text is NOT
-    hardcoded — it is re-derived at runtime from the docstring, so the test pins
-    whatever the (already-green) docstring declares. Deterministic: functions in
-    the given (source) order; no clock/random."""
+    SYMBOL (a top-level function, a public class docstring, or a public method),
+    each rebuilding the symbol's ENFORCEABLE examples from the LIVE ``__doc__`` of
+    the resolved object (``+SKIP`` excluded, the same set Apex verified) and
+    asserting the stdlib :mod:`doctest` runner reports zero failures. The example
+    text is NOT hardcoded — it is re-derived at runtime from the docstring, so the
+    test pins whatever the (already-green) docstring declares.
+
+    Byte-identity: for a function-only module (``has_objects`` is ``False``) the
+    helper text and every test use the EXACT current shape (``func.__name__`` /
+    ``def test_<fn>_doctest():`` / ``_run_enforceable(_module.<fn>)``), so the
+    generated file is unchanged. Deterministic: symbols in the given (source)
+    order; no clock/random."""
     lines = [
         '"""Auto-generated by Apex pin-doctest: execute the unenforced ``>>>``',
         f'examples of {dotted} as a suite-enforced contract.',
@@ -292,35 +537,88 @@ def _render_doctest_test(dotted: str, stem: str,
         "        if not ex.options.get(doctest.SKIP)",
         "    ]",
         "    assert examples, \"expected at least one enforceable doctest example\"",
-        "    test = doctest.DocTest(examples, _module.__dict__, func.__name__,",
+        f"    test = doctest.DocTest(examples, _module.__dict__, {_doctest_name_expr(has_objects)},",
         "                           None, 0, None)",
         "    runner = doctest.DocTestRunner(verbose=False)",
         "    return runner.run(test, out=lambda _s: None, clear_globs=False)",
         "",
     ]
-    for name, _lineno in functions:
+    for sym in symbols:
         lines += [
             "",
-            f"def test_{name}_doctest():",
-            f"    result = _run_enforceable(_module.{name})",
+            f"def {sym.test_name}_doctest():",
+            f"    result = _run_enforceable({sym.access_expr})",
             "    assert result.failed == 0",
         ]
     return "\n".join(lines) + "\n"
 
 
+def _function_symbols(functions: list[tuple[str, int]]) -> list[_Symbol]:
+    """Wrap the qualifying top-level ``(name, lineno)`` functions as :class:`_Symbol`
+    records in their FUNCTION form — ``dotted == bare_name`` and the EXACT current
+    accessor ``_module.<name>`` / test name ``test_<name>`` — so a function-only
+    module renders byte-for-byte what it does today. Source order preserved."""
+    return [_Symbol(name, lineno, name, f"test_{name}", f"_module.{name}")
+            for name, lineno in functions]
+
+
+def _dedup_test_names(symbols: list[_Symbol]) -> list[_Symbol]:
+    """Make every symbol's ``test_name`` UNIQUE so the rendered file never emits
+    two identically-named ``def test_..._doctest()`` (the second of which would
+    shadow the first at collection, silently dropping one verified contract).
+
+    The ``test_<Class>_<method>`` flattening uses underscores, so distinct symbols
+    can collapse to one name — e.g. a top-level function ``C_value`` and class ``C``
+    method ``value`` both render ``test_C_value``; likewise class ``A_b``.``c`` vs
+    class ``A``.``b_c``. For ANY ``test_name`` shared by >1 symbol, this appends the
+    symbol's 1-based source ``lineno`` (``test_C_value`` -> ``test_C_value_l5`` /
+    ``test_C_value_l14``): two distinct symbols in one module have distinct linenos,
+    so the suffixed names are unique AND stably tied to the source def. Names that
+    are already unique are returned UNCHANGED — so a function-only module (no
+    method/class symbols to collide with) is byte-for-byte what it is today, and a
+    collision only perturbs the colliding pair. Deterministic: input order
+    preserved; the suffix is an AST lineno, never a clock/random/hash value."""
+    counts = Counter(sym.test_name for sym in symbols)
+    return [sym if counts[sym.test_name] == 1
+            else replace(sym, test_name=f"{sym.test_name}_l{sym.lineno}")
+            for sym in symbols]
+
+
+def _qualifying_class_symbols(root: Path, module_rel: str, source: str,
+                              dotted: str | None) -> list[_Symbol]:
+    """The class-docstring + public-method symbols (source order) that clear EVERY
+    pin-doctest gate via :func:`_symbol_qualifies`. ``[]`` on a syntax error — the
+    function path has already handled the module's top-level functions."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return []
+    return [sym for sym in _iter_candidate_symbols(tree)
+            if _symbol_qualifies(root, module_rel, source, dotted, sym)]
+
+
 def plan_pin_doctest(project_root: str | Path, module_rel: str) -> RenamePlan:
     """Build the pin-doctest plan for one module, or an honest no-op.
 
-    CREATES ``tests/test_<stem>_doctest.py`` with one test per function whose
-    enforceable docstring examples PASS today but nothing enforces. Like
+    CREATES ``tests/test_<stem>_doctest.py`` with one test per SYMBOL whose
+    enforceable docstring examples PASS today but nothing enforces — a top-level
+    function, a public class (its docstring), or a public method. Like
     :func:`~app.execution.objectives.generate_usage_doc.plan_generate_usage_doc`
     this is a NEW-FILE plan (not a source rewrite): the original (existing-or-``""``)
     goes in ``originals`` so the verified-apply engine can roll the create back. An
     EMPTY plan (a no-op refusal) results when the target is a test/fixture file, the
     module is unreadable, the project already enforces doctests project-wide
-    (``--doctest-modules``), no function qualifies, or the generated test source
+    (``--doctest-modules``), no symbol qualifies, or the generated test source
     would not parse. Idempotent: a second run sees the already-pinned test file
-    (its functions are now enforced by it) and yields a byte-identical no-op."""
+    (its symbols are now enforced by it) and yields a byte-identical no-op.
+
+    Determinism / ordering: top-level functions FIRST (in source order, exactly as
+    before — so a function-only module is byte-identical), then class symbols in
+    source order (each class's docstring symbol before its methods, methods in
+    lineno order). Generated test-function names are made UNIQUE
+    (:func:`_dedup_test_names`) so a name the underscore-flattening would otherwise
+    collide (e.g. function ``C_value`` vs class ``C`` method ``value``) cannot
+    silently shadow another symbol's contract; non-colliding names are unchanged."""
     root = Path(project_root)
     plan = RenamePlan(old=module_rel, new="pin-doctest")
     if _is_fixture_path(module_rel):
@@ -337,14 +635,18 @@ def plan_pin_doctest(project_root: str | Path, module_rel: str) -> RenamePlan:
         return plan  # no importable name — cannot generate a runnable test
 
     # The env-reproducibility gate re-runs the examples under the SAME dotted path
-    # the generated test imports, so a function only qualifies when its examples are
+    # the generated test imports, so a symbol only qualifies when its examples are
     # green AND stay green under a varied environment.
     functions = _qualifying_functions(root, module_rel, source, dotted_paths[0])
-    if not functions:
+    class_symbols = _qualifying_class_symbols(
+        root, module_rel, source, dotted_paths[0])
+    symbols = _dedup_test_names(_function_symbols(functions) + class_symbols)
+    if not symbols:
         return plan  # nothing unenforced-but-green to pin — honest under-claim
 
     stem = Path(module_rel).stem
-    generated = _render_doctest_test(dotted_paths[0], stem, functions)
+    generated = _render_doctest_test(dotted_paths[0], stem, symbols,
+                                     has_objects=bool(class_symbols))
     try:
         ast.parse(generated)  # gate 2: never ship un-runnable test code
     except (SyntaxError, ValueError):
@@ -360,7 +662,7 @@ def plan_pin_doctest(project_root: str | Path, module_rel: str) -> RenamePlan:
 
     plan.originals[doc_rel] = original
     plan.new_contents[doc_rel] = generated
-    plan.edits_by_file[doc_rel] = len(functions)
+    plan.edits_by_file[doc_rel] = len(symbols)
     return plan
 
 

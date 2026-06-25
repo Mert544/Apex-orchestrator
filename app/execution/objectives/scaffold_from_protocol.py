@@ -127,6 +127,18 @@ def plan_scaffold_from_protocol(project_root: str | Path,
     plan.originals[impl_rel] = original
     plan.new_contents[impl_rel] = candidate
     plan.edits_by_file[impl_rel] = len(members)
+    # The created impl is DERIVED FROM the protocol source module: it is
+    # ``class <P>Impl(<P>)`` importing ``<P>`` from ``module_rel``. The impl file
+    # itself has no importing test yet (it never existed), so the impact-scope
+    # gate would degrade to the FULL suite — and on a multi-module RED baseline an
+    # unrelated still-red module would veto this oracle-proven scaffold. Carrying
+    # the protocol module as the derived-from source seeds the scope from the
+    # tests that exercise the protocol — precisely the tests that exercise the
+    # concrete implementer once it is wired in — so the scaffold is regression-
+    # gated honestly instead of deadlocked. A fixed echo of ``module_rel`` (a
+    # field SEPARATE from ``new_contents``), so the determinism harness — which
+    # hashes only ``new_contents`` — stays byte-identical.
+    plan.derived_from = [module_rel]
     return plan
 
 
@@ -158,8 +170,15 @@ def moves(project_root: str | Path) -> list:
 # The fitness scan instantiates each candidate scaffold in a subprocess (the
 # oracle), so it is heavyweight — flag it expensive so the fast plan/ascend board
 # skips it (it stays runnable via `apex develop --objective scaffold-from-protocol`).
-# No scope_verify: a CREATED file has no importing tests yet, so the FULL-suite
-# gate is the correct backstop (the oracle already proves instantiation
-# independently of any suite).
+# scope_verify=True: the created ``<stem>_impl.py`` has no importing test yet, but
+# the plan carries the protocol module in ``derived_from`` (set above), so the
+# impact-scope gate seeds the scope from the PROTOCOL module's real importing tests
+# instead of degrading to the full suite. On a multi-module RED baseline an
+# unrelated still-red module therefore can no longer veto this oracle-proven
+# scaffold. The instantiation oracle (protocol_scaffold.scaffold_instantiates)
+# remains the INDEPENDENT correctness proof run BEFORE apply; the impact-scoped
+# suite is a pure-additive regression backstop, and the FULL suite stays the
+# commit-time backstop (``scripts/verify.py``). Listed in the audited
+# SCOPE_VERIFY_ALLOWLIST (app/engine/soundness_audit.py).
 register(ObjectiveSpec(name="scaffold-from-protocol", fitness=fitness,
-                       moves=moves, expensive=True))
+                       moves=moves, expensive=True, scope_verify=True))

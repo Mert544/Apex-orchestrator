@@ -60,6 +60,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "infer_type_hints": 0.72,        # PROVABLE return-type hints (never a guess)
     "pin_doctest": 0.70,             # turn worked >>> examples into a suite-enforced test
     "document_signature": 0.68,      # a docstring with proven Returns: type
+    "document_export_jsdoc": 0.68,   # the JS/TS sibling: a JSDoc with a proven @returns {T} (same tier as document_signature)
     "generate_usage_doc": 0.66,      # a USAGE.md from the public API (oracle-checked)
     # --- TIER 2 — real structural improvement (behaviour-shape, not just bytes) ---
     "dedup_extract": 0.60,           # lift a duplicated block into a shared helper

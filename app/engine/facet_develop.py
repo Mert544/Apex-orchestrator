@@ -288,6 +288,20 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # any other key (nor any of them of it), so its order is free.
     "the public signature to document": "document-signature",
 
+    # Undocumented EXPORTED JS/TS signature: the JS/TS sibling of the above. The
+    # document-export-jsdoc objective LANDS a minimal JSDoc on an exported
+    # function/const-arrow that carries NO leading JSDoc — one ``@param <name>``
+    # per declared parameter plus (TS only) an ``@returns {T}`` read VERBATIM off
+    # the declared return-type annotation; it inherits document-signature's honesty
+    # gate and REFUSES a name+param-only restatement (so it lands only when a
+    # declared return type surfaces a fact the bare signature does not). A JSDoc is
+    # leading trivia (zero runtime bytes), so it is behaviour-identical by
+    # construction, verified by an in-driver re-parse — no jest/tsc run. Its
+    # phrasing is not a substring of any other key (nor any of them of it) — in
+    # particular it is distinct from "the public signature to document" above
+    # ("exported"/"in jsdoc" vs "public") — so its order is free.
+    "the exported signature to document in jsdoc": "document-export-jsdoc",
+
     # Missing usage doc: the document lens's "worked examples" aspect names the
     # package's USAGE.md — the minimal runnable examples a newcomer needs. The
     # generate-usage-doc objective LANDS exactly that — a USAGE.md generated from

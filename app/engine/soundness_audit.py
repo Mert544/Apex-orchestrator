@@ -118,9 +118,10 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "add-from-future-annotations": "behavior-identical-future-import",
     "infer-type-hints": "behavior-identical-annotation-only",
     "document-signature": "behavior-identical-docstring-only",
+    "document-export-jsdoc": "jsdoc-leading-trivia-insert+reparse-identical-or-refuse(no-suite-needed)",
     "generate-usage-doc": "oracle-gated-scaffold(doc-only-no-source-change)",
     "pin-doctest": "additive+oracle-gate(doctest-captured-then-verified)",
-    "scaffold-from-protocol": "oracle-gated-scaffold(suite-gated-new-module)",
+    "scaffold-from-protocol": "oracle-gated-scaffold(instantiation-oracle)+impact-scoped-derived-from-gate",
     "strengthen-tests": "additive+env-reproducible-oracle-gate",
     "cover-gaps": "additive+env-reproducible-oracle-gate",
     "implement-stub": "additive-fill+impact-scoped-suite-gate",
@@ -186,6 +187,14 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
 SCOPE_VERIFY_ALLOWLIST: frozenset[str] = frozenset({
     "implement-stub", "tdd-implement", "strengthen-tests", "wire-exports",
     "implement-from-doctest", "js-tdd-implement",
+    # scaffold-from-protocol lands a brand-new ``<stem>_impl.py`` that no test
+    # imports yet, so its impact-scope gate would degrade to the full suite and an
+    # unrelated still-red module would veto the oracle-proven scaffold on a
+    # multi-module RED baseline. It carries the protocol module in
+    # ``RenamePlan.derived_from``, so the scope is seeded from the PROTOCOL
+    # module's real importing tests; the instantiation oracle stays the
+    # independent correctness proof and the full suite the commit-time backstop.
+    "scaffold-from-protocol",
 })
 
 
