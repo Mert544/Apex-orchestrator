@@ -63,6 +63,7 @@ __all__ = [
     "AmbiguityDiagnosis",
     "ambiguity_reason",
     "render_ambiguity_reason",
+    "stub_decline_reason",
 ]
 
 
@@ -406,6 +407,7 @@ def candidate_bodies(stub: StubFunction,
         out.extend(_one_arg_templates(params[0], witnesses or []))
     elif len(params) >= 2:
         out.extend(_two_arg_templates(params[0], params[1], witnesses or []))
+        out.extend(_multi_arg_arith_templates(params, witnesses or []))
     return out
 
 
@@ -455,6 +457,10 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
     out.extend(_one_arg_builtin_templates(a, kind, witnesses))
     out.extend(_compose_index_arith_templates(a, witnesses, simpler=out))
     out.extend(_sorted_index_templates(a, witnesses, simpler=out))
+    if kind in (None, "int", "float"):
+        out.extend(_clamp_templates(a, witnesses))
+    if kind in (None, "iterable"):
+        out.extend(_elementwise_map_templates(a, witnesses))
     if kind in (None, "int") and _recursion_allowed(witnesses):
         out.extend([
             ("factorial", f"1 if {a} <= 1 else {a} * __apex_self__({a} - 1)"),
@@ -527,6 +533,141 @@ def _scalar_arith_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tu
         out.append((f"n%{k}", f"{a} % {k}"))
     out.append(("n*2", f"{a} * 2"))
     out.append(("n+n", f"{a} + {a}"))
+    return out
+
+
+def _clamp_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The CLAMP / PIECEWISE family (NEW): bounded shapes the old single-``return``
+    engine could not express — a lower clamp ``max(lo, a)``, an upper clamp
+    ``min(hi, a)``, the two-sided ``max(lo, min(hi, a))``, and the ``relu``-style
+    ternaries ``a if a > k else k`` / ``k if a < k else a``. ``lo``/``hi``/``k`` are
+    WITNESS-DERIVED — the flat-region output value where the function stops tracking
+    its input (:func:`_clamp_constants`) — never invented.
+
+    OVERFIT FLOOR (the soundness core): a boundary is offered ONLY when the
+    witnesses both (a) PIN the flat region with at least TWO DISTINCT inputs that
+    saturate to it and (b) PIN the pass-through region with at least one input the
+    clamp leaves unchanged. One flat example (``clip(99) == 50``) could equally be a
+    constant, a different cap, or a scaling — so a single flat witness never lands a
+    clamp; the two-distinct-flat-inputs + one-passthrough requirement is what makes
+    the derived boundary trustworthy. Every emitted body is still gate-verified
+    in-process AND by the pinned suite, and two competing boundaries that survive
+    the witnesses but diverge off-witness are refused by the ambiguity guard (the
+    int/float canary probes already perturb each witnessed value's neighbours and
+    fixed anchors, so a wrong boundary is exposed). Deterministic: boundaries are
+    the sorted distinct flat-region constants; the ternary text is fixed."""
+    los, his = _clamp_constants(witnesses)
+    out: list[tuple[str, str]] = []
+    for lo in los:
+        out.append((f"clamp_lo({lo})", f"max({lo}, {a})"))
+        out.append((f"relu({lo})", f"{a} if {a} > {lo} else {lo}"))
+        out.append((f"floor({lo})", f"{lo} if {a} < {lo} else {a}"))
+    for hi in his:
+        out.append((f"clamp_hi({hi})", f"min({hi}, {a})"))
+    for lo in los:
+        for hi in his:
+            out.append((f"clamp({lo},{hi})", f"max({lo}, min({hi}, {a}))"))
+    return out
+
+
+def _clamp_constants(witnesses: list[tuple[str, str]]) -> tuple[list[str], list[str]]:
+    """The witness-derived ``(lower_bounds, upper_bounds)`` for the clamp family —
+    each a list of literal-constant SOURCE strings, sorted and de-duplicated, or
+    EMPTY when the overfit floor is not met.
+
+    A single-number witness ``(v, e)`` is classified by comparing the output to the
+    input: ``e > v`` means the lower clamp fired (``e`` is a ``lo`` candidate), ``e
+    < v`` means the upper clamp fired (``e`` is a ``hi`` candidate), ``e == v`` is a
+    pass-through. A bound is returned ONLY when at least TWO DISTINCT inputs
+    saturate to the SAME single bound value AND at least one witness passes through
+    unchanged — so a lone flat example, a contract with no pass-through region (a
+    bare constant in disguise), or two inconsistent flat values never yield a
+    boundary. Non-numeric / multi-arg / non-literal witnesses are ignored (they
+    cannot establish a numeric boundary). Deterministic."""
+    passthrough = False
+    lo_inputs: dict[object, set] = {}
+    hi_inputs: dict[object, set] = {}
+    for args_text, expected_text in witnesses:
+        classified = _clamp_witness_kind(args_text, expected_text)
+        if classified is None:
+            return [], []  # a non-numeric / non-literal witness — no boundary
+        kind, v, expected = classified
+        if kind == "pass":
+            passthrough = True
+        elif kind == "lo":
+            lo_inputs.setdefault(expected, set()).add(v)
+        else:
+            hi_inputs.setdefault(expected, set()).add(v)
+    if not passthrough:
+        return [], []  # no pass-through region — a flat-only contract is a constant
+    los = sorted(repr(k) for k, ins in lo_inputs.items() if len(ins) >= 2)
+    his = sorted(repr(k) for k, ins in hi_inputs.items() if len(ins) >= 2)
+    return los, his
+
+
+def _clamp_witness_kind(args_text: str,
+                        expected_text: str) -> tuple[str, object, object] | None:
+    """Classify ONE single-number clamp witness into ``("pass"|"lo"|"hi", input,
+    output)`` — pass-through (``e == v``), lower-clamp saturation (``e > v``), or
+    upper-clamp saturation (``e < v``) — or ``None`` when the witness is not a
+    single numeric ``(input, output)`` literal pair (multi-arg, non-literal, or a
+    ``bool``/non-number). Pure and deterministic; the boundary value is the output
+    ``e``."""
+    value = _literal_tuple(args_text)
+    expected = _literal_value(expected_text)
+    if value is None or len(value) != 1 or expected is _NO_LITERAL:
+        return None
+    v = value[0]
+    if isinstance(v, bool) or isinstance(expected, bool):
+        return None
+    if not isinstance(v, (int, float)) or not isinstance(expected, (int, float)):
+        return None
+    if expected == v:
+        return "pass", v, expected
+    if expected > v:
+        return "lo", v, expected
+    return "hi", v, expected
+
+
+def _elementwise_map_templates(a: str,
+                               witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The ELEMENT-WISE MAP / REDUCTION family (NEW): list comprehensions and
+    scalar reductions over an iterable arg — shapes the old engine, which emits a
+    single non-comprehension ``return`` expr, could not produce. The per-element
+    transform pool is FIXED and small (mirroring the string-method whitelist
+    discipline): identity is skipped (a plain passthrough already covers it),
+    leaving ``x * k`` / ``x + k`` (witness-derived ``k``), ``abs(x)``, ``-x``,
+    ``str(x)``, ``x.strip()``, ``x.lower()``, and the reductions ``sum(x * x for x
+    in a)`` / ``sum(abs(x) for x in a)``.
+
+    HASHSEED SAFETY (load-bearing): every output here is a LIST or a SCALAR, never a
+    ``set``/``frozenset`` and never a set-iteration-ordered value — the same
+    order-reproducibility discipline that makes the file withhold ``set(a)``. A
+    comprehension iterates its argument in the argument's own order, so the landed
+    bytes are identical across ``PYTHONHASHSEED`` values.
+
+    OVERFIT FLOOR: the witness-derived ``x * k`` / ``x + k`` shapes bake the
+    witnessed ``k``, so they are offered only under the >=2-distinct-tuple floor
+    (:func:`_string_floor_met`) — a single ``[1, 2] -> [2, 4]`` cannot pin ``x * 2``
+    alone. The value-free transforms need no floor (a non-matching one is rejected
+    by the gate; two that diverge off-witness are refused by the sequence canary
+    probes). Every body is still gate-verified in-process (``_expr_matches_all``
+    evaluates list outputs type-exactly) AND by the pinned suite. Deterministic: the
+    transform pool is fixed, constants sorted."""
+    out: list[tuple[str, str]] = []
+    out.append(("map(abs)", f"[abs(x) for x in {a}]"))
+    out.append(("map(-x)", f"[-x for x in {a}]"))
+    out.append(("map(x*x)", f"[x * x for x in {a}]"))
+    out.append(("map(str)", f"[str(x) for x in {a}]"))
+    out.append(("map(strip)", f"[x.strip() for x in {a}]"))
+    out.append(("map(lower)", f"[x.lower() for x in {a}]"))
+    out.append(("map(upper)", f"[x.upper() for x in {a}]"))
+    out.append(("sum(x*x)", f"sum(x * x for x in {a})"))
+    out.append(("sum(abs)", f"sum(abs(x) for x in {a})"))
+    if _string_floor_met(witnesses):
+        for k in _numeric_constants(witnesses):
+            out.append((f"map(x*{k})", f"[x * {k} for x in {a}]"))
+            out.append((f"map(x+{k})", f"[x + {k} for x in {a}]"))
     return out
 
 
@@ -2395,6 +2536,52 @@ def _get_default_templates(a: str, b: str,
     out: list[tuple[str, str]] = []
     for default in _expected_literals(witnesses):
         out.append((f"get(default={default})", f"{a}.get({b}, {default})"))
+    return out
+
+
+def _multi_arg_arith_templates(params: tuple[str, ...],
+                               witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The MULTI-ARG ARITHMETIC family (NEW): a FIXED, small set of combined
+    numeric shapes over the FIRST TWO params (a mean / scaled binary) and — only
+    when the stub has EXACTLY three params — the three-operand combinations that
+    today's :func:`_two_arg_templates` never reaches (it forms one binary op on
+    ``a``/``b`` and ignores ``c`` entirely, so a 3-arg arithmetic stub gets
+    NOTHING). Offered AFTER every existing binary shape, so a plain ``a + b`` still
+    wins when it fits; this family only lands where the old engine produced nothing.
+
+    Two-param additions: ``(a + b) / 2`` and ``(a + b) // 2`` (the float / integer
+    mean — a 2-arg shape the single-binary space cannot express), then the
+    witness-DERIVED ``a * b + k`` / ``a - b * k`` for each small constant ``k``
+    inferred from the witnesses. Three-param set (arity == 3 only): the fixed
+    combinations ``a*b+c``, ``(a+b)*c``, ``(a-b)*c``, ``a*b//c``, ``(a+b)/c`` — a
+    SHORT fixed list, never a search over all ASTs, so the space stays bounded and
+    reproducible.
+
+    Soundness: every shape here is still gate-verified (in-process type-exact
+    ``eval`` against the literal witnesses AND the pinned pytest/doctest nodes), so
+    a non-matching combination is rejected, never landed. The witness-DERIVED
+    ``k``-baking shapes carry the same >=2-distinct-tuple overfit floor the derived
+    scalar constants use (:func:`_string_floor_met` / :func:`_numeric_constants`),
+    so one example cannot pin an arbitrary ``k``. The value-free mean / 3-op shapes
+    need no floor — a coincidental one is caught by the gate, and two that survive
+    the gate but diverge off-witness are refused by the ambiguity guard (the
+    existing :func:`_multi_arg_canary_probes`, which already reorders/perturbs up to
+    arity 4). Deterministic: the op list is fixed, constants are sorted."""
+    out: list[tuple[str, str]] = []
+    a, b = params[0], params[1]
+    out.append(("mean2", f"({a} + {b}) / 2"))
+    out.append(("floormean2", f"({a} + {b}) // 2"))
+    if _string_floor_met(witnesses):
+        for k in _numeric_constants(witnesses):
+            out.append((f"a*b+{k}", f"{a} * {b} + {k}"))
+            out.append((f"a-b*{k}", f"{a} - {b} * {k}"))
+    if len(params) == 3:
+        c = params[2]
+        out.append(("a*b+c", f"{a} * {b} + {c}"))
+        out.append(("(a+b)*c", f"({a} + {b}) * {c}"))
+        out.append(("(a-b)*c", f"({a} - {b}) * {c}"))
+        out.append(("a*b//c", f"{a} * {b} // {c}"))
+        out.append(("(a+b)/c", f"({a} + {b}) / {c}"))
     return out
 
 
@@ -4634,6 +4821,77 @@ def render_ambiguity_reason(diagnosis: AmbiguityDiagnosis) -> str:
             f"({va} vs {vb})… add a discriminating test")
 
 
+def stub_decline_reason(module_source: str, stub: StubFunction,
+                        has_pinned_test: bool = False) -> str | None:
+    """A deterministic, human-readable DECLINE message (NEW) for a stub that
+    DOCUMENTS a return — a docstring ``Returns:`` / ``:returns:`` / ``:return:``
+    section or a non-``None`` return annotation — yet pins NO synthesizable example:
+    no enforceable docstring ``>>>`` witness and no pinned test. ``None`` when the
+    stub is synthesizable (has an example/test) or documents no return at all.
+
+    This is DISCLOSURE, not a body: with a documented return type but no executable
+    example, every candidate would be a GUESS, so Apex synthesizes nothing (the
+    never-guess discipline) and instead names exactly what is missing, e.g.::
+
+        declined: `parse` documents a return but pins no example/test — add one
+        `>>>` line or a test so Apex can synthesize a verified body
+
+    It NEVER changes what lands (it returns a string for a stub the engine already
+    refuses) — purely additive, mirroring :func:`ambiguity_reason`. Pure and
+    deterministic: a fixed reading of the docstring/annotation, no disk, no clock.
+    ``has_pinned_test`` lets a caller that already resolved the stub's pinned test
+    files suppress the decline when a test exists (the stub is then synthesizable
+    through the pytest gate, so there is nothing to decline)."""
+    if has_pinned_test:
+        return None
+    if _doctest_witnesses(module_source, stub):
+        return None  # a doctest example pins it — synthesizable, not declined
+    if not _documents_return(module_source, stub):
+        return None  # documents no return — not this disclosure's concern
+    return (f"declined: `{stub.name}` documents a return but pins no example/test "
+            f"— add one `>>>` line or a test so Apex can synthesize a verified body")
+
+
+def _documents_return(module_source: str, stub: StubFunction) -> bool:
+    """True when ``stub`` DOCUMENTS a return value — either a non-``None`` return
+    ANNOTATION on the ``def`` or a docstring section that names a returned value
+    (``Returns:`` / ``Return:`` Google/NumPy heading, or a ``:returns:`` /
+    ``:return:`` reST field). Used only to decide whether a SYNTHESIS-less stub
+    deserves an honest decline; it never feeds the template engine. Conservative
+    and fully guarded: an unparseable source yields ``False`` (never raises).
+    Deterministic: a fixed scan of the AST and docstring text."""
+    if _return_annotation_text(module_source, stub) not in (None, "None"):
+        return True
+    docstring = _stub_docstring(module_source, stub)
+    if not docstring:
+        return False
+    for line in docstring.splitlines():
+        stripped = line.strip().lower()
+        if stripped.startswith((":returns:", ":return:")):
+            return True
+        if stripped.rstrip(":") in ("returns", "return") and stripped.endswith(":"):
+            return True
+    return False
+
+
+def _return_annotation_text(module_source: str, stub: StubFunction) -> str | None:
+    """The SOURCE text of ``stub``'s return annotation (``-> T``), or ``None`` when
+    it has none or the source does not parse. The function is matched by name AND
+    1-based ``lineno`` (never confusing an overload). Fully guarded — a malformed
+    source raises nothing. Deterministic."""
+    try:
+        tree = ast.parse(module_source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    for node in ast.walk(tree):
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == stub.name and node.lineno == stub.lineno):
+            if node.returns is None:
+                return None
+            return ast.unparse(node.returns)
+    return None
+
+
 def _render_args(params: tuple[str, ...], canary: tuple) -> str:
     """Render the discriminating input as ``name=value`` pairs (``a=[3, 9, 2]``,
     or ``a=5, b=1`` for a multi-arg stub), in parameter order. Falls back to a bare
@@ -4683,7 +4941,15 @@ def _int_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
     negative — injecting one for an all-non-negative contract makes ``abs(a)`` /
     ``round(a)`` look like a different intent from a plain passthrough (they
     diverge only at the off-domain negative), wrongly tripping the guard against
-    a genuine ``identity(5)==5, identity(9)==9``."""
+    a genuine ``identity(5)==5, identity(9)==9``.
+
+    Each witnessed FLAT-REGION boundary (an expected value that differs from its
+    input — a saturated clamp/relu output) also contributes its just-inside /
+    just-outside neighbours (``b-1``/``b``/``b+1``), so two clamps with DIFFERENT
+    boundaries (``max(0, min(50, a))`` vs ``max(0, min(99, a))``) are split right at
+    the boundary even when the bare witnessed neighbours miss it. These are valid
+    int inputs (the contract's own output values), so they never fabricate a
+    divergence for a single-shape contract — they only sharpen the clamp family."""
     extra: set[int] = set()
     for args, _e in witnesses:
         v = args[0]
@@ -4691,7 +4957,30 @@ def _int_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
     extra.update({0, 1, 2, 3, 50, 99, 100})
     if any(args[0] < 0 for args, _e in witnesses):
         extra.add(-1)
+    extra.update(_boundary_neighbors(witnesses, int))
     return [(v,) for v in sorted(extra)]
+
+
+def _boundary_neighbors(witnesses: list[tuple[tuple, object]],
+                        kind: type) -> set:
+    """The just-inside / just-outside neighbours (``b-1``, ``b``, ``b+1``) of every
+    witnessed FLAT-REGION boundary — an expected output that differs from its
+    single ``kind`` (``int``/``float``) input, i.e. a saturated clamp/relu value.
+    These probes split two clamp bodies whose boundaries differ; an unsaturated
+    (pass-through) witness contributes nothing. ``set()`` for a non-matching
+    contract. Pure and deterministic — derived only from witnessed literals."""
+    out: set = set()
+    for args, expected in witnesses:
+        if len(args) != 1:
+            continue
+        v = args[0]
+        if isinstance(v, bool) or isinstance(expected, bool):
+            continue
+        if not isinstance(v, kind) or not isinstance(expected, kind):
+            continue
+        if expected != v:
+            out.update({expected - 1, expected, expected + 1})
+    return out
 
 
 def _str_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
@@ -4748,12 +5037,18 @@ def _float_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple]:
     Each probe stays in the float domain, so a body that raises is folded to the
     stable ``'<err>'`` fingerprint token by the eval. A contract that pins one
     shape (``round(x, 2)`` with discriminating witnesses) still lands — no second
-    matching shape to disagree with. Deduped + sorted for determinism."""
+    matching shape to disagree with. Deduped + sorted for determinism.
+
+    Each witnessed FLOAT FLAT-REGION boundary (an expected value differing from its
+    input — a saturated clamp) also contributes its neighbours so two float clamps
+    with different boundaries diverge right at the boundary, exactly as the int
+    path does."""
     extra: set[float] = set()
     for args, _e in witnesses:
         v = args[0]
         extra.update({-v, v + 0.5, v + 0.125})
     extra.update({0.0, -1.5})
+    extra.update(_boundary_neighbors(witnesses, float))
     return [(v,) for v in sorted(extra)]
 
 
@@ -4777,7 +5072,18 @@ def _sequence_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple
       duplicated ahead of it) splits the join separators: ``" ".join(a)`` and
       ``"".join(a)`` agree on a one-element list but diverge once two elements are
       joined. Built only for an all-string sequence (a join input), so a numeric
-      reduction contract is unaffected."""
+      reduction contract is unaffected.
+
+    For an ALL-NUMERIC sequence two further PER-ELEMENT-PERTURBED probes split the
+    element-wise MAP family: each witnessed element incremented by one, plus the
+    fixed canonical ``[1, 2, 3]`` (or its tuple form) whose distinct non-zero
+    elements separate ``[x * 2 …]`` from ``[x * 3 …]``, ``[x + 1 …]`` from a plain
+    map, and a reduction from a comprehension. Without these, an all-zero witness
+    (``f([0, 0]) == [0, 0]``) leaves every linear transform AGREEING and a wrong map
+    body could land; the canonical probe makes the divergence observable, so the
+    ambiguity guard honestly refuses an under-specified map contract. The probes
+    stay the witnessed sequence's own type (``list``/``tuple``), valid inputs of the
+    same shape, so they never fabricate a divergence for a single-shape contract."""
     out: list[tuple] = []
     for args, _e in witnesses:
         seq = args[0]
@@ -4789,7 +5095,18 @@ def _sequence_canary_probes(witnesses: list[tuple[tuple, object]]) -> list[tuple
         out.append((type(seq)(),))  # empty edge: splits default= from plain reduce
         if seq and all(isinstance(el, str) for el in seq):
             out.append((type(seq)([seq[0], *seq]),))  # >=2 elems: splits join seps
+        if seq and all(_is_plain_number(el) for el in seq):
+            out.append((type(seq)(el + 1 for el in seq),))  # per-element perturb
+            out.append((type(seq)([1, 2, 3]),))  # distinct non-zero: splits maps
     return out
+
+
+def _is_plain_number(value: object) -> bool:
+    """True for a genuine ``int``/``float`` element (``bool`` excluded). Gates the
+    per-element MAP-family perturbation probes so only a numeric sequence (where
+    ``el + 1`` and the ``[1, 2, 3]`` anchor are valid, divergence-revealing inputs)
+    contributes them; a string/other element sequence is unaffected."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _multi_arg_canary_probes(
