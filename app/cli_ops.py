@@ -253,6 +253,24 @@ def cmd_self_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_owner_report(args: argparse.Namespace) -> int:
+    """Plain-language owner trust summary — composes the existing audits.
+
+    A thin, non-technical VIEW (the founder's owner-oversight "Layer-1"): it reuses
+    the North Star + soundness denetçi and the health grade verbatim, then renders
+    ONE owner-readable sentence per verdict. Deterministic, zero-token, offline,
+    clock-free — no new analysis. ``--json`` emits the composed dict instead."""
+    from app.reporting.owner_report import owner_report, render_owner_report_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    report = owner_report(str(target))
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(render_owner_report_markdown(report))
+    return 0
+
+
 def _is_string_expr(stmt: ast.AST) -> bool:
     """True if ``stmt`` is a bare string-literal expression statement (docstring-shaped)."""
     return (
@@ -450,7 +468,7 @@ def cmd_metrics(args: argparse.Namespace) -> int:
 
 def register_parsers(subparsers) -> None:
     """Register the ops family's subcommands: scan, agents, consensus, daemon,
-    self-audit, fix-docstrings, fix-coverage, lsp, metrics."""
+    self-audit, owner-report, fix-docstrings, fix-coverage, lsp, metrics."""
     # scan
     scan_parser = subparsers.add_parser("scan", help="Run an automation plan")
     scan_parser.add_argument(
@@ -580,6 +598,17 @@ def register_parsers(subparsers) -> None:
              "twice under varied PYTHONHASHSEED/cwd/TZ; spawns interpreters)",
     )
     self_audit_parser.set_defaults(func=cmd_self_audit)
+
+    # owner-report — plain-language trust summary for a non-technical owner
+    owner_report_parser = subparsers.add_parser(
+        "owner-report",
+        help="Plain-language owner trust summary (composes the North Star + soundness "
+             "audits and the grade; deterministic, zero-token, clock-free)",
+    )
+    owner_report_parser.add_argument("--target", default=".", help="Target project root")
+    owner_report_parser.add_argument(
+        "--json", action="store_true", help="Emit the composed report dict as JSON")
+    owner_report_parser.set_defaults(func=cmd_owner_report)
 
     # fix-docstrings
     fix_doc_parser = subparsers.add_parser("fix-docstrings", help="Auto-fix missing docstrings")

@@ -102,7 +102,7 @@ def test_family_parser_registration_covers_every_command():
         "ideate", "review", "rename", "move", "signature", "rewrite", "teach", "extract", "inline",
         "bench", "run", "canvas", "changed", "idea-html", "partition",
         "scan", "agents", "consensus", "daemon", "self-audit",
-        "fix-docstrings", "fix-coverage", "lsp", "metrics",
+        "fix-docstrings", "fix-coverage", "lsp", "metrics", "owner-report",
         "dashboard", "hotspots", "deadcode", "city", "report", "fractal", "debug", "pulse", "gate", "deps",
         "plugin", "marketplace", "hook",
     }

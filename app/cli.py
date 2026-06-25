@@ -51,6 +51,7 @@ from app.cli_ops import (  # noqa: F401  (re-exports: import surface unchanged)
     cmd_fix_docstrings,
     cmd_lsp,
     cmd_metrics,
+    cmd_owner_report,
     cmd_scan,
     cmd_self_audit,
 )
