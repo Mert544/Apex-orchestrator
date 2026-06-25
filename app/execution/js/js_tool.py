@@ -29,6 +29,7 @@ __all__ = [
     "JsStub",
     "JsWitness",
     "JsDocTarget",
+    "JsWireTarget",
     "DRIVER",
     "global_node_modules",
     "scan_stubs",
@@ -37,6 +38,9 @@ __all__ = [
     "doc_targets",
     "exported_names",
     "reparse_exports_identical",
+    "wire_targets",
+    "all_exported_names",
+    "reparse_exports_superset",
 ]
 
 # The bundled driver checked into this package — never a string Apex generates.
@@ -78,6 +82,22 @@ class JsDocTarget:
     name: str
     params: tuple[str, ...]
     return_type: str | None
+    insert_offset: int
+
+
+@dataclass(frozen=True)
+class JsWireTarget:
+    """One DEFINED-but-unexported top-level PUBLIC function/const-arrow the driver
+    found — the missing-export target the js-wire-exports objective lands an ESM
+    ``export`` keyword for. ``kind`` is ``"function"`` or ``"const"`` (advisory; the
+    splice just prepends ``export ``), and ``insert_offset`` is the byte offset of
+    the statement start, where prepending ``export `` publishes the already-defined
+    binding (a pure export-surface GROW). The driver only emits these for clean ESM
+    modules — a file carrying any ``module.exports``/``export default``/``export =``
+    yields none (the deferred surface)."""
+
+    name: str
+    kind: str
     insert_offset: int
 
 
@@ -206,3 +226,60 @@ def reparse_exports_identical(root: Path, rel: str, new_source: str) -> bool:
         probe.write_text(new_source, encoding="utf-8")
         after = exported_names(Path(tmp), probe.name)
     return after is not None and after == before
+
+
+def wire_targets(root: Path, rel: str) -> list[JsWireTarget]:
+    """The DEFINED-but-unexported top-level PUBLIC function/const-arrow targets in
+    ``root/rel`` (empty on refuse). Conservative: a file that does not parse, has no
+    such target, or that carries any ``module.exports``/``export default``/
+    ``export =`` (the deferred CJS/default surface) yields ``[]`` — nothing to wire,
+    never a guess.
+
+    Deterministic source order, exactly as the driver's ``wire-targets`` emits."""
+    data = _driver_json(["wire-targets", str(root / rel)], root)
+    if not isinstance(data, list):
+        return []
+    return [JsWireTarget(name=d["name"], kind=d["kind"], insert_offset=d["insertOffset"])
+            for d in data]
+
+
+def all_exported_names(root: Path, rel: str) -> frozenset[str] | None:
+    """The FULL set of exported names ``root/rel`` declares — ESM ``export``,
+    ``export {`` named bindings, and CJS ``module.exports.NAME``/``exports.NAME`` —
+    or ``None`` when the driver could not parse it (its conservative-refuse path).
+
+    This is the wire oracle's witness (the superset analogue of
+    :func:`exported_names`): see :func:`reparse_exports_superset`."""
+    data = _driver_json(["wire-verify", str(root / rel)], root)
+    if not isinstance(data, dict) or not isinstance(data.get("names"), list):
+        return None
+    return frozenset(data["names"])
+
+
+def reparse_exports_superset(root: Path, rel: str, new_source: str,
+                             added: frozenset[str] | set[str]) -> bool:
+    """The wire oracle for an ESM ``export``-keyword splice: ``True`` iff
+    ``new_source`` (the spliced bytes of ``root/rel``) RE-PARSES cleanly AND carries
+    EXACTLY the on-disk original's full exported-name set UNION ``added``.
+
+    A pure export-surface GROW only PUBLISHES already-defined bindings; this check
+    proves the splice added precisely the ``added`` names and corrupted nothing (a
+    broken splice would fail to re-parse, the driver would exit 2, and
+    :func:`all_exported_names` would return ``None``; a stray extra/missing export
+    would make the set differ). The probe writes ``new_source`` to a THROWAWAY file
+    (the real tree is never touched here) and asks the driver for its full exported
+    set. Conservative: any driver failure (a parse diagnostic, missing node) yields
+    ``None`` and we refuse (return ``False``) rather than land an unverified
+    change. The strict ``document_export_jsdoc`` re-parse oracle with ``==``
+    relaxed to ``== before | added`` (we INTEND to grow the surface by ``added``)."""
+    import tempfile
+
+    before = all_exported_names(root, rel)
+    if before is None:
+        return False
+    suffix = Path(rel).suffix or ".js"
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = Path(tmp) / ("probe" + suffix)
+        probe.write_text(new_source, encoding="utf-8")
+        after = all_exported_names(Path(tmp), probe.name)
+    return after is not None and after == before | frozenset(added)

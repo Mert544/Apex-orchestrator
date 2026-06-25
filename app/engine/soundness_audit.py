@@ -113,6 +113,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "seal-final-method": "runtime-noop+transitive-subclass-scan(tests-incl)",
     "wire-module-exports": "behavior-identical-or-star-consumer-scan(tests-incl)",
     "wire-exports": "oracle-gated-scaffold(import-oracle)+additive-init",
+    "js-wire-exports": "esm-export-keyword-add(pure-surface-grow)+reparse-exported-name-superset-or-refuse(no-suite-needed)",
     "freeze-dataclass": "suite-catches-runtime+own-module-mutation-scan",
     "add-slots": "behavior-identical-storage+whole-project-closed-attribute-superset-proof-or-refuse",
     "dataclassify": "suite-catches-runtime+behavior-preserving-rewrite",

@@ -398,7 +398,15 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # document-signature, refusing a name+param-only
                              # restatement. Appended, so the originals still lead
                              # and emit in their order.
-                             "the exported signature to document in jsdoc"],
+                             "the exported signature to document in jsdoc",
+                             # added: a DEFINED-but-unexported public JS/TS
+                             # function/const-arrow in a clean-ESM module — the
+                             # js-wire-exports objective lands the ONE missing ESM
+                             # `export` keyword (a pure export-surface grow proven by
+                             # an in-driver re-parse name-superset), the JS/TS sibling
+                             # of wire-exports, refusing a CJS/`export default` module.
+                             # Appended, so the originals still lead and emit first.
+                             "the unexported public function to export"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
     "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown",
                         # added: the package's USAGE.md generated from its public

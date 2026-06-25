@@ -302,6 +302,19 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # ("exported"/"in jsdoc" vs "public") — so its order is free.
     "the exported signature to document in jsdoc": "document-export-jsdoc",
 
+    # Defined-but-unexported public JS/TS function: the "signatures and types" lens
+    # also names a top-level public function/const-arrow a clean-ESM module DEFINES
+    # but never exports. The js-wire-exports objective LANDS exactly that — it
+    # prepends the ONE missing ESM ``export`` keyword (a pure export-surface GROW:
+    # publishing an already-defined binding can never break an existing importer),
+    # proven by an in-driver re-parse that the exported-name set grew by exactly that
+    # name; it REFUSES a CJS/``export default``/``export =`` module (the deferred
+    # surface). The JS/TS sibling of wire-exports. Its phrasing is not a substring of
+    # any other key (nor any of them of it) — distinct from "the public re-export
+    # surface to wire" (package index) and "the exported signature to document in
+    # jsdoc" (already exported) — so its order is free.
+    "the unexported public function to export": "js-wire-exports",
+
     # Missing usage doc: the document lens's "worked examples" aspect names the
     # package's USAGE.md — the minimal runnable examples a newcomer needs. The
     # generate-usage-doc objective LANDS exactly that — a USAGE.md generated from

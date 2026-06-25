@@ -35,6 +35,23 @@
 //                             so the spliced file must re-parse (exit 2 if not) AND
 //                             carry the same exported names — Python compares the
 //                             pre/post sets and refuses on any drift.
+//   wire-targets <file>    -> JSON: every top-level PUBLIC function/const-arrow in
+//                             <file> that is DEFINED but never exported (and not
+//                             otherwise named in `export {`/`export default`/
+//                             `module.exports`), as [{name, kind, insertOffset}] —
+//                             the missing-export targets the js-wire-exports
+//                             objective splices a leading `export ` keyword before.
+//                             REFUSES the WHOLE file (empty list) when ANY
+//                             `module.exports`/`exports.`/`export default`/`export =`
+//                             is present (CJS + default-export are the deferred
+//                             surface; v0 is clean-ESM-named only). Exit 2 on parse.
+//   wire-verify <file>     -> JSON: {names:[...]} the sorted ALL-EXPORTED-name set of
+//                             <file> (ESM `export`, `export {`, plus CJS
+//                             `module.exports.NAME`/`exports.NAME`). The oracle for a
+//                             wire splice: the spliced file must re-parse (exit 2 if
+//                             not) AND carry exactly the prior set UNION {name} —
+//                             Python proves the splice added precisely the one
+//                             intended named export and corrupted nothing.
 //
 // Determinism: no clock, no randomness; functions are reported in source order;
 // JSON keys are emitted in a fixed order. A byte-span splice (getStart/getEnd),
@@ -250,6 +267,139 @@ function exportedNames(sf) {
   return names.sort();
 }
 
+// True when `node` carries a `default` modifier (an `export default function`/
+// `export default class` declaration). Read like `isExported`, with the
+// `ts.getModifiers`/`node.modifiers` fallback so the same walk works across
+// compiler versions. A default-export declaration is the DEFERRED surface for
+// js-wire-exports (its only honest "resolves" proof is a node loader), so its
+// presence makes wire-targets refuse the whole file.
+function hasDefaultModifier(node) {
+  const mods = ts.getModifiers ? ts.getModifiers(node) : node.modifiers;
+  if (!mods) return false;
+  return mods.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword);
+}
+
+// The root identifier text of a (possibly nested) property-access LHS, or null —
+// e.g. `module.exports.x` -> "module", `exports.y` -> "exports". Used to spot a
+// CJS export assignment without caring about the property depth.
+function assignmentRootName(expr) {
+  let cur = expr;
+  while (ts.isPropertyAccessExpression(cur)) {
+    cur = cur.expression;
+  }
+  return ts.isIdentifier(cur) ? cur.text : null;
+}
+
+// True when `stmt` is a CJS export assignment — `module.exports.x = ...`,
+// `exports.x = ...`, or `module.exports = ...` (the LHS is a property access
+// rooted at `module` or `exports`). CJS is the DEFERRED surface (appending a
+// statement can change behaviour if `module.exports` is later reassigned), so its
+// presence makes wire-targets refuse the whole file; the property NAME is also a
+// CJS export, so `allExportedNames` reads it for the oracle's full surface.
+function cjsExportTarget(stmt) {
+  if (!ts.isExpressionStatement(stmt)) return null;
+  const expr = stmt.expression;
+  if (!ts.isBinaryExpression(expr)
+      || expr.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return null;
+  const left = expr.left;
+  if (!ts.isPropertyAccessExpression(left)) return null;
+  const root = assignmentRootName(left);
+  if (root !== "module" && root !== "exports") return null;
+  // `module.exports.NAME = ...` / `exports.NAME = ...` export NAME; a bare
+  // `module.exports = ...` reassigns the whole object (no single named binding).
+  return left.name.text;
+}
+
+// True when the file carries ANY CJS (`module.exports`/`exports.`) assignment,
+// `export default` (the declaration-modifier form OR the `export default <expr>`
+// assignment form), or a TS `export =` — the DEFERRED surfaces. wire-targets
+// emits an EMPTY target list for the whole file in that case (v0 is clean-ESM-
+// named only), so we never splice an `export ` into a module whose public surface
+// is shaped by a form this oracle cannot fully reason about.
+function hasCjsOrDefaultExport(sf) {
+  for (const stmt of sf.statements) {
+    // `export default <expr>` and `export = <expr>` are both ExportAssignment.
+    if (ts.isExportAssignment(stmt)) return true;
+    // `export default function/class ...` carries a `default` modifier.
+    if (hasDefaultModifier(stmt)) return true;
+    // `module.exports`/`exports.` assignment (any depth).
+    if (cjsExportTarget(stmt) !== null) return true;
+  }
+  return false;
+}
+
+// The SET of ALL exported names a source file declares, sorted — the superset of
+// `exportedNames`: ESM `export function`/`export const`, the named bindings of a
+// trailing `export { a, b as c }` (the EXPORTED name `c`, not the local `b`), and
+// CJS `module.exports.NAME`/`exports.NAME`. This is the wire oracle's witness: a
+// pure export-surface GROW must leave it equal to the prior set UNION {the one
+// added name}, so it must see every form to never miss a name the splice touched.
+function allExportedNames(sf) {
+  const names = new Set(exportedNames(sf));
+  for (const stmt of sf.statements) {
+    if (ts.isExportDeclaration(stmt) && stmt.exportClause
+        && ts.isNamedExports(stmt.exportClause)) {
+      for (const el of stmt.exportClause.elements) {
+        names.add(el.name.text);
+      }
+    } else {
+      const cjs = cjsExportTarget(stmt);
+      // A bare `module.exports = ...` has property name "exports" off `module`;
+      // it names no single binding, so skip it (its root is `module`, prop
+      // `exports`). A `module.exports.NAME`/`exports.NAME` names NAME.
+      if (cjs !== null && !(cjs === "exports"
+          && ts.isPropertyAccessExpression(stmt.expression.left)
+          && assignmentRootName(stmt.expression.left.expression) === "module")) {
+        names.add(cjs);
+      }
+    }
+  }
+  return Array.from(names).sort();
+}
+
+// One wireable target: a top-level PUBLIC function/const-arrow that is DEFINED but
+// NOT exported, NOT private (`_`-prefixed), and NOT already named in the file's
+// FULL exported-name set (so we never double-export). `kind` is "function" or
+// "const" (advisory/audit — the splice just prepends `export `); `insertOffset` is
+// the STATEMENT start, where prepending `export ` publishes the binding. `params`
+// reuses the `paramNames` identifier gate so a node we cannot read off the AST is
+// SKIPPED — never wire a name we cannot resolve structurally.
+function wireTargetFor(name, fnNode, stmtNode, sf, kind, alreadyExported) {
+  if (isExported(stmtNode)) return null;             // already exported -> skip
+  if (name.startsWith("_")) return null;             // private -> not public surface
+  if (alreadyExported.has(name)) return null;        // collides with an export -> skip
+  if (paramNames(fnNode) === null) return null;      // unreadable binding -> skip
+  return { name: name, kind: kind, insertOffset: stmtNode.getStart(sf) };
+}
+
+// Collect the wireable targets of a source file, in source order: an un-exported
+// `function foo(...) {...}` declaration, or an un-exported `const foo = (...) =>
+// ...` / `const foo = function (...) {...}` initializer, each PUBLIC and not
+// otherwise exported. REFUSES the WHOLE file (empty list) when any CJS/default/
+// `export =` form is present (the deferred surface). Deterministic (source order),
+// pure AST.
+function collectWireTargets(sf) {
+  if (hasCjsOrDefaultExport(sf)) return [];
+  const alreadyExported = new Set(allExportedNames(sf));
+  const out = [];
+  for (const stmt of sf.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name) {
+      const t = wireTargetFor(stmt.name.text, stmt, stmt, sf, "function", alreadyExported);
+      if (t !== null) out.push(t);
+    } else if (ts.isVariableStatement(stmt)) {
+      for (const decl of stmt.declarationList.declarations) {
+        const init = decl.initializer;
+        if (!init || !ts.isIdentifier(decl.name)) continue;
+        if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) {
+          const t = wireTargetFor(decl.name.text, init, stmt, sf, "const", alreadyExported);
+          if (t !== null) out.push(t);
+        }
+      }
+    }
+  }
+  return out;
+}
+
 function fail(message) {
   process.stderr.write(String(message) + "\n");
   process.exit(REFUSE);
@@ -311,6 +461,19 @@ function cmdDocVerify(file) {
   process.stdout.write(JSON.stringify({ names: exportedNames(sf) }));
 }
 
+function cmdWireTargets(file) {
+  const { sf } = readSource(file);
+  process.stdout.write(JSON.stringify(collectWireTargets(sf)));
+}
+
+function cmdWireVerify(file) {
+  const { sf } = readSource(file);
+  // readSource already refused (exit 2) on any parse diagnostic, so reaching here
+  // proves the file parses; emit its FULL exported-name set for the superset
+  // oracle (Python proves the post-splice set == prior set UNION {the added name}).
+  process.stdout.write(JSON.stringify({ names: allExportedNames(sf) }));
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const sub = argv[0];
@@ -319,8 +482,10 @@ function main() {
   if (sub === "fill" && argv.length === 4) return cmdFill(argv[1], argv[2], argv[3]);
   if (sub === "doc-targets" && argv.length === 2) return cmdDocTargets(argv[1]);
   if (sub === "doc-verify" && argv.length === 2) return cmdDocVerify(argv[1]);
+  if (sub === "wire-targets" && argv.length === 2) return cmdWireTargets(argv[1]);
+  if (sub === "wire-verify" && argv.length === 2) return cmdWireVerify(argv[1]);
   fail("usage: ts_driver.js scan <file> | mine <file> <name> | fill <file> <name> <body> "
-       + "| doc-targets <file> | doc-verify <file>");
+       + "| doc-targets <file> | doc-verify <file> | wire-targets <file> | wire-verify <file>");
 }
 
 main();

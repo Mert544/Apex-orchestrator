@@ -501,10 +501,12 @@ def test_objective_registers_and_is_available():
     assert "add-slots" in set(available_objectives())
 
 
-def test_objective_total_is_sixty_four():
+def test_objective_total_is_sixty_five():
     from app.engine.objective_compiler import available_objectives
 
-    assert len(set(available_objectives())) == 64
+    # 65 after js-wire-exports (the 3rd JS/TS concrete objective) self-registered;
+    # this count pin is the tripwire each new objective round bumps by one.
+    assert len(set(available_objectives())) == 65
 
 
 def test_objective_spec_is_callable():
@@ -546,12 +548,12 @@ def test_parity_manifest_classifies_concrete():
     assert manifest_subset_of_registry() == []  # no stale manifest name
 
 
-def test_parity_concrete_count_is_twenty_two():
+def test_parity_concrete_count_is_twenty_three():
     from app.engine.north_star_audit import classify_objectives
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 22  # rose from 21 with add-slots
+    assert len(buckets["CONCRETE"]) == 23  # rose from 22 with js-wire-exports
 
 
 # --- PARITY ROW 3: soundness-strategy manifest ------------------------------

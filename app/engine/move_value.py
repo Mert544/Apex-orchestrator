@@ -55,6 +55,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "scaffold_from_protocol": 0.95,  # a runnable implementer for an unimplemented protocol
     "cover_gaps": 0.90,              # first characterization test for an untested module
     "wire_exports": 0.90,            # the package re-export surface (__all__ + re-exports)
+    "js_wire_exports": 0.90,         # JS/TS sibling of wire_exports — add a missing ESM export (same tier as wire_exports)
     "strengthen_tests": 0.88,        # a mutant-killing assertion the suite was missing
     "wire_module_exports": 0.80,     # declare a leaf module's explicit __all__
     "infer_type_hints": 0.72,        # PROVABLE return-type hints (never a guess)
