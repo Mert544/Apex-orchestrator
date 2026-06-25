@@ -648,11 +648,23 @@ def _develop_history(args, target) -> int:
     return 0
 
 
+def _min_move_value(args) -> float:
+    """The buyer's value FLOOR for ``compile_objective`` from ``--min-value``.
+
+    The CLI flag defaults to ``None`` (unset); ``compile_objective`` expects a
+    float whose byte-identical default is ``0.0``. Map an unset flag to ``0.0``
+    so omitting ``--min-value`` reorders/refuses nothing — every existing
+    campaign stays unchanged."""
+    floor = getattr(args, "min_value", None)
+    return 0.0 if floor is None else float(floor)
+
+
 def _develop_goal(args, target, goal, max_steps, verify, apply) -> int:
     """`apex develop --goal`: pursue a high-level goal that fractally decomposes."""
     from app.engine.fractal_develop import compile_goal, render_goal_markdown
 
-    gr = compile_goal(str(target), goal, max_steps=max_steps, verify=verify, apply=apply)
+    gr = compile_goal(str(target), goal, max_steps=max_steps, verify=verify, apply=apply,
+                      value_led=getattr(args, "value_led", False))
     if args.json:
         print(json.dumps(gr.to_dict(), indent=2))
     else:
@@ -714,7 +726,8 @@ def _develop_auto(args, target, grade_before, max_steps, verify, apply) -> int:
     for objective in selected:
         result = compile_objective(str(target), objective=objective,
                                    max_steps=max_steps, verify=verify, apply=apply,
-                                   scope_verify=getattr(args, "fast", False))
+                                   scope_verify=getattr(args, "fast", False),
+                                   min_move_value=_min_move_value(args))
         if result.steps or result.fitness_start > 0:
             results.append(result)
     changed = apply and any(r.steps for r in results)
@@ -788,6 +801,7 @@ def _develop_objective(args, target, objective, grade_before, max_steps, verify,
     result = compile_objective(
         str(target), objective=objective, max_steps=max_steps,
         verify=verify, apply=apply, scope_verify=getattr(args, "fast", False),
+        min_move_value=_min_move_value(args),
     )
     if args.json:
         print(json.dumps(result.to_dict(), indent=2))
@@ -1546,6 +1560,19 @@ def register_parsers(subparsers) -> None:
              "blocking — fill it in so the suite exercises the target, then re-apply")
     develop_parser.add_argument("--apply", action="store_true",
                                 help="Apply the composed moves (default: dry run)")
+    develop_parser.add_argument(
+        "--value-led", action="store_true", dest="value_led",
+        help="With --goal: attempt the highest buyer-value leaves FIRST "
+             "(concrete-first — stub bodies, tests, wired surfaces before idiom "
+             "ceremony), under the step budget. Off by default (declaration "
+             "order); deterministic, hashseed-invariant")
+    develop_parser.add_argument(
+        "--min-value", type=float, default=None, dest="min_value",
+        metavar="FLOOR",
+        help="Buyer's value FLOOR (0..1): order an objective's candidate moves by "
+             "descending buyer value and SKIP any below FLOOR (e.g. 0.35 drops "
+             "Tier-3 idiom ceremony). Off by default; the suite+rollback gate is "
+             "untouched, so value never overrides correctness")
     develop_parser.add_argument("--max-steps", type=int, default=25, dest="max_steps",
                                 help="Maximum moves to compose (default 25)")
     develop_parser.add_argument("--no-verify", action="store_true", dest="no_verify",
