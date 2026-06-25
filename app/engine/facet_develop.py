@@ -351,6 +351,16 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # literal), not by the suite. Phrasing is substring-order-safe vs every other key.
     "an enum to enforce unique values on": "enforce-enum-unique",
 
+    # A dispatch (match/case or if/elif) over a PROVABLY-CLOSED discriminant set (an
+    # in-module Enum, a Literal[...] of constants, or bool) that is missing a member
+    # arm and carries NO catch-all: complete-match-exhaustiveness appends a loud
+    # `case _:`/`else:` sentinel (raise AssertionError) so the silent fall-through
+    # becomes loud. The inserted arm runs only on a value the old code didn't handle,
+    # so it is dead code or a fixed silent bug — never a regression; the false-fill
+    # risk is closed STATICALLY (refuse on any open/uncertain set), not by the suite.
+    # Phrasing is substring-order-safe vs every other key.
+    "a closed-set dispatch missing an exhaustiveness arm": "complete-match-exhaustiveness",
+
     # Missing lazy-annotation import: the document lens's "signatures and types"
     # aspect names a module that USES type annotations (a return type, an
     # annotated param, an ``x: T`` assignment) but lacks ``from __future__ import

@@ -29,6 +29,7 @@ from app.engine.objective_compiler import (
     available_objectives,
     compile_objective,
 )
+from app.engine.objective_value import objective_value_weight
 
 __all__ = [
     "GoalRanking", "AscendRound", "AscendReport",
@@ -46,24 +47,32 @@ class GoalRanking:
     payoff: float = 0.0     # learned health-gain per move from past campaigns
     reliability: float = 1.0  # the organism's DREAMED land-rate for this objective
     expensive: bool = False  # a heavy fitness scan (only on the --concrete board)
+    value_weight: float = 1.0  # buyer-value lead on the --concrete board; neutral 1.0 keeps the default fast board byte-identical
 
     @property
     def priority(self) -> float:
         """The score the climb ranks by: pending work AMPLIFIED by learned
-        payoff and DAMPED by the objective's proven land-rate.
+        payoff, DAMPED by the objective's proven land-rate, and LED by its buyer
+        value on the --concrete board.
 
         ``reliability`` is what the organism learned in its own runs (the same
         signal its nightly dream reads): an objective that reliably LANDS keeps
         its priority, while one that mostly blocks/rolls back is pushed down — so
-        the climb stops wasting rounds on a proven blocker. With no track record
-        both factors are neutral (payoff 0, reliability 1), so a fresh project
-        ranks purely on pending work, exactly as before."""
-        return self.pending * (1.0 + max(0.0, self.payoff)) * self.reliability
+        the climb stops wasting rounds on a proven blocker. ``value_weight`` is
+        the buyer-value lens (``objective_value_weight``) populated ONLY on the
+        --concrete board, so Tier-1 concrete leads there; it is a neutral 1.0 on
+        the default fast board AND as the field default. With no track record all
+        three factors are neutral (payoff 0, reliability 1, value_weight 1), so a
+        fresh project's default board ranks purely on pending work, exactly as
+        before."""
+        return (self.pending * (1.0 + max(0.0, self.payoff))
+                * self.reliability * self.value_weight)
 
     def to_dict(self) -> dict[str, Any]:
         return {"objective": self.objective, "pending": self.pending,
                 "goal": self.goal, "payoff": round(self.payoff, 3),
                 "reliability": round(self.reliability, 3),
+                "value_weight": round(self.value_weight, 3),
                 "priority": round(self.priority, 3)}
 
 
@@ -246,16 +255,26 @@ def rank_objectives(project_root: str | Path,
             pending = float(fitness_fn(project_root))
         except Exception:
             pending = 0.0
+        # The buyer-value weight ENTERS priority ONLY on the include_expensive
+        # (--concrete) board, where expensive concrete is already surfaced; on the
+        # default fast board it is held NEUTRAL at 1.0 so priority and ordering are
+        # byte-identical to today (the trust property is STRUCTURAL, not a comment).
         rankings.append(GoalRanking(objective=name, pending=pending,
                                     goal=objective_parent(name),
                                     payoff=weights.get(name, 0.0),
                                     reliability=reliab.get(name, 1.0),
-                                    expensive=name in exp))
-    # Highest priority first; among ties the cheaper objective (expensive=False)
-    # banks before an expensive rollback-prone scan; then registration index. On
-    # the default board the survivors are all cheap, so this middle key is a
-    # constant False and the order is byte-identical to before.
-    rankings.sort(key=lambda r: (-r.priority, r.expensive, order.get(r.objective, 0)))
+                                    expensive=name in exp,
+                                    value_weight=(objective_value_weight(name)
+                                                  if include_expensive else 1.0)))
+    # Highest priority first; among priority ties the higher buyer-value objective
+    # leads (so on the --concrete board an equal-priority concrete banks before a
+    # cheaper tidy), then the cheaper objective (expensive=False) banks before an
+    # expensive rollback-prone scan, then registration index. On the default board
+    # value_weight is a constant 1.0 for every survivor, so -r.value_weight is a
+    # constant key and the order collapses to exactly the old
+    # (-priority, expensive, order) — byte-identical to before.
+    rankings.sort(key=lambda r: (-r.priority, -r.value_weight, r.expensive,
+                                 order.get(r.objective, 0)))
     return rankings
 
 

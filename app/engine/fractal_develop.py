@@ -48,6 +48,15 @@ GOAL_TREE: dict[str, list[str]] = {
     # standalone (not under reduce-debt) so writing tests is an opt-in goal,
     # pursued by name or chosen by `apex ascend` when it is the worst gap.
     "harden": ["cover-gaps"],
+    # --- ship-value: the North Star's own concrete chain as a fractal campaign.
+    # Additive; declared in DESCENDING buyer-value order so even value_led=False
+    # gives a concrete-first sweep. Every leaf is already a registered objective.
+    "ship-value": ["finish-code", "wire-surface", "safety-net", "type-and-doc"],
+    "finish-code": ["implement-stub", "tdd-implement", "scaffold-from-protocol"],
+    "wire-surface": ["wire-exports", "wire-module-exports"],
+    "safety-net": ["cover-gaps", "strengthen-tests", "pin-doctest"],
+    "type-and-doc": ["infer-type-hints", "document-signature",
+                     "generate-usage-doc", "dataclassify"],
 }
 
 
@@ -86,11 +95,19 @@ def available_goals() -> list[str]:
     return sorted(set(GOAL_TREE) | set(available_objectives()))
 
 
-def resolve_goal(goal: str, _seen: frozenset[str] = frozenset()) -> list[str]:
+def resolve_goal(goal: str, _seen: frozenset[str] = frozenset(), *,
+                 value_led: bool = False) -> list[str]:
     """Flatten a goal to its leaf objectives, in order, de-duplicated.
 
     A goal in the tree expands into its children (recursively); a name that is
-    an available objective is a leaf. Cycles/unknown names resolve to nothing."""
+    an available objective is a leaf. Cycles/unknown names resolve to nothing.
+
+    With ``value_led=True`` the flattened leaf list is re-ordered ONCE, at the
+    outermost frame, by DESCENDING buyer value (``move_value.objective_value``)
+    with the declaration index as a total, hashseed-invariant tiebreak — a
+    concrete-first sweep. Off by default, so every existing caller is unchanged
+    byte-for-byte. Children recurse value-blind (the sort never re-orders a
+    partial child-list)."""
     if goal in _seen:
         return []  # guard the (shouldn't-happen) cycle
     if goal in GOAL_TREE:
@@ -99,6 +116,9 @@ def resolve_goal(goal: str, _seen: frozenset[str] = frozenset()) -> list[str]:
             for obj in resolve_goal(child, _seen | {goal}):
                 if obj not in out:
                     out.append(obj)
+        if value_led and not _seen:
+            order = {o: i for i, o in enumerate(out)}
+            out = sorted(out, key=lambda o: (-_objective_value(o), order[o]))
         return out
     return [goal] if goal in available_objectives() else []
 
@@ -111,12 +131,29 @@ def _grade(project_root: str | Path) -> int:
         return -1
 
 
+def _objective_value(obj: str) -> float:
+    """Buyer value of a leaf objective in [0,1] for value-led ordering.
+    Lazily imports move_value (the shared spine) and never raises — an
+    unknown objective resolves to DEFAULT_VALUE=0.30 inside objective_value,
+    and any import failure falls back to 0.0 (sorts last, never starves)."""
+    try:
+        from app.engine.move_value import objective_value
+        return objective_value(obj)
+    except Exception:
+        return 0.0
+
+
 def compile_goal(project_root: str | Path, goal: str, max_steps: int = 25,
-                 verify: bool = True, apply: bool = True) -> GoalResult:
+                 verify: bool = True, apply: bool = True, *,
+                 value_led: bool = False) -> GoalResult:
     """Pursue ``goal`` by running each leaf objective it decomposes into — each
     its own suite-gated campaign — and prove the whole goal's effect with a
-    before→after health grade."""
-    objectives = resolve_goal(goal)
+    before→after health grade.
+
+    ``value_led=True`` attempts the highest buyer-value leaves first (a
+    concrete-first campaign under a step budget); off by default, so the order
+    is the unchanged declaration sequence."""
+    objectives = resolve_goal(goal, value_led=value_led)
     before = _grade(project_root) if apply else -1
     result = GoalResult(goal=goal, objectives=objectives, applied=apply,
                         grade_before=before)

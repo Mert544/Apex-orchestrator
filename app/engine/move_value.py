@@ -79,6 +79,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "add_final": 0.34,               # seal a never-subclassed class with @final
     "seal_final_method": 0.34,       # seal a never-overridden method with @final
     "enforce_enum_unique": 0.34,     # lock an all-distinct Enum with @enum.unique
+    "complete_match_exhaustiveness": 0.34,   # fill a closed-set dispatch's missing arm with a loud exhaustiveness sentinel
     "add_from_future_annotations": 0.32,  # lazy annotations via a __future__ import
     # --- TIER 3 — surface tidy / idiom (lowest buyer value; pure ceremony) ---
     "modernize": 0.25,               # == None -> is None, dead f-prefix, dict()/list()

@@ -88,7 +88,13 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                             # distinct — enforce-enum-unique locks that invariant with
                             # @enum.unique (a no-op today, a loud import-time error on a
                             # future duplicate alias). Appended, originals still lead.
-                            "an enum to enforce unique values on"],
+                            "an enum to enforce unique values on",
+                            # added: a dispatch over a PROVABLY-CLOSED set (an in-module
+                            # Enum / Literal[...] / bool) missing an arm and lacking a
+                            # catch-all — complete-match-exhaustiveness appends a loud
+                            # sentinel so the silent fall-through becomes loud (total
+                            # dispatch = an exhaustiveness invariant). Originals lead.
+                            "a closed-set dispatch missing an exhaustiveness arm"],
     # simplify
     "dead code": ["unreferenced symbols", "unreachable branches", "redundant guards"],
     "duplicated logic": ["extract a shared helper", "parameterize the variants", "single source of truth"],

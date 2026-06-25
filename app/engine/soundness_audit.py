@@ -128,6 +128,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "implement-from-doctest": "additive-fill+doctest-oracle+impact-scoped-suite-gate",
     "js-tdd-implement": "js-failing-test-RED→GREEN-or-refuse+byte-rollback",
     "enforce-enum-unique": "runtime-noop(@unique)+static-value-collision-refusal",
+    "complete-match-exhaustiveness": "runtime-additive(unreached-arm)+static-closed-set-refusal",
     # --- TIDY: behavior-preserving idiom rewrites ---------------------------
     "modernize": "behavior-preserving-idiom",
     "simplify-bool-return": "behavior-preserving-idiom",
