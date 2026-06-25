@@ -72,6 +72,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "extract_guard_clause": 0.45,    # flatten nesting into early-exit guards
     "guard_clause": 0.45,            # a trailing-guard-after-setup rewrite
     "freeze_dataclass": 0.45,        # add frozen=True to a never-mutated dataclass
+    "add_slots": 0.45,               # add __slots__ to a closed-attribute class
     "extract_constant": 0.42,        # name a repeated magic literal
     "drop_param": 0.40,              # drop a never-read parameter
     "remove_dead_code": 0.40,        # delete statically unreachable code

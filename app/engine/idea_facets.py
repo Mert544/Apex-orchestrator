@@ -357,7 +357,16 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                                         # hashable, behaviour-preserving), proving no
                                         # whole-project mutation first. Appended, so
                                         # the originals still lead and emit first.
-                                        "a never-mutated dataclass to freeze"],
+                                        "a never-mutated dataclass to freeze",
+                                        # added: a class whose instance attributes are
+                                        # PROVABLY closed — the add-slots objective
+                                        # splices __slots__ naming the proven field set
+                                        # (the structural dual of freeze-dataclass),
+                                        # proving across the WHOLE project that the slot
+                                        # set is a superset of every stored attribute.
+                                        # Appended last, so the originals still lead and
+                                        # emit first.
+                                        "the closed-attribute class to give slots"],
     # document ladder
     "signatures and types": ["parameter meanings", "return type and None", "raised exceptions list",
                              # added: the package's public re-export surface — the

@@ -114,6 +114,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "wire-module-exports": "behavior-identical-or-star-consumer-scan(tests-incl)",
     "wire-exports": "oracle-gated-scaffold(import-oracle)+additive-init",
     "freeze-dataclass": "suite-catches-runtime+own-module-mutation-scan",
+    "add-slots": "behavior-identical-storage+whole-project-closed-attribute-superset-proof-or-refuse",
     "dataclassify": "suite-catches-runtime+behavior-preserving-rewrite",
     "add-from-future-annotations": "behavior-identical-future-import",
     "infer-type-hints": "behavior-identical-annotation-only",

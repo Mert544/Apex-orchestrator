@@ -344,6 +344,21 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # above (nor it of this), so their relative order is free.
     "a never-mutated dataclass to freeze": "freeze-dataclass",
 
+    # Closed-attribute class: the same "unreachable or no-op statements" simplify
+    # sub-aspect also names a class whose instance attributes are PROVABLY closed —
+    # only ever the ones its ``__init__`` (or ``@dataclass`` field list) declares,
+    # never an off-field attribute stored anywhere. The add-slots objective LANDS
+    # exactly that storage/shape lock: it splices ``__slots__ = (...)`` naming the
+    # proven instance-attribute set in source order (smaller per-instance memory + a
+    # typo-attribute becomes a loud AttributeError), proving across the WHOLE project
+    # (tests included) that the slot set is a SUPERSET of every attribute ever stored
+    # on the class, and is suite-gated + auto-rollback for the dynamic residual. So
+    # the "class to give slots" facet becomes the campaign that closes its shape. The
+    # structural DUAL of freeze-dataclass; its phrasing shares no whole-key substring
+    # with the freeze/dataclassify keys above (nor any of them with it), so the
+    # relative order is free.
+    "the closed-attribute class to give slots": "add-slots",
+
     # A leaf class proven never subclassed anywhere: add-final seals it with
     # @typing.final (a type-checker-only no-op — behaviour-preserving; the false-final
     # risk is closed STRUCTURALLY by the whole-project subclass scan, not the suite).

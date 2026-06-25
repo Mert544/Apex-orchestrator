@@ -77,6 +77,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "infer-type-hints",
         "dataclassify",
         "freeze-dataclass",
+        "add-slots",
         "add-from-future-annotations",
         "generate-usage-doc",
         "document-signature",
