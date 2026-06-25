@@ -335,8 +335,14 @@ def _materialize_briefs(root: Path, subjects: list[str],
         from app.engine.idea_brief import build_brief, save_brief
         from app.engine.idea_permutation import IdeaPermutationEngine
 
+        # A BUYER ENTRY POINT (the dream closes the loop into a SAVED work order):
+        # opt into value-aware idea generation so the materialized brief leads with
+        # the highest concrete-value work — the graded landability bonus and the
+        # deep cost-tier signals (incl. the value-led ``::landable-*`` family). The
+        # engine default stays OFF, so only this development surface opts in.
         tree = IdeaPermutationEngine(
-            {"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4},
+            {"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4,
+             "landability_aware": True, "landability_deep": True},
             project_root=str(root)).run()
     except Exception:
         return

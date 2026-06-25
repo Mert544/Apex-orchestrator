@@ -503,6 +503,29 @@ class IdeaSeeder:
     # synthesis precisely because it was uncapped and competed for the cap).
     _DISCOVERY_CAP = 3
 
+    # How many top LANDABLE opportunities the value-led family may append. Small,
+    # like the other discovery families: a focused "here is what Apex can finish"
+    # list, not a flood. The opportunities are probed in a FIXED, highest-value
+    # -first signal order and capped here, so the family is deterministic.
+    _LANDABLE_OPPORTUNITY_CAP = 3
+    # The Tier-1 (highest buyer value) landable signals the value-led family
+    # surfaces, in descending-value order, each paired with the OBJECTIVE name its
+    # fact_label must carry to route through the bridge's fact→action mapping
+    # (these labels exist in ``idea_action_bridge._FACT_ACTIONS``, so a seeded root
+    # routes straight to the resolving objective). Per-module signals first, then
+    # the package and per-symbol ones; the first signal that claims a subject wins.
+    _LANDABLE_OPPORTUNITY_SIGNALS: tuple[tuple[str, str, str], ...] = (
+        # (synthesis signal, objective name = fact_label, human action phrase)
+        ("fillable_stub_modules", "implement-stub",
+         "Implement the stub in {s} — a real function body Apex can land and verify"),
+        ("cover_gaps_modules", "cover-gaps",
+         "Cover the untested module {s} — a characterization safety net Apex can land"),
+        ("wire_export_packages", "wire-exports",
+         "Wire the public re-export surface for {s} — `__all__` Apex can land and verify"),
+        ("tdd_implementable_symbols", "tdd-implement",
+         "Implement the missing function {s} a red test calls — Apex can write and verify it"),
+    )
+
     # Coverage-gradient exposure seed family (DISCOVERY sharpener). A module's
     # exposure = norm(fan-in) * (1 - coverage_depth) * norm(churn) — peaks only
     # for a hub that is BOTH thinly covered AND actively churned. The family is
@@ -538,7 +561,8 @@ class IdeaSeeder:
 
     def seed(self, profile: ProjectProfile, objective: str | None = None,
              accelerating: dict[str, dict] | None = None,
-             *, seed_discoveries: bool = False) -> list[IdeaNode]:
+             *, seed_discoveries: bool = False,
+             landability_deep: bool = False) -> list[IdeaNode]:
         roots: list[IdeaNode] = []
         seen_subjects: set[str] = set()
         self._accel = accelerating or {}
@@ -610,6 +634,15 @@ class IdeaSeeder:
         # the SAME deterministic polyglot facts (git+stdlib only) and seeds nothing
         # on a Python-only repo, so that path stays byte-identical.
         self._seed_js_ts_coverage(roots, seen_subjects, profile)
+        # Highest-value LANDABLE work runs LAST too (OPT-IN behind ``landability_deep``,
+        # default OFF = byte-identical seeding), on a ``::landable-<objective>``-suffixed
+        # subject no other family can claim, so it is purely ADDITIVE: it never
+        # competes for or deduplicates against a module an earlier family already
+        # owns, and every prior root stays byte-identical and in the same order. Its
+        # premise is "Apex can concretely FINISH this" (a Tier-1 landable move) — the
+        # first family framed by what Apex can build, not what looks risky.
+        if landability_deep:
+            self._seed_landable_opportunities(roots, seen_subjects, profile)
         # NOTE: dream-discovery seeds (``discovered_idea_seeds``) are intentionally
         # NOT auto-seeded here. As competing roots they disrupt the bounded idea
         # budget, displacing valuable synthesis ideas (e.g. import-cycle pairs) and
@@ -684,6 +717,74 @@ class IdeaSeeder:
                 fact_value=(f"{subject} ({kind} lead, score {score:.4f}, "
                             f"from {source}{corr_clause}: {evidence})"),
             )
+
+    @staticmethod
+    def _landable_opportunity_candidates(profile: ProjectProfile) -> list[str]:
+        """The bounded, sorted ``.py`` candidate set the Tier-1 landable signals
+        probe — the union of ``module_to_tests`` keys with every module-valued
+        profile list (so one empty attribute can't blind the scan), sorted + capped
+        for determinism and cost. Mirrors the engine's ``_landable_candidates``."""
+        mods: set[str] = set(getattr(profile, "module_to_tests", {}) or {})
+        for attr in ("untested_modules", "critical_untested_modules",
+                     "modernizable_modules", "fragile_modules", "hotspot_modules",
+                     "hub_untested_modules", "shallow_tested_modules"):
+            mods.update(getattr(profile, attr, None) or [])
+        mods.update(getattr(profile, "module_fanin", {}) or {})
+        return sorted(m for m in mods if m.endswith(".py"))[:40]
+
+    def _seed_landable_opportunities(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+    ) -> None:
+        """Append the top HIGHEST-VALUE LANDABLE opportunities as roots (OPT-IN).
+
+        The seeder's first family whose premise is "Apex can concretely FINISH
+        this": it asks the SAME honest synthesis signals the engine's landability
+        scan uses (each is the real lander's own diff-producing gate, so a surfaced
+        idea is one Apex can actually land — never an over-promise) which modules
+        carry a Tier-1 move (implement-stub, cover-gaps, wire-exports, tdd), and
+        seeds one buyer-framed root per top opportunity. Each carries a distinct
+        ``<subject>::landable-<objective>`` subject (so it NEVER collides with or
+        deduplicates against an existing module subject — purely additive) and a
+        ``fact_label`` = the objective name, which the bridge's fact→action mapping
+        routes straight to the resolving objective. Deterministic (signals sort +
+        cap; a FIXED highest-value-first signal order) and best-effort (any failure
+        appends nothing, leaving the seeded set byte-identical)."""
+        candidates = self._landable_opportunity_candidates(profile)
+        if not candidates:
+            return
+        try:
+            from app.engine import idea_synthesis_signals as sigs
+        except Exception:
+            return
+        appended = 0
+        for signal_name, objective, phrase in self._LANDABLE_OPPORTUNITY_SIGNALS:
+            if appended >= self._LANDABLE_OPPORTUNITY_CAP:
+                break
+            try:
+                hits = getattr(sigs, signal_name)(
+                    self.project_root, candidates, limit=40)
+            except Exception:
+                continue
+            for hit in hits:
+                if appended >= self._LANDABLE_OPPORTUNITY_CAP:
+                    break
+                # A per-symbol signal returns "<module>:<name>"; the module half
+                # de-duplicates against a module subject an earlier family owns, but
+                # the full hit names the concrete target in the title/fact.
+                subject = f"{hit}::landable-{objective}"
+                if subject in seen_subjects:
+                    continue
+                before = len(roots)
+                self._append_root(
+                    roots, seen_subjects,
+                    title=phrase.format(s=hit),
+                    subject=subject,
+                    fact_label=objective,
+                    fact_value=(f"{hit} ({objective} would produce a verified diff "
+                                f"here — a concrete contribution Apex can land)"),
+                )
+                if len(roots) > before:
+                    appended += 1
 
     def _seed_correctness_bugs(
         self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile

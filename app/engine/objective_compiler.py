@@ -73,6 +73,12 @@ class CompileStep:
     # — a green-but-unreferencing suite (``none``) must never be labelled a
     # genuine "verified" move (the never-fake-green hardening maintain carries).
     coverage: str = ""
+    # Buyer value of THIS move's operator class (``move_value.scored_move_value``,
+    # in [0,1]). A disclosure ALONGSIDE the honest ``coverage_verified`` tier —
+    # NOT blended into the "verified" count — so the report can headline *what
+    # kind* of value landed (a real body vs. a sorted import), not just how many.
+    # Default 0.0 keeps ``to_dict`` additive (mirrors how ``coverage`` was added).
+    value: float = 0.0
 
     @property
     def coverage_verified(self) -> bool:
@@ -84,13 +90,22 @@ class CompileStep:
             "function", "module", "test-change")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "operator": self.operator, "target": self.target,
             "description": self.description,
             "fitness_before": self.fitness_before,
             "fitness_after": self.fitness_after, "verified": self.verified,
             "coverage": self.coverage,
         }
+        # ``value`` is a PURELY ADDITIVE disclosure: it appears ONLY when a move
+        # actually carried a recorded buyer value (value-aware selection engaged,
+        # see ``compile_objective(record_value=...)``/``min_move_value``). Default
+        # 0.0 ⇒ key omitted ⇒ ``to_dict()`` is BYTE-IDENTICAL to before for every
+        # existing campaign (the off-by-default invariant), exactly mirroring how a
+        # step that ran no suite omits nothing it didn't measure.
+        if self.value:
+            d["value"] = self.value
+        return d
 
 
 @dataclass
@@ -763,17 +778,37 @@ def _resolve_compile_target(
 
 def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
                         scope_module: str | None, memory: Any,
-                        last_operator: str) -> list[Move]:
-    """The candidate moves for one scan, scoped and sequence-ordered.
+                        last_operator: str, value_aware: bool = False) -> list[Move]:
+    """The candidate moves for one scan, scoped and ordered.
 
     Generates the objective's moves against the CURRENT tree, confines them to
-    ``scope_module`` when set, then — when a move has already landed — orders
-    them by the composition memory's learned sequence credit (a neutral 1.0 for
-    unknown pairs keeps the order stable, so a fresh project is unchanged)."""
+    ``scope_module`` when set, then orders them.
+
+    Default (``value_aware=False``) is the historical order: untouched on the
+    first pass, and by the composition memory's learned sequence credit once a
+    move has landed (a neutral 1.0 for unknown pairs keeps it stable, so a fresh
+    project is byte-identical). This is what every default ``develop``/``--all``/
+    ``ascend`` campaign uses, so their move order never shifts.
+
+    When ``value_aware`` (a buyer opted in via ``min_move_value`` at a buyer entry
+    point), the PRIMARY key becomes descending ``scored_move_value`` — the move a
+    buyer values most banks first — with the learned ``sequence_factor`` kept as a
+    SUBORDINATE tiebreak and a final stable ``m.target`` tiebreak for a total,
+    deterministic order. This bites on the multi-operator objectives (``modernize``
+    and the dedup family) and on interleaved sweeps, where the high-value move
+    precedes the ceremony move within a capped budget."""
+    from app.engine.move_value import scored_move_value
+
     moves = generate(root)
     if scope_module is not None:
         moves = [m for m in moves if _move_module(m) == scope_module]
-    if last_operator:
+    if value_aware:
+        moves = sorted(moves, key=lambda m: (
+            -scored_move_value(m.operator, memory),                 # buyer value first
+            -memory.sequence_factor(last_operator, m.operator),     # learned-sequence credit
+            m.target,                                               # stable, deterministic
+        ))
+    elif last_operator:
         moves = sorted(
             moves, key=lambda m: -memory.sequence_factor(last_operator, m.operator))
     return moves
@@ -797,14 +832,20 @@ def _fill_dry_run(result: CompileResult, moves: list[Move], start: float,
 
 
 def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
-                    verify: bool, scope_verify: bool) -> tuple[bool, float]:
+                    verify: bool, scope_verify: bool, memory: Any = None,
+                    value_aware: bool = False) -> tuple[bool, float]:
     """Try to land one move against the CURRENT tree, recording its outcome.
 
     Builds the move's plan fresh (line numbers stay exact even as earlier moves
     in the pass edited the file). A blocked or empty plan, or a suite failure
     (auto-rolled-back), records the reason onto ``result`` and counts as not
     landed. A clean apply appends a CompileStep dropping fitness by one (these
-    objectives are monotone). Returns ``(landed, new_fitness)``."""
+    objectives are monotone). Returns ``(landed, new_fitness)``.
+
+    When ``value_aware`` (the buyer opted in), the landed step also records its
+    ``scored_move_value`` — an honest disclosure of WHAT KIND of value landed,
+    kept separate from the ``verified``/``coverage`` correctness tier. Off ⇒ the
+    step's ``value`` stays 0.0 ⇒ ``to_dict()`` is byte-identical."""
     from app.execution.cross_file_rename import apply_rename
 
     plan = mv.build_plan()
@@ -819,30 +860,49 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
             result.blocked.append(f"{mv.target}: {res['reason']}")
         return False, current
     nxt = max(0.0, current - 1)
+    value = 0.0
+    if value_aware:
+        from app.engine.move_value import scored_move_value
+        value = scored_move_value(mv.operator, memory)
     result.steps.append(CompileStep(
         operator=mv.operator, target=mv.target, description=mv.description,
         fitness_before=current, fitness_after=nxt,
         verified=res.get("verified") is True,
-        coverage=str(res.get("coverage") or "")))
+        coverage=str(res.get("coverage") or ""), value=value))
     return True, nxt
 
 
 def _run_pass(result: CompileResult, moves: list[Move], root: str, current: float,
               max_steps: int, verify: bool, scope_verify: bool,
-              last_operator: str) -> tuple[bool, float, str]:
+              last_operator: str, memory: Any = None, value_aware: bool = False,
+              min_move_value: float = 0.0) -> tuple[bool, float, str]:
     """Apply every move in one pass's scan that still lands, in order.
 
     Each move's plan is re-derived against the CURRENT tree, so line numbers stay
     exact even as earlier moves in the same pass edit the file; a move whose
     precondition an earlier edit invalidated simply no-ops and is skipped. Stops
     at ``max_steps``. Returns ``(progressed, fitness, last_operator)`` — the last
-    landed operator biases the next pass's move ordering."""
+    landed operator biases the next pass's move ordering.
+
+    REFUSAL FLOOR (opt-in): a move whose ``scored_move_value`` is below
+    ``min_move_value`` is SKIPPED and recorded as a blocked-by-policy reason
+    (honest about the refusal, exactly like a blocked plan), so a buyer who set
+    "land only things worth my review" never sees the Tier-3 ceremony. Default
+    ``min_move_value=0.0`` ⇒ the guard never fires ⇒ byte-identical to today."""
     progressed = False
     for mv in moves:
         if len(result.steps) >= max_steps:
             break
+        if min_move_value > 0.0:
+            from app.engine.move_value import scored_move_value
+            mv_value = scored_move_value(mv.operator, memory)
+            if mv_value < min_move_value:
+                result.blocked.append(
+                    f"{mv.target}: skipped — low buyer value "
+                    f"({mv_value:g} < {min_move_value:g})")
+                continue
         landed, current = _apply_one_move(
-            result, mv, root, current, verify, scope_verify)
+            result, mv, root, current, verify, scope_verify, memory, value_aware)
         if landed:
             last_operator = mv.operator  # bias the next move's ordering
             progressed = True
@@ -866,7 +926,8 @@ def _archive_campaign(result: CompileResult, root: str, objective: str,
 def compile_objective(project_root: str | Path, objective: str = "dead-params",
                       max_steps: int = 25, verify: bool = True,
                       apply: bool = True, scope_module: str | None = None,
-                      scope_verify: bool = False) -> CompileResult:
+                      scope_verify: bool = False,
+                      min_move_value: float = 0.0) -> CompileResult:
     """Greedily compose verified moves toward ``objective``.
 
     Each iteration: regenerate candidate moves against the current tree, apply
@@ -878,7 +939,16 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     ``scope_module`` confines the campaign to one module (a dream confluence,
     say): only moves targeting that module are composed, and fitness becomes the
     count of those scoped moves remaining — so the organism can clean up the one
-    risky file its nightly dream flagged, not the whole project at once."""
+    risky file its nightly dream flagged, not the whole project at once.
+
+    ``min_move_value`` (DEFAULT 0.0 = byte-identical to today) is the buyer's
+    opt-in refusal FLOOR: when > 0 it (1) ORDERS candidates by descending buyer
+    value (``move_value``) instead of generation/sequence order, (2) RECORDS each
+    landed step's value, and (3) SKIPS — recording a blocked-by-policy reason —
+    any move below the floor. A buyer passes e.g. ``0.35`` to drop the Tier-3
+    ceremony and lead with substance; the safety gate (suite + rollback) is
+    untouched, so value never overrides correctness. At 0.0 nothing is reordered,
+    recorded, or refused — every existing campaign is unchanged."""
     objectives = _objectives_map()
     objective_name, blocked = _resolve_compile_target(objective, objectives)
     if objective_name is None:
@@ -908,8 +978,14 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     memory = IdeaMemory.load(root)
     last_operator = ""
 
+    # Value-awareness engages ONLY when the buyer set a floor (> 0). Off ⇒ the
+    # ordering, step-value recording, and refusal are all the historical no-ops,
+    # so every default ``develop``/``--all``/``ascend`` campaign is byte-identical.
+    value_aware = min_move_value > 0.0
+
     def candidates() -> list[Move]:
-        return _ordered_candidates(generate, root, scope_module, memory, last_operator)
+        return _ordered_candidates(generate, root, scope_module, memory,
+                                   last_operator, value_aware)
 
     def measure() -> float:
         # Scoped runs measure the local debt (remaining scoped moves); a global
@@ -942,7 +1018,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
             break
         progressed, current, last_operator = _run_pass(
             result, moves, root, current, max_steps, verify, effective_scope,
-            last_operator)
+            last_operator, memory, value_aware, min_move_value)
         if not progressed:
             break
 
@@ -1014,6 +1090,29 @@ def _compile_tier_tag(s: CompileStep) -> str:
     return " ⚠️ no-suite — applied, nothing verified it"
 
 
+def _compile_breakdown(result: CompileResult, verb: str) -> str:
+    """The headline move-breakdown: ``N move(s): V verified[, W weak][, S no-suite]``,
+    plus an OPT-IN ``mean buyer-value`` when the moves carried recorded values.
+
+    The verified/weak/no-suite split keeps the honest never-fake-green tier (only
+    a test-COVERED move counts as "verified"). The mean buyer-value is appended
+    only when value-aware selection recorded values — omitted for every default
+    campaign, so the headline is byte-identical there."""
+    landed = len(result.steps)
+    verified = sum(1 for s in result.steps if s.coverage_verified)
+    weak = sum(1 for s in result.steps if s.verified and not s.coverage_verified)
+    no_suite = landed - verified - weak
+    breakdown = f"{verb.lower()} {landed} move(s): {verified} verified"
+    if weak:
+        breakdown += f", {weak} weak (suite green but uncovered)"
+    if no_suite:
+        breakdown += f", {no_suite} no-suite"
+    valued = [s.value for s in result.steps if s.value]
+    if valued:
+        breakdown += f", mean buyer-value {sum(valued) / len(valued):.2f}"
+    return breakdown
+
+
 def render_compile_markdown(result: CompileResult) -> str:
     """Render a compile campaign as a readable report.
 
@@ -1022,21 +1121,12 @@ def render_compile_markdown(result: CompileResult) -> str:
     count is only the moves a test actually exercised (never-fake-green: a
     green suite that never looked at the change is not counted as verified)."""
     verb = "Applied" if result.applied else "Would apply"
-    landed = len(result.steps)
-    verified = sum(1 for s in result.steps if s.coverage_verified)
-    weak = sum(1 for s in result.steps if s.verified and not s.coverage_verified)
-    no_suite = landed - verified - weak
     lines = [f"# Objective compile — `{result.objective}`", ""]
     if result.blocked and not result.steps:
         lines.append(f"_No improving move available. Fitness: {result.fitness_start:g}._")
-    breakdown = f"{verb.lower()} {landed} move(s): {verified} verified"
-    if weak:
-        breakdown += f", {weak} weak (suite green but uncovered)"
-    if no_suite:
-        breakdown += f", {no_suite} no-suite"
     lines.append(
         f"Fitness {result.fitness_start:g} → **{result.fitness_end:g}** "
-        f"({breakdown})."
+        f"({_compile_breakdown(result, verb)})."
     )
     lines.append("")
     for i, s in enumerate(result.steps, 1):

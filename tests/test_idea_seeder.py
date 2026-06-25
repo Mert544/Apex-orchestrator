@@ -979,3 +979,96 @@ def test_all_families_profile_seeds_one_per_listed_family():
     # the order constant can't silently drift out of sync with the seeder.
     roots = IdeaSeeder().seed(_all_families_profile())
     assert len(roots) == len(_ALL_FAMILIES_ORDER)
+
+
+# --- value-led landable-opportunity family (OPT-IN, ``landability_deep``) -----
+
+def _landable_seeder_project(tmp_path):
+    """A real on-disk project with an UNTESTED module so the honest cover-gaps
+    signal (the family's Tier-1 probe) fires. Returns (root, seeder, profile)."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "u.py").write_text(
+        "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n",
+        encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    seeder = IdeaSeeder(str(tmp_path))
+    profile = ProjectProfile(root=str(tmp_path), untested_modules=["app/u.py"],
+                             module_to_tests={"app/u.py": []}, ci_files=["ci.yml"])
+    return tmp_path, seeder, profile
+
+
+def test_seed_landable_family_off_by_default_is_byte_identical(tmp_path):
+    # Default (no landability_deep) MUST NOT call the family: the seeded set is
+    # byte-identical to a plain seed on the same project+profile.
+    _, seeder, profile = _landable_seeder_project(tmp_path)
+    plain = seeder.seed(profile)
+    off = seeder.seed(profile, landability_deep=False)
+    assert [r.subject for r in plain] == [r.subject for r in off]
+    assert [r.title for r in plain] == [r.title for r in off]
+    # And no ``::landable-`` subject ever appears with the flag off.
+    assert not any("::landable-" in r.subject for r in off)
+
+
+def test_seed_landable_family_is_purely_additive(tmp_path):
+    # With landability_deep on, the family appends ONLY ``::landable-*`` subjects
+    # and leaves every prior root byte-identical and in the same order.
+    _, seeder, profile = _landable_seeder_project(tmp_path)
+    base = seeder.seed(profile)
+    deep = seeder.seed(profile, landability_deep=True)
+
+    # Every prior root is unchanged and in order (the additive-family invariant).
+    assert [r.subject for r in deep[:len(base)]] == [r.subject for r in base]
+    assert [r.title for r in deep[:len(base)]] == [r.title for r in base]
+    # The only NEW roots are the value-led landable family, all ``::landable-``.
+    added = deep[len(base):]
+    assert added, "expected the value-led family to surface the untested module"
+    assert all("::landable-" in r.subject for r in added)
+
+
+def test_seed_landable_family_surfaces_cover_gaps(tmp_path):
+    # The untested module surfaces as a cover-gaps landable opportunity, on the
+    # additive ``::landable-cover-gaps`` subject, with a concrete buyer-framed title.
+    _, seeder, profile = _landable_seeder_project(tmp_path)
+    deep = seeder.seed(profile, landability_deep=True)
+    landables = [r for r in deep if "::landable-" in r.subject]
+    assert any(r.subject == "app/u.py::landable-cover-gaps" for r in landables)
+    cg = next(r for r in landables if r.subject == "app/u.py::landable-cover-gaps")
+    assert "app/u.py" in cg.title
+    assert cg.operator == "root" and cg.depth == 0
+
+
+def test_seed_landable_family_fact_routes_to_objective(tmp_path):
+    # The seeded fact label routes through the bridge's fact→action mapping to the
+    # resolving objective (cover-gaps → the cover_gaps action), proving the family
+    # surfaces work Apex can actually land.
+    from app.engine.idea_action_bridge import _FACT_ACTIONS
+
+    _, seeder, profile = _landable_seeder_project(tmp_path)
+    deep = seeder.seed(profile, landability_deep=True)
+    cg = next(r for r in deep if r.subject == "app/u.py::landable-cover-gaps")
+    label = cg.source_facts[0].split(":")[0].strip()
+    assert label == "cover-gaps"
+    action_type = _FACT_ACTIONS[label][0]
+    assert action_type == "cover_gaps"
+
+
+def test_seed_landable_family_capped_and_deterministic(tmp_path):
+    # The family is capped and deterministic: two identical deep seeds yield the
+    # identical ``::landable-`` subject list, within the cap.
+    _, seeder, profile = _landable_seeder_project(tmp_path)
+    a = [r.subject for r in seeder.seed(profile, landability_deep=True)
+         if "::landable-" in r.subject]
+    b = [r.subject for r in seeder.seed(profile, landability_deep=True)
+         if "::landable-" in r.subject]
+    assert a == b
+    assert len(a) <= IdeaSeeder._LANDABLE_OPPORTUNITY_CAP
+
+
+def test_seed_landable_family_empty_on_no_candidates():
+    # No .py modules on the profile → no candidates → the family appends nothing,
+    # even with the flag on (best-effort empty path).
+    seeder = IdeaSeeder(".")
+    profile = ProjectProfile(root=".", ci_files=["ci.yml"])
+    deep = seeder.seed(profile, landability_deep=True)
+    assert not any("::landable-" in r.subject for r in deep)

@@ -329,3 +329,97 @@ def test_end_to_end_new_objective_reachable_from_emitted_facet(tmp_path) -> None
     # At least one — in practice all eight — of the wave's objectives is now
     # reachable from a phrase the engine genuinely emitted.
     assert new_objectives & reachable_from_emitted
+
+
+# --- value-aware facet routing (shared move_value spine) ---------------------
+
+def test_facet_objective_value_grades_by_move_value() -> None:
+    # The facet bridge values a routed phrase by the SAME move_value model the
+    # move loop uses, so Layers (a) and (b) can never disagree about buyer value.
+    from app.engine.facet_develop import facet_objective_value
+    from app.engine.move_value import move_value, objective_value
+
+    # A Tier-1 phrase (function the red test calls -> tdd-implement, value 1.0)
+    # outvalues a Tier-3 tidy phrase (an unsorted import block -> sort-imports).
+    tier1 = facet_objective_value("the function the red test calls")
+    tidy = facet_objective_value("an unsorted import block")
+    assert tier1 == move_value("tdd_implement") == 1.0
+    assert tidy == move_value("sort_imports")
+    assert tier1 > tidy
+    # The value matches objective_value for the routed objective (one model).
+    assert facet_objective_value("the public re-export surface to wire") == \
+        objective_value("wire-exports")
+
+
+def test_facet_objective_value_unrouted_is_zero() -> None:
+    # A phrase that names no objective scores 0.0 — no lift for a generic leaf.
+    from app.engine.facet_develop import facet_objective_value
+
+    assert facet_objective_value("some generic case split") == 0.0
+    assert facet_objective_value("") == 0.0
+
+
+# --- buyer entry points opt into landability (a.1.3) -------------------------
+
+def test_develop_brief_constructs_value_aware_engine(monkeypatch) -> None:
+    # ``develop_brief`` is a BUYER entry point: it must construct the engine with
+    # landability_aware ON (and the deep cost tier). The bare engine default stays
+    # OFF (proven below), so only this development surface opts in.
+    import app.engine.brief_develop as bd
+
+    captured: dict = {}
+
+    class _StopEngine:
+        def __init__(self, cfg, project_root=".", *a, **k):
+            captured["cfg"] = cfg
+
+        def run(self, objective=None):
+            raise RuntimeError("stop after construction")
+
+    monkeypatch.setattr(bd, "IdeaPermutationEngine", _StopEngine, raising=False)
+    # Patch the lazy import target too (develop_brief imports it inside the fn).
+    import app.engine.idea_permutation as ip
+    monkeypatch.setattr(ip, "IdeaPermutationEngine", _StopEngine, raising=False)
+
+    try:
+        bd.develop_brief(".")
+    except RuntimeError:
+        pass
+    assert captured["cfg"].get("landability_aware") is True
+    assert captured["cfg"].get("landability_deep") is True
+
+
+def test_materialize_briefs_constructs_value_aware_engine(monkeypatch, tmp_path) -> None:
+    # ``dream._materialize_briefs`` is the other BUYER entry point (it closes the
+    # dream into a SAVED work order): same opt-in.
+    import app.engine.dream as dream
+
+    captured: dict = {}
+
+    class _StopEngine:
+        def __init__(self, cfg, project_root=".", *a, **k):
+            captured["cfg"] = cfg
+
+        def run(self, objective=None):
+            raise RuntimeError("stop after construction")
+
+    import app.engine.idea_permutation as ip
+    monkeypatch.setattr(ip, "IdeaPermutationEngine", _StopEngine, raising=False)
+
+    class _Report:
+        curated: list = []
+
+    # One un-briefed subject so the path reaches the engine construction.
+    dream._materialize_briefs(tmp_path, ["app/x.py"], _Report())
+    assert captured.get("cfg", {}).get("landability_aware") is True
+    assert captured.get("cfg", {}).get("landability_deep") is True
+
+
+def test_bare_engine_default_is_landability_off() -> None:
+    # The engine default stays OFF so the ~20k scoring tests are byte-identical;
+    # only the named buyer entry points opt in.
+    from app.engine.idea_permutation import IdeaPermutationEngine
+
+    eng = IdeaPermutationEngine()
+    assert eng.landability_aware is False
+    assert eng.landability_deep is False

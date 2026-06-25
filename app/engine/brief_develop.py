@@ -185,8 +185,16 @@ def develop_brief(project_root: str | Path, branch_path: str = "",
     from app.engine.idea_brief import build_brief, check_brief, save_brief
     from app.engine.idea_permutation import IdeaPermutationEngine
 
+    # A BUYER ENTRY POINT: opt into value-aware idea generation. ``develop_brief``
+    # exists to LAND concrete work for a real project, so it surfaces the highest
+    # concrete-value ideas (the graded landability bonus) and the deep cost-tier
+    # signals (cover-gaps/tdd/wire-exports/the value-led ``::landable-*`` family).
+    # The bare ``IdeaPermutationEngine()`` default stays OFF so the ~20k scoring
+    # tests are byte-identical; only this development surface opts in (mirrors how
+    # ``SESSION_OBJECTIVES`` is a SEPARATE opt-in list at the develop core).
     engine = IdeaPermutationEngine(
-        {"max_total_ideas": max_ideas, "max_idea_depth": depth, "breadth": breadth},
+        {"max_total_ideas": max_ideas, "max_idea_depth": depth, "breadth": breadth,
+         "landability_aware": True, "landability_deep": True},
         project_root=str(project_root),
     )
     report = engine.run(objective=objective_focus or None)

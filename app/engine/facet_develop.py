@@ -243,6 +243,8 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # stub-implementation key it shares an aspect with; neither phrase is a
     # substring of the other, so their relative order is free.
     "the function the red test calls": "tdd-implement",
+    "the worked example to satisfy": "implement-from-doctest",
+    "the failing jest test whose function to write": "js-tdd-implement",
 
     # Missing type hints: the constructive "naming and types" aspect names the
     # precise type/annotation a parameter or return ought to carry. The
@@ -386,6 +388,25 @@ def facet_to_objective(phrase: str) -> str | None:
         if key in p:
             return objective
     return None
+
+
+def facet_objective_value(phrase: str) -> float:
+    """The BUYER VALUE of the develop objective ``phrase`` routes to, or 0.0.
+
+    Routes ``phrase`` through :func:`facet_to_objective`, then reads the shared
+    ``move_value`` model via ``move_value.objective_value`` — so a facet that
+    NAMES a concrete high-value contribution ("the function the red test calls" →
+    tdd-implement, value 1.0) scores higher than one naming a low-value tidy, and
+    a phrase that routes to NOTHING scores 0.0. The single place the facet zoom
+    asks "how much would a buyer value finishing this facet?", grounded in the
+    same value table the move loop uses (Layers a and b never disagree).
+    Deterministic and pure: a fixed-map lookup, no clock/randomness."""
+    from app.engine.move_value import objective_value
+
+    objective = facet_to_objective(phrase)
+    if objective is None:
+        return 0.0
+    return objective_value(objective)
 
 
 def facets_to_objectives(phrases: list[str]) -> list[str]:

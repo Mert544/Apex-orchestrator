@@ -144,15 +144,26 @@ class IdeaPermutationEngine:
         # ``_landable_subjects`` stays empty → the bonus is 0.0 for every node, so
         # existing idea sets do not shift.
         self.landability_aware = bool(cfg.get("landability_aware", False))
+        # Opt-in COST tier for the landability scan (DEFAULT FALSE): when on, the
+        # scan ALSO probes the five high-value but suite-cost signals (cover-gaps,
+        # tdd, strengthen, wire-exports, generate-usage-doc) — the work the North
+        # Star cares about most — and the seeder's value-led ``::landable-*`` family
+        # fires. Off ⇒ only the 6 cheap pure-read signals run (the historical fast
+        # ranking contract), so the default ``plan``/``ascend`` board never runs a
+        # suite while merely ranking. Requires ``landability_aware`` to take effect.
+        self.landability_deep = bool(cfg.get("landability_deep", False))
         # Opt-in: append fused cross-engine discovery leads as recommend-only
         # roots (default off = byte-identical seeding). Forwarded to the seeder.
         self.seed_discoveries = bool(cfg.get("seed_discoveries", False))
         self._security_pressure = 1.0
-        # The set of LANDABLE subject modules (computed ONCE per run in
-        # ``_begin_run`` when ``landability_aware`` is on). Initialized empty so a
-        # caller that drives ``_score`` directly without ``_begin_run`` (e.g. unit
-        # tests) sees the off-by-default behavior — an empty set → no bonus.
-        self._landable_subjects: frozenset[str] = frozenset()
+        # The LANDABLE subject modules → the BEST (highest) buyer value of any
+        # landable signal that matched them (computed ONCE per run in ``_begin_run``
+        # when ``landability_aware`` is on). A mapping, not a set, so the bonus is
+        # GRADED by the kind of move that lands: a stub-landable module (1.0) earns
+        # the full cap, a sort-landable one (0.18) a fraction. Initialized empty so
+        # a caller that drives ``_score`` directly without ``_begin_run`` (e.g. unit
+        # tests) sees the off-by-default behavior — an empty mapping → no bonus.
+        self._landable_subjects: dict[str, float] = {}
         self._has_objective = False
 
     def _scan_security_pressure(self) -> float:
@@ -247,7 +258,7 @@ class IdeaPermutationEngine:
         # (→ byte-identical scoring) or the scan finds/yields nothing.
         self._landable_subjects = (
             self._scan_landable_subjects(profile)
-            if self.landability_aware else frozenset()
+            if self.landability_aware else {}
         )
         # Learning memory: bounded feasibility nudges from past apply outcomes.
         if self.learning:
@@ -268,7 +279,8 @@ class IdeaPermutationEngine:
         budgeted) and return them as the initial ``emitted`` list."""
         emitted: list[IdeaNode] = []
         for root in self.seeder.seed(profile, objective, accelerating=self._accelerating,
-                                     seed_discoveries=self.seed_discoveries):
+                                     seed_discoveries=self.seed_discoveries,
+                                     landability_deep=self.landability_deep):
             if self.budget.exhausted:
                 break
             self._score(root, relevance)
@@ -425,26 +437,53 @@ class IdeaPermutationEngine:
 
     # Landability scan (opt-in, see ``landability_aware``). Probe at most this many
     # candidate modules (bounds cost; matches the action bridge's own synthesis
-    # candidate cap) and only the CHEAP/PURE synthesis signals — each is a pure-
-    # source read that mirrors the lander's own gate. The suite-cost signals
-    # (cover-gaps / tdd / strengthen) are deliberately EXCLUDED so the scan never
-    # runs a test suite while merely ranking ideas.
+    # candidate cap). Each signal name maps to the OPERATOR its lander would run, so
+    # the bonus can be sized by that move's buyer value (``move_value``) — a stub
+    # lander earns the full cap, a sort lander a fraction. Two cost tiers:
+    #
+    #   * the CHEAP/PURE tier (always, when the flag is on) — each is a pure-source
+    #     read that mirrors the lander's own gate, no suite run while merely ranking
+    #     (the historical fast-ranking contract);
+    #   * the DEEP tier (only when ``landability_deep`` is also on) — the five
+    #     high-value but suite-cost signals the North Star cares about most. They
+    #     are STILL the lander's own diff-producing gate, so surfacing them never
+    #     over-promises; they just cost a suite, so they stay behind the explicit
+    #     deep flag and out of the fast plan/ascend board.
     _LANDABLE_CANDIDATE_LIMIT = 40
-    _LANDABLE_SIGNALS = (
-        "fillable_stub_modules", "inferable_return_modules",
-        "dataclassifiable_modules", "modernizable_modules",
-        "dedup_total_return_modules", "dedup_parameterizable_modules",
-    )
+    _LANDABLE_SIGNAL_OPERATORS: dict[str, str] = {
+        "fillable_stub_modules": "implement_stub",
+        "inferable_return_modules": "infer_type_hints",
+        "dataclassifiable_modules": "dataclassify",
+        "modernizable_modules": "modernize",
+        "dedup_total_return_modules": "dedup_total_return",
+        "dedup_parameterizable_modules": "dedup_parameterized",
+    }
+    _LANDABLE_DEEP_SIGNAL_OPERATORS: dict[str, str] = {
+        "cover_gaps_modules": "cover_gaps",
+        "tdd_implementable_symbols": "tdd_implement",
+        "strengthenable_modules": "strengthen_tests",
+        "wire_export_packages": "wire_exports",
+        "generate_usage_doc_packages": "generate_usage_doc",
+    }
 
-    def _scan_landable_subjects(self, profile: ProjectProfile) -> frozenset[str]:
-        """The subject modules a verifiable concrete change can LAND on.
+    def _scan_landable_subjects(self, profile: ProjectProfile) -> dict[str, float]:
+        """The subject modules a verifiable concrete change can LAND on, each
+        mapped to the BEST (highest) buyer value of any landable signal that
+        matched it.
 
         Reuses the existing honest ``idea_synthesis_signals`` (each returns only
         modules whose REAL lander would produce a diff, so this never over-promises
         a landability) over a bounded, deterministic candidate set drawn from the
-        profile. Pure and best-effort: any failure yields the empty set rather than
-        perturbing the run, and the inputs are sorted/capped so the result is
-        deterministic for a given repo state — no clock, no randomness.
+        profile. The per-subject reduction takes a ``max`` of ``move_value`` over a
+        FIXED signal order, so the GRADED bonus ranks a high-value concrete
+        contribution above a low-value one — using the SAME value model the move
+        loop uses (Layers a and b can never disagree). Pure and best-effort: any
+        failure yields the empty mapping rather than perturbing the run, and the
+        inputs are sorted/capped so the result is deterministic for a given repo
+        state — no clock, no randomness.
+
+        The DEEP (suite-cost) signals run ONLY when ``landability_deep`` is on, so
+        the default ranking path stays the 6 cheap pure-read signals.
 
         GOTCHA: ``ProjectProfile`` has no single attribute enumerating every ``.py``
         module, so the candidate set is the union of ``module_to_tests`` keys (the
@@ -454,21 +493,30 @@ class IdeaPermutationEngine:
         """
         candidates = self._landable_candidates(profile)
         if not candidates:
-            return frozenset()
+            return {}
+        signals = dict(self._LANDABLE_SIGNAL_OPERATORS)
+        if self.landability_deep:
+            signals.update(self._LANDABLE_DEEP_SIGNAL_OPERATORS)
         try:
             from app.engine import idea_synthesis_signals as sigs
+            from app.engine.move_value import move_value
 
-            landable: set[str] = set()
-            for signal_name in self._LANDABLE_SIGNALS:
+            landable: dict[str, float] = {}
+            for signal_name, operator in signals.items():
                 signal = getattr(sigs, signal_name)
+                value = move_value(operator)
                 for module in signal(self.project_root, candidates,
                                      limit=self._LANDABLE_CANDIDATE_LIMIT):
-                    # Symbol signals (if any) return "<module>:<name>"; keep the
-                    # module half so the subject membership test matches a path.
-                    landable.add(module.split(":", 1)[0])
-            return frozenset(landable)
+                    # Symbol signals return "<module>:<name>"; keep the module half
+                    # so the subject membership test matches a path. Record the BEST
+                    # value seen for the subject (a module landable by several moves
+                    # is worth its most valuable one).
+                    base = module.split(":", 1)[0]
+                    if value > landable.get(base, 0.0):
+                        landable[base] = value
+            return landable
         except Exception:
-            return frozenset()
+            return {}
 
     @classmethod
     def _landable_candidates(cls, profile: ProjectProfile) -> list[str]:
@@ -1174,6 +1222,18 @@ class IdeaPermutationEngine:
         bonus = _landability_bonus(node, self._landable_subjects)
         if bonus:
             value = round(min(1.0, value + bonus), 4)
+        # Facet landable lift (opt-in; gated on ``landability_aware`` so the engine
+        # default is byte-identical): a facet phrase that NAMES a concrete Tier-1
+        # contribution ("the function the red test calls", "the public re-export
+        # surface to wire") routes via ``facet_to_objective`` to a develop objective;
+        # give it the SAME graded landability lift (cap × the objective's buyer
+        # value), so the value-guided spike drills toward the facet that names real,
+        # high-value work rather than a generic case-split leaf. Reuses the shared
+        # ``move_value`` model (via ``objective_value``) — no new vocabulary.
+        if self.landability_aware and node.kind == "facet":
+            bonus = _facet_landable_bonus(node)
+            if bonus:
+                value = round(min(1.0, value + bonus), 4)
         return value
 
     def _attach_caveats(self, node: IdeaNode) -> None:
@@ -1263,25 +1323,53 @@ def _magnitude_bonus(node: IdeaNode) -> float:
     return 0.0
 
 
-# Landability is BINARY (a concrete change either lands on the subject or it
-# doesn't), so the bonus is a single flat lift — same shared cap as the other
-# scoring bonuses (convergence/evidence/magnitude) so no one mechanism dominates.
+# Landability is GRADED by the BUYER VALUE of the move that would land (the shared
+# ``move_value`` table): the cap is scaled by that value, so a stub-landable module
+# (value 1.0) earns the full lift and a sort-landable one (0.18) a fraction. The
+# ceiling stays the same shared ``0.08`` as the other scoring bonuses
+# (convergence/evidence/magnitude) so no one mechanism dominates — but now a
+# concrete HIGH-value contribution ranks strictly above a concrete LOW-value one,
+# which the old flat bonus could never do.
 _LANDABILITY_CAP = 0.08
 
 
-def _landability_bonus(node: IdeaNode, landable_subjects: frozenset[str]) -> float:
-    """Flat ``_LANDABILITY_CAP`` when the node's subject MODULE is landable, else 0.
+def _landability_bonus(node: IdeaNode, landable_values: dict[str, float]) -> float:
+    """``_LANDABILITY_CAP`` scaled by the node subject's best landable buyer value.
 
-    Empty ``landable_subjects`` (the off-by-default case) short-circuits to 0.0, so
+    Empty ``landable_values`` (the off-by-default case) short-circuits to 0.0, so
     scoring is byte-identical. The subject is reduced to its bare module path before
-    the membership test: a facet's ``"mod.py :: phrase"`` and a symbol subject's
+    the lookup: a facet's ``"mod.py :: phrase"`` and a symbol subject's
     ``"mod.py::Class.f"`` both reduce to ``mod.py`` (so a child inherits its root's
     landability), while a pair (``A↔B``) or abstract subject (``"CI pipeline"``)
-    reduces to itself, names no ``.py`` module, and earns nothing."""
-    if not landable_subjects:
+    reduces to itself, names no ``.py`` module, and earns nothing. A subject present
+    with value ``v`` earns ``round(_LANDABILITY_CAP * v, 4)`` — the graded lift."""
+    if not landable_values:
         return 0.0
     base = node.subject.split(" :: ", 1)[0].split("::", 1)[0]
-    return _LANDABILITY_CAP if base in landable_subjects else 0.0
+    return round(_LANDABILITY_CAP * landable_values.get(base, 0.0), 4)
+
+
+def _facet_landable_bonus(node: IdeaNode) -> float:
+    """The graded landability lift for a FACET whose phrase names a concrete
+    develop objective, sized by that objective's buyer value (the shared
+    ``move_value`` model via ``objective_value``), clamped to the shared
+    ``_LANDABILITY_CAP``.
+
+    A facet phrase (carried as a ``facet:<phrase>`` source fact) is routed through
+    ``facet_develop.facet_to_objective``; a phrase that names a high-value
+    contribution ("the function the red test calls" → tdd-implement, value 1.0)
+    earns the full cap, a phrase that names a low-value tidy a fraction, and a
+    case-split phrase that routes to NOTHING earns 0.0. Deterministic and pure:
+    a fixed map lookup, no clock/randomness."""
+    facet_facts = [f for f in node.source_facts if f.startswith("facet:")]
+    if not facet_facts:
+        return 0.0
+    phrase = facet_facts[-1].split("facet:", 1)[-1].strip()
+    if not phrase:
+        return 0.0
+    from app.engine.facet_develop import facet_objective_value
+
+    return round(_LANDABILITY_CAP * facet_objective_value(phrase), 4)
 
 
 _FACT_HINTS: dict[str, str] = {
