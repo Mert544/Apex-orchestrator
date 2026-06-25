@@ -11,6 +11,17 @@
 
 ## 1. Bu oturumda inen geliştirme (hepsi `origin`'de, A+99, gated, never-fake-green)
 
+**BU OTURUM (21. tur) — MEGA-DALGA: İLK PYTHON-DIŞI İNİŞ (JS) + ÇEKİRDEK ZEKÂ + YETENEK. 6 ağır mühendis izole kopyalarda + 9-spec tasarım ordusu + 2 alıcı-değer demosu + denetçi (PASS); 5 build İNDİ, capplanner ERTELENDİ (ürün-tansiyonu); full-gate yeşil (17 step, 893s), A+99, 23.262 test, CONCRETE 17→19:**
+- `a1c4ec1` **js-tdd-implement (19. CONCRETE) — APEX'İN İLK PYTHON-DIŞI İNİŞİ (K3/F4, en büyük kör nokta KAPANDI):** dev RED jest testi yazar → Apex witness'ları LLM'siz çıkarır → TypeScript Compiler API ile sabit şablon uzayından gövde sentezler → `npm test` RED→GREEN olanı tutar, yoksa REDDEDER, byte-byte rollback. Projenin kendi jest suite'i kapı (Python venv modelinin aynısı). Yeni `app/execution/js/` paketi; Python yolu byte-AYNI (yalnız ekleme); non-JS reddeder (corpus geçer). 36 test (gerçek döngü dahil).
+- `b6d87e3` **implement-from-doctest (18. CONCRETE):** stub gövdesini KENDİ `>>>` docstring örneklerinden doldurur (doctest-oracle geçerse tut, yoksa REDDET + rollback). implement-stub'dan FARKLI: "pinned test YOK, sözleşme yalnız docstring'de". stub_synthesis salt-okunur reuse. Demolar bunun gerekli kanalını kanıtladı. 2 yeni objektifin paylaşılan parity'sini (idea_facets/north_star_audit/soundness_audit) taşır. 27 test.
+- `a3bd520` **move_value zekâ-omurgası (ZEKÂ):** yeni `move_value.py` (her operatör, 3 alıcı-katmanı, drift-test) — fikir-ağacı + move-loop'un "alıcı neye değer verir"de anlaşması. Layer-b: değer-greedy move seçimi + opt-in min_move_value tabanı. Layer-a: graded landability + buyer-entrypoint'lerde (brief_develop/dream) açık. **VARSAYILANDA byte-AYNI (3 yolla kanıtlandı).** facet_develop'a facet_objective_value + 2 yeni objektifin FACET girdileri.
+- `3394292` **implement-stub 4 yeni şablon ailesi (YETENEK):** tek-return motoru clamp/piecewise, element-wise map, çok-arg aritmetik (3+ param), constructor'ı kaçırıyordu (demolar doğruladı). 4 yeni witness-kapılı, ambiguity-kontrollü, hashseed-güvenli aile — her biri verified-OR-refused. tdd-implement bedava miras. Mevcut sentez byte-aynı. 27 test.
+- `6cedc1a` **bounded mutation budget (YETENEK):** strengthen-tests/cover-gaps büyük modülde 600s timeout → HİÇ test indirmiyordu (her mutant için fresh copytree+pytest, ~930 koşu). FIX: deterministik mutant-SAYISI budget (saat DEĞİL) + boyut-cap + ucuz runtime_trace ön-filtre. Artık büyük gerçek dosyada test İNDİRİYOR. Landmine korundu (TimeoutExpired=KILL saat-bağımsız). Küçük projede byte-aynı. 27 test.
+- **⏸️ capplanner ERTELENDİ (value-aware planner):** değer-AĞIRLIĞI sıralaması doğru ama "un-skip" pahalı pytest objektiflerini OTONOM VARSAYILAN board'a sokuyordu → KASITLI güven-özelliğini ("kullanıcı istemeden sessiz pytest işi yok") bozdu. Gate yakaladı (chunk 5/10). "Testi-geçmek-için-zayıflatma" yerine TEMİZ geri alındı (round-17 add-override dersi). Round-22'de güven-özelliğini KORUYAN value-ranking olarak yeniden kurulacak. **PATRON ÜRÜN-KARARI:** `apex ascend` varsayılanı pahalı concrete işi (implement-stub) kendiliğinden yapsın mı, yoksa hep `--concrete` ile mi?
+- **🎯 2 ALICI-DEĞER DEMOSU (ana fikrin canlı kanıtı):** Apex yarım-kalmış 2 yabancı projeyi (pennywise kütüphane + notesapi Flask) alıp **15 gerçek fonksiyon gövdesi + TDD + ~32 test + 22 tip + 2 dataclass + 2 doc** indirdi — doctest+suite-doğrulu, canlı byte-byte rollback, never-fake-green, deterministik SHA, **offline (soket kapalı)**, 0 çökme. Moat çalıştı: xfail-only/zehirli-doctest → REDDET.
+- **🚀 GATE = MOAT (cross-build):** birleşik gate 2 cross-build etkileşimi yakaladı (her build tek başına yeşildi): move_value 2 yeni operatörü kaçırmıştı (eklendi); capplanner güven-özelliğini bozdu (ertelendi). İzole kopyalar göremezdi; gate gördü. **9 tasarım/keşif spec'i** round-22 için HAZIR (dream-value, value-report, deepen-highvalue, JS-roadmap, multilang-core, new-objectives#2-8).
+- **⏭️ ROUND-22 SLATE:** capplanner re-spec (güven-koruyan value-ranking) + dream value-awareness (move_value üstüne) + `apex value-report` (V1 audience-metrik) + deepen-highvalue (pin-doctest sınıf-metotlarına) + JS-roadmap obj 2-6 + multilang-core LanguageAdapter + new-objectives #2-8.
+
 **BU OTURUM (20. tur) — F1-F5 KÖR-NOKTA FIX'LERİ + 2 YENİ OBJEKTİF + KALICI SOUNDNESS DENETÇİSİ: derin re-audit'in 5 bulgusu kapatıldı, wire-v2 docstring kalıntısı (pilot) düzeltildi, enforce-enum-unique (17. CONCRETE) + sort-dunder-all (TIDY), `apex self-audit --soundness` indi; 6-mühendis ordusu izole kopyalarda (1 mühendis 529-öldü ama işi tamamdı→bağımsız doğrulandı); full-gate yeşil (17 step, 1002s), A+99, 23.115 test, CONCRETE 16→17:**
 - `119393b` **fix(add-final/seal/freeze) — public-API REDDİ (F1/F2/F3, HIGH, `ascend`-otonom):** @final/freeze, DIŞ subclasser'ı görünmeyen PUBLIC kütüphane sınıf/metoduna iniyordu (suite ASLA yakalayamaz — @final runtime no-op; freeze __hash__/immutability ekler). Pilot boltons'ta ~73 @final landing doğruladı. FIX: paylaşılan `module_public_surface` (`__all__` varsa listesi; yoksa TÜM top-level non-underscore = default-PUBLIC, __init__.py-gating YOK — PEP-420 namespace paketleri + plan-layer zaten non-library dosyaları eler). Public yüzeyi REDDEDER, yalnız PRIVATE/internal'ı mühürler.
 - `864b14c` **fix(plan) — non-library dosya dışlama (F4, BROAD-LAND):** paylaşılan tek-dosya makinesi setup.py/conf.py/noxfile.py/shebang'ı elemiyordu (docs/conf.py sınıfına @final kanıtlandı). FIX: `_SCRIPT_DENYLIST` (cross_file_rename) → plan_source_rewrite reddeder + SourceIndex.build dışlar. **DENYLIST-ONLY** (auditor'ın __init__.py kuralı DEĞİL): Apex PEP-420 namespace paketleri kullanıyor → __init__.py kuralı 21 gerçek modülü objektiflerden VE kalite-tarama indeksinden düşürürdü. Mühendis bu kalibrasyonu kendi buldu+belgeledi.
@@ -527,10 +538,11 @@
 
 ## 2. Kanıt duruşu (next session bunlara güvenebilir)
 
-- **Kapı:** `python scripts/verify.py` → full green (**23.115 test** + ruff), öz-not **A+99**
-  (20. turda `--chunks 16 -j 4` → 1002s, 17 step + ruff PASS, exit 0; 6 commit: public-API reddi
-  F1/F2/F3, non-library dışlama F4, wire docstring, enum-unique+dunder-all, `--soundness`, targeting;
-  CONCRETE 16→17, TIDY 41→42, dup baseline-only). **Yeni:** `apex self-audit --soundness` (objektif-soundness kalıcı denetçisi).
+- **Kapı:** `python scripts/verify.py` → full green (**23.262 test** + ruff), öz-not **A+99**
+  (21. turda `--chunks 16 -j 4` → 893s, 17 step + ruff PASS, exit 0; 5 commit: mutation-budget,
+  implement-stub 4-aile, move_value zekâ-omurgası, implement-from-doctest, js-tdd-implement/K3;
+  CONCRETE 17→19, TIDY 42, dup baseline-only). **Yeni:** JS/TS desteği (ilk Python-dışı iniş,
+  js-tdd-implement); capplanner value-planner ERTELENDİ (round-22 re-spec, güven-özelliğini koru).
   **PARALEL-AĞIR:** worktree bozuk → izole `cp` kopyaları (`/tmp/apex-eng-*`, scratchpad `parallel_heavy_harness.sh`);
   STEP-0 `import app` izolasyon-assert'i zorunlu (kopyanın app/'i editable-install'ı yener); entegrasyon `cp`-back
   (ayrık-dosya). RAM-bütçe: targeted-test düşük RAM, ≤11GB peak ile ~5-6 eşzamanlı ağır mümkün ("5=OOM" full-suite içindi). **Yeni objektif eklerken** facet-parite
@@ -604,6 +616,9 @@
 4. **add-override REDESIGN (round-17'de ERTELENDİ):** binding-aware base resolution + top-level-only index + method-only match +
    version-gate (`>`/`>=` iff (major,minor)>=(3,12)) + parantezli import. EN ZOR + yalnız >=3.12 erişir → EN DÜŞÜK öncelik. `spec_r17_add_override.md`.
 - ⏳ add-functools-wraps NEEDS-DESIGN; ❌ add-slots/add-staticmethod REDDEDİLDİ; strip-redundant-object-base NEEDS-DESIGN (TIDY).
+- ✅ **21.tur İNDİ:** 5 commit — mutation-budget (`6cedc1a`), implement-stub 4-aile (`3394292`), move_value zekâ-omurgası (`a3bd520`),
+  implement-from-doctest 18.CONCRETE (`b6d87e3`), **js-tdd-implement 19.CONCRETE / İLK PYTHON-DIŞI İNİŞ** (`a1c4ec1`). + 2 alıcı-değer demosu
+  (15 gövde, 2 domen). capplanner ERTELENDİ (güven-tansiyonu, round-22 re-spec). Gate 2 cross-build etkileşim yakaladı (moat). CONCRETE 17→19.
 - ✅ **20.tur İNDİ:** 6 commit — public-API reddi F1/F2/F3 (`119393b`), non-library dışlama F4 (`864b14c`), wire docstring (`0fcf934`),
   enforce-enum-unique+sort-dunder-all (`281c14d`), `apex self-audit --soundness` (`8cfc6d9`), cover-gaps/document-signature targeting (`9d613ce`).
   Derin re-audit'in F1-F5'i kapandı; wire-v2 docstring kalıntısı (2 pilot) düzeldi; soundness denetçisi kalıcı oldu. CONCRETE 16→17.
