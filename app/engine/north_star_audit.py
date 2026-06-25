@@ -242,8 +242,12 @@ _CONCRETE_SCOPES = frozenset({
     "generate-usage-doc", "usage-doc",
     "percent-to-fstring", "format-to-fstring", "fstring-convert",
     "develop-session",
-    # ... and the value-oracle that DIRECTLY GATES those landed fills.
+    # ... the value-oracle that DIRECTLY GATES those landed fills ...
     "test-shield", "test_shield",
+    # ... and the overnight LANDING CHAIN (`apex dream --land`): pure orchestration
+    # over the verified-with-rollback compiler that LANDS the value-led concrete
+    # chain, so the chain's own commits count concrete in the drift check.
+    "dream-develop",
 })
 # A `fix`/`feat` whose scope names one of these is trust-foundation/safety work.
 _SAFETY_SCOPES = frozenset({

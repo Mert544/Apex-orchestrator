@@ -141,7 +141,13 @@ def cmd_brief(args: argparse.Namespace) -> int:
 
 
 def cmd_dream(args: argparse.Namespace) -> int:
-    """Review the organism's memory stores, extract patterns, curate, digest."""
+    """Review the organism's memory stores, extract patterns, curate, digest.
+
+    With ``--land`` it instead runs the overnight LANDING CHAIN (``_cmd_dream_land``):
+    the value-led concrete objectives, scoped to the dream's confluences, each
+    verified-with-rollback. Without ``--land`` the command is unchanged."""
+    if getattr(args, "land", False):
+        return _cmd_dream_land(args)
     from app.engine.dream import dream, render_dream_markdown
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
@@ -152,6 +158,27 @@ def cmd_dream(args: argparse.Namespace) -> int:
         print(render_dream_markdown(report))
         if report.digest_path:
             print(f"[dream] Digest written to {report.digest_path}")
+    return 0
+
+
+def _cmd_dream_land(args: argparse.Namespace) -> int:
+    """`apex dream --land`: the overnight landing CHAIN.
+
+    Runs ``dream_develop`` — the value-led concrete objective order, scoped to the
+    dream's confluence modules (or whole-tree when none), each landed through the
+    existing verified-with-rollback compiler — and prints one DreamChainReport.
+    DRY-RUN by default; ``--apply`` writes, ``--fast`` scopes the per-move gate.
+    Exit 0 even on an empty chain — a project with nothing landable is an honest
+    refusal, not a failure."""
+    from app.engine.dream_develop import dream_develop, render_dream_chain_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    report = dream_develop(str(target), apply=getattr(args, "apply", False),
+                           fast=getattr(args, "fast", False))
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(render_dream_chain_markdown(report))
     return 0
 
 
@@ -995,6 +1022,14 @@ def register_parsers(subparsers) -> None:
     dream_parser.add_argument("--target", default="", help="Target project root")
     dream_parser.add_argument("--curate", action="store_true",
                               help="Apply the curation (default only reports; inputs untouched)")
+    dream_parser.add_argument("--land", action="store_true",
+                              help="Run the overnight LANDING CHAIN: value-led concrete "
+                                   "objectives, scoped to the dream's confluences, each "
+                                   "verified-with-rollback (default dry run)")
+    dream_parser.add_argument("--apply", action="store_true",
+                              help="With --land: actually write the verified moves (default: dry run)")
+    dream_parser.add_argument("--fast", action="store_true",
+                              help="With --land: scope each per-move gate to the changed module")
     dream_parser.add_argument("--json", action="store_true", help="Emit JSON")
     dream_parser.set_defaults(func=cmd_dream)
 
