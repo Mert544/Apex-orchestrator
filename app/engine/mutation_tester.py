@@ -160,6 +160,14 @@ class MutationResult:
     # kill/survive split is meaningless (every mutant looks "killed" against an
     # already-red baseline). A sound score requires baseline_ok is True.
     baseline_ok: bool = True
+    # True when a deterministic work budget (a mutant-RUN COUNT, never a clock)
+    # ran out before every enumerated mutant was verified — so ``total`` covers
+    # only the mutants ACTUALLY examined and the rest were left unvisited this
+    # run. A distinct honest outcome (mirrors ``baseline_ok``): the score over the
+    # examined mutants is still sound (no skip is folded into killed/survived),
+    # but the caller must not read a budget-truncated scan as "module clean". The
+    # default is False, so every unbudgeted run is byte-identical to before.
+    budget_exhausted: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -171,6 +179,7 @@ class MutationResult:
             "survivors": [m.to_dict() for m in self.survivors],
             "scoped_tests": list(self.scoped_tests),
             "baseline_ok": self.baseline_ok,
+            "budget_exhausted": self.budget_exhausted,
         }
 
 
@@ -721,9 +730,59 @@ def render_mutation_markdown(result: MutationResult) -> str:
     return "\n".join(lines)
 
 
+def _build_pending(source_lines: list[str], sites: list[_Site], module_rel: str,
+                   max_mutants: int) -> list[tuple[Mutant, str]]:
+    """``(Mutant, mutated source)`` pairs in document order, splices that fail to
+    re-parse skipped, capped at ``max_mutants`` — the raw work list."""
+    pending: list[tuple[Mutant, str]] = []
+    for site in sites:
+        if len(pending) >= max_mutants:
+            break
+        mutated_source = _splice(source_lines, site)
+        if mutated_source is None:
+            continue
+        pending.append((Mutant(
+            module=module_rel, line=site.line, operator=site.operator,
+            original=site.original, mutated=site.mutated,
+        ), mutated_source))
+    return pending
+
+
+def _verify_pending(root: Path, module_rel: str,
+                    pending: list[tuple[Mutant, str]], verify_timeout: int,
+                    covering: list[str], budget) -> tuple[int, list[Mutant], bool]:
+    """Verify each pending mutant until the work budget runs out.
+
+    Returns ``(killed, survivors, exhausted)``. With ``budget is None`` every
+    pending mutant runs (today's behaviour, byte-identical). With a ``_Budget``
+    the loop spends one run per mutant and STOPS the moment nothing is left — the
+    unvisited mutants are simply not examined (never folded into killed/survived,
+    so the score over the examined set stays sound). ``verify_timeout`` is passed
+    through UNCHANGED on every call: the budget bounds the COUNT of runs, never
+    the per-run time, so a mutant that runs gets the same fixed-timeout verdict on
+    every machine (the TimeoutExpired→kill rule is untouched)."""
+    killed = 0
+    survivors: list[Mutant] = []
+    for i, (mutant, mutated_source) in enumerate(pending):
+        if budget is not None and budget.exhausted:
+            # Out of allowance: every remaining mutant is left UNEXAMINED. We do
+            # NOT count it as killed or survived — truncating ``total`` keeps the
+            # examined-set score honest. The caller reports budget_exhausted.
+            return killed, survivors, True
+        if _verify_killed(root, module_rel, mutated_source, verify_timeout,
+                          covering=covering):
+            mutant.killed = True
+            killed += 1
+        else:
+            survivors.append(mutant)
+        if budget is not None:
+            budget.spend(1)
+    return killed, survivors, False
+
+
 def mutation_score(project_root, module_rel: str, max_mutants: int = 30,
                    verify_timeout: int = 120,
-                   scope_tests: bool = True) -> MutationResult:
+                   scope_tests: bool = True, budget=None) -> MutationResult:
     """Measure how strongly the project's test suite constrains ``module_rel``.
 
     Seeds up to ``max_mutants`` deterministic single-token faults into the
@@ -741,6 +800,18 @@ def mutation_score(project_root, module_rel: str, max_mutants: int = 30,
     empty to record that we fell back). A genuinely untested module therefore
     surfaces its survivors honestly. ``scope_tests=False`` keeps the original
     full-suite behaviour for back-compat.
+
+    Work budget (``budget``, an :class:`app.execution._verify_budget._Budget` or
+    ``None``): a DETERMINISTIC mutant-RUN COUNT — never a wall clock — bounding
+    how many ``_verify_killed`` runs this scan may spend so a big real module
+    can't fan out past the harness limit and land an honest no-op. Each run
+    (baseline + per mutant) debits one. When it runs out mid-scan the remaining
+    mutants are left UNEXAMINED (``total`` covers only those verified) and
+    ``budget_exhausted=True`` is reported — a skip is NEVER folded into
+    killed/survived, so the examined-set score stays sound. ``verify_timeout``
+    is independent of the budget (it stays its fixed default), so a mutant that
+    runs gets the same verdict everywhere — the TimeoutExpired→kill rule is
+    untouched. ``budget is None`` (the default) is byte-identical to before.
 
     The original project tree is read-only throughout (see ``_verify_killed``).
     """
@@ -760,23 +831,18 @@ def mutation_score(project_root, module_rel: str, max_mutants: int = 30,
 
     source_lines = source.splitlines(keepends=True)
     sites = _collect_sites(tree, source_lines)
-
-    # Build (Mutant, mutated source) pairs in document order, skipping any
-    # splice that fails to re-parse, capped at max_mutants.
-    pending: list[tuple[Mutant, str]] = []
-    for site in sites:
-        if len(pending) >= max_mutants:
-            break
-        mutated_source = _splice(source_lines, site)
-        if mutated_source is None:
-            continue
-        mutant = Mutant(
-            module=module_rel, line=site.line, operator=site.operator,
-            original=site.original, mutated=site.mutated,
-        )
-        pending.append((mutant, mutated_source))
-
+    pending = _build_pending(source_lines, sites, module_rel, max_mutants)
     mutants = [m for m, _ in pending]
+
+    # Budget guard at the START: the baseline run below costs one mutant-run. If
+    # there is work to do but the budget can't even pay for the baseline, examine
+    # NOTHING this scan (total=0) and report budget_exhausted — a half-funded
+    # module is never scored against a baseline-less (and so meaningless) split.
+    if pending and budget is not None and not budget.can_afford(1):
+        return MutationResult(
+            module=module_rel, total=0, killed=0, survived=0, score=0.0,
+            survivors=[], scoped_tests=list(covering), budget_exhausted=True,
+        )
 
     # Baseline-green guard (measurement soundness): a kill/survive split is only
     # meaningful if the covering tests PASS on the UNMUTATED module. If they
@@ -785,29 +851,28 @@ def mutation_score(project_root, module_rel: str, max_mutants: int = 30,
     # .git) — then EVERY mutant trivially looks "killed" and the score is a false
     # 100%. Run the original source through the same harness first; if the suite
     # is already red, report baseline_ok=False instead of a misleading score.
-    if pending and _verify_killed(root, module_rel, source, verify_timeout,
-                                  covering=covering):
-        return MutationResult(
-            module=module_rel, total=len(mutants), killed=0,
-            survived=len(mutants), score=0.0, survivors=list(mutants),
-            scoped_tests=list(covering), baseline_ok=False,
-        )
+    if pending:
+        baseline_red = _verify_killed(root, module_rel, source, verify_timeout,
+                                      covering=covering)
+        if budget is not None:
+            budget.spend(1)  # the baseline run costs one unit of the budget
+        if baseline_red:
+            return MutationResult(
+                module=module_rel, total=len(mutants), killed=0,
+                survived=len(mutants), score=0.0, survivors=list(mutants),
+                scoped_tests=list(covering), baseline_ok=False,
+            )
 
-    killed = 0
-    survivors: list[Mutant] = []
-    for mutant, mutated_source in pending:
-        if _verify_killed(root, module_rel, mutated_source, verify_timeout,
-                          covering=covering):
-            mutant.killed = True
-            killed += 1
-        else:
-            survivors.append(mutant)
+    killed, survivors, exhausted = _verify_pending(
+        root, module_rel, pending, verify_timeout, covering, budget)
 
-    total = len(mutants)
-    survived = total - killed
+    # ``total`` counts only the mutants ACTUALLY examined (killed + survived) — a
+    # budget-truncated tail is excluded, so the score is honest over what ran.
+    total = killed + len(survivors)
+    survived = len(survivors)
     score = killed / total if total else 0.0
     return MutationResult(
         module=module_rel, total=total, killed=killed,
         survived=survived, score=score, survivors=survivors,
-        scoped_tests=list(covering),
+        scoped_tests=list(covering), budget_exhausted=exhausted,
     )

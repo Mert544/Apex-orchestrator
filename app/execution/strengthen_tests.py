@@ -57,6 +57,7 @@ from app.engine.mutation_tester import (
     _splice,
     mutation_score,
 )
+from app.execution._verify_budget import _Budget, _mutant_cap_for
 from app.execution.cross_file_rename import RenamePlan
 from app.execution.test_shield import (
     _captured_oracle,
@@ -604,7 +605,8 @@ def _killing_func(module_stem: str, body_lines: list[str]) -> list[str]:
     ]
 
 
-def plan_strengthen_tests(project_root: str | Path, module_rel: str) -> RenamePlan:
+def plan_strengthen_tests(project_root: str | Path, module_rel: str,
+                          budget: _Budget | None = None) -> RenamePlan:
     """Build the mutant-killing test plan for one module, or an empty no-op plan.
 
     Runs the mutation engine over ``module_rel`` to find surviving mutants, then
@@ -615,14 +617,22 @@ def plan_strengthen_tests(project_root: str | Path, module_rel: str) -> RenamePl
     oracle. The MODULE target is refused outright for a test/fixture file. The
     write goes in ``new_contents`` (with the original in ``originals`` when the
     test file already exists, so the verified-apply engine rolls it back on a
-    full-suite regression)."""
+    full-suite regression).
+
+    ``budget`` (a :class:`app.execution._verify_budget._Budget` or ``None``) is a
+    DETERMINISTIC mutant-RUN COUNT — never a clock — threaded into the mutation
+    engine so a scan over a big real file can't fan out past the harness limit and
+    land an honest no-op. It bounds how many mutants are examined for THIS module
+    (decrementing the shared counter the caller passes), never weakens a gate, and
+    never shortens ``verify_timeout``. ``budget is None`` (the default) is
+    byte-identical to the pre-budget behaviour, so a small project is unchanged."""
     plan = RenamePlan(old=module_rel, new="strengthen-tests")
     rel = module_rel.replace("\\", "/")
     if not rel.endswith(".py") or _is_fixture_path(rel):
         return plan  # never treat a test/fixture (or non-module) as the subject
     root = Path(project_root)
     existing = _read_existing_test(root, rel)
-    killers = _module_killing_assertions(root, rel, existing)
+    killers = _module_killing_assertions(root, rel, existing, budget)
     if killers is None:
         return plan  # nothing to land (no survivors / unkillable / unreadable)
     assertions, imports = killers
@@ -641,15 +651,23 @@ def _read_existing_test(root: Path, rel: str) -> str | None:
         return None
 
 
-def _module_killing_assertions(root: Path, rel: str,
-                               existing: str | None) -> tuple[list, list] | None:
+def _module_killing_assertions(root: Path, rel: str, existing: str | None,
+                               budget: _Budget | None = None
+                               ) -> tuple[list, list] | None:
     """``(assertions, imports)`` for one module, or ``None`` (a no-op).
 
     ``None`` for: a packaging module (``__init__``/``__main__``), an
     unreadable/unparseable source, an unsound (red) or already-saturated mutation
     baseline, or a survivor set from which nothing could be killed honestly.
     ``existing`` (the current test file, if any) seeds the import-binding reuse so
-    appended assertions address the function the way that file already does."""
+    appended assertions address the function the way that file already does.
+
+    ``budget`` is the deterministic mutant-run COUNT threaded into the mutation
+    engine (``None`` = unbounded, byte-identical to before). The per-module mutant
+    cap is the smaller of the module default and the size-aware
+    :func:`_mutant_cap_for` cap, so a huge file enumerates fewer mutants while a
+    small file keeps the full default set — a pure function of the source, so the
+    cap is deterministic and never changes any mutant's kill/survive verdict."""
     module_stem = Path(rel).stem
     if module_stem.startswith("__"):  # __init__/__main__ are packaging, not behaviour
         return None
@@ -658,7 +676,8 @@ def _module_killing_assertions(root: Path, rel: str,
         tree = ast.parse(source)
     except (OSError, SyntaxError, RecursionError, MemoryError):
         return None
-    result = mutation_score(root, rel, max_mutants=_MAX_MUTANTS)
+    cap = min(_MAX_MUTANTS, _mutant_cap_for(source))
+    result = mutation_score(root, rel, max_mutants=cap, budget=budget)
     # A red baseline makes the kill/survive split meaningless; refuse to act on it.
     if not result.baseline_ok or not result.survivors:
         return None
