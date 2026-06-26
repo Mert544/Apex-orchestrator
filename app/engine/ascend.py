@@ -48,6 +48,13 @@ class GoalRanking:
     reliability: float = 1.0  # the organism's DREAMED land-rate for this objective
     expensive: bool = False  # a heavy fitness scan (only on the --concrete board)
     value_weight: float = 1.0  # buyer-value lead on the --concrete board; neutral 1.0 keeps the default fast board byte-identical
+    # A PURELY DISPLAY-ONLY buyer-value lens for the read-only preview path
+    # (``value_weight_preview``). It is NEVER read by ``priority`` — the
+    # apply-driving order stays byte-identical whether or not the preview lens is
+    # on (the round-21 safety: only the read-only PREVIEW may change, never the
+    # applied set). Default 0.0 ⇒ ``to_dict`` omits it (additive, like
+    # ``CompileStep.value``), so ``apex plan --json`` is byte-identical when off.
+    preview_value: float = 0.0
 
     @property
     def priority(self) -> float:
@@ -69,11 +76,18 @@ class GoalRanking:
                 * self.reliability * self.value_weight)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"objective": self.objective, "pending": self.pending,
-                "goal": self.goal, "payoff": round(self.payoff, 3),
-                "reliability": round(self.reliability, 3),
-                "value_weight": round(self.value_weight, 3),
-                "priority": round(self.priority, 3)}
+        d = {"objective": self.objective, "pending": self.pending,
+             "goal": self.goal, "payoff": round(self.payoff, 3),
+             "reliability": round(self.reliability, 3),
+             "value_weight": round(self.value_weight, 3),
+             "priority": round(self.priority, 3)}
+        # ``preview_value`` is a PURELY ADDITIVE display disclosure: it appears
+        # ONLY when the read-only preview lens populated it (default 0.0 ⇒ key
+        # omitted ⇒ ``apex plan --json`` is byte-identical to before), exactly
+        # mirroring ``CompileStep.to_dict``'s additive ``value`` omission.
+        if self.preview_value:
+            d["preview_value"] = round(self.preview_value, 3)
+        return d
 
 
 @dataclass
@@ -212,7 +226,8 @@ def land_factors(project_root: str | Path) -> dict[str, float]:
 def rank_objectives(project_root: str | Path,
                     objectives: list[str] | None = None,
                     *, include_expensive: bool = False,
-                    exclude: set[str] | None = None) -> list[GoalRanking]:
+                    exclude: set[str] | None = None,
+                    value_weight_preview: bool = False) -> list[GoalRanking]:
     """Every objective ranked by pending fixable debt AMPLIFIED by learned
     payoff, worst-and-most-profitable first.
 
@@ -226,7 +241,15 @@ def rank_objectives(project_root: str | Path,
     ``exclude`` is the climb's within-run blocked set: objectives a prior round
     proved cannot move (every candidate blocked) so the board stops re-ranking
     them to the top each round. It only drops names — it never reorders the
-    survivors — and an empty/None set leaves the board byte-identical to before."""
+    survivors — and an empty/None set leaves the board byte-identical to before.
+
+    ``value_weight_preview`` is a READ-ONLY display lens: when on it stamps each
+    ranking's NEW ``preview_value`` field with ``objective_value_weight(name)``
+    (a buyer-value annotation the preview can surface). It NEVER feeds
+    ``priority`` and NEVER touches the sort key, so the apply-driving order is
+    byte-identical whether it is on or off (the round-21 safety — only the
+    read-only preview may change). Off (default) ⇒ ``preview_value`` stays 0.0
+    ⇒ ``to_dict`` omits it ⇒ ``apex plan --json`` is byte-identical."""
     from app.engine.develop_registry import expensive_names
     from app.engine.objective_compiler import _objectives_map
 
@@ -265,7 +288,12 @@ def rank_objectives(project_root: str | Path,
                                     reliability=reliab.get(name, 1.0),
                                     expensive=name in exp,
                                     value_weight=(objective_value_weight(name)
-                                                  if include_expensive else 1.0)))
+                                                  if include_expensive else 1.0),
+                                    # Display-only buyer-value annotation for the
+                                    # read-only preview; NEVER read by priority or
+                                    # the sort key (apply order stays identical).
+                                    preview_value=(objective_value_weight(name)
+                                                   if value_weight_preview else 0.0)))
     # Highest priority first; among priority ties the higher buyer-value objective
     # leads (so on the --concrete board an equal-priority concrete banks before a
     # cheaper tidy), then the cheaper objective (expensive=False) banks before an

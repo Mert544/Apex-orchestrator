@@ -357,9 +357,144 @@ def _auto_deep_disclosure(args) -> str:
             "add `--deep` to include it._")
 
 
+# --- Value-ranked PREVIEW (read-only, opt-in-expensive) ---------------------- #
+# A buyer sees the high-value work FIRST in the default preview, instead of the
+# moat being hidden behind --concrete. STRICTLY read-only: every board here is
+# built with ``rank_objectives`` (apply=False ⇒ writes nothing, runs no suite)
+# and is NEVER fed into ``compile_objective(apply=True)`` — the applied set stays
+# byte-identical (the round-21 safety). "Value" answers *what KIND of work* it is
+# (the frozen buyer model), kept strictly separate from coverage/"verified"
+# (whether a test exercised a landed change), so the annotation never reads as a
+# verification claim.
+
+
+def _auto_value_board(target, *, concrete: bool) -> list:
+    """The default-path objective board, value-RANKED for the read-only preview.
+
+    Reuses the same fitness board ``apex plan``/``apex develop --auto`` select
+    from (``rank_objectives``, with the expensive concrete objectives included
+    only when ``concrete``), keeps the ones carrying qualifying work right now
+    (``pending > 0``), and orders them by buyer value desc with the objective
+    name as a stable tie-break — a total order, no clock/random. The
+    ``value_weight_preview`` lens stamps each ranking's display-only
+    ``preview_value`` WITHOUT touching ``priority`` (the apply-driving order).
+
+    Best-effort, like ``_auto_memory_line``: a failing board must never break the
+    brief — on any error the value preview degrades to empty (it is a read-only
+    enrichment, never a correctness gate)."""
+    from app.engine.objective_value import objective_value_weight
+
+    try:
+        from app.engine.ascend import rank_objectives
+
+        board = [r for r in rank_objectives(str(target), include_expensive=concrete,
+                                            value_weight_preview=True)
+                 if r.pending > 0]
+    except Exception:
+        return []
+    board.sort(key=lambda r: (-objective_value_weight(r.objective), r.objective))
+    return board
+
+
+def _auto_concrete_unlock(target) -> tuple[str, float] | None:
+    """The single highest-value EXPENSIVE objective ``--concrete`` would unlock
+    (carrying qualifying work now), as ``(objective, buyer_value)`` — or None.
+
+    DISPLAY-ONLY: this expensive-inclusive board exists to NAME the concrete moat
+    in the disclosure; it is never fed into ``compile_objective(apply=True)``, so
+    expensive work stays opt-in. Deterministic: value desc, name as tie-break."""
+    from app.engine.develop_registry import expensive_names
+    from app.engine.objective_value import objective_value_weight
+
+    expensive = expensive_names()
+    unlockable = [r for r in _auto_value_board(target, concrete=True)
+                  if r.objective in expensive]
+    if not unlockable:
+        return None
+    best = unlockable[0]  # already value-sorted (value desc, name tie-break)
+    return best.objective, objective_value_weight(best.objective)
+
+
+def _auto_value_lead_line(board: list) -> str:
+    """The headline naming the highest buyer-value applicable objective + its
+    value, so the default preview LEADS with the moat. Empty when nothing
+    applies. "buyer-value" describes the KIND of work, never a verification."""
+    if not board:
+        return ""
+    from app.engine.objective_value import objective_value_weight
+
+    top = board[0]
+    return (f"**Highest-value work available:** `{top.objective}` "
+            f"(buyer-value {objective_value_weight(top.objective):.2f}, "
+            f"{int(top.pending)} pending).")
+
+
+def _auto_concrete_unlock_line(target, concrete: bool, *, flag: str) -> str:
+    """The disclosure naming the concrete/expensive objective ``flag`` would
+    unlock (highest buyer-value first) WITHOUT selecting it. Empty when concrete
+    is already on or nothing expensive is applicable. Mirrors the
+    ``_auto_deep_disclosure`` idiom: cost-bearing work stays visible + opt-in.
+    ``flag`` is the actual opt-in for the calling command (``--concrete`` for
+    ``develop --auto``, ``--deep`` for ``auto``), so the message names the right
+    one."""
+    if concrete:
+        return ""
+    unlock = _auto_concrete_unlock(target)
+    if unlock is None:
+        return ""
+    name, value = unlock
+    return (f"_Higher-value concrete work is available: `{name}` "
+            f"(buyer-value {value:.2f}) — add `{flag}` to include it "
+            f"(runs pytest during grounding)._")
+
+
+def _auto_value_preview_lines(target, concrete: bool, *, flag: str) -> list[str]:
+    """The read-only value-ranked preview block for the recommend headline: the
+    highest-value applicable objective, then (when ``concrete`` is off) the
+    disclosure naming the concrete moat ``flag`` would unlock. Empty list when
+    nothing applies, so a clean project's headline is unchanged. Pure string
+    assembly over a read-only board — no writes, no suite, no clock/random."""
+    board = _auto_value_board(target, concrete=concrete)
+    lines: list[str] = []
+    lead = _auto_value_lead_line(board)
+    if lead:
+        lines += [lead, ""]
+    unlock = _auto_concrete_unlock_line(target, concrete, flag=flag)
+    if unlock:
+        lines += [unlock, ""]
+    return lines
+
+
+def _auto_value_ranked_json(target, concrete: bool) -> dict:
+    """The ADDITIVE value-preview keys for ``apex auto --json``: the value-ranked
+    applicable board and the concrete moves ``--concrete`` would unlock. Purely
+    additive — existing keys are untouched, so the payload stays back-compatible.
+    Read-only (``rank_objectives``); never drives an apply."""
+    from app.engine.objective_value import objective_value_weight
+
+    board = _auto_value_board(target, concrete=concrete)
+    value_ranked = [{"objective": r.objective,
+                     "value": round(objective_value_weight(r.objective), 3),
+                     "pending": r.pending} for r in board]
+    unlock = _auto_concrete_unlock(target)
+    concrete_available = ([] if unlock is None
+                          else [{"objective": unlock[0],
+                                 "value": round(unlock[1], 3)}])
+    return {"value_ranked": value_ranked, "concrete_available": concrete_available}
+
+
 def _auto_recommend(args, target, goal, shape, roadmap, sec_n,
                     executable, decision, emit_json) -> int:
-    """The recommend path: never touch the tree, report what could be applied."""
+    """The recommend path: never touch the tree, report what could be applied.
+
+    Now PREVIEW-FIRST: the default (no-flag) recommend LEADS with the highest
+    buyer-value applicable objective and discloses the concrete moat ``--deep``
+    would unlock — surfacing the value-ranked work instead of hiding it. The
+    value board is strictly read-only (``rank_objectives``); it drives no apply,
+    so the recommend path still touches nothing."""
+    # ``--deep`` is what unlocks the EXPENSIVE board in the auto path (the
+    # --concrete equivalent); the disclosure names that flag.
+    concrete = getattr(args, "deep", False)
     if emit_json:
         print(json.dumps({
             "target": str(target), "goal": goal, "ideas": shape.total_ideas,
@@ -367,8 +502,13 @@ def _auto_recommend(args, target, goal, shape, roadmap, sec_n,
             "observations": shape.observations,
             "quick_wins": [{"title": i.title, "roi": i.roi} for i in roadmap.quick_wins],
             "applicable": executable, "applied": False, "decision": decision.to_dict(),
+            # ADDITIVE value-preview keys (existing keys untouched).
+            **_auto_value_ranked_json(target, concrete),
         }, indent=2))
         return 0
+    preview = _auto_value_preview_lines(target, concrete, flag="--deep")
+    if preview:
+        print("\n".join(preview))
     print(f"_Apex chose not to apply automatically: {decision.reason}._\n")
     cap = (getattr(args, "max_apply", 0) or 8)
     # Disclose the per-run apply cap so the recommend count and what `--apply`
@@ -732,14 +872,57 @@ def _develop_auto(args, target, grade_before, max_steps, verify, apply) -> int:
             results.append(result)
     changed = apply and any(r.steps for r in results)
     if args.json:
+        # BYTE-IDENTICAL apply/dry-run JSON contract: the step contract is
+        # untouched; the value-ranked PREVIEW is a CLI-string-layer concern only.
         print(json.dumps([r.to_dict() for r in results], indent=2))
-    else:
+    elif apply:
         print(render_all_markdown(results))
         if changed:
             print(_APPLIED_TREE_NOTE)
+    else:
+        # DEFAULT (dry-run, human-readable): value-rank the DISPLAY so the
+        # highest buyer-value work leads, and disclose the concrete moat
+        # ``--concrete`` would unlock — read-only string assembly over the SAME
+        # results (no re-selection, the step contract is unchanged).
+        print(_develop_auto_value_preview(target, results, concrete))
     _print_grade_proof(str(target), grade_before, changed,
                        objective="auto", moves=sum(len(r.steps) for r in results))
     return 0
+
+
+def _develop_auto_value_preview(target, results: list, concrete: bool) -> str:
+    """The DEFAULT-path dry-run preview for ``develop --auto``, value-RANKED:
+    render the per-objective breakdowns ordered by buyer value desc (name as a
+    stable tie-break), each headed by its buyer-value, then disclose the highest
+    -value concrete objective ``--concrete`` would unlock. Pure string assembly
+    over the already-computed ``results`` — it reorders/annotates the DISPLAY
+    only, never the applied set (which a dry run does not produce anyway), and
+    "buyer-value" names the KIND of work, never a verification claim."""
+    from app.engine.objective_compiler import (
+        render_all_markdown, render_compile_markdown,
+    )
+    from app.engine.objective_value import objective_value_weight
+
+    unlock = _auto_concrete_unlock_line(target, concrete, flag="--concrete")
+    if not results:
+        # The cheap board is a fixpoint — keep the canonical empty-sweep message,
+        # but STILL surface the concrete moat ``--concrete`` would unlock (the
+        # whole point: the high buyer-value work isn't hidden) when it applies.
+        body = render_all_markdown(results)
+        return f"{body}\n{unlock}\n" if unlock else body
+    ordered = sorted(results,
+                     key=lambda r: (-objective_value_weight(r.objective), r.objective))
+    total_moves = sum(len(r.steps) for r in ordered)
+    total_gain = sum(r.fitness_start - r.fitness_end for r in ordered)
+    lines = [f"# Develop — all objectives ({len(ordered)} with work), value-ranked", "",
+             f"**{total_moves} verified move(s)**, total fitness gain "
+             f"**{total_gain:g}** across the sweep — highest buyer-value first.", ""]
+    for r in ordered:
+        lines.append(f"_buyer-value {objective_value_weight(r.objective):.2f}_")
+        lines.append(render_compile_markdown(r))
+    if unlock:
+        lines += [unlock, ""]
+    return "\n".join(lines)
 
 
 def _develop_session(args, target, max_steps, verify, apply) -> int:

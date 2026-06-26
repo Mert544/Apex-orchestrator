@@ -421,3 +421,58 @@ def test_expensive_objective_landing_is_recorded_with_zero_delta(tmp_path, monke
     from app.engine.dev_history import DevHistory
     runs = DevHistory.load(str(tmp_path)).entries()
     assert any(r.objective == "ascend:implement-stub" for r in runs)
+
+
+# --------------------------------------------------------------------------- #
+# preview-only value lens: value_weight_preview stamps preview_value WITHOUT    #
+# touching priority / order, and to_dict omits it when off (the round-21 safety)#
+# --------------------------------------------------------------------------- #
+def test_preview_value_does_not_feed_priority():
+    # preview_value is a DISPLAY-only annotation: priority must NEVER read it, so
+    # the apply-driving score is identical whether or not it is set.
+    base = GoalRanking("modernize", 3.0, "refine")
+    with_pv = GoalRanking("modernize", 3.0, "refine", preview_value=0.99)
+    assert base.priority == with_pv.priority == 3.0
+
+
+def test_value_weight_preview_annotates_preview_value_without_changing_order(tmp_path):
+    # The lens stamps preview_value = objective_value_weight(name) on every
+    # ranking, but the ORDER (driven by priority) is byte-identical to the lens-off
+    # board — only the read-only annotation changes (round-21 safety).
+    from app.engine.objective_value import objective_value_weight
+
+    _debt_project(tmp_path)
+    off = rank_objectives(str(tmp_path))
+    on = rank_objectives(str(tmp_path), value_weight_preview=True)
+    # same objectives in the same order, same priorities
+    assert [r.objective for r in off] == [r.objective for r in on]
+    assert [round(r.priority, 6) for r in off] == [round(r.priority, 6) for r in on]
+    # lens off → preview_value stays the neutral 0.0 everywhere
+    assert all(r.preview_value == 0.0 for r in off)
+    # lens on → each carries its buyer-value annotation
+    assert all(r.preview_value == objective_value_weight(r.objective) for r in on)
+    assert any(r.preview_value > 0.0 for r in on)  # something was annotated
+
+
+def test_to_dict_omits_preview_value_when_off():
+    # Default (preview_value == 0.0) → the key is OMITTED, so `apex plan --json` is
+    # byte-identical to before the lens existed (additive disclosure, like value).
+    d = GoalRanking("modernize", 3.0, "refine").to_dict()
+    assert "preview_value" not in d
+    # the established keys are all still present and unchanged
+    assert set(d) == {"objective", "pending", "goal", "payoff", "reliability",
+                      "value_weight", "priority"}
+
+
+def test_to_dict_includes_preview_value_when_set():
+    d = GoalRanking("implement-stub", 2.0, "evolve", preview_value=1.0).to_dict()
+    assert d["preview_value"] == 1.0
+
+
+def test_value_weight_preview_leaves_value_weight_neutral_on_default_board(tmp_path):
+    # The preview lens must NOT bleed into value_weight (which DOES feed priority on
+    # the --concrete board): on the default board value_weight stays the neutral 1.0
+    # even with the preview lens on, so priority is unchanged.
+    _debt_project(tmp_path)
+    on = rank_objectives(str(tmp_path), value_weight_preview=True)
+    assert all(r.value_weight == 1.0 for r in on)
