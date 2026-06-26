@@ -137,6 +137,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "complete-match-exhaustiveness": "runtime-additive(unreached-arm)+static-closed-set-refusal",
     "synthesize-dunders": "suite-catches-runtime+canonical-total-dunders-over-proven-fields+inherited-eq-refusal",
     "seal-total-ordering": "runtime-additive(filled-comparison-ops)+single-defined-order-op+eq-present+static-refusal",
+    "seal-hashable-eq": "runtime-additive(restored-__hash__)+own-body-eq-present+no-__hash__-defined+canonical-over-proven-fields+static-refusal",
     "add-dataclass-order": "runtime-additive(generated-order-ops)+stdlib-dataclass-provenance+no-existing-comparison-dunder+static-refusal",
     # --- TIDY: behavior-preserving idiom rewrites ---------------------------
     "modernize": "behavior-preserving-idiom",

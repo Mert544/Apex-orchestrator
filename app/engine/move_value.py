@@ -74,6 +74,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "dataclassify": 0.50,            # boilerplate __init__ -> @dataclass
     "synthesize_dunders": 0.50,      # canonical __repr__/__eq__/__hash__ over a class's proven field set (dataclassify's sibling)
     "seal_total_ordering": 0.50,     # @functools.total_ordering fills 3 comparison ops from one (synthesize_dunders' comparison-dunder sibling)
+    "seal_hashable_eq": 0.50,        # canonical __hash__ restoring set/dict usability where __eq__ made instances unhashable (synthesize_dunders' hash sibling)
     "inline": 0.45,                  # fold a single-use helper back into its caller
     "extract_guard_clause": 0.45,    # flatten nesting into early-exit guards
     "guard_clause": 0.45,            # a trailing-guard-after-setup rewrite

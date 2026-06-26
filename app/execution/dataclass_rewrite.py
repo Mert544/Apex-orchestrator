@@ -419,6 +419,29 @@ def rejoin_guarded(source: str, out_lines: list[str]) -> str | None:
     return result_text
 
 
+def apply_reverse_line_inserts(
+    source: str, lines: list[str], edits: list[tuple[int, list[str]]]
+) -> str | None:
+    """Apply ``(insert_index, new_lines)`` block INSERTS to ``lines`` and return the
+    guarded module text, or ``None`` when ``edits`` is empty.
+
+    The shared tail of every "splice whole blocks at body positions" rewrite
+    (``dunder_synthesis.synthesize_dunders`` / ``hashable_eq.seal_hashable_eq``): the
+    inserts are applied in REVERSE index order so each earlier line span stays valid as
+    later ones grow, then :func:`rejoin_guarded` re-joins (preserving the trailing
+    newline) and re-``ast.parse``s so a malformed splice yields ``None`` rather than
+    landing broken Python. An EMPTY ``edits`` is a no-op (``None``). Pure: it never
+    reads the clock / random / disk, and sorting by the integer index is total and
+    stable, so the result is deterministic."""
+    if not edits:
+        return None
+    edits.sort(key=lambda e: e[0], reverse=True)  # reverse so indices stay valid
+    out_lines = list(lines)
+    for index_at, body in edits:
+        out_lines[index_at:index_at] = body
+    return rejoin_guarded(source, out_lines)
+
+
 def _node_line_span(node: ast.AST) -> tuple[int, int]:
     """The 0-based ``[start, end)`` line slice a node occupies."""
     start = node.lineno - 1  # type: ignore[attr-defined]

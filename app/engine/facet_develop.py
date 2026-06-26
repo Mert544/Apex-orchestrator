@@ -443,6 +443,23 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # the relative order is free.
     "the comparison operators to complete from one": "seal-total-ordering",
 
+    # A non-@dataclass regular class that defines __eq__ in its OWN body but does NOT
+    # define __hash__ and is NOT already deliberately unhashable: the SAME "unreachable
+    # or no-op statements" simplify sub-aspect also names such a class. THE PYTHON RULE
+    # — defining __eq__ sets __hash__ = None implicitly, so instances become UNHASHABLE
+    # (TypeError in a set/dict-key). seal-hashable-eq LANDS the canonical
+    # `def __hash__(self): return hash((self.f1, ...))` over the SAME proven pure-copy
+    # field set synthesize-dunders trusts (the __hash__ sibling of synthesize-dunders),
+    # RESTORING set/dict-key usability where instances currently raise. RUNTIME-ADDITIVE
+    # (it re-enables a hard TypeError on an unhashable instance); the residual (a field
+    # whose own value is unhashable) is caught by the suite + auto-rollback. PURELY
+    # intra-module (no base allowed -> the hash contract is the class's OWN), so strictly
+    # simpler than synthesize-dunders. Its phrasing ("the hash to restore from the eq
+    # fields") shares no whole-key substring with the dunders / comparison-ops /
+    # dataclassify / freeze / slots keys above (nor any of them with it), so the relative
+    # order is free.
+    "the hash to restore from the eq fields": "seal-hashable-eq",
+
     # A project's own @dataclass that does NOT set order= and defines NONE of the
     # comparison dunders __lt__/__le__/__gt__/__ge__ itself: the SAME "unreachable or
     # no-op statements" simplify sub-aspect also names such a class, and

@@ -401,7 +401,20 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                                         # gated (stdlib-dataclass provenance + no existing
                                         # comparison dunder). Appended last, so the originals
                                         # still lead and emit first.
-                                        "the dataclass to make orderable"],
+                                        "the dataclass to make orderable",
+                                        # added: a non-@dataclass class that defines __eq__ in
+                                        # its OWN body but does NOT define __hash__ and is NOT
+                                        # already deliberately unhashable — the seal-hashable-eq
+                                        # objective lands the canonical
+                                        # `def __hash__(self): return hash((self.f1, ...))` over
+                                        # the proven pure-copy field set, RESTORING set/dict-key
+                                        # usability where defining __eq__ made instances
+                                        # unhashable (__hash__ = None implicitly). The __hash__
+                                        # sibling of synthesize-dunders; runtime-additive and
+                                        # statically gated (no base -> the hash contract is the
+                                        # class's own). Appended last, so the originals still
+                                        # lead and emit first.
+                                        "the hash to restore from the eq fields"],
     # document ladder
     "signatures and types": ["parameter meanings", "return type and None", "raised exceptions list",
                              # added: the package's public re-export surface — the

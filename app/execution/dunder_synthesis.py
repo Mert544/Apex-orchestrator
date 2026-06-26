@@ -67,7 +67,7 @@ from app.execution.dataclass_rewrite import (
     _class_body_names,
     _class_indent,
     _find_init,
-    rejoin_guarded,
+    apply_reverse_line_inserts,
 )
 from app.execution.slots_synthesis import _init_field_names
 
@@ -356,14 +356,7 @@ def synthesize_dunders(source: str, project_sources: list[str]) -> str | None:
     index = _classes_by_name(project_sources)
     lines = source.splitlines()
     edits = _collect_edits(tree, lines, index)
-    if not edits:
-        return None
-
-    edits.sort(key=lambda e: e[0], reverse=True)  # reverse so indices stay valid
-    out_lines = list(lines)
-    for index_at, body in edits:
-        out_lines[index_at:index_at] = body
-    return rejoin_guarded(source, out_lines)
+    return apply_reverse_line_inserts(source, lines, edits)
 
 
 def synthesizable_classes(source: str) -> list[str]:
