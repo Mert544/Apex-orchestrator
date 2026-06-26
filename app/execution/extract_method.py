@@ -543,6 +543,31 @@ def _window_shape_ok(i: int, j: int, n: int, lines_saved: int,
     return _SUGGEST_MIN_LINES <= lines_saved <= _SUGGEST_MAX_LINES
 
 
+def _suggest_helper_name(fn_name: str) -> str:
+    """A module-level helper name for a seam extracted from ``fn_name``.
+
+    The helper is inserted at module level, but its replacement call sits in the
+    original (possibly class-body) scope. A name that *begins* with ``_`` would
+    be class-private name-mangled at that unqualified call site
+    (``__deserialize_part`` → ``_ClassName__deserialize_part``) and resolve to a
+    name that doesn't exist → ``NameError`` at runtime — and since mangling is
+    name-resolution, not syntax, the plan still parses, so it slips past the
+    plan-time parse guard and only fails when the suite runs.
+
+    Stripping the LEADING underscores and using a distinctive ``extracted_``
+    prefix keeps every real candidate (a private method like ``_deserialize``
+    still gets a clean seam) while never colliding with a real public symbol:
+    ``_deserialize`` → ``extracted_deserialize_part``, ``process`` →
+    ``extracted_process_part``, ``__init__`` → ``extracted_init___part``
+    (trailing underscores are kept — they don't mangle). An all-underscore name
+    falls back to ``extracted_fn_part`` via the ``or "fn"`` guard. The result is
+    always a valid identifier with no leading underscore; the apply-time
+    ``isidentifier()`` and module-level collision guards stay the safety net for
+    the rare residual clash."""
+    stem = fn_name.lstrip("_") or "fn"
+    return f"extracted_{stem}_part"
+
+
 def _window_candidate(fn, i: int, j: int, n: int, start: int, win_end: int,
                       win_blocked: bool, win_loads: set[str], win_aug: set[str],
                       win_raw: set[str], win_comp: set[str],
@@ -567,7 +592,7 @@ def _window_candidate(fn, i: int, j: int, n: int, start: int, win_end: int,
         "line": fn.lineno,
         "start": start,
         "end": win_end,
-        "name": f"_{fn.name}_part",
+        "name": _suggest_helper_name(fn.name),
         "params": live_in,
         "returns": live_out,
         "lines_saved": lines_saved,

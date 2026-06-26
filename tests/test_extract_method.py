@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import argparse
 
-import pytest
-
 from app.execution.extract_method import plan_extract
 
 
@@ -255,7 +253,7 @@ def test_suggest_finds_clean_seam_in_long_function():
     s = sugs[0]
     assert s["function"] == "big"
     assert s["start"] < s["end"]
-    assert s["name"] == "_big_part"
+    assert s["name"] == "extracted_big_part"
     assert s["lines_saved"] >= 6
 
 
@@ -325,6 +323,121 @@ def test_suggest_is_deterministic():
     assert suggest_extractions(src) == suggest_extractions(src)
 
 
+# ── Regression: a `_`-prefixed method must not yield a name-mangled helper ──
+# (marshmallow buyer-value pilot: `_deserialize` extracted to a module-level
+# `def __deserialize_part(...)` whose UNQUALIFIED call inside the class body is
+# class-private name-mangled to `_ClassName__deserialize_part` → NameError at
+# runtime. The plan parses fine — mangling is name-resolution, not syntax — so
+# it slips past plan-time guards and only the suite catches it.)
+
+def test_suggest_helper_name_strips_leading_underscores():
+    from app.execution.extract_method import _suggest_helper_name
+
+    # ordinary public method/function — distinctive prefix, no surprises
+    assert _suggest_helper_name("process") == "extracted_process_part"
+    # private method → NO leading underscore (the bug fix)
+    assert _suggest_helper_name("_deserialize") == "extracted_deserialize_part"
+    # dunder: leading underscores stripped; trailing kept (they don't mangle)
+    assert _suggest_helper_name("__init__") == "extracted_init___part"
+    # all-underscore name → the `or "fn"` fallback (still a valid identifier)
+    assert _suggest_helper_name("__") == "extracted_fn_part"
+    assert _suggest_helper_name("_") == "extracted_fn_part"
+    # trailing underscore is kept (valid): process_ → extracted_process__part
+    assert _suggest_helper_name("process_") == "extracted_process__part"
+    # every result is a valid identifier with no leading underscore (no mangling)
+    for name in ("process", "_deserialize", "__init__", "__", "_", "process_"):
+        out = _suggest_helper_name(name)
+        assert out.isidentifier()
+        assert not out.startswith("_")
+
+
+def test_suggest_private_method_helper_is_not_mangled():
+    """The suggested name for a `_`-prefixed method has no leading underscore."""
+    from app.execution.extract_method import suggest_extractions
+
+    body = "\n".join(f"        s{i} = result + {i}" for i in range(45))
+    src = ("class Schema:\n"
+           "    def _deserialize(self, value):\n"
+           "        result = value\n"
+           f"{body}\n"
+           "        return result\n")
+    sugs = suggest_extractions(src)
+    assert sugs, "a long private method should still yield a seam"
+    name = sugs[0]["name"]
+    assert name == "extracted_deserialize_part"
+    assert not name.startswith("_")
+
+
+def test_extracted_private_method_compiles_and_runs_without_nameerror(tmp_path):
+    """End-to-end: extracting from a `_`-prefixed method produces a module that
+    COMPILES and, when run, does not NameError on the mangled call site.
+
+    Before the fix the helper was `def __deserialize_part(...)` and the in-class
+    call `__deserialize_part(...)` mangled to `_Schema__deserialize_part` →
+    NameError. The fix names it `extracted_deserialize_part` (no mangling)."""
+    from app.execution.extract_method import plan_extract, suggest_extractions
+
+    # A `_deserialize` method whose middle is a cohesive, self-contained block.
+    lines = ["class Schema:",
+             "    def _deserialize(self, value):",
+             "        acc = value"]
+    for i in range(40):
+        lines.append(f"        acc = acc + {i}")
+    lines.append("        return acc")
+    src = "\n".join(lines) + "\n"
+    _write(tmp_path, "m.py", src)
+
+    sugs = suggest_extractions(src)
+    assert sugs
+    s = sugs[0]
+    assert not s["name"].startswith("_")
+
+    plan = plan_extract(str(tmp_path), "m.py", s["start"], s["end"], s["name"])
+    assert not plan.blockers
+    new = plan.new_contents["m.py"]
+
+    # The dangerous mangling-prone name must NOT appear anywhere.
+    assert "__deserialize_part" not in new
+    assert "def extracted_deserialize_part(" in new
+
+    # It compiles AND runs: instantiate, call `_deserialize`, assert the value.
+    namespace: dict = {}
+    exec(compile(new, "m.py", "exec"), namespace)  # would raise on bad syntax
+    obj = namespace["Schema"]()
+    result = obj._deserialize(0)  # would NameError before the fix
+    assert result == sum(range(40))  # 0 + 0 + 1 + ... + 39
+
+
+def test_extracted_ordinary_method_runs(tmp_path):
+    """The public-method path keeps working: `process` → extracted_process_part,
+    and the rewritten module compiles, runs, and returns the right value."""
+    from app.execution.extract_method import plan_extract, suggest_extractions
+
+    lines = ["class Pipe:",
+             "    def process(self, value):",
+             "        acc = value"]
+    for i in range(40):
+        lines.append(f"        acc = acc + {i}")
+    lines.append("        return acc")
+    src = "\n".join(lines) + "\n"
+    _write(tmp_path, "m.py", src)
+
+    sugs = suggest_extractions(src)
+    assert sugs
+    s = sugs[0]
+    assert s["name"] == "extracted_process_part"
+
+    plan = plan_extract(str(tmp_path), "m.py", s["start"], s["end"], s["name"])
+    assert not plan.blockers
+    new = plan.new_contents["m.py"]
+    assert "def extracted_process_part(" in new
+
+    namespace: dict = {}
+    exec(compile(new, "m.py", "exec"), namespace)
+    obj = namespace["Pipe"]()
+    assert obj.process(0) == sum(range(40))
+
+
 # ── Characterization: the per-statement memoization (the precomputed store/load
 # sets reused across overlapping windows) MUST be byte-identical to the original
 # per-window data-flow walk. These snapshots pin the exact list — order, fields,
@@ -377,22 +490,22 @@ def test_suggest_characterization_snapshot():
         "short_fn": [],
         "clean": [
             {"function": "big", "line": 1, "start": 3, "end": 42,
-             "name": "_big_part", "params": ["a", "b", "c"], "returns": [],
+             "name": "extracted_big_part", "params": ["a", "b", "c"], "returns": [],
              "lines_saved": 40},
         ],
         "mixed_returns": [
             {"function": "mixed", "line": 1, "start": 12, "end": 17,
-             "name": "_mixed_part", "params": ["b"], "returns": [],
+             "name": "extracted_mixed_part", "params": ["b"], "returns": [],
              "lines_saved": 6},
         ],
         "method": [
             {"function": "m", "line": 2, "start": 4, "end": 43,
-             "name": "_m_part", "params": ["a", "b"], "returns": [],
+             "name": "extracted_m_part", "params": ["a", "b"], "returns": [],
              "lines_saved": 40},
         ],
         "comprehension": [
             {"function": "comps", "line": 1, "start": 4, "end": 43,
-             "name": "_comps_part", "params": [], "returns": [],
+             "name": "extracted_comps_part", "params": [], "returns": [],
              "lines_saved": 40},
         ],
     }
@@ -438,7 +551,8 @@ def test_suggest_memoized_matches_naive_window_walk():
                     cand = {"function": fn.name, "line": fn.lineno,
                             "start": stmts[0].lineno,
                             "end": max(getattr(s, "end_lineno", s.lineno) for s in stmts),
-                            "name": f"_{fn.name}_part", "params": li, "returns": lo,
+                            "name": em._suggest_helper_name(fn.name),
+                            "params": li, "returns": lo,
                             "lines_saved": saved}
                     key = (score, -cand["start"], -(cand["end"] - cand["start"]))
                     if best is None or key > best[0]:

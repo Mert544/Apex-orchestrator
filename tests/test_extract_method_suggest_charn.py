@@ -1,11 +1,22 @@
 """Characterization: refactored ``suggest_extractions`` is byte-identical to the
-original (the base-commit version of ``app/execution/extract_method.py``).
+original (the base-commit version of ``app/execution/extract_method.py``), apart
+from ONE intentional, audited change — the auto-suggested helper *name*.
 
 The refactor decomposed ``suggest_extractions`` into pure helpers; this harness
 loads the original module straight from the base commit's blob, then compares
 full output — order AND contents of the suggestion dicts (including key order) —
 across a battery of source inputs, original vs refactored. Zero mismatches is
 the proof. Deterministic, stdlib-only, offline.
+
+The base-commit original named the helper ``_<fn>_part``; that stacks
+underscores for a ``_``-prefixed method (``_deserialize`` → ``__deserialize_part``)
+whose unqualified call site inside a class body is then class-private
+name-mangled to ``_ClassName__deserialize_part`` → ``NameError`` at runtime
+(mangling is name-resolution, not syntax, so the plan parses and slips past the
+plan-time guard). HEAD fixes this with :func:`_suggest_helper_name`
+(``extracted_<stem>_part``). So this harness keeps the byte-identical proof for
+every field EXCEPT ``name``, which it normalizes on the original via the very
+helper under test — the only sanctioned drift from the snapshot.
 """
 
 from __future__ import annotations
@@ -14,6 +25,7 @@ import ast
 import pathlib
 import subprocess
 
+from app.execution.extract_method import _suggest_helper_name
 from app.execution.extract_method import suggest_extractions as refactored
 
 
@@ -36,6 +48,18 @@ def _load_original_suggest():
 
 
 original = _load_original_suggest()
+
+
+def _renamed(suggestions: list[dict]) -> list[dict]:
+    """The original's suggestions with only the ``name`` field migrated to HEAD's
+    non-mangling scheme — the single audited change, applied via the helper under
+    test so the rest of the dict stays the untouched base-commit snapshot."""
+    out = []
+    for d in suggestions:
+        nd = dict(d)
+        nd["name"] = _suggest_helper_name(d["function"])
+        out.append(nd)
+    return out
 
 
 def _mk_long_fn(name: str, body: str) -> str:
@@ -92,7 +116,7 @@ def _modules() -> list[str]:
 def test_byte_identical_across_inputs():
     mismatches = []
     for src in _modules():
-        exp = original(src)
+        exp = _renamed(original(src))
         got = refactored(src)
         if got != exp:
             mismatches.append(src[:60])
@@ -107,14 +131,14 @@ def test_byte_identical_supplied_tree_fastpath():
             tree = ast.parse(src)
         except SyntaxError:
             continue
-        assert refactored(src, tree=tree) == original(src, tree=tree)
+        assert refactored(src, tree=tree) == _renamed(original(src, tree=tree))
         # supplying the tree must equal the parse-here path
         assert refactored(src, tree=tree) == refactored(src)
 
 
 def test_repr_identical():
     # repr captures order + contents + types in one string — the strongest
-    # single-line byte-identical assertion.
-    combined_exp = [original(s) for s in _modules()]
+    # single-line byte-identical assertion (with only the audited name migrated).
+    combined_exp = [_renamed(original(s)) for s in _modules()]
     combined_got = [refactored(s) for s in _modules()]
     assert repr(combined_got) == repr(combined_exp)

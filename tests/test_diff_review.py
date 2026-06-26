@@ -282,9 +282,10 @@ def test_review_flags_long_function_with_extract_command(tmp_path):
     assert f.severity == "low"
     assert f.fix_kind == "extract"
     assert not f.auto_fixable  # extraction is a judgment call, never auto-applied
-    # The message carries the exact, runnable command.
+    # The message carries the exact, runnable command. The suggested helper
+    # strips leading underscores (non-mangling): `compute` → `extracted_compute_part`.
     assert "apex extract app/base.py" in f.message
-    assert "_compute_part" in f.message
+    assert "extracted_compute_part" in f.message
 
 
 def test_review_extract_finding_renders_with_refactor_hint(tmp_path):

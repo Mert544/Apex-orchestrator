@@ -292,7 +292,9 @@ def test_shrink_functions_extracts_one_clean_helper(tmp_path):
     src = (tmp_path / "app" / "m.py").read_text()
     defs = [ln for ln in src.splitlines() if ln.startswith("def ")]
     # Exactly one helper extracted; NO cascading _part_part nesting.
-    assert "def _big_part(" in src
+    # The helper name strips leading underscores (non-mangling) — see
+    # extract_method._suggest_helper_name: `big` → `extracted_big_part`.
+    assert "def extracted_big_part(" in src
     assert not any("_part_part" in d for d in defs)
     assert {s.operator for s in r.steps} == {"extract"}
 

@@ -663,7 +663,9 @@ def test_extractable_blocks_surfaces_concrete_extract_command(tmp_path: Path):
     eb = next(b for b in blocks if b["module"] == "app/big.py")
     assert eb["function"] == "compute"
     assert eb["start"] < eb["end"]
-    assert eb["name"] == "_compute_part"
+    # Suggested helper strips leading underscores (non-mangling): see
+    # extract_method._suggest_helper_name — `compute` → `extracted_compute_part`.
+    assert eb["name"] == "extracted_compute_part"
     assert eb["lines_saved"] >= 6
     # Fixtures/tests are excluded from the signal (their flaws are intentional).
     assert all(not b["module"].startswith("tests/") for b in blocks)
