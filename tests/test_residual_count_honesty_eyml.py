@@ -18,6 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.engine.health_score import (
     _GradeMetrics,
     _fragile_penalty_count,
@@ -183,6 +185,9 @@ def test_at_cap_repo_count_equals_list(tmp_path: Path):
 
 # --- Apex self-grade is UNCHANGED (at/below cap) -----------------------------
 
+@pytest.mark.timeout(300)  # whole-repo grade() is intrinsically ~95-154s; the
+# 120s default is a hang tripwire, not a correctness bound — raise it for this one
+# genuinely-heavy real-tree audit (mirrors test_owner_report_is_deterministic).
 def test_apex_self_grade_unchanged():
     repo_root = Path(__file__).resolve().parent.parent
     g = grade(str(repo_root))
