@@ -601,6 +601,123 @@ def test_infer_unparseable_is_none():
     assert infer_annotations("def (:\n") is None
 
 
+# --- decorator transparency: never trust a wrapper-transforming decorator -----
+#
+# CORRECTNESS FIX (denetçi finding): the return oracle inferred from the body's
+# ``return`` statements and IGNORED ``fn.decorator_list``. For a decorator that
+# REWRITES the return (``@make_str`` whose wrapper does ``return str(fn(*a))``),
+# the body returns 42 but the *callable* returns ``"42"`` — so landing ``-> int``
+# is a verified LIE. The fix REFUSES any function carrying a decorator outside a
+# proven type-transparent allow-list. These are correctness assertions, NOT
+# test-weakening: the old behaviour (annotating through such a decorator) was the
+# bug.
+
+def test_refuses_wrapper_transforming_decorator_make_str():
+    # The exact denetçi repro: a decorator whose wrapper casts the return to str.
+    # The body returns int, but ``compute()`` returns str — so NO ``-> int``.
+    src = "@make_str\ndef compute():\n    return 42\n"
+    assert infer_annotations(src) is None
+
+
+def test_refuses_unknown_user_decorator_bare_and_call():
+    # An arbitrary user decorator may transform the return; we cannot prove it
+    # does not, so we refuse — both the bare and the parametrized-call forms.
+    assert infer_annotations("@mydeco\ndef f():\n    return 1\n") is None
+    assert infer_annotations("@mydeco(opt=1)\ndef f():\n    return 1\n") is None
+
+
+def test_refuses_when_any_decorator_is_non_transparent():
+    # A mix of a transparent decorator and an unknown one still refuses: the
+    # unknown one may wrap the return, so the whole stack is untrustworthy.
+    src = (
+        "class C:\n"
+        "    @staticmethod\n"
+        "    @make_str\n"
+        "    def compute():\n"
+        "        return 42\n"
+    )
+    assert infer_annotations(src) is None
+
+
+def test_annotates_through_staticmethod():
+    # ``@staticmethod`` only rebinds the call shape; the return is the body's
+    # value untouched, so the proven ``-> int`` still lands (allow-list).
+    src = "class C:\n    @staticmethod\n    def compute():\n        return 42\n"
+    out = infer_annotations(src)
+    assert out is not None and "def compute() -> int:" in out
+
+
+def test_annotates_through_property():
+    # ``@property`` returns the getter's own value; ``-> int`` is sound.
+    src = "class C:\n    @property\n    def x(self):\n        return 42\n"
+    out = infer_annotations(src)
+    assert out is not None and "def x(self) -> int:" in out
+
+
+def test_annotates_through_classmethod():
+    src = "class C:\n    @classmethod\n    def make(cls):\n        return 42\n"
+    out = infer_annotations(src)
+    assert out is not None and "def make(cls) -> int:" in out
+
+
+def test_annotates_through_lru_cache_bare_and_call():
+    # ``@lru_cache`` memoises — first call returns the body's value, cached calls
+    # replay the SAME object, so the type is unchanged. Both decorator spellings
+    # (bare ``@lru_cache`` and ``@lru_cache(maxsize=…)``) are inferred through.
+    bare = infer_annotations("@lru_cache\ndef f():\n    return 42\n")
+    assert bare is not None and "def f() -> int:" in bare
+    call = infer_annotations("@lru_cache(maxsize=8)\ndef f():\n    return 42\n")
+    assert call is not None and "def f() -> int:" in call
+
+
+def test_annotates_through_dotted_functools_decorators():
+    # The allow-list matches the LAST attribute name, so ``@functools.lru_cache``,
+    # ``@functools.cache`` and ``@functools.wraps(...)`` are all recognised.
+    cache = infer_annotations("@functools.cache\ndef f():\n    return 42\n")
+    assert cache is not None and "def f() -> int:" in cache
+    lru = infer_annotations(
+        "@functools.lru_cache(maxsize=None)\ndef f():\n    return 42\n")
+    assert lru is not None and "def f() -> int:" in lru
+
+
+def test_annotates_through_typing_and_abc_markers():
+    # Pure markers — ``typing.final`` / ``abc.abstractmethod`` interpose no call,
+    # so the body's proven return type is sound through them.
+    fin = infer_annotations("@typing.final\ndef f():\n    return 42\n")
+    assert fin is not None and "def f() -> int:" in fin
+    abm = (
+        "class C:\n"
+        "    @abc.abstractmethod\n"
+        "    def f(self):\n"
+        "        return 42\n"
+    )
+    out = infer_annotations(abm)
+    assert out is not None and "def f(self) -> int:" in out
+
+
+def test_decorator_last_name_extracts_final_identifier():
+    # The helper unwraps a Call and reads the last identifier; a non-reference
+    # decorator (a subscript) has no name and yields None (treated non-transparent).
+    import ast
+
+    from app.execution.semantic.transforms.type_annotations import (
+        _decorator_last_name,
+    )
+
+    def deco_of(src: str) -> ast.expr:
+        return ast.parse(src).body[0].decorator_list[0]
+
+    assert _decorator_last_name(deco_of("@property\ndef f(): ...\n")) == "property"
+    assert _decorator_last_name(
+        deco_of("@functools.lru_cache\ndef f(): ...\n")) == "lru_cache"
+    assert _decorator_last_name(
+        deco_of("@lru_cache(maxsize=8)\ndef f(): ...\n")) == "lru_cache"
+    assert _decorator_last_name(
+        deco_of("@functools.lru_cache(maxsize=8)\ndef f(): ...\n")) == "lru_cache"
+    # A subscript decorator is not a plain reference -> None.
+    assert _decorator_last_name(deco_of("@reg[0]\ndef f(): ...\n")) is None
+
+
 # --- end-to-end: gated apply, coverage delta, rollback -----------------------
 
 def _suite_project(tmp_path: Path) -> Path:

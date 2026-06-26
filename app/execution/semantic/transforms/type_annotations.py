@@ -938,9 +938,83 @@ def _join_all_types(types: list[str]) -> str | None:
     return joined
 
 
+# Decorators that provably do NOT transform a function's return value, so the
+# type inferred from the body's ``return`` statements is still SOUND when one is
+# present. EVERYTHING ELSE — an unknown user decorator, ``@contextmanager``, a
+# ``@functools.wraps``-built wrapper, ``str``-casting wrappers like the
+# denetçi's ``@make_str`` — may REPLACE the return with a value of another type,
+# so a body-inferred ``-> T`` would be a verified LIE. Matched on the decorator's
+# LAST identifier only (``functools.lru_cache`` → ``lru_cache``), covering bare
+# ``Name``/``Attribute`` and the ``Call`` forms (``@lru_cache(maxsize=…)``).
+#   - ``property`` / ``cached_property``: the descriptor returns the getter's own
+#     value unchanged (``cached_property`` memoises identity, not type).
+#   - ``staticmethod`` / ``classmethod``: rebind ``self``/``cls`` only; the
+#     underlying call returns the body's value untouched.
+#   - ``functools.cache`` / ``functools.lru_cache``: memoise — first call returns
+#     the body's value; cached calls replay that SAME object.
+#   - ``functools.wraps``: copies metadata onto a wrapper; it does not itself wrap
+#     a return (it is applied to the inner wrapper, whose body we read directly).
+#   - ``abstractmethod`` / ``final`` / ``override``: pure typing/ABC markers — no
+#     runtime call interposition at all.
+# Source modules accepted via the last-name match: ``functools.*``, ``typing.*``,
+# ``abc.*`` as well as the bare re-exported names.
+_TYPE_TRANSPARENT_DECORATORS: frozenset[str] = frozenset({
+    "property",
+    "cached_property",
+    "staticmethod",
+    "classmethod",
+    "cache",
+    "lru_cache",
+    "wraps",
+    "abstractmethod",
+    "final",
+    "override",
+})
+
+
+def _decorator_last_name(node: ast.expr) -> str | None:
+    """The LAST identifier of a decorator expression, or ``None`` when it is not a
+    plain name/attribute reference (e.g. a subscript or lambda).
+
+    Unwraps a ``Call`` first (``@lru_cache(maxsize=8)`` → the ``lru_cache``
+    reference), then reads a bare ``Name`` (``@property`` → ``"property"``) or the
+    final attribute of a dotted path (``@functools.lru_cache`` → ``"lru_cache"``).
+    A non-reference decorator (a ``Subscript``, a ``Call`` of a non-reference, etc.)
+    has no resolvable name and yields ``None`` — which the caller treats as
+    non-transparent (refuse)."""
+    if isinstance(node, ast.Call):
+        node = node.func
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _has_only_type_transparent_decorators(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    """True when EVERY decorator on ``fn`` is known not to transform its return
+    value (in :data:`_TYPE_TRANSPARENT_DECORATORS`), so a body-inferred return type
+    stays sound. An undecorated function is trivially transparent (``all`` over an
+    empty list). A single decorator whose last identifier is unknown — an arbitrary
+    user wrapper that may cast/replace the return — makes this ``False`` (refuse)."""
+    return all(
+        _decorator_last_name(dec) in _TYPE_TRANSPARENT_DECORATORS
+        for dec in fn.decorator_list
+    )
+
+
 def _infer_return_type(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
     """The provable return type for ``fn``, or ``None`` if not provable.
 
+    - A decorator that may TRANSFORM the return value (anything outside the
+      type-transparent allow-list :data:`_TYPE_TRANSPARENT_DECORATORS` — an
+      unknown user wrapper, ``@contextmanager``, a ``str``-casting wrapper) makes
+      the body's return type unsound, so the function is refused. Only provably
+      return-preserving decorators (``property``/``staticmethod``/``classmethod``/
+      ``cached_property``/``cache``/``lru_cache``/``wraps``/``abstractmethod``/
+      ``final``/``override``, bare or dotted) are inferred through.
     - A generator (own ``yield``) is never inferred (its return is an iterator).
     - ``-> None`` when there is no value return (``return`` with no value, or no
       return at all) — a pure procedure.
@@ -954,6 +1028,8 @@ def _infer_return_type(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None
       that can reach the end without an explicit ``return`` implicitly returns
       ``None``, so its true type is ``T | None``. Rather than guess the union we
       REFUSE (return ``None``) — the honest under-claim this module promises."""
+    if not _has_only_type_transparent_decorators(fn):
+        return None  # a non-transparent decorator may replace the return value
     if fn.returns is not None:
         return None  # already annotated — never overwrite
     if _has_own_yield(fn):

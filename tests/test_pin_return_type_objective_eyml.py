@@ -58,6 +58,27 @@ def test_existing_return_field_is_case_insensitive_and_anchored():
     assert not _has_existing_return_field("Just a one-line summary.")
 
 
+def test_existing_return_field_matches_rest_rtype_and_numpydoc_section():
+    # Two REAL human spellings the colon-bearing regex misses (denetçi finding):
+    # reST ``:rtype:`` (a return-TYPE field, no ``returns`` word) and the numpydoc
+    # ``Returns`` SECTION (a bare header underlined with dashes, no colon). Both
+    # already document the return, so appending ``Returns:`` would be a double-doc.
+    assert _has_existing_return_field("Doc.\n\n:rtype: int\n")
+    assert _has_existing_return_field("Doc.\n\n    :rtype: int\n")  # leading ws
+    assert _has_existing_return_field("Doc.\n\nReturns\n-------\nint\n")
+    assert _has_existing_return_field("Doc.\n\n    Returns\n    -------\n    int\n")
+    assert _has_existing_return_field("Doc.\n\n    Return\n    ------\n    int\n")
+
+
+def test_existing_return_field_does_not_overmatch_prose_or_stray_dashes():
+    # Prose merely mentioning "returns", or a dashed underline under a DIFFERENT
+    # section header (numpydoc ``Notes``), is NOT a return field -> still gets a line.
+    assert not _has_existing_return_field("It returns the value, see below.\n")
+    assert not _has_existing_return_field("Doc.\n\n    Notes\n    -----\n    stuff\n")
+    # ``:rtype`` without the closing colon is not the field either.
+    assert not _has_existing_return_field("Doc.\n\nthe :rtype of the thing\n")
+
+
 # --- the splice helper + indent guard -----------------------------------------
 
 def test_returns_insertion_targets_the_closing_quote_line():
@@ -191,6 +212,76 @@ def test_refuses_generator():
     assert pin_return_types(src) is None
 
 
+# The oracle now also REFUSES a function whose decorator may TRANSFORM the return
+# value (denetçi finding): pin-return-type reads the same oracle, so a wrapper-
+# transforming decorator that would document a wrong ``Returns: int`` is refused
+# here for free. CORRECTNESS, not test-weakening — the old oracle ignored
+# ``decorator_list`` and so would have documented a lie.
+
+def test_refuses_wrapper_transforming_decorator_make_str():
+    # ``@make_str``'s wrapper casts the return to str; the body returns int but the
+    # callable returns str, so documenting ``Returns: int`` would be a verified lie.
+    src = (
+        '@make_str\n'
+        'def compute():\n'
+        '    """Compute it.\n'
+        '    """\n'
+        '    return 42\n'
+    )
+    assert pin_return_types(src) is None
+
+
+def test_refuses_unknown_user_decorator():
+    # An arbitrary user decorator may wrap the return — unprovable, so refuse.
+    src = (
+        '@mydeco(opt=1)\n'
+        'def f():\n'
+        '    """Doc.\n'
+        '    """\n'
+        '    return 1\n'
+    )
+    assert pin_return_types(src) is None
+
+
+def test_pins_through_staticmethod_allow_list():
+    # ``@staticmethod`` is type-transparent (rebinds the call shape only), so the
+    # proven ``Returns: int`` STILL lands in the docstring (allow-list).
+    src = (
+        'class C:\n'
+        '    @staticmethod\n'
+        '    def compute():\n'
+        '        """Compute it.\n'
+        '        """\n'
+        '        return 42\n'
+    )
+    out = pin_return_types(src)
+    assert out is not None and "Returns: int" in out
+
+
+def test_pins_through_property_and_lru_cache_allow_list():
+    # ``@property`` returns the getter's value; ``@lru_cache`` replays the same
+    # object — both type-transparent, so the documented ``Returns: int`` lands.
+    prop = (
+        'class C:\n'
+        '    @property\n'
+        '    def x(self):\n'
+        '        """The x.\n'
+        '        """\n'
+        '        return 42\n'
+    )
+    out = pin_return_types(prop)
+    assert out is not None and "Returns: int" in out
+    lru = (
+        '@lru_cache(maxsize=8)\n'
+        'def f():\n'
+        '    """Doc.\n'
+        '    """\n'
+        '    return 42\n'
+    )
+    out = pin_return_types(lru)
+    assert out is not None and "Returns: int" in out
+
+
 def test_refuses_fall_through_value_return():
     # A value return reachable past a non-terminating branch -> oracle refuses (T|None).
     src = (
@@ -232,6 +323,38 @@ def test_refuses_existing_rest_return_field():
 def test_refuses_existing_epydoc_return_field():
     src = 'def f():\n    """Doc.\n\n    @return the thing\n    """\n    return 1\n'
     assert pin_return_types(src) is None
+
+
+def test_refuses_existing_rest_rtype_field():
+    # ``:rtype: int`` already documents the return TYPE; appending ``Returns: int``
+    # would be a redundant double-doc -> refuse (left byte-for-byte alone).
+    src = 'def f():\n    """Doc.\n\n    :rtype: int\n    """\n    return 1\n'
+    assert pin_return_types(src) is None
+
+
+def test_refuses_existing_numpydoc_returns_section():
+    # numpydoc ``Returns``-section (header + dashed underline, no colon) already
+    # documents the return; no second ``Returns:`` line is appended.
+    src = (
+        'def f():\n'
+        '    """Doc.\n'
+        '\n'
+        '    Returns\n'
+        '    -------\n'
+        '    int\n'
+        '        the value\n'
+        '    """\n'
+        '    return 1\n'
+    )
+    assert pin_return_types(src) is None
+
+
+def test_still_pins_a_plain_docstring_without_any_return_field():
+    # The load-bearing non-over-refusal: a docstring with NO return field (in any
+    # spelling) still gets the proven ``Returns: int`` line.
+    src = 'def f():\n    """Just a summary.\n\n    More prose.\n    """\n    return 1\n'
+    out = pin_return_types(src)
+    assert out is not None and "Returns: int" in out
 
 
 def test_refuses_private_function():

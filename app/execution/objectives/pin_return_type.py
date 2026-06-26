@@ -77,6 +77,20 @@ _DEF = (ast.FunctionDef, ast.AsyncFunctionDef)
 # function — we never overwrite a maintainer's stated return contract.
 _RETURN_FIELD = re.compile(r"(?im)^\s*(returns?:|:returns?:|@returns?\b)")
 
+# reST/Sphinx ``:rtype: <T>`` — the SEPARATE return-TYPE field a maintainer writes
+# (often alongside ``:param:`` but instead of ``:returns:``), which the colon-bearing
+# ``_RETURN_FIELD`` misses (it has no ``returns`` word). Documenting the return type
+# already; appending ``Returns: <T>`` on top would be a redundant double-doc.
+_RTYPE_FIELD = re.compile(r"(?im)^\s*:rtype:")
+
+# numpydoc ``Returns`` / ``Return`` SECTION: a bare header line (the word alone, NO
+# colon — so ``_RETURN_FIELD`` never sees it) IMMEDIATELY followed by an underline of
+# at least three dashes. This is the canonical NumPy/SciPy return spelling; its
+# presence likewise means the return is already documented. The ``\n`` between the two
+# anchored lines keeps the underline tied to THIS header (a stray ``-------`` elsewhere
+# does not trigger it).
+_NUMPYDOC_RETURNS = re.compile(r"(?im)^[ \t]*returns?[ \t]*$\n[ \t]*-{3,}[ \t]*$")
+
 
 def _is_public(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     """True when ``fn`` is a PUBLIC, non-test function — the NAME half of the
@@ -94,9 +108,21 @@ def _is_public(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
 
 def _has_existing_return_field(doc: str) -> bool:
     """True when the docstring text ``doc`` already records a return in any
-    conventional spelling (Google / reST / epydoc), so a ``Returns:`` line must NOT
-    be added. Pure regex over the cleaned docstring body — see :data:`_RETURN_FIELD`."""
-    return _RETURN_FIELD.search(doc) is not None
+    conventional spelling, so a ``Returns:`` line must NOT be added.
+
+    Covers the colon-bearing Google / reST / epydoc field words
+    (:data:`_RETURN_FIELD` — ``Returns:`` / ``:returns:`` / ``@return``), the reST
+    return-TYPE field (:data:`_RTYPE_FIELD` — ``:rtype:``), AND the numpydoc
+    ``Returns`` SECTION (:data:`_NUMPYDOC_RETURNS` — the bare header underlined with
+    dashes). Any one match REFUSES the function — appending ``Returns: <T>`` on a
+    docstring that already documents the return (in ANY of these spellings) is a
+    redundant double-doc, never an honest contribution. Pure regex over the cleaned
+    docstring body."""
+    return (
+        _RETURN_FIELD.search(doc) is not None
+        or _RTYPE_FIELD.search(doc) is not None
+        or _NUMPYDOC_RETURNS.search(doc) is not None
+    )
 
 
 def _returns_insertion(
