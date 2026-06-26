@@ -379,6 +379,37 @@ def test_named_reexport_with_specifier_not_over_refused(tmp_path: Path):
     assert "export function priv" in wired
 
 
+@_needs_node
+def test_cross_module_reexport_local_name_collision_not_over_refused(tmp_path: Path):
+    # P3 (denetçi): `function foo(){}; export { foo as pub } from "./m";` — the
+    # re-export carries a moduleSpecifier, so its `foo` is a name in `./m`, NOT the
+    # LOCAL binding. reexportedLocalNames must SKIP specifier-bearing clauses, so the
+    # genuine local `foo` is NOT marked already-public and STAYS wireable (the over-
+    # refusal the fix removes). The exported-NAME surface is the re-export's {pub}.
+    root = _with_package_json(tmp_path)
+    src = 'function foo(x) { return x; }\nexport { foo as pub } from "./m";\n'
+    _project(root, "src/xmod.ts", src)
+    assert [t.name for t in wireable_targets(root, "src/xmod.ts")] == ["foo"]
+    wired = plan_js_wire_exports(str(root), "src/xmod.ts").new_contents["src/xmod.ts"]
+    assert "export function foo" in wired
+    # the exported-NAME witness stays the TRUE surface {pub} (oracle unperturbed)
+    assert all_exported_names(root, "src/xmod.ts") == frozenset({"pub"})
+
+
+@_needs_node
+def test_true_local_reexport_without_specifier_still_collides(tmp_path: Path):
+    # The complement guard the P3 must NOT break: a TRUE-LOCAL re-export
+    # `export { foo as pub };` (NO moduleSpecifier) re-publishes the local `foo`, so
+    # `foo` is ALREADY public and must STAY excluded from wire targets (never double-
+    # export). This is the only clause shape that should add a collision name.
+    root = _with_package_json(tmp_path)
+    src = "function foo(x) { return x; }\nexport { foo as pub };\n"
+    _project(root, "src/loc.ts", src)
+    assert all(t.name != "foo" for t in wireable_targets(root, "src/loc.ts"))
+    assert plan_js_wire_exports(str(root), "src/loc.ts").new_contents == {}
+    assert all_exported_names(root, "src/loc.ts") == frozenset({"pub"})
+
+
 # --- registration / 5-registry 1:1 parity (always runs) -----------------------
 
 def test_objective_registers_and_is_available():

@@ -71,8 +71,10 @@
 //                             intended named export and corrupted nothing.
 //
 // Determinism: no clock, no randomness; functions are reported in source order;
-// JSON keys are emitted in a fixed order. A byte-span splice (getStart/getEnd),
-// never an AST unparse, so the surrounding source is untouched.
+// JSON keys are emitted in a fixed order. A UTF-16-code-unit-span splice
+// (getStart/getEnd — the SourceFile text is indexed in UTF-16 code units, so the
+// Python side re-indexes these to code points before its own splice), never an AST
+// unparse, so the surrounding source is untouched.
 
 "use strict";
 
@@ -198,8 +200,8 @@ function throwStubBody(node) {
 // Collect the top-level fillable stub functions of a source file: a
 // `function foo(...) { throw ... }` declaration, or a `const foo = (...) => {
 // throw ... }` / `const foo = function (...) { throw ... }` arrow/function
-// initializer. Each carries its name, plain param names, and the BYTE span of
-// its body block (start = the `{`, end = just past the `}`).
+// initializer. Each carries its name, plain param names, and the UTF-16 code-unit
+// span of its body block (start = the `{`, end = just past the `}`).
 function collectStubs(sf) {
   const out = [];
   function consider(name, fnNode) {
@@ -588,20 +590,30 @@ function allExportedNames(sf) {
   return Array.from(names).sort();
 }
 
-// The LOCAL-side identifiers of every `export { local as pub }` / `export { x }`
-// clause — the names ALREADY public (re-exported) even though the local binding
-// carries no `export` modifier. wire-targets must treat these as COLLISIONS so it
-// never re-publishes (`export function local`) a helper already exposed under a
-// renamed re-export. `el.propertyName` is the local side when an alias is present
-// (`local as pub` -> propertyName=local, name=pub); without an alias the local IS
-// `el.name` (`export { x }` -> name=x). NOT folded into `allExportedNames` (that
-// set is the oracle's exported-NAME witness — it must stay the true exported
-// surface `{pub}`, not the locals); this is consumed ONLY by `collectWireTargets`.
+// The LOCAL-side identifiers of every TRUE-LOCAL `export { local as pub }` /
+// `export { x }` clause (one with NO moduleSpecifier) — the names ALREADY public
+// (re-exported) even though the local binding carries no `export` modifier.
+// wire-targets must treat these as COLLISIONS so it never re-publishes
+// (`export function local`) a helper already exposed under a renamed re-export.
+// `el.propertyName` is the local side when an alias is present (`local as pub` ->
+// propertyName=local, name=pub); without an alias the local IS `el.name`
+// (`export { x }` -> name=x). A clause WITH a moduleSpecifier
+// (`export { foo as pub } from "./m"`) is SKIPPED: its identifiers name bindings in
+// the OTHER module, not local ones, so they would over-refuse a genuine local of
+// the same name. NOT folded into `allExportedNames` (that set is the oracle's
+// exported-NAME witness — it must stay the true exported surface `{pub}`, not the
+// locals); this is consumed ONLY by `collectWireTargets`.
 function reexportedLocalNames(sf) {
   const names = new Set();
   for (const stmt of sf.statements) {
     if (ts.isExportDeclaration(stmt) && stmt.exportClause
         && ts.isNamedExports(stmt.exportClause)) {
+      // A CROSS-MODULE re-export `export { foo as pub } from "./m"` carries a
+      // moduleSpecifier: there `foo` is a name in `./m`, NOT a local binding, so it
+      // must not mark a genuine local `foo` as already-public (that would
+      // over-refuse wiring it). Only a TRUE-LOCAL re-export `export { foo as pub };`
+      // (no specifier) re-publishes a local binding and belongs in the collision set.
+      if (stmt.moduleSpecifier) continue;
       for (const el of stmt.exportClause.elements) {
         names.add(el.propertyName ? el.propertyName.text : el.name.text);
       }

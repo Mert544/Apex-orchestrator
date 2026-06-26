@@ -61,7 +61,12 @@ from pathlib import Path
 from app.engine.develop_registry import ObjectiveSpec, register
 from app.execution.cross_file_rename import RenamePlan
 from app.execution.js.js_tool import JsWireTarget, reparse_exports_superset, wire_targets
-from app.execution.lang.js_adapter import _read, _walk_files, is_js_source
+from app.execution.lang.js_adapter import (
+    _read,
+    _u16_to_codepoint,
+    _walk_files,
+    is_js_source,
+)
 from app.execution.lang.js_adapter import JS_SOURCE_SUFFIXES as _JS_SUFFIXES
 
 __all__ = [
@@ -88,17 +93,20 @@ def wireable_targets(root: Path, rel: str) -> list[JsWireTarget]:
 
 def _splice_export(source: str, targets: list[JsWireTarget]) -> str | None:
     """``source`` with ``"export "`` prepended at each target's ``insert_offset``,
-    or ``None`` when any offset is out of range (a stale scan — refuse rather than
-    corrupt the file).
+    or ``None`` when any offset is out of range or splits a surrogate pair (a stale
+    scan — refuse rather than corrupt the file).
 
     Splices BOTTOM-UP (descending offset) so each earlier insertion does not shift
-    a later offset. Pure byte-offset insertion — the surrounding formatting and
-    every other byte survive untouched; the only added bytes are the ``export ``
-    keyword that publishes an already-defined binding."""
+    a later offset. The driver's ``insert_offset`` is a UTF-16 code-UNIT offset, so
+    it is re-indexed to a code-POINT index via :func:`_u16_to_codepoint` against the
+    CURRENT ``new_source`` before each insertion (they diverge by +1 per astral char
+    upstream) — the surrounding formatting and every other character survive
+    untouched; the only added bytes are the ``export `` keyword that publishes an
+    already-defined binding."""
     new_source = source
     for target in sorted(targets, key=lambda t: t.insert_offset, reverse=True):
-        off = target.insert_offset
-        if not 0 <= off <= len(new_source):
+        off = _u16_to_codepoint(new_source, target.insert_offset)
+        if off is None:
             return None
         new_source = new_source[:off] + "export " + new_source[off:]
     return new_source if new_source != source else None

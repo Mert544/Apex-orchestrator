@@ -61,7 +61,12 @@ from pathlib import Path
 from app.engine.develop_registry import ObjectiveSpec, register
 from app.execution.cross_file_rename import RenamePlan
 from app.execution.js.js_tool import JsDocTarget, doc_targets, reparse_exports_identical
-from app.execution.lang.js_adapter import _read, _walk_files, is_js_source
+from app.execution.lang.js_adapter import (
+    _read,
+    _u16_to_codepoint,
+    _walk_files,
+    is_js_source,
+)
 from app.execution.lang.js_adapter import JS_SOURCE_SUFFIXES as _JS_SUFFIXES
 
 __all__ = [
@@ -115,19 +120,22 @@ def splice_jsdoc(source: str, targets: list[JsDocTarget],
                  block_fn: Callable[[JsDocTarget], str]) -> str | None:
     """``source`` with a JSDoc block (minted by ``block_fn``) spliced in as leading
     trivia at each target's ``insert_offset``, or ``None`` when any offset is out of
-    range (a stale scan — refuse rather than corrupt the file).
+    range or splits a surrogate pair (a stale scan — refuse rather than corrupt the
+    file).
 
     Splices BOTTOM-UP (descending offset) so each earlier insertion does not shift
-    a later offset. Pure byte-offset insertion — the surrounding formatting and
-    every other byte survive untouched (the JSDoc is leading trivia, so ZERO
-    runtime bytes change). ``block_fn`` is the only varying part across the JSDoc-
-    insert objectives (this module's ``@param name`` template vs
-    js-document-param-types' ``@param {T} name``), so it is injected — the splice
-    spine itself is shared, not cloned."""
+    a later offset. The driver's ``insert_offset`` is a UTF-16 code-UNIT offset, so
+    it is re-indexed to a code-POINT index via :func:`_u16_to_codepoint` against the
+    CURRENT ``new_source`` before each insertion (they diverge by +1 per astral char
+    upstream) — the surrounding formatting and every other character survive
+    untouched (the JSDoc is leading trivia, so ZERO runtime bytes change).
+    ``block_fn`` is the only varying part across the JSDoc-insert objectives (this
+    module's ``@param name`` template vs js-document-param-types' ``@param {T}
+    name``), so it is injected — the splice spine itself is shared, not cloned."""
     new_source = source
     for target in sorted(targets, key=lambda t: t.insert_offset, reverse=True):
-        off = target.insert_offset
-        if not 0 <= off <= len(new_source):
+        off = _u16_to_codepoint(new_source, target.insert_offset)
+        if off is None:
             return None
         new_source = new_source[:off] + block_fn(target) + new_source[off:]
     return new_source if new_source != source else None

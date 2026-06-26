@@ -12,9 +12,10 @@ module re-exports the public names as thin forwarders, so importers and the
 registry are unaffected and the 507-line behaviour pin stays green.
 
 :class:`JavaScriptAdapter` is a THIN re-expression of those same functions —
-``owns`` IS :func:`is_js_source`, ``parse``/``locate`` read the byte spans
-:func:`app.execution.js.js_tool.scan_stubs` already returns, ``apply`` IS the
-:func:`_splice_body` byte splice, and ``reparses`` reuses the driver's
+``owns`` IS :func:`is_js_source`, ``parse``/``locate`` read the UTF-16 code-unit
+spans :func:`app.execution.js.js_tool.scan_stubs` already returns, ``apply`` IS the
+:func:`_splice_body` splice (re-indexing those offsets to code points), and
+``reparses`` reuses the driver's
 exit-2-means-does-not-parse contract via ``scan_stubs``'s conservative-None
 path. Because every adapter method is the same predicate/slice the objective
 called inline, dispatch through the adapter is byte-identical.
@@ -139,6 +140,41 @@ def _read(path: Path) -> str:
         return path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return ""
+
+
+def _is_low_surrogate(u16le: bytes, byte_pos: int) -> bool:
+    """True when the UTF-16-LE code unit STARTING at ``byte_pos`` is a low
+    surrogate (0xDC00-0xDFFF) — i.e. ``byte_pos`` lands in the MIDDLE of a
+    surrogate pair (between the high and low halves of one astral character)."""
+    if byte_pos + 1 >= len(u16le):
+        return False
+    unit = u16le[byte_pos] | (u16le[byte_pos + 1] << 8)
+    return 0xDC00 <= unit <= 0xDFFF
+
+
+def _u16_to_codepoint(source: str, u16_off: int) -> int | None:
+    """Map a UTF-16 code-UNIT offset (as the ts_driver emits via ``getStart``/
+    ``getEnd`` / ``insertOffset``) to a Python ``str`` code-POINT index into
+    ``source``, or ``None`` when the offset is out of range or splits a surrogate
+    pair (a stale / garbled span — refuse rather than corrupt the file).
+
+    The driver indexes the SourceFile text in UTF-16 code units; ``_read`` gives a
+    ``str`` indexed by code points. They agree on the BMP (and on a leading BOM)
+    but diverge by +1 per astral character (emoji, U+10000+) BEFORE the offset, so
+    a raw splice on the code-unit offset lands one position early per astral char.
+    Re-index via a utf-16-le round-trip so the splice lands on the SAME character
+    the driver chose. BOM-safe: U+FEFF is one code unit AND one code point, so the
+    mapping is identity through it (and the read MUST stay ``encoding="utf-8"``,
+    never ``utf-8-sig``, or the BOM drops and every offset shifts)."""
+    if u16_off < 0:
+        return None
+    buf = source.encode("utf-16-le")  # 2 bytes per UTF-16 code unit
+    byte_pos = u16_off * 2
+    if byte_pos > len(buf):
+        return None  # offset past end -> stale span -> refuse
+    if byte_pos and _is_low_surrogate(buf, byte_pos):
+        return None  # offset splits a surrogate pair -> refuse (never corrupt)
+    return len(buf[:byte_pos].decode("utf-16-le"))
 
 
 def _walk_files(root: Path, suffixes: frozenset[str]) -> list[str]:
@@ -306,16 +342,23 @@ def plan_js_tdd_implement(project_root: str | Path, missing: JsMissingBody,
 
 
 def _splice_body(source: str, stub: JsStub, body: str) -> str | None:
-    """Replace the body-block byte span of ``stub`` in ``source`` with
-    ``{ <body> }`` and return the new source, or ``None`` when the recorded span
-    is out of range (a stale scan — refuse rather than corrupt the file).
+    """Replace the body-block span of ``stub`` in ``source`` with ``{ <body> }``
+    and return the new source, or ``None`` when the recorded span is out of range
+    or splits a surrogate pair (a stale scan — refuse rather than corrupt the file).
 
-    The same exact byte-span splice the driver performs, recomputed in Python so
-    the LANDED new_contents is produced WITHOUT a second filesystem write — the
-    surrounding formatting/comments survive untouched."""
-    if not (0 <= stub.body_start <= stub.body_end <= len(source)):
+    ``stub.body_start``/``body_end`` are the driver's UTF-16 code-UNIT offsets
+    (``getStart``/``getEnd``); ``source`` is a code-POINT-indexed ``str`` from
+    ``_read``, so each offset is re-indexed via :func:`_u16_to_codepoint` BEFORE
+    slicing (they diverge by +1 per astral char upstream). The same exact span
+    splice the driver performs, recomputed in Python so the LANDED new_contents is
+    produced WITHOUT a second filesystem write — the surrounding formatting and
+    comments survive untouched. (This is also the splice the adapter's ``apply``
+    routes through, so the JS-tdd locate->apply path is re-indexed here too.)"""
+    start = _u16_to_codepoint(source, stub.body_start)
+    end = _u16_to_codepoint(source, stub.body_end)
+    if start is None or end is None or start > end:
         return None
-    return source[:stub.body_start] + "{ " + body + " }" + source[stub.body_end:]
+    return source[:start] + "{ " + body + " }" + source[end:]
 
 
 def _landable(project_root: str | Path) -> list[JsMissingBody]:
@@ -429,8 +472,9 @@ class JavaScriptAdapter:
     """The JS/TS :class:`LanguageAdapter`: a thin re-expression of the helpers
     above so the four verbs dispatch through one structural seam.
 
-    ``owns`` IS :func:`is_js_source`; ``parse``/``locate`` read the byte spans
-    :func:`scan_stubs` already returns; ``apply`` IS :func:`_splice_body`; and
+    ``owns`` IS :func:`is_js_source`; ``parse``/``locate`` read the UTF-16
+    code-unit spans :func:`scan_stubs` already returns; ``apply`` IS
+    :func:`_splice_body` (re-indexing those offsets to code points); and
     ``reparses`` reuses the driver's conservative ``scan_stubs`` path (a file the
     driver exits-2 on yields no stubs). Every method is the same predicate/slice
     the objective called inline, so dispatch is byte-identical."""
@@ -449,10 +493,11 @@ class JavaScriptAdapter:
 
     def locate(self, tree: ParseTree, source: str,
                query: TargetQuery) -> Target | None:
-        """The stub named by ``query`` as a byte-span :class:`Target`, sourced
-        from ``query.extra['stub']`` (the :class:`JsStub` the detector already
-        located) — or ``None`` when absent. The JS driver locates stubs by path,
-        so the detector supplies the span and this exposes it through the seam."""
+        """The stub named by ``query`` as a :class:`Target` carrying its UTF-16
+        code-unit body span, sourced from ``query.extra['stub']`` (the
+        :class:`JsStub` the detector already located) — or ``None`` when absent.
+        The JS driver locates stubs by path, so the detector supplies the span and
+        this exposes it through the seam (re-indexed to code points in ``apply``)."""
         stub = query.extra.get("stub")
         if not isinstance(stub, JsStub) or stub.name != query.name:
             return None
@@ -461,7 +506,8 @@ class JavaScriptAdapter:
     def apply(self, source: str, target: Target, edit: Edit) -> str | None:
         """``source`` with ``target``'s body span replaced by ``{ <edit.body> }``,
         or ``None`` when the span is stale — the exact :func:`_splice_body`
-        splice, reconstructing the :class:`JsStub` from the located span."""
+        splice (which re-indexes the UTF-16 code-unit span to code points before
+        slicing), reconstructing the :class:`JsStub` from the located span."""
         start, end = target.span
         stub = JsStub(name=target.name, params=(), body_start=start, body_end=end)
         return _splice_body(source, stub, edit.body)

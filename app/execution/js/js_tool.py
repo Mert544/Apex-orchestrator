@@ -50,9 +50,11 @@ DRIVER = Path(__file__).with_name("ts_driver.js")
 
 @dataclass(frozen=True)
 class JsStub:
-    """One top-level ``throw``-stub function the driver found, with the exact byte
-    span of its body block (``body_start`` = the ``{``, ``body_end`` = just past
-    the ``}``) so a fill is a precise splice, not an unparse."""
+    """One top-level ``throw``-stub function the driver found, with the exact
+    UTF-16 code-unit span of its body block (``body_start`` = the ``{``,
+    ``body_end`` = just past the ``}``) so a fill is a precise splice, not an
+    unparse. The driver emits these as UTF-16 code units (the SourceFile text's
+    native index); the Python splice re-indexes them to code points first."""
 
     name: str
     params: tuple[str, ...]
@@ -86,8 +88,9 @@ class JsDocTarget:
     ``None`` when ANY throw is an unprovable shape (a variable / call / member-ctor /
     re-throw); document-raises-jsdoc surfaces this as the ``@throws {Ctor}`` set and
     the other JSDoc objectives ignore it (exactly as document-export-jsdoc ignores
-    ``param_types``), and the byte ``insert_offset`` of the statement start (BEFORE
-    any ``export`` keyword, so the JSDoc splices in as leading trivia)."""
+    ``param_types``), and the UTF-16-code-unit ``insert_offset`` of the statement
+    start (BEFORE any ``export`` keyword, so the JSDoc splices in as leading trivia;
+    re-indexed to a code-point index by the Python splice)."""
 
     name: str
     params: tuple[str, ...]
@@ -102,9 +105,10 @@ class JsWireTarget:
     """One DEFINED-but-unexported top-level PUBLIC function/const-arrow the driver
     found — the missing-export target the js-wire-exports objective lands an ESM
     ``export`` keyword for. ``kind`` is ``"function"`` or ``"const"`` (advisory; the
-    splice just prepends ``export ``), and ``insert_offset`` is the byte offset of
-    the statement start, where prepending ``export `` publishes the already-defined
-    binding (a pure export-surface GROW). The driver only emits these for clean ESM
+    splice just prepends ``export ``), and ``insert_offset`` is the UTF-16 code-unit
+    offset of the statement start, where prepending ``export `` publishes the
+    already-defined binding (a pure export-surface GROW; the Python splice re-indexes
+    it to a code-point index first). The driver only emits these for clean ESM
     modules — a file carrying any ``module.exports``/``export default``/``export =``
     yields none (the deferred surface)."""
 
