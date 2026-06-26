@@ -297,3 +297,37 @@ def test_refusal_is_deterministic(tmp_path: Path):
     a = plan_implement_stub(str(tmp_path), "mylib/core.py").new_contents.get("mylib/core.py")
     b = plan_implement_stub(str(tmp_path), "mylib/core.py").new_contents.get("mylib/core.py")
     assert a is None and b is None and a == b
+
+
+# --- denetçi follow-up: a comparison that pins NO VALUE must still refuse ------
+
+def test_pins_a_value_refuses_non_value_comparisons(tmp_path: Path):
+    # Each shape CALLS the stub and puts the result in a Compare, but NONE pins a
+    # value the equality-witness synthesis can honestly satisfy: a tautology (always
+    # true for ANY body), a non-equality, a half-space, or a membership. The floor
+    # must REFUSE all of them — else the value-free passthrough template fake-greens
+    # (a guessed body stamped "verified"). Regression guard for the over-loose
+    # "any comparison touching the call" rule that re-opened the vacuous-oracle hole.
+    shapes = {
+        "tautology_call": "    assert f(5) == f(5)\n",
+        "tautology_bound": "    r = f(5)\n    assert r == r\n",
+        "not_equal_none": "    assert f(5) != None\n",
+        "is_not_none": "    assert f(5) is not None\n",
+        "less_than": "    assert f(5) < 100\n",
+        "membership": "    assert f(5) in (1, 2, 5)\n",
+    }
+    stub = StubFunction("f", ("x",), 1, 2, "", False)
+    for label, body in shapes.items():
+        rel = f"tests/test_{label}.py"
+        _write(tmp_path, rel, "from app.m import f\ndef test_it():\n" + body)
+        assert _pins_a_value(tmp_path, [rel], stub) is False, label
+
+
+def test_pins_a_value_true_for_equality_to_another_value(tmp_path: Path):
+    # The narrowing must NOT over-refuse: `f(x) == g(y)` pins a value (the stub's
+    # result must equal another computed value) — only a SELF-comparison (both sides
+    # the stub's own result) is vacuous.
+    _write(tmp_path, "tests/test_fg.py",
+           "from app.m import f, g\ndef test_it():\n    assert f(5) == g(5)\n")
+    stub = StubFunction("f", ("x",), 1, 2, "", False)
+    assert _pins_a_value(tmp_path, ["tests/test_fg.py"], stub) is True

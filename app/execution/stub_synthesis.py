@@ -2812,13 +2812,21 @@ def _witnesses_in_file(text: str, stub: StubFunction,
     excluded = _unenforced_line_ranges(text)
     indirect, resolved_lines = _indirect_witnesses(text, stub)
     out: list[tuple[str, str]] = list(indirect)
+    # A self-referential RHS (`f(x) == f(...)`) is a TAUTOLOGY — any body is equal to
+    # itself, so it pins NO value. Mining it as a witness fake-greens the search (a
+    # guessed body passes the self-equal gate); skip any assert whose expected side
+    # calls the stub itself.
+    self_call = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(stub.name) + r"\s*\(")
     for m in call_eq.finditer(text):
         line = text.count("\n", 0, m.start()) + 1
         if _line_in_ranges(line, excluded):
             continue  # assertion lives in an xfail/skip test — not a contract
         if line in resolved_lines:
             continue  # this exact assert already mined as a literal indirectly
-        out.append((m.group(1).strip(), m.group(2).strip()))
+        expected = m.group(2).strip()
+        if self_call.search(expected):
+            continue  # `f(x) == f(...)` tautology — pins no value, never a witness
+        out.append((m.group(1).strip(), expected))
     out.extend(_singleton_witnesses(text, stub, excluded))
     return out
 
@@ -4172,14 +4180,44 @@ def _call_targets(func: ast.expr, name: str) -> bool:
     return isinstance(func, ast.Attribute) and func.attr == name
 
 
-def _compares_call_result(fn: ast.AST, name: str) -> bool:
-    """Whether ``fn`` COMPARES a call of ``name`` to a value — ``name(args) == v`` /
-    ``is None`` inline, or ``r = name(args); ... r == v`` via a local binding.
+def _is_singleton(node: ast.expr) -> bool:
+    """A ``None`` / ``True`` / ``False`` literal — the only RHS that makes
+    ``f(x) is <v>`` a value pin (identity-equality idiom). Uses ``is`` comparisons,
+    not ``in (...)``, so a falsy literal like ``0`` (``0 == False``) is never
+    mistaken for a singleton."""
+    return isinstance(node, ast.Constant) and (
+        node.value is None or node.value is True or node.value is False)
 
-    A type-only check (``isinstance(name(x), str)`` — the call is an *argument*, not
-    a comparison operand) and a discarded call (``name(x)`` standing alone) have no
-    such comparison, so they read as NOT value-pinning. Robust to parenthesised
-    arguments (tuples, nested calls) the literal witness regex cannot parse."""
+
+def _is_stub_result(operand: ast.expr, name: str, bound: set[str]) -> bool:
+    """Whether ``operand`` IS the stub's call result — a direct call of ``name`` or a
+    local previously bound to one."""
+    if isinstance(operand, ast.Call) and _call_targets(operand.func, name):
+        return True
+    return isinstance(operand, ast.Name) and operand.id in bound
+
+
+def _compares_call_result(fn: ast.AST, name: str) -> bool:
+    """Whether ``fn`` pins the stub's return by an EQUALITY/IDENTITY comparison to a
+    VALUE — ``name(args) == v`` / ``name(args) is None`` inline, or via a local
+    binding ``r = name(args); ... r == v``. Robust to parenthesised arguments
+    (tuples, nested calls) the literal witness regex cannot parse.
+
+    The discriminator is deliberately narrow, because a loose "any comparison
+    touching the call" rule RE-OPENS the vacuous-oracle fake-green:
+
+    * ONLY ``==`` (against any non-stub operand) and ``is`` (against a
+      None/True/False singleton) pin a value the equality-witness synthesis can
+      honestly satisfy. ``!=`` / ``is not`` / ``<`` / ``<=`` / ``>`` / ``>=`` /
+      ``in`` / ``not in`` constrain a half-space or a non-equality, NOT a value — a
+      guessed body would still fake-green through them, so they are refused.
+    * a SELF-comparison (``f(x) == f(x)`` or ``r == r``) pins nothing — any body
+      equals itself — so a comparison whose BOTH sides reduce to the stub result is
+      refused. The value-side must be something OTHER than the stub's own result.
+
+    A type-only check (``isinstance(name(x), str)``), a discarded call (``name(x)``
+    alone), and a name-only reference (``callable(name)`` — never CALLED) have no
+    qualifying comparison, so they correctly read as NOT value-pinning."""
     bound: set[str] = set()
     for node in ast.walk(fn):
         if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
@@ -4188,10 +4226,14 @@ def _compares_call_result(fn: ast.AST, name: str) -> bool:
     for node in ast.walk(fn):
         if not isinstance(node, ast.Compare):
             continue
-        for operand in (node.left, *node.comparators):
-            if isinstance(operand, ast.Call) and _call_targets(operand.func, name):
-                return True
-            if isinstance(operand, ast.Name) and operand.id in bound:
+        operands = [node.left, *node.comparators]
+        for i, op in enumerate(node.ops):
+            lhs_stub = _is_stub_result(operands[i], name, bound)
+            rhs_stub = _is_stub_result(operands[i + 1], name, bound)
+            if lhs_stub == rhs_stub:
+                continue  # both sides the stub (self-comparison) or neither — no value
+            other = operands[i + 1] if lhs_stub else operands[i]
+            if isinstance(op, ast.Eq) or (isinstance(op, ast.Is) and _is_singleton(other)):
                 return True
     return False
 
