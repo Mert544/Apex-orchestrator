@@ -33,7 +33,10 @@ from pathlib import Path
 
 from app.execution.stub_synthesis import (
     StubFunction,
+    _has_enforceable_contract,
+    _is_runtime_skip_stmt,
     _pins_a_value,
+    _unenforced_line_ranges,
     can_fill_stub_in_process,
     pinned_test_files,
     synthesize_expr_from_witnesses,
@@ -331,3 +334,225 @@ def test_pins_a_value_true_for_equality_to_another_value(tmp_path: Path):
            "from app.m import f, g\ndef test_it():\n    assert f(5) == g(5)\n")
     stub = StubFunction("f", ("x",), 1, 2, "", False)
     assert _pins_a_value(tmp_path, ["tests/test_fg.py"], stub) is True
+
+
+# --- denetçi: a RUNTIME skip/xfail IN THE BODY must refuse like the decorator -----
+#
+# The breach: a pinning test whose body OPENS with a runtime skip/xfail call
+# (``pytest.skip(...)`` / ``pytest.xfail(...)`` / ``pytest.importorskip("missing")``
+# / ``raise unittest.SkipTest``) never enforces its trailing assertions, so the
+# Pass-2 pytest gate in ``synthesize_stub_body`` greens VACUOUSLY and the FIRST
+# candidate (the value-free ``passthrough`` — an arbitrary, WRONG body) lands
+# stamped verified. The DECORATOR forms were already refused; the runtime-in-body
+# forms were invisible (only ``decorator_list`` was inspected). The expected RHS
+# is a non-literal subscript (``EXP[3]``) so the in-process witness is non-evaluable
+# and control genuinely reaches the pytest-gated Pass-2 path — the exact shape the
+# adversarial audit reproduced. After the fix the enforceable-contract floor sees
+# the runtime skip and refuses BEFORE the vacuous gate runs.
+
+# The runtime forms that UNCONDITIONALLY suspend the test, mapped to the body line
+# that opens the test function. ``EXP[...]`` keeps the witness non-evaluable so the
+# pytest Pass-2 path is reached (a bare literal would land in-process before then).
+_RUNTIME_SKIP_BODY_LINES = {
+    "pytest_skip": '    pytest.skip("wip")\n',
+    "pytest_xfail": '    pytest.xfail("wip")\n',
+    "pytest_importorskip": '    pytest.importorskip("definitely_missing_mod")\n',
+    "unittest_skiptest": "    raise unittest.SkipTest\n",
+}
+
+
+def _scale_project(tmp_path: Path, body_prefix: str) -> tuple[Path, str]:
+    # A 1-arg int stub whose ONLY pinning test runs ``body_prefix`` (a runtime skip
+    # or guard) before two non-literal-expected assertions. Returns (module_path,
+    # original_source) so callers can assert byte-equality after a refused apply.
+    _suite_project(tmp_path)
+    original = "def scale(n):\n    raise NotImplementedError\n"
+    _write(tmp_path, "app/scale.py", original)
+    _write(tmp_path, "tests/test_scale.py",
+           "import pytest, unittest\n"
+           "from app.scale import scale\n"
+           "EXP = {3: 6, 5: 10}\n"
+           "def test_scale():\n"
+           + body_prefix
+           + "    assert scale(3) == EXP[3]\n"
+           "    assert scale(5) == EXP[5]\n")
+    return (tmp_path / "app" / "scale.py"), original
+
+
+def test_runtime_skip_in_body_refuses_each_form(tmp_path: Path):
+    # Every unconditional runtime skip/xfail in the test BODY makes the Pass-2 gate
+    # vacuous, so ``synthesize_stub_body`` MUST refuse (land NO body) — the wrong
+    # ``passthrough`` (``return n``) that fake-greened before must not land.
+    stub = StubFunction("scale", ("n",), 1, 2, "", False)
+    for label, line in _RUNTIME_SKIP_BODY_LINES.items():
+        sub = tmp_path / label
+        sub.mkdir()
+        module_path, original = _scale_project(sub, line)
+        tf = pinned_test_files(sub, "app/scale.py", "scale")
+        assert tf == ["tests/test_scale.py"], label
+        # The floor itself sees the runtime skip and reports no enforceable contract.
+        assert _has_enforceable_contract(sub, tf, stub) is False, label
+        body = synthesize_stub_body(sub, "app/scale.py", stub, tf, RunTestsSkill())
+        assert body is None, label  # REFUSE — no arbitrary body lands
+        assert module_path.read_text() == original, label  # file byte-unchanged
+
+
+def test_runtime_skip_in_body_refuses_via_plan_unchanged(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # End-of-objective view through ``implement-stub``: the plan lands NOTHING for
+    # each runtime-skipped contract and the module is byte-for-byte untouched.
+    for label, line in _RUNTIME_SKIP_BODY_LINES.items():
+        sub = tmp_path / label
+        sub.mkdir()
+        module_path, original = _scale_project(sub, line)
+        plan = plan_implement_stub(str(sub), "app/scale.py")
+        assert not plan.new_contents and not plan.blockers, label
+        assert module_path.read_text() == original, label
+
+
+def test_decorator_skip_still_refuses_regression_guard(tmp_path: Path):
+    # Regression guard for the form that already worked: a ``@pytest.mark.skip``
+    # decorator on the only pinning test is still refused (the asymmetry the fix
+    # closes is decorator-caught vs runtime-in-body-missed — both must refuse now).
+    _suite_project(tmp_path)
+    original = "def scale(n):\n    raise NotImplementedError\n"
+    _write(tmp_path, "app/scale.py", original)
+    _write(tmp_path, "tests/test_scale.py",
+           "import pytest\n"
+           "from app.scale import scale\n"
+           "EXP = {3: 6, 5: 10}\n"
+           "@pytest.mark.skip\n"
+           "def test_scale():\n"
+           "    assert scale(3) == EXP[3]\n"
+           "    assert scale(5) == EXP[5]\n")
+    stub = StubFunction("scale", ("n",), 1, 2, "", False)
+    tf = pinned_test_files(tmp_path, "app/scale.py", "scale")
+    assert _has_enforceable_contract(tmp_path, tf, stub) is False
+    body = synthesize_stub_body(tmp_path, "app/scale.py", stub, tf, RunTestsSkill())
+    assert body is None
+    assert (tmp_path / "app" / "scale.py").read_text() == original
+
+
+def test_conditional_runtime_skip_still_enforced_lands(tmp_path: Path):
+    # The asymmetry the fix preserves: a skip GUARDED by ``if not HAS:`` (HAS=True,
+    # so it never fires) is a genuine, enforced test that runs — the nested skip is
+    # NOT a direct body statement, so the floor does NOT trip and a correct body
+    # (``n * 2``) STILL lands. Proves we did not over-refuse legitimate conditional
+    # skips (the load-bearing "direct body statement only" rule).
+    _suite_project(tmp_path)
+    _write(tmp_path, "app/d.py", "def double(n):\n    raise NotImplementedError\n")
+    _write(tmp_path, "tests/test_d.py",
+           "import pytest\n"
+           "from app.d import double\n"
+           "HAS = True\n"
+           "def test_d():\n"
+           "    if not HAS:\n"
+           "        pytest.skip('need optional dep')\n"
+           "    assert double(3) == 6\n"
+           "    assert double(5) == 10\n")
+    stub = StubFunction("double", ("n",), 1, 2, "", False)
+    tf = pinned_test_files(tmp_path, "app/d.py", "double")
+    assert _has_enforceable_contract(tmp_path, tf, stub) is True
+    body = synthesize_stub_body(tmp_path, "app/d.py", stub, tf, RunTestsSkill())
+    assert body is not None and "return n * 2" in body  # legitimate body lands
+
+
+def test_legitimate_enforced_test_still_lands_verified(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # The plain over-refusal guard: a normal pinning test with NO skip of any kind
+    # still lands the correct ``n * 2`` body through the full gated apply.
+    _suite_project(tmp_path)
+    _write(tmp_path, "app/d.py", "def double(n):\n    raise NotImplementedError\n")
+    _write(tmp_path, "tests/test_d.py",
+           "from app.d import double\n"
+           "def test_d():\n    assert double(3) == 6\n    assert double(5) == 10\n")
+    body = plan_implement_stub(str(tmp_path), "app/d.py").new_contents.get("app/d.py")
+    assert body is not None and "return n * 2" in body
+
+
+def test_runtime_skip_refusal_is_deterministic(tmp_path: Path):
+    # Same runtime-skipped project twice -> identically refused (no time/random).
+    stub = StubFunction("scale", ("n",), 1, 2, "", False)
+    _scale_project(tmp_path, '    pytest.skip("wip")\n')
+    tf = pinned_test_files(tmp_path, "app/scale.py", "scale")
+    a = synthesize_stub_body(tmp_path, "app/scale.py", stub, tf, RunTestsSkill())
+    b = synthesize_stub_body(tmp_path, "app/scale.py", stub, tf, RunTestsSkill())
+    assert a is None and b is None and a == b
+
+
+# --- the helper in isolation (predicate-level edge coverage) -------------------
+
+def _stmt(src: str):
+    import ast
+    return ast.parse(src).body[0]
+
+
+def test_is_runtime_skip_stmt_matches_the_unconditional_forms():
+    # Bare call, assigned call, importorskip, and both raise spellings — every
+    # unconditional runtime skip/xfail is recognised, alias-spelled or attributed.
+    import ast
+    for src in (
+        'pytest.skip("x")',
+        'pytest.xfail("x")',
+        'pytest.importorskip("m")',
+        'mod = pytest.importorskip("m")',
+        "skip('x')",                 # ``from pytest import skip`` alias
+        "raise unittest.SkipTest",
+        "raise unittest.SkipTest()",
+        "raise SkipTest",            # ``from unittest import SkipTest`` alias
+        "raise pytest.skip.Exception",
+    ):
+        node = ast.parse(src).body[0]
+        assert _is_runtime_skip_stmt(node) is True, src
+
+
+def test_is_runtime_skip_stmt_ignores_non_skip_and_guarded_statements():
+    # An assertion, a value-pinning call, a benign call/raise, and crucially a skip
+    # nested under ``if`` / ``for`` / ``try`` are all NOT direct unconditional skips,
+    # so the predicate returns False (the conditional asymmetry is deliberate).
+    import ast
+    for src in (
+        "assert scale(3) == 6",
+        "x = scale(3)",
+        "print('hi')",
+        "raise ValueError('boom')",
+        "if not HAS:\n    pytest.skip('dep')",
+        "for _ in range(1):\n    pytest.skip('dep')",
+        "try:\n    pytest.skip('dep')\nexcept Exception:\n    pass",
+    ):
+        node = ast.parse(src).body[0]
+        assert _is_runtime_skip_stmt(node) is False, src
+
+
+def test_unenforced_line_ranges_flags_runtime_skip_body_not_conditional():
+    # The range miner now spans a function whose body opens with a runtime skip, but
+    # leaves a function whose skip is guarded (and a plain function) un-flagged.
+    text = (
+        "import pytest\n"
+        "def test_skipped():\n"          # lines 2-3: unconditional skip -> flagged
+        "    pytest.skip('wip')\n"
+        "def test_guarded():\n"          # lines 4-6: conditional skip -> not flagged
+        "    if not HAS:\n"
+        "        pytest.skip('dep')\n"
+        "    assert g(1) == 1\n"
+        "def test_plain():\n"            # lines 8-9: no skip -> not flagged
+        "    assert g(2) == 2\n"
+    )
+    ranges = _unenforced_line_ranges(text)
+    # Exactly the unconditional-skip function's def line is covered.
+    assert _line_covered(ranges, 2) is True
+    assert _line_covered(ranges, 5) is False   # guarded test
+    assert _line_covered(ranges, 8) is False   # plain test
+
+
+def _line_covered(ranges, line: int) -> bool:
+    return any(start <= line <= end for start, end in ranges)
+
+
+def test_unenforced_line_ranges_empty_on_no_tests_and_syntax_error():
+    # Edge/empty paths: a file with no functions yields no ranges; a syntax error
+    # yields ``[]`` (a parse failure must never silently drop a real contract).
+    assert _unenforced_line_ranges("X = 1\n") == []
+    assert _unenforced_line_ranges("def broken(:\n") == []

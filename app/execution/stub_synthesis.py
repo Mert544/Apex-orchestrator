@@ -3675,10 +3675,13 @@ def _is_enforced_test(node: ast.AST, excluded: list[tuple[int, int]]) -> bool:
 def _unenforced_line_ranges(text: str) -> list[tuple[int, int]]:
     """The 1-based ``(start, end)`` line spans of every test function in ``text``
     decorated to NOT enforce its assertions: ``@pytest.mark.xfail`` (and bare
-    ``@xfail``), ``@pytest.mark.skip`` / ``skipif``, and ``@unittest.skip*``. An
-    assertion inside such a function pins no contract — its failure is allowed
-    (xfail) or it never runs (skip). Deterministic; ``[]`` on a syntax error so a
-    parse failure never silently drops a real contract."""
+    ``@xfail``), ``@pytest.mark.skip`` / ``skipif``, and ``@unittest.skip*`` — OR
+    whose body OPENS with an unconditional runtime skip/xfail
+    (``pytest.skip(...)`` / ``pytest.xfail(...)`` / ``pytest.importorskip(...)`` /
+    ``raise unittest.SkipTest``). An assertion inside such a function pins no
+    contract — its failure is allowed (xfail) or it never runs (skip).
+    Deterministic; ``[]`` on a syntax error so a parse failure never silently
+    drops a real contract."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
@@ -3687,7 +3690,8 @@ def _unenforced_line_ranges(text: str) -> list[tuple[int, int]]:
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        if any(_is_unenforced_decorator(d) for d in node.decorator_list):
+        if any(_is_unenforced_decorator(d) for d in node.decorator_list) \
+                or any(_is_runtime_skip_stmt(s) for s in node.body):
             out.append((node.lineno, node.end_lineno or node.lineno))
     return out
 
@@ -3711,6 +3715,43 @@ def _is_unenforced_decorator(dec: ast.expr) -> bool:
     return lowered in {"xfail", "skip", "skipif", "skipunless"}
 
 
+_RUNTIME_SKIP_CALLS = {"skip", "xfail", "importorskip"}
+
+
+def _is_runtime_skip_stmt(stmt: ast.stmt) -> bool:
+    """True for a DIRECT body statement that UNCONDITIONALLY skips/xfails the test
+    at runtime: a bare or assigned ``pytest.skip(...)`` / ``pytest.xfail(...)`` /
+    ``pytest.importorskip(...)`` call, or ``raise unittest.SkipTest`` /
+    ``raise pytest.skip.Exception``. Matched on the trailing attribute/name token so
+    import-alias spellings still count (mirrors :func:`_is_unenforced_decorator`).
+    Only DIRECT body statements are inspected, so a skip guarded by an ``if`` / ``for``
+    / ``try`` (a conditional, genuinely-enforced test that runs for some inputs) does
+    NOT trip this gate — that asymmetry is deliberate and load-bearing."""
+    call = None
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+        call = stmt.value
+    elif isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
+        call = stmt.value
+    if call is not None:
+        f = call.func
+        nm = f.attr if isinstance(f, ast.Attribute) else (
+            f.id if isinstance(f, ast.Name) else None)
+        if nm in _RUNTIME_SKIP_CALLS:
+            return True
+    if isinstance(stmt, ast.Raise) and stmt.exc is not None:
+        exc = stmt.exc
+        if isinstance(exc, ast.Call):
+            exc = exc.func
+        if isinstance(exc, ast.Attribute) and exc.attr == "Exception" \
+                and isinstance(exc.value, ast.Attribute) and exc.value.attr == "skip":
+            return True  # raise pytest.skip.Exception
+        nm = exc.attr if isinstance(exc, ast.Attribute) else (
+            exc.id if isinstance(exc, ast.Name) else None)
+        if nm == "SkipTest":
+            return True
+    return False
+
+
 def _line_in_ranges(line: int, ranges: list[tuple[int, int]]) -> bool:
     """True when 1-based ``line`` falls within any ``(start, end)`` span."""
     return any(start <= line <= end for start, end in ranges)
@@ -3719,18 +3760,20 @@ def _line_in_ranges(line: int, ranges: list[tuple[int, int]]) -> bool:
 def _has_enforceable_contract(root: Path, test_files: list[str],
                               stub: StubFunction) -> bool:
     """True when at least one ENFORCED test references ``stub.name`` — a test
-    function that is NOT decorated ``xfail`` / ``skip`` / ``skipif`` and so whose
-    assertions the suite actually enforces.
+    function that is NOT decorated ``xfail`` / ``skip`` / ``skipif`` AND whose body
+    does not open with an unconditional runtime skip/xfail (``pytest.skip(...)`` /
+    ``pytest.xfail(...)`` / ``pytest.importorskip(...)`` / ``raise unittest.SkipTest``),
+    and so whose assertions the suite actually enforces.
 
     This is the never-fake-green floor for the pytest-gated path: when EVERY test
-    touching the stub is xfail/skip, the pinned-test gate is meaningless (an
-    xfail test stays "green" no matter what body we land, a skip never runs), so
-    synthesising a body against it would stamp an unenforced contract "verified".
-    We refuse instead. A non-stub reference inside an enforced test is enough — we
-    err toward "enforceable" only when a real, running test names the function.
-    Deterministic; on a parse failure we conservatively report ``True`` so a
-    parse hiccup never suppresses a genuine contract (the run gate still
-    decides)."""
+    touching the stub is xfail/skip (whether via a decorator OR a runtime skip in
+    the body), the pinned-test gate is meaningless (an xfail test stays "green" no
+    matter what body we land, a skip never runs), so synthesising a body against it
+    would stamp an unenforced contract "verified". We refuse instead. A non-stub
+    reference inside an enforced test is enough — we err toward "enforceable" only
+    when a real, running test names the function. Deterministic; on a parse failure
+    we conservatively report ``True`` so a parse hiccup never suppresses a genuine
+    contract (the run gate still decides)."""
     name_re = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(stub.name)
                          + r"(?![A-Za-z0-9_])")
     saw_reference = False
@@ -3752,7 +3795,8 @@ def _has_enforceable_contract(root: Path, test_files: list[str],
             if not name_re.search(seg):
                 continue
             saw_reference = True
-            if not any(_is_unenforced_decorator(d) for d in node.decorator_list):
+            if not any(_is_unenforced_decorator(d) for d in node.decorator_list) \
+                    and not any(_is_runtime_skip_stmt(s) for s in node.body):
                 return True  # an enforced test names the stub — real contract
     # If no test referenced the stub at all, leave the decision to the caller
     # (no-pinned-tests is handled separately as a no-op refusal). Only when EVERY
