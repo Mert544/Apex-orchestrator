@@ -87,6 +87,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "remove_unreachable_after_terminator": 0.40,  # drop code after return/raise/break
     "merge_duplicate_imports": 0.35,  # collapse repeated from-imports
     "add_final": 0.34,               # seal a never-subclassed class with @final
+    "java_finalize_field": 0.34,     # Java sibling of add_final: seal a never-reassigned private field with `final` (same runtime-noop tier)
     "seal_final_method": 0.34,       # seal a never-overridden method with @final
     "enforce_enum_unique": 0.34,     # lock an all-distinct Enum with @enum.unique
     "complete_match_exhaustiveness": 0.34,   # fill a closed-set dispatch's missing arm with a loud exhaustiveness sentinel

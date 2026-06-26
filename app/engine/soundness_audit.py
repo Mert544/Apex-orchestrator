@@ -110,6 +110,7 @@ def repo_root() -> Path:
 SOUNDNESS_STRATEGY: dict[str, str] = {
     # --- CONCRETE: lands working code ---------------------------------------
     "add-final": "runtime-noop+used-as-base-scan(tests-incl)",
+    "java-finalize-field": "java-final-modifier-add(runtime-noop)+private-field-never-reassigned-whole-file-scan+reparse-fact-set-identical-or-refuse(no-suite-needed)",
     "seal-final-method": "runtime-noop+transitive-subclass-scan(tests-incl)",
     "wire-module-exports": "behavior-identical-or-star-consumer-scan(tests-incl)",
     "wire-exports": "oracle-gated-scaffold(import-oracle)+additive-init",
@@ -375,6 +376,12 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # unsatisfiable by every fixed template — js-implement-from-jsdoc MUST refuse it
     # (no fixed body reproduces both), never land a fake-green fill.
     "jsdoc_contradiction": frozenset({"js-implement-from-jsdoc"}),
+    # The Java analogue of provenance_trap: a PRIVATE field that LOOKS never-reassigned
+    # to a method-local scan (the enclosing class only READS it) but is REASSIGNED by a
+    # nested inner class — so `final` would be a COMPILE ERROR, not a runtime no-op.
+    # java-finalize-field MUST refuse it (the whole-file assignment scan sees the
+    # inner-class write), never seal a falsely-`final` field.
+    "java_false_final": frozenset({"java-finalize-field"}),
     "syntax_error": frozenset(),  # universal-refuse rule covers every objective
     "already_applied": frozenset(
         {"wire-module-exports", "add-final", "freeze-dataclass"}),

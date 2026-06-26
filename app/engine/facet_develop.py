@@ -481,6 +481,16 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # Phrasing is substring-order-safe vs every other key.
     "a class to seal as final": "add-final",
 
+    # A PRIVATE Java field proven never reassigned anywhere in its file: the Java
+    # sibling of add-final. java-finalize-field seals it with the `final` modifier (a
+    # RUNTIME no-op — the field already obeys it; the false-final risk is closed
+    # STRUCTURALLY by a whole-file assignment scan over a parse-only tree, not a
+    # Maven/JUnit run, then a re-parse fact-set-identity check). Its phrasing shares
+    # no whole key with "a class to seal as final" / "the method to seal as final"
+    # above (in either direction — "java field to finalize" vs "to seal as final"),
+    # so its relative order is free.
+    "the never-reassigned java field to finalize": "java-finalize-field",
+
     # A method proven never overridden anywhere: seal-final-method seals it with
     # @typing.final (the method-level sibling of add-final — a type-checker-only
     # no-op, behaviour-preserving; the false-final risk is closed STRUCTURALLY by a

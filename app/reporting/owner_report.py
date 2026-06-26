@@ -46,10 +46,17 @@ __all__ = [
 # audits it composes.
 
 # A CONCRETE objective whose name starts with one of these tokens lands JavaScript /
-# TypeScript code (the ESM/JSDoc objectives); every other CONCRETE objective lands
-# Python. Prefix-matching the slug keeps this a stable, reviewable rule rather than a
-# second hand-maintained list that could drift from the manifest.
+# TypeScript code (the ESM/JSDoc objectives); a ``java-`` slug lands Java; every other
+# CONCRETE objective lands Python. Prefix-matching the slug keeps this a stable,
+# reviewable rule rather than a second hand-maintained list that could drift from the
+# manifest.
 _JS_NAME_PREFIXES: tuple[str, ...] = ("js-", "document-export-jsdoc")
+
+# A CONCRETE objective whose name starts with ``java-`` lands Java code (the JDK
+# Compiler-Tree-API objectives). Kept SEPARATE from ``_JS_NAME_PREFIXES`` so a
+# ``java-`` slug is neither mistaken for JS nor (the load-bearing fix) silently
+# counted as Python by the "everything else is Python" rule below.
+_JAVA_NAME_PREFIXES: tuple[str, ...] = ("java-",)
 
 # A FEW CONCRETE objectives rendered as the plain phrase an owner understands. Only
 # names present in the live CONCRETE bucket are shown (sorted, then capped), so this
@@ -66,6 +73,7 @@ _ABILITY_PHRASES: dict[str, str] = {
     "generate-usage-doc": "writing a usage guide",
     "js-tdd-implement": "filling in unfinished JavaScript from its tests",
     "js-wire-exports": "wiring up JavaScript/TypeScript exports",
+    "java-finalize-field": "marking Java fields final where they never change",
 }
 
 _MAX_EXAMPLE_ABILITIES = 4
@@ -75,20 +83,23 @@ def _languages_for(concrete_names) -> list[str]:
     """The owner-facing language list Apex can land CONCRETE code in.
 
     Pure function of the CONCRETE objective NAMES: any JS/TS-shaped slug (see
-    :data:`_JS_NAME_PREFIXES`) contributes "JavaScript/TypeScript"; every other
-    CONCRETE objective contributes "Python". Returned in a STABLE display order
-    (Python first), de-duplicated, and only for languages actually represented — so
-    a Python-only manifest reads "Python" alone."""
+    :data:`_JS_NAME_PREFIXES`) contributes "JavaScript/TypeScript"; a ``java-`` slug
+    (see :data:`_JAVA_NAME_PREFIXES`) contributes "Java"; every OTHER CONCRETE
+    objective (neither JS nor Java) contributes "Python". Returned in a STABLE display
+    order (Python, then Java, then JavaScript/TypeScript), de-duplicated, and only for
+    languages actually represented — so a Python-only manifest reads "Python" alone."""
     names = list(concrete_names)
-    has_js = any(
-        n.startswith(prefix) for n in names for prefix in _JS_NAME_PREFIXES
-    )
+    has_js = any(n.startswith(p) for n in names for p in _JS_NAME_PREFIXES)
+    has_java = any(n.startswith(p) for n in names for p in _JAVA_NAME_PREFIXES)
     has_python = any(
-        not any(n.startswith(prefix) for prefix in _JS_NAME_PREFIXES) for n in names
+        not any(n.startswith(p) for p in _JS_NAME_PREFIXES + _JAVA_NAME_PREFIXES)
+        for n in names
     )
     languages: list[str] = []
     if has_python:
         languages.append("Python")
+    if has_java:
+        languages.append("Java")
     if has_js:
         languages.append("JavaScript/TypeScript")
     return languages

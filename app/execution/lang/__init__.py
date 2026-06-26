@@ -57,20 +57,25 @@ def register_adapter(adapter: LanguageAdapter) -> LanguageAdapter:
 
 
 def _ensure_builtins() -> None:
-    """Register the two built-in adapters (Python + JavaScript) ONCE, on first
+    """Register the built-in adapters (Python + JavaScript + Java) ONCE, on first
     use. Imported lazily — the adapter modules pull in ``cross_file_rename`` /
-    the test runner, so importing them at module top would couple this leaf
-    package to that heavy graph; deferring keeps ``import app.execution.lang``
-    cheap and cycle-free. Idempotent: built-ins load at most once."""
+    the test runner / the language drivers, so importing them at module top would
+    couple this leaf package to that heavy graph; deferring keeps ``import
+    app.execution.lang`` cheap and cycle-free. Idempotent: built-ins load at most
+    once. Order of registration is irrelevant — :func:`adapters` puts Python first
+    and sorts every other adapter by ``name`` (so ``java`` sorts before
+    ``javascript``), a total order independent of registration timing."""
     global _BUILTINS_LOADED
     if _BUILTINS_LOADED:
         return
     _BUILTINS_LOADED = True  # set first: a re-entrant import never double-loads
+    from app.execution.lang.java_adapter import JavaAdapter
     from app.execution.lang.js_adapter import JavaScriptAdapter
     from app.execution.lang.python_adapter import PythonAdapter
 
     register_adapter(PythonAdapter())
     register_adapter(JavaScriptAdapter())
+    register_adapter(JavaAdapter())
 
 
 def _order_key(name: str) -> tuple[int, str]:

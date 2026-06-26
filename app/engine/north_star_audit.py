@@ -90,6 +90,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "cover-gaps",
         "scaffold-from-protocol",
         "add-final",
+        "java-finalize-field",
         "seal-final-method",
         "enforce-enum-unique",
         "complete-match-exhaustiveness",

@@ -216,7 +216,16 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                          # overridden anywhere, which seal-final-method seals with
                          # `@typing.final` (the per-method inverse of an extension
                          # point). Appended, originals still lead.
-                         "the method to seal as final"],
+                         "the method to seal as final",
+                         # added: the JAVA sibling of add-final — a PRIVATE Java field
+                         # provably never reassigned anywhere in its file, which
+                         # java-finalize-field seals with the `final` modifier (a
+                         # runtime no-op the field already obeys; the false-final risk
+                         # is closed by a whole-file assignment scan over a parse-only
+                         # tree + a re-parse fact-set-identity check, no Maven/JUnit
+                         # run). Appended last, so the originals still lead and emit
+                         # first.
+                         "the never-reassigned java field to finalize"],
     "sensible defaults": ["the safe default", "the override path", "documented rationale"],
     # generalize L3 ladders — the appended L2 moves decompose once more into the
     # concrete edits an engineer performs, then bottom out in the case split.

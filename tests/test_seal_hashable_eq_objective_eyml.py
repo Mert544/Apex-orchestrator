@@ -487,8 +487,8 @@ def test_counts_are_thirty_concrete_of_seventy_two():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 72  # 72 after seal-hashable-eq (30th concrete) registered
-    assert len(classify_objectives(names)["CONCRETE"]) == 30
+    assert len(names) == 73  # 73 after java-finalize-field (31st concrete) registered
+    assert len(classify_objectives(names)["CONCRETE"]) == 31
 
 
 def test_north_star_and_soundness_audits_pass():

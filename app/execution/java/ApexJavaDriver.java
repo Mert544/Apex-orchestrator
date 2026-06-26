@@ -1,0 +1,437 @@
+// ApexJavaDriver.java — Apex's bundled, deterministic Java parse/analyse driver.
+//
+// The LLM-free parse engine behind the java-finalize-field objective and Apex's
+// Java support, the exact analogue of the bundled `ts_driver.js`. Apex (Python)
+// spawns this script through the existing CommandRunner as a single-file source
+// launcher (`java ApexJavaDriver.java <subcommand> <file>`); it speaks canonical
+// JSON on stdout and exits 2 on REFUSE. It depends ONLY on the JDK's OWN Compiler
+// Tree API (`com.sun.source.util.JavacTask.parse()` + `Trees`/`SourcePositions`) —
+// NO third-party jar is ever installed, NO symbol resolution, NO classpath, NO
+// network. `JavacTask.parse()` is a pure function of the bytes and every emission
+// is in source order with fixed JSON key order, so the same input yields the same
+// output (the determinism invariant the Python spine keeps). Because the parser is
+// shipped INSIDE the JDK we already require, there is no `NODE_PATH`/global-package
+// analogue — the install story is just "a JDK is on PATH".
+//
+// Subcommands (argv[0]):
+//   parse-verify <file> -> JSON {"types":[...],"fields":[...],"methods":[...]}: the
+//                          canonical structural fact-set of <file> — the sorted
+//                          declared top-level/nested type names, the
+//                          "<Type>.<field>" names, and the "<Type>.<method>/<arity>"
+//                          signatures. This is BOTH the well-formedness oracle and
+//                          the behaviour-identical witness for a splice (a leading
+//                          modifier-only edit changes ZERO of these facts, so the
+//                          spliced file must re-parse AND carry the same fact-set —
+//                          Python compares the pre/post sets and refuses on drift).
+//                          Exit 2 (REFUSE) on ANY parse error diagnostic (the exact
+//                          analogue of `sf.parseDiagnostics.length > 0` -> exit 2).
+//   final-targets <file> -> JSON [{name, insertOffset}]: every PRIVATE instance
+//                          field that is NEVER reassigned anywhere in <file> (the
+//                          whole assignment surface of a private field lives in this
+//                          one file's AST — no other file can write it), in source
+//                          order, where `insertOffset` is the byte offset just past
+//                          the field's existing modifier keywords (`public`/`private`/
+//                          `static`/... ) at which splicing ` final` makes it
+//                          `private final ...`. REFUSES (omits) a field that is: not
+//                          private; already final; static; assigned ANYWHERE but its
+//                          own initializer (a plain `=`, a compound `+=`, or a `++`/
+//                          `--`, in any method/constructor); OR one of several
+//                          declarators sharing a single statement (`int a, b;`) — any
+//                          shape it cannot read verbatim is omitted (never a guess).
+//                          Exit 2 (REFUSE) on ANY parse error diagnostic.
+//
+// Determinism: no clock, no randomness; types/fields/methods are SORTED, targets are
+// reported in source order; JSON keys are emitted in a fixed order. `insertOffset`
+// comes from `SourcePositions` (a byte offset into the source), so a splice is a
+// precise byte insert, never an AST unparse — the surrounding source is untouched.
+
+import com.sun.source.tree.AssignmentTree;
+import com.sun.source.tree.ClassTree;
+import com.sun.source.tree.CompilationUnitTree;
+import com.sun.source.tree.CompoundAssignmentTree;
+import com.sun.source.tree.ExpressionTree;
+import com.sun.source.tree.IdentifierTree;
+import com.sun.source.tree.MemberSelectTree;
+import com.sun.source.tree.MethodTree;
+import com.sun.source.tree.ModifiersTree;
+import com.sun.source.tree.Tree;
+import com.sun.source.tree.UnaryTree;
+import com.sun.source.tree.VariableTree;
+import com.sun.source.util.JavacTask;
+import com.sun.source.util.SourcePositions;
+import com.sun.source.util.TreePathScanner;
+import com.sun.source.util.TreeScanner;
+import com.sun.source.util.Trees;
+
+import javax.lang.model.element.Modifier;
+import javax.tools.DiagnosticCollector;
+import javax.tools.JavaCompiler;
+import javax.tools.JavaFileObject;
+import javax.tools.SimpleJavaFileObject;
+import javax.tools.StandardJavaFileManager;
+import javax.tools.ToolProvider;
+
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
+
+public final class ApexJavaDriver {
+
+    private static final int REFUSE = 2;
+
+    private ApexJavaDriver() {
+    }
+
+    // --- parse seam ----------------------------------------------------------
+
+    /** A parse-only compilation unit plus the positions table, or REFUSE (exit 2)
+     * on any parse-error diagnostic or unreadable file — the exact analogue of the
+     * JS driver's readSource(). NO symbol resolution (only parse()), NO classpath. */
+    private static final class Parsed {
+        final CompilationUnitTree unit;
+        final SourcePositions positions;
+        final String source;
+
+        Parsed(CompilationUnitTree unit, SourcePositions positions, String source) {
+            this.unit = unit;
+            this.positions = positions;
+            this.source = source;
+        }
+    }
+
+    private static Parsed parseOrRefuse(String file) {
+        String source;
+        try {
+            source = new String(Files.readAllBytes(Paths.get(file)), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return fail("cannot read " + file);
+        }
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        if (compiler == null) {
+            return fail("no system Java compiler");
+        }
+        DiagnosticCollector<JavaFileObject> diags = new DiagnosticCollector<>();
+        JavaFileObject jfo = new SimpleJavaFileObject(
+                URI.create("string:///In.java"), JavaFileObject.Kind.SOURCE) {
+            @Override
+            public CharSequence getCharContent(boolean ignoreEncodingErrors) {
+                return source;
+            }
+        };
+        try {
+            StandardJavaFileManager fm =
+                    compiler.getStandardFileManager(diags, null, StandardCharsets.UTF_8);
+            // -proc:none keeps it parse/scan only — never runs annotation processors,
+            // never resolves a classpath; the whole point is no network / no deps.
+            JavacTask task = (JavacTask) compiler.getTask(
+                    null, fm, diags, List.of("-proc:none"), null, List.of(jfo));
+            Iterable<? extends CompilationUnitTree> units = task.parse();
+            Trees trees = Trees.instance(task);
+            CompilationUnitTree unit = null;
+            for (CompilationUnitTree u : units) {
+                unit = u;
+                break;
+            }
+            // ANY parse-error diagnostic is a refusal — never edit a file we cannot model.
+            if (hasError(diags) || unit == null) {
+                return fail("parse error in " + file);
+            }
+            return new Parsed(unit, trees.getSourcePositions(), source);
+        } catch (Exception e) {
+            return fail("parse error in " + file);
+        }
+    }
+
+    private static boolean hasError(DiagnosticCollector<JavaFileObject> diags) {
+        for (javax.tools.Diagnostic<? extends JavaFileObject> d : diags.getDiagnostics()) {
+            if (d.getKind() == javax.tools.Diagnostic.Kind.ERROR) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // --- parse-verify: the canonical structural fact-set ---------------------
+
+    private static void cmdParseVerify(String file) {
+        Parsed p = parseOrRefuse(file);
+        Set<String> types = new TreeSet<>();
+        Set<String> fields = new TreeSet<>();
+        Set<String> methods = new TreeSet<>();
+        collectFacts(p.unit, types, fields, methods);
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"types\":");
+        appendStringArray(sb, types);
+        sb.append(",\"fields\":");
+        appendStringArray(sb, fields);
+        sb.append(",\"methods\":");
+        appendStringArray(sb, methods);
+        sb.append("}");
+        System.out.print(sb);
+    }
+
+    /** Walk every class/interface/enum/record and record its declared type names,
+     * "<Type>.<field>" names, and "<Type>.<method>/<arity>" signatures — the
+     * structural fact-set a behaviour-identical edit must leave UNCHANGED. */
+    private static void collectFacts(CompilationUnitTree unit, Set<String> types,
+                                     Set<String> fields, Set<String> methods) {
+        new TreeScanner<Void, String>() {
+            @Override
+            public Void visitClass(ClassTree node, String outer) {
+                String simple = String.valueOf(node.getSimpleName());
+                if (simple.isEmpty()) {
+                    return super.visitClass(node, outer);  // anonymous — skip the name
+                }
+                String qualified = outer.isEmpty() ? simple : outer + "." + simple;
+                types.add(qualified);
+                for (Tree member : node.getMembers()) {
+                    if (member instanceof VariableTree) {
+                        fields.add(qualified + "." + ((VariableTree) member).getName());
+                    } else if (member instanceof MethodTree) {
+                        MethodTree m = (MethodTree) member;
+                        methods.add(qualified + "." + m.getName() + "/" + m.getParameters().size());
+                    }
+                }
+                return super.visitClass(node, qualified);
+            }
+        }.scan(unit, "");
+    }
+
+    // --- final-targets: never-reassigned private fields ----------------------
+
+    private static void cmdFinalTargets(String file) {
+        Parsed p = parseOrRefuse(file);
+        Set<String> assigned = collectAssignedNames(p.unit);
+        Set<String> multiDeclared = collectMultiDeclaredFieldNames(p.unit, p.positions);
+        List<long[]> orderedOffsets = new ArrayList<>();  // [insertOffset]
+        List<String> orderedNames = new ArrayList<>();
+        collectFinalTargets(p, assigned, multiDeclared, orderedNames, orderedOffsets);
+        // Emit in source order (the field-declaration order the scanner visits).
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < orderedNames.size(); i++) {
+            if (i > 0) {
+                sb.append(",");
+            }
+            sb.append("{\"name\":");
+            appendJsonString(sb, orderedNames.get(i));
+            sb.append(",\"insertOffset\":").append(orderedOffsets.get(i)[0]).append("}");
+        }
+        sb.append("]");
+        System.out.print(sb);
+    }
+
+    /** Every PRIVATE, non-static, non-final, single-declarator instance field that
+     * is NEVER an assignment target anywhere in the file, with the byte offset just
+     * past its modifier keywords where ` final` splices in. Source order. */
+    private static void collectFinalTargets(Parsed p, Set<String> assigned,
+                                            Set<String> multiDeclared,
+                                            List<String> names, List<long[]> offsets) {
+        new TreeScanner<Void, Void>() {
+            @Override
+            public Void visitClass(ClassTree node, Void unused) {
+                for (Tree member : node.getMembers()) {
+                    if (member instanceof VariableTree) {
+                        considerField((VariableTree) member, p, assigned, multiDeclared,
+                                names, offsets);
+                    }
+                }
+                return super.visitClass(node, unused);
+            }
+        }.scan(p.unit, null);
+    }
+
+    private static void considerField(VariableTree field, Parsed p, Set<String> assigned,
+                                      Set<String> multiDeclared, List<String> names,
+                                      List<long[]> offsets) {
+        String name = String.valueOf(field.getName());
+        ModifiersTree mods = field.getModifiers();
+        Set<Modifier> flags = mods.getFlags();
+        // REFUSE: not private / already final / static (a static field's "instance"
+        // framing does not apply; keep the first objective to instance fields only).
+        if (!flags.contains(Modifier.PRIVATE)
+                || flags.contains(Modifier.FINAL)
+                || flags.contains(Modifier.STATIC)) {
+            return;
+        }
+        // REFUSE: assigned anywhere but its own initializer (any `=`, `+=`, `++`).
+        if (assigned.contains(name)) {
+            return;
+        }
+        // REFUSE: a multi-declarator statement (`private int a, b;`) — a single
+        // ` final` cannot be placed verbatim without re-emitting the declaration.
+        if (multiDeclared.contains(name)) {
+            return;
+        }
+        long insert = modifierInsertOffset(field, p);
+        if (insert < 0) {
+            return;  // a modifier span we cannot read verbatim — refuse
+        }
+        names.add(name);
+        offsets.add(new long[]{insert});
+    }
+
+    /** The byte offset just past the field's modifier keywords (where ` final`
+     * inserts cleanly), or -1 when the modifier/field span is unreadable. A private
+     * field always carries the `private` keyword, so the keyword-end is the normal
+     * path; the bounds checks make an unreadable/synthetic span refuse rather than
+     * splice at a wrong offset. */
+    private static long modifierInsertOffset(VariableTree field, Parsed p) {
+        ModifiersTree mods = field.getModifiers();
+        long modEnd = p.positions.getEndPosition(p.unit, mods);
+        long fieldStart = p.positions.getStartPosition(p.unit, field);
+        if (modEnd >= 0 && modEnd <= p.source.length() && fieldStart >= 0 && modEnd >= fieldStart) {
+            return modEnd;  // splice ` final` right after `private`/the modifier list
+        }
+        return -1;
+    }
+
+    /** The simple names that are an assignment TARGET anywhere in the file — a plain
+     * `=`, a compound `+=`/`-=`/..., or a `++`/`--`. Conservative: for a member
+     * select (`this.b`, `obj.b`) we record the trailing identifier, so a write to
+     * ANY `.b` marks the field `b` reassigned (soundness over recall — we never
+     * want a false `final`). */
+    private static Set<String> collectAssignedNames(CompilationUnitTree unit) {
+        Set<String> assigned = new HashSet<>();
+        new TreePathScanner<Void, Void>() {
+            @Override
+            public Void visitAssignment(AssignmentTree node, Void unused) {
+                recordTarget(node.getVariable(), assigned);
+                return super.visitAssignment(node, unused);
+            }
+
+            @Override
+            public Void visitCompoundAssignment(CompoundAssignmentTree node, Void unused) {
+                recordTarget(node.getVariable(), assigned);
+                return super.visitCompoundAssignment(node, unused);
+            }
+
+            @Override
+            public Void visitUnary(UnaryTree node, Void unused) {
+                String kind = node.getKind().toString();
+                if (kind.contains("INCREMENT") || kind.contains("DECREMENT")) {
+                    recordTarget(node.getExpression(), assigned);
+                }
+                return super.visitUnary(node, unused);
+            }
+        }.scan(unit, null);
+        return assigned;
+    }
+
+    private static void recordTarget(ExpressionTree target, Set<String> assigned) {
+        if (target instanceof IdentifierTree) {
+            assigned.add(String.valueOf(((IdentifierTree) target).getName()));
+        } else if (target instanceof MemberSelectTree) {
+            assigned.add(String.valueOf(((MemberSelectTree) target).getIdentifier()));
+        }
+    }
+
+    /** The simple field names declared as one of SEVERAL declarators in a single
+     * statement (`private int a, b;`). Detected structurally: two field members of
+     * the SAME class whose declarations share a modifiers START position belong to
+     * the same `int a, b;` statement, so BOTH names are flagged (a single ` final`
+     * cannot be spliced into a shared declaration verbatim). */
+    private static Set<String> collectMultiDeclaredFieldNames(CompilationUnitTree unit,
+                                                              SourcePositions positions) {
+        Set<String> multi = new HashSet<>();
+        new TreeScanner<Void, Void>() {
+            @Override
+            public Void visitClass(ClassTree node, Void unused) {
+                List<VariableTree> fields = new ArrayList<>();
+                for (Tree member : node.getMembers()) {
+                    if (member instanceof VariableTree) {
+                        fields.add((VariableTree) member);
+                    }
+                }
+                flagShared(fields);
+                return super.visitClass(node, unused);
+            }
+
+            private void flagShared(List<VariableTree> fields) {
+                for (int i = 0; i < fields.size(); i++) {
+                    long si = positions.getStartPosition(unit, fields.get(i).getModifiers());
+                    for (int j = i + 1; j < fields.size(); j++) {
+                        long sj = positions.getStartPosition(unit, fields.get(j).getModifiers());
+                        if (si >= 0 && si == sj) {
+                            multi.add(String.valueOf(fields.get(i).getName()));
+                            multi.add(String.valueOf(fields.get(j).getName()));
+                        }
+                    }
+                }
+            }
+        }.scan(unit, null);
+        return multi;
+    }
+
+    // --- JSON emit (fixed key order, deterministic) --------------------------
+
+    private static void appendStringArray(StringBuilder sb, Set<String> values) {
+        sb.append("[");
+        boolean first = true;
+        for (String value : values) {  // TreeSet -> already sorted, deterministic
+            if (!first) {
+                sb.append(",");
+            }
+            first = false;
+            appendJsonString(sb, value);
+        }
+        sb.append("]");
+    }
+
+    private static void appendJsonString(StringBuilder sb, String raw) {
+        sb.append('"');
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            switch (c) {
+                case '"':
+                    sb.append("\\\"");
+                    break;
+                case '\\':
+                    sb.append("\\\\");
+                    break;
+                case '\n':
+                    sb.append("\\n");
+                    break;
+                case '\r':
+                    sb.append("\\r");
+                    break;
+                case '\t':
+                    sb.append("\\t");
+                    break;
+                default:
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+            }
+        }
+        sb.append('"');
+    }
+
+    // --- dispatch ------------------------------------------------------------
+
+    private static Parsed fail(String message) {
+        System.err.println(message);
+        System.exit(REFUSE);
+        throw new IllegalStateException("unreachable");  // System.exit does not return
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 2 && "parse-verify".equals(args[0])) {
+            cmdParseVerify(args[1]);
+            return;
+        }
+        if (args.length == 2 && "final-targets".equals(args[0])) {
+            cmdFinalTargets(args[1]);
+            return;
+        }
+        System.err.println("usage: ApexJavaDriver.java parse-verify <file> | final-targets <file>");
+        System.exit(REFUSE);
+    }
+}

@@ -48,6 +48,7 @@ class CommandRunner:
         "npm",
         "pnpm",
         "yarn",
+        "java",
     }
 
     def __init__(self, allowed_binaries: set[str] | None = None) -> None:
