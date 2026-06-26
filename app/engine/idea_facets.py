@@ -390,7 +390,18 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                                         # sibling of synthesize-dunders), runtime-additive and
                                         # statically gated. Appended last, so the originals still
                                         # lead and emit first.
-                                        "the comparison operators to complete from one"],
+                                        "the comparison operators to complete from one",
+                                        # added: a project's own @dataclass that does NOT set
+                                        # order= and defines NONE of __lt__/__le__/__gt__/__ge__
+                                        # itself — the add-dataclass-order objective lands
+                                        # order=True on the decorator, generating the four
+                                        # comparison operators from the field tuple (the
+                                        # dataclass sibling of freeze-dataclass and
+                                        # seal-total-ordering), runtime-additive and statically
+                                        # gated (stdlib-dataclass provenance + no existing
+                                        # comparison dunder). Appended last, so the originals
+                                        # still lead and emit first.
+                                        "the dataclass to make orderable"],
     # document ladder
     "signatures and types": ["parameter meanings", "return type and None", "raised exceptions list",
                              # added: the package's public re-export surface — the

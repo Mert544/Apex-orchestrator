@@ -94,6 +94,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "complete-match-exhaustiveness",
         "synthesize-dunders",
         "seal-total-ordering",
+        "add-dataclass-order",
         "wire-module-exports",
         # NOTE: "fix-docstrings" was REMOVED here — it is a standalone CLI
         # subcommand (`apex fix-docstrings`), NOT a registered develop objective,

@@ -136,6 +136,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "complete-match-exhaustiveness": "runtime-additive(unreached-arm)+static-closed-set-refusal",
     "synthesize-dunders": "suite-catches-runtime+canonical-total-dunders-over-proven-fields+inherited-eq-refusal",
     "seal-total-ordering": "runtime-additive(filled-comparison-ops)+single-defined-order-op+eq-present+static-refusal",
+    "add-dataclass-order": "runtime-additive(generated-order-ops)+stdlib-dataclass-provenance+no-existing-comparison-dunder+static-refusal",
     # --- TIDY: behavior-preserving idiom rewrites ---------------------------
     "modernize": "behavior-preserving-idiom",
     "simplify-bool-return": "behavior-preserving-idiom",
@@ -363,8 +364,9 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     "relative_star_consumer": frozenset({"wire-module-exports"}),
     "env_fragile_return": frozenset({"strengthen-tests", "cover-gaps"}),
     "walrus_binder": frozenset({"wire-module-exports"}),
-    "unpack_decorator": frozenset({"freeze-dataclass"}),
-    "provenance_trap": frozenset({"freeze-dataclass", "add-final"}),
+    "unpack_decorator": frozenset({"freeze-dataclass", "add-dataclass-order"}),
+    "provenance_trap": frozenset(
+        {"freeze-dataclass", "add-final", "add-dataclass-order"}),
     # The JS/TS analogue of provenance_trap: a JS ``throw``-stub whose ONLY contract
     # is its JSDoc ``@example`` block (no jest test links it, so it IS a
     # js-implement-from-jsdoc candidate) but whose two examples are mutually

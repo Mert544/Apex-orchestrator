@@ -426,6 +426,21 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # the relative order is free.
     "the comparison operators to complete from one": "seal-total-ordering",
 
+    # A project's own @dataclass that does NOT set order= and defines NONE of the
+    # comparison dunders __lt__/__le__/__gt__/__ge__ itself: the SAME "unreachable or
+    # no-op statements" simplify sub-aspect also names such a class, and
+    # add-dataclass-order LANDS order=True on the decorator (@dataclass ->
+    # @dataclass(order=True), or splices into an existing call), which generates the
+    # four comparison operators from the field tuple — the dataclass sibling of
+    # freeze-dataclass (frozen=True) and seal-total-ordering. RUNTIME-ADDITIVE
+    # (order=True only ADDS the four ops, absent today -> TypeError); the false-fill
+    # risk is closed STATICALLY (stdlib-dataclass provenance, no existing comparison
+    # dunder, eq not disabled, single-line-rewritable) + suite + auto-rollback. Its
+    # phrasing ("the dataclass to make orderable") shares no whole-key substring with
+    # the freeze / dataclassify / dunders / slots keys above (nor any of them with it),
+    # so the relative order is free.
+    "the dataclass to make orderable": "add-dataclass-order",
+
     # A leaf class proven never subclassed anywhere: add-final seals it with
     # @typing.final (a type-checker-only no-op — behaviour-preserving; the false-final
     # risk is closed STRUCTURALLY by the whole-project subclass scan, not the suite).
