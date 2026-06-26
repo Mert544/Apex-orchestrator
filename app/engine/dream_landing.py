@@ -80,7 +80,8 @@ def _live_confluence_modules(project_root: str | Path) -> list[str]:
     return sorted(set(out))
 
 
-def dream_confluence_modules(project_root: str | Path) -> list[str]:
+def dream_confluence_modules(project_root: str | Path,
+                             value_ranked: bool = False) -> list[str]:
     """Modules the dream graduated as CONFLUENCES — files that carry many
     structural signals at once (high churn × hub × co-change). Read from the
     promotion store the dream writes (`.apex/dream-promotions.json`); these are
@@ -91,7 +92,15 @@ def dream_confluence_modules(project_root: str | Path) -> list[str]:
     writes), the modules are derived LIVE from a read-only dream under the same
     graduation gate — so ``develop --from-dream`` lands on the file the organism
     flags even on a project that was never ``--curate``-d, instead of stopping at
-    a report. A non-empty store always wins, so a curated project is unchanged."""
+    a report. A non-empty store always wins, so a curated project is unchanged.
+
+    ``value_ranked`` (DEFAULT False = byte-identical to the alphabetical order
+    every existing caller relies on) re-orders the graduated set by
+    :func:`_rank_confluences` — highest expected-landable-buyer-value file first —
+    so the overnight chain leads with the most valuable confluence. It re-orders
+    the SAME set (a permutation, never a different membership) and a single-/
+    zero-confluence project is unchanged regardless, so opting in cannot land
+    anything the alphabetical order would not."""
     import json
 
     path = Path(project_root) / ".apex" / "dream-promotions.json"
@@ -105,9 +114,10 @@ def dream_confluence_modules(project_root: str | Path) -> list[str]:
         module = _confluence_key_module(key, project_root)
         if module:
             out.append(module)
-    if out:
-        return sorted(set(out))
-    return _live_confluence_modules(project_root)
+    modules = sorted(set(out)) if out else _live_confluence_modules(project_root)
+    if value_ranked:
+        modules = _rank_confluences(modules, project_root)
+    return modules
 
 
 def _dream_sweep_objectives(project_root: str | Path) -> list[str]:
@@ -125,9 +135,75 @@ def _dream_sweep_objectives(project_root: str | Path) -> list[str]:
     return [r.objective for r in rank_objectives(project_root) if r.pending > 0]
 
 
+def _module_landable_value(project_root: str | Path) -> dict[str, float]:
+    """Per-module sum of buyer-value over the objectives that have PENDING,
+    fixable work SCOPED to that module — the landable buyer-value a confluence
+    chain could actually realize there.
+
+    For each fitness-applicable objective (the SAME ``rank_objectives`` board the
+    sweep runs, kept to ``pending > 0`` so a project-wide-dead objective never
+    counts), generate its candidate moves ONCE against the current tree, bucket
+    them by the module each targets (``_move_module``), and credit every module
+    that has at least one scoped move with the objective's
+    ``objective_value_weight`` — the frozen ``move_value`` table the planner
+    already trusts. Summing those weights ranks a file by how much CONCRETE buyer
+    value the chain can land on it, not by how many moves: a single
+    ``implement-stub`` (1.00) outweighs three ``sort-imports`` (0.18 each).
+
+    Pure, deterministic, zero-token: a frozen-table lookup over the compiler's own
+    candidate generation — no clock, no randomness, no writes (every move is built
+    but NONE applied). Reads ``move_value`` exactly like ``objective_value`` does,
+    so it carries no new objective / parity obligation."""
+    from app.engine.objective_compiler import _move_module, _objectives_map
+    from app.engine.objective_value import objective_value_weight
+
+    table = _objectives_map()
+    scores: dict[str, float] = {}
+    for objective in _dream_sweep_objectives(project_root):
+        spec = table.get(objective)
+        if spec is None:
+            continue
+        generate = spec[1]
+        try:
+            moves = generate(project_root)
+        except Exception:
+            continue  # an objective that cannot enumerate names no module — skip
+        weight = objective_value_weight(objective)
+        for module in {_move_module(m) for m in moves}:
+            if module:
+                scores[module] = scores.get(module, 0.0) + weight
+    return scores
+
+
+def _rank_confluences(modules: list[str], project_root: str | Path) -> list[str]:
+    """Re-rank graduated confluence ``modules`` by EXPECTED LANDABLE BUYER-VALUE,
+    highest first — so the overnight chain spends its first (and, under a budget,
+    possibly only) verified moves where a buyer gets the most concrete value, not
+    on the file whose path happens to sort first.
+
+    The score is :func:`_module_landable_value` — the sum of
+    ``objective_value_weight`` over the fitness-applicable objectives with pending
+    work scoped to the module, the SAME value/ranking math ``plan``/``ascend``
+    already trust. Modules sort by that score DESCENDING; every tie (including the
+    common case where the value model can't separate two files) falls back to the
+    existing ALPHABETICAL key, so the order is total and fully deterministic — two
+    runs on the same tree return the identical list, with no clock or randomness.
+
+    Ordering ONLY: the returned list is a permutation of the input — never a
+    different SET — so it cannot change WHICH moves the suite-gated-with-rollback
+    landing attempts, only the order it attempts them in. A 0/1-module list is
+    returned unchanged (nothing to reorder)."""
+    if len(modules) < 2:
+        return list(modules)
+    scores = _module_landable_value(project_root)
+    # Descending value, ties broken by the existing alphabetical key — total order.
+    return sorted(modules, key=lambda m: (-scores.get(m, 0.0), m))
+
+
 def compile_from_dream(project_root: str | Path, objective: str = "dead-params",
                        max_steps: int = 25, verify: bool = True,
-                       apply: bool = True, sweep: bool = False) -> list[CompileResult]:
+                       apply: bool = True, sweep: bool = False,
+                       value_ranked: bool = False) -> list[CompileResult]:
     """Run a scoped develop campaign on each module the dream flagged as a
     confluence — the closed loop: a 20-night structural discovery becomes a
     morning's verified cleanup, no human choosing the next move.
@@ -140,8 +216,19 @@ def compile_from_dream(project_root: str | Path, objective: str = "dead-params",
     to dead-params: the organism brings its whole verified-move repertoire to the
     exact file it flagged. Every move stays suite-gated with auto-rollback, so an
     objective with nothing to land on a module simply yields an empty campaign —
-    never a faked one. Empty list when the dream named no confluence."""
-    modules = dream_confluence_modules(project_root)
+    never a faked one. Empty list when the dream named no confluence.
+
+    ``value_ranked`` (DEFAULT False = byte-identical to today's alphabetical order)
+    opts the MODULE order into :func:`_rank_confluences`: with several graduated
+    confluences the chain then works the highest expected-landable-buyer-value file
+    first instead of the alphabetically-first one. Ordering ONLY — it never changes
+    WHICH campaigns run (same module set, same objectives), so a single-confluence /
+    empty project and every default caller stay byte-for-byte unchanged."""
+    # The default keeps the historical single-argument call EXACTLY, so an existing
+    # ``dream_confluence_modules`` monkeypatch/stub still binds — only the opted-in
+    # path passes the new keyword.
+    modules = (dream_confluence_modules(project_root, value_ranked=True)
+               if value_ranked else dream_confluence_modules(project_root))
     objectives = _dream_sweep_objectives(project_root) if sweep else [objective]
     results: list[CompileResult] = []
     for module in modules:

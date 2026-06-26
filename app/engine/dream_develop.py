@@ -177,20 +177,31 @@ def _chain_objectives(value_led: bool = True) -> list[str]:
     return resolve_goal(CHAIN_GOAL, value_led=value_led)
 
 
-def _chain_scope(project_root: str | Path) -> list[str]:
+def _chain_scope(project_root: str | Path,
+                 value_ranked: bool = False) -> list[str]:
     """The dream-derived confluence modules to scope the chain to, or ``[]``.
 
     Reuses ``dream_landing.dream_confluence_modules`` — which already falls back to
     a read-only LIVE derivation under the unchanged ``PROMOTE_STREAK`` /
     ``PROMOTE_CONFIDENCE`` gate — so the scope is the files the organism's own
-    multi-night dream flagged. ``[]`` ⇒ run whole-tree."""
+    multi-night dream flagged. ``[]`` ⇒ run whole-tree.
+
+    ``value_ranked`` (DEFAULT False = the alphabetical order today's chain runs)
+    asks ``dream_confluence_modules`` for the value-ranked order, so a chain with
+    several confluences leads with the highest-buyer-value file. It re-orders the
+    SAME module set (a permutation), so a single-/zero-confluence chain — and every
+    default caller — is byte-for-byte unchanged."""
     from app.engine.dream_landing import dream_confluence_modules
+    # Default keeps the historical single-argument call EXACTLY (so an existing
+    # stub/monkeypatch still binds); only the opted-in path passes the keyword.
+    if value_ranked:
+        return dream_confluence_modules(project_root, value_ranked=True)
     return dream_confluence_modules(project_root)
 
 
 def dream_develop(project_root: str | Path, max_steps: int = 25,
                   verify: bool = True, apply: bool = False,
-                  fast: bool = False) -> DreamChainReport:
+                  fast: bool = False, value_ranked: bool = False) -> DreamChainReport:
     """Land the value-led concrete chain, scoped to the dream's confluences.
 
     In one motion: derive the concrete-first objective order
@@ -205,11 +216,18 @@ def dream_develop(project_root: str | Path, max_steps: int = 25,
     auto-rollback. ``fast`` scopes the per-move gate to the changed module
     (``compile_objective(scope_verify=...)``) for a quicker overnight pass.
 
+    ``value_ranked`` (DEFAULT False = today's alphabetical confluence order) leads
+    the chain with the highest expected-landable-buyer-value confluence first
+    (:func:`_chain_scope`). It re-orders WHICH MODULE the chain visits first, never
+    WHICH objectives or moves run, so a single-/zero-confluence chain and every
+    default caller stay byte-for-byte unchanged — the value order can only front-
+    load value the alphabetical order would have landed anyway, never fake-green.
+
     Soundness: a move that fails its gate is rolled back and NOT counted, and a
     project with nothing landable yields an honest EMPTY chain — never a faked
     one. Deterministic: the report body carries no clock or randomness."""
     objectives = _chain_objectives(value_led=True)
-    modules = _chain_scope(project_root)
+    modules = _chain_scope(project_root, value_ranked=value_ranked)
     before = _grade(project_root) if apply else -1
     report = DreamChainReport(goal=CHAIN_GOAL, objectives=objectives,
                               modules=modules, applied=apply, grade_before=before)
