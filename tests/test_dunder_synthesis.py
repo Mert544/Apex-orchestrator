@@ -245,6 +245,291 @@ def test_clean_resolvable_base_without_eq_adds_both():
     assert "def __hash__(self) -> int:" in out
 
 
+# --- the inherited-__eq__ gate vs a DECORATOR-generated __eq__ ----------------
+# An adversarial re-audit found a latent P1: a base decorated ``@dataclass`` generates
+# ``__eq__`` IMPLICITLY (no body ``def``), so a literal-``def``-only scan judged it
+# "clean" and WRONGLY spliced a value ``__eq__`` (+ ``__hash__``) over the inherited
+# dataclass equality, flipping the child unhashable -> hashable. The gate now treats a
+# decorator-generated ``__eq__`` it cannot prove absent as eq-defining -> refuse.
+
+_DATACLASS_BASE = (
+    "from dataclasses import dataclass\n"
+    "\n"
+    "\n"
+    "@dataclass\n"
+    "class Base:\n"
+    "    a: int\n"
+)
+
+
+def test_dataclass_base_refuses_eq_but_adds_repr():
+    # The P1 reproduction: a project-resolvable ``@dataclass`` base (no ``eq=False``)
+    # synthesizes ``__eq__`` with no literal ``def`` in its body. Adding a value
+    # ``__eq__`` to the pure-copy child would silently OVERRIDE the inherited dataclass
+    # equality AND flip the child from unhashable to hashable -> the gate must REFUSE
+    # ``__eq__`` (+ ``__hash__``); ``__repr__`` carries no inherited contract -> added.
+    child = (
+        "class Child(Base):\n"
+        "    def __init__(self, a, b):\n"
+        "        self.a = a\n"
+        "        self.b = b\n"
+    )
+    out = synthesize_dunders(child, [_DATACLASS_BASE, child])
+    assert out is not None
+    assert "def __eq__" not in out  # would override the IMPLICIT dataclass __eq__
+    assert "__hash__" not in out  # rides with the (refused) __eq__ — child stays as-is
+    assert "def __repr__(self) -> str:" in out  # repr has no inherited contract
+
+
+def test_dataclass_base_pure_copy_child_in_isolation_refuses_eq():
+    # The exact bug shape in ONE source (base + child in the same module). Before the
+    # fix synthesize_dunders spliced __eq__/__hash__ into Child; it must now refuse them.
+    src = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "\n"
+        "@dataclass\n"
+        "class Base:\n"
+        "    a: int\n"
+        "\n"
+        "\n"
+        "class Child(Base):\n"
+        "    def __init__(self, a, b):\n"
+        "        self.a = a\n"
+        "        self.b = b\n"
+    )
+    out = synthesize_dunders(src, [src])
+    assert out is not None
+    # Base is a @dataclass -> out of scope itself; Child must NOT gain __eq__/__hash__.
+    assert "def __eq__" not in out
+    assert "__hash__" not in out
+    # the spliced repr is on Child only; Base (a @dataclass) is untouched.
+    assert out.count("def __repr__") == 1
+    assert synthesize_dunders(out, [out]) is None  # idempotent: a 2nd run is a no-op
+
+
+def test_dotted_dataclasses_base_refuses_eq():
+    # ``@dataclasses.dataclass`` (dotted) is the same implicit-__eq__ shape -> refuse.
+    base = (
+        "import dataclasses\n"
+        "\n"
+        "\n"
+        "@dataclasses.dataclass\n"
+        "class Base:\n"
+        "    a: int\n"
+    )
+    child = (
+        "class Child(Base):\n"
+        "    def __init__(self, a, b):\n"
+        "        self.a = a\n"
+        "        self.b = b\n"
+    )
+    out = synthesize_dunders(child, [base, child])
+    assert out is not None
+    assert "def __eq__" not in out
+    assert "def __repr__(self) -> str:" in out
+
+
+def test_dataclass_eq_false_base_stays_eligible():
+    # ``@dataclass(eq=False)`` PROVABLY generates NO __eq__ (it is explicitly suppressed),
+    # so the base resolves to identity ``object.__eq__``. The pure-copy child genuinely
+    # does NOT inherit a value-__eq__ -> adding our value semantics is sound (it replaces
+    # identity, exactly the landed feature), so it stays ELIGIBLE for __eq__/__hash__.
+    base = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "\n"
+        "@dataclass(eq=False)\n"
+        "class Base:\n"
+        "    a: int\n"
+    )
+    child = (
+        "class Child(Base):\n"
+        "    def __init__(self, a, b):\n"
+        "        self.a = a\n"
+        "        self.b = b\n"
+    )
+    out = synthesize_dunders(child, [base, child])
+    assert out is not None
+    assert "def __repr__(self) -> str:" in out
+    assert "def __eq__(self, other: object) -> bool:" in out  # eq genuinely not inherited
+    assert "def __hash__(self) -> int:" in out
+
+
+def test_dataclass_with_other_kwargs_but_no_eq_false_refuses_eq():
+    # ``@dataclass(frozen=True)`` still DEFAULTS to ``eq=True`` (generates __eq__) — only
+    # an explicit ``eq=False`` proves suppression. Without it -> refuse.
+    base = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class Base:\n"
+        "    a: int\n"
+    )
+    child = (
+        "class Child(Base):\n"
+        "    def __init__(self, a, b):\n"
+        "        self.a = a\n"
+        "        self.b = b\n"
+    )
+    out = synthesize_dunders(child, [base, child])
+    assert out is not None
+    assert "def __eq__" not in out  # frozen=True does NOT suppress eq -> refuse
+    assert "def __repr__(self) -> str:" in out
+
+
+def test_dataclass_eq_false_via_kwargs_unpack_refuses_eq():
+    # A ``**opts``-unpacking ``@dataclass(**opts)`` MIGHT carry eq=False in the dict, but
+    # we cannot prove it statically -> refuse on uncertainty (do not add __eq__).
+    base = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "\n"
+        "opts = {'eq': False}\n"
+        "\n"
+        "\n"
+        "@dataclass(**opts)\n"
+        "class Base:\n"
+        "    a: int\n"
+    )
+    child = (
+        "class Child(Base):\n"
+        "    def __init__(self, a, b):\n"
+        "        self.a = a\n"
+        "        self.b = b\n"
+    )
+    out = synthesize_dunders(child, [base, child])
+    assert out is not None
+    assert "def __eq__" not in out  # unprovable **opts -> refuse on uncertainty
+    assert "def __repr__(self) -> str:" in out
+
+
+def test_attrs_define_base_refuses_eq():
+    # An attrs ``@define`` base synthesizes __eq__ too (and is a decorator we do NOT
+    # model) -> refuse on uncertainty; __repr__ still added.
+    base = (
+        "from attrs import define\n"
+        "\n"
+        "\n"
+        "@define\n"
+        "class Base:\n"
+        "    a: int\n"
+    )
+    child = (
+        "class Child(Base):\n"
+        "    def __init__(self, a, b):\n"
+        "        self.a = a\n"
+        "        self.b = b\n"
+    )
+    out = synthesize_dunders(child, [base, child])
+    assert out is not None
+    assert "def __eq__" not in out  # unmodelable decorator -> cannot prove eq-free
+    assert "def __repr__(self) -> str:" in out
+
+
+def test_attr_s_dotted_base_refuses_eq():
+    # ``@attr.s`` (dotted, attrs-classic) — also an unmodelable, eq-synthesizing
+    # decorator -> refuse.
+    base = (
+        "import attr\n"
+        "\n"
+        "\n"
+        "@attr.s\n"
+        "class Base:\n"
+        "    a = attr.ib()\n"
+    )
+    child = (
+        "class Child(Base):\n"
+        "    def __init__(self, a, b):\n"
+        "        self.a = a\n"
+        "        self.b = b\n"
+    )
+    out = synthesize_dunders(child, [base, child])
+    assert out is not None
+    assert "def __eq__" not in out
+    assert "def __repr__(self) -> str:" in out
+
+
+def test_unmodelable_decorator_base_refuses_eq():
+    # Any decorator we cannot model (here a custom ``@register``) folds into the
+    # refuse-on-uncertainty branch: we cannot PROVE it leaves __eq__ untouched.
+    base = (
+        "def register(cls):\n"
+        "    return cls\n"
+        "\n"
+        "\n"
+        "@register\n"
+        "class Base:\n"
+        "    def greet(self):\n"
+        "        return 'hi'\n"
+    )
+    child = (
+        "class Child(Base):\n"
+        "    def __init__(self, a, b):\n"
+        "        self.a = a\n"
+        "        self.b = b\n"
+    )
+    out = synthesize_dunders(child, [base, child])
+    assert out is not None
+    assert "def __eq__" not in out  # an unmodelable decorator -> refuse
+    assert "def __repr__(self) -> str:" in out
+
+
+def test_transitive_dataclass_grandbase_refuses_eq():
+    # Child <- Mid (plain) <- Base (@dataclass): the transitive scan must reach the
+    # decorator-generated __eq__ on the grand-base and refuse.
+    base = _DATACLASS_BASE
+    mid = "class Mid(Base):\n    pass\n"
+    child = (
+        "class Child(Mid):\n"
+        "    def __init__(self, a, b):\n"
+        "        self.a = a\n"
+        "        self.b = b\n"
+    )
+    out = synthesize_dunders(child, [base, mid, child])
+    assert out is not None
+    assert "def __eq__" not in out  # the @dataclass grand-base is eq-defining
+    assert "def __repr__(self) -> str:" in out
+
+
+def test_dataclass_base_refusal_is_deterministic_across_hashseed():
+    # The refusal-tightening keeps determinism: the @dataclass-base refusal is identical
+    # across PYTHONHASHSEED.
+    snippet = (
+        "from app.execution.dunder_synthesis import synthesize_dunders\n"
+        "src = (\n"
+        "    'from dataclasses import dataclass\\n'\n"
+        "    '\\n'\n"
+        "    '\\n'\n"
+        "    '@dataclass\\n'\n"
+        "    'class Base:\\n'\n"
+        "    '    a: int\\n'\n"
+        "    '\\n'\n"
+        "    '\\n'\n"
+        "    'class Child(Base):\\n'\n"
+        "    '    def __init__(self, a, b):\\n'\n"
+        "    '        self.a = a\\n'\n"
+        "    '        self.b = b\\n'\n"
+        ")\n"
+        "print(synthesize_dunders(src, [src]))\n"
+    )
+
+    def _run(seed: str) -> str:
+        env = {"PYTHONHASHSEED": seed, "PATH": __import__("os").environ.get("PATH", "")}
+        out = subprocess.run(
+            [sys.executable, "-c", snippet],
+            capture_output=True, text=True, env=env,
+            cwd=str(Path(__file__).resolve().parents[1]), check=True)
+        return out.stdout
+
+    first = _run("0")
+    second = _run("99999")
+    assert first == second
+    assert "def __eq__" not in first  # the refusal held
+    assert "def __repr__(self) -> str:" in first
+
+
 # --- refusals: nothing provable to splice ------------------------------------
 
 def test_kwargs_capture_refused():

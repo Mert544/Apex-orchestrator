@@ -158,11 +158,70 @@ def _classes_by_name(sources: list[str]) -> dict[str, ast.ClassDef]:
     return index
 
 
+def _dataclass_decorator_sets_eq_false(dec: ast.expr) -> bool:
+    """True when ``dec`` is a ``@dataclass(...)`` / ``@dataclasses.dataclass(...)``
+    call that EXPLICITLY passes ``eq=False`` — the one decorator shape that PROVES it
+    generates NO ``__eq__`` (the field-tuple ``__eq__`` is suppressed, leaving the
+    inherited identity ``object.__eq__``). A bare ``@dataclass`` (no keywords) defaults
+    to ``eq=True`` and so does NOT qualify. A ``**``-unpacking call (``kw.arg is None``)
+    might carry ``eq=False`` in the unpacked dict but we cannot prove it statically, so
+    it does NOT qualify (refuse on uncertainty). Mirrors
+    ``dataclass_order._decorator_blocks_order``'s ``eq=False`` shape."""
+    if not isinstance(dec, ast.Call):
+        return False  # a bare @dataclass defaults to eq=True — generates __eq__
+    func = dec.func
+    is_dataclass_shape = (isinstance(func, ast.Name) and func.id == "dataclass") or (
+        isinstance(func, ast.Attribute) and func.attr == "dataclass"
+    )
+    if not is_dataclass_shape:
+        return False
+    return any(
+        kw.arg == "eq"
+        and isinstance(kw.value, ast.Constant)
+        and kw.value.value is False
+        for kw in dec.keywords
+    )
+
+
+def _decorators_prove_eq_free(cls: ast.ClassDef) -> bool:
+    """True when ``cls``'s DECORATORS prove it adds no ``__eq__`` of its own — the
+    refuse-on-uncertainty rail for an IMPLICITLY-generated ``__eq__``.
+
+    A bare base (no decorators) is decorator-eq-free. Otherwise EVERY decorator must be
+    a ``@dataclass(...)`` call that explicitly sets ``eq=False`` (the one shape that
+    PROVABLY suppresses the generated ``__eq__``). ANY other decorator — a bare
+    ``@dataclass`` / ``@dataclass(...)`` without ``eq=False`` (synthesizes a value
+    ``__eq__`` with NO literal ``def`` in the body), an attrs ``@define`` / ``@attr.s``
+    (also synthesizes ``__eq__``), or any decorator we cannot model — folds into the
+    refusal (we cannot PROVE the base is ``__eq__``-free, so adding ours to the child
+    might silently override a decorator-generated equality). Strictly conservative: it
+    only ever turns a base from "looks clean" into "refuse"."""
+    return all(
+        _dataclass_decorator_sets_eq_false(dec) for dec in cls.decorator_list
+    )
+
+
 def _defines_eq_directly(cls: ast.ClassDef) -> bool:
-    """True when ``cls`` defines ``__eq__`` on ITS OWN body — method or
-    ``__eq__ = ...`` binding. The single-class predicate the transitive base scan
-    walks; reuses :func:`_class_defines_dunder`."""
-    return _class_defines_dunder(cls, "__eq__")
+    """True when ``cls`` carries an ``__eq__`` we must NOT silently override by adding
+    ours to a child — by EITHER route:
+
+      - a LITERAL ``__eq__`` on its own body (method or ``__eq__ = ...`` binding, via
+        :func:`_class_defines_dunder`); OR
+      - a DECORATOR-generated ``__eq__`` we cannot prove absent — a base decorated
+        ``@dataclass`` (without ``eq=False``) synthesizes ``__eq__`` IMPLICITLY (no body
+        ``def``), as does an attrs ``@define`` / ``@attr.s``; any decorator we cannot
+        model is treated the same (:func:`_decorators_prove_eq_free`).
+
+    The single-class predicate the transitive base scan walks: a base that is eq-defining
+    by EITHER route refuses adding ``__eq__`` (+ the ``__hash__`` that rides with it) to
+    the child. The decorator route is the closure of the latent hole an adversarial
+    re-audit found — a literal-``def``-only scan judged a ``@dataclass`` base "clean" and
+    WRONGLY spliced a value ``__eq__`` (+ ``__hash__``) over the inherited dataclass
+    equality, flipping the child from unhashable to hashable. Strictly SAFER (it only
+    ADDS refusals)."""
+    if _class_defines_dunder(cls, "__eq__"):
+        return True
+    return not _decorators_prove_eq_free(cls)
 
 
 def _inherited_eq_is_safe(
