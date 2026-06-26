@@ -391,6 +391,15 @@ public final class ApexJavaDriver {
         if (multiDeclared.contains(name)) {
             return;
         }
+        // REFUSE: a blank field (no initializer) that survived the `assigned` check
+        // is never definitely assigned, so a blank `final` cannot compile (JLS §16
+        // definite-assignment: a blank final must be assigned in every constructor).
+        // A constructor-assigned field is already excluded above via `assigned`, so
+        // only genuinely never-assigned blanks reach here — sealing them is a compile
+        // error the parse-only oracle cannot catch, so refuse statically.
+        if (field.getInitializer() == null) {
+            return;
+        }
         long insert = modifierInsertOffset(field, p);
         if (insert < 0) {
             return;  // a modifier span we cannot read verbatim — refuse

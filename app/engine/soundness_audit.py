@@ -385,6 +385,14 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # java-finalize-field MUST refuse it (the whole-file assignment scan sees the
     # inner-class write), never seal a falsely-`final` field.
     "java_false_final": frozenset({"java-finalize-field"}),
+    # The Java blank-`final` trap: a PRIVATE field with NO initializer that is never
+    # assigned anywhere. It LOOKS finalisable to the never-reassigned scan, but a blank
+    # `final` instance field must be definitely assigned by the end of every constructor
+    # (JLS §16) — the implicit default constructor assigns nothing — so sealing it is a
+    # COMPILE ERROR the parse-only Tier-A oracle cannot catch. java-finalize-field MUST
+    # refuse a blank, never-assigned field (only an initializer-bearing, definitely-
+    # assigned field is ever sealed).
+    "java_blank_final": frozenset({"java-finalize-field"}),
     "syntax_error": frozenset(),  # universal-refuse rule covers every objective
     "already_applied": frozenset(
         {"wire-module-exports", "add-final", "freeze-dataclass"}),

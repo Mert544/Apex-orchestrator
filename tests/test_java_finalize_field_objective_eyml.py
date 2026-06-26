@@ -59,8 +59,10 @@ from app.execution.objectives.java_finalize_field import (
 
 _PHRASE = "the never-reassigned java field to finalize"
 
-# A class with a mix of fields: `neverWritten` + `name` are private and only ever
-# read (-> finalisable); `counter` is reassigned in tick() (-> SKIP); `total` via +=
+# A class with a mix of fields: `neverWritten` is private, initialised (`= 1`) and only
+# ever read (-> finalisable); `name` is private but BLANK (no initializer) and never
+# assigned anywhere, so a blank `final` could never be definitely assigned (JLS §16 ->
+# COMPILE ERROR) (-> SKIP); `counter` is reassigned in tick() (-> SKIP); `total` via +=
 # (-> SKIP); `ticks` via ++ (-> SKIP); `exposed` is public (-> SKIP); `already` is
 # already final (-> SKIP); `shared` is static (-> SKIP); `a, b` are one multi-
 # declarator statement (-> SKIP both).
@@ -242,10 +244,12 @@ def test_driver_final_targets_finds_only_never_reassigned_private_fields(tmp_pat
     root = _project(tmp_path, "src/Counter.java", _COUNTER_JAVA)
     targets = final_targets(root, "src/Counter.java")
     names = [t.name for t in targets]
-    # ONLY the never-reassigned private fields, in source order. counter/total/ticks
-    # are reassigned; exposed is public; already is final; shared is static; a,b are
-    # one multi-declarator statement -> all SKIPPED.
-    assert names == ["neverWritten", "name"]
+    # ONLY the never-reassigned private fields WITH AN INITIALIZER, in source order.
+    # `name` is blank (no initializer) + never assigned -> a blank `final` cannot be
+    # definitely assigned (JLS §16) -> SKIPPED. counter/total/ticks are reassigned;
+    # exposed is public; already is final; shared is static; a,b are one multi-
+    # declarator statement -> all SKIPPED.
+    assert names == ["neverWritten"]
     # the insert offset sits just past `private`, so splicing ` final` reads
     # `private final ...`
     src = _COUNTER_JAVA
@@ -302,7 +306,7 @@ def test_finalizable_targets_filters_to_never_reassigned(tmp_path: Path):
     root = _with_pom(tmp_path)
     _project(root, "src/Counter.java", _COUNTER_JAVA)
     assert [t.name for t in finalizable_targets(root, "src/Counter.java")] == [
-        "neverWritten", "name"]
+        "neverWritten"]
 
 
 @_needs_jdk
@@ -314,7 +318,9 @@ def test_reparse_facts_identical_true_for_final_splice(tmp_path: Path):
     sealed = splice_final(_COUNTER_JAVA, list(targets))
     assert sealed is not None
     assert "private final int neverWritten" in sealed
-    assert "private final String name" in sealed
+    # `name` is blank (no initializer) -> refused (a blank `final` cannot compile)
+    assert "private final String name" not in sealed
+    assert "private String name;" in sealed
     assert reparse_facts_identical(root, "src/Counter.java", sealed)
 
 
@@ -336,11 +342,13 @@ def test_plan_lands_final_on_eligible_file(tmp_path: Path):
     plan = plan_java_finalize_field(str(root), "src/Counter.java")
     assert plan.ok
     assert plan.originals["src/Counter.java"] == _COUNTER_JAVA  # original captured
-    assert plan.edits_by_file["src/Counter.java"] == 2  # neverWritten + name sealed
+    assert plan.edits_by_file["src/Counter.java"] == 1  # only neverWritten sealed
     sealed = plan.new_contents["src/Counter.java"]
     assert "private final int neverWritten = 1;" in sealed
-    assert "private final String name;" in sealed
-    # the reassigned / public / static / final / multi-declarator fields are UNTOUCHED
+    # the blank / reassigned / public / static / final / multi-declarator fields are
+    # UNTOUCHED. `name` is blank (no initializer) -> a blank `final` cannot be
+    # definitely assigned (JLS §16), so it stays unsealed.
+    assert "private String name;" in sealed
     assert "private int counter;" in sealed
     assert "public int exposed = 5;" in sealed
     assert "private final int already = 7;" in sealed
@@ -467,7 +475,8 @@ def test_end_to_end_lands_final_and_reparses_identical(tmp_path: Path):
 
     landed = (root / "src" / "Counter.java").read_text(encoding="utf-8")
     assert "private final int neverWritten = 1;" in landed
-    assert "private final String name;" in landed
+    # `name` is blank (no initializer) -> not sealed (a blank `final` cannot compile)
+    assert "private String name;" in landed
     # the structural fact-set is UNCHANGED — a final modifier is a runtime no-op
     assert parse_facts(root, "src/Counter.java") == before_facts
 
