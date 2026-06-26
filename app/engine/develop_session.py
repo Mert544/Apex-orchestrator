@@ -62,6 +62,7 @@ from app.engine.value_landed import value_landed_from_session
 __all__ = [
     "SessionMove", "SessionObjective", "SessionReport",
     "run_develop_session", "render_session_markdown",
+    "build_session_proof",
 ]
 
 # Verification tiers a landed move can carry. A move only reaches the report if
@@ -824,3 +825,124 @@ def render_session_markdown(report: SessionReport) -> str:
         lines.append("```")
     lines.append("")
     return "\n".join(lines)
+
+
+# --- Proof trail: the session's landings as proof-of-fix evidence ------------
+#
+# A LANDED ``apex develop session --apply`` move IS a verified-with-rollback fix,
+# so its realized buyer value belongs on the SAME ``.apex/proof-of-fix.json``
+# trail that ``value_landed`` / the owner-report / the tamper-seal already
+# consume — making the session's realized value legible cross-run. This is the
+# develop-side analog of the dream chain's ``build_dream_proof`` wiring; the two
+# stay attributable by their distinct ``mode`` (``develop-session`` vs
+# ``dream-land``) on the shared, content-addressed trail.
+#
+# These two helpers are PURE and READ-ONLY over the report: each landed-and-held
+# move (a ``SessionMove`` — a failed gate was rolled back by the engine and a
+# regression empties ``obj.moves`` entirely, so only held moves are present)
+# becomes one value-grade record matching ``proof_of_fix._fix_record``'s exact
+# output contract, so ``value_landed`` / ``proof_hash`` / ``proof_manifest``
+# score it UNCHANGED. We HONESTLY omit diff/changed_files (not threaded up
+# through ``SessionMove``; faking them would betray the never-fake-green moat),
+# and never fabricate a record for a move that did not hold.
+
+# The session tier -> proof coverage-level map. ``SessionMove`` carries no
+# ``coverage`` string (unlike the dream chain's ``CompileStep.coverage``), only
+# the coverage-aware ``tier`` ``_tier_for`` stamped — so the proof builder maps
+# the tier onto a ``value_landed``-recognized level. This table is the HONEST
+# INVERSE of ``value_landed._SESSION_TIER_BUCKET``: feeding a record built from
+# this level back through ``value_landed`` lands each move in the SAME honesty
+# bucket ``value_landed_from_session`` assigns in-memory. ``"module"`` (not
+# ``"function"``) is the conservative verified level — it never over-claims
+# function-level coverage we cannot prove from a bare tier.
+_SESSION_TIER_LEVEL = {
+    TIER_VERIFIED: "module",    # genuinely verified -> a verified-bucket level
+    TIER_WEAK: "none",          # green-but-uncovered -> the weak bucket
+    TIER_NO_SUITE: "no-suite",  # nothing ran -> the unverified bucket
+}
+
+
+def _session_proof_records(report: SessionReport) -> list[dict]:
+    """One value-grade proof record per LANDED-AND-HELD move, in session order.
+
+    Each record matches ``proof_of_fix._fix_record``'s output contract exactly:
+    ``finding`` (label/branch/action/operator/target), an empty
+    ``transform_type`` and ``None`` ``risk_tier``, ``outcome == "applied"`` (only
+    held moves reach ``report.objectives[*].moves`` — a failed gate was rolled
+    back and a regression emptied the move list), empty ``changed_files``/``diff``
+    (the session does not thread the per-move diff up — we omit it honestly rather
+    than fake it), the ``verification.strength.level`` derived from the move's
+    ``tier`` via :data:`_SESSION_TIER_LEVEL` (the SAME
+    ``function``/``module``/``none``/``no-suite`` vocabulary value-landed reads),
+    and a not-rolled-back ``rollback`` clause. Pure: no clock, no random, no I/O —
+    a deterministic projection of the report."""
+    records: list[dict] = []
+    for obj in report.objectives:
+        for mv in obj.moves:
+            records.append({
+                "finding": {
+                    "label": obj.objective,
+                    "branch": "",
+                    "action": obj.objective,
+                    "operator": mv.operator,
+                    "target": mv.target,
+                },
+                "transform_type": "",
+                "risk_tier": None,
+                "outcome": "applied",
+                "changed_files": [],
+                "diff": "",
+                "verification": {
+                    "performed": mv.tier != TIER_NO_SUITE,
+                    "strength": {"level": _SESSION_TIER_LEVEL.get(mv.tier, "none")},
+                },
+                "rollback": {"occurred": False, "reason": ""},
+            })
+    return records
+
+
+def build_session_proof(report: SessionReport, project_root: str | Path) -> dict:
+    """A proof-of-fix artifact for the develop session, in ``build_proof``'s schema.
+
+    Reuses ``proof_of_fix``'s ``SCHEMA``/``SCHEMA_VERSION``/``tool_version`` and the
+    same top-level shape ``build_proof`` emits, with ``mode == "develop-session"``,
+    the ``fixes`` list from :func:`_session_proof_records`, and totals folded from
+    the report (every landed-and-held move is an applied, never-rolled-back fix).
+    So ``value_landed`` / ``proof_hash`` / ``proof_manifest`` / ``write_proof`` all
+    consume it UNCHANGED, and the session's realized value joins the cross-run
+    trail. ``totals.rolled_back == 0`` is honest BECAUSE a rolled-back move never
+    appears in ``fixes`` (a per-move failure never reached the steps list; an
+    end-of-session regression emptied ``obj.moves``).
+
+    Pure apart from ``build_proof``'s lone clock convention: ``generated_at`` is
+    the ONLY wall-clock, and it lives OUTSIDE the tamper seal — so the records,
+    ``proof_hash`` and ``value_landed`` are byte-deterministic over the same
+    landed moves. Read-only over the report; writes nothing (that is
+    ``write_proof``'s job)."""
+    from datetime import datetime, timezone
+
+    from app.engine.proof_of_fix import (
+        SCHEMA,
+        SCHEMA_VERSION,
+        tool_version,
+    )
+
+    fixes = _session_proof_records(report)
+    return {
+        "schema": SCHEMA,
+        "schema_version": SCHEMA_VERSION,
+        "tool": {"name": "Apex Orchestrator", "version": tool_version()},
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "project_root": str(project_root),
+        "objective": "develop-session",
+        "mode": "develop-session",
+        "verify": True,
+        "totals": {
+            "executable": report.total_moves,
+            "applied": len(fixes),
+            "rolled_back": 0,
+            "blocked": 0,
+            "committed": 0,
+        },
+        "fixes": fixes,
+    }

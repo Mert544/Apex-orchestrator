@@ -759,6 +759,7 @@ def _develop_session(args, target, max_steps, verify, apply) -> int:
     report = run_develop_session(
         str(target), max_steps=max_steps, verify=verify, apply=apply,
         scope_verify=getattr(args, "fast", False))
+    _develop_session_write_proof(args, report, target)
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
     else:
@@ -766,6 +767,27 @@ def _develop_session(args, target, max_steps, verify, apply) -> int:
         if report.applied and report.total_moves:
             print(_APPLIED_TREE_NOTE)
     return 0
+
+
+def _develop_session_write_proof(args, report, target) -> None:
+    """Proof-of-fix: persist an `--apply` session's landed-and-held moves onto the
+    SHARED ``.apex/proof-of-fix.json`` trail value-landed / owner-report consume.
+
+    The develop-side analog of ``_dream_land_write_proof``: gated on ``--apply``
+    AND a real held landing (``report.total_moves``), so a dry run (no writes, no
+    moves) and a fully-rolled-back session (the regression backstop emptied
+    ``obj.moves`` -> ``total_moves == 0``) each write NOTHING — never-fake-green.
+    ``write_proof`` archives the prior pointer (content-addressed), so this merges
+    with any maintain/dream history rather than clobbering it."""
+    if not (getattr(args, "apply", False) and report.total_moves):
+        return
+    from app.engine.develop_session import build_session_proof
+    from app.engine.proof_of_fix import write_proof
+
+    proof = build_session_proof(report, str(target))
+    proof_path = write_proof(proof, str(target))
+    if not args.json:
+        print(f"\n[develop] Proof-of-fix evidence written to {proof_path}")
 
 
 def _develop_from_dream(args, target, objective, max_steps, verify, apply) -> int:
