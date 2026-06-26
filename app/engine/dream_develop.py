@@ -48,6 +48,7 @@ from app.engine.objective_compiler import CompileResult, compile_objective
 __all__ = [
     "LandedContribution", "DreamChainReport",
     "dream_develop", "render_dream_chain_markdown",
+    "build_dream_proof",
 ]
 
 # The composed concrete goal: the North-Star LAND-working-code chain. Run
@@ -271,3 +272,98 @@ def render_dream_chain_markdown(report: DreamChainReport) -> str:
                      f"— buyer-value {c.value:.2f} · {tag}")
     lines.append("")
     return "\n".join(lines)
+
+
+# --- Proof trail: the dream chain's landings as proof-of-fix evidence ---------
+#
+# A LANDED ``apex dream --land --apply`` move IS a verified-with-rollback fix, so
+# its realized buyer value belongs on the SAME ``.apex/proof-of-fix.json`` trail
+# value-landed / the owner-report / the tamper-seal already consume — making the
+# dream differentiator's value legible cross-run. These two helpers are PURE and
+# READ-ONLY over the report: each landed step (a ``CompileStep`` that ran green
+# and HELD — a failed gate was rolled back and never appended) becomes one
+# value-grade record matching ``proof_of_fix._fix_record``'s exact output
+# contract, so ``value_landed`` / ``proof_hash`` / ``proof_manifest`` score it
+# unchanged. We HONESTLY omit diff/changed_files (not threaded up through
+# ``CompileStep``; faking them would betray the never-fake-green moat), and never
+# fabricate a record for a move that did not hold.
+
+
+def _dream_proof_records(report: DreamChainReport) -> list[dict]:
+    """One value-grade proof record per LANDED step, in chain order.
+
+    Each record matches ``proof_of_fix._fix_record``'s output contract exactly:
+    ``finding`` (label/branch/action/operator/target), an empty ``transform_type``
+    and ``None`` ``risk_tier``, ``outcome == "applied"`` (only landed-and-held
+    steps reach ``report.results[i].steps``), empty ``changed_files``/``diff``
+    (the compiler does not thread the diff up — we omit it honestly rather than
+    fake it), the ``verification.strength.level`` carried by the step's coverage
+    (the SAME ``function``/``module``/``test-change``/``none`` vocabulary
+    value-landed reads), and a not-rolled-back ``rollback`` clause. Pure: no clock,
+    no random, no I/O — a deterministic projection of the report."""
+    records: list[dict] = []
+    for r in report.results:
+        for s in r.steps:
+            records.append({
+                "finding": {
+                    "label": r.objective,
+                    "branch": "",
+                    "action": r.objective,
+                    "operator": s.operator,
+                    "target": s.target,
+                },
+                "transform_type": "",
+                "risk_tier": None,
+                "outcome": "applied",
+                "changed_files": [],
+                "diff": "",
+                "verification": {
+                    "performed": bool(s.verified),
+                    "strength": {"level": s.coverage or "none"},
+                },
+                "rollback": {"occurred": False, "reason": ""},
+            })
+    return records
+
+
+def build_dream_proof(report: DreamChainReport, project_root: str | Path) -> dict:
+    """A proof-of-fix artifact for the dream chain, in ``build_proof``'s schema.
+
+    Reuses ``proof_of_fix``'s ``SCHEMA``/``SCHEMA_VERSION``/``tool_version`` and the
+    same top-level shape ``build_proof`` emits, with ``mode == "dream-land"``, the
+    ``fixes`` list from :func:`_dream_proof_records`, and totals folded from the
+    report (every landed step is an applied, never-rolled-back fix). So
+    ``value_landed`` / ``proof_hash`` / ``proof_manifest`` / ``write_proof`` all
+    consume it UNCHANGED, and the dream's realized value joins the cross-run trail.
+
+    Pure apart from ``build_proof``'s lone clock convention: ``generated_at`` is
+    the ONLY wall-clock, and it lives OUTSIDE the tamper seal — so the records,
+    ``proof_hash`` and ``value_landed`` are byte-deterministic over the same
+    landed moves. Read-only over the report; writes nothing (that is
+    ``write_proof``'s job)."""
+    from app.engine.proof_of_fix import (
+        SCHEMA,
+        SCHEMA_VERSION,
+        tool_version,
+    )
+    from datetime import datetime, timezone
+
+    fixes = _dream_proof_records(report)
+    return {
+        "schema": SCHEMA,
+        "schema_version": SCHEMA_VERSION,
+        "tool": {"name": "Apex Orchestrator", "version": tool_version()},
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "project_root": str(project_root),
+        "objective": report.goal,
+        "mode": "dream-land",
+        "verify": True,
+        "totals": {
+            "executable": report.total_moves,
+            "applied": len(fixes),
+            "rolled_back": 0,
+            "blocked": 0,
+            "committed": 0,
+        },
+        "fixes": fixes,
+    }

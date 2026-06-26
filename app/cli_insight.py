@@ -175,11 +175,34 @@ def _cmd_dream_land(args: argparse.Namespace) -> int:
     target = Path(args.target).resolve() if args.target else _get_project_root()
     report = dream_develop(str(target), apply=getattr(args, "apply", False),
                            fast=getattr(args, "fast", False))
+    _dream_land_write_proof(args, report, target)
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
     else:
         print(render_dream_chain_markdown(report))
     return 0
+
+
+def _dream_land_write_proof(args: argparse.Namespace, report, target: Path) -> None:
+    """Persist the LANDED chain onto the shared proof-of-fix trail.
+
+    On ``--apply`` with at least one landed campaign, write the dream chain's
+    verified-with-rollback moves to ``<target>/.apex/proof-of-fix.json`` (the SAME
+    artifact value-landed / the owner-report / the tamper-seal consume), so the
+    dream differentiator's realized buyer value becomes legible cross-run. Mirrors
+    ``_maintain_write_proof``'s guard exactly: a DRY RUN (``apply`` off) or an empty
+    chain (no ``results``) writes NOTHING — the off-by-default tree stays
+    byte-identical. ``write_proof`` archives the prior pointer, so this merges with
+    the maintain history layer rather than clobbering it."""
+    if not (getattr(args, "apply", False) and report.results):
+        return
+    from app.engine.dream_develop import build_dream_proof
+    from app.engine.proof_of_fix import write_proof
+
+    proof = build_dream_proof(report, str(target))
+    proof_path = write_proof(proof, str(target))
+    if not args.json:
+        print(f"\n[dream] Proof-of-fix evidence written to {proof_path}")
 
 
 def cmd_intelligence(args: argparse.Namespace) -> int:
