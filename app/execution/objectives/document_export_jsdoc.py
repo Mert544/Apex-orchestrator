@@ -55,6 +55,7 @@ it needs NO ``SCOPE_VERIFY_ALLOWLIST`` entry).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from app.engine.develop_registry import ObjectiveSpec, register
@@ -68,6 +69,8 @@ __all__ = [
     "detect_jsdoc_targets",
     "is_js_source",
     "documentable_targets",
+    "splice_jsdoc",
+    "plan_jsdoc_insert",
 ]
 
 
@@ -108,22 +111,62 @@ def _jsdoc_block(target: JsDocTarget) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _splice_jsdoc(source: str, targets: list[JsDocTarget]) -> str | None:
-    """``source`` with a JSDoc block spliced in as leading trivia at each target's
-    ``insert_offset``, or ``None`` when any offset is out of range (a stale scan —
-    refuse rather than corrupt the file).
+def splice_jsdoc(source: str, targets: list[JsDocTarget],
+                 block_fn: Callable[[JsDocTarget], str]) -> str | None:
+    """``source`` with a JSDoc block (minted by ``block_fn``) spliced in as leading
+    trivia at each target's ``insert_offset``, or ``None`` when any offset is out of
+    range (a stale scan — refuse rather than corrupt the file).
 
     Splices BOTTOM-UP (descending offset) so each earlier insertion does not shift
     a later offset. Pure byte-offset insertion — the surrounding formatting and
     every other byte survive untouched (the JSDoc is leading trivia, so ZERO
-    runtime bytes change)."""
+    runtime bytes change). ``block_fn`` is the only varying part across the JSDoc-
+    insert objectives (this module's ``@param name`` template vs
+    js-document-param-types' ``@param {T} name``), so it is injected — the splice
+    spine itself is shared, not cloned."""
     new_source = source
     for target in sorted(targets, key=lambda t: t.insert_offset, reverse=True):
         off = target.insert_offset
         if not 0 <= off <= len(new_source):
             return None
-        new_source = new_source[:off] + _jsdoc_block(target) + new_source[off:]
+        new_source = new_source[:off] + block_fn(target) + new_source[off:]
     return new_source if new_source != source else None
+
+
+def plan_jsdoc_insert(project_root: str | Path, rel: str, new_name: str,
+                      targets_fn: Callable[[Path, str], list[JsDocTarget]],
+                      block_fn: Callable[[JsDocTarget], str]) -> RenamePlan:
+    """The SHARED JSDoc-insert plan spine for ONE source file, or an empty no-op
+    plan (an honest refusal).
+
+    Both JSDoc-insert objectives — this module (``@param name`` + ``@returns {T}``,
+    landable on a declared return type) and js-document-param-types (``@param {T}
+    name``, landable on a declared param type) — differ ONLY in their
+    landability-filtered ``targets_fn`` and their ``block_fn``; the splice + re-parse
+    oracle + record steps are identical, so they live HERE once rather than being
+    cloned. Splices a facts-only JSDoc as leading trivia, then proves the splice
+    behaviour-identical with the driver's re-parse oracle
+    (:func:`reparse_exports_identical` — same exported-name set, still parses)
+    before recording it. An empty plan means nothing was landable or the oracle
+    refused — nothing is touched (never-fake-green)."""
+    plan = RenamePlan(old=rel, new=new_name)
+    root = Path(project_root)
+    targets = targets_fn(root, rel)
+    if not targets:
+        return plan  # non-JS / test / nothing landable — honest no-op
+    target_file = root / rel
+    original = _read(target_file)
+    if not original and not target_file.exists():
+        return plan  # unreadable / missing target — no-op
+    documented = splice_jsdoc(original, targets, block_fn)
+    if documented is None:
+        return plan  # a stale offset / no-change splice — refuse
+    if not reparse_exports_identical(root, rel, documented):
+        return plan  # the splice did not re-parse identical — refuse, land nothing
+    plan.originals[rel] = original
+    plan.new_contents[rel] = documented
+    plan.edits_by_file[rel] = len(targets)
+    return plan
 
 
 def detect_jsdoc_targets(project_root: str | Path) -> list[str]:
@@ -151,25 +194,11 @@ def plan_document_export_jsdoc(project_root: str | Path, rel: str) -> RenamePlan
     trivia, then proves the splice behaviour-identical with the driver's re-parse
     oracle (:func:`reparse_exports_identical` — same exported-name set, still
     parses) before recording it. An empty plan means nothing was landable or the
-    oracle refused — nothing is touched (never-fake-green)."""
-    plan = RenamePlan(old=rel, new="document-export-jsdoc")
-    root = Path(project_root)
-    targets = documentable_targets(root, rel)
-    if not targets:
-        return plan  # non-JS / test / no return-typed export — honest no-op
-    target_file = root / rel
-    original = _read(target_file)
-    if not original and not target_file.exists():
-        return plan  # unreadable / missing target — no-op
-    documented = _splice_jsdoc(original, targets)
-    if documented is None:
-        return plan  # a stale offset / no-change splice — refuse
-    if not reparse_exports_identical(root, rel, documented):
-        return plan  # the splice did not re-parse identical — refuse, land nothing
-    plan.originals[rel] = original
-    plan.new_contents[rel] = documented
-    plan.edits_by_file[rel] = len(targets)
-    return plan
+    oracle refused — nothing is touched (never-fake-green). Delegates to the shared
+    :func:`plan_jsdoc_insert` spine with this objective's return-typed
+    landability filter and ``@param name``/``@returns {T}`` block template."""
+    return plan_jsdoc_insert(project_root, rel, "document-export-jsdoc",
+                             documentable_targets, _jsdoc_block)
 
 
 def _documentable_files(project_root: str | Path) -> list[str]:

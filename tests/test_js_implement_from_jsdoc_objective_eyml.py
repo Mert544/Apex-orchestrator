@@ -520,8 +520,8 @@ def test_counts_are_twenty_five_concrete_of_sixty_seven():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 68  # 68 after seal-total-ordering (26th concrete) registered
-    assert len(classify_objectives(names)["CONCRETE"]) == 26
+    assert len(names) == 69  # 69 after js-document-param-types (27th concrete) registered
+    assert len(classify_objectives(names)["CONCRETE"]) == 27
 
 
 def test_north_star_and_soundness_audits_pass():

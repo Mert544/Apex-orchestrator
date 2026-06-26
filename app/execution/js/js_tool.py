@@ -74,14 +74,19 @@ class JsWitness:
 class JsDocTarget:
     """One EXPORTED, JSDoc-less function/const-arrow the driver found, with the
     proven AST facts a minimal JSDoc is built from: its declared parameter
-    ``names`` (in order), the ``return_type`` text read VERBATIM off a TS return
-    annotation (``None`` for plain JS / no annotation — the honesty gate refuses
+    ``names`` (in order), the per-param declared ``param_types`` read VERBATIM off
+    each TS annotation (one entry per param, parallel to ``params``; an entry is
+    ``None`` when that param carries no annotation — js-document-param-types
+    surfaces the typed ones, document-export-jsdoc ignores the field), the
+    ``return_type`` text read VERBATIM off a TS return annotation (``None`` for
+    plain JS / no annotation — the document-export-jsdoc honesty gate refuses
     those, a name+param-only JSDoc restating the signature adds nothing), and the
     byte ``insert_offset`` of the statement start (BEFORE any ``export`` keyword,
     so the JSDoc splices in as leading trivia)."""
 
     name: str
     params: tuple[str, ...]
+    param_types: tuple[str | None, ...]
     return_type: str | None
     insert_offset: int
 
@@ -202,6 +207,7 @@ def doc_targets(root: Path, rel: str) -> list[JsDocTarget]:
     if not isinstance(data, list):
         return []
     return [JsDocTarget(name=d["name"], params=tuple(d["params"]),
+                        param_types=tuple(d["paramTypes"]),
                         return_type=d["returnType"], insert_offset=d["insertOffset"])
             for d in data]
 

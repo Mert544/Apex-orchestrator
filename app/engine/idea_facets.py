@@ -430,7 +430,16 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # an in-driver re-parse name-superset), the JS/TS sibling
                              # of wire-exports, refusing a CJS/`export default` module.
                              # Appended, so the originals still lead and emit first.
-                             "the unexported public function to export"],
+                             "the unexported public function to export",
+                             # added: an EXPORTED JS/TS function/const-arrow whose
+                             # parameters carry DECLARED types but with no leading
+                             # JSDoc — the js-document-param-types objective lands a
+                             # JSDoc whose `@param {T} name` lines carry the declared
+                             # types read verbatim (the missing half of
+                             # document-export-jsdoc), refusing a name-only/untyped
+                             # restatement. Appended, so the originals still lead and
+                             # emit first.
+                             "the exported parameter types to document in jsdoc"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
     "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown",
                         # added: the package's USAGE.md generated from its public

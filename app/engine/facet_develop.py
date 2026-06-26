@@ -313,6 +313,22 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # ("exported"/"in jsdoc" vs "public") — so its order is free.
     "the exported signature to document in jsdoc": "document-export-jsdoc",
 
+    # Undocumented EXPORTED JS/TS PARAMETER TYPES: the missing HALF of
+    # document-export-jsdoc. Where that objective lands only when a declared
+    # RETURN type exists (and emits bare ``@param <name>`` lines, no type), the
+    # js-document-param-types objective LANDS a JSDoc whose ``@param {T} <name>``
+    # lines carry the DECLARED parameter types read VERBATIM off the TS annotation
+    # (plus an ``@returns {T}`` when a return type is declared) — a strictly
+    # richer, maintainer-valued fact. It inherits the same honesty gate and lands
+    # ONLY when at least one parameter carries a declared type (a name-only/untyped
+    # ``@param`` restates the signature → refuse). A JSDoc is leading trivia (zero
+    # runtime bytes), so it is behaviour-identical by construction, verified by the
+    # SAME in-driver re-parse — no jest/tsc run. Its phrasing is not a substring of
+    # any other key (nor any of them of it) — in particular it is distinct from
+    # "the exported signature to document in jsdoc" above ("parameter types" vs
+    # "signature") — so its order is free.
+    "the exported parameter types to document in jsdoc": "js-document-param-types",
+
     # Defined-but-unexported public JS/TS function: the "signatures and types" lens
     # also names a top-level public function/const-arrow a clean-ESM module DEFINES
     # but never exports. The js-wire-exports objective LANDS exactly that — it

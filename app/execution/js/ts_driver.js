@@ -34,9 +34,12 @@
 //                             once as a fillable stub.
 //   doc-targets <file>     -> JSON: every EXPORTED function/const-arrow in <file>
 //                             with NO leading JSDoc, as [{name, params,
-//                             returnType|null, insertOffset}] — the facts the
-//                             document-export-jsdoc objective splices a minimal
-//                             JSDoc from (pure AST). Exit 2 (REFUSE) on parse error.
+//                             paramTypes, returnType|null, insertOffset}] — the
+//                             facts the document-export-jsdoc (names + returnType)
+//                             and js-document-param-types (the verbatim per-param
+//                             `paramTypes`) objectives splice a minimal JSDoc from
+//                             (pure AST). `paramTypes` is parallel to `params` (one
+//                             verbatim type or null per param). Exit 2 on parse error.
 //   doc-verify <file>      -> JSON: {names:[...]} the sorted EXPORTED-name set of
 //                             <file>. The behaviour-identical oracle for a JSDoc
 //                             splice: a leading comment changes ZERO runtime bytes,
@@ -98,6 +101,22 @@ function paramNames(node) {
     names.push(p.name.text);
   }
   return names;
+}
+
+// The DECLARED parameter TYPES of a function-like node, in order — parallel to
+// `paramNames` (the SAME identifier gate, so a destructuring / rest / default
+// param makes it return null too). Each entry is the param's TS type-annotation
+// text read VERBATIM off the AST (`p.type.getText(sf).trim()`), or null when that
+// param carries no annotation. The js-document-param-types objective reads these
+// to mint `@param {T} name` lines; a type is never inferred, only copied from the
+// author's own annotation (so the JSDoc cannot misstate it).
+function paramTypes(node, sf) {
+  const types = [];
+  for (const p of node.parameters) {
+    if (!ts.isIdentifier(p.name) || p.dotDotDotToken || p.initializer) return null;
+    types.push(p.type ? p.type.getText(sf).trim() : null);
+  }
+  return types;
 }
 
 // A function-like declaration is a "throw-stub" iff its body is EXACTLY one
@@ -328,11 +347,14 @@ function hasLeadingJSDoc(node, sf) {
 }
 
 // One documentable target: an EXPORTED, JSDoc-less function/const-arrow with its
-// declared param names, its DECLARED return-type text (verbatim, or null), and
-// the byte offset of its statement start (BEFORE the `export` keyword, so the
-// JSDoc lands as leading trivia). `params` reuses `paramNames`, so a node with a
-// non-identifier param (destructuring/rest/default) yields null and is SKIPPED —
-// we never invent a `@param` name we cannot read off the AST.
+// declared param names, the per-param DECLARED type texts (verbatim, or null per
+// param), its DECLARED return-type text (verbatim, or null), and the byte offset
+// of its statement start (BEFORE the `export` keyword, so the JSDoc lands as
+// leading trivia). `params` reuses `paramNames`, so a node with a non-identifier
+// param (destructuring/rest/default) yields null and is SKIPPED — we never invent
+// a `@param` name we cannot read off the AST. `paramTypes` runs the same gate and
+// so is the SAME length as `params` (one verbatim type or null per param) — the
+// js-document-param-types objective reads it; document-export-jsdoc ignores it.
 function docTargetFor(name, fnNode, stmtNode, sf) {
   if (!isExported(stmtNode) || hasLeadingJSDoc(stmtNode, sf)) return null;
   const params = paramNames(fnNode);
@@ -340,6 +362,7 @@ function docTargetFor(name, fnNode, stmtNode, sf) {
   return {
     name: name,
     params: params,
+    paramTypes: paramTypes(fnNode, sf),
     returnType: fnNode.type ? fnNode.type.getText(sf).trim() : null,
     insertOffset: stmtNode.getStart(sf),
   };
