@@ -496,7 +496,16 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                         # so the suite keeps them honest. Appended, so the originals
                         # still lead and emit in their existing order.
                         "the unenforced doctest examples to pin"],
-    "raised exceptions": ["which type when", "recoverable versus fatal", "error message contract"],
+    "raised exceptions": ["which type when", "recoverable versus fatal", "error message contract",
+                          # added: a public function whose body raises a PROVEN
+                          # escaping ``raise <ErrorName>(...)`` set but whose
+                          # docstring records none of it — the document-raises
+                          # objective lands a ``Raises:`` block naming the distinct
+                          # escaping exceptions read verbatim in source order (the
+                          # Python sibling of document-raises-jsdoc), refusing a
+                          # zero-raise or unprovable-raise shape. Appended, so the
+                          # originals still lead and emit first.
+                          "the raised exceptions to document"],
     "partial-failure behavior": ["what completed", "what rolled back", "how callers detect it"],
     "retry guidance": ["safe-to-retry conditions", "backoff recommendation", "idempotency requirement"],
     # integrate ladder

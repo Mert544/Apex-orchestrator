@@ -299,6 +299,25 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # any other key (nor any of them of it), so its order is free.
     "the public signature to document": "document-signature",
 
+    # Undocumented public FAILURE CONTRACT: the "raised exceptions" lens names a
+    # public function whose body raises an exception its docstring never records.
+    # The document-raises objective LANDS exactly that — a ``Raises:`` block with
+    # one line per DISTINCT *escaping* literal ``raise <ErrorName>(...)``, the name
+    # read VERBATIM off the AST in source order (the Python sibling of the JS
+    # document-raises-jsdoc ``@throws``); it inherits document-signature's honesty
+    # gate and lands ONLY when at least one PROVABLE escaping raise exists (a
+    # function that raises nothing, or raises an unprovable shape — a variable / a
+    # lowercase factory call / a dotted ctor / a bare re-raise / inside a
+    # try-with-except that could swallow it — is refused, never a content-free
+    # ``Raises:``). A docstring is a string-literal first statement (zero runtime
+    # bytes), so it is behaviour-identical by construction. Its phrasing is not a
+    # substring of any other key (nor any of them of it) — in particular it is
+    # distinct from "the public signature to document" above ("raised exceptions"
+    # vs "signature") and from the JS "the thrown error types to document in jsdoc"
+    # ("raised exceptions to document" vs "thrown error types … in jsdoc") — so its
+    # order is free.
+    "the raised exceptions to document": "document-raises",
+
     # Undocumented EXPORTED JS/TS signature: the JS/TS sibling of the above. The
     # document-export-jsdoc objective LANDS a minimal JSDoc on an exported
     # function/const-arrow that carries NO leading JSDoc — one ``@param <name>``

@@ -83,6 +83,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "add-from-future-annotations",
         "generate-usage-doc",
         "document-signature",
+        "document-raises",
         "document-export-jsdoc",
         "js-document-param-types",
         "document-raises-jsdoc",

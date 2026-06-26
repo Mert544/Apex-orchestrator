@@ -121,6 +121,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "add-from-future-annotations": "behavior-identical-future-import",
     "infer-type-hints": "behavior-identical-annotation-only",
     "document-signature": "behavior-identical-docstring-only",
+    "document-raises": "behavior-identical-docstring-only+raises-from-literal-raise-Name-verbatim+escape-only(stop-at-nested-scope,try-with-except-refuses)",
     "document-export-jsdoc": "jsdoc-leading-trivia-insert+reparse-identical-or-refuse(no-suite-needed)",
     "js-document-param-types": "jsdoc-leading-trivia-insert+declared-param-types-verbatim+reparse-identical-or-refuse(no-suite-needed)",
     "document-raises-jsdoc": "jsdoc-leading-trivia-insert+throws-types-from-literal-new-verbatim+reparse-identical-or-refuse(no-suite-needed)",
