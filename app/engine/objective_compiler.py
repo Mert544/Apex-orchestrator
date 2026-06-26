@@ -705,10 +705,20 @@ _OBJECTIVE_SYNONYMS: tuple[tuple[str, str], ...] = (
     ("optimise", "modernize"),
     ("speed up", "modernize"),
     ("faster", "modernize"),
-    ("harden", "modernize"),
-    ("fortify", "modernize"),
-    ("secure", "modernize"),
-    ("lock down", "modernize"),
+    # harden: land a real security fix per finding (the security engine wired as a
+    # develop objective). These security-intent verbs used to route to modernize;
+    # they now point at the dedicated ``harden`` lens. The bare ``("harden", ...)``
+    # row is REPOINTED, not deleted: while the EXACT string "harden" resolves to the
+    # objective by name (the exact-name branch wins before the synonym scan), a
+    # longer phrase that merely CONTAINS the word ("harden the auth path") has no
+    # exact match and still needs this trigger — pointing it at modernize (the old
+    # behaviour) would now be the misleading row, so it is corrected to "harden".
+    # ``sanitize``/``sanitise`` stay on modernize (input-cleanup is closer to the
+    # surface-tidy lens than the security-finding fixer).
+    ("harden", "harden"),
+    ("fortify", "harden"),
+    ("secure", "harden"),
+    ("lock down", "harden"),
     ("sanitize", "modernize"),
     ("sanitise", "modernize"),
 )

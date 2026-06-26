@@ -3,8 +3,9 @@
 These cover ``resolve_objective`` / ``objective_synonyms`` and the wiring into
 ``compile_objective``: a free-text goal ("clean up the imports", "lock down
 auth", "speed up") resolves to the right registered objective, deterministically
-and table-driven (no fuzzy/LLM matching). Construction style mirrors
-``test_objective_compiler.py``.
+and table-driven (no fuzzy/LLM matching). Security-intent verbs ("harden",
+"fortify", "secure", "lock down") route to the ``harden`` objective; ``sanitize``
+stays on ``modernize``. Construction style mirrors ``test_objective_compiler.py``.
 """
 from __future__ import annotations
 
@@ -40,8 +41,12 @@ def _project(tmp_path: Path, body: str) -> Path:
     ("refactor it", "modernize"),
     ("please optimize this", "modernize"),
     ("can we speed up the parser", "modernize"),
-    ("harden the auth path", "modernize"),
-    ("lock down the endpoint", "modernize"),
+    # security-intent verbs → harden (the security engine wired as an objective).
+    # ``sanitize`` stays on modernize (input-cleanup is closer to surface-tidy).
+    ("harden the auth path", "harden"),
+    ("lock down the endpoint", "harden"),
+    ("fortify the request path", "harden"),
+    ("secure the upload handler", "harden"),
     ("sanitize the inputs", "modernize"),
     # imports
     ("sort import block", "sort-imports"),

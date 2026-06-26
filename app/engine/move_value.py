@@ -69,6 +69,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "document_raises_jsdoc": 0.68,   # JSDoc @throws set from proven throw-new-Identifier (the failure-contract sibling of document_export_jsdoc / js_document_param_types)
     "pin_return_type": 0.66,         # one Returns: <T> line spliced into an EXISTING docstring from the proven return oracle (a doc-surface line, not a minted docstring — generate_usage_doc's tier, below the docstring-MINTING document_signature/document_raises)
     "generate_usage_doc": 0.66,      # a USAGE.md from the public API (oracle-checked)
+    "harden": 0.65,                  # land a real security fix per finding — Tier-1 rewrites the vulnerability away (eval/os.system/yaml/bare-except/hashlib-new), Tier-0 annotates a reviewable # SECURITY comment where no safe auto-rewrite exists (pickle/sql/tempfile/popen/tls/zip-slip/weak-hash)
     # --- TIER 2 — real structural improvement (behaviour-shape, not just bytes) ---
     "dedup_extract": 0.60,           # lift a duplicated block into a shared helper
     "dedup_total_return": 0.60,      # lift an always-returning duplicate block

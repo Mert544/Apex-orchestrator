@@ -593,6 +593,18 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # gives the interface a runnable implementer to fill in. Its phrasing is not a
     # substring of any other key (nor any of them of it), so its order is free.
     "the protocol stub to scaffold": "scaffold-from-protocol",
+
+    # A detected security vulnerability: the "harden" lens's sub-aspect names a
+    # specific security FINDING in the project's own code. The harden objective
+    # LANDS exactly the fix the built security engine produces for that finding —
+    # Tier-1 rewrites the vulnerability away (eval → ast.literal_eval, os.system →
+    # subprocess, yaml.load → safe_load, bare/Base except → Exception, hashlib.new
+    # weak → usedforsecurity=False), Tier-0 inserts a reviewable ``# SECURITY``
+    # annotation where no safe auto-rewrite exists (pickle / f-string SQL /
+    # tempfile.mktemp / os.popen / verify=False / Zip-Slip / weak hash). Each is
+    # routed through the same suite-gated, auto-rollback engine. Its phrasing is not
+    # a substring of any other key (nor any of them of it), so its order is free.
+    "the security vulnerability to harden": "harden",
 }
 
 

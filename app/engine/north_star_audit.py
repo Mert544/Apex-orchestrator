@@ -102,6 +102,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "seal-hashable-eq",
         "add-dataclass-order",
         "wire-module-exports",
+        "harden",
         # NOTE: "fix-docstrings" was REMOVED here — it is a standalone CLI
         # subcommand (`apex fix-docstrings`), NOT a registered develop objective,
         # so it never appears in ``available_objectives()``. Listing it left the
