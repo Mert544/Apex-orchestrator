@@ -409,6 +409,28 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # refuse a blank, never-assigned field (only an initializer-bearing, definitely-
     # assigned field is ever sealed).
     "java_blank_final": frozenset({"java-finalize-field"}),
+    # The raise-from del/unbound trap: a fixable ``raise X(...)`` in an ``except E as
+    # err:`` handler that ``del``\s ``err`` BEFORE the raise. Appending ``from err``
+    # would raise ``UnboundLocalError`` (the WRONG exception type + changed control
+    # flow), not the original ``RuntimeError`` — a behavior change the syntax-only
+    # re-parse floor cannot see. raise-from MUST refuse it (``_name_still_caught_
+    # exception`` sees the ``del`` and declines), never landing a falsely-"behavior-
+    # preserving" chain.
+    "raise_from_del_binding": frozenset({"raise-from"}),
+    # The raise-from wrong-cause trap: a fixable ``raise X(...)`` in an ``except E as
+    # err:`` handler that REBINDS ``err`` to a fresh exception BEFORE the raise.
+    # Appending ``from err`` would chain that fabricated object as ``__cause__`` — NOT
+    # the caught exception — falsifying the "chains to its original cause" claim while
+    # re-parsing cleanly. raise-from MUST refuse it (the predicate sees ``err`` rebound
+    # and declines), never chaining a semantically-wrong cause.
+    "raise_from_rebound_binding": frozenset({"raise-from"}),
+    # NB: ``raise_from_string_collision`` is deliberately NOT must-refuse. The P0-#1
+    # fix replaced the textual ``str.replace`` (which would have corrupted a string
+    # literal whose text matched the raise's source) with a COLUMN-OFFSET splice, so
+    # raise-from now LANDS a CORRECT, idempotent, behavior-identical chain on that
+    # shape — the honest verdict is ``behavior-identical``, not a refusal. The corpus
+    # still exercises it (proving the string literal is no longer corrupted), and a
+    # dedicated test asserts the splice lands past the real raise.
     "syntax_error": frozenset(),  # universal-refuse rule covers every objective
     "already_applied": frozenset(
         {"wire-module-exports", "add-final", "freeze-dataclass"}),

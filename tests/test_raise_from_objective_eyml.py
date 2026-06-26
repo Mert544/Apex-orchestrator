@@ -233,19 +233,32 @@ def test_plan_idempotent_after_landing(tmp_path: Path):
 
 # --- the fitness / moves loop (one move per landable module; fitness -> 0) -----
 
-def _runnable_project(tmp_path: Path) -> Path:
-    """A self-contained installable project with ONE B904 in its own module and a
-    GREEN suite, so the develop fitness/moves loop has a real subject."""
+_RUNNABLE_B904 = (
+    "def f():\n"
+    "    try:\n"
+    "        return int('x')\n"
+    "    except ValueError as err:\n"
+    "        raise RuntimeError('bad')\n"
+)
+# A runnable string-collision module: ``f()`` enters the handler and raises
+# RuntimeError(1); the raise's source text also lives in an earlier string literal
+# on the SAME line, so a textual replace would corrupt it (a churn loop).
+_STRING_COLLISION_RUNNABLE = (
+    "def f():\n"
+    "    try:\n"
+    "        return int('x')\n"
+    "    except ValueError as err:\n"
+    "        tag = \"raise RuntimeError(1)\"; raise RuntimeError(1)\n"
+)
+
+
+def _runnable_project_with(tmp_path: Path, module_src: str) -> Path:
+    """A self-contained installable project whose own module is ``module_src`` (which
+    must define ``f()`` that raises ``RuntimeError`` when called) with a GREEN suite —
+    so the develop fitness/moves/apply loop has a real subject."""
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
-    (tmp_path / "pkg" / "m.py").write_text(
-        "def f():\n"
-        "    try:\n"
-        "        return int('x')\n"
-        "    except ValueError as err:\n"
-        "        raise RuntimeError('bad')\n",
-        encoding="utf-8",
-    )
+    (tmp_path / "pkg" / "m.py").write_text(module_src, encoding="utf-8")
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_m.py").write_text(
         "import pytest\n"
@@ -258,6 +271,12 @@ def _runnable_project(tmp_path: Path) -> Path:
     (tmp_path / "pyproject.toml").write_text(
         "[project]\nname='pkg'\nversion='0'\n", encoding="utf-8")
     return tmp_path
+
+
+def _runnable_project(tmp_path: Path) -> Path:
+    """A self-contained installable project with ONE B904 in its own module and a
+    GREEN suite, so the develop fitness/moves loop has a real subject."""
+    return _runnable_project_with(tmp_path, _RUNNABLE_B904)
 
 
 def _spec():
@@ -450,14 +469,101 @@ def test_counts_are_thirty_six_concrete_of_seventy_eight():
 
 def test_refuses_on_python_soundness_corpus():
     # raise-from is NOT expensive (pure AST), so it is swept on the DEFAULT cheap
-    # path (include_heavy=False). The standing corpus is Python-shaped with ZERO
-    # ``except … as`` bindings carrying a fixable raise, so the objective REFUSES on
-    # every fixture shape (a behaviour-identical chain is the only alternative, and
-    # there is nothing to chain).
+    # path (include_heavy=False). Every fixture shape is REFUSED or behaviour-
+    # identical — never a VIOLATION. The two adversarial binding shapes
+    # (``raise_from_del_binding`` / ``raise_from_rebound_binding``) MUST be refused
+    # (chaining a del'd/rebound name changes behaviour); ``raise_from_string_collision``
+    # LANDS a correct, behaviour-identical chain (the column-offset splice leaves the
+    # string literal intact). All other shapes carry no fixable ``except … as``
+    # binding, so they are refused.
     from app.engine.soundness_audit import corpus_refusal_findings, repo_root
 
     corpus = corpus_refusal_findings(repo_root(), include_heavy=False)
     cells = corpus.get("raise-from", {})
     assert cells, "raise-from should be swept on the cheap corpus path"
     for shape, verdict in cells.items():
-        assert verdict == "refused", f"{shape}: {verdict}"
+        assert not verdict.startswith("VIOLATION"), f"{shape}: {verdict}"
+    assert cells["raise_from_del_binding"] == "refused"
+    assert cells["raise_from_rebound_binding"] == "refused"
+    assert cells["raise_from_string_collision"] == "behavior-identical"
+
+
+# --- adversarial binding vectors: del / rebind / string-collision -------------
+#
+# The denetçi-flagged P0/P1 set, at the objective/plan layer. The transform AST-finds
+# the raise but must verify the bound name is still the CAUGHT exception (not del'd /
+# rebound) and must splice by COLUMN OFFSET (never a textual str.replace that could
+# corrupt a same-line string literal). These build the fixture, run the real plan,
+# and assert REFUSAL (del/rebind) or a CORRECT splice (string-collision) — plus the
+# non-convergence guard (apply twice -> the 2nd pass is a byte no-op, fitness 0).
+
+_DEL_BINDING = (
+    "def f():\n"
+    "    try:\n"
+    "        g()\n"
+    "    except ValueError as err:\n"
+    "        del err\n"
+    "        raise RuntimeError('boom')\n"
+)
+_REBOUND_BINDING = (
+    "def f():\n"
+    "    try:\n"
+    "        g()\n"
+    "    except ValueError as err:\n"
+    "        err = KeyError('x')\n"
+    "        raise RuntimeError('boom')\n"
+)
+_STRING_COLLISION = (
+    "def f():\n"
+    "    try:\n"
+    "        g()\n"
+    "    except ValueError as err:\n"
+    "        tag = \"raise RuntimeError(1)\"; raise RuntimeError(1)\n"
+)
+
+
+def test_plan_refuses_del_binding(tmp_path: Path):
+    root = _project(tmp_path, "pkg/m.py", _DEL_BINDING)
+    plan = plan_raise_from(str(root), "pkg/m.py")
+    assert not plan.new_contents  # del'd name -> chaining would be UnboundLocalError
+
+
+def test_plan_refuses_rebound_binding(tmp_path: Path):
+    root = _project(tmp_path, "pkg/m.py", _REBOUND_BINDING)
+    plan = plan_raise_from(str(root), "pkg/m.py")
+    assert not plan.new_contents  # rebound name -> chaining a fabricated wrong cause
+
+
+def test_plan_lands_string_collision_without_corrupting_the_literal(tmp_path: Path):
+    # The raise's source text repeats inside an earlier string literal on the line;
+    # the column-offset splice chains the REAL raise and leaves the string untouched.
+    root = _project(tmp_path, "pkg/m.py", _STRING_COLLISION)
+    plan = plan_raise_from(str(root), "pkg/m.py")
+    out = plan.new_contents["pkg/m.py"]
+    assert "tag = \"raise RuntimeError(1)\"; raise RuntimeError(1) from err" in out
+    assert "tag = \"raise RuntimeError(1) from err\"" not in out  # not spliced into the string
+    ast.parse(out)  # re-parses
+
+
+def test_apply_string_collision_is_idempotent_non_convergence_guard(tmp_path: Path):
+    # Apply twice on the real apply path: the 2nd pass is a byte-identical no-op and
+    # fitness drops to 0 — the corruption loop the textual replace caused is gone.
+    root = _runnable_project_with(tmp_path, _STRING_COLLISION_RUNNABLE)
+    first = _spec().moves(str(root))[0].build_plan()
+    out1 = apply_rename(str(root), first, verify=True)
+    assert out1["applied"] is True and out1.get("rolled_back") is False
+    landed = (root / "pkg" / "m.py").read_text(encoding="utf-8")
+    assert "raise RuntimeError(1) from err" in landed
+    assert "tag = \"raise RuntimeError(1) from err\"" not in landed
+    # Second pass: nothing left to fix -> fitness 0, no moves (byte no-op).
+    assert _spec().fitness(str(root)) == 0.0
+    assert _spec().moves(str(root)) == []
+
+
+def test_plan_del_and_rebind_are_deterministic_refusals(tmp_path: Path):
+    # Both adversarial shapes refuse the SAME way on every run (no clock/random).
+    for i, src in enumerate((_DEL_BINDING, _REBOUND_BINDING)):
+        root = _project(tmp_path / f"r{i}", "pkg/m.py", src)
+        a = plan_raise_from(str(root), "pkg/m.py").new_contents
+        b = plan_raise_from(str(root), "pkg/m.py").new_contents
+        assert a == b == {}
