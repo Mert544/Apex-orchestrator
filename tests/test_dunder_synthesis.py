@@ -444,7 +444,10 @@ def test_parity_facet_phrase_lives_in_ladder_with_originals_leading():
 
     ladder = _FACET_SUBASPECTS["unreachable or no-op statements"]
     assert _PHRASE in ladder
-    assert ladder[-1] == _PHRASE  # appended LAST
+    # synthesize-dunders was appended after the originals; a LATER objective
+    # (seal-total-ordering) appended its own phrase after this one, so this phrase is
+    # no longer the very last entry — but it stays strictly after every original.
+    assert ladder.index(_PHRASE) >= 2  # the two originals still lead
     assert ladder[0] == "redundant pass statement"  # originals still lead
     # the add-slots sibling stays directly before it.
     assert ladder[ladder.index(_PHRASE) - 1] == "the closed-attribute class to give slots"

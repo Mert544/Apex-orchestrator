@@ -380,7 +380,17 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                                         # dataclassify must refuse), gated by an
                                         # inherited-__eq__ refusal. Appended last, so the
                                         # originals still lead and emit first.
-                                        "the repr and eq to synthesize from fields"],
+                                        "the repr and eq to synthesize from fields",
+                                        # added: a non-@dataclass class that defines __eq__
+                                        # AND exactly one of __lt__/__le__/__gt__/__ge__ but
+                                        # is MISSING the other three — the seal-total-ordering
+                                        # objective lands @functools.total_ordering, which
+                                        # fills the three absent comparison operators from the
+                                        # one the author wrote plus __eq__ (the comparison-dunder
+                                        # sibling of synthesize-dunders), runtime-additive and
+                                        # statically gated. Appended last, so the originals still
+                                        # lead and emit first.
+                                        "the comparison operators to complete from one"],
     # document ladder
     "signatures and types": ["parameter meanings", "return type and None", "raised exceptions list",
                              # added: the package's public re-export surface — the

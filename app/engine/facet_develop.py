@@ -396,6 +396,20 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # order is free.
     "the repr and eq to synthesize from fields": "synthesize-dunders",
 
+    # A non-@dataclass regular class that defines __eq__ AND exactly one of the
+    # ordering dunders __lt__/__le__/__gt__/__ge__ but is MISSING the other three:
+    # the SAME "unreachable or no-op statements" simplify sub-aspect also names such a
+    # class, and seal-total-ordering LANDS the stdlib @functools.total_ordering that
+    # fills the three absent comparison operators from the one the author wrote plus
+    # __eq__ (the comparison-dunder sibling of synthesize-dunders). RUNTIME-ADDITIVE
+    # (@total_ordering never overwrites a defined method); the false-fill risk is closed
+    # STATICALLY (refuse unless __eq__ + exactly one order op are defined in this body
+    # and the other three are absent) + suite + auto-rollback. Its phrasing ("the
+    # comparison operators to complete from one") shares no whole-key substring with the
+    # dunders / dataclassify / freeze / slots keys above (nor any of them with it), so
+    # the relative order is free.
+    "the comparison operators to complete from one": "seal-total-ordering",
+
     # A leaf class proven never subclassed anywhere: add-final seals it with
     # @typing.final (a type-checker-only no-op — behaviour-preserving; the false-final
     # risk is closed STRUCTURALLY by the whole-project subclass scan, not the suite).

@@ -71,6 +71,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "extract": 0.55,                 # extract a helper from a long function
     "dataclassify": 0.50,            # boilerplate __init__ -> @dataclass
     "synthesize_dunders": 0.50,      # canonical __repr__/__eq__/__hash__ over a class's proven field set (dataclassify's sibling)
+    "seal_total_ordering": 0.50,     # @functools.total_ordering fills 3 comparison ops from one (synthesize_dunders' comparison-dunder sibling)
     "inline": 0.45,                  # fold a single-use helper back into its caller
     "extract_guard_clause": 0.45,    # flatten nesting into early-exit guards
     "guard_clause": 0.45,            # a trailing-guard-after-setup rewrite

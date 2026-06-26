@@ -504,10 +504,10 @@ def test_objective_registers_and_is_available():
 def test_objective_total_is_sixty_seven():
     from app.engine.objective_compiler import available_objectives
 
-    # 67 after js-implement-from-jsdoc (the JS/TS image of implement-from-doctest)
-    # self-registered; this count pin is the tripwire each new objective round
-    # bumps by one.
-    assert len(set(available_objectives())) == 67
+    # 68 after seal-total-ordering (the comparison-dunder sibling of
+    # synthesize-dunders) self-registered; this count pin is the tripwire each new
+    # objective round bumps by one.
+    assert len(set(available_objectives())) == 68
 
 
 def test_objective_spec_is_callable():
@@ -554,7 +554,7 @@ def test_parity_concrete_count_is_twenty_five():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 25  # rose from 24 with js-implement-from-jsdoc
+    assert len(buckets["CONCRETE"]) == 26  # rose from 25 with seal-total-ordering
 
 
 # --- PARITY ROW 3: soundness-strategy manifest ------------------------------
