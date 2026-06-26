@@ -38,6 +38,16 @@
 //                          `--`, in any method/constructor); OR one of several
 //                          declarators sharing a single statement (`int a, b;`) — any
 //                          shape it cannot read verbatim is omitted (never a guess).
+//                          REFUSES the WHOLE unit (emits []) when it references
+//                          `java.lang.reflect` (an import or a Field-setter member
+//                          select like `setAccessible`/`setInt`) OR any class
+//                          `implements Serializable`: a reflective/deserialization
+//                          writer can set ANY private field WITHOUT a syntactic `=`,
+//                          so sealing one `final` would throw/no-op at RUNTIME (the
+//                          fact-set reparse oracle cannot see it — `final` is not a
+//                          fact), and a single-file parser cannot prove WHICH field is
+//                          safe. Conservative whole-file refusal, the same spirit as
+//                          the multi-declarator refusal.
 //                          Exit 2 (REFUSE) on ANY parse error diagnostic.
 //
 // Determinism: no clock, no randomness; types/fields/methods are SORTED, targets are
@@ -51,7 +61,9 @@ import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.tree.CompoundAssignmentTree;
 import com.sun.source.tree.ExpressionTree;
 import com.sun.source.tree.IdentifierTree;
+import com.sun.source.tree.ImportTree;
 import com.sun.source.tree.MemberSelectTree;
+import com.sun.source.tree.MethodInvocationTree;
 import com.sun.source.tree.MethodTree;
 import com.sun.source.tree.ModifiersTree;
 import com.sun.source.tree.Tree;
@@ -207,6 +219,18 @@ public final class ApexJavaDriver {
 
     private static void cmdFinalTargets(String file) {
         Parsed p = parseOrRefuse(file);
+        // Whole-unit refusal: a reflective writer (`java.lang.reflect.Field` set*) or a
+        // deserializer (`implements Serializable`) can write ANY private field WITHOUT a
+        // syntactic assignment the scan can see, so sealing one `final` would throw /
+        // no-op at RUNTIME — and the fact-set reparse oracle cannot catch it (`final` is
+        // not a declared type/field/method fact). A single-file parser cannot prove
+        // WHICH private field such a writer leaves alone, so the conservative, sound
+        // answer is to finalise NOTHING in the whole unit (mirrors the multi-declarator
+        // refusal). Emit [] and stop.
+        if (referencesReflectionOrSerializable(p)) {
+            System.out.print("[]");
+            return;
+        }
         Set<String> assigned = collectAssignedNames(p.unit);
         Set<String> multiDeclared = collectMultiDeclaredFieldNames(p.unit, p.positions);
         List<long[]> orderedOffsets = new ArrayList<>();  // [insertOffset]
@@ -224,6 +248,105 @@ public final class ApexJavaDriver {
         }
         sb.append("]");
         System.out.print(sb);
+    }
+
+    // --- whole-unit refusal: reflection / serialization writers --------------
+
+    /** The member-select method names a `java.lang.reflect.Field` exposes to WRITE a
+     * field's value (`f.setInt(this, 99)`, `f.set(obj, v)`, `f.setAccessible(true)`).
+     * Seeing any of these as the selected method of an invocation is a strong signal
+     * the unit writes a private field reflectively, so we refuse the whole unit. */
+    private static final Set<String> REFLECT_FIELD_WRITERS = Set.of(
+            "setAccessible", "set", "setInt", "setLong", "setShort", "setByte",
+            "setBoolean", "setChar", "setDouble", "setFloat", "setObject");
+
+    /** True when the unit references reflection (an import of `java.lang.reflect.*` /
+     * `java.lang.reflect.Field`, OR an invocation of a `Field`-writer member select)
+     * OR declares a class that `implements Serializable` — in either case a writer
+     * outside the syntactic-assignment scan can set a private field, so NO field in
+     * the unit may be sealed `final`. Conservative by design: a false positive only
+     * declines a finalisation (lands nothing), never an unsound seal. */
+    private static boolean referencesReflectionOrSerializable(Parsed p) {
+        return importsJavaLangReflect(p.unit)
+                || usesReflectFieldWriter(p.unit)
+                || implementsSerializable(p.unit);
+    }
+
+    /** True when any import names the reflection package — `java.lang.reflect.Field`,
+     * `java.lang.reflect.*`, or any `java.lang.reflect.<X>`. The simplest conservative
+     * gate: a unit that imports reflection is presumed to write a field reflectively. */
+    private static boolean importsJavaLangReflect(CompilationUnitTree unit) {
+        for (ImportTree imp : unit.getImports()) {
+            Tree id = imp.getQualifiedIdentifier();
+            if (id == null) {
+                continue;
+            }
+            String name = id.toString();
+            if (name.equals("java.lang.reflect.*")
+                    || name.equals("java.lang.reflect.Field")
+                    || name.startsWith("java.lang.reflect.")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** True when the unit invokes a `Field`-writer member select (`x.setInt(...)`,
+     * `x.set(...)`, `x.setAccessible(...)`) anywhere — the robust signal a reflective
+     * write happens even when the `Field` is obtained without an `import` (a
+     * fully-qualified `java.lang.reflect.Field`). Conservative on the method NAME (no
+     * symbol resolution): any same-named member-select invocation flags the unit. */
+    private static boolean usesReflectFieldWriter(CompilationUnitTree unit) {
+        boolean[] found = {false};
+        new TreePathScanner<Void, Void>() {
+            @Override
+            public Void visitMethodInvocation(MethodInvocationTree node, Void unused) {
+                ExpressionTree select = node.getMethodSelect();
+                if (select instanceof MemberSelectTree) {
+                    String method = String.valueOf(
+                            ((MemberSelectTree) select).getIdentifier());
+                    if (REFLECT_FIELD_WRITERS.contains(method)) {
+                        found[0] = true;
+                    }
+                }
+                return super.visitMethodInvocation(node, unused);
+            }
+        }.scan(unit, null);
+        return found[0];
+    }
+
+    /** True when ANY class/enum/record in the unit lists `Serializable` (or
+     * `java.io.Serializable`) in its implements clause — a deserializer sets such a
+     * class's private fields reflectively, so none may be sealed `final`. The trailing
+     * simple name is compared (a `MemberSelectTree` for the qualified form), so both
+     * `implements Serializable` and `implements java.io.Serializable` are caught. */
+    private static boolean implementsSerializable(CompilationUnitTree unit) {
+        boolean[] found = {false};
+        new TreeScanner<Void, Void>() {
+            @Override
+            public Void visitClass(ClassTree node, Void unused) {
+                for (Tree iface : node.getImplementsClause()) {
+                    if (simpleTypeName(iface).equals("Serializable")) {
+                        found[0] = true;
+                    }
+                }
+                return super.visitClass(node, unused);
+            }
+        }.scan(unit, null);
+        return found[0];
+    }
+
+    /** The trailing simple name of a (possibly qualified) type tree: the identifier
+     * for `Serializable`, the selected name for `java.io.Serializable`, else the raw
+     * string (e.g. a parameterized type's text — never matched here). */
+    private static String simpleTypeName(Tree type) {
+        if (type instanceof IdentifierTree) {
+            return String.valueOf(((IdentifierTree) type).getName());
+        }
+        if (type instanceof MemberSelectTree) {
+            return String.valueOf(((MemberSelectTree) type).getIdentifier());
+        }
+        return String.valueOf(type);
     }
 
     /** Every PRIVATE, non-static, non-final, single-declarator instance field that

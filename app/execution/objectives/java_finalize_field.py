@@ -11,13 +11,27 @@ student/team would otherwise add by hand. It is the soundest, smallest-blast-rad
 Java edit: ``final`` on an already-never-reassigned field changes ZERO runtime
 behaviour.
 
-Why it is sound (and needs NO Maven/Gradle/JUnit/compile run): a ``private`` field
-cannot be written from outside its class, so the ENTIRE assignment surface lives in
-this one file's parse tree — exactly the property js-wire-exports relies on ("the
-binding provably exists in the SAME AST"). The driver scans every assignment target
-in the file (plain ``=``, compound ``+=``, ``++``/``--``); a field written ONLY by
-its declarator initializer (or never) can take ``final`` without changing behaviour.
+Why it is sound (and needs NO Maven/Gradle/JUnit/compile run): for a unit that does
+NOT touch reflection or serialization, a ``private`` field cannot be written from
+outside its class, so the ENTIRE *syntactic* assignment surface lives in this one
+file's parse tree — exactly the property js-wire-exports relies on ("the binding
+provably exists in the SAME AST"). The driver scans every assignment target in the
+file (plain ``=``, compound ``+=``, ``++``/``--``); a field written ONLY by its
+declarator initializer (or never) can take ``final`` without changing behaviour.
 **No symbol resolution, no other file, no classpath** — pure Tier A.
+
+The one hole in "the whole assignment surface is syntactic" is a writer that sets a
+field WITHOUT a ``=``: ``java.lang.reflect.Field`` (``f.setAccessible(true);
+f.setInt(obj, v)``) and the deserializer of a ``Serializable`` class both write
+private fields reflectively, and sealing such a field ``final`` makes that write
+throw ``IllegalAccessException`` / no-op at RUNTIME — a real breakage the fact-set
+re-parse oracle CANNOT catch (``final`` is not a declared type/field/method fact, so
+the spliced file re-parses fact-identical and would wrongly pass). A single-file
+parser cannot prove WHICH private field such a writer leaves alone, so the driver
+REFUSES the WHOLE compilation unit (yields no final-targets) when it imports
+``java.lang.reflect`` / invokes a ``Field`` setter, OR any class ``implements
+Serializable`` — the conservative whole-file refusal, the same spirit as the
+multi-declarator refusal and the false-``final`` (inner-class reassignment) trap.
 
 The pipeline mirrors :mod:`document_export_jsdoc` / :mod:`js_wire_exports` — same
 adapter spine, same reparse-oracle pattern, with the fact-set IDENTICAL (a ``final``
