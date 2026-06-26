@@ -39,6 +39,7 @@ class DreamReport:
     new_since: list[str] = field(default_factory=list)    # surfaced this dream, not last
     resolved_since: list[str] = field(default_factory=list)  # in last dream, gone now
     promoted: list[str] = field(default_factory=list)     # confirmed laws → waking ideas
+    forecast: list[str] = field(default_factory=list)     # near-miss: one more dream graduates
     curated: list[str] = field(default_factory=list)      # what it tidied (--curate)
     proposed: list[str] = field(default_factory=list)     # what it WOULD tidy (default)
     digest_path: str = ""
@@ -49,8 +50,9 @@ class DreamReport:
     def to_dict(self) -> dict[str, Any]:
         return {"patterns": self.patterns, "discoveries": self.discoveries,
                 "new_since": self.new_since, "resolved_since": self.resolved_since,
-                "promoted": self.promoted, "curated": self.curated,
-                "proposed": self.proposed, "digest_path": self.digest_path}
+                "promoted": self.promoted, "forecast": self.forecast,
+                "curated": self.curated, "proposed": self.proposed,
+                "digest_path": self.digest_path}
 
 
 def _review_outcome_memory(root: Path, report: DreamReport, curate: bool) -> None:
@@ -356,6 +358,35 @@ def _materialize_briefs(root: Path, subjects: list[str],
             f"`apex brief {brief.branch_path} --check` ({subject})")
 
 
+def _forecast(report: DreamReport) -> None:
+    """Turn the BACKWARD streak count into a FORWARD signal: what graduates next.
+
+    A pure read over the data ``_promote`` already trusts — ``report._streaks``
+    (set in ``_consolidate``, byte-identical under ``persist=False``) and the
+    same ``PROMOTE_STREAK``/``PROMOTE_CONFIDENCE`` constants that gate promotion.
+    A discovery already strong enough (``confidence >= PROMOTE_CONFIDENCE``) but
+    still UNDER the streak gate (``2 <= streak < PROMOTE_STREAK``) is a near-miss:
+    one (or a few) more dream(s) and the existing gate graduates it into a work
+    order. Forecasting ONLY what the same gate would promote keeps it honest —
+    the forecast and the next night's actual graduation can never disagree.
+
+    The exactly-at-streak set stays in "Graduated" (``_promote``), never here, so
+    a discovery is never double-reported. Emits nothing when no discovery sits in
+    the near-miss band, so the digest is byte-identical when the signal is absent.
+    """
+    streaks: dict[str, int] = getattr(report, "_streaks", {}) or {}
+    for d in report.discovery_objs:
+        streak = streaks.get(d["key"], 1)
+        if not (PROMOTE_CONFIDENCE <= d.get("confidence", 0.0)
+                and 2 <= streak < PROMOTE_STREAK):
+            continue
+        remaining = PROMOTE_STREAK - streak
+        more = "one more dream" if remaining == 1 else f"{remaining} more dreams"
+        report.forecast.append(
+            f"{d['text']}  → confirmed {streak}/{PROMOTE_STREAK} dreams; "
+            f"{more} graduates it into a work order.")
+
+
 def _safe(call) -> None:
     """Run one review step; a missing/corrupt store must never break the dream."""
     try:
@@ -373,6 +404,7 @@ def _run_reviews(root: Path, report: DreamReport, curate: bool,
     _safe(lambda: _review_pulse(root, report, persist))
     _safe(lambda: _consolidate(root, report, persist))
     _safe(lambda: _promote(root, report, curate))
+    _safe(lambda: _forecast(report))
 
 
 def _write_digest(root: Path, report: DreamReport) -> None:
@@ -556,6 +588,8 @@ def render_dream_markdown(report: DreamReport) -> str:
     _render_since_last(lines, report)
     _emit_section(lines, "## ⬆️ Graduated to the idea engine (confirmed across dreams)",
                   report.promoted, "- ")
+    _emit_section(lines, "## 🔮 Next to graduate (one more dream away)",
+                  report.forecast, "- ")
     if report.patterns:
         _emit_section(lines, "## Patterns", report.patterns, "- ")
     else:
