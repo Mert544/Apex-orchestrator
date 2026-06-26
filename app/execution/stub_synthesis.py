@@ -3718,6 +3718,38 @@ def _is_unenforced_decorator(dec: ast.expr) -> bool:
 _RUNTIME_SKIP_CALLS = {"skip", "xfail", "importorskip"}
 
 
+def _skip_call_name(stmt: ast.stmt) -> str | None:
+    """The trailing callee token of a bare or assigned call statement (``f(...)`` or
+    ``x = f(...)``), else ``None`` — lets the caller spot a runtime ``skip`` /
+    ``xfail`` / ``importorskip`` call by name (import-alias spellings still count)."""
+    call = None
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+        call = stmt.value
+    elif isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
+        call = stmt.value
+    if call is None:
+        return None
+    f = call.func
+    return f.attr if isinstance(f, ast.Attribute) else (
+        f.id if isinstance(f, ast.Name) else None)
+
+
+def _is_skip_raise(stmt: ast.stmt) -> bool:
+    """True for ``raise unittest.SkipTest`` (bare or called) / ``raise
+    pytest.skip.Exception`` — matched on the trailing token so alias spellings count."""
+    if not (isinstance(stmt, ast.Raise) and stmt.exc is not None):
+        return False
+    exc = stmt.exc
+    if isinstance(exc, ast.Call):
+        exc = exc.func
+    if isinstance(exc, ast.Attribute) and exc.attr == "Exception" \
+            and isinstance(exc.value, ast.Attribute) and exc.value.attr == "skip":
+        return True  # raise pytest.skip.Exception
+    nm = exc.attr if isinstance(exc, ast.Attribute) else (
+        exc.id if isinstance(exc, ast.Name) else None)
+    return nm == "SkipTest"
+
+
 def _is_runtime_skip_stmt(stmt: ast.stmt) -> bool:
     """True for a DIRECT body statement that UNCONDITIONALLY skips/xfails the test
     at runtime: a bare or assigned ``pytest.skip(...)`` / ``pytest.xfail(...)`` /
@@ -3727,34 +3759,22 @@ def _is_runtime_skip_stmt(stmt: ast.stmt) -> bool:
     Only DIRECT body statements are inspected, so a skip guarded by an ``if`` / ``for``
     / ``try`` (a conditional, genuinely-enforced test that runs for some inputs) does
     NOT trip this gate — that asymmetry is deliberate and load-bearing."""
-    call = None
-    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
-        call = stmt.value
-    elif isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
-        call = stmt.value
-    if call is not None:
-        f = call.func
-        nm = f.attr if isinstance(f, ast.Attribute) else (
-            f.id if isinstance(f, ast.Name) else None)
-        if nm in _RUNTIME_SKIP_CALLS:
-            return True
-    if isinstance(stmt, ast.Raise) and stmt.exc is not None:
-        exc = stmt.exc
-        if isinstance(exc, ast.Call):
-            exc = exc.func
-        if isinstance(exc, ast.Attribute) and exc.attr == "Exception" \
-                and isinstance(exc.value, ast.Attribute) and exc.value.attr == "skip":
-            return True  # raise pytest.skip.Exception
-        nm = exc.attr if isinstance(exc, ast.Attribute) else (
-            exc.id if isinstance(exc, ast.Name) else None)
-        if nm == "SkipTest":
-            return True
-    return False
+    return _skip_call_name(stmt) in _RUNTIME_SKIP_CALLS or _is_skip_raise(stmt)
 
 
 def _line_in_ranges(line: int, ranges: list[tuple[int, int]]) -> bool:
     """True when 1-based ``line`` falls within any ``(start, end)`` span."""
     return any(start <= line <= end for start, end in ranges)
+
+
+def _test_function_is_enforced(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    """True when a test function's assertions actually run — NOT suspended by an
+    xfail/skip/skipif decorator NOR by an unconditional runtime skip/xfail opening
+    its body (the two skip surfaces the never-fake-green floor must both close)."""
+    return not any(_is_unenforced_decorator(d) for d in node.decorator_list) \
+        and not any(_is_runtime_skip_stmt(s) for s in node.body)
 
 
 def _has_enforceable_contract(root: Path, test_files: list[str],
@@ -3795,8 +3815,7 @@ def _has_enforceable_contract(root: Path, test_files: list[str],
             if not name_re.search(seg):
                 continue
             saw_reference = True
-            if not any(_is_unenforced_decorator(d) for d in node.decorator_list) \
-                    and not any(_is_runtime_skip_stmt(s) for s in node.body):
+            if _test_function_is_enforced(node):
                 return True  # an enforced test names the stub — real contract
     # If no test referenced the stub at all, leave the decision to the caller
     # (no-pinned-tests is handled separately as a no-op refusal). Only when EVERY
