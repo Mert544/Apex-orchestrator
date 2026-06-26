@@ -80,14 +80,20 @@ class JsDocTarget:
     surfaces the typed ones, document-export-jsdoc ignores the field), the
     ``return_type`` text read VERBATIM off a TS return annotation (``None`` for
     plain JS / no annotation — the document-export-jsdoc honesty gate refuses
-    those, a name+param-only JSDoc restating the signature adds nothing), and the
-    byte ``insert_offset`` of the statement start (BEFORE any ``export`` keyword,
-    so the JSDoc splices in as leading trivia)."""
+    those, a name+param-only JSDoc restating the signature adds nothing), the
+    ``throws_types`` — the DISTINCT thrown constructor names of the body in source
+    order, read VERBATIM off each literal ``throw new <Identifier>(...)`` node, or
+    ``None`` when ANY throw is an unprovable shape (a variable / call / member-ctor /
+    re-throw); document-raises-jsdoc surfaces this as the ``@throws {Ctor}`` set and
+    the other JSDoc objectives ignore it (exactly as document-export-jsdoc ignores
+    ``param_types``), and the byte ``insert_offset`` of the statement start (BEFORE
+    any ``export`` keyword, so the JSDoc splices in as leading trivia)."""
 
     name: str
     params: tuple[str, ...]
     param_types: tuple[str | None, ...]
     return_type: str | None
+    throws_types: tuple[str, ...] | None
     insert_offset: int
 
 
@@ -208,7 +214,10 @@ def doc_targets(root: Path, rel: str) -> list[JsDocTarget]:
         return []
     return [JsDocTarget(name=d["name"], params=tuple(d["params"]),
                         param_types=tuple(d["paramTypes"]),
-                        return_type=d["returnType"], insert_offset=d["insertOffset"])
+                        return_type=d["returnType"],
+                        throws_types=(tuple(d["throwsTypes"])
+                                      if d["throwsTypes"] is not None else None),
+                        insert_offset=d["insertOffset"])
             for d in data]
 
 

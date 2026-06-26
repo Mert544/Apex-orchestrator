@@ -450,7 +450,18 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # document-export-jsdoc), refusing a name-only/untyped
                              # restatement. Appended, so the originals still lead and
                              # emit first.
-                             "the exported parameter types to document in jsdoc"],
+                             "the exported parameter types to document in jsdoc",
+                             # added: an EXPORTED JS/TS function/const-arrow whose
+                             # body throws a PROVEN constructor set (literal
+                             # `throw new <Identifier>(...)`) but with no leading
+                             # JSDoc — the document-raises-jsdoc objective lands a
+                             # JSDoc whose `@throws {Ctor}` lines name the distinct
+                             # thrown constructors read verbatim in source order (the
+                             # failure-contract sibling of document-export-jsdoc and
+                             # js-document-param-types), refusing a zero-throw or
+                             # unprovable-throw shape. Appended, so the originals still
+                             # lead and emit first.
+                             "the thrown error types to document in jsdoc"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
     "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown",
                         # added: the package's USAGE.md generated from its public

@@ -64,6 +64,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "document_signature": 0.68,      # a docstring with proven Returns: type
     "document_export_jsdoc": 0.68,   # the JS/TS sibling: a JSDoc with a proven @returns {T} (same tier as document_signature)
     "js_document_param_types": 0.68,  # the missing half of document_export_jsdoc: a JSDoc with @param {T} from declared param types (same tier)
+    "document_raises_jsdoc": 0.68,   # JSDoc @throws set from proven throw-new-Identifier (the failure-contract sibling of document_export_jsdoc / js_document_param_types)
     "generate_usage_doc": 0.66,      # a USAGE.md from the public API (oracle-checked)
     # --- TIER 2 — real structural improvement (behaviour-shape, not just bytes) ---
     "dedup_extract": 0.60,           # lift a duplicated block into a shared helper

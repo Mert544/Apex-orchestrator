@@ -504,10 +504,10 @@ def test_objective_registers_and_is_available():
 def test_objective_total_is_sixty_seven():
     from app.engine.objective_compiler import available_objectives
 
-    # 70 after add-dataclass-order (freeze-dataclass's orderable sibling)
+    # 71 after document-raises-jsdoc (the JSDoc @throws failure-contract sibling)
     # self-registered; this count pin is the tripwire each new objective round
     # bumps by one.
-    assert len(set(available_objectives())) == 70
+    assert len(set(available_objectives())) == 71
 
 
 def test_objective_spec_is_callable():
@@ -554,7 +554,7 @@ def test_parity_concrete_count_is_twenty_five():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 28  # rose from 27 with add-dataclass-order
+    assert len(buckets["CONCRETE"]) == 29  # rose from 28 with document-raises-jsdoc
 
 
 # --- PARITY ROW 3: soundness-strategy manifest ------------------------------

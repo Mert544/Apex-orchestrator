@@ -329,6 +329,23 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # "signature") — so its order is free.
     "the exported parameter types to document in jsdoc": "js-document-param-types",
 
+    # Undocumented EXPORTED JS/TS FAILURE CONTRACT: the third JSDoc-family fact,
+    # the sibling of document-export-jsdoc (``@returns``) and js-document-param-types
+    # (``@param {T}``). The document-raises-jsdoc objective LANDS a JSDoc whose
+    # ``@throws {Ctor}`` lines name the DISTINCT thrown constructors of the body,
+    # read VERBATIM off each literal ``throw new <Identifier>(...)`` node in source
+    # order; it inherits the same honesty gate and lands ONLY when at least one
+    # PROVABLE thrown constructor exists (a function that throws nothing, or throws
+    # an unprovable shape — a variable / call / member-ctor / re-throw — is refused,
+    # never a content-free ``@throws``). A JSDoc is leading trivia (zero runtime
+    # bytes), so it is behaviour-identical by construction, verified by the SAME
+    # in-driver re-parse — no jest/tsc run. Its phrasing is not a substring of any
+    # other key (nor any of them of it) — in particular it is distinct from "the
+    # exported signature to document in jsdoc" and "the exported parameter types to
+    # document in jsdoc" above ("thrown error types" vs "signature" vs "parameter
+    # types") — so its order is free.
+    "the thrown error types to document in jsdoc": "document-raises-jsdoc",
+
     # Defined-but-unexported public JS/TS function: the "signatures and types" lens
     # also names a top-level public function/const-arrow a clean-ESM module DEFINES
     # but never exports. The js-wire-exports objective LANDS exactly that — it

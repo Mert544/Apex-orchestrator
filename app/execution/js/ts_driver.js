@@ -34,12 +34,18 @@
 //                             once as a fillable stub.
 //   doc-targets <file>     -> JSON: every EXPORTED function/const-arrow in <file>
 //                             with NO leading JSDoc, as [{name, params,
-//                             paramTypes, returnType|null, insertOffset}] — the
-//                             facts the document-export-jsdoc (names + returnType)
-//                             and js-document-param-types (the verbatim per-param
-//                             `paramTypes`) objectives splice a minimal JSDoc from
-//                             (pure AST). `paramTypes` is parallel to `params` (one
-//                             verbatim type or null per param). Exit 2 on parse error.
+//                             paramTypes, returnType|null, throwsTypes|null,
+//                             insertOffset}] — the facts the document-export-jsdoc
+//                             (names + returnType), js-document-param-types (the
+//                             verbatim per-param `paramTypes`) and
+//                             document-raises-jsdoc (the `throwsTypes` set) objectives
+//                             splice a minimal JSDoc from (pure AST). `paramTypes` is
+//                             parallel to `params` (one verbatim type or null per
+//                             param). `throwsTypes` is the DISTINCT thrown constructor
+//                             names in source order — but ONLY when EVERY `throw` in
+//                             the body is a literal `new <Identifier>(...)`; any other
+//                             throw shape makes it null (the document-raises-jsdoc
+//                             refusal). Exit 2 on parse error.
 //   doc-verify <file>      -> JSON: {names:[...]} the sorted EXPORTED-name set of
 //                             <file>. The behaviour-identical oracle for a JSDoc
 //                             splice: a leading comment changes ZERO runtime bytes,
@@ -117,6 +123,43 @@ function paramTypes(node, sf) {
     types.push(p.type ? p.type.getText(sf).trim() : null);
   }
   return types;
+}
+
+// The DISTINCT thrown-constructor names of a function-like node's body, in source
+// order, or null when the throw set is not PROVABLE. The document-raises-jsdoc
+// fact: walk the body for every `ts.isThrowStatement` and require its expression be
+// a literal `new <Identifier>(...)` (a `ts.isNewExpression` whose `expression` is a
+// bare `ts.isIdentifier` — e.g. `throw new TypeError("bad")`). Collect each ctor's
+// `.text` in source order, de-duplicated (one `@throws {Ctor}` per distinct ctor).
+// Returns null the moment ANY throw is a shape we cannot read verbatim — a
+// `throw <variable>` / `throw fn()` / a member-expression ctor `new ns.Err()` / a
+// bare re-throw — so the objective REFUSES rather than claim an unprovable @throws
+// (the same null-on-unmodelled-shape discipline as `paramTypes`). A body with zero
+// throws yields [] (vacuously provable, empty) — the Python honesty gate then
+// refuses it (nothing to document), never an empty @throws block.
+function throwsTypes(node) {
+  const body = node.body;
+  if (!body || !ts.isBlock(body)) return [];
+  const seen = new Set();
+  const names = [];
+  let provable = true;
+  function visit(n) {
+    if (ts.isThrowStatement(n)) {
+      const expr = n.expression;
+      if (expr && ts.isNewExpression(expr) && ts.isIdentifier(expr.expression)) {
+        const name = expr.expression.text;
+        if (!seen.has(name)) {
+          seen.add(name);
+          names.push(name);
+        }
+      } else {
+        provable = false;  // a throw whose ctor we cannot read verbatim -> refuse
+      }
+    }
+    ts.forEachChild(n, visit);
+  }
+  visit(body);
+  return provable ? names : null;
 }
 
 // A function-like declaration is a "throw-stub" iff its body is EXACTLY one
@@ -348,13 +391,18 @@ function hasLeadingJSDoc(node, sf) {
 
 // One documentable target: an EXPORTED, JSDoc-less function/const-arrow with its
 // declared param names, the per-param DECLARED type texts (verbatim, or null per
-// param), its DECLARED return-type text (verbatim, or null), and the byte offset
-// of its statement start (BEFORE the `export` keyword, so the JSDoc lands as
-// leading trivia). `params` reuses `paramNames`, so a node with a non-identifier
-// param (destructuring/rest/default) yields null and is SKIPPED — we never invent
-// a `@param` name we cannot read off the AST. `paramTypes` runs the same gate and
-// so is the SAME length as `params` (one verbatim type or null per param) — the
-// js-document-param-types objective reads it; document-export-jsdoc ignores it.
+// param), its DECLARED return-type text (verbatim, or null), the DISTINCT thrown
+// constructor names of its body in source order (verbatim, or null when an
+// unprovable throw shape is present), and the byte offset of its statement start
+// (BEFORE the `export` keyword, so the JSDoc lands as leading trivia). `params`
+// reuses `paramNames`, so a node with a non-identifier param (destructuring/rest/
+// default) yields null and is SKIPPED — we never invent a `@param` name we cannot
+// read off the AST. `paramTypes` runs the same gate and so is the SAME length as
+// `params` (one verbatim type or null per param) — the js-document-param-types
+// objective reads it; document-export-jsdoc ignores it. `throwsTypes` is the
+// document-raises-jsdoc fact (the verbatim `@throws {Ctor}` set, or null = refuse);
+// the other JSDoc objectives ignore it, exactly as document-export-jsdoc ignores
+// `paramTypes`.
 function docTargetFor(name, fnNode, stmtNode, sf) {
   if (!isExported(stmtNode) || hasLeadingJSDoc(stmtNode, sf)) return null;
   const params = paramNames(fnNode);
@@ -364,6 +412,7 @@ function docTargetFor(name, fnNode, stmtNode, sf) {
     params: params,
     paramTypes: paramTypes(fnNode, sf),
     returnType: fnNode.type ? fnNode.type.getText(sf).trim() : null,
+    throwsTypes: throwsTypes(fnNode),
     insertOffset: stmtNode.getStart(sf),
   };
 }
