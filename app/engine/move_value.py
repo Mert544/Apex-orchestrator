@@ -70,6 +70,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "pin_return_type": 0.66,         # one Returns: <T> line spliced into an EXISTING docstring from the proven return oracle (a doc-surface line, not a minted docstring — generate_usage_doc's tier, below the docstring-MINTING document_signature/document_raises)
     "generate_usage_doc": 0.66,      # a USAGE.md from the public API (oracle-checked)
     "harden": 0.65,                  # land a real security fix per finding — Tier-1 rewrites the vulnerability away (eval/os.system/yaml/bare-except/hashlib-new), Tier-0 annotates a reviewable # SECURITY comment where no safe auto-rewrite exists (pickle/sql/tempfile/popen/tls/zip-slip/weak-hash)
+    "raise_from": 0.64,              # chain a re-raised exception to its cause (raise X(...) from err — the B904 fix): a real but small behaviour-preserving traceback-hygiene fix, below the doc-surface cluster
     # --- TIER 2 — real structural improvement (behaviour-shape, not just bytes) ---
     "dedup_extract": 0.60,           # lift a duplicated block into a shared helper
     "dedup_total_return": 0.60,      # lift an always-returning duplicate block

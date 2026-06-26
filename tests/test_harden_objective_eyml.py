@@ -393,13 +393,13 @@ def test_harden_synonym_repointed_from_modernize_to_harden():
 
 # --- the count pins ----------------------------------------------------------
 
-def test_counts_are_thirty_five_concrete_of_seventy_seven():
+def test_counts_are_thirty_six_concrete_of_seventy_eight():
     from app.engine.north_star_audit import classify_objectives
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 77  # 77 after harden (35th concrete)
-    assert len(classify_objectives(names)["CONCRETE"]) == 35
+    assert len(names) == 78  # 78 after raise-from (36th concrete)
+    assert len(classify_objectives(names)["CONCRETE"]) == 36
 
 
 # --- both audits still PASS --------------------------------------------------

@@ -510,11 +510,11 @@ def test_objective_spec_is_callable_and_flagged():
     assert spec.scope_verify is False  # runtime-noop modifier add; no red-baseline veto
 
 
-def test_objective_total_is_seventy_seven():
+def test_objective_total_is_seventy_eight():
     from app.engine.objective_compiler import available_objectives
 
-    # 77 after harden (the security engine wired as a develop objective).
-    assert len(set(available_objectives())) == 77
+    # 78 after raise-from (the B904 transform wired as a develop objective).
+    assert len(set(available_objectives())) == 78
 
 
 # --- PARITY ROW 1: move_value tier (matches add-final's runtime-noop tier) ----
@@ -542,12 +542,12 @@ def test_parity_manifest_classifies_concrete():
     assert manifest_subset_of_registry() == []  # no stale manifest name
 
 
-def test_parity_concrete_count_is_thirty_five():
+def test_parity_concrete_count_is_thirty_six():
     from app.engine.north_star_audit import classify_objectives
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 35  # rose from 34 with harden
+    assert len(buckets["CONCRETE"]) == 36  # rose from 35 with raise-from
 
 
 # --- PARITY ROW 3: soundness-strategy manifest --------------------------------

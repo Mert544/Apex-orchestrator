@@ -517,7 +517,16 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                           # Python sibling of document-raises-jsdoc), refusing a
                           # zero-raise or unprovable-raise shape. Appended, so the
                           # originals still lead and emit first.
-                          "the raised exceptions to document"],
+                          "the raised exceptions to document",
+                          # added: a ``raise X(...)`` inside an ``except E as err:``
+                          # handler with no ``from`` — which discards the original
+                          # traceback (B904). The raise-from objective appends
+                          # ``from err`` so the re-raised exception is chained to its
+                          # cause (behaviour-preserving: the same exception is raised,
+                          # only __cause__ changes), refusing when the handler has no
+                          # ``as`` binding to chain from. Appended last, so the
+                          # originals still lead and emit first.
+                          "the unchained re-raise to chain from its cause"],
     "partial-failure behavior": ["what completed", "what rolled back", "how callers detect it"],
     "retry guidance": ["safe-to-retry conditions", "backoff recommendation", "idempotency requirement"],
     # integrate ladder

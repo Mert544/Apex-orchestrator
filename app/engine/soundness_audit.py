@@ -144,6 +144,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "seal-hashable-eq": "runtime-additive(restored-__hash__)+own-body-eq-present+no-__hash__-defined+canonical-over-proven-fields+static-refusal",
     "add-dataclass-order": "runtime-additive(generated-order-ops)+stdlib-dataclass-provenance+no-existing-comparison-dunder+static-refusal",
     "harden": "suite-catches-runtime+security-rewrite(tier1)+behavior-identical-annotation(tier0)+engine-decline-on-unsafe",
+    "raise-from": "behavior-preserving-traceback-chain-only+raise-from-except-binding-verbatim+refuse-when-no-binding",
     # --- TIDY: behavior-preserving idiom rewrites ---------------------------
     "modernize": "behavior-preserving-idiom",
     "simplify-bool-return": "behavior-preserving-idiom",

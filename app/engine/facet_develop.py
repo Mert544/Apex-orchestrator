@@ -605,6 +605,21 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # routed through the same suite-gated, auto-rollback engine. Its phrasing is not
     # a substring of any other key (nor any of them of it), so its order is free.
     "the security vulnerability to harden": "harden",
+
+    # An unchained re-raise inside an except block: the "raised exceptions" lens's
+    # exception-chaining sub-aspect names a ``raise X(...)`` raised inside an
+    # ``except E as err:`` handler WITHOUT ``from`` — which discards the original
+    # traceback (flake8 B904). The raise-from objective LANDS exactly that fix — it
+    # appends ``from err`` so the re-raised exception is chained to its cause,
+    # restoring the traceback; the SAME exception ``X`` is still raised with the same
+    # control flow (only ``__cause__`` changes), so it is behaviour-preserving by
+    # construction. It REFUSES when the handler has no ``as`` binding to chain from
+    # (inventing one is a bigger edit than this promises), no fixable raise, or a
+    # multi-line raise. Routed through the same suite-gated, auto-rollback engine. Its
+    # phrasing is not a substring of any other key (nor any of them of it) — distinct
+    # in particular from "the raised exceptions to document" ("unchained re-raise …
+    # from its cause" vs "raised exceptions to document") — so its order is free.
+    "the unchained re-raise to chain from its cause": "raise-from",
 }
 
 
