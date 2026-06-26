@@ -36,6 +36,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from app.execution.js.js_gate import run_jest_gate
 from app.execution.js.js_tool import JsStub, JsWitness, fill_body, mine_witnesses
 from app.skills.execution.run_tests import RunTestsSkill
 
@@ -113,12 +114,17 @@ def candidate_bodies(stub: JsStub,
 def _gate_green(copy_root: Path, file_rel: str, name: str, body: str,
                 runner: RunTestsSkill) -> bool:
     """Fill ``body`` into the stub ``name`` in the COPY and return whether the
-    copy's jest suite goes green. A driver refusal (the fill did not apply) or a
-    no-suite copy is read as NOT green — never a fake-green."""
+    copy's jest suite goes green.
+
+    The suite run is FORCED to jest (:func:`app.execution.js.js_gate.run_jest_gate`
+    passes the jest command explicitly so :meth:`RunTestsSkill._detect_commands`'
+    pytest-first auto-detection can never substitute pytest on a mixed repo) AND
+    must show jest actually executed >=1 passing test. A driver refusal (the fill
+    did not apply), a no-suite copy, or a ``--passWithNoTests``/no-tests-found run is
+    read as NOT green — never a fake-green."""
     if not fill_body(copy_root, file_rel, name, body):
         return False
-    summary = runner.run(str(copy_root))
-    return bool(summary.commands) and summary.ok
+    return run_jest_gate(copy_root, runner)
 
 
 def synthesize_js_body(root: Path, file_rel: str, stub: JsStub,
