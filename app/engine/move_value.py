@@ -69,6 +69,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "dedup_parameterized": 0.60,     # lift near-duplicate variants into one helper
     "extract": 0.55,                 # extract a helper from a long function
     "dataclassify": 0.50,            # boilerplate __init__ -> @dataclass
+    "synthesize_dunders": 0.50,      # canonical __repr__/__eq__/__hash__ over a class's proven field set (dataclassify's sibling)
     "inline": 0.45,                  # fold a single-use helper back into its caller
     "extract_guard_clause": 0.45,    # flatten nesting into early-exit guards
     "guard_clause": 0.45,            # a trailing-guard-after-setup rewrite

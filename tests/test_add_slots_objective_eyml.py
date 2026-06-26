@@ -501,12 +501,12 @@ def test_objective_registers_and_is_available():
     assert "add-slots" in set(available_objectives())
 
 
-def test_objective_total_is_sixty_five():
+def test_objective_total_is_sixty_six():
     from app.engine.objective_compiler import available_objectives
 
-    # 65 after js-wire-exports (the 3rd JS/TS concrete objective) self-registered;
+    # 66 after synthesize-dunders (dataclassify's sibling) self-registered;
     # this count pin is the tripwire each new objective round bumps by one.
-    assert len(set(available_objectives())) == 65
+    assert len(set(available_objectives())) == 66
 
 
 def test_objective_spec_is_callable():
@@ -548,12 +548,12 @@ def test_parity_manifest_classifies_concrete():
     assert manifest_subset_of_registry() == []  # no stale manifest name
 
 
-def test_parity_concrete_count_is_twenty_three():
+def test_parity_concrete_count_is_twenty_four():
     from app.engine.north_star_audit import classify_objectives
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 23  # rose from 22 with js-wire-exports
+    assert len(buckets["CONCRETE"]) == 24  # rose from 23 with synthesize-dunders
 
 
 # --- PARITY ROW 3: soundness-strategy manifest ------------------------------
@@ -606,10 +606,13 @@ def test_parity_facet_phrase_lives_in_ladder_with_originals_leading():
 
     ladder = _FACET_SUBASPECTS["unreachable or no-op statements"]
     assert _PHRASE in ladder
-    assert ladder[-1] == _PHRASE  # appended LAST
+    # add-slots was the tail until synthesize-dunders (its sibling) was appended after
+    # it; the originals still lead and emit first, which is what this pin guards.
     assert ladder[0] == "redundant pass statement"  # originals still lead
     # the freeze-dataclass sibling stays directly before it.
     assert ladder[ladder.index(_PHRASE) - 1] == "a never-mutated dataclass to freeze"
+    # synthesize-dunders' phrase now follows add-slots' directly (appended last).
+    assert ladder[ladder.index(_PHRASE) + 1] == "the repr and eq to synthesize from fields"
 
 
 # --- the plan: a closed-attribute class gets __slots__ -----------------------

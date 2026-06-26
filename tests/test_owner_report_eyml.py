@@ -20,7 +20,11 @@ Plus determinism: ``owner_report`` is a pure function of repo state.
 from __future__ import annotations
 
 import argparse
+import copy
+import functools
 import json
+
+import pytest
 
 from app.engine.soundness_audit import repo_root
 from app.reporting.owner_report import owner_report, render_owner_report_markdown
@@ -30,9 +34,24 @@ from app.reporting.owner_report import owner_report, render_owner_report_markdow
 _CLOCK_MARKERS = ("UTC", "GMT", "T00:", "T12:", ":00:", "AM", "PM", "Z\n")
 
 
-def _apex_report() -> dict:
-    """The composed owner report for Apex's OWN tree (the audits' real subject)."""
+@functools.lru_cache(maxsize=1)
+def _composed_apex_report() -> dict:
+    """The composed owner report for Apex's OWN tree, computed ONCE and shared.
+
+    ``owner_report`` re-runs the real north-star / soundness / grade audits over the
+    whole repo (~60-75s each); the read-only tests below all assert against the SAME
+    composition, so it is computed a single time per process rather than once per
+    test. (Computing it per-test made this file re-audit the tree ~8x and tipped the
+    determinism PAIR over the 120s per-test timeout as the repo grew.) The
+    determinism test still does its OWN independent recomputation, so sharing this
+    one cannot mask a non-deterministic report."""
     return owner_report(str(repo_root()))
+
+
+def _apex_report() -> dict:
+    """A private COPY of the shared composition (so no read-only test can mutate the
+    cache the others — and the determinism check — depend on)."""
+    return copy.deepcopy(_composed_apex_report())
 
 
 # --- (1) Composition of the REAL audit verdicts ------------------------------
@@ -41,18 +60,18 @@ def test_owner_report_composes_real_apex_verdicts():
     report = _apex_report()
     # Headline: every underlying audit passes on Apex today, so the owner sees YES.
     assert report["trustworthy"] is True
-    # North Star: the real PASS verdict, no drift, the live 23/65 concrete split.
+    # North Star: the real PASS verdict, no drift, the live 24/66 concrete split.
     ns = report["north_star"]
     assert ns["verdict"] == "PASS"
     assert ns["drift"] is False
-    assert ns["total_objectives"] == 65
-    assert ns["concrete_count"] == 23
+    assert ns["total_objectives"] == 66
+    assert ns["concrete_count"] == 24
     assert 0.0 <= ns["ratio"] <= 1.0
-    # Soundness: PASS with all 65 objectives declaring a proof-strategy, plus the
+    # Soundness: PASS with all 66 objectives declaring a proof-strategy, plus the
     # single-gated-writer and scope_verify allow-list booleans.
     sound = report["soundness"]
     assert sound["verdict"] == "PASS"
-    assert sound["strategies"] == "65/65"
+    assert sound["strategies"] == "66/66"
     assert sound["single_writer"] is True
     assert sound["scope_verify_ok"] is True
     # Grade: the real letter + score.
@@ -61,7 +80,7 @@ def test_owner_report_composes_real_apex_verdicts():
 
 def test_owner_report_capabilities_summary():
     cap = _apex_report()["capabilities"]
-    assert cap["concrete_count"] == 23
+    assert cap["concrete_count"] == 24
     # Apex lands both Python and JS/TS concrete objectives, Python listed first.
     assert cap["languages"] == ["Python", "JavaScript/TypeScript"]
     # A few real, plain-language example abilities (never empty on Apex's manifest).
@@ -138,15 +157,15 @@ def _crafted_report(*, drift: bool, ns_verdict: str, sound_verdict: str) -> dict
         "trustworthy": trustworthy,
         "north_star": {
             "verdict": ns_verdict, "drift": drift,
-            "concrete_count": 23, "total_objectives": 65, "ratio": 0.35,
+            "concrete_count": 24, "total_objectives": 66, "ratio": 0.35,
         },
         "soundness": {
-            "verdict": sound_verdict, "strategies": "65/65",
+            "verdict": sound_verdict, "strategies": "66/66",
             "single_writer": True, "scope_verify_ok": True,
         },
         "grade": {"letter": "A+", "score": 99},
         "capabilities": {
-            "concrete_count": 23,
+            "concrete_count": 24,
             "languages": ["Python", "JavaScript/TypeScript"],
             "abilities": ["filling in unfinished functions"],
         },
@@ -176,7 +195,7 @@ def test_render_not_trustworthy_on_soundness_fail_names_reason():
     assert "trustworthy?  ->  NO" in md
     assert "honest-verification check did not pass" in md
     # The honesty line itself reflects the failure rather than a green claim.
-    assert "[FAIL, 65/65]" in md
+    assert "[FAIL, 66/66]" in md
 
 
 def test_crafted_trustworthy_true_renders_yes():
@@ -190,8 +209,15 @@ def test_crafted_trustworthy_true_renders_yes():
 
 # --- (5) Determinism + edge/empty rendering ----------------------------------
 
+@pytest.mark.timeout(300)
 def test_owner_report_is_deterministic():
-    assert _apex_report() == _apex_report()
+    # Two INDEPENDENT compositions of the real-tree report must be byte-equal:
+    # owner_report is a pure function of repo state (sorted outputs; no clock,
+    # random, or hash-order). A genuinely FRESH audit here, compared against the
+    # suite's shared composition (computed independently) — NOT the cached object
+    # compared to itself. The marker gives this heaviest test headroom for up to two
+    # real-tree audits, while the read-only tests reuse the single shared one.
+    assert owner_report(str(repo_root())) == _composed_apex_report()
 
 
 def test_render_handles_empty_capabilities():

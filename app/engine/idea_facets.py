@@ -366,7 +366,16 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                                         # set is a superset of every stored attribute.
                                         # Appended last, so the originals still lead and
                                         # emit first.
-                                        "the closed-attribute class to give slots"],
+                                        "the closed-attribute class to give slots",
+                                        # added: a non-@dataclass plumbing class MISSING
+                                        # __repr__/__eq__ — the synthesize-dunders objective
+                                        # splices the canonical __repr__/__eq__/__hash__
+                                        # @dataclass itself emits over the proven pure-copy
+                                        # field set (dataclassify's sibling for classes
+                                        # dataclassify must refuse), gated by an
+                                        # inherited-__eq__ refusal. Appended last, so the
+                                        # originals still lead and emit first.
+                                        "the repr and eq to synthesize from fields"],
     # document ladder
     "signatures and types": ["parameter meanings", "return type and None", "raised exceptions list",
                              # added: the package's public re-export surface — the

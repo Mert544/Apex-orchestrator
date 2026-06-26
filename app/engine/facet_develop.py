@@ -372,6 +372,19 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # relative order is free.
     "the closed-attribute class to give slots": "add-slots",
 
+    # A non-@dataclass plumbing class MISSING __repr__/__eq__: the SAME
+    # "unreachable or no-op statements" simplify sub-aspect also names a regular class
+    # whose __init__ is pure ``self.x = x`` copies but that — because it has a base, an
+    # extra method, or a real __init__ body — dataclassify must REFUSE. synthesize-dunders
+    # LANDS exactly the value semantics dataclassify would have given it: the canonical
+    # TOTAL __repr__/__eq__/__hash__ ``@dataclass`` itself emits, over the PROVEN
+    # pure-copy field set, gated by an inherited-__eq__ refusal (no resolvable base may
+    # define __eq__) + suite + auto-rollback. The sibling of dataclassify; its phrasing
+    # ("the repr and eq to synthesize from fields") shares no whole-key substring with the
+    # dataclassify / freeze / slots keys above (nor any of them with it), so the relative
+    # order is free.
+    "the repr and eq to synthesize from fields": "synthesize-dunders",
+
     # A leaf class proven never subclassed anywhere: add-final seals it with
     # @typing.final (a type-checker-only no-op — behaviour-preserving; the false-final
     # risk is closed STRUCTURALLY by the whole-project subclass scan, not the suite).

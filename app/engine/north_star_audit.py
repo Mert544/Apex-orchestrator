@@ -90,6 +90,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "seal-final-method",
         "enforce-enum-unique",
         "complete-match-exhaustiveness",
+        "synthesize-dunders",
         "wire-module-exports",
         # NOTE: "fix-docstrings" was REMOVED here — it is a standalone CLI
         # subcommand (`apex fix-docstrings`), NOT a registered develop objective,

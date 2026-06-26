@@ -132,6 +132,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "js-tdd-implement": "js-failing-test-RED→GREEN-or-refuse+byte-rollback",
     "enforce-enum-unique": "runtime-noop(@unique)+static-value-collision-refusal",
     "complete-match-exhaustiveness": "runtime-additive(unreached-arm)+static-closed-set-refusal",
+    "synthesize-dunders": "suite-catches-runtime+canonical-total-dunders-over-proven-fields+inherited-eq-refusal",
     # --- TIDY: behavior-preserving idiom rewrites ---------------------------
     "modernize": "behavior-preserving-idiom",
     "simplify-bool-return": "behavior-preserving-idiom",
