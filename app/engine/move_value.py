@@ -60,6 +60,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "strengthen_tests": 0.88,        # a mutant-killing assertion the suite was missing
     "wire_module_exports": 0.80,     # declare a leaf module's explicit __all__
     "infer_type_hints": 0.72,        # PROVABLE return-type hints (never a guess)
+    "annotate_self_returns": 0.70,   # PROVABLE -> "<Class>" self/cls return-type forward-ref (a return-type the literal oracle refuses; infer_type_hints' tier)
     "pin_doctest": 0.70,             # turn worked >>> examples into a suite-enforced test
     "document_signature": 0.68,      # a docstring with proven Returns: type
     "document_raises": 0.68,         # a docstring Raises: set from proven literal raise <Name>(...) (Python sibling of document_raises_jsdoc)

@@ -120,6 +120,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "dataclassify": "suite-catches-runtime+behavior-preserving-rewrite",
     "add-from-future-annotations": "behavior-identical-future-import",
     "infer-type-hints": "behavior-identical-annotation-only",
+    "annotate-self-returns": "behavior-identical-annotation-only+self/cls-class-bound-forward-ref",
     "document-signature": "behavior-identical-docstring-only",
     "document-raises": "behavior-identical-docstring-only+raises-from-literal-raise-Name-verbatim+escape-only(stop-at-nested-scope,try-with-except-refuses)",
     "pin-return-type": "behavior-identical-docstring-only+returns-from-proven-return-oracle",

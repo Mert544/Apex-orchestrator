@@ -482,13 +482,13 @@ def test_facet_phrase_lives_in_the_noop_statements_ladder():
         "the repr and eq to synthesize from fields") < ladder.index(_PHRASE)
 
 
-def test_counts_are_thirty_concrete_of_seventy_two():
+def test_counts_are_thirty_four_concrete_of_seventy_six():
     from app.engine.north_star_audit import classify_objectives
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 75  # 75 after pin-return-type (33rd concrete) registered
-    assert len(classify_objectives(names)["CONCRETE"]) == 33
+    assert len(names) == 76  # 76 after annotate-self-returns (34th concrete) registered
+    assert len(classify_objectives(names)["CONCRETE"]) == 34
 
 
 def test_north_star_and_soundness_audits_pass():

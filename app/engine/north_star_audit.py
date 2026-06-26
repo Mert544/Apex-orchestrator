@@ -77,6 +77,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "wire-exports",
         "js-wire-exports",
         "infer-type-hints",
+        "annotate-self-returns",
         "dataclassify",
         "freeze-dataclass",
         "add-slots",

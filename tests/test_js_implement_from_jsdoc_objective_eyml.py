@@ -515,13 +515,13 @@ def test_soundness_strategy_declared_and_scope_verify_allowed():
     assert strategy_subset_of_registry() == []  # no stale strategy entry
 
 
-def test_counts_are_twenty_five_concrete_of_sixty_seven():
+def test_counts_are_thirty_four_concrete_of_seventy_six():
     from app.engine.north_star_audit import classify_objectives
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 75  # 75 after pin-return-type (33rd concrete) registered
-    assert len(classify_objectives(names)["CONCRETE"]) == 33
+    assert len(names) == 76  # 76 after annotate-self-returns (34th concrete) registered
+    assert len(classify_objectives(names)["CONCRETE"]) == 34
 
 
 def test_north_star_and_soundness_audits_pass():

@@ -48,6 +48,20 @@ What counts as PROVABLE (the only things ever annotated):
     (name/call/attribute/subscript), a ``yield`` generator, or an existing
     ``-> T``.
 
+  - **Self / cls return type** — the one return shape the literal oracle above
+    deliberately refuses (a bare ``Name``/``Call`` is "not statically certain"),
+    yet which IS provable from the LANGUAGE CONTRACT: a method whose EVERY
+    value-return is ``self`` returns an instance of its OWN class (subclass
+    is-a holds), and a ``@classmethod`` whose every value-return is ``cls(...)``
+    constructs an instance of the class/subclass — both a SOUND upper bound. So
+    such a method earns ``-> "<EnclosingClass>"``, a forward-ref STRING literal
+    (NOT ``typing.Self``): a string annotation is never evaluated at runtime,
+    needs NO import and NO version gate, and changes no runtime value — the same
+    behaviour-identical landing this module promises. See
+    :func:`_infer_self_return_type` for the full refusal set (mixed returns,
+    ``cls(...)`` outside ``@classmethod``, a reassigned ``self``/``cls``, a
+    ``staticmethod``/``property``, no single enclosing class, …).
+
 A parameter type from an UNCONDITIONAL runtime ``isinstance`` guard at entry:
 when ``assert isinstance(x, str)`` or ``if not isinstance(x, int): raise``
 opens a function body, every path that continues past it has PROVEN ``x`` is an
@@ -93,7 +107,12 @@ from app.execution.cross_file_rename import RenamePlan, plan_source_rewrite
 
 from ..result import SemanticPatchResult
 
-__all__ = ["apply", "plan_type_annotations", "infer_annotations"]
+__all__ = [
+    "apply",
+    "plan_type_annotations",
+    "plan_annotate_self_returns",
+    "infer_annotations",
+]
 
 
 def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
@@ -943,9 +962,7 @@ def _join_all_types(types: list[str]) -> str | None:
 # present. EVERYTHING ELSE — an unknown user decorator, ``@contextmanager``, a
 # ``@functools.wraps``-built wrapper, ``str``-casting wrappers like the
 # denetçi's ``@make_str`` — may REPLACE the return with a value of another type,
-# so a body-inferred ``-> T`` would be a verified LIE. Matched on the decorator's
-# LAST identifier only (``functools.lru_cache`` → ``lru_cache``), covering bare
-# ``Name``/``Attribute`` and the ``Call`` forms (``@lru_cache(maxsize=…)``).
+# so a body-inferred ``-> T`` would be a verified LIE.
 #   - ``property`` / ``cached_property``: the descriptor returns the getter's own
 #     value unchanged (``cached_property`` memoises identity, not type).
 #   - ``staticmethod`` / ``classmethod``: rebind ``self``/``cls`` only; the
@@ -956,8 +973,25 @@ def _join_all_types(types: list[str]) -> str | None:
 #     a return (it is applied to the inner wrapper, whose body we read directly).
 #   - ``abstractmethod`` / ``final`` / ``override``: pure typing/ABC markers — no
 #     runtime call interposition at all.
-# Source modules accepted via the last-name match: ``functools.*``, ``typing.*``,
-# ``abc.*`` as well as the bare re-exported names.
+#
+# NAME-COLLISION TIGHTENING (denetçi a4f889fe): a LAST-NAME-only match re-opened
+# the lie when a user SHADOWS a trusted name with a return-TRANSFORMING callable
+# — a local ``def property(fn): return str(fn())`` then ``@property``, an
+# ``import wrap as lru_cache`` then ``@lru_cache``, or a dotted ``@x.property``
+# whose ``x`` is some object. Each matches the bare/last name yet does NOT denote
+# the trusted builtin/stdlib member, so the body-inferred type would again be a
+# verified LIE. The trust rule is therefore tightened to a FORM check
+# (:func:`_decorator_is_type_transparent`), refuse-only (it can only narrow what
+# was trusted, never widen — so no honest landing breaks):
+#   - a BARE ``ast.Name`` allow-list member (``@property``, ``@lru_cache``) is
+#     trusted ONLY when that name is NOT bound at MODULE top level (a ``def`` /
+#     ``class`` / assignment / ``import ... as`` creating it = shadowed → refuse);
+#   - a DOTTED ``ast.Attribute`` allow-list member is trusted ONLY when its ROOT
+#     name is literally ``functools`` / ``typing`` / ``abc``
+#     (:data:`_TRANSPARENT_DECORATOR_ROOTS`) — so ``@functools.lru_cache`` and
+#     ``@abc.abstractmethod`` stay trusted while ``@x.property`` / ``@a.b.cache``
+#     refuse;
+#   - the ``Call`` forms (``@lru_cache(maxsize=…)``) unwrap to the same checks.
 _TYPE_TRANSPARENT_DECORATORS: frozenset[str] = frozenset({
     "property",
     "cached_property",
@@ -969,6 +1003,17 @@ _TYPE_TRANSPARENT_DECORATORS: frozenset[str] = frozenset({
     "abstractmethod",
     "final",
     "override",
+})
+
+
+# The ONLY dotted ROOT names a trusted decorator member may resolve through. A
+# dotted decorator whose root is anything else (``@x.property``, ``@a.b.cache``)
+# denotes an attribute of some user object, NOT the stdlib member, so it is
+# refused. ``cached_property``/``cache``/``lru_cache``/``wraps`` live in
+# ``functools``; ``final``/``override`` in ``typing``; ``abstractmethod`` in
+# ``abc`` (``property``/``staticmethod``/``classmethod`` are builtins, used bare).
+_TRANSPARENT_DECORATOR_ROOTS: frozenset[str] = frozenset({
+    "functools", "typing", "abc",
 })
 
 
@@ -991,30 +1036,90 @@ def _decorator_last_name(node: ast.expr) -> str | None:
     return None
 
 
+def _decorator_root_name(node: ast.expr) -> str | None:
+    """The LEFTMOST identifier of a DOTTED decorator (``@functools.lru_cache`` →
+    ``"functools"``, ``@a.b.cache`` → ``"a"``), or ``None`` when the decorator is
+    not a dotted ``ast.Attribute`` reference.
+
+    Unwraps a ``Call`` first, then — only for an ``ast.Attribute`` — walks the
+    ``.value`` chain to its base ``ast.Name``. A bare ``Name`` decorator
+    (``@property``) is NOT dotted, so it yields ``None`` here (the caller routes a
+    bare name through the module-shadow check instead)."""
+    if isinstance(node, ast.Call):
+        node = node.func
+    if not isinstance(node, ast.Attribute):
+        return None
+    cur: ast.expr = node.value
+    while isinstance(cur, ast.Attribute):
+        cur = cur.value
+    return cur.id if isinstance(cur, ast.Name) else None
+
+
+def _decorator_is_type_transparent(
+    node: ast.expr, module_bound_names: frozenset[str]
+) -> bool:
+    """True when ONE decorator is a trusted return-preserving form (see the
+    :data:`_TYPE_TRANSPARENT_DECORATORS` block) under the name-collision
+    tightening, else ``False`` (refuse).
+
+    The last identifier must be in the allow-list AND the FORM must denote the
+    real builtin/stdlib member, not a same-named user shadow:
+      - a BARE ``ast.Name`` (``@property``/``@lru_cache``, possibly ``Call``-wrapped)
+        is trusted ONLY when its name is NOT in ``module_bound_names`` — a module
+        top-level ``def``/``class``/assignment/``import ... as`` that creates the
+        name has SHADOWED the builtin/import, so the decorator may transform the
+        return ⇒ refuse;
+      - a DOTTED ``ast.Attribute`` is trusted ONLY when its ROOT name is one of
+        :data:`_TRANSPARENT_DECORATOR_ROOTS` (``functools``/``typing``/``abc``) —
+        ``@x.property`` / ``@a.b.cache`` resolve through a user object, not the
+        stdlib, ⇒ refuse;
+      - any other shape (a ``Subscript``, a non-reference ``Call``) has no
+        allow-listed name ⇒ refuse."""
+    last = _decorator_last_name(node)
+    if last not in _TYPE_TRANSPARENT_DECORATORS:
+        return False
+    root = _decorator_root_name(node)
+    if root is not None:
+        # Dotted form: trusted only through a known stdlib root.
+        return root in _TRANSPARENT_DECORATOR_ROOTS
+    # Bare-name form: trusted only when NOT shadowed at module scope.
+    return last not in module_bound_names
+
+
 def _has_only_type_transparent_decorators(
     fn: ast.FunctionDef | ast.AsyncFunctionDef,
+    module_bound_names: frozenset[str],
 ) -> bool:
-    """True when EVERY decorator on ``fn`` is known not to transform its return
-    value (in :data:`_TYPE_TRANSPARENT_DECORATORS`), so a body-inferred return type
-    stays sound. An undecorated function is trivially transparent (``all`` over an
-    empty list). A single decorator whose last identifier is unknown — an arbitrary
-    user wrapper that may cast/replace the return — makes this ``False`` (refuse)."""
+    """True when EVERY decorator on ``fn`` is a trusted return-preserving form
+    (:func:`_decorator_is_type_transparent`), so a body-inferred return type stays
+    sound. An undecorated function is trivially transparent (``all`` over an empty
+    list). A single decorator that is an arbitrary user wrapper — or a same-named
+    SHADOW of a trusted name (a local ``def property`` / an ``import ... as
+    lru_cache`` / a dotted ``@x.property``) — makes this ``False`` (refuse)."""
     return all(
-        _decorator_last_name(dec) in _TYPE_TRANSPARENT_DECORATORS
+        _decorator_is_type_transparent(dec, module_bound_names)
         for dec in fn.decorator_list
     )
 
 
-def _infer_return_type(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+def _infer_return_type(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+    class_name: str | None = None,
+    module_bound_names: frozenset[str] = frozenset(),
+) -> str | None:
     """The provable return type for ``fn``, or ``None`` if not provable.
 
     - A decorator that may TRANSFORM the return value (anything outside the
       type-transparent allow-list :data:`_TYPE_TRANSPARENT_DECORATORS` — an
-      unknown user wrapper, ``@contextmanager``, a ``str``-casting wrapper) makes
-      the body's return type unsound, so the function is refused. Only provably
-      return-preserving decorators (``property``/``staticmethod``/``classmethod``/
-      ``cached_property``/``cache``/``lru_cache``/``wraps``/``abstractmethod``/
-      ``final``/``override``, bare or dotted) are inferred through.
+      unknown user wrapper, ``@contextmanager``, a ``str``-casting wrapper, or a
+      same-named SHADOW of a trusted name) makes the body's return type unsound,
+      so the function is refused. Only provably return-preserving decorators
+      (``property``/``staticmethod``/``classmethod``/``cached_property``/``cache``/
+      ``lru_cache``/``wraps``/``abstractmethod``/``final``/``override``) are
+      inferred through, and only in the trusted FORM (a bare name not shadowed at
+      module scope, or a dotted ``functools``/``typing``/``abc`` member) —
+      :func:`_has_only_type_transparent_decorators`, threaded
+      ``module_bound_names`` from :func:`infer_annotations`.
     - A generator (own ``yield``) is never inferred (its return is an iterator).
     - ``-> None`` when there is no value return (``return`` with no value, or no
       return at all) — a pure procedure.
@@ -1027,8 +1132,13 @@ def _infer_return_type(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None
     - And the body must PROVABLY terminate (cannot fall off the end): a function
       that can reach the end without an explicit ``return`` implicitly returns
       ``None``, so its true type is ``T | None``. Rather than guess the union we
-      REFUSE (return ``None``) — the honest under-claim this module promises."""
-    if not _has_only_type_transparent_decorators(fn):
+      REFUSE (return ``None``) — the honest under-claim this module promises.
+    - As a LAST resort, when the literal/builtin join above proves nothing, a
+      ``self`` / ``cls(...)`` return earns the forward-ref ``"<class_name>"``
+      (:func:`_infer_self_return_type`, fed the enclosing ``class_name`` the
+      caller resolved). This fires ONLY after every shared precondition above has
+      passed, so it can never override or widen a literal landing."""
+    if not _has_only_type_transparent_decorators(fn, module_bound_names):
         return None  # a non-transparent decorator may replace the return value
     if fn.returns is not None:
         return None  # already annotated — never overwrite
@@ -1057,13 +1167,138 @@ def _infer_return_type(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None
     for r in value_returns:
         t = _return_value_type(r.value, assigned)  # r.value is not None here
         if t is None:
-            return None  # a non-provable return — not certain
+            # No LITERAL/builtin type for this return. Before giving up, try the
+            # language-contract ``self``/``cls(...)`` case (a Name/Call the
+            # literal oracle deliberately refuses) — sound only as a WHOLE-body
+            # property, so it inspects every value-return itself.
+            return _infer_self_return_type(
+                fn, value_returns, class_name, assigned)
         types.append(t)
     # JOIN the (source-ordered) return types to a single least-upper-bound: a
     # set of returns sharing one container agrees on the precise parametrized
     # type when identical, else WIDENS to the bare base (``list[int]`` +
     # bare ``list`` -> ``list``); differing bases still refuse (``None``).
     return _join_all_types(types)
+
+
+def _is_classmethod(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when ``fn`` carries a ``@classmethod`` decorator — accepted as a bare
+    ``classmethod`` name or a dotted ``...classmethod`` (e.g. ``@builtins.classmethod``).
+
+    Used to gate the ``cls(...)`` self-return case: a ``cls(...)`` body is a sound
+    ``-> "<Class>"`` ONLY under ``@classmethod`` (there ``cls`` is the class object
+    by language contract). A plain method whose first parameter merely happens to
+    be named ``cls`` carries NO such guarantee, so it must refuse."""
+    return any(
+        _decorator_last_name(dec) == "classmethod" for dec in fn.decorator_list
+    )
+
+
+def _has_receiver_breaking_decorator(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    """True when ``fn`` carries ``@staticmethod`` or ``@property`` — decorators
+    that BREAK the ``self``/``cls`` receiver contract the self-return case relies
+    on. A ``@staticmethod`` has no receiver at all; a ``@property``'s call returns
+    the ATTRIBUTE value, not the instance, so ``-> "<Class>"`` would be wrong even
+    if the body literally ``return self``. Both refuse the self-return case
+    (the literal path already handles a ``@property``/``@staticmethod`` returning a
+    provable literal — this guard only suppresses the self/cls fallback)."""
+    return any(
+        _decorator_last_name(dec) in ("staticmethod", "property")
+        for dec in fn.decorator_list
+    )
+
+
+def _all_value_returns_are(
+    value_returns: list[ast.Return], predicate
+) -> bool:
+    """True when ``value_returns`` is non-empty and EVERY return value satisfies
+    ``predicate`` — the "every value-return path" check the self-return soundness
+    argument requires (one non-matching arm makes the union unprovable)."""
+    return bool(value_returns) and all(
+        predicate(r.value) for r in value_returns
+    )
+
+
+def _returns_self(node: ast.expr | None) -> bool:
+    """True when ``node`` is exactly the bare name ``self``."""
+    return isinstance(node, ast.Name) and node.id == "self"
+
+
+def _returns_cls_call(node: ast.expr | None) -> bool:
+    """True when ``node`` is a ``cls(...)`` call — the callee is the bare name
+    ``cls`` (args are irrelevant; ``cls(n)`` constructs the same class as
+    ``cls()``). A ``cls.method()`` (callee is an ``Attribute``) or a bare ``cls``
+    (not called) is NOT this shape."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "cls"
+    )
+
+
+def _infer_self_return_type(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+    value_returns: list[ast.Return],
+    class_name: str | None,
+    assigned: frozenset[str],
+) -> str | None:
+    """The forward-ref ``"<class_name>"`` for a method whose EVERY value-return is
+    the receiver, or ``None`` (refuse).
+
+    Two sound shapes — the receiver is, by Python's language contract, an instance
+    of the enclosing class (or a subclass, and is-a holds, so ``-> "<Class>"`` is a
+    SOUND UPPER BOUND):
+      - a plain instance method whose every value-return is exactly ``self``;
+      - a ``@classmethod`` whose every value-return is ``cls(...)`` (constructs an
+        instance of the class/subclass — same bound).
+
+    The result is the forward-ref STRING ``f'"{class_name}"'`` (NOT ``typing.Self``)
+    so there is no import and no version gate; a string annotation is never
+    evaluated at runtime and changes no value — behaviour-identical.
+
+    REFUSES (returns ``None``) when ANY holds — the full refusal set:
+      - no single resolvable enclosing ``ClassDef`` (``class_name is None``: a
+        module-level function or a nested-function-in-method returning ``self``);
+      - ``@staticmethod`` / ``@property`` (receiver contract broken —
+        :func:`_has_receiver_breaking_decorator`);
+      - the receiver name (``self`` for the instance shape, ``cls`` for the
+        classmethod shape) is REASSIGNED in the body (``receiver in assigned`` via
+        :func:`_assigned_names_in_scope`) — the returned name may no longer be the
+        receiver;
+      - instance shape: any value-return is NOT exactly ``self`` (an attribute
+        ``self.x``, another name, a call, a new object) — mixed ⇒ refuse;
+      - classmethod shape: any value-return is NOT ``cls(...)`` — a bare ``cls``, a
+        ``cls.method()``, an ``OtherClass(...)`` ⇒ refuse;
+      - a ``cls(...)`` body NOT under ``@classmethod`` ⇒ refuse (no class-object
+        guarantee for ``cls``).
+    The shared preconditions (already-annotated, generator, bare-return mix,
+    non-terminating body) are enforced by :func:`_infer_return_type` before this
+    is ever reached."""
+    if class_name is None:
+        return None  # not inside exactly one resolvable enclosing ClassDef
+    if _has_receiver_breaking_decorator(fn):
+        return None  # @staticmethod / @property breaks the receiver contract
+
+    if _is_classmethod(fn):
+        # Classmethod shape: every value-return must be ``cls(...)`` and ``cls``
+        # must not have been rebound in the body.
+        if "cls" in assigned:
+            return None
+        if not _all_value_returns_are(value_returns, _returns_cls_call):
+            return None
+        return f'"{class_name}"'
+
+    # Instance shape: every value-return must be exactly ``self`` and ``self``
+    # must not have been rebound in the body. (A ``cls(...)`` body that is NOT a
+    # ``@classmethod`` falls here and fails the ``self`` predicate ⇒ refuse,
+    # which is the "cls(...) without @classmethod" refusal.)
+    if "self" in assigned:
+        return None
+    if not _all_value_returns_are(value_returns, _returns_self):
+        return None
+    return f'"{class_name}"'
 
 
 def _return_value_type(node: ast.expr, assigned_names: frozenset[str]) -> str | None:
@@ -1398,19 +1633,29 @@ def _annotatable_params(
 
 
 def _function_edits(
-    fn: ast.FunctionDef | ast.AsyncFunctionDef, source: str, line_starts: list[int]
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+    source: str,
+    line_starts: list[int],
+    class_name: str | None = None,
+    module_bound_names: frozenset[str] = frozenset(),
 ) -> list[tuple[int, int, str]]:
     """The ``(start, end, text)`` splice edits for one function: a ``: T`` after
     each parameter whose type is PROVABLE from an entry ``isinstance`` guard
     (:func:`_annotatable_params`), plus a `` -> T`` before the header colon when
-    the return is provable. Offsets are absolute into ``source``."""
+    the return is provable. Offsets are absolute into ``source``.
+
+    ``class_name`` is the enclosing ``ClassDef`` name (or ``None`` for a non-method
+    function), and ``module_bound_names`` the module's top-level bound names — both
+    resolved by :func:`infer_annotations` (an ``ast.FunctionDef`` carries no parent
+    pointer) and threaded into :func:`_infer_return_type` for the ``self``/``cls``
+    forward-ref case and the name-collision decorator-trust tightening."""
     edits: list[tuple[int, int, str]] = []
     for arg, type_name in _annotatable_params(fn):
         off = _end_offset(arg, line_starts)
         if off is not None:
             edits.append((off, off, f": {type_name}"))
 
-    ret = _infer_return_type(fn)
+    ret = _infer_return_type(fn, class_name, module_bound_names)
     if ret is not None:
         colon = _header_colon_offset(fn, source, line_starts)
         if colon is not None:
@@ -1418,12 +1663,75 @@ def _function_edits(
     return edits
 
 
+def _module_bound_names(tree: ast.Module) -> frozenset[str]:
+    """Every NAME bound at the MODULE top level — a ``def``/``class`` name, an
+    ``import``/``from`` import name (the ``as`` alias when present, else the
+    leftmost component), and any assignment/walrus/``for``/``with`` Store target in
+    a top-level statement.
+
+    The decorator name-collision tightening uses this as the SHADOW set: a bare
+    ``@property`` / ``@lru_cache`` is trusted only when its name is NOT here, so a
+    local ``def property(...)`` or an ``import wrap as lru_cache`` (which binds the
+    trusted name to a return-TRANSFORMING callable) correctly disqualifies the bare
+    form. A conservative, deterministic over-approximation: only TOP-LEVEL bindings
+    matter (a name bound inside a function is that function's local, not a module
+    shadow of the decorator)."""
+    names: set[str] = set()
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(stmt.name)
+        elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            for alias in stmt.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign,
+                               ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)):
+            for node in ast.walk(stmt):
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                    names.add(node.id)
+    return frozenset(names)
+
+
+def _method_class_names(tree: ast.Module) -> dict[int, str]:
+    """Map ``id(method_FunctionDef)`` → its enclosing ``ClassDef`` name, for every
+    method DIRECTLY in a class body (recursing into nested classes, so a method of
+    an inner class maps to the INNER class name).
+
+    Only methods that are a DIRECT statement of a ``ClassDef.body`` are paired —
+    a function nested inside a method is not class-bound (its ``self``/``cls`` would
+    be the inner function's parameters, not the class's), so it is absent and the
+    self-return case refuses it (``class_name is None``). Keyed by ``id(node)``
+    because an ``ast.FunctionDef`` carries no parent pointer; the resolved name is
+    threaded to :func:`_infer_self_return_type`."""
+    out: dict[int, str] = {}
+
+    def walk(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                for stmt in child.body:
+                    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        out[id(stmt)] = child.name
+                walk(child)  # recurse for nested classes / inner methods
+            else:
+                walk(child)
+
+    walk(tree)
+    return out
+
+
 def infer_annotations(source: str) -> str | None:
     """Return ``source`` with every provable annotation added, or ``None`` when
     nothing provable changes (or the source does not parse).
 
     Edits are applied by byte offset, right-to-left, so earlier offsets stay
-    valid as later ones are spliced in. Pure AST → text; deterministic."""
+    valid as later ones are spliced in. Pure AST → text; deterministic.
+
+    Before walking functions, two module-wide facts an ``ast.FunctionDef`` cannot
+    carry alone are resolved once: :func:`_method_class_names` pairs each method
+    with its enclosing class (for the ``self``/``cls`` forward-ref case), and
+    :func:`_module_bound_names` collects the top-level bound names (the shadow set
+    for the decorator name-collision tightening). Both are threaded into
+    :func:`_function_edits`; a non-method function simply gets ``class_name=None``,
+    so its behaviour is unchanged."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, RecursionError, MemoryError, ValueError):
@@ -1437,10 +1745,13 @@ def infer_annotations(source: str) -> str | None:
     # affects which edits we collect, not their application.
     func_nodes.sort(key=lambda n: (n.lineno, n.col_offset))
 
+    class_names = _method_class_names(tree)
+    module_bound = _module_bound_names(tree)
     line_starts = _line_start_offsets(source.splitlines(keepends=True))
     edits: list[tuple[int, int, str]] = []
     for fn in func_nodes:
-        edits.extend(_function_edits(fn, source, line_starts))
+        edits.extend(_function_edits(
+            fn, source, line_starts, class_names.get(id(fn)), module_bound))
 
     if not edits:
         return None
@@ -1569,3 +1880,22 @@ def plan_type_annotations(project_root: str | Path, module_rel: str) -> RenamePl
     when nothing is provable) — is delegated to :func:`plan_source_rewrite`."""
     return plan_source_rewrite(
         project_root, module_rel, "infer-type-hints", infer_annotations)
+
+
+def plan_annotate_self_returns(project_root: str | Path, module_rel: str) -> RenamePlan:
+    """Build the self/cls forward-ref return-type plan for one module, or an empty
+    no-op plan — the ``annotate-self-returns`` develop-objective surface.
+
+    Shares the SAME engine (:func:`infer_annotations`) as
+    :func:`plan_type_annotations`: the self/cls forward-ref case is a branch INSIDE
+    that engine, fired only where the literal oracle proves nothing. The two
+    objectives therefore land complementary annotations from one transform — a
+    literal-returning function gets ``-> int`` from ``infer-type-hints``, a
+    ``return self`` method gets ``-> "<Class>"`` here — and never collide (they act
+    on disjoint return shapes). A distinct plan LABEL (``"annotate-self-returns"``)
+    is passed so this objective has its own observable plan provenance. The
+    test/fixture-file refusal, the single-rewrite record with rollback, and the
+    no-op-when-nothing-provable behaviour are delegated to
+    :func:`plan_source_rewrite`."""
+    return plan_source_rewrite(
+        project_root, module_rel, "annotate-self-returns", infer_annotations)

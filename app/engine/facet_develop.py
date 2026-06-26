@@ -265,6 +265,18 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # raises the project's type-hint coverage.
     "the precise type or annotation": "infer-type-hints",
 
+    # Fluent / alternative-constructor return type: the "naming and types" aspect
+    # also names the return shape the literal type oracle deliberately REFUSES — a
+    # method that returns ``self`` (a builder) or a ``@classmethod`` that returns
+    # ``cls(...)`` (an alternative constructor). The annotate-self-returns objective
+    # LANDS exactly that — a forward-ref ``-> "<Class>"`` provable from the language
+    # contract (``self`` is an instance of its class; ``cls(...)`` constructs one),
+    # the one return type infer-type-hints cannot reach. Its phrasing is not a
+    # substring of "the precise type or annotation" (nor of any other key, nor any
+    # of them of it) — "fluent self-return type" vs "precise type or annotation" —
+    # so its insertion order is free.
+    "the fluent self-return type to annotate": "annotate-self-returns",
+
     # Unwired public surface: the document lens's "signatures and types" aspect
     # names the package's public re-export surface. The wire-exports objective
     # LANDS exactly that — it populates an empty ``__init__.py`` with
