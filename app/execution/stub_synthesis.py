@@ -4164,6 +4164,33 @@ def _python_for(root: Path) -> str:
     return sys.executable
 
 
+def _pins_a_value(root: Path, test_files: list[str], stub: StubFunction) -> bool:
+    """True when at least one enforceable witness CONSTRAINS the stub's return — a
+    ``func(<args>) == <expected>`` / ``is None/True/False`` assertion, a doctest
+    example, or the >=2-distinct-tuples constant ``_expected_constant`` clears.
+
+    This is the never-fake-green floor the candidate search was missing: a test may
+    REFERENCE the symbol by name (``assert callable(fn)``) — satisfying
+    :func:`_has_enforceable_contract` — yet assert NOTHING about the value the stub
+    returns. With no value-pinning witness, the value-free ``passthrough`` template
+    (``return x``) passes such a vacuous oracle for ANY body, so a guessed body
+    would be stamped "verified" while the suite stays green. We refuse instead,
+    mirroring the in-process synth's ``if not witnesses: return None`` and the
+    doctest path's behavior (and agreeing with the cheap scan, which already
+    reports such a stub NOT fillable).
+
+    ``_function_witnesses`` is a SUPERSET of the literals ``_expected_constant``
+    reads (it also mines parametrize / module-local-helper / ``is``-singleton /
+    doctest witnesses), so a non-empty witness set is the general value-pinning
+    signal; the explicit ``_expected_constant`` check is a belt-and-suspenders
+    guarantee that the legitimate constant last-resort (which the search yields
+    only after that >=2-tuple floor) is never refused here. Deterministic,
+    offline, stdlib-only — same project, same verdict."""
+    if _function_witnesses(root, test_files, stub):
+        return True
+    return _expected_constant(root, test_files, stub) is not None
+
+
 def synthesize_stub_body(root: Path, module_rel: str, stub: StubFunction,
                          test_files: list[str],
                          runner: RunTestsSkill | None = None) -> str | None:
@@ -4177,11 +4204,18 @@ def synthesize_stub_body(root: Path, module_rel: str, stub: StubFunction,
     beats a bare constant. With no pinned tests there is no spec to satisfy —
     refuse immediately.
 
-    Two never-fake-green floors precede the search:
+    Three never-fake-green floors precede the search:
 
     * **enforceable-contract floor** — if EVERY pinned test touching the stub is
       ``xfail`` / ``skip``, the gate is meaningless (an xfail test stays green for
       any body), so we refuse rather than stamp an unenforced contract verified;
+    * **value-pinning floor** (:func:`_pins_a_value`) — a test may merely REFERENCE
+      the symbol (``assert callable(fn)``) without asserting anything about its
+      return; the value-free ``passthrough`` template then passes for ANY body, so
+      a guessed body would be stamped "verified". When NO witness constrains the
+      return we refuse, mirroring the in-process synth's ``if not witnesses:
+      return None`` (this is the apply path agreeing with the scan, which already
+      reports such a stub NOT fillable);
     * **ambiguity floor** — if >=2 fixed templates of DIFFERENT shape both satisfy
       ALL the enforceable witnesses, the witnesses don't determine intent, so we
       refuse (mirror ``cross_file_rename``'s conservatism on an ambiguous spec)."""
@@ -4189,6 +4223,8 @@ def synthesize_stub_body(root: Path, module_rel: str, stub: StubFunction,
         return None
     if not _has_enforceable_contract(root, test_files, stub):
         return None  # only xfail/skip tests pin this stub — no real contract
+    if not _pins_a_value(root, test_files, stub):
+        return None  # no witness constrains the return — any body fake-greens
     if _is_ambiguous(root, test_files, stub):
         return None  # witnesses fit >=2 different-shape templates — under-specified
     runner = runner or RunTestsSkill()
