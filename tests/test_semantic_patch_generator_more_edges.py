@@ -156,7 +156,7 @@ def test_fix_collection_literal_branch(tmp_path: Path):
 
 
 def test_fix_bare_except_branch(tmp_path: Path):
-    _write(tmp_path / "app" / "be.py", "def f():\n    try:\n        pass\n    except:\n        pass\n")
+    _write(tmp_path / "app" / "be.py", "def f():\n    try:\n        pass\n    except:\n        raise\n")
     generator = SemanticPatchGenerator()
     patch_plan = {"target_files": ["app/be.py"], "title": "Fix bare except handler", "task_id": "be-1"}
 

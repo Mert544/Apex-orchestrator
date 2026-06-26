@@ -45,7 +45,7 @@ def test_harden_converges_all_fix_types_in_one_pass(tmp_path: Path):
     assert res["rolled_back"] == 0
     after = src.read_text()
     assert "ast.literal_eval(rule)" in after
-    assert "except Exception:" in after and "except:" not in after
+    assert "# SECURITY (Apex: bare except" in after  # swallow -> annotated (narrowing changes BaseException behavior)
     assert "items=None" in after and "if items is None:" in after   # mutable-default guard
     assert "x is None" in after                                     # modernized
     assert "x == 5" in after                                        # identity-literal fixed

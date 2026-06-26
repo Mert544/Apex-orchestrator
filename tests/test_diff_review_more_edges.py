@@ -123,7 +123,7 @@ def test_line_suggestion_raise_from_branch():
 
 
 def test_line_suggestion_bare_except_branch():
-    src = "def f():\n    try:\n        pass\n    except:\n        pass\n"
+    src = "def f():\n    try:\n        pass\n    except:\n        raise\n"
     f = next(x for x in scan_findings("m.py", src) if x.fix_kind == "bare except")
     assert _line_suggestion("m.py", src, f) == ("except:", "except Exception:")
 

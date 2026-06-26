@@ -183,7 +183,8 @@ def test_harden_applies_bare_except_fix(tmp_path):
     step = IdeaActionBridge().plan_idea(idea)
     result = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised")
     if result["applied"]:
-        assert "except Exception:" in src.read_text()
+        # a swallowing bare except is annotated (narrowing would change BaseException behavior)
+        assert "# SECURITY (Apex: bare except" in src.read_text()
 
 
 def test_harden_narrows_except_base_exception(tmp_path):
@@ -573,8 +574,7 @@ def test_harden_step_converges_all_fixes_in_one_pass(tmp_path):
     # Both the eval AND the bare-except were fixed in the one pass.
     assert "ast.literal_eval(rule)" in after
     assert "eval(rule)" not in after.replace("literal_eval", "")
-    assert "except Exception:" in after
-    assert "except:" not in after
+    assert "# SECURITY (Apex: bare except" in after  # swallow -> annotated, not narrowed
 
 
 def test_harden_change_strategy_ladder_priority(tmp_path):

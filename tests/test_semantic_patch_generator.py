@@ -401,7 +401,7 @@ def test_security_transform_covers_all_six_categories():
     cases = {
         "eval_to_literal_eval": ("e.py", "x = eval(s)\n", "fix eval"),
         "os_system_to_subprocess": ("o.py", "import os\nos.system(c)\n", "fix os.system"),
-        "bare_except_to_exception": ("b.py", "try:\n    x=1\nexcept:\n    pass\n", "fix bare except"),
+        "bare_except_to_exception": ("b.py", "try:\n    x=1\nexcept:\n    raise\n", "fix bare except"),
         "flag_pickle_loads": ("p.py", "import pickle\npickle.loads(b)\n", "fix pickle"),
         "flag_sql_injection": ("s.py", 'cur.execute(f"SELECT {x}")\n', "fix sql injection"),
         "yaml_load_to_safe_load": ("y.py", "import yaml\nyaml.load(s)\n", "fix yaml"),
