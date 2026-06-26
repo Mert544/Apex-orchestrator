@@ -34,9 +34,11 @@ from app.runtime.command_runner import CommandResult, CommandRunner, CommandSpec
 
 __all__ = [
     "JavaFinalTarget",
+    "JavaDocTarget",
     "JavaFacts",
     "DRIVER",
     "final_targets",
+    "doc_targets",
     "parse_facts",
     "reparse_facts_identical",
 ]
@@ -54,6 +56,22 @@ class JavaFinalTarget:
     offset)."""
 
     name: str
+    insert_offset: int
+
+
+@dataclass(frozen=True)
+class JavaDocTarget:
+    """One method that DECLARES a ``throws`` clause but carries NO Javadoc, with the
+    simple type names of its declared throws clause IN SOURCE ORDER (``throws_types``)
+    and the byte ``insert_offset`` at the method's start where a leading
+    ``/** ... @throws <Type> ... */`` Javadoc block splices in — a pure byte-offset
+    insert of a COMMENT, not an unparse. ``name`` is the method's simple name (the
+    fact-only summary the block leads with). A Javadoc changes ZERO declared structure,
+    so the spliced file re-parses fact-identical (see :func:`reparse_facts_identical`).
+    The Java analogue of the Python ``document-raises`` ``Raises:`` target."""
+
+    name: str
+    throws_types: tuple[str, ...]
     insert_offset: int
 
 
@@ -112,6 +130,24 @@ def final_targets(root: Path, rel: str) -> list[JavaFinalTarget]:
     if not isinstance(data, list):
         return []
     return [JavaFinalTarget(name=d["name"], insert_offset=d["insertOffset"])
+            for d in data]
+
+
+def doc_targets(root: Path, rel: str) -> list[JavaDocTarget]:
+    """The methods in ``root/rel`` that DECLARE a ``throws`` clause but have NO Javadoc
+    (empty on refuse). Conservative: a file that does not parse, has no such method, or
+    that the driver declines yields ``[]`` — nothing to document, never a guess. The
+    driver already applied the non-empty-throws-clause / no-existing-Javadoc gates.
+
+    Deterministic source order, exactly as the driver's ``doc-targets`` emits. The
+    ``throws`` simple type names are carried IN SOURCE ORDER (the declared contract,
+    not inferred from ``throw new X()`` statements)."""
+    data = _driver_json(["doc-targets", str(root / rel)], root)
+    if not isinstance(data, list):
+        return []
+    return [JavaDocTarget(name=d["name"],
+                          throws_types=tuple(d["throws"]),
+                          insert_offset=d["insertOffset"])
             for d in data]
 
 

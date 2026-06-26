@@ -111,6 +111,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     # --- CONCRETE: lands working code ---------------------------------------
     "add-final": "runtime-noop+used-as-base-scan(tests-incl)",
     "java-finalize-field": "java-final-modifier-add(runtime-noop)+private-field-never-reassigned-whole-file-scan+reparse-fact-set-identical-or-refuse(no-suite-needed)",
+    "java-document-throws": "java-javadoc-throws-from-declared-throws-clause-verbatim+reparse-fact-set-identical-or-refuse(no-suite-needed)+refuse-already-documented",
     "seal-final-method": "runtime-noop+transitive-subclass-scan(tests-incl)",
     "wire-module-exports": "behavior-identical-or-star-consumer-scan(tests-incl)",
     "wire-exports": "oracle-gated-scaffold(import-oracle)+additive-init",

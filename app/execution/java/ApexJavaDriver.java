@@ -49,6 +49,23 @@
 //                          safe. Conservative whole-file refusal, the same spirit as
 //                          the multi-declarator refusal.
 //                          Exit 2 (REFUSE) on ANY parse error diagnostic.
+//   doc-targets <file> -> JSON [{name, throws:[Type,...], insertOffset}]: every method
+//                          that DECLARES a `throws` clause (`MethodTree.getThrows()` is
+//                          non-empty) but has NO Javadoc (`Trees.getDocComment(path)`
+//                          is null), in source order, where `insertOffset` is the byte
+//                          offset just before the method's start (at its modifiers) at
+//                          which splicing a `/** ... @throws <Type> ... */` Javadoc
+//                          block documents the DECLARED checked-exception types. The
+//                          `throws` names are the SIMPLE type names of the declared
+//                          throws clause IN SOURCE ORDER (the exact, behaviour-identical
+//                          contract — NOT inferred from `throw new X()` statements). A
+//                          Javadoc is a COMMENT, so it changes ZERO declared structure
+//                          (the fact-set re-parse oracle stays identical). REFUSES
+//                          (omits) a method that ALREADY carries a Javadoc (merging an
+//                          existing block is out of scope), or that has an empty throws
+//                          clause, or whose start position is unreadable. This is the
+//                          Java analogue of document-raises / document-raises-jsdoc.
+//                          Exit 2 (REFUSE) on ANY parse error diagnostic.
 //
 // Determinism: no clock, no randomness; types/fields/methods are SORTED, targets are
 // reported in source order; JSON keys are emitted in a fixed order. `insertOffset`
@@ -71,6 +88,7 @@ import com.sun.source.tree.UnaryTree;
 import com.sun.source.tree.VariableTree;
 import com.sun.source.util.JavacTask;
 import com.sun.source.util.SourcePositions;
+import com.sun.source.util.TreePath;
 import com.sun.source.util.TreePathScanner;
 import com.sun.source.util.TreeScanner;
 import com.sun.source.util.Trees;
@@ -109,11 +127,14 @@ public final class ApexJavaDriver {
         final CompilationUnitTree unit;
         final SourcePositions positions;
         final String source;
+        final Trees trees;
 
-        Parsed(CompilationUnitTree unit, SourcePositions positions, String source) {
+        Parsed(CompilationUnitTree unit, SourcePositions positions, String source,
+               Trees trees) {
             this.unit = unit;
             this.positions = positions;
             this.source = source;
+            this.trees = trees;
         }
     }
 
@@ -154,7 +175,7 @@ public final class ApexJavaDriver {
             if (hasError(diags) || unit == null) {
                 return fail("parse error in " + file);
             }
-            return new Parsed(unit, trees.getSourcePositions(), source);
+            return new Parsed(unit, trees.getSourcePositions(), source, trees);
         } catch (Exception e) {
             return fail("parse error in " + file);
         }
@@ -500,7 +521,103 @@ public final class ApexJavaDriver {
         return multi;
     }
 
+    // --- doc-targets: undocumented methods with a declared `throws` clause ----
+
+    private static void cmdDocTargets(String file) {
+        Parsed p = parseOrRefuse(file);
+        List<String> orderedNames = new ArrayList<>();
+        List<List<String>> orderedThrows = new ArrayList<>();
+        List<Long> orderedOffsets = new ArrayList<>();
+        collectDocTargets(p, orderedNames, orderedThrows, orderedOffsets);
+        // Emit in source order (the method-declaration order the scanner visits).
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < orderedNames.size(); i++) {
+            if (i > 0) {
+                sb.append(",");
+            }
+            sb.append("{\"name\":");
+            appendJsonString(sb, orderedNames.get(i));
+            sb.append(",\"throws\":");
+            appendStringList(sb, orderedThrows.get(i));
+            sb.append(",\"insertOffset\":").append(orderedOffsets.get(i)).append("}");
+        }
+        sb.append("]");
+        System.out.print(sb);
+    }
+
+    /** Every method that DECLARES a non-empty throws clause but carries NO Javadoc,
+     * with the simple type names of its declared throws clause (source order) and the
+     * byte offset just before the method's start where a leading Javadoc block splices
+     * in. A TreePathScanner is used because Trees.getDocComment needs the method's
+     * TreePath: an EXISTING Javadoc is refused (merging is out of scope, exactly as
+     * Python document-raises documents only the undocumented). Source order is the
+     * visit order of the methods. */
+    private static void collectDocTargets(Parsed p, List<String> names,
+                                          List<List<String>> throwsLists,
+                                          List<Long> offsets) {
+        Trees trees = p.trees;
+        new TreePathScanner<Void, Void>() {
+            @Override
+            public Void visitMethod(MethodTree node, Void unused) {
+                considerDocMethod(node, getCurrentPath(), trees, p, names, throwsLists,
+                        offsets);
+                return super.visitMethod(node, unused);
+            }
+        }.scan(p.unit, null);
+    }
+
+    private static void considerDocMethod(MethodTree method, TreePath path, Trees trees,
+                                          Parsed p, List<String> names,
+                                          List<List<String>> throwsLists,
+                                          List<Long> offsets) {
+        List<? extends ExpressionTree> declared = method.getThrows();
+        // REFUSE: no declared `throws` clause — nothing to document (exact, not inferred).
+        if (declared == null || declared.isEmpty()) {
+            return;
+        }
+        // REFUSE: a method that ALREADY carries a Javadoc — merging an existing block is
+        // out of scope (mirrors document-raises documenting only the undocumented). A
+        // null doc-comment is the "no Javadoc" signal.
+        if (trees.getDocComment(path) != null) {
+            return;
+        }
+        List<String> types = new ArrayList<>();
+        for (ExpressionTree thrown : declared) {
+            types.add(simpleTypeName(thrown));
+        }
+        long insert = methodInsertOffset(method, p);
+        if (insert < 0) {
+            return;  // an unreadable method span — refuse rather than splice at a guess
+        }
+        names.add(String.valueOf(method.getName()));
+        throwsLists.add(types);
+        offsets.add(insert);
+    }
+
+    /** The byte offset of the method's START (its modifiers/return-type), or -1 when
+     * the span is unreadable. Splicing a Javadoc block here places it immediately
+     * before the method declaration — a leading comment that changes ZERO declared
+     * structure. The Python spine indents the block to the method's column. */
+    private static long methodInsertOffset(MethodTree method, Parsed p) {
+        long start = p.positions.getStartPosition(p.unit, method);
+        if (start >= 0 && start <= p.source.length()) {
+            return start;
+        }
+        return -1;
+    }
+
     // --- JSON emit (fixed key order, deterministic) --------------------------
+
+    private static void appendStringList(StringBuilder sb, List<String> values) {
+        sb.append("[");
+        for (int i = 0; i < values.size(); i++) {  // source order — NOT sorted
+            if (i > 0) {
+                sb.append(",");
+            }
+            appendJsonString(sb, values.get(i));
+        }
+        sb.append("]");
+    }
 
     private static void appendStringArray(StringBuilder sb, Set<String> values) {
         sb.append("[");
@@ -563,7 +680,12 @@ public final class ApexJavaDriver {
             cmdFinalTargets(args[1]);
             return;
         }
-        System.err.println("usage: ApexJavaDriver.java parse-verify <file> | final-targets <file>");
+        if (args.length == 2 && "doc-targets".equals(args[0])) {
+            cmdDocTargets(args[1]);
+            return;
+        }
+        System.err.println("usage: ApexJavaDriver.java parse-verify <file> | "
+                + "final-targets <file> | doc-targets <file>");
         System.exit(REFUSE);
     }
 }

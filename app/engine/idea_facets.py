@@ -518,6 +518,16 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                           # zero-raise or unprovable-raise shape. Appended, so the
                           # originals still lead and emit first.
                           "the raised exceptions to document",
+                          # added: the JAVA sibling of document-raises — a method that
+                          # DECLARES a ``throws`` clause but carries NO Javadoc, which
+                          # java-document-throws documents with a fresh Javadoc block of
+                          # one ``@throws <Type>`` line per DECLARED checked-exception
+                          # type (the throws clause verbatim, NOT inferred from
+                          # ``throw new X()``). A Javadoc is a COMMENT, so the edit is
+                          # behaviour-identical (a re-parse fact-set-identity check, no
+                          # Maven/JUnit run); an already-documented method is refused.
+                          # Appended after its Python sibling, so the originals lead.
+                          "the undocumented java throws clause to document",
                           # added: a ``raise X(...)`` inside an ``except E as err:``
                           # handler with no ``from`` — which discards the original
                           # traceback (B904). The raise-from objective appends

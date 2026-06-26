@@ -778,10 +778,10 @@ def test_objective_registers_and_is_available():
 def test_objective_total_is_seventy_eight():
     from app.engine.objective_compiler import available_objectives
 
-    # 78 after raise-from (the B904 transform wired as a develop objective)
-    # self-registered; this count pin is the tripwire each new objective round
-    # bumps by one.
-    assert len(set(available_objectives())) == 78
+    # 79 after java-document-throws (the Java @throws Javadoc objective wired as a
+    # develop objective) self-registered; this count pin is the tripwire each new
+    # objective round bumps by one.
+    assert len(set(available_objectives())) == 79
 
 
 def test_objective_spec_is_callable():
@@ -828,7 +828,7 @@ def test_parity_concrete_count_is_thirty_six():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 36  # rose from 35 with raise-from
+    assert len(buckets["CONCRETE"]) == 37  # rose from 36 with java-document-throws
 
 
 # --- PARITY ROW 3: soundness-strategy manifest ------------------------------

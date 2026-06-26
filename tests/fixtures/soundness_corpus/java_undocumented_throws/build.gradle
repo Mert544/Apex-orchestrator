@@ -1,0 +1,12 @@
+// Marks this fixture as a single Java project root (the Gradle marker), so the
+// java-document-throws objective's single-project gate fires and it is SWEPT by the
+// soundness corpus — the Java analogue of the jsdoc_contradiction shape's package.json.
+// No tasks/plugins: it is only a presence marker (parse-only, no build is ever run —
+// the objective is Tier-A structural reparse, never a Gradle run).
+//
+// Unlike java_false_final / java_blank_final (which are TRAPS java-finalize-field MUST
+// REFUSE), this shape is a LANDABLE: it declares an UNDOCUMENTED throwing method, which
+// java-document-throws SHOULD document with an `@throws` Javadoc. So it is NOT listed in
+// soundness_audit's `_SHAPE_MUST_REFUSE` — the corpus sweep instead verifies the Javadoc
+// insert stays BEHAVIOUR-IDENTICAL (a comment-only edit re-parses fact-identical), while
+// every OTHER objective (which has nothing to do here) cleanly refuses it.

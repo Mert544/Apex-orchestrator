@@ -94,6 +94,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "scaffold-from-protocol",
         "add-final",
         "java-finalize-field",
+        "java-document-throws",
         "seal-final-method",
         "enforce-enum-unique",
         "complete-match-exhaustiveness",

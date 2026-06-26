@@ -544,6 +544,18 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # so its relative order is free.
     "the never-reassigned java field to finalize": "java-finalize-field",
 
+    # A Java method that DECLARES a `throws` clause but carries NO Javadoc: the Java
+    # sibling of document-raises / document-raises-jsdoc. java-document-throws lands a
+    # FRESH Javadoc block with one `@throws <Type>` line per DECLARED checked-exception
+    # type (the method's `throws` clause verbatim, NOT inferred from `throw new X()`).
+    # A Javadoc is a COMMENT, so the edit is BEHAVIOUR-IDENTICAL (zero declared
+    # structure changes; a re-parse fact-set-identity check, no Maven/JUnit run);
+    # already-documented methods are refused (merging is out of scope). Its phrasing
+    # shares no whole key with "the never-reassigned java field to finalize" (in either
+    # direction — "throws clause to document" vs "field to finalize"), so its relative
+    # order is free.
+    "the undocumented java throws clause to document": "java-document-throws",
+
     # A method proven never overridden anywhere: seal-final-method seals it with
     # @typing.final (the method-level sibling of add-final — a type-checker-only
     # no-op, behaviour-preserving; the false-final risk is closed STRUCTURALLY by a

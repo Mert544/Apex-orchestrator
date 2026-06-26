@@ -68,6 +68,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "js_document_param_types": 0.68,  # the missing half of document_export_jsdoc: a JSDoc with @param {T} from declared param types (same tier)
     "document_raises_jsdoc": 0.68,   # JSDoc @throws set from proven throw-new-Identifier (the failure-contract sibling of document_export_jsdoc / js_document_param_types)
     "pin_return_type": 0.66,         # one Returns: <T> line spliced into an EXISTING docstring from the proven return oracle (a doc-surface line, not a minted docstring — generate_usage_doc's tier, below the docstring-MINTING document_signature/document_raises)
+    "java_document_throws": 0.66,    # a Javadoc with @throws lines from a method's DECLARED throws clause (the Java sibling of document_raises_jsdoc; doc-surface tier — a comment-only, behaviour-identical insert)
     "generate_usage_doc": 0.66,      # a USAGE.md from the public API (oracle-checked)
     "harden": 0.65,                  # land a real security fix per finding — Tier-1 rewrites the vulnerability away (eval/os.system/yaml/bare-except/hashlib-new), Tier-0 annotates a reviewable # SECURITY comment where no safe auto-rewrite exists (pickle/sql/tempfile/popen/tls/zip-slip/weak-hash)
     "raise_from": 0.64,              # chain a re-raised exception to its cause (raise X(...) from err — the B904 fix): a real but small behaviour-preserving traceback-hygiene fix, below the doc-surface cluster
