@@ -66,6 +66,7 @@ from typing import NamedTuple
 
 from app.execution.dataclass_rewrite import _import_insertion_index, rejoin_guarded
 from app.execution.final_marker import _insert_decorator, _shadows_name
+from app.execution.freeze_dataclass import _class_only_object_base
 
 __all__ = [
     "seal_total_ordering",
@@ -275,15 +276,29 @@ def _is_orderable(cls: ast.ClassDef, binding: _OrderingBinding) -> bool:
     """True when ``cls`` is a top-level class safe to seal ``@total_ordering``.
 
     Gates (all must hold): a provable spelling of ``functools.total_ordering`` exists
-    in the module; ``cls`` does NOT already carry ``@total_ordering``; its body is
-    fully modelled (no unmodelled binder); ``__eq__`` is defined in this body as a
-    ``def``; NO comparison dunder is bound by assignment / lambda; and EXACTLY ONE of
-    the four order ops is defined in this body as a ``def`` (so the other three are
-    absent). This is the precise precondition ``@total_ordering`` documents."""
+    in the module; ``cls`` does NOT already carry ``@total_ordering``; it has NO base
+    other than the implicit ``object`` and no class keywords; its body is fully
+    modelled (no unmodelled binder); ``__eq__`` is defined in this body as a ``def``;
+    NO comparison dunder is bound by assignment / lambda; and EXACTLY ONE of the four
+    order ops is defined in this body as a ``def`` (so the other three are absent).
+
+    The object-only-base rail (mirroring ``seal_hashable_eq`` / ``add_slots`` via the
+    shared ``freeze_dataclass._class_only_object_base`` predicate) is what makes the
+    fill SOUND. ``@total_ordering`` derives the missing ops from ``max(roots)`` where
+    ``roots`` is EVERY order dunder NON-default on the class — INCLUDING any INHERITED
+    from a base (``getattr(cls, op) is not getattr(object, op)``). So a class with a
+    base carrying a bespoke order op would have that inherited op join ``roots`` and
+    possibly WIN the ``max(roots)`` selection, deriving the comparison surface from a
+    method this parse-only intra-module view never inspected — contradicting the body
+    op the rail proved. A base's inherited comparison surface cannot be proven absent
+    here, so ANY non-``object`` base (or a class keyword such as ``metaclass=``) is a
+    refusal."""
     if not _binding_usable(binding):
         return False
     if class_has_total_ordering_decorator(cls):
         return False
+    if not _class_only_object_base(cls):
+        return False  # an inherited order op could win max(roots) — refuse, can't prove absent
     shape = _body_shape(cls)
     if not shape.modelled:
         return False  # an unmodelled binder could create a comparison method — refuse

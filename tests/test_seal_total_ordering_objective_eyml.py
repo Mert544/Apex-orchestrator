@@ -301,6 +301,81 @@ def test_refuses_plain_non_comparison_class():
     assert seal_total_ordering(src) is None  # no __eq__, no order op
 
 
+# --- the object-only-base rail (the inherited-order-op soundness closure) -----
+
+def test_refuses_subclass_inheriting_a_bespoke_order_op():
+    # THE LATENT BUG (P1): a base carries a BESPOKE order op; the child defines
+    # ``__eq__`` + exactly ONE order op in its OWN body. Without the object-only-base
+    # rail this child was sealed ``@total_ordering`` — but at runtime ``total_ordering``
+    # derives the missing ops from ``max(roots)`` where ``roots`` INCLUDES the inherited
+    # ``__le__`` (a non-default), which WINS over the body ``__gt__`` (``"__le__" >
+    # "__gt__"``), silently deriving ``<`` / ``>=`` from a base method the static rail
+    # never inspected. The fix REFUSES any class with a non-object base.
+    src = (
+        "from functools import total_ordering\n"
+        "class Base:\n" + _LE +
+        "class Child(Base):\n" + _EQ + _GT
+    )
+    assert orderable_classes(src) == []  # Base lacks __eq__; Child has a non-object base
+    assert seal_total_ordering(src) is None  # no decorator lands
+
+
+def test_refuses_subclass_even_with_body_eq_and_one_order_op():
+    # The minimal closure: a child with the EXACT body shape the rail looks for
+    # (``__eq__`` + exactly one order op) is STILL refused purely because it has a base
+    # other than ``object`` — its inherited comparison surface can't be proven absent
+    # from this parse-only / intra-module view.
+    src = (
+        "from functools import total_ordering\n"
+        "class Base:\n    pass\n"
+        "class Child(Base):\n" + _EQ + _LT
+    )
+    assert "Child" not in orderable_classes(src)
+    assert seal_total_ordering(src) is None
+
+
+def test_refuses_any_non_object_base_kind():
+    # Any non-``object`` base kind is refused: a bare Name base, a dotted-attribute
+    # base, a subscripted (generic) base, and a ``metaclass=`` class keyword.
+    bases = ["Mixin", "abc.ABC", "Sequence[int]"]
+    for base in bases:
+        src = (f"from functools import total_ordering\nclass C({base}):\n"
+               + _EQ + _LT)
+        assert seal_total_ordering(src) is None, base
+    meta = ("from functools import total_ordering\nclass C(metaclass=Meta):\n"
+            + _EQ + _LT)
+    assert seal_total_ordering(meta) is None  # a class keyword is out of scope too
+
+
+def test_seals_explicit_object_base_unchanged():
+    # The implicit-default ``object`` base is allowed: an explicit ``class C(object)``
+    # with ``__eq__`` + one order op is STILL sealed (the rail only refuses a base that
+    # is not exactly object-only — object is the implicit default).
+    src = "from functools import total_ordering\nclass C(object):\n" + _EQ + _LT
+    assert orderable_classes(src) == ["C"]
+    out = seal_total_ordering(src)
+    assert out is not None and "@total_ordering" in out
+    ast.parse(out)
+
+
+def test_object_base_rail_is_deterministic_and_idempotent():
+    # The added refusal keeps determinism + idempotency: a refused subclass is a stable
+    # no-op across runs, and a sealed object-only base is a byte-identical no-op on a
+    # second run.
+    refused = (
+        "from functools import total_ordering\n"
+        "class Base:\n    pass\n"
+        "class Child(Base):\n" + _EQ + _LT
+    )
+    assert seal_total_ordering(refused) is None
+    assert seal_total_ordering(refused) is None  # stable refusal
+
+    src = "from functools import total_ordering\nclass C(object):\n" + _EQ + _LT
+    once = seal_total_ordering(src)
+    assert once is not None
+    assert seal_total_ordering(once) is None  # 2nd run = byte-identical no-op
+
+
 # --- idempotency / determinism ----------------------------------------------
 
 def test_idempotent_second_run_is_noop():
