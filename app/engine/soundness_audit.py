@@ -373,6 +373,20 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     "unpack_decorator": frozenset({"freeze-dataclass", "add-dataclass-order"}),
     "provenance_trap": frozenset(
         {"freeze-dataclass", "add-final", "add-dataclass-order"}),
+    # The add-slots READ-path trap the STORE-only superset proof misses: a clean,
+    # closed-attribute class whose instance is ``weakref.ref(...)``'d in the same
+    # module. ``__slots__`` without ``__weakref__`` makes that a runtime ``TypeError``
+    # ("cannot create weak reference") — a SILENT behavior change the store scan never
+    # sees. add-slots MUST refuse it (the project-wide weakref scan sees the call),
+    # never land a falsely-"behavior-identical-storage" slot.
+    "weakref_target": frozenset({"add-slots"}),
+    # The sibling add-slots READ-path trap: a clean, closed-attribute class whose
+    # instance ``__dict__`` is READ (``conf.__dict__`` / ``vars(conf)``) — distinct
+    # from the ``__dict__[...] =`` store the enumerability gate already catches.
+    # ``__slots__`` without ``__dict__`` makes that read an ``AttributeError`` /
+    # ``TypeError``. add-slots MUST refuse it (the project-wide ``__dict__``-read scan
+    # sees the load), never land a silent behavior change.
+    "dunder_dict_read": frozenset({"add-slots"}),
     # The JS/TS analogue of provenance_trap: a JS ``throw``-stub whose ONLY contract
     # is its JSDoc ``@example`` block (no jest test links it, so it IS a
     # js-implement-from-jsdoc candidate) but whose two examples are mutually

@@ -43,7 +43,12 @@ from pathlib import Path
 
 from app.execution.cross_file_rename import apply_rename
 from app.execution.objectives.add_slots import plan_add_slots
-from app.execution.slots_synthesis import add_slots, slottable_classes
+from app.execution.slots_synthesis import (
+    _source_dict_reads,
+    _source_weakrefs,
+    add_slots,
+    slottable_classes,
+)
 
 _PHRASE = "the closed-attribute class to give slots"
 
@@ -283,6 +288,154 @@ def test_whole_project_scan_can_only_add_refusals():
     sibling = "class Other:\n    def go(self):\n        self.z = 1\n"
     assert add_slots(main) is not None
     assert add_slots(main, [main, sibling]) is None  # sibling's ``z`` store refuses
+
+
+# --- READ-path hazards: weakref + __dict__/vars() READ (never-fake-green) ----
+#
+# ``__slots__`` (without ``__weakref__`` / ``__dict__`` in the tuple) ALSO breaks two
+# READ paths the STORE-only superset scan never sees: a ``weakref.ref(inst)`` raises
+# ``TypeError`` (no ``__weakref__`` slot) and an ``inst.__dict__`` / ``vars(inst)`` READ
+# raises ``AttributeError`` / ``TypeError`` (no ``__dict__`` slot). Either signal present
+# anywhere in the project -> REFUSE (the name-only scan cannot prove THIS class's
+# instances do not flow to the site — soundness over recall, the store-scan posture).
+
+def test_refuses_when_instance_weakref_ref_taken_in_same_module():
+    src = (
+        "import weakref\n"
+        "\n"
+        "\n"
+        "class _Node:\n"
+        "    def __init__(self, v):\n"
+        "        self.v = v\n"
+        "\n"
+        "\n"
+        "def track(n):\n"
+        "    return weakref.ref(n)\n"
+    )
+    assert slottable_classes(src) == []  # the weakref READ path forbids the slot
+    assert add_slots(src) is None
+
+
+def test_refuses_when_weakref_only_in_a_sibling_source():
+    # The class is clean IN ISOLATION; a SIBLING source takes a weak reference -> the
+    # whole-project READ scan refuses (it cannot prove the class's instances never flow
+    # to that site). Mirrors the cross-module off-slot-store refusal.
+    main = "class _C:\n    def __init__(self, a):\n        self.a = a\n"
+    sibling = "import weakref\ndef hold(o):\n    return weakref.proxy(o)\n"
+    assert add_slots(main) is not None  # slottable alone ...
+    assert add_slots(main, [main, sibling]) is None  # ... refused once the weakref is in scope
+
+
+def test_refuses_weakref_via_from_import_alias():
+    # ``from weakref import ref`` -> a BARE ``ref(...)`` call; the trailing-name match
+    # still counts it (alias-tolerant), so the slot is refused.
+    src = (
+        "from weakref import ref\n"
+        "\n"
+        "\n"
+        "class _C:\n"
+        "    def __init__(self, a):\n"
+        "        self.a = a\n"
+        "\n"
+        "\n"
+        "def keep(o):\n"
+        "    return ref(o)\n"
+    )
+    assert add_slots(src) is None
+
+
+def test_refuses_weakref_container_construction():
+    # Constructing a ``WeakValueDictionary`` implies weak-referenced instances -> the
+    # missing-``__weakref__`` hazard, matched on the trailing token regardless of alias.
+    src = (
+        "import weakref\n"
+        "\n"
+        "\n"
+        "class _C:\n"
+        "    def __init__(self, a):\n"
+        "        self.a = a\n"
+        "\n"
+        "\n"
+        "_REGISTRY = weakref.WeakValueDictionary()\n"
+    )
+    assert add_slots(src) is None
+
+
+def test_refuses_when_instance_dunder_dict_read():
+    # An ``inst.__dict__`` READ (a LOAD, NOT the ``__dict__[...] =`` store) breaks under
+    # a ``__dict__``-less ``__slots__`` -> refuse.
+    src = (
+        "class _C:\n"
+        "    def __init__(self, a):\n"
+        "        self.a = a\n"
+        "\n"
+        "\n"
+        "def snapshot(o):\n"
+        "    return dict(o.__dict__)\n"
+    )
+    assert slottable_classes(src) == []
+    assert add_slots(src) is None
+
+
+def test_refuses_when_vars_called_on_instance():
+    src = (
+        "class _C:\n"
+        "    def __init__(self, a):\n"
+        "        self.a = a\n"
+        "\n"
+        "\n"
+        "def as_map(o):\n"
+        "    return vars(o)\n"
+    )
+    assert add_slots(src) is None
+
+
+def test_dunder_dict_store_alone_does_not_trip_the_read_scan():
+    # EDGE: a ``<expr>.__dict__[...] =`` STORE is NOT a ``__dict__`` READ — the read scan
+    # must ignore it (the dynamic-store gate already handles that store form). A class
+    # with NO such store and a sibling whose ONLY ``__dict__`` use is the store stays
+    # slottable as far as the READ signal is concerned.
+    assert _source_dict_reads("def f(o):\n    o.__dict__['z'] = 1\n") is False
+    # The class itself with a __dict__ store is still refused — by the dynamic-store gate
+    # (a separate path), proving the read scan is not what (incorrectly) catches it here.
+    main = "class _C:\n    def __init__(self, a):\n        self.a = a\n"
+    store_sibling = "def f(o):\n    o.__dict__['z'] = 1\n"
+    assert add_slots(main, [main, store_sibling]) is not None  # store-only sibling: still lands
+
+
+def test_read_scan_helpers_empty_on_unparseable_source():
+    # EMPTY/edge path: an unparseable source contributes NO read signal (a False), so a
+    # syntax-error sibling never spuriously refuses a clean class.
+    assert _source_weakrefs("def (:\n") is False
+    assert _source_dict_reads("def (:\n") is False
+
+
+def test_read_scan_helpers_false_when_no_signal_present():
+    # EMPTY path: a plain source with neither a weakref nor a __dict__/vars read yields
+    # False for both, so the clean-class landing path is unaffected.
+    clean = "class _C:\n    def __init__(self, a):\n        self.a = a\n"
+    assert _source_weakrefs(clean) is False
+    assert _source_dict_reads(clean) is False
+
+
+def test_dotted_vars_is_not_the_builtin_and_does_not_refuse():
+    # EDGE: ``mod.vars(o)`` is an ATTRIBUTE call, not the bare ``vars`` builtin, so it is
+    # NOT a __dict__ read — the clean class still lands. (A bare ``vars`` Name is what the
+    # hazard scan matches.)
+    src = (
+        "import mod\n"
+        "\n"
+        "\n"
+        "class _C:\n"
+        "    def __init__(self, a):\n"
+        "        self.a = a\n"
+        "\n"
+        "\n"
+        "def go(o):\n"
+        "    return mod.vars(o)\n"
+    )
+    assert _source_dict_reads(src) is False
+    assert add_slots(src) is not None  # dotted ``mod.vars`` is not the builtin -> lands
 
 
 # --- the core transform: REFUSALS (honest no-ops) ---------------------------
@@ -576,6 +729,33 @@ def test_parity_soundness_strategy_present_and_no_scope_verify_entry():
     )
     assert "add-slots" not in SCOPE_VERIFY_ALLOWLIST  # scope_verify stays off
     assert strategy_subset_of_registry() == []  # no stale strategy name
+
+
+# --- PARITY ROW 3b: the soundness corpus READ-path shapes -------------------
+
+def test_parity_soundness_corpus_read_path_shapes_refuse_add_slots():
+    # The standing proof: the two new adversarial shapes are present in the corpus and
+    # add-slots REFUSES both (its STORE-only superset proof would otherwise slot them,
+    # silently breaking a weakref / __dict__-read). No other objective VIOLATES on them.
+    from app.engine.soundness_audit import (
+        _SHAPE_MUST_REFUSE,
+        corpus_refusal_findings,
+        corpus_shapes,
+        repo_root,
+    )
+
+    root = repo_root()
+    shapes = set(corpus_shapes(root))
+    assert {"weakref_target", "dunder_dict_read"} <= shapes
+    assert _SHAPE_MUST_REFUSE["weakref_target"] == frozenset({"add-slots"})
+    assert _SHAPE_MUST_REFUSE["dunder_dict_read"] == frozenset({"add-slots"})
+    findings = corpus_refusal_findings(root, include_heavy=False)
+    assert findings["add-slots"]["weakref_target"] == "refused"
+    assert findings["add-slots"]["dunder_dict_read"] == "refused"
+    # no objective lands a (would-be VIOLATION) change on either new shape
+    for per_shape in findings.values():
+        for shape in ("weakref_target", "dunder_dict_read"):
+            assert not per_shape[shape].startswith("VIOLATION")
 
 
 # --- PARITY ROW 4 + 5: facet map and ladder ---------------------------------

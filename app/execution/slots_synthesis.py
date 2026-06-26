@@ -15,7 +15,7 @@ whole-project over-approximation — a future ``add-slots`` objective (``__slots
 also requires no never-mutated-field violations) reuses it unchanged."
 
 SOUNDNESS — the whole point. ``__slots__`` changes ONLY the storage mechanism, not
-any observable VALUE, FOR a class whose attribute set is closed. The single failure
+any observable VALUE, FOR a class whose attribute set is closed. The primary failure
 mode — an attribute STORE to a name not in ``__slots__`` now raising
 ``AttributeError`` at runtime — is closed STATICALLY by requiring the declared slot
 tuple to be a SUPERSET of every attribute name ever stored on ANY instance of this
@@ -34,6 +34,21 @@ proven instance-attribute set (the ``__init__`` ``self.<p> = <p>`` copies, or a
 ``@dataclass``'s field list) in SOURCE ORDER; it never invents a field (honest
 under-claim).
 
+A bare ``__slots__`` tuple (without ``__weakref__`` / ``__dict__`` in it) ALSO drops
+two instance facilities, so it silently breaks two READ paths the store scan never
+sees: (1) ``weakref.ref(inst)`` / ``weakref.proxy(inst)`` / a ``WeakValueDictionary`` /
+``WeakKeyDictionary`` / ``WeakSet`` / ``WeakMethod`` raises ``TypeError`` ("cannot
+create weak reference") with no ``__weakref__`` slot; (2) ``vars(inst)`` /
+``inst.__dict__`` READ raises ``AttributeError`` / ``TypeError`` with no ``__dict__``.
+So two more whole-project signals are computed in the SAME walk over the project
+sources: ``project_weakrefs`` (any ``weakref.ref`` / ``proxy`` call or weakref-container
+construction, matched on the trailing name so ``import weakref as wr`` / ``from weakref
+import ref`` aliases count) and ``project_dict_reads`` (any ``<expr>.__dict__`` LOAD —
+NOT the ``__dict__[...] =`` store, already covered — or a bare ``vars(...)`` call). The
+name-only scan cannot prove THIS class's instances do not flow to such a site, so the
+mere PRESENCE of EITHER signal anywhere in the project REFUSES slotting — the same
+recall sacrifice the store scan already makes for a same-named store.
+
 A class is slotted ONLY when ALL of these hold (otherwise an honest no-op):
 
   - it has NO base other than the implicit ``object`` and no class keywords — a
@@ -45,6 +60,11 @@ A class is slotted ONLY when ALL of these hold (otherwise an honest no-op):
     a class-body default is a ``ValueError`` at class creation;
   - it is NOT a ``Protocol`` / ``ABC`` (``ABCMeta`` metaclass) / ``Enum`` family
     class — slots there are meaningless / harmful;
+  - NO project source takes a WEAK REFERENCE (``weakref.ref`` / ``proxy`` / a
+    ``Weak*`` container) — a missing ``__weakref__`` slot makes that a ``TypeError``;
+  - NO project source READS an instance ``__dict__`` (``inst.__dict__`` LOAD or
+    ``vars(inst)``) — a missing ``__dict__`` slot makes that an ``AttributeError`` /
+    ``TypeError`` (the ``__dict__[...] =`` store is caught by the enumerability gate);
   - its instance-attribute set is statically ENUMERABLE — a boilerplate ``__init__``
     of ``self.<p> = <p>`` copies, or a ``@dataclass``; a ``**kwargs`` capture or a
     non-literal ``setattr`` / ``__dict__`` write defeats enumeration and refuses;
@@ -97,6 +117,17 @@ __all__ = [
 _ABSTRACT_BASE_NAMES = frozenset({
     "Protocol", "ABC", "Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"})
 _ABCMETA_NAMES = frozenset({"ABCMeta", "EnumMeta", "EnumType"})
+
+# A ``weakref.ref(inst)`` / ``weakref.proxy(inst)`` CALL takes a weak reference to its
+# argument — which raises ``TypeError`` ("cannot create weak reference") on an instance
+# of a class whose ``__slots__`` omits ``__weakref__``. Matched by the call's trailing
+# name so ``import weakref as wr`` / ``from weakref import ref`` alias spellings count.
+_WEAKREF_CALL_NAMES = frozenset({"ref", "proxy"})
+# The weakref CONTAINERS — constructing any of these (a ``Name`` / ``Attribute`` whose
+# trailing token is one of these) implies instances are weak-referenced as keys/values,
+# the same missing-``__weakref__``-slot hazard. Matched on the trailing token too.
+_WEAKREF_CONTAINER_NAMES = frozenset(
+    {"WeakValueDictionary", "WeakKeyDictionary", "WeakSet", "WeakMethod"})
 
 
 def _is_dataclass_decorated(cls: ast.ClassDef) -> bool:
@@ -216,6 +247,102 @@ def _has_dynamic_attr_store(cls: ast.ClassDef) -> bool:
     return False
 
 
+def _call_trailing_name(call: ast.Call) -> str | None:
+    """The trailing token of a call's ``func`` — an ``Attribute``'s final ``.attr``
+    (``weakref.ref(...)`` -> ``ref``) or a bare ``Name``'s ``id`` (``ref(...)`` from
+    ``from weakref import ref`` -> ``ref``). Matching the trailing token (not the dotted
+    head) is what makes the scan tolerant of ``import weakref as wr`` alias spellings."""
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
+def _trailing_name(node: ast.expr) -> str | None:
+    """The trailing token of a referenced value — an ``Attribute``'s final ``.attr`` or
+    a ``Name``'s ``id`` — used to spot a weakref CONTAINER spelling (``weakref.WeakSet``
+    or a ``from weakref import WeakSet`` bare ``WeakSet``) regardless of alias."""
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return None
+
+
+def _source_weakrefs(source: str) -> bool:
+    """True when ``source`` takes a WEAK REFERENCE to anything: a ``weakref.ref(...)`` /
+    ``weakref.proxy(...)`` CALL (trailing name in :data:`_WEAKREF_CALL_NAMES`), or a
+    reference to a weakref CONTAINER type (``WeakValueDictionary`` / ``WeakKeyDictionary``
+    / ``WeakSet`` / ``WeakMethod``) — its construction implies weak-referenced instances.
+
+    A class whose instances flow to such a site needs a ``__weakref__`` slot; a name-only
+    project-wide scan cannot prove they do NOT, so its mere PRESENCE refuses slotting
+    (soundness over recall — the same conservatism the closed-attribute store scan keeps).
+    Returns ``False`` on a syntax error (an unparseable module contributes no signal —
+    the per-module parse is the same gate the store scan uses)."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _call_trailing_name(node) in _WEAKREF_CALL_NAMES:
+            return True
+        if _trailing_name(node) in _WEAKREF_CONTAINER_NAMES:
+            return True
+    return False
+
+
+def _store_subscript_dict_bases(tree: ast.AST) -> set[int]:
+    """The ``id()``s of the ``<expr>.__dict__`` ``Attribute`` nodes that are the
+    subscripted base of a ``<expr>.__dict__[...] = ...`` STORE.
+
+    In ``inst.__dict__['z'] = 1`` the ``.__dict__`` attribute is itself a ``Load`` (the
+    dict is loaded, then subscript-stored), so an unfiltered "``__dict__`` Load" scan
+    would mistake that store for a READ. Pre-collecting these base nodes lets
+    :func:`_source_dict_reads` exclude them by identity — the store is already refused by
+    :func:`_is_dict_attr_store` via the dynamic-store gate."""
+    bases: set[int] = set()
+    for node in ast.walk(tree):
+        if _is_dict_attr_store(node):
+            bases.add(id(node.value))  # type: ignore[attr-defined]
+    return bases
+
+
+def _is_vars_call(node: ast.AST) -> bool:
+    """True for a call to a bare ``vars`` ``Name`` — ``vars(inst)``, which returns
+    ``inst.__dict__`` and so raises ``TypeError`` on a ``__dict__``-less ``__slots__``
+    instance. A dotted ``mod.vars(...)`` is NOT the builtin and does not match."""
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "vars")
+
+
+def _source_dict_reads(source: str) -> bool:
+    """True when ``source`` READS instance ``__dict__`` / calls ``vars(...)``: an
+    ``<expr>.__dict__`` attribute LOAD (excluding the ``__dict__[...] =`` store base) or
+    a call to a bare ``vars`` ``Name``.
+
+    Both raise ``AttributeError`` / ``TypeError`` on a ``__slots__`` instance that lacks
+    a ``__dict__``, so a class whose instances flow to either is silently broken by
+    slotting. As with the weakref scan, the name-only project-wide check cannot prove the
+    class's instances do NOT reach the site, so its PRESENCE refuses slotting. The
+    ``__dict__[...] =`` store is intentionally NOT matched here (already handled by the
+    dynamic-store gate). Returns ``False`` on a syntax error."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+    store_bases = _store_subscript_dict_bases(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == "__dict__" \
+                and isinstance(node.ctx, ast.Load) and id(node) not in store_bases:
+            return True
+        if _is_vars_call(node):
+            return True
+    return False
+
+
 def _class_declares_slots(cls: ast.ClassDef) -> bool:
     """True when ``cls`` already binds ``__slots__`` in its body (the idempotency
     guard — a second run sees it and refuses). Reuses ``_class_body_names``."""
@@ -255,13 +382,20 @@ class _ModuleContext(NamedTuple):
     """The per-module facts the slottability gate needs beyond the class itself: the
     module's raw ``source`` and physical ``lines`` (for the public-surface check and
     the splice), whether to apply the public-surface ``refuse_public`` gate (set by
-    the objective; off for in-isolation reasoning), and the whole-project ``mutated``
-    attribute-name over-approximation the closed-attribute proof reads."""
+    the objective; off for in-isolation reasoning), the whole-project ``mutated``
+    attribute-name over-approximation the closed-attribute proof reads, and two
+    whole-project READ signals that ``__slots__`` (without ``__weakref__`` / ``__dict__``
+    in the tuple) silently breaks: ``project_weakrefs`` (any instance is weak-referenced
+    anywhere) and ``project_dict_reads`` (any instance ``__dict__`` / ``vars()`` is READ
+    anywhere). Either present -> refuse (the same recall sacrifice as same-named stores:
+    a name-only scan cannot prove THIS class's instances do not flow to the site)."""
 
     source: str
     lines: list[str]
     refuse_public: bool
     mutated: set[str]
+    project_weakrefs: bool
+    project_dict_reads: bool
 
 
 def _whole_project_mutated(sources: list[str]) -> set[str]:
@@ -274,23 +408,55 @@ def _whole_project_mutated(sources: list[str]) -> set[str]:
     return mutated
 
 
+def _whole_project_weakrefs(sources: list[str]) -> bool:
+    """True when ANY project source takes a weak reference (a ``weakref.ref`` /
+    ``proxy`` call or a weakref-container construction) — the same walk that feeds
+    :func:`_whole_project_mutated`, surfacing the missing-``__weakref__`` READ hazard."""
+    return any(_source_weakrefs(src) for src in sources)
+
+
+def _whole_project_dict_reads(sources: list[str]) -> bool:
+    """True when ANY project source READS instance ``__dict__`` / calls ``vars(...)`` —
+    the missing-``__dict__`` READ hazard, computed over the same source set as
+    :func:`_whole_project_mutated`."""
+    return any(_source_dict_reads(src) for src in sources)
+
+
+def _build_context(
+    source: str, scan_sources: list[str], *, refuse_public: bool
+) -> _ModuleContext:
+    """Assemble the :class:`_ModuleContext` for ``source`` from ``scan_sources`` (the
+    whole-project source set). One walk-set computes all three project-wide signals —
+    the mutated-attribute over-approximation plus the weakref and ``__dict__``-read READ
+    hazards — so both builders share one construction path and stay in lockstep."""
+    return _ModuleContext(
+        source=source, lines=source.splitlines(), refuse_public=refuse_public,
+        mutated=_whole_project_mutated(scan_sources),
+        project_weakrefs=_whole_project_weakrefs(scan_sources),
+        project_dict_reads=_whole_project_dict_reads(scan_sources))
+
+
 def _slot_fields(cls: ast.ClassDef, ctx: _ModuleContext) -> list[str] | None:
     """The slot field list to declare on ``cls``, in source order, or ``None`` when
     ``cls`` fails ANY soundness gate (an honest no-op).
 
     Gates (all must hold): no base other than ``object`` and no class keywords; not
     already ``__slots__``-declared; not a ``Protocol`` / ``ABC`` / ``Enum`` family
-    class; (when ``ctx.refuse_public``) not on the module's public surface; no
-    dynamic attribute-store mechanism; an enumerable, NON-EMPTY field set; no
-    class-attr / slot-name collision; and the field set is a SUPERSET of the
-    whole-project mutated-attribute set (the closed-attribute proof — ANY stored
-    name outside the fields refuses)."""
+    class; no whole-project weakref / ``__dict__``-or-``vars()``-READ signal (either
+    would silently break under a ``__slots__`` lacking ``__weakref__`` / ``__dict__``);
+    (when ``ctx.refuse_public``) not on the module's public surface; no dynamic
+    attribute-store mechanism; an enumerable, NON-EMPTY field set; no class-attr /
+    slot-name collision; and the field set is a SUPERSET of the whole-project
+    mutated-attribute set (the closed-attribute proof — ANY stored name outside the
+    fields refuses)."""
     if not _class_only_object_base(cls):
         return None
     if _class_declares_slots(cls):
         return None
     if _is_abstract_or_enum(cls):
         return None
+    if ctx.project_weakrefs or ctx.project_dict_reads:
+        return None  # a weakref / __dict__-READ site anywhere -> slotting silently breaks it
     if ctx.refuse_public and is_public_name(cls.name, ctx.source):
         return None
     if _has_dynamic_attr_store(cls):
@@ -353,9 +519,7 @@ def slottable_classes(source: str) -> list[str]:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return []
-    ctx = _ModuleContext(
-        source=source, lines=source.splitlines(), refuse_public=False,
-        mutated=_whole_project_mutated([source]))
+    ctx = _build_context(source, [source], refuse_public=False)
     out: list[str] = []
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and _slot_fields(node, ctx) is not None:
@@ -388,9 +552,7 @@ def add_slots(
         return None
 
     scan_sources = [source] if project_sources is None else project_sources
-    ctx = _ModuleContext(
-        source=source, lines=source.splitlines(), refuse_public=refuse_public,
-        mutated=_whole_project_mutated(scan_sources))
+    ctx = _build_context(source, scan_sources, refuse_public=refuse_public)
 
     edits = _collect_slot_edits(tree, ctx)
     if not edits:
