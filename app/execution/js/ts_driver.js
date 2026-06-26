@@ -545,6 +545,16 @@ function hasCjsOrDefaultExport(sf) {
     if (hasDefaultModifier(stmt)) return true;
     // `module.exports`/`exports.` assignment (any depth).
     if (cjsExportTarget(stmt) !== null) return true;
+    // `export * from "./m"` / `export * as ns from "./m"` re-export names we
+    // CANNOT enumerate without a cross-file loader. Their re-exported set is
+    // invisible to `allExportedNames`, so a splice could create a duplicate the
+    // superset oracle can't see -> defer the WHOLE file (refuse). It is an
+    // ExportDeclaration with a moduleSpecifier that is NOT a `export { ... }`
+    // named clause (no clause = `export *`; a NamespaceExport clause =
+    // `export * as ns`). A `export { a, b as c } from "./m"` IS a NamedExports
+    // clause -> names enumerable -> not refused (handled by allExportedNames).
+    if (ts.isExportDeclaration(stmt) && stmt.moduleSpecifier
+        && !(stmt.exportClause && ts.isNamedExports(stmt.exportClause))) return true;
   }
   return false;
 }
@@ -578,6 +588,28 @@ function allExportedNames(sf) {
   return Array.from(names).sort();
 }
 
+// The LOCAL-side identifiers of every `export { local as pub }` / `export { x }`
+// clause — the names ALREADY public (re-exported) even though the local binding
+// carries no `export` modifier. wire-targets must treat these as COLLISIONS so it
+// never re-publishes (`export function local`) a helper already exposed under a
+// renamed re-export. `el.propertyName` is the local side when an alias is present
+// (`local as pub` -> propertyName=local, name=pub); without an alias the local IS
+// `el.name` (`export { x }` -> name=x). NOT folded into `allExportedNames` (that
+// set is the oracle's exported-NAME witness — it must stay the true exported
+// surface `{pub}`, not the locals); this is consumed ONLY by `collectWireTargets`.
+function reexportedLocalNames(sf) {
+  const names = new Set();
+  for (const stmt of sf.statements) {
+    if (ts.isExportDeclaration(stmt) && stmt.exportClause
+        && ts.isNamedExports(stmt.exportClause)) {
+      for (const el of stmt.exportClause.elements) {
+        names.add(el.propertyName ? el.propertyName.text : el.name.text);
+      }
+    }
+  }
+  return names;
+}
+
 // One wireable target: a top-level PUBLIC function/const-arrow that is DEFINED but
 // NOT exported, NOT private (`_`-prefixed), and NOT already named in the file's
 // FULL exported-name set (so we never double-export). `kind` is "function" or
@@ -601,7 +633,11 @@ function wireTargetFor(name, fnNode, stmtNode, sf, kind, alreadyExported) {
 // pure AST.
 function collectWireTargets(sf) {
   if (hasCjsOrDefaultExport(sf)) return [];
+  // The collision set = the true exported-NAME surface PLUS the LOCAL side of
+  // every `export { local as pub }` re-export (already public though the binding
+  // carries no `export` modifier) — so we never double-export a renamed re-export.
   const alreadyExported = new Set(allExportedNames(sf));
+  for (const local of reexportedLocalNames(sf)) alreadyExported.add(local);
   const out = [];
   for (const stmt of sf.statements) {
     if (ts.isFunctionDeclaration(stmt) && stmt.name) {

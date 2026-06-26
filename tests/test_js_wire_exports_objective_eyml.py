@@ -295,6 +295,90 @@ def test_planning_never_touches_the_real_tree(tmp_path: Path):
     assert (root / "src" / "api.ts").read_text(encoding="utf-8") == before
 
 
+# --- collision-aware on renamed re-exports + refuse export* (P2 regressions) ---
+
+@_needs_node
+def test_renamed_reexport_local_is_not_double_exported(tmp_path: Path):
+    # `function local(){}; export { local as pub };` — `local` is ALREADY public
+    # (as `pub`), so wiring `export function local` would double-publish it under
+    # two names. The exported-NAME surface {pub} alone misses `local` (the LOCAL
+    # side of the alias), so wire-targets must union the re-export's local names
+    # into the collision set and REFUSE `local`.
+    root = _with_package_json(tmp_path)
+    src = "function local(x) { return x; }\nexport { local as pub };\n"
+    _project(root, "src/alias.ts", src)
+    targets = wireable_targets(root, "src/alias.ts")
+    assert all(t.name != "local" for t in targets)  # `local` is NOT a wire target
+    # the only candidate was `local`, so the plan lands nothing (no double-export)
+    assert plan_js_wire_exports(str(root), "src/alias.ts").new_contents == {}
+    # the exported-NAME witness stays the TRUE surface {pub} (oracle unperturbed)
+    assert all_exported_names(root, "src/alias.ts") == frozenset({"pub"})
+
+
+@_needs_node
+def test_non_aliased_reexport_still_collides(tmp_path: Path):
+    # `function foo(){}; export { foo };` — the non-aliased clause: the local side
+    # IS `el.name` (no propertyName), so the propertyName-fallback must still treat
+    # `foo` as a collision and refuse it (guards the `el.propertyName ?? el.name`
+    # fallback against a regression).
+    root = _with_package_json(tmp_path)
+    src = "function foo() { return 1; }\nexport { foo };\n"
+    _project(root, "src/named.ts", src)
+    assert all(t.name != "foo" for t in wireable_targets(root, "src/named.ts"))
+    assert plan_js_wire_exports(str(root), "src/named.ts").new_contents == {}
+
+
+@_needs_node
+def test_export_star_refuses_whole_file(tmp_path: Path):
+    # `export * from "./m";` re-exports names this driver CANNOT enumerate without a
+    # cross-file loader (the deferred surface). A splice could create a duplicate the
+    # superset oracle can't see, so the WHOLE file is refused (empty targets).
+    root = _with_package_json(tmp_path)
+    src = 'export * from "./m";\nfunction f() { return 1; }\n'
+    _project(root, "src/star.ts", src)
+    assert wireable_targets(root, "src/star.ts") == []  # whole-file deferral
+    assert plan_js_wire_exports(str(root), "src/star.ts").new_contents == {}
+
+
+@_needs_node
+def test_export_star_as_namespace_refuses_whole_file(tmp_path: Path):
+    # `export * as ns from "./m";` is a NamespaceExport clause (not NamedExports):
+    # its re-exported binding is just as un-enumerable, so the file is refused too.
+    root = _with_package_json(tmp_path)
+    src = 'export * as ns from "./m";\nfunction g() { return 2; }\n'
+    _project(root, "src/starns.ts", src)
+    assert wireable_targets(root, "src/starns.ts") == []
+    assert plan_js_wire_exports(str(root), "src/starns.ts").new_contents == {}
+
+
+@_needs_node
+def test_no_over_refusal_genuine_private_helper_still_wired(tmp_path: Path):
+    # The no-over-refusal invariant: a genuine private helper (un-exported, used by
+    # an exported function) is STILL wired — neither fix may suppress the real case.
+    root = _with_package_json(tmp_path)
+    src = ("function helper(x) { return x + 1; }\n"
+           "export function used() { return helper(0); }\n")
+    _project(root, "src/helper.ts", src)
+    assert [t.name for t in wireable_targets(root, "src/helper.ts")] == ["helper"]
+    wired = plan_js_wire_exports(str(root), "src/helper.ts").new_contents["src/helper.ts"]
+    assert "export function helper" in wired
+    # the exported set grows by exactly {helper} (oracle accepts the surface grow)
+    assert all_exported_names(root, "src/helper.ts") == frozenset({"used"})  # pre-splice
+
+
+@_needs_node
+def test_named_reexport_with_specifier_not_over_refused(tmp_path: Path):
+    # FIX-B precision: `export { a, b as c } from "./m";` carries a moduleSpecifier
+    # but its clause IS NamedExports — the re-exported names (`a`, `c`) ARE
+    # enumerable, so the file must NOT be deferred; a genuine private `priv` is wired.
+    root = _with_package_json(tmp_path)
+    src = ('export { a, b as c } from "./m";\nfunction priv() { return 0; }\n')
+    _project(root, "src/namedfrom.ts", src)
+    assert [t.name for t in wireable_targets(root, "src/namedfrom.ts")] == ["priv"]
+    wired = plan_js_wire_exports(str(root), "src/namedfrom.ts").new_contents["src/namedfrom.ts"]
+    assert "export function priv" in wired
+
+
 # --- registration / 5-registry 1:1 parity (always runs) -----------------------
 
 def test_objective_registers_and_is_available():
