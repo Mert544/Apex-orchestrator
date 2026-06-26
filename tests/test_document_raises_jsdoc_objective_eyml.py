@@ -277,6 +277,110 @@ def test_driver_const_arrow_throw_form(tmp_path: Path):
     assert targets[0].throws_types == ("RangeError",)
 
 
+# --- ESCAPE-ONLY attribution: nested-function boundary + try/catch refuse -------
+# (the P2 over-attribution closure — a `@throws` is the DOCUMENTED function's OWN
+# contract, so a nested callback / nested helper throw is NOT attributed, and any
+# try-with-catch refuses the whole target since deciding what a catch swallows is
+# fragile. A catch-less try/finally does NOT swallow, so it still attributes.)
+
+@_needs_node
+def test_driver_refuses_target_with_try_catch_present(tmp_path: Path):
+    # The exact adversarial-audit shape: a throw inside a nested callback, a throw
+    # inside a nested helper, and a try whose catch SWALLOWS it. NONE of these is
+    # the documented function's own escaping contract; the present `catch` makes the
+    # whole target unprovable -> throwsTypes null (REFUSE the target). Before the
+    # fix the driver wrongly returned ["RangeError","TypeError"].
+    src = (
+        "export function outer(items: number[]): number {\n"
+        "  items.forEach((x) => { if (x < 0) throw new RangeError(\"neg\"); });\n"
+        "  function inner() { throw new TypeError(\"bad\"); }\n"
+        "  try { inner(); } catch (e) { /* swallowed */ }\n"
+        "  return items.length;\n"
+        "}\n"
+    )
+    root = _project(tmp_path, "src/outer.ts", src)
+    targets = doc_targets(root, "src/outer.ts")
+    assert len(targets) == 1
+    assert targets[0].name == "outer"
+    assert targets[0].throws_types is None  # refused (catch present)
+
+
+@_needs_node
+def test_driver_nested_callback_throw_not_attributed(tmp_path: Path):
+    # A throw inside a nested `.forEach` callback, NO try/catch anywhere: it is the
+    # callback's OWN contract, never `loop`'s. The walk does not descend into the
+    # nested function-like, so it is invisible -> throwsTypes [] (vacuously provable,
+    # the honesty gate then refuses — but it is NOT attributed to `loop`).
+    src = (
+        "export function loop(items: number[]): number {\n"
+        "  items.forEach((x) => { if (x < 0) throw new RangeError(\"neg\"); });\n"
+        "  return items.length;\n"
+        "}\n"
+    )
+    root = _project(tmp_path, "src/loop.ts", src)
+    targets = doc_targets(root, "src/loop.ts")
+    assert len(targets) == 1
+    assert targets[0].throws_types == ()  # nested throw NOT counted, no try/catch
+
+
+@_needs_node
+def test_driver_nested_helper_throw_not_attributed(tmp_path: Path):
+    # A throw inside a nested HELPER function declaration (not a callback) is that
+    # helper's contract, not the outer function's — and with no try/catch the outer
+    # function attributes nothing.
+    src = (
+        "export function host(x: number): number {\n"
+        "  function helper() { throw new TypeError(\"bad\"); }\n"
+        "  helper();\n"
+        "  return x;\n"
+        "}\n"
+    )
+    root = _project(tmp_path, "src/host.ts", src)
+    assert doc_targets(root, "src/host.ts")[0].throws_types == ()
+
+
+@_needs_node
+def test_driver_direct_top_level_throw_still_attributed(tmp_path: Path):
+    # The unchanged base case: a function whose ONLY throw is a DIRECT, un-caught
+    # `throw new TypeError(...)` in its own top-level body is still attributed.
+    root = _project(tmp_path, "src/direct.ts",
+                    "export function f(x: number): number {\n"
+                    "  if (x < 0) throw new TypeError(\"bad\");\n"
+                    "  return x;\n"
+                    "}\n")
+    targets = doc_targets(root, "src/direct.ts")
+    assert len(targets) == 1
+    assert targets[0].throws_types == ("TypeError",)
+
+
+@_needs_node
+def test_driver_try_finally_without_catch_still_attributes(tmp_path: Path):
+    # A `try`/`finally` with NO catch does NOT swallow — a direct top-level throw
+    # still escapes, so it is STILL attributed (only a present `catch` refuses).
+    root = _project(tmp_path, "src/tf.ts",
+                    "export function g(x: number): number {\n"
+                    "  if (x < 0) throw new TypeError(\"bad\");\n"
+                    "  try { run(); } finally { cleanup(); }\n"
+                    "  return x;\n"
+                    "}\n")
+    targets = doc_targets(root, "src/tf.ts")
+    assert len(targets) == 1
+    assert targets[0].throws_types == ("TypeError",)
+
+
+@_needs_node
+def test_driver_direct_throw_inside_try_with_catch_refuses(tmp_path: Path):
+    # Even a DIRECT throw is refused when it sits inside a try whose catch may
+    # swallow it — the present catch makes the escape set unprovable.
+    root = _project(tmp_path, "src/tc.ts",
+                    "export function h(x: number): number {\n"
+                    "  try { if (x < 0) throw new TypeError(\"bad\"); }\n"
+                    "  catch (e) { return 0; }\n"
+                    "  return x;\n"
+                    "}\n")
+    assert doc_targets(root, "src/tc.ts")[0].throws_types is None
+
+
 @_needs_node
 def test_driver_skips_unexported_and_destructured(tmp_path: Path):
     src = (

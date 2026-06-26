@@ -137,6 +137,20 @@ function paramTypes(node, sf) {
 // (the same null-on-unmodelled-shape discipline as `paramTypes`). A body with zero
 // throws yields [] (vacuously provable, empty) — the Python honesty gate then
 // refuses it (nothing to document), never an empty @throws block.
+//
+// ESCAPE-only attribution (the refuse-on-uncertainty fix). A `@throws` is the
+// DOCUMENTED function's OWN failure contract, so only a throw that actually
+// escapes THIS function counts:
+//   (1) NESTED-FUNCTION boundary — a `throw` inside a nested function/method/arrow/
+//       constructor (e.g. an `items.forEach((x) => { throw ... })` callback or an
+//       inner helper) is THAT function's contract, not the documented one. The walk
+//       therefore does NOT descend into any function-like child other than the root
+//       node; its throws are invisible here.
+//   (2) try/catch — statically deciding which throws a `catch` swallows vs.
+//       re-throws is fragile, so the SOUND rule is to REFUSE the whole target
+//       (return null) the moment the body contains ANY `try` with a `catch` clause.
+//       A `try`/`finally` with NO `catch` does NOT swallow — those throws still
+//       escape — so a catch-less try alone never triggers the refusal.
 function throwsTypes(node) {
   const body = node.body;
   if (!body || !ts.isBlock(body)) return [];
@@ -144,6 +158,9 @@ function throwsTypes(node) {
   const names = [];
   let provable = true;
   function visit(n) {
+    // A `try`/`catch` may swallow a throw — refuse the whole target (only a
+    // PRESENT catch clause swallows; a catch-less `try`/`finally` does not).
+    if (ts.isTryStatement(n) && n.catchClause) provable = false;
     if (ts.isThrowStatement(n)) {
       const expr = n.expression;
       if (expr && ts.isNewExpression(expr) && ts.isIdentifier(expr.expression)) {
@@ -156,7 +173,12 @@ function throwsTypes(node) {
         provable = false;  // a throw whose ctor we cannot read verbatim -> refuse
       }
     }
-    ts.forEachChild(n, visit);
+    ts.forEachChild(n, (child) => {
+      // Do NOT descend into a nested function-like node — its throws are its OWN
+      // contract, never the documented function's. Only the root body is walked.
+      if (child !== node && ts.isFunctionLike(child)) return;
+      visit(child);
+    });
   }
   visit(body);
   return provable ? names : null;
