@@ -128,6 +128,23 @@ _WEAKREF_CALL_NAMES = frozenset({"ref", "proxy"})
 # the same missing-``__weakref__``-slot hazard. Matched on the trailing token too.
 _WEAKREF_CONTAINER_NAMES = frozenset(
     {"WeakValueDictionary", "WeakKeyDictionary", "WeakSet", "WeakMethod"})
+# Every ``weakref`` export whose call / construction takes a weak reference — the union
+# of the call and container names. A module-level ``from weakref import <name> as <x>``
+# binds the LOCAL token ``x`` to one of these, which the trailing-name scan alone MISSES
+# (``r(inst)`` from ``from weakref import ref as r`` reads as a bare ``r`` ∉ these sets),
+# so the alias map below re-canonicalises it — the exact clone of the runtime-skip
+# ``from pytest import skip as s`` hole closed in ``stub_synthesis._collect_skip_aliases``.
+_WEAKREF_CANONICALS = _WEAKREF_CALL_NAMES | _WEAKREF_CONTAINER_NAMES
+# Modules whose ``ref`` / ``proxy`` / ``Weak*`` exports we trust as the genuine weak-ref
+# surface (so a ``from somethingelse import ref`` of an UNRELATED ``ref`` is not mistaken
+# for a weak reference). Mirrors ``stub_synthesis._SKIP_IMPORT_MODULES``.
+_WEAKREF_IMPORT_MODULES = frozenset({"weakref"})
+
+# The builtin ``vars(inst)`` returns ``inst.__dict__``; a ``from builtins import vars as
+# v`` rebinds it to a LOCAL token (``v(inst)``), again invisible to a bare-name match, so
+# the same alias resolution applies to the ``__dict__``-read scan.
+_DICT_READ_CANONICALS = frozenset({"vars"})
+_DICT_READ_IMPORT_MODULES = frozenset({"builtins"})
 
 
 def _is_dataclass_decorated(cls: ast.ClassDef) -> bool:
@@ -271,25 +288,83 @@ def _trailing_name(node: ast.expr) -> str | None:
     return None
 
 
+def _collect_import_aliases(
+    tree: ast.Module, modules: frozenset[str], canonicals: frozenset[str]
+) -> set[str]:
+    """The LOCAL names a module's top-level imports bind to any export in ``canonicals``
+    that comes from a trusted ``modules`` source — so a ``from weakref import ref as r``
+    (``ImportFrom``, module ``weakref``, export ``ref`` ∈ ``canonicals``) yields ``{"r"}``.
+    An ``import weakref.ref as x`` style ``ast.Import`` whose dotted TAIL is a canonical
+    contributes its ``asname`` too. Mirrors ``stub_synthesis._collect_skip_aliases`` (and
+    the import-walking in ``type_annotations._module_bound_names``): only a trusted-module
+    export is aliased, so a same-named export of an UNRELATED module is never resolved.
+
+    A bare ``import weakref`` / ``import weakref as wr`` binds the MODULE, not a constructor,
+    so it contributes NO local alias — the ``wr.ref`` attribute form already reads through
+    the trailing-name heuristic and needs no entry (the attribute path stays unchanged)."""
+    out: set[str] = set()
+    for stmt in tree.body:
+        if isinstance(stmt, ast.ImportFrom):
+            if stmt.module not in modules:
+                continue
+            for alias in stmt.names:
+                if alias.name in canonicals:
+                    out.add(alias.asname or alias.name)
+        elif isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                tail = alias.name.rsplit(".", 1)[-1]
+                if alias.asname and tail in canonicals:
+                    out.add(alias.asname)
+    return out
+
+
+def _call_is_weakref(call: ast.Call, aliases: set[str]) -> bool:
+    """True when ``call``'s callee resolves to a weak-ref constructor: its trailing token
+    is a known weak-ref call name (``weakref.ref`` / a non-aliased ``from weakref import
+    ref``), OR a BARE-``Name`` callee whose id is a module-level ``from``-import ALIAS of
+    one (``from weakref import ref as r`` -> ``r(inst)``). The trailing-token branch keeps
+    the attribute form (``wr.ref``) and the un-renamed bare form working unchanged."""
+    name = _call_trailing_name(call)
+    if name in _WEAKREF_CALL_NAMES:
+        return True
+    return isinstance(call.func, ast.Name) and call.func.id in aliases
+
+
+def _ref_is_weakref_container(node: ast.expr, aliases: set[str]) -> bool:
+    """True when ``node`` references a weakref CONTAINER type: its trailing token is a
+    known container name (``weakref.WeakSet`` / a non-aliased ``from weakref import
+    WeakSet``), OR a BARE ``Name`` aliased to one at module level (``WeakSet as W``)."""
+    if _trailing_name(node) in _WEAKREF_CONTAINER_NAMES:
+        return True
+    return isinstance(node, ast.Name) and node.id in aliases
+
+
 def _source_weakrefs(source: str) -> bool:
     """True when ``source`` takes a WEAK REFERENCE to anything: a ``weakref.ref(...)`` /
-    ``weakref.proxy(...)`` CALL (trailing name in :data:`_WEAKREF_CALL_NAMES`), or a
-    reference to a weakref CONTAINER type (``WeakValueDictionary`` / ``WeakKeyDictionary``
-    / ``WeakSet`` / ``WeakMethod``) — its construction implies weak-referenced instances.
+    ``weakref.proxy(...)`` CALL (trailing name in :data:`_WEAKREF_CALL_NAMES`, OR a bare
+    callee that is a module-level ``from weakref import ref as r`` ALIAS), or a reference
+    to a weakref CONTAINER type (``WeakValueDictionary`` / ``WeakKeyDictionary`` /
+    ``WeakSet`` / ``WeakMethod``, by trailing token OR by ``... as W`` alias) — its
+    construction implies weak-referenced instances.
 
-    A class whose instances flow to such a site needs a ``__weakref__`` slot; a name-only
-    project-wide scan cannot prove they do NOT, so its mere PRESENCE refuses slotting
-    (soundness over recall — the same conservatism the closed-attribute store scan keeps).
-    Returns ``False`` on a syntax error (an unparseable module contributes no signal —
-    the per-module parse is the same gate the store scan uses)."""
+    The module-level import aliases are resolved FIRST (:func:`_collect_import_aliases`):
+    a from-import rename binds a LOCAL token a trailing-name scan alone misses (``r(inst)``
+    reads as bare ``r``), the exact clone of the runtime-skip ``from pytest import skip as
+    s`` hole. A class whose instances flow to such a site needs a ``__weakref__`` slot; a
+    name-only project-wide scan cannot prove they do NOT, so its mere PRESENCE refuses
+    slotting (soundness over recall — the same conservatism the closed-attribute store scan
+    keeps). Returns ``False`` on a syntax error (an unparseable module contributes no
+    signal — the per-module parse is the same gate the store scan uses)."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return False
+    aliases = _collect_import_aliases(
+        tree, _WEAKREF_IMPORT_MODULES, _WEAKREF_CANONICALS)
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and _call_trailing_name(node) in _WEAKREF_CALL_NAMES:
+        if isinstance(node, ast.Call) and _call_is_weakref(node, aliases):
             return True
-        if _trailing_name(node) in _WEAKREF_CONTAINER_NAMES:
+        if _ref_is_weakref_container(node, aliases):
             return True
     return False
 
@@ -310,35 +385,57 @@ def _store_subscript_dict_bases(tree: ast.AST) -> set[int]:
     return bases
 
 
-def _is_vars_call(node: ast.AST) -> bool:
-    """True for a call to a bare ``vars`` ``Name`` — ``vars(inst)``, which returns
-    ``inst.__dict__`` and so raises ``TypeError`` on a ``__dict__``-less ``__slots__``
-    instance. A dotted ``mod.vars(...)`` is NOT the builtin and does not match."""
-    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "vars")
+def _is_vars_call(node: ast.AST, aliases: set[str]) -> bool:
+    """True for a call to the builtin ``vars`` by a bare ``Name`` — ``vars(inst)``, which
+    returns ``inst.__dict__`` and so raises ``TypeError`` on a ``__dict__``-less
+    ``__slots__`` instance — including a ``from builtins import vars as v`` rename whose
+    LOCAL token ``v`` is in ``aliases`` (``v(inst)``). A dotted ``mod.vars(...)`` is NOT the
+    builtin and does not match (no instance ``__dict__`` is read)."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+        return False
+    return node.func.id == "vars" or node.func.id in aliases
+
+
+def _is_getattr_dict_read(node: ast.AST) -> bool:
+    """True for a ``getattr(<expr>, "__dict__"[, ...])`` call — the builtin ``getattr`` by
+    a bare ``Name`` whose 2nd argument is the string literal ``"__dict__"``. This reads the
+    instance ``__dict__`` exactly as ``inst.__dict__`` does (raising on a ``__dict__``-less
+    ``__slots__`` instance), but as a CALL it slips past the ``.__dict__`` attribute scan —
+    so it is matched here. A non-literal 2nd arg (a computed name) is conservatively NOT
+    matched by this specific shape; the field-enumeration gate covers dynamic access."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr" and len(node.args) >= 2):
+        return False
+    name_arg = node.args[1]
+    return isinstance(name_arg, ast.Constant) and name_arg.value == "__dict__"
 
 
 def _source_dict_reads(source: str) -> bool:
     """True when ``source`` READS instance ``__dict__`` / calls ``vars(...)``: an
-    ``<expr>.__dict__`` attribute LOAD (excluding the ``__dict__[...] =`` store base) or
-    a call to a bare ``vars`` ``Name``.
+    ``<expr>.__dict__`` attribute LOAD (excluding the ``__dict__[...] =`` store base), a
+    call to the builtin ``vars`` (bare ``Name`` or a ``from builtins import vars as v``
+    ALIAS), or a ``getattr(<expr>, "__dict__")`` call (the CALL form that bypasses the
+    attribute scan).
 
-    Both raise ``AttributeError`` / ``TypeError`` on a ``__slots__`` instance that lacks
-    a ``__dict__``, so a class whose instances flow to either is silently broken by
-    slotting. As with the weakref scan, the name-only project-wide check cannot prove the
-    class's instances do NOT reach the site, so its PRESENCE refuses slotting. The
-    ``__dict__[...] =`` store is intentionally NOT matched here (already handled by the
-    dynamic-store gate). Returns ``False`` on a syntax error."""
+    All raise ``AttributeError`` / ``TypeError`` on a ``__slots__`` instance that lacks a
+    ``__dict__``, so a class whose instances flow to any is silently broken by slotting. As
+    with the weakref scan, module-level import aliases are resolved first so a ``vars``
+    rename is not missed, and the name-only project-wide check cannot prove the class's
+    instances do NOT reach the site, so its PRESENCE refuses slotting. The ``__dict__[...]
+    =`` store is intentionally NOT matched here (already handled by the dynamic-store gate).
+    Returns ``False`` on a syntax error."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return False
+    aliases = _collect_import_aliases(
+        tree, _DICT_READ_IMPORT_MODULES, _DICT_READ_CANONICALS)
     store_bases = _store_subscript_dict_bases(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and node.attr == "__dict__" \
                 and isinstance(node.ctx, ast.Load) and id(node) not in store_bases:
             return True
-        if _is_vars_call(node):
+        if _is_vars_call(node, aliases) or _is_getattr_dict_read(node):
             return True
     return False
 

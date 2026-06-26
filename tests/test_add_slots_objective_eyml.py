@@ -438,6 +438,127 @@ def test_dotted_vars_is_not_the_builtin_and_does_not_refuse():
     assert add_slots(src) is not None  # dotted ``mod.vars`` is not the builtin -> lands
 
 
+# --- READ-path hazards: from-import ALIAS resolution (the P0 hole) -----------
+#
+# The trailing-name scan alone MISSES a ``from weakref import ref as r`` rename: ``r(inst)``
+# reads as a bare ``r`` ∉ the call-name set, so the class would be SLOTTED and
+# ``weakref.ref(inst)`` would raise ``TypeError`` at runtime — the exact clone of the
+# runtime-skip ``from pytest import skip as s`` hole. The fix resolves module-level
+# weakref / builtins import aliases first. These tests FAIL pre-fix (the aliased fixture
+# was slotted) and pass post-fix (refused), and they regression-guard the attribute form
+# (``wr.ref``) and the NON-aliased ``from weakref import ref`` which already refused.
+
+def _weak_fixture(import_line: str, call_expr: str) -> str:
+    """A private slottable class plus a function that calls ``call_expr`` under
+    ``import_line`` — the closed-attribute class is clean, so ONLY the weakref/dict-read
+    signal can refuse it."""
+    return (
+        f"{import_line}\n"
+        "\n"
+        "\n"
+        "class _C:\n"
+        "    def __init__(self, a):\n"
+        "        self.a = a\n"
+        "\n"
+        "\n"
+        "def use(o):\n"
+        f"    return {call_expr}\n"
+    )
+
+
+def test_refuses_weakref_ref_via_from_import_rename():
+    # ``from weakref import ref as r`` -> ``r(inst)``: the bare-``Name`` alias resolves to
+    # the canonical ``ref``, so the slot is refused. (Pre-fix this fixture was SLOTTED.)
+    src = _weak_fixture("from weakref import ref as r", "r(o)")
+    assert _source_weakrefs(src) is True
+    assert slottable_classes(src) == []
+    assert add_slots(src) is None
+
+
+def test_refuses_weakref_proxy_via_from_import_rename():
+    src = _weak_fixture("from weakref import proxy as p", "p(o)")
+    assert _source_weakrefs(src) is True
+    assert add_slots(src) is None
+
+
+def test_refuses_weakvaluedictionary_via_from_import_rename():
+    # A renamed weakref CONTAINER: ``from weakref import WeakValueDictionary as W`` ->
+    # ``W()`` construction implies weak-referenced instances -> refuse.
+    src = _weak_fixture("from weakref import WeakValueDictionary as W", "W()")
+    assert _source_weakrefs(src) is True
+    assert add_slots(src) is None
+
+
+def test_refuses_weakset_via_from_import_rename():
+    src = _weak_fixture("from weakref import WeakSet as W", "W()")
+    assert _source_weakrefs(src) is True
+    assert add_slots(src) is None
+
+
+def test_refuses_vars_via_from_builtins_rename():
+    # ``from builtins import vars as v`` -> ``v(inst)`` reads ``inst.__dict__`` -> refuse.
+    src = _weak_fixture("from builtins import vars as v", "v(o)")
+    assert _source_dict_reads(src) is True
+    assert add_slots(src) is None
+
+
+def test_refuses_getattr_dunder_dict_read():
+    # ``getattr(inst, "__dict__")`` reads the instance ``__dict__`` as a CALL that slips
+    # past the ``.__dict__`` attribute scan -> caught by the getattr-literal shape.
+    src = (
+        "class _C:\n"
+        "    def __init__(self, a):\n"
+        "        self.a = a\n"
+        "\n"
+        "\n"
+        "def snap(o):\n"
+        "    return getattr(o, \"__dict__\")\n"
+    )
+    assert _source_dict_reads(src) is True
+    assert slottable_classes(src) == []
+    assert add_slots(src) is None
+
+
+# --- regression guards: the forms that ALREADY refused must keep refusing ----
+
+def test_regression_weakref_attribute_form_still_refuses():
+    # ``import weakref as wr; wr.ref(inst)`` — the attribute form reads through the
+    # trailing token unchanged; the alias fix must not regress it.
+    src = _weak_fixture("import weakref as wr", "wr.ref(o)")
+    assert _source_weakrefs(src) is True
+    assert add_slots(src) is None
+
+
+def test_regression_non_aliased_from_weakref_import_still_refuses():
+    # ``from weakref import ref`` with NO rename -> bare ``ref(inst)`` whose trailing token
+    # is the canonical; both the pre-fix trailing scan and the alias map catch it.
+    src = _weak_fixture("from weakref import ref", "ref(o)")
+    assert _source_weakrefs(src) is True
+    assert add_slots(src) is None
+
+
+# --- soundness: a same-named import from an UNRELATED module does NOT refuse --
+
+def test_unrelated_module_ref_alias_does_not_over_refuse():
+    # ``from other import ref as r`` is NOT the weakref surface (untrusted module), so the
+    # alias resolution does NOT bind ``r`` -> the clean class STILL slots (no false refusal,
+    # mirroring the trusted-module gate of ``_collect_skip_aliases``).
+    src = _weak_fixture("from other import ref as r", "r(o)")
+    assert _source_weakrefs(src) is False
+    assert add_slots(src) is not None
+
+
+def test_clean_class_with_no_read_hazard_anywhere_still_slots():
+    # OVER-REFUSAL guard: a slottable class with NEITHER a weakref nor any __dict__/vars/
+    # getattr read present STILL slots — the alias machinery never spuriously refuses.
+    src = "class _C:\n    def __init__(self, a):\n        self.a = a\n"
+    assert _source_weakrefs(src) is False
+    assert _source_dict_reads(src) is False
+    out = add_slots(src)
+    assert out is not None
+    assert _slots_of(out) == {"_C": ("a",)}
+
+
 # --- the core transform: REFUSALS (honest no-ops) ---------------------------
 
 def test_refuses_class_with_non_object_base():
