@@ -203,6 +203,78 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     return 1
 
 
+def _value_landed_metric(target: Path) -> dict:
+    """The value-landed metric for ``target`` — via the right adapter.
+
+    Folds the project's persisted ``.apex/proof-of-fix.json`` when present (the
+    zero-cost cross-run path, via :func:`value_landed`), else runs a report-only
+    ``develop session`` (``apply=False``, lands NOTHING) and scores the in-memory
+    report via :func:`value_landed_from_session`. One metric, two adapters — the
+    CLI picks the source; the scoring core is shared."""
+    from app.engine.value_landed import value_landed, value_landed_from_session
+
+    proof = target / ".apex" / "proof-of-fix.json"
+    if proof.is_file():
+        try:
+            return value_landed(json.loads(proof.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            pass
+    from app.engine.develop_session import run_develop_session
+
+    return value_landed_from_session(run_develop_session(target, apply=False))
+
+
+def _render_value_landed_markdown(metric: dict, target: Path,
+                                  gaps: list[str]) -> str:
+    """Render the value-landed metric as a deterministic markdown block — mirrors
+    the north-star/soundness audit renderers (pure, clock-free)."""
+    lines = [
+        "# Apex Self-Audit — Value landed",
+        f"**Target:** {target}",
+        "",
+        f"- Verdict: {metric['verdict']}",
+        f"- Verified value: {metric['value_landed_verified']:.2f} "
+        f"({metric['moves_verified']} move(s))",
+        f"- Weak value: {metric['value_landed_weak']:.2f} "
+        f"({metric['moves_weak']} move(s))",
+        f"- Unverified value: {metric['value_landed_unverified']:.2f} "
+        f"({metric['moves_unverified']} move(s))",
+        f"- By tier (verified): tier1={metric['by_tier']['tier1']:.2f}, "
+        f"tier2={metric['by_tier']['tier2']:.2f}, "
+        f"tier3={metric['by_tier']['tier3']:.2f}",
+    ]
+    if gaps:
+        lines.append(
+            "- VALUE-COVERAGE GAP (objectives with no explicit tier): "
+            + ", ".join(gaps))
+    return "\n".join(lines)
+
+
+def _run_value_landed_audit(args: argparse.Namespace) -> int:
+    """``apex self-audit --value-landed`` — the deterministic buyer-value metric.
+
+    Mirrors ``--north-star``: compute the value landed (from the project's proof
+    history, or a report-only session), print markdown or ``--json``, and flag any
+    registered objective missing an explicit value tier (the coverage tripwire).
+    Exit 0 by default (it REPORTS value, it does not gate on drift) — UNLESS
+    ``--min-verified-value V`` is given, then non-zero when the verified value is
+    below the floor (a CI value floor for buyers)."""
+    from app.engine.value_landed import value_coverage_gaps
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    metric = _value_landed_metric(target)
+    gaps = value_coverage_gaps()
+    if args.format == "json":
+        print(json.dumps({**metric, "value_coverage_gaps": gaps}, indent=2,
+                         default=str))
+    else:
+        print(_render_value_landed_markdown(metric, target, gaps))
+    floor = getattr(args, "min_verified_value", None)
+    if floor is not None and metric["value_landed_verified"] < floor:
+        return 1
+    return 0
+
+
 def cmd_self_audit(args: argparse.Namespace) -> int:
     if getattr(args, "north_star", False):
         from app.engine.north_star_audit import north_star_report, render_markdown
@@ -230,6 +302,9 @@ def cmd_self_audit(args: argparse.Namespace) -> int:
         else:
             print(render_markdown(report, sound_root))
         return 1 if report["violations"] else 0
+
+    if getattr(args, "value_landed", False):
+        return _run_value_landed_audit(args)
 
     from app.agents.skills.self_audit_agent import SelfAuditAgent
 
@@ -596,6 +671,16 @@ def register_parsers(subparsers) -> None:
         "--determinism", action="store_true",
         help="With --soundness: also run the heavy §4 determinism sweep (each objective "
              "twice under varied PYTHONHASHSEED/cwd/TZ; spawns interpreters)",
+    )
+    self_audit_parser.add_argument(
+        "--value-landed", action="store_true",
+        help="Measure the deterministic value LANDED (verified buyer-value held, by tier) "
+             "from the project's proof history or a report-only develop session; reports only",
+    )
+    self_audit_parser.add_argument(
+        "--min-verified-value", type=float, default=None,
+        help="With --value-landed: a CI value FLOOR — exit non-zero when the verified "
+             "value landed is below V (default: report only, exit 0)",
     )
     self_audit_parser.set_defaults(func=cmd_self_audit)
 

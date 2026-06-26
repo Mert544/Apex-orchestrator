@@ -30,6 +30,7 @@ from app.engine.proof_of_fix import (
     proof_hash,
     proof_manifest,
 )
+from app.engine.value_landed import value_landed
 
 __all__ = [
     "BUNDLE_SCHEMA",
@@ -38,6 +39,8 @@ __all__ = [
     "proof_hash",
     "proof_manifest",
     "write_bundle",
+    "value_bundle",
+    "write_value_bundle",
 ]
 
 
@@ -52,6 +55,37 @@ def write_bundle(
     it. Returns the path written."""
     bundle = proof_bundle(artifact_or_records)
     path = Path(out) if out else Path(project_root) / ".apex" / "proof-bundle.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def value_bundle(artifact_or_records: Any) -> dict:
+    """The proof bundle PLUS a buyer ``value`` block — the realized-value view.
+
+    The existing :func:`proof_bundle` UNCHANGED (its ``proof_hash`` and
+    ``summary`` byte-identical), with a ``value`` block from
+    :func:`app.engine.value_landed.value_landed` added ALONGSIDE it. The value
+    block is a DERIVED view of the same records, so it stays OUTSIDE
+    ``proof_hash`` (which seals audited facts only) — the tamper seal and every
+    existing bundle consumer are unaffected. Deterministic: same records in →
+    identical bundle out (no time, no randomness, no hash-order)."""
+    bundle = proof_bundle(artifact_or_records)
+    bundle["value"] = value_landed(artifact_or_records)
+    return bundle
+
+
+def write_value_bundle(
+    artifact_or_records: Any,
+    project_root: str | Path,
+    out: str | Path | None = None,
+) -> Path:
+    """Write the value-augmented bundle (default: ``.apex/value-bundle.json``).
+
+    Additive side-car beside ``proof-bundle.json`` / ``proof-of-fix.json`` — it
+    never touches either. Returns the path written."""
+    bundle = value_bundle(artifact_or_records)
+    path = Path(out) if out else Path(project_root) / ".apex" / "value-bundle.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
     return path

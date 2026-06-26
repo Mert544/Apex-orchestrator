@@ -57,6 +57,7 @@ from app.engine.objective_compiler import (
     CompileResult,
     compile_objective,
 )
+from app.engine.value_landed import value_landed_from_session
 
 __all__ = [
     "SessionMove", "SessionObjective", "SessionReport",
@@ -758,13 +759,62 @@ def _tier_footnote(report: SessionReport) -> list[str]:
     return note
 
 
+_TIER_LABEL = {
+    "tier1": "Tier 1 (lands new code)",
+    "tier2": "Tier 2 (structural)",
+    "tier3": "Tier 3 (idiom)",
+}
+
+
+def _value_landed_lines(report: SessionReport) -> list[str]:
+    """The buyer's value scorecard ON the landed diff — present ONLY when moves
+    landed, so a no-op / nothing-landed report renders byte-identically.
+
+    A pure render of :func:`value_landed_from_session(report)`: the verified
+    total with the honest weak/unverified split, a per-tier table over the
+    verified moves, and the top contributions (each a real landed diff below).
+    No clock/random."""
+    metric = value_landed_from_session(report)
+    lines = [
+        "",
+        "## Value landed (what a buyer would pay for)",
+        "",
+        f"**{metric['value_landed_verified']:.2f} verified value** landed "
+        f"({metric['moves_verified']} move(s)) — "
+        f"{metric['value_landed_weak']:.2f} weak, "
+        f"{metric['value_landed_unverified']:.2f} unverified (disclosed, not "
+        "counted as verified).",
+        "",
+        "| Tier | Verified moves | Verified value |",
+        "| --- | --- | --- |",
+    ]
+    for tier in ("tier1", "tier2", "tier3"):
+        lines.append(
+            f"| {_TIER_LABEL[tier]} | {metric['moves_by_tier'][tier]} | "
+            f"{metric['by_tier'][tier]:.2f} |")
+    top = [c for c in metric["top_contributions"] if c["bucket"] == "verified"]
+    if top:
+        lines.append("")
+        lines.append("Top verified contributions:")
+        for c in top:
+            target = c["target"] or "(project)"
+            lines.append(f"- `{c['operator']}` → {target} ({c['value']:.2f})")
+    return lines
+
+
 def render_session_markdown(report: SessionReport) -> str:
     """Render the combined session report — the buyer artifact.
 
     Pure function of the report: a stable headline, the per-objective breakdown,
-    and the unified diff (the tangible code Apex landed). No clock/random, so the
-    same report renders byte-identically every time."""
+    the value scorecard (only when moves landed), and the unified diff (the
+    tangible code Apex landed). No clock/random, so the same report renders
+    byte-identically every time."""
     lines = _render_summary(report)
+    # Additive, present-only-when-present: the value scorecard appears ONLY for an
+    # applied session that actually landed a move, so a report-only / no-op /
+    # nothing-landed report is byte-identical to before.
+    if report.applied and report.total_moves:
+        lines += _value_landed_lines(report)
     if report.applied and report.diff:
         lines.append("")
         lines.append("## The verified diff (the tangible artifact)")
