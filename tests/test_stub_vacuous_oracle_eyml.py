@@ -33,9 +33,11 @@ from pathlib import Path
 
 from app.execution.stub_synthesis import (
     StubFunction,
+    _build_skip_context,
     _has_enforceable_contract,
     _is_runtime_skip_stmt,
     _pins_a_value,
+    _test_function_is_enforced,
     _unenforced_line_ranges,
     can_fill_stub_in_process,
     pinned_test_files,
@@ -556,3 +558,277 @@ def test_unenforced_line_ranges_empty_on_no_tests_and_syntax_error():
     # yields ``[]`` (a parse failure must never silently drop a real contract).
     assert _unenforced_line_ranges("X = 1\n") == []
     assert _unenforced_line_ranges("def broken(:\n") == []
+
+
+# --- P0-A: renamed ``from``-import alias skip must refuse like the attribute form --
+#
+# ``from pytest import skip as s`` then ``s("wip")`` opening a pinning test never
+# enforces its asserts, but the OLD ``_skip_call_name`` returned the LOCAL token ``s``
+# (∉ the canonical set) so the skip was INVISIBLE and the vacuous Pass-2 gate landed
+# the wrong ``n*2``. The fix resolves module-level skip-import aliases into a
+# ``{local -> canonical}`` map so a bare-``Name`` callee/raise resolves correctly.
+# ``EXP[...]`` keeps the witness non-evaluable so control reaches the pytest gate.
+
+# (import_header, body_prefix) pairs — each unconditionally suspends the test via a
+# RENAMED alias of the pytest/unittest skip surface.
+_FROM_ALIAS_SKIP_VECTORS = {
+    "skip_as_s": ("from pytest import skip as s\n", '    s("wip")\n'),
+    "xfail_as_xf": ("from pytest import xfail as xf\n", '    xf("wip")\n'),
+    "importorskip_as_imp": (
+        "from pytest import importorskip as imp\n",
+        '    imp("definitely_missing_mod")\n'),
+    "skiptest_as_E": (
+        "from unittest import SkipTest as E\n", "    raise E\n"),
+}
+
+
+def _alias_skip_project(tmp_path: Path, import_header: str,
+                        body_prefix: str) -> tuple[Path, str]:
+    # A 1-arg int stub whose only pinning test imports a RENAMED skip alias and opens
+    # its body with it before two non-literal-expected asserts. Returns (module_path,
+    # original_source) for a byte-equality check after a refused apply.
+    _suite_project(tmp_path)
+    original = "def scale(n):\n    raise NotImplementedError\n"
+    _write(tmp_path, "app/scale.py", original)
+    _write(tmp_path, "tests/test_scale.py",
+           import_header
+           + "from app.scale import scale\n"
+           "EXP = {3: 6, 5: 10}\n"
+           "def test_scale():\n"
+           + body_prefix
+           + "    assert scale(3) == EXP[3]\n"
+           "    assert scale(5) == EXP[5]\n")
+    return (tmp_path / "app" / "scale.py"), original
+
+
+def test_from_import_alias_skip_refuses_each_form(tmp_path: Path):
+    # P0-A end-to-end: a renamed ``from``-import skip alias opening the only pinning
+    # test makes the Pass-2 gate vacuous, so ``synthesize_stub_body`` MUST refuse and
+    # the module stays byte-for-byte unchanged (no wrong ``n*2`` lands).
+    stub = StubFunction("scale", ("n",), 1, 2, "", False)
+    for label, (hdr, line) in _FROM_ALIAS_SKIP_VECTORS.items():
+        sub = tmp_path / label
+        sub.mkdir()
+        module_path, original = _alias_skip_project(sub, hdr, line)
+        tf = pinned_test_files(sub, "app/scale.py", "scale")
+        assert tf == ["tests/test_scale.py"], label
+        assert _has_enforceable_contract(sub, tf, stub) is False, label
+        body = synthesize_stub_body(sub, "app/scale.py", stub, tf, RunTestsSkill())
+        assert body is None, label  # REFUSE — no arbitrary body lands
+        assert module_path.read_text() == original, label  # byte-unchanged
+
+
+def test_from_import_alias_skip_refuses_via_plan_unchanged(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # End-of-objective view: each renamed-alias-skipped contract lands NOTHING and the
+    # module is untouched (no blocker — an honest no-op, like the decorator family).
+    for label, (hdr, line) in _FROM_ALIAS_SKIP_VECTORS.items():
+        sub = tmp_path / label
+        sub.mkdir()
+        module_path, original = _alias_skip_project(sub, hdr, line)
+        plan = plan_implement_stub(str(sub), "app/scale.py")
+        assert not plan.new_contents and not plan.blockers, label
+        assert module_path.read_text() == original, label
+
+
+# --- P0-B: a class-fixture / inline ``self.skipTest`` skip must refuse --------------
+#
+# A ``unittest.TestCase`` whose ``setUp`` unconditionally ``self.skipTest(...)`` makes
+# every ``test_*`` method vacuously green, but the per-method predicates inspect each
+# method's OWN body in isolation and never saw the class fixture. Also an inline
+# ``self.skipTest(...)`` (a bound-method call, trailing attr ``skipTest``) opening a
+# test method was an unrecognised surface. Both now refuse.
+
+def test_class_setup_skiptest_poisons_sibling_tests_refuses(tmp_path: Path):
+    # ``setUp`` unconditionally skips -> every ``test_*`` method of the class is
+    # vacuously green, so the stub it pins has no enforceable contract: REFUSE.
+    _suite_project(tmp_path)
+    original = "def scale(n):\n    raise NotImplementedError\n"
+    _write(tmp_path, "app/scale.py", original)
+    _write(tmp_path, "tests/test_scale.py",
+           "import unittest\n"
+           "from app.scale import scale\n"
+           "EXP = {3: 6, 5: 10}\n"
+           "class TScale(unittest.TestCase):\n"
+           "    def setUp(self):\n"
+           "        self.skipTest('env')\n"
+           "    def test_scale(self):\n"
+           "        assert scale(3) == EXP[3]\n"
+           "        assert scale(5) == EXP[5]\n")
+    stub = StubFunction("scale", ("n",), 1, 2, "", False)
+    tf = pinned_test_files(tmp_path, "app/scale.py", "scale")
+    assert tf == ["tests/test_scale.py"]
+    assert _has_enforceable_contract(tmp_path, tf, stub) is False
+    body = synthesize_stub_body(tmp_path, "app/scale.py", stub, tf, RunTestsSkill())
+    assert body is None
+    assert (tmp_path / "app" / "scale.py").read_text() == original
+
+
+def test_inline_self_skiptest_in_method_body_refuses(tmp_path: Path):
+    # An inline ``self.skipTest(...)`` opening a test method's body suspends its
+    # asserts exactly like ``pytest.skip(...)`` — REFUSE (the bound-method surface).
+    _suite_project(tmp_path)
+    original = "def scale(n):\n    raise NotImplementedError\n"
+    _write(tmp_path, "app/scale.py", original)
+    _write(tmp_path, "tests/test_scale.py",
+           "import unittest\n"
+           "from app.scale import scale\n"
+           "EXP = {3: 6, 5: 10}\n"
+           "class TScale(unittest.TestCase):\n"
+           "    def test_scale(self):\n"
+           "        self.skipTest('wip')\n"
+           "        assert scale(3) == EXP[3]\n"
+           "        assert scale(5) == EXP[5]\n")
+    stub = StubFunction("scale", ("n",), 1, 2, "", False)
+    tf = pinned_test_files(tmp_path, "app/scale.py", "scale")
+    assert _has_enforceable_contract(tmp_path, tf, stub) is False
+    body = synthesize_stub_body(tmp_path, "app/scale.py", stub, tf, RunTestsSkill())
+    assert body is None
+    assert (tmp_path / "app" / "scale.py").read_text() == original
+
+
+# --- P2: a module-level ``pytestmark`` skip suspends every test in the file ---------
+
+def test_module_pytestmark_skip_refuses_all_pinning_tests(tmp_path: Path):
+    # ``pytestmark = pytest.mark.skip`` at module level skips EVERY test in the file,
+    # so no pinning test enforces its asserts: the stub has no contract -> REFUSE.
+    _suite_project(tmp_path)
+    original = "def scale(n):\n    raise NotImplementedError\n"
+    _write(tmp_path, "app/scale.py", original)
+    _write(tmp_path, "tests/test_scale.py",
+           "import pytest\n"
+           "from app.scale import scale\n"
+           "EXP = {3: 6, 5: 10}\n"
+           "pytestmark = pytest.mark.skip\n"
+           "def test_scale():\n"
+           "    assert scale(3) == EXP[3]\n"
+           "    assert scale(5) == EXP[5]\n")
+    stub = StubFunction("scale", ("n",), 1, 2, "", False)
+    tf = pinned_test_files(tmp_path, "app/scale.py", "scale")
+    assert _has_enforceable_contract(tmp_path, tf, stub) is False
+    body = synthesize_stub_body(tmp_path, "app/scale.py", stub, tf, RunTestsSkill())
+    assert body is None
+    assert (tmp_path / "app" / "scale.py").read_text() == original
+
+
+def test_module_pytestmark_skip_list_refuses(tmp_path: Path):
+    # The list form ``pytestmark = [pytest.mark.usefixtures(...), pytest.mark.skip]``
+    # also poisons the file when ANY element is a ``.mark.skip``.
+    _suite_project(tmp_path)
+    original = "def scale(n):\n    raise NotImplementedError\n"
+    _write(tmp_path, "app/scale.py", original)
+    _write(tmp_path, "tests/test_scale.py",
+           "import pytest\n"
+           "from app.scale import scale\n"
+           "EXP = {3: 6, 5: 10}\n"
+           "pytestmark = [pytest.mark.usefixtures('x'), pytest.mark.skip]\n"
+           "def test_scale():\n"
+           "    assert scale(3) == EXP[3]\n"
+           "    assert scale(5) == EXP[5]\n")
+    stub = StubFunction("scale", ("n",), 1, 2, "", False)
+    tf = pinned_test_files(tmp_path, "app/scale.py", "scale")
+    assert _has_enforceable_contract(tmp_path, tf, stub) is False
+    assert synthesize_stub_body(
+        tmp_path, "app/scale.py", stub, tf, RunTestsSkill()) is None
+    assert (tmp_path / "app" / "scale.py").read_text() == original
+
+
+# --- REGRESSION: the new file-context surfaces must NOT over-refuse ------------------
+
+def test_conditional_setup_skiptest_still_enforced_lands(tmp_path: Path):
+    # The class-poison asymmetry the fix preserves: a ``setUp`` whose skip is GUARDED
+    # by ``if COND:`` (COND=False, so it never fires) does NOT poison the class — the
+    # nested skip is not a direct body statement, so the test STILL enforces and a
+    # correct ``n * 2`` body lands. Mirrors the body-level conditional asymmetry.
+    _suite_project(tmp_path)
+    _write(tmp_path, "app/d.py", "def double(n):\n    raise NotImplementedError\n")
+    _write(tmp_path, "tests/test_d.py",
+           "import unittest\n"
+           "from app.d import double\n"
+           "COND = False\n"
+           "class TD(unittest.TestCase):\n"
+           "    def setUp(self):\n"
+           "        if COND:\n"
+           "            self.skipTest('env')\n"
+           "    def test_d(self):\n"
+           "        assert double(3) == 6\n"
+           "        assert double(5) == 10\n")
+    stub = StubFunction("double", ("n",), 1, 2, "", False)
+    tf = pinned_test_files(tmp_path, "app/d.py", "double")
+    assert _has_enforceable_contract(tmp_path, tf, stub) is True
+    body = synthesize_stub_body(tmp_path, "app/d.py", stub, tf, RunTestsSkill())
+    assert body is not None and "return n * 2" in body  # legitimate body lands
+
+
+def test_unused_plain_from_import_skip_does_not_over_refuse(tmp_path: Path):
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    # A bare ``from pytest import skip`` that is NEVER CALLED must not suppress a real
+    # contract: the test enforces its asserts and the correct ``n * 2`` body lands.
+    _suite_project(tmp_path)
+    _write(tmp_path, "app/d.py", "def double(n):\n    raise NotImplementedError\n")
+    _write(tmp_path, "tests/test_d.py",
+           "from pytest import skip\n"
+           "from app.d import double\n"
+           "def test_d():\n"
+           "    assert double(3) == 6\n"
+           "    assert double(5) == 10\n")
+    body = plan_implement_stub(str(tmp_path), "app/d.py").new_contents.get("app/d.py")
+    assert body is not None and "return n * 2" in body
+
+
+# --- predicate-level edge coverage for the file-context surfaces --------------------
+
+def test_skip_context_resolves_from_import_aliases():
+    # The alias map only resolves the pytest/unittest skip surface — an UNRELATED
+    # ``from mymod import skip as s`` (wrong module) must NOT be treated as a skip.
+    import ast
+    ctx = _build_skip_context(ast.parse(
+        "from pytest import skip as s, xfail as xf\n"
+        "from unittest import SkipTest as E\n"))
+    assert ctx.aliases == {"s": "skip", "xf": "xfail", "E": "SkipTest"}
+    unrelated = _build_skip_context(ast.parse("from mymod import skip as s\n"))
+    assert unrelated.aliases == {}  # wrong module -> no alias
+
+
+def test_skip_context_pytestmark_skipif_does_not_poison():
+    # A ``skipif`` (CONDITIONAL) module mark must NOT poison the file — only a bare
+    # ``.mark.skip`` does (mirrors the decorator path's conservative skipif refusal).
+    import ast
+    skipif = _build_skip_context(ast.parse(
+        "import pytest\npytestmark = pytest.mark.skipif(True, reason='x')\n"))
+    assert skipif.pytestmark_skips is False
+    plain_skip = _build_skip_context(ast.parse(
+        "import pytest\npytestmark = pytest.mark.skip\n"))
+    assert plain_skip.pytestmark_skips is True
+
+
+def test_test_function_is_enforced_without_context_matches_legacy():
+    # ``_test_function_is_enforced`` with no ctx falls back to the body/decorator-only
+    # decision (the existing callers that pass no context keep working): a plain test
+    # is enforced, a body-skip test is not.
+    import ast
+    plain = ast.parse("def test_x():\n    assert f(1) == 2\n").body[0]
+    skipped = ast.parse("def test_x():\n    pytest.skip('x')\n    assert f(1)==2\n").body[0]
+    assert _test_function_is_enforced(plain) is True
+    assert _test_function_is_enforced(skipped) is False
+
+
+def test_unenforced_line_ranges_flags_pytestmark_and_setup_poison():
+    # The range miner spans every test in a ``pytestmark``-skipped file, and every
+    # ``test_*`` method of a class whose setUp unconditionally skips.
+    pm = _unenforced_line_ranges(
+        "import pytest\n"
+        "pytestmark = pytest.mark.skip\n"
+        "def test_a():\n    assert g(1) == 1\n")
+    assert _line_covered(pm, 3) is True  # the test def line is flagged
+
+    poisoned = _unenforced_line_ranges(
+        "import unittest\n"
+        "class T(unittest.TestCase):\n"
+        "    def setUp(self):\n"
+        "        self.skipTest('e')\n"
+        "    def test_a(self):\n"          # line 5: poisoned by setUp
+        "        assert g(1) == 1\n")
+    assert _line_covered(poisoned, 5) is True

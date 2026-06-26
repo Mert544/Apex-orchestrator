@@ -3673,25 +3673,26 @@ def _is_enforced_test(node: ast.AST, excluded: list[tuple[int, int]]) -> bool:
 
 
 def _unenforced_line_ranges(text: str) -> list[tuple[int, int]]:
-    """The 1-based ``(start, end)`` line spans of every test function in ``text``
-    decorated to NOT enforce its assertions: ``@pytest.mark.xfail`` (and bare
-    ``@xfail``), ``@pytest.mark.skip`` / ``skipif``, and ``@unittest.skip*`` — OR
-    whose body OPENS with an unconditional runtime skip/xfail
-    (``pytest.skip(...)`` / ``pytest.xfail(...)`` / ``pytest.importorskip(...)`` /
-    ``raise unittest.SkipTest``). An assertion inside such a function pins no
-    contract — its failure is allowed (xfail) or it never runs (skip).
-    Deterministic; ``[]`` on a syntax error so a parse failure never silently
-    drops a real contract."""
+    """The 1-based ``(start, end)`` line spans of every function in ``text`` whose
+    assertions do NOT enforce a contract: decorated ``@pytest.mark.xfail`` (and bare
+    ``@xfail``), ``@pytest.mark.skip`` / ``skipif``, ``@unittest.skip*``; OR whose body
+    OPENS with an unconditional runtime skip/xfail (``pytest.skip(...)`` /
+    ``pytest.xfail(...)`` / ``pytest.importorskip(...)`` / ``self.skipTest(...)`` /
+    ``raise unittest.SkipTest``, alias-renamed forms included); OR poisoned from afar by
+    a module ``pytestmark`` skip or its ``unittest.TestCase``'s ``setUp``
+    unconditionally skipping. An assertion inside such a function pins no contract — its
+    failure is allowed (xfail) or it never runs (skip). Deterministic; ``[]`` on a
+    syntax error so a parse failure never silently drops a real contract."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return []
+    ctx = _build_skip_context(tree)
     out: list[tuple[int, int]] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        if any(_is_unenforced_decorator(d) for d in node.decorator_list) \
-                or any(_is_runtime_skip_stmt(s) for s in node.body):
+        if not _test_function_is_enforced(node, ctx):
             out.append((node.lineno, node.end_lineno or node.lineno))
     return out
 
@@ -3716,12 +3717,24 @@ def _is_unenforced_decorator(dec: ast.expr) -> bool:
 
 
 _RUNTIME_SKIP_CALLS = {"skip", "xfail", "importorskip"}
+# The canonical pytest/unittest skip surfaces a ``from``-import alias can rename
+# to a LOCAL token (``from pytest import skip as s`` binds ``s`` → canonical ``skip``).
+_SKIP_CANONICALS = {"skip", "xfail", "importorskip", "SkipTest"}
+# Modules whose ``skip``/``xfail``/``importorskip``/``SkipTest`` exports we trust as
+# the genuine skip surface (so a ``from somethingelse import skip`` of an UNRELATED
+# module is not mistaken for a test skip).
+_SKIP_IMPORT_MODULES = {"pytest", "unittest", "_pytest.outcomes"}
 
 
-def _skip_call_name(stmt: ast.stmt) -> str | None:
-    """The trailing callee token of a bare or assigned call statement (``f(...)`` or
+def _skip_call_name(stmt: ast.stmt,
+                    aliases: dict[str, str] | None = None) -> str | None:
+    """The CANONICAL skip token of a bare or assigned call statement (``f(...)`` or
     ``x = f(...)``), else ``None`` — lets the caller spot a runtime ``skip`` /
-    ``xfail`` / ``importorskip`` call by name (import-alias spellings still count)."""
+    ``xfail`` / ``importorskip`` / ``skipTest`` call. The trailing attribute token is
+    returned verbatim (so ``pytest.skip`` / ``import pytest as pt; pt.skip`` and a
+    bound ``self.skipTest`` all read through); a BARE ``ast.Name`` callee is mapped
+    through ``aliases`` so a ``from pytest import skip as s`` rename (local ``s`` ∉ the
+    canonical set) still resolves to its canonical ``skip``."""
     call = None
     if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
         call = stmt.value
@@ -3730,13 +3743,19 @@ def _skip_call_name(stmt: ast.stmt) -> str | None:
     if call is None:
         return None
     f = call.func
-    return f.attr if isinstance(f, ast.Attribute) else (
-        f.id if isinstance(f, ast.Name) else None)
+    if isinstance(f, ast.Attribute):
+        return f.attr
+    if isinstance(f, ast.Name):
+        return (aliases or {}).get(f.id, f.id)
+    return None
 
 
-def _is_skip_raise(stmt: ast.stmt) -> bool:
+def _is_skip_raise(stmt: ast.stmt,
+                   aliases: dict[str, str] | None = None) -> bool:
     """True for ``raise unittest.SkipTest`` (bare or called) / ``raise
-    pytest.skip.Exception`` — matched on the trailing token so alias spellings count."""
+    pytest.skip.Exception``. The attribute form matches on the trailing token; a BARE
+    ``ast.Name`` exception is mapped through ``aliases`` so a ``from unittest import
+    SkipTest as Foo`` rename (``raise Foo``) resolves to its canonical ``SkipTest``."""
     if not (isinstance(stmt, ast.Raise) and stmt.exc is not None):
         return False
     exc = stmt.exc
@@ -3745,21 +3764,29 @@ def _is_skip_raise(stmt: ast.stmt) -> bool:
     if isinstance(exc, ast.Attribute) and exc.attr == "Exception" \
             and isinstance(exc.value, ast.Attribute) and exc.value.attr == "skip":
         return True  # raise pytest.skip.Exception
-    nm = exc.attr if isinstance(exc, ast.Attribute) else (
-        exc.id if isinstance(exc, ast.Name) else None)
-    return nm == "SkipTest"
+    if isinstance(exc, ast.Attribute):
+        return exc.attr == "SkipTest"
+    if isinstance(exc, ast.Name):
+        return (aliases or {}).get(exc.id, exc.id) == "SkipTest"
+    return False
 
 
-def _is_runtime_skip_stmt(stmt: ast.stmt) -> bool:
+def _is_runtime_skip_stmt(stmt: ast.stmt,
+                          aliases: dict[str, str] | None = None) -> bool:
     """True for a DIRECT body statement that UNCONDITIONALLY skips/xfails the test
     at runtime: a bare or assigned ``pytest.skip(...)`` / ``pytest.xfail(...)`` /
-    ``pytest.importorskip(...)`` call, or ``raise unittest.SkipTest`` /
-    ``raise pytest.skip.Exception``. Matched on the trailing attribute/name token so
-    import-alias spellings still count (mirrors :func:`_is_unenforced_decorator`).
+    ``pytest.importorskip(...)`` / ``self.skipTest(...)`` call, or ``raise
+    unittest.SkipTest`` / ``raise pytest.skip.Exception``. Matched on the trailing
+    attribute token (so ``pt.skip`` / ``self.skipTest`` count) and, for a bare-``Name``
+    callee, through ``aliases`` (so a ``from pytest import skip as s`` rename counts —
+    pass the per-file alias map from :func:`_build_skip_context`).
+
     Only DIRECT body statements are inspected, so a skip guarded by an ``if`` / ``for``
     / ``try`` (a conditional, genuinely-enforced test that runs for some inputs) does
     NOT trip this gate — that asymmetry is deliberate and load-bearing."""
-    return _skip_call_name(stmt) in _RUNTIME_SKIP_CALLS or _is_skip_raise(stmt)
+    name = _skip_call_name(stmt, aliases)
+    return name in _RUNTIME_SKIP_CALLS or name == "skipTest" \
+        or _is_skip_raise(stmt, aliases)
 
 
 def _line_in_ranges(line: int, ranges: list[tuple[int, int]]) -> bool:
@@ -3769,31 +3796,171 @@ def _line_in_ranges(line: int, ranges: list[tuple[int, int]]) -> bool:
 
 def _test_function_is_enforced(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ctx: _FileSkipContext | None = None,
 ) -> bool:
     """True when a test function's assertions actually run — NOT suspended by an
-    xfail/skip/skipif decorator NOR by an unconditional runtime skip/xfail opening
-    its body (the two skip surfaces the never-fake-green floor must both close)."""
+    xfail/skip/skipif decorator, NOR by an unconditional runtime skip/xfail opening
+    its OWN body, NOR (when ``ctx`` is given) by a file-level skip surface that poisons
+    it from afar: a module ``pytestmark`` skip, or an unconditional skip in the
+    ``setUp``/``setUpClass`` of the ``unittest.TestCase`` it belongs to. The two
+    body-local skip surfaces AND the three file-context surfaces are the holes the
+    never-fake-green floor must all close; ``ctx`` also carries the import-alias map so
+    a ``from pytest import skip as s`` rename is recognised."""
+    aliases = ctx.aliases if ctx else None
+    if ctx and (ctx.pytestmark_skips or id(node) in ctx.poisoned_ids):
+        return False
     return not any(_is_unenforced_decorator(d) for d in node.decorator_list) \
-        and not any(_is_runtime_skip_stmt(s) for s in node.body)
+        and not any(_is_runtime_skip_stmt(s, aliases) for s in node.body)
+
+
+@dataclass(frozen=True)
+class _FileSkipContext:
+    """The per-FILE skip surface the context-free body predicates can't see on a lone
+    statement: the module-level import-alias map (local token → canonical ``skip`` /
+    ``xfail`` / ``importorskip`` / ``SkipTest``), whether a module ``pytestmark`` skips
+    every test, and the ``id()``s of ``test_*`` methods POISONED by an unconditional
+    skip in their ``unittest.TestCase``'s ``setUp``/``setUpClass``. Built once per file
+    by :func:`_build_skip_context` and threaded into the body/enforced predicates."""
+    aliases: dict[str, str]
+    pytestmark_skips: bool
+    poisoned_ids: frozenset[int]
+
+
+def _collect_skip_aliases(tree: ast.Module) -> dict[str, str]:
+    """Resolve MODULE-level imports of the pytest/unittest skip surface into a
+    ``{local_name -> canonical}`` map. Walks top-level ``from pytest/unittest import
+    skip as s`` (``ast.ImportFrom`` from a trusted module → ``{"s": "skip"}``) and
+    ``import pytest.skip as x`` style ``ast.Import`` whose dotted tail is a canonical
+    (mirrors the import-walking in ``type_annotations._module_bound_names``). The
+    attribute form ``pytest.skip`` needs no entry — its trailing token already reads."""
+    out: dict[str, str] = {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.ImportFrom):
+            if stmt.module not in _SKIP_IMPORT_MODULES:
+                continue
+            for alias in stmt.names:
+                if alias.name in _SKIP_CANONICALS:
+                    out[alias.asname or alias.name] = alias.name
+        elif isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                tail = alias.name.rsplit(".", 1)[-1]
+                if alias.asname and tail in _SKIP_CANONICALS:
+                    out[alias.asname] = tail
+    return out
+
+
+def _module_pytestmark_skips(tree: ast.Module) -> bool:
+    """True when a MODULE-level ``pytestmark = pytest.mark.skip`` (or a list/tuple any
+    of whose elements is a ``*.mark.skip``) unconditionally skips every test in the
+    file. A ``skipif`` mark is CONDITIONAL — not matched (mirrors the decorator path,
+    which conservatively refuses ``skipif`` separately); only a bare ``.mark.skip``
+    (trailing attr ``skip``, with or without a message arg) poisons the whole file."""
+    for stmt in tree.body:
+        if not (isinstance(stmt, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "pytestmark"
+                for t in stmt.targets)):
+            continue
+        value = stmt.value
+        elts = value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]
+        if any(_is_mark_skip(e) for e in elts):
+            return True
+    return False
+
+
+def _is_mark_skip(node: ast.expr) -> bool:
+    """True for a ``*.mark.skip`` expression (``pytest.mark.skip`` bare or called) — the
+    unconditional module-level skip mark. Matched on the trailing ``skip`` attr whose
+    parent attr is ``mark``; a ``skipif`` tail is deliberately NOT matched."""
+    if isinstance(node, ast.Call):
+        node = node.func
+    return isinstance(node, ast.Attribute) and node.attr == "skip" \
+        and isinstance(node.value, ast.Attribute) and node.value.attr == "mark"
+
+
+_TESTCASE_SETUP_HOOKS = {"setUp", "setUpClass", "setUpModule"}
+
+
+def _class_is_testcase(node: ast.ClassDef) -> bool:
+    """True when ``node`` subclasses a ``unittest.TestCase``-ish base — a base whose
+    trailing name token is ``TestCase`` or ends with ``TestCase`` (covers
+    ``unittest.TestCase``, a bare ``TestCase`` alias, and ``IsolatedAsyncioTestCase``-
+    style names). Conservative name-only check (no import resolution)."""
+    for base in node.bases:
+        name = base.attr if isinstance(base, ast.Attribute) else (
+            base.id if isinstance(base, ast.Name) else None)
+        if name and name.endswith("TestCase"):
+            return True
+    return False
+
+
+def _setup_unconditionally_skips(cls: ast.ClassDef,
+                                 aliases: dict[str, str]) -> bool:
+    """True when a ``setUp``/``setUpClass``/``setUpModule`` method of ``cls`` opens with
+    an UNCONDITIONAL runtime skip (``self.skipTest(...)`` / ``pytest.skip(...)`` /
+    ``raise SkipTest``) as a DIRECT body statement — which vacuously greens every
+    ``test_*`` method of the class. The same conditional asymmetry holds: a skip nested
+    under ``if``/``for``/``try`` in setUp does NOT poison (the suite still runs for the
+    unskipped branch)."""
+    for stmt in cls.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                and stmt.name in _TESTCASE_SETUP_HOOKS \
+                and any(_is_runtime_skip_stmt(s, aliases) for s in stmt.body):
+            return True
+    return False
+
+
+def _collect_poisoned_test_ids(tree: ast.Module,
+                               aliases: dict[str, str]) -> frozenset[int]:
+    """The ``id()``s of every ``test_*`` method whose enclosing ``unittest.TestCase``
+    has a ``setUp``/``setUpClass`` that unconditionally skips — so the method is
+    vacuously green even though its OWN body carries no skip. Only DIRECT methods of a
+    poisoned TestCase body are collected (a nested function is not a test method)."""
+    poisoned: set[int] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.ClassDef) and _class_is_testcase(node)):
+            continue
+        if not _setup_unconditionally_skips(node, aliases):
+            continue
+        for member in node.body:
+            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and member.name.startswith("test"):
+                poisoned.add(id(member))
+    return frozenset(poisoned)
+
+
+def _build_skip_context(tree: ast.Module) -> _FileSkipContext:
+    """Compute the per-file skip surface (alias map, module ``pytestmark`` skip,
+    setUp-poisoned test-method ids) ONCE for a parsed test file, so the cheap body
+    predicates can resolve renamed-alias skips and file-level (pytestmark / class
+    setUp) skips that no single statement reveals. Deterministic; pure AST."""
+    aliases = _collect_skip_aliases(tree)
+    return _FileSkipContext(
+        aliases=aliases,
+        pytestmark_skips=_module_pytestmark_skips(tree),
+        poisoned_ids=_collect_poisoned_test_ids(tree, aliases),
+    )
 
 
 def _has_enforceable_contract(root: Path, test_files: list[str],
                               stub: StubFunction) -> bool:
     """True when at least one ENFORCED test references ``stub.name`` — a test
-    function that is NOT decorated ``xfail`` / ``skip`` / ``skipif`` AND whose body
-    does not open with an unconditional runtime skip/xfail (``pytest.skip(...)`` /
-    ``pytest.xfail(...)`` / ``pytest.importorskip(...)`` / ``raise unittest.SkipTest``),
-    and so whose assertions the suite actually enforces.
+    function that is NOT decorated ``xfail`` / ``skip`` / ``skipif``, whose body does
+    not open with an unconditional runtime skip/xfail (``pytest.skip(...)`` /
+    ``pytest.xfail(...)`` / ``pytest.importorskip(...)`` / ``self.skipTest(...)`` /
+    ``raise unittest.SkipTest``), AND which is not poisoned from afar by a module
+    ``pytestmark`` skip or its ``unittest.TestCase``'s ``setUp`` unconditionally
+    skipping — so the suite actually enforces its assertions.
 
     This is the never-fake-green floor for the pytest-gated path: when EVERY test
-    touching the stub is xfail/skip (whether via a decorator OR a runtime skip in
-    the body), the pinned-test gate is meaningless (an xfail test stays "green" no
-    matter what body we land, a skip never runs), so synthesising a body against it
-    would stamp an unenforced contract "verified". We refuse instead. A non-stub
-    reference inside an enforced test is enough — we err toward "enforceable" only
-    when a real, running test names the function. Deterministic; on a parse failure
-    we conservatively report ``True`` so a parse hiccup never suppresses a genuine
-    contract (the run gate still decides)."""
+    touching the stub is xfail/skip (via a decorator, a body runtime skip, a renamed
+    ``from``-import alias, a module ``pytestmark`` skip, or a class-``setUp`` skip),
+    the pinned-test gate is meaningless (an xfail test stays "green" no matter what
+    body we land, a skip never runs), so synthesising a body against it would stamp an
+    unenforced contract "verified". We refuse instead. A non-stub reference inside an
+    enforced test is enough — we err toward "enforceable" only when a real, running
+    test names the function. Deterministic; on a parse failure we conservatively report
+    ``True`` so a parse hiccup never suppresses a genuine contract (the run gate still
+    decides)."""
     name_re = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(stub.name)
                          + r"(?![A-Za-z0-9_])")
     saw_reference = False
@@ -3808,6 +3975,7 @@ def _has_enforceable_contract(root: Path, test_files: list[str],
             if name_re.search(text):
                 return True  # can't analyse — assume the reference is enforced
             continue
+        ctx = _build_skip_context(tree)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -3815,7 +3983,7 @@ def _has_enforceable_contract(root: Path, test_files: list[str],
             if not name_re.search(seg):
                 continue
             saw_reference = True
-            if _test_function_is_enforced(node):
+            if _test_function_is_enforced(node, ctx):
                 return True  # an enforced test names the stub — real contract
     # If no test referenced the stub at all, leave the decision to the caller
     # (no-pinned-tests is handled separately as a no-op refusal). Only when EVERY
