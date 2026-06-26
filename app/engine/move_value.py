@@ -52,6 +52,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "tdd_implement": 1.00,           # write the not-yet-written function a red test calls
     "implement_from_doctest": 1.00,  # synthesise a body from the stub's own doctest examples
     "js_tdd_implement": 1.00,        # write the JS function a red jest test calls (first non-Python landing)
+    "js_implement_from_jsdoc": 1.00,  # JS image of implement_from_doctest — fill a JS stub from its own jsdoc @example (no jest test)
     "scaffold_from_protocol": 0.95,  # a runnable implementer for an unimplemented protocol
     "cover_gaps": 0.90,              # first characterization test for an untested module
     "wire_exports": 0.90,            # the package re-export surface (__all__ + re-exports)

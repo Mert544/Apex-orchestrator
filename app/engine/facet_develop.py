@@ -245,6 +245,17 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     "the function the red test calls": "tdd-implement",
     "the worked example to satisfy": "implement-from-doctest",
     "the failing jest test whose function to write": "js-tdd-implement",
+    # The JS/TS image of "the worked example to satisfy": a JS/TS stub whose
+    # contract is its OWN JSDoc ``@example`` block and that NO jest test references
+    # (the inverse of the failing-jest-test trigger above). The
+    # js-implement-from-jsdoc objective LANDS exactly that — it synthesises a body
+    # from the fixed template space and keeps it iff a jest spec Apex GENERATES from
+    # the ``@example`` lines goes green in a throwaway copy (never writing a test
+    # into the real tree), refusing otherwise. Substring-order-safe vs the
+    # failing-jest-test key and the Python worked-example key ("jsdoc example" vs
+    # "jest test" vs "worked example" — none is a substring of another), so its
+    # relative order is free.
+    "the jsdoc example whose function to write": "js-implement-from-jsdoc",
 
     # Missing type hints: the constructive "naming and types" aspect names the
     # precise type/annotation a parameter or return ought to carry. The

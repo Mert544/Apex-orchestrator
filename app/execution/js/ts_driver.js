@@ -17,6 +17,14 @@
 //                             <name>: [{args:[...], expected:"..."}] from
 //                             expect(<name>(...)).<matcher>(<expected>) shapes
 //                             (matchers: toBe / toEqual / toStrictEqual).
+//   mine-jsdoc <file> <name> -> JSON: the SAME [{args, expected}] witness shape,
+//                             but mined from the stub <name>'s OWN leading JSDoc
+//                             `@example` lines (`<name>(...) === <expected>` or
+//                             `expect(<name>(...)).toBe(<expected>)`) — the
+//                             contract of a stub NO jest test references. Pure
+//                             leading-comment trivia read (no type info), exactly
+//                             one JSDoc-block definition or refuse (empty list).
+//                             Exit 2 (REFUSE) when the file does not parse.
 //   fill  <file> <name> <body>
 //                          -> replace the body BLOCK of the single top-level
 //                             function <name> with `{ <body> }` (exact byte-span
@@ -174,6 +182,125 @@ function mineWitnesses(sf, name) {
     ts.forEachChild(node, visit);
   }
   visit(sf);
+  return witnesses;
+}
+
+// The leading `/** ... */` JSDoc text of the top-level declaration that defines
+// <name> as a single-`throw` stub, or null. The DISJOINT mirror of the
+// js-tdd-implement trigger: its contract lives ONLY in this comment block. Read
+// straight off the source's leading comment trivia (the same trivia read
+// `hasLeadingJSDoc` uses), so it is pure (no type info). Refuses (null) unless
+// <name> is defined EXACTLY ONCE as a fillable stub carrying ONE JSDoc block —
+// zero/many definitions or zero/many JSDoc blocks is ambiguous, never guessed.
+function jsdocTextForStub(sf, name) {
+  const full = sf.getFullText();
+  const blocks = [];
+  function consider(stmtNode, fnNode, declName) {
+    if (declName !== name) return;
+    if (throwStubBody(fnNode) === null) return;
+    const ranges = ts.getLeadingCommentRanges(full, stmtNode.getFullStart()) || [];
+    for (const r of ranges) {
+      const text = full.slice(r.pos, r.end);
+      if (text.startsWith("/**")) blocks.push(text);
+    }
+  }
+  for (const stmt of sf.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name) {
+      consider(stmt, stmt, stmt.name.text);
+    } else if (ts.isVariableStatement(stmt)) {
+      for (const decl of stmt.declarationList.declarations) {
+        const init = decl.initializer;
+        if (!init || !ts.isIdentifier(decl.name)) continue;
+        if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) {
+          // The JSDoc on a `const foo = ...` is leading trivia of the STATEMENT.
+          consider(stmt, init, decl.name.text);
+        }
+      }
+    }
+  }
+  // Exactly-one discipline (the JS image of "defined exactly once or refuse").
+  return blocks.length === 1 ? blocks[0] : null;
+}
+
+// The body text of every `@example` tag inside one JSDoc block, in source order
+// — the lines between `@example` and the next tag / the block end, with the
+// leading ` * ` margin stripped. Pure string slicing, no type info.
+function exampleBodies(jsdoc) {
+  const inner = jsdoc.replace(/^\/\*\*/, "").replace(/\*\/$/, "");
+  const lines = inner.split("\n").map((line) => line.replace(/^\s*\*?\s?/, ""));
+  const bodies = [];
+  let current = null;
+  for (const line of lines) {
+    const tag = line.match(/^@(\w+)\b(.*)$/);
+    if (tag) {
+      if (current !== null) bodies.push(current);
+      current = tag[1] === "example" ? (tag[2].trim() ? tag[2].trim() + "\n" : "") : null;
+    } else if (current !== null) {
+      current += line + "\n";
+    }
+  }
+  if (current !== null) bodies.push(current);
+  return bodies;
+}
+
+// One witness `{args, expected}` from a single `@example` expression line for
+// <name>, or null. Accepts the two proven shapes (parsing the line as its own
+// source so nested commas in array/object args are handled by the real parser):
+//   * `<name>(<args...>) === <expected>`  (a strict-equality BinaryExpression)
+//   * `expect(<name>(<args...>)).toBe|toEqual|toStrictEqual(<expected>)`
+// <name> may be bare or `mod.name(...)`. Any other shape yields null (refuse).
+function witnessFromExampleExpr(exprSource, name) {
+  const matchers = new Set(["toBe", "toEqual", "toStrictEqual"]);
+  const sf = ts.createSourceFile("ex.ts", exprSource, ts.ScriptTarget.Latest, true);
+  if ((sf.parseDiagnostics || []).length > 0) return null;
+  if (sf.statements.length !== 1 || !ts.isExpressionStatement(sf.statements[0])) return null;
+  const expr = sf.statements[0].expression;
+  function callTargetsName(callExpr) {
+    if (!ts.isCallExpression(callExpr)) return false;
+    const fn = callExpr.expression;
+    if (ts.isIdentifier(fn)) return fn.text === name;
+    if (ts.isPropertyAccessExpression(fn)) return fn.name.text === name;
+    return false;
+  }
+  // `<name>(...) === <expected>`
+  if (ts.isBinaryExpression(expr)
+      && expr.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+      && callTargetsName(expr.left)) {
+    return { args: expr.left.arguments.map((a) => literalText(a, sf)),
+             expected: literalText(expr.right, sf) };
+  }
+  // `expect(<name>(...)).toBe(<expected>)`
+  if (ts.isCallExpression(expr) && ts.isPropertyAccessExpression(expr.expression)
+      && matchers.has(expr.expression.name.text) && expr.arguments.length === 1) {
+    const expectCall = expr.expression.expression;
+    if (ts.isCallExpression(expectCall) && ts.isIdentifier(expectCall.expression)
+        && expectCall.expression.text === "expect" && expectCall.arguments.length === 1
+        && callTargetsName(expectCall.arguments[0])) {
+      return { args: expectCall.arguments[0].arguments.map((a) => literalText(a, sf)),
+               expected: literalText(expr.arguments[0], sf) };
+    }
+  }
+  return null;
+}
+
+// Mine witness tuples for <name> from the stub's OWN JSDoc `@example` block(s) —
+// the same `{args, expected}` JSON `mine` emits, but sourced from the JSDoc
+// contract instead of a jest test. Each non-blank line of each `@example` body
+// is parsed as one expression; a line that is not a recognised shape is SKIPPED
+// (so prose around the examples never breaks mining), and a block with NO usable
+// example yields no witness (the planner then refuses).
+function mineJsdocWitnesses(sf, name) {
+  const jsdoc = jsdocTextForStub(sf, name);
+  if (jsdoc === null) return [];
+  const witnesses = [];
+  for (const body of exampleBodies(jsdoc)) {
+    for (const raw of body.split("\n")) {
+      const line = raw.trim();
+      if (!line) continue;
+      const w = witnessFromExampleExpr(line, name);
+      if (w !== null) witnesses.push(w);
+    }
+  }
   return witnesses;
 }
 
@@ -430,6 +557,11 @@ function cmdMine(file, name) {
   process.stdout.write(JSON.stringify(mineWitnesses(sf, name)));
 }
 
+function cmdMineJsdoc(file, name) {
+  const { sf } = readSource(file);
+  process.stdout.write(JSON.stringify(mineJsdocWitnesses(sf, name)));
+}
+
 function cmdFill(file, name, body) {
   const { source, sf } = readSource(file);
   const stubs = collectStubs(sf).filter((s) => s.name === name);
@@ -479,12 +611,14 @@ function main() {
   const sub = argv[0];
   if (sub === "scan" && argv.length === 2) return cmdScan(argv[1]);
   if (sub === "mine" && argv.length === 3) return cmdMine(argv[1], argv[2]);
+  if (sub === "mine-jsdoc" && argv.length === 3) return cmdMineJsdoc(argv[1], argv[2]);
   if (sub === "fill" && argv.length === 4) return cmdFill(argv[1], argv[2], argv[3]);
   if (sub === "doc-targets" && argv.length === 2) return cmdDocTargets(argv[1]);
   if (sub === "doc-verify" && argv.length === 2) return cmdDocVerify(argv[1]);
   if (sub === "wire-targets" && argv.length === 2) return cmdWireTargets(argv[1]);
   if (sub === "wire-verify" && argv.length === 2) return cmdWireVerify(argv[1]);
-  fail("usage: ts_driver.js scan <file> | mine <file> <name> | fill <file> <name> <body> "
+  fail("usage: ts_driver.js scan <file> | mine <file> <name> "
+       + "| mine-jsdoc <file> <name> | fill <file> <name> <body> "
        + "| doc-targets <file> | doc-verify <file> | wire-targets <file> | wire-verify <file>");
 }
 

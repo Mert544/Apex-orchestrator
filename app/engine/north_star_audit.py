@@ -72,6 +72,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "tdd-implement",
         "implement-from-doctest",
         "js-tdd-implement",
+        "js-implement-from-jsdoc",
         "strengthen-tests",
         "wire-exports",
         "js-wire-exports",

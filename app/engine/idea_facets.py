@@ -66,6 +66,11 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                                               "the function the red test calls",
                                               "the failing jest test whose function to write",
                                               "the worked example to satisfy",
+                                              # the JS/TS image of the worked example:
+                                              # a JS/TS stub whose contract is its OWN
+                                              # JSDoc @example and that NO jest test
+                                              # references (js-implement-from-jsdoc).
+                                              "the jsdoc example whose function to write",
                                               "the consumers to update"],
     "the new return shape": ["the additive field or variant",
                              "the empty and error result",

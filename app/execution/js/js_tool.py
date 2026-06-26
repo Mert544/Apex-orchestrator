@@ -34,6 +34,7 @@ __all__ = [
     "global_node_modules",
     "scan_stubs",
     "mine_witnesses",
+    "mine_jsdoc_witnesses",
     "fill_body",
     "doc_targets",
     "exported_names",
@@ -159,6 +160,21 @@ def mine_witnesses(root: Path, test_rel: str, name: str) -> list[JsWitness]:
     """The witness tuples the jest test ``root/test_rel`` pins on ``name`` (empty
     when none / on refuse). Deterministic source order, as the driver emits."""
     data = _driver_json(["mine", str(root / test_rel), name], root)
+    if not isinstance(data, list):
+        return []
+    return [JsWitness(args=tuple(d["args"]), expected=d["expected"]) for d in data]
+
+
+def mine_jsdoc_witnesses(root: Path, rel: str, name: str) -> list[JsWitness]:
+    """The witness tuples the stub ``name``'s OWN leading JSDoc ``@example`` block
+    pins in ``root/rel`` (empty when none / on refuse).
+
+    The SAME ``(args, expected)`` shape :func:`mine_witnesses` returns, but mined
+    from the stub's docstring contract instead of a jest test — the
+    ``js-implement-from-jsdoc`` objective's witness source. Deterministic source
+    order, exactly as the driver's ``mine-jsdoc`` emits; a file that does not
+    parse, a stub with no JSDoc, or a JSDoc with no usable example yields ``[]``."""
+    data = _driver_json(["mine-jsdoc", str(root / rel), name], root)
     if not isinstance(data, list):
         return []
     return [JsWitness(args=tuple(d["args"]), expected=d["expected"]) for d in data]

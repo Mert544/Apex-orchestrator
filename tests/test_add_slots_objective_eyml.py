@@ -501,12 +501,13 @@ def test_objective_registers_and_is_available():
     assert "add-slots" in set(available_objectives())
 
 
-def test_objective_total_is_sixty_six():
+def test_objective_total_is_sixty_seven():
     from app.engine.objective_compiler import available_objectives
 
-    # 66 after synthesize-dunders (dataclassify's sibling) self-registered;
-    # this count pin is the tripwire each new objective round bumps by one.
-    assert len(set(available_objectives())) == 66
+    # 67 after js-implement-from-jsdoc (the JS/TS image of implement-from-doctest)
+    # self-registered; this count pin is the tripwire each new objective round
+    # bumps by one.
+    assert len(set(available_objectives())) == 67
 
 
 def test_objective_spec_is_callable():
@@ -548,12 +549,12 @@ def test_parity_manifest_classifies_concrete():
     assert manifest_subset_of_registry() == []  # no stale manifest name
 
 
-def test_parity_concrete_count_is_twenty_four():
+def test_parity_concrete_count_is_twenty_five():
     from app.engine.north_star_audit import classify_objectives
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 24  # rose from 23 with synthesize-dunders
+    assert len(buckets["CONCRETE"]) == 25  # rose from 24 with js-implement-from-jsdoc
 
 
 # --- PARITY ROW 3: soundness-strategy manifest ------------------------------

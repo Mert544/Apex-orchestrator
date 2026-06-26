@@ -130,6 +130,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "tdd-implement": "additive-fill+impact-scoped-suite-gate",
     "implement-from-doctest": "additive-fill+doctest-oracle+impact-scoped-suite-gate",
     "js-tdd-implement": "js-failing-test-RED→GREEN-or-refuse+byte-rollback",
+    "js-implement-from-jsdoc": "js-jsdoc-example-RED→GREEN-or-refuse+byte-rollback",
     "enforce-enum-unique": "runtime-noop(@unique)+static-value-collision-refusal",
     "complete-match-exhaustiveness": "runtime-additive(unreached-arm)+static-closed-set-refusal",
     "synthesize-dunders": "suite-catches-runtime+canonical-total-dunders-over-proven-fields+inherited-eq-refusal",
@@ -189,7 +190,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
 # ``scope_verify=True`` objective NOT listed here is a FAIL.
 SCOPE_VERIFY_ALLOWLIST: frozenset[str] = frozenset({
     "implement-stub", "tdd-implement", "strengthen-tests", "wire-exports",
-    "implement-from-doctest", "js-tdd-implement",
+    "implement-from-doctest", "js-tdd-implement", "js-implement-from-jsdoc",
     # scaffold-from-protocol lands a brand-new ``<stem>_impl.py`` that no test
     # imports yet, so its impact-scope gate would degrade to the full suite and an
     # unrelated still-red module would veto the oracle-proven scaffold on a
@@ -362,6 +363,12 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     "walrus_binder": frozenset({"wire-module-exports"}),
     "unpack_decorator": frozenset({"freeze-dataclass"}),
     "provenance_trap": frozenset({"freeze-dataclass", "add-final"}),
+    # The JS/TS analogue of provenance_trap: a JS ``throw``-stub whose ONLY contract
+    # is its JSDoc ``@example`` block (no jest test links it, so it IS a
+    # js-implement-from-jsdoc candidate) but whose two examples are mutually
+    # unsatisfiable by every fixed template — js-implement-from-jsdoc MUST refuse it
+    # (no fixed body reproduces both), never land a fake-green fill.
+    "jsdoc_contradiction": frozenset({"js-implement-from-jsdoc"}),
     "syntax_error": frozenset(),  # universal-refuse rule covers every objective
     "already_applied": frozenset(
         {"wire-module-exports", "add-final", "freeze-dataclass"}),

@@ -31,8 +31,9 @@ from pathlib import Path
 
 from app.engine.skip_dirs import SKIPPED_DIRS
 from app.execution.cross_file_rename import RenamePlan
+from app.execution.js.js_jsdoc_synthesis import synthesize_js_jsdoc_body
 from app.execution.js.js_stub_synthesis import synthesize_js_body
-from app.execution.js.js_tool import JsStub, scan_stubs
+from app.execution.js.js_tool import JsStub, mine_jsdoc_witnesses, scan_stubs
 from app.execution.lang.adapter import (
     Edit,
     ParseTree,
@@ -44,11 +45,16 @@ from app.skills.execution.run_tests import RunTestsSkill
 __all__ = [
     "JavaScriptAdapter",
     "JsMissingBody",
+    "JsJsdocStub",
     "plan_js_tdd_implement",
+    "plan_js_implement_from_jsdoc",
     "detect_js_stubs",
+    "detect_js_jsdoc_stubs",
     "is_js_source",
     "fitness",
+    "jsdoc_fitness",
     "landable",
+    "jsdoc_landable",
     "JS_SOURCE_SUFFIXES",
 ]
 
@@ -100,6 +106,18 @@ class JsMissingBody:
     stub: JsStub
     file_rel: str
     test_rel: str
+
+
+@dataclass(frozen=True)
+class JsJsdocStub:
+    """One deterministically-located stub whose contract lives ONLY in its own
+    JSDoc ``@example`` block and that NO jest test references — the DISJOINT
+    sibling of :class:`JsMissingBody` (which requires a LINKING jest test; this
+    requires the inverse). The ``stub`` (name + params + body span) and its source
+    ``file_rel``; the witnesses are mined from the stub's docstring, not a test."""
+
+    stub: JsStub
+    file_rel: str
 
 
 _ADAPTER_SINGLETON: JavaScriptAdapter | None = None
@@ -180,6 +198,27 @@ def _locate_test(root: Path, file_rel: str, name: str) -> str | None:
     return None
 
 
+def _iter_own_stubs(root: Path):
+    """Yield ``(file_rel, stub)`` for every top-level single-``throw`` stub in every
+    own non-test JS/TS source under the single-``package.json`` root gate.
+
+    The shared SCAN both detectors walk: REFUSES the whole project (yields nothing)
+    unless a single ``package.json`` is at the root — the single-project gate, the
+    JS analogue of one Python project root, and what makes the JS objectives a clean
+    no-op on a Python (or any non-JS) tree. Deterministic: sources in sorted order
+    (as :func:`_walk_files` emits), stubs in driver source order. The per-stub KEEP
+    rule (a pinning jest test vs a JSDoc ``@example`` contract) is the caller's, so
+    the two detectors share the walk without duplicating it."""
+    if not (root / "package.json").exists():
+        return
+    adapter = _adapter()
+    for file_rel in _walk_files(root, _JS_SOURCE_SUFFIXES):
+        if not adapter.owns(file_rel):  # the file gate, via the adapter seam
+            continue
+        for stub in scan_stubs(root, file_rel):
+            yield file_rel, stub
+
+
 def detect_js_stubs(project_root: str | Path) -> list[JsMissingBody]:
     """Every deterministically-located JS/TS stub a RED jest test demands a body
     for, each pinned to its single test.
@@ -190,19 +229,55 @@ def detect_js_stubs(project_root: str | Path) -> list[JsMissingBody]:
     that locates to exactly one pinning test is kept. Deterministic: sources and
     tests in sorted order."""
     root = Path(project_root)
-    if not (root / "package.json").exists():
-        return []
-    adapter = _adapter()
     out: list[JsMissingBody] = []
-    for file_rel in _walk_files(root, _JS_SOURCE_SUFFIXES):
-        if not adapter.owns(file_rel):  # the file gate, via the adapter seam
+    for file_rel, stub in _iter_own_stubs(root):
+        test_rel = _locate_test(root, file_rel, stub.name)
+        if test_rel is None:
             continue
-        for stub in scan_stubs(root, file_rel):
-            test_rel = _locate_test(root, file_rel, stub.name)
-            if test_rel is None:
-                continue
-            out.append(JsMissingBody(stub=stub, file_rel=file_rel, test_rel=test_rel))
+        out.append(JsMissingBody(stub=stub, file_rel=file_rel, test_rel=test_rel))
     return out
+
+
+def _read_plan_source(root: Path, file_rel: str) -> str | None:
+    """The on-disk bytes of ``root/file_rel`` to land a body into, or ``None`` when
+    it is a non-JS / test / fixture WRITE target (the :func:`is_js_source` file
+    gate, via the adapter seam) or is unreadable/missing.
+
+    The shared HEAD of every JS body-landing plan (``js-tdd-implement`` /
+    ``js-implement-from-jsdoc``): the same owns-gate + read both perform before
+    synthesising, so the no-op-on-``.py`` and unreadable-target refusals live in one
+    place instead of being copied per objective."""
+    if not _adapter().owns(file_rel):  # the file gate, via the adapter seam
+        return None  # non-JS / test / fixture file — refuse (the no-op on .py)
+    target = root / file_rel
+    original = _read(target)
+    if not original and not target.exists():
+        return None  # unreadable / missing target — no-op
+    return original
+
+
+def _land_body(plan: RenamePlan, file_rel: str, original: str,
+               stub: JsStub, body: str) -> RenamePlan:
+    """Splice ``body`` into ``stub``'s body span of ``original`` and record the
+    landing on ``plan`` (original for rollback, filled source, single-write edit
+    count), or leave ``plan`` empty when the recorded span is stale / the splice is
+    a no-op (refuse rather than corrupt the file).
+
+    The shared TAIL of every JS body-landing plan: the same locate-via-the-seam ->
+    apply -> record sequence both objectives perform once a body is synthesised, so
+    the splice/record idiom lives in one helper rather than copied per objective."""
+    adapter = _adapter()
+    located = adapter.locate(adapter.parse(original), original,
+                             TargetQuery(name=stub.name, extra={"stub": stub}))
+    if located is None:
+        return plan  # the recorded stub span is stale — refuse rather than corrupt
+    filled = adapter.apply(original, located, Edit(body=body))
+    if filled is None or filled == original:
+        return plan  # the splice did not change the source — refuse
+    plan.originals[file_rel] = original
+    plan.new_contents[file_rel] = filled
+    plan.edits_by_file[file_rel] = 1
+    return plan
 
 
 def plan_js_tdd_implement(project_root: str | Path, missing: JsMissingBody,
@@ -218,33 +293,16 @@ def plan_js_tdd_implement(project_root: str | Path, missing: JsMissingBody,
     restores it byte-for-byte on any regression. An empty plan means no fixed
     template flipped the test green — nothing is landed (never-fake-green)."""
     plan = RenamePlan(old=missing.file_rel, new="js-tdd-implement")
-    file_rel = missing.file_rel
-    adapter = _adapter()
-    if not adapter.owns(file_rel):  # the file gate, via the adapter seam
-        return plan  # non-JS / test / fixture file — refuse (the no-op on .py)
     root = Path(project_root)
-    target = root / file_rel
-    original = _read(target)
-    if not original and not target.exists():
-        return plan  # unreadable / missing target — no-op
-
+    original = _read_plan_source(root, missing.file_rel)
+    if original is None:
+        return plan  # non-JS / test / fixture / unreadable — refuse
     runner = runner or RunTestsSkill()
-    body = synthesize_js_body(root, file_rel, missing.stub, missing.test_rel, runner)
+    body = synthesize_js_body(root, missing.file_rel, missing.stub,
+                              missing.test_rel, runner)
     if body is None:
         return plan  # no fixed template flips the RED test green — refuse
-
-    located = adapter.locate(adapter.parse(original), original,
-                             TargetQuery(name=missing.stub.name,
-                                         extra={"stub": missing.stub}))
-    if located is None:
-        return plan  # the recorded stub span is stale — refuse rather than corrupt
-    filled = adapter.apply(original, located, Edit(body=body))
-    if filled is None or filled == original:
-        return plan  # the splice did not change the source — refuse
-    plan.originals[file_rel] = original
-    plan.new_contents[file_rel] = filled
-    plan.edits_by_file[file_rel] = 1
-    return plan
+    return _land_body(plan, missing.file_rel, original, missing.stub, body)
 
 
 def _splice_body(source: str, stub: JsStub, body: str) -> str | None:
@@ -282,6 +340,89 @@ def landable(project_root: str | Path) -> list[JsMissingBody]:
     ``Move``s (the ``operator="js_tdd_implement"`` literal stays in the objectives
     package so the move-value drift scanner still discovers it)."""
     return _landable(project_root)
+
+
+# --- js-implement-from-jsdoc: the DISJOINT JSDoc-contract sibling -------------
+#
+# The INVERSE trigger of ``js-tdd-implement``: a ``throw``-stub with >=1 JSDoc
+# ``@example`` AND NO jest test that links it (``_locate_test`` returns None), so
+# the two NEVER double-count the same stub. The body is gated against a jest spec
+# Apex GENERATES from the ``@example`` lines (in a throwaway copy), never against a
+# test in the real tree.
+
+
+def detect_js_jsdoc_stubs(project_root: str | Path) -> list[JsJsdocStub]:
+    """Every JS/TS stub whose contract is its OWN JSDoc ``@example`` block and that
+    NO jest test references — the ``js-implement-from-jsdoc`` candidates.
+
+    REFUSES the whole project (returns ``[]``) unless a single ``package.json`` is
+    at the root (the single-project gate, the JS analogue of one Python project
+    root). For each own non-test JS/TS source, each top-level single-``throw`` stub
+    is KEPT only when (a) its leading JSDoc mines >=1 ``@example`` witness AND (b)
+    no jest test links it (:func:`_locate_test` is ``None`` — the inverse of
+    ``js-tdd-implement``'s trigger), so a stub a test pins stays
+    ``js-tdd-implement``'s and is never double-counted. Deterministic: sources in
+    sorted order."""
+    root = Path(project_root)
+    out: list[JsJsdocStub] = []
+    for file_rel, stub in _iter_own_stubs(root):
+        if not mine_jsdoc_witnesses(root, file_rel, stub.name):
+            continue  # no enforceable @example -> not ours
+        if _locate_test(root, file_rel, stub.name) is not None:
+            continue  # a jest test pins it -> js-tdd-implement's, refuse
+        out.append(JsJsdocStub(stub=stub, file_rel=file_rel))
+    return out
+
+
+def plan_js_implement_from_jsdoc(project_root: str | Path, missing: JsJsdocStub,
+                                 runner: RunTestsSkill | None = None) -> RenamePlan:
+    """Build the synthesise-from-JSDoc plan for ONE located stub, or an empty no-op
+    plan (an honest refusal).
+
+    REFUSES a non-JS-source or test/fixture write target outright
+    (:func:`is_js_source`), then delegates the body to
+    :func:`synthesize_js_jsdoc_body`, which generates a throwaway jest spec from
+    the stub's ``@example`` block and keeps the first fixed template whose copy goes
+    green. On success the plan lands the ONE changed source's new full text in
+    ``new_contents`` (original in ``originals``), so the gated/rollback writer runs
+    the FULL real suite and restores it byte-for-byte on any regression. An empty
+    plan means no fixed template satisfied the documented examples — nothing is
+    landed (never-fake-green); Apex NEVER writes the generated spec into the real
+    tree."""
+    plan = RenamePlan(old=missing.file_rel, new="js-implement-from-jsdoc")
+    root = Path(project_root)
+    original = _read_plan_source(root, missing.file_rel)
+    if original is None:
+        return plan  # non-JS / test / fixture / unreadable — refuse
+    runner = runner or RunTestsSkill()
+    body = synthesize_js_jsdoc_body(root, missing.file_rel, missing.stub, runner)
+    if body is None:
+        return plan  # no fixed template satisfies the @example contract — refuse
+    return _land_body(plan, missing.file_rel, original, missing.stub, body)
+
+
+def _jsdoc_landable(project_root: str | Path) -> list[JsJsdocStub]:
+    """The JSDoc-contract stubs a fixed template can actually satisfy — i.e.
+    ``plan_js_implement_from_jsdoc`` would land a body. A stub no template fits does
+    NOT count (we refuse to touch it), so it never shows as remaining debt — an
+    honest measure, exactly like :func:`_landable`."""
+    root = Path(project_root)
+    return [mb for mb in detect_js_jsdoc_stubs(root)
+            if plan_js_implement_from_jsdoc(root, mb).new_contents]
+
+
+def jsdoc_fitness(project_root: str | Path) -> float:
+    """Fitness = how many JSDoc-contract stubs still demand a body this objective
+    can deterministically synthesise. 0 means no implementable stub remains."""
+    return float(len(_jsdoc_landable(project_root)))
+
+
+def jsdoc_landable(project_root: str | Path) -> list[JsJsdocStub]:
+    """Public alias of :func:`_jsdoc_landable` — the JSDoc-contract stubs a fixed
+    template can satisfy. The objective's ``moves`` generator iterates this (the
+    ``operator="js_implement_from_jsdoc"`` literal stays in the objectives package
+    so the move-value drift scanner discovers it)."""
+    return _jsdoc_landable(project_root)
 
 
 class JavaScriptAdapter:
