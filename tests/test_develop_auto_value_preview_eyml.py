@@ -181,22 +181,27 @@ def test_auto_recommend_never_calls_apply_rename(tmp_path: Path, monkeypatch):
 # --------------------------------------------------------------------------- #
 def test_default_preview_discloses_concrete_without_selecting_it(tmp_path: Path):
     # A concrete/expensive objective `--concrete` would unlock is NAMED in the
-    # disclosure, but it is NOT in the default selection (the expensive board is
-    # display-only — never fed into the applied sweep).
+    # disclosure, but it is NOT in the default selection (the disclosure is
+    # display-only — never fed into the applied sweep). The NAME comes from a
+    # STATIC buyer-value ranking of the registered expensive objectives (no
+    # fitness, no suite — see test_default_preview_*_no_suite below), so it is the
+    # highest-value EXPENSIVE objective and is, by construction, expensive.
+    from app.engine.develop_registry import expensive_names
+
     _modernizable_project(tmp_path)
     rc, out = _run(_auto_ns(tmp_path))
     assert rc == 0
 
     unlock = m._auto_concrete_unlock(tmp_path)
-    assert unlock is not None  # an expensive objective is applicable here
+    assert unlock is not None  # the expensive set is non-empty in this repo
     name, _value = unlock
     # the disclosure names it + the opt-in flag
     assert name in out
     assert "--concrete" in out
-    # but it is NOT in the default (concrete-off) selection
+    # the named objective is a registered EXPENSIVE one (the moat being disclosed)
+    assert name in expensive_names()
+    # but it is NOT in the default (concrete-off) selection — disclosure, not apply
     assert name not in m._auto_selected_objectives(tmp_path, concrete=False)
-    # the expensive board only ever surfaces via the display board, not selection.
-    assert name in {r.objective for r in m._auto_value_board(tmp_path, concrete=True)}
 
 
 def test_preview_with_empty_results_still_discloses_concrete_moat(tmp_path: Path):
@@ -204,14 +209,21 @@ def test_preview_with_empty_results_still_discloses_concrete_moat(tmp_path: Path
     # fixpoint), the dry-run preview must still NAME the concrete moat
     # ``--concrete`` would unlock — the high-value work is never hidden. Driven on
     # the renderer directly with an empty results list so the empty branch is
-    # exercised deterministically (a real stub project carries cheap hint debt).
+    # exercised deterministically. The NAMED objective is the STATIC highest-value
+    # expensive objective (a frozen-table ranking — no suite), so it is stable
+    # regardless of this project's own debt.
+    from app.engine.develop_registry import expensive_names
+    from app.engine.objective_value import objective_value_weight
+
     _stub_only_project(tmp_path)
     unlock = m._auto_concrete_unlock(tmp_path)
-    assert unlock is not None and unlock[0] == "implement-stub"  # the moat exists
+    assert unlock is not None  # the moat (expensive set) exists
+    moat = min(expensive_names(), key=lambda n: (-objective_value_weight(n), n))
+    assert unlock[0] == moat  # the highest static buyer-value expensive objective
     rendered = m._develop_auto_value_preview(tmp_path, [], concrete=False)
     # the canonical empty-sweep message is preserved AND the moat is disclosed
     assert "Nothing to do" in rendered
-    assert "implement-stub" in rendered and "--concrete" in rendered
+    assert moat in rendered and "--concrete" in rendered
     # and with --concrete on there is nothing left to disclose
     assert "--concrete" not in m._develop_auto_value_preview(tmp_path, [], concrete=True)
 
@@ -369,3 +381,127 @@ def test_json_path_unchanged_by_value_preview(tmp_path: Path):
     assert isinstance(data, list)
     # no value-ranked wrapper keys, no preview annotation — the raw results list.
     assert all(isinstance(r, dict) and "objective" in r for r in data)
+
+
+# --------------------------------------------------------------------------- #
+# GUARDRAIL 6 — the default preview NEVER runs the buyer's pytest suite        #
+#                                                                              #
+# The round-21 byte-identity floor for the value-ranked preview: every         #
+# expensive gate stays byte-identical, i.e. the DEFAULT (no --apply / no       #
+# --concrete / no --deep) read-only path runs NO new pytest. The concrete-moat #
+# disclosure must NAME the moat from a STATIC buyer-value ranking, never by     #
+# measuring an expensive objective's fitness — because that fitness            #
+# (tdd-implement → detect_missing_symbols) HARVESTS the project suite. We spy  #
+# on that exact suite-harvesting entrypoint and assert it is never entered on  #
+# any of the three default preview paths (`develop --auto`, `auto`, `auto      #
+# --json`). (Pre-fix this spy FIRES — _auto_concrete_unlock ranked the         #
+# expensive set with include_expensive=True, running the suite.)              #
+# --------------------------------------------------------------------------- #
+def _suite_demanding_project(root: Path) -> Path:
+    """A foreign package whose suite is REAL and non-trivial (a RED test that
+    demands a not-yet-written symbol), so if any default path measured the
+    EXPENSIVE tdd-implement fitness it would run pytest AND materialize
+    ``.pytest_cache`` — making the violation observable two ways (the spy AND the
+    cache dir)."""
+    (root / "pkg").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='pkg'\nversion='0'\n", encoding="utf-8")
+    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    # A defined function (a cheap modernize target) so the project isn't a fixpoint
+    # for the cheap board either — the default preview still has something to say.
+    (root / "pkg" / "util.py").write_text(
+        "def is_missing(value):\n    return value == None\n", encoding="utf-8")
+    # A RED test importing a symbol that does NOT exist yet → exactly the shape
+    # detect_missing_symbols harvests from the suite.
+    (root / "tests" / "test_need.py").write_text(
+        "from pkg.util import compute\n"
+        "def test_compute():\n    assert compute(2, 3) == 5\n", encoding="utf-8")
+    return root
+
+
+def _spy_detector(monkeypatch) -> list:
+    """Spy on the suite-harvesting entrypoint (tdd-implement's
+    ``detect_missing_symbols`` — it runs the project's full pytest suite). Returns
+    a call-log list; any append means a default path measured an EXPENSIVE
+    objective's fitness, i.e. ran the buyer's suite (the violation)."""
+    import app.execution.objectives.tdd_implement as tdd
+    calls: list = []
+    real = tdd.detect_missing_symbols
+    monkeypatch.setattr(
+        tdd, "detect_missing_symbols",
+        lambda *a, **k: (calls.append((a, k)), real(*a, **k))[1])
+    return calls
+
+
+def test_develop_auto_default_preview_runs_no_suite(tmp_path: Path, monkeypatch):
+    _suite_demanding_project(tmp_path)
+    calls = _spy_detector(monkeypatch)
+    rc, _out = _run(_auto_ns(tmp_path))  # default: no --apply, no --concrete
+    assert rc == 0
+    assert calls == []  # the suite-harvesting detector was NEVER entered
+    assert not (tmp_path / ".pytest_cache").exists()  # no suite ⇒ no cache
+
+
+def test_auto_human_default_preview_runs_no_suite(tmp_path: Path, monkeypatch):
+    _suite_demanding_project(tmp_path)
+    calls = _spy_detector(monkeypatch)
+    ns = argparse.Namespace(
+        goal="", target=str(tmp_path), apply=False, recommend=True, mode=None,
+        commit=False, no_verify=False, max_apply=0, json=False, out="", deep=False)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = cmd_auto(ns)
+    assert rc == 0
+    assert calls == []  # `apex auto` (human) ran no pytest on the default path
+    assert not (tmp_path / ".pytest_cache").exists()
+    # the disclosure still NAMES a concrete objective (the moat is not hidden)
+    assert "--deep" in out.getvalue()
+
+
+def test_auto_json_default_preview_runs_no_suite(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    _suite_demanding_project(tmp_path)
+    calls = _spy_detector(monkeypatch)
+    ns = argparse.Namespace(
+        goal="", target=str(tmp_path), apply=False, recommend=True, mode=None,
+        commit=False, no_verify=False, max_apply=0, json=True, out="", deep=False)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = cmd_auto(ns)
+    assert rc == 0
+    assert calls == []  # `apex auto --json` ran no pytest on the default path
+    assert not (tmp_path / ".pytest_cache").exists()
+    # the additive value-preview key is present and well-formed (no suite needed)
+    data = _json.loads(out.getvalue().strip())
+    assert isinstance(data.get("concrete_available"), list)
+
+
+def test_concrete_unlock_is_static_and_suite_free(tmp_path: Path, monkeypatch):
+    # UNIT: the disclosure source itself names the moat WITHOUT the detector — a
+    # frozen-table ranking of the registered expensive set, independent of the
+    # project (target is unused), so it is pure and suite-free.
+    from app.engine.develop_registry import expensive_names
+    from app.engine.objective_value import objective_value_weight
+
+    _suite_demanding_project(tmp_path)
+    calls = _spy_detector(monkeypatch)
+    unlock = m._auto_concrete_unlock(tmp_path)
+    assert calls == []  # named the moat without harvesting the suite
+    moat = min(expensive_names(), key=lambda n: (-objective_value_weight(n), n))
+    assert unlock == (moat, objective_value_weight(moat))
+    # target-independent: a non-existent path yields the IDENTICAL answer (proof it
+    # never reads project state / runs fitness).
+    assert m._auto_concrete_unlock(tmp_path / "does-not-exist") == unlock
+
+
+def test_concrete_unlock_none_when_no_expensive_registered(monkeypatch):
+    # EDGE (empty expensive set): with nothing flagged expensive there is no moat
+    # to disclose → None (and still no suite). Patched at the source the helper
+    # imports.
+    import app.engine.develop_registry as reg
+    monkeypatch.setattr(reg, "expensive_names", lambda: set())
+    assert m._auto_concrete_unlock(Path("/any")) is None
+    line = m._auto_concrete_unlock_line(Path("/any"), concrete=False, flag="--concrete")
+    assert line == ""  # nothing expensive ⇒ no disclosure line

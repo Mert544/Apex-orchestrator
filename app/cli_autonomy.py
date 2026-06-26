@@ -359,9 +359,15 @@ def _auto_deep_disclosure(args) -> str:
 
 # --- Value-ranked PREVIEW (read-only, opt-in-expensive) ---------------------- #
 # A buyer sees the high-value work FIRST in the default preview, instead of the
-# moat being hidden behind --concrete. STRICTLY read-only: every board here is
-# built with ``rank_objectives`` (apply=False ⇒ writes nothing, runs no suite)
-# and is NEVER fed into ``compile_objective(apply=True)`` — the applied set stays
+# moat being hidden behind --concrete. STRICTLY read-only AND suite-free: the
+# CHEAP main board is built with ``rank_objectives(include_expensive=False)``,
+# which EXCLUDES the expensive concrete objectives, so it runs NO pytest. The
+# concrete-moat disclosure NAMES the highest-value expensive objective from a
+# STATIC frozen-table ranking (``_auto_concrete_unlock``) — it never measures an
+# expensive objective's fitness, because doing so would HARVEST the buyer's
+# pytest suite on this default path (the round-21 byte-identity violation: every
+# expensive gate stays byte-identical, i.e. no new suite execution). No board
+# here is fed into ``compile_objective(apply=True)`` — the applied set stays
 # byte-identical (the round-21 safety). "Value" answers *what KIND of work* it is
 # (the frozen buyer model), kept strictly separate from coverage/"verified"
 # (whether a test exercised a landed change), so the annotation never reads as a
@@ -397,22 +403,33 @@ def _auto_value_board(target, *, concrete: bool) -> list:
 
 
 def _auto_concrete_unlock(target) -> tuple[str, float] | None:
-    """The single highest-value EXPENSIVE objective ``--concrete`` would unlock
-    (carrying qualifying work now), as ``(objective, buyer_value)`` — or None.
+    """The single highest buyer-value EXPENSIVE objective ``--concrete`` would
+    unlock, as ``(objective, buyer_value)`` — or None when nothing expensive is
+    registered.
 
-    DISPLAY-ONLY: this expensive-inclusive board exists to NAME the concrete moat
-    in the disclosure; it is never fed into ``compile_objective(apply=True)``, so
-    expensive work stays opt-in. Deterministic: value desc, name as tie-break."""
+    NAMES the concrete moat for the read-only disclosure via a STATIC, zero-cost
+    ranking ONLY: ``expensive_names()`` (a registry flag — no fitness) intersected
+    with the registered objectives, sorted by ``objective_value_weight`` (a frozen
+    -table lookup — no IO) descending with the name as a total-order tie-break. It
+    deliberately does NOT measure ``pending``: computing an expensive objective's
+    fitness would run the buyer's pytest suite on this default read-only path (the
+    round-21 byte-identity violation), and the moat only needs its NAME + static
+    buyer-value here. ``target`` is unused (kept for a stable signature across the
+    disclosure helpers) — the ranking is identical for every project, so this is
+    pure and suite-free. Never fed into ``compile_objective(apply=True)``, so
+    expensive work stays opt-in."""
+    del target  # static naming only — no per-project fitness, hence no suite run.
     from app.engine.develop_registry import expensive_names
+    from app.engine.objective_compiler import available_objectives
     from app.engine.objective_value import objective_value_weight
 
-    expensive = expensive_names()
-    unlockable = [r for r in _auto_value_board(target, concrete=True)
-                  if r.objective in expensive]
+    registered = set(available_objectives())
+    unlockable = sorted(expensive_names() & registered,
+                        key=lambda name: (-objective_value_weight(name), name))
     if not unlockable:
         return None
-    best = unlockable[0]  # already value-sorted (value desc, name tie-break)
-    return best.objective, objective_value_weight(best.objective)
+    best = unlockable[0]  # value desc, name tie-break ⇒ a total order.
+    return best, objective_value_weight(best)
 
 
 def _auto_value_lead_line(board: list) -> str:
@@ -430,13 +447,15 @@ def _auto_value_lead_line(board: list) -> str:
 
 
 def _auto_concrete_unlock_line(target, concrete: bool, *, flag: str) -> str:
-    """The disclosure naming the concrete/expensive objective ``flag`` would
-    unlock (highest buyer-value first) WITHOUT selecting it. Empty when concrete
-    is already on or nothing expensive is applicable. Mirrors the
-    ``_auto_deep_disclosure`` idiom: cost-bearing work stays visible + opt-in.
-    ``flag`` is the actual opt-in for the calling command (``--concrete`` for
-    ``develop --auto``, ``--deep`` for ``auto``), so the message names the right
-    one."""
+    """The disclosure NAMING the highest buyer-value concrete/expensive objective
+    ``flag`` would unlock, WITHOUT selecting it OR measuring its fitness. Empty
+    when concrete is already on or nothing expensive is registered. Mirrors the
+    ``_auto_deep_disclosure`` idiom: cost-bearing work stays visible + opt-in,
+    framed as POTENTIAL work ("available — add the flag") rather than a "pending
+    right now" claim — the name comes from a static buyer-value ranking that runs
+    no suite (see ``_auto_concrete_unlock``). ``flag`` is the actual opt-in for the
+    calling command (``--concrete`` for ``develop --auto``, ``--deep`` for
+    ``auto``), so the message names the right one."""
     if concrete:
         return ""
     unlock = _auto_concrete_unlock(target)
