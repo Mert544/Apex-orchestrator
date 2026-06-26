@@ -106,8 +106,11 @@ def _escaping_raises(
       - ``None``  — an UNPROVABLE shape is present, so the whole function is
         refused. That is: any raise :func:`_proven_raise_name` cannot read (a bare
         re-raise, a ``raise <var>``, a lowercase-callee ``raise fn()``, a dotted
-        ``raise mod.Err(...)``), OR any ``ast.Try`` with a non-empty ``except``
-        that could SWALLOW a raise (the swallow guard).
+        ``raise mod.Err(...)``), OR any ``ast.Try``/``ast.TryStar`` with a
+        non-empty ``except`` that could SWALLOW a raise (the swallow guard), OR any
+        ``ast.With``/``ast.AsyncWith`` body containing a raise (a context manager
+        could swallow it — ``contextlib.suppress`` and any ``__exit__`` returning
+        truthy).
       - ``[]``    — nothing escapes (an honest no-op; never a content-free Raises).
       - ``[name, …]`` — the DISTINCT provable names, first-seen order.
 
@@ -117,19 +120,31 @@ def _escaping_raises(
     shape as :func:`app.tools.exception_hygiene._direct_raises`."""
     names: list[str] = []
 
-    def walk(nodes: list[ast.stmt]) -> bool:
+    def walk(nodes: list[ast.stmt], under_with: bool = False) -> bool:
         """Append every provable escaping name; return ``False`` (and stop) the
-        moment an unprovable shape — a swallowing ``try`` or an unreadable raise —
-        appears."""
+        moment an unprovable shape appears — a swallowing ``try``/``try*`` with
+        handlers, an unreadable raise, OR a raise inside a ``with``/``async with``
+        whose context manager could suppress it (``contextlib.suppress`` and any
+        ``__exit__`` returning truthy)."""
         for node in nodes:
-            if isinstance(node, ast.Try):
+            if isinstance(node, (ast.Try, ast.TryStar)):
                 if node.handlers:
-                    return False  # try-with-except could swallow → refuse
+                    return False  # try/except(*) could swallow → refuse
                 # try/finally with NO except does NOT swallow: descend the parts
                 # that actually run (body, the no-exception else, and finally).
-                if not (walk(node.body) and walk(node.orelse) and walk(node.finalbody)):
+                if not (walk(node.body, under_with)
+                        and walk(node.orelse, under_with)
+                        and walk(node.finalbody, under_with)):
+                    return False
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                # A context manager's __exit__ may suppress the raise (e.g.
+                # contextlib.suppress), so a raise inside the body is no longer
+                # provably escaping. Descend under the swallow flag.
+                if not walk(node.body, under_with=True):
                     return False
             elif isinstance(node, ast.Raise):
+                if under_with:
+                    return False  # an enclosing context manager could swallow it
                 name = _proven_raise_name(node)
                 if name is None:
                     return False
@@ -137,7 +152,7 @@ def _escaping_raises(
                     names.append(name)
             elif not isinstance(node, _SCOPE):  # new scope's raises are not ours
                 kids = [c for c in ast.iter_child_nodes(node) if isinstance(c, ast.stmt)]
-                if not walk(kids):
+                if not walk(kids, under_with):
                     return False
         return True
 

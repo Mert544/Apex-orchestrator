@@ -5,10 +5,13 @@ document-raises-jsdoc (``@throws``). Land a docstring carrying one
 VERBATIM off the AST — never inferred.
 
 Covers: the escape walker / honesty gate (single / two-distinct-source-order /
-duplicate-collapse / descend-if-for-while-with / scope-stop at nested
+duplicate-collapse / descend-if-for-while / scope-stop at nested
 def/lambda/class) and its FULL refusal set (a ``raise <var>``, a lowercase factory
 call, a dotted ctor, a bare re-raise, a mixed provable+unprovable body, a
-try-with-except swallow guard — while a try/finally with NO except still lands);
+try-with-except AND a try*/except* swallow guard, a raise inside a
+``with``/``async with`` whose context manager could suppress it (contextlib.suppress
+and the could-really-escape ``open()`` case) — while a try/finally with NO except
+still lands AND a raise outside any with still lands);
 the docstring block + the "a Raises line is content the signature lacks" bar; the
 ``document_raises`` transform (lands, refuses already-doc'd/private/dunder/test_,
 the single-line-body indent guard, unparseable source, idempotence, determinism,
@@ -59,14 +62,16 @@ def test_escaping_raises_duplicate_collapses():
     assert _escaping_raises(fn) == ["RuntimeError"]  # one line
 
 
-def test_escaping_raises_descends_if_for_while_with():
+def test_escaping_raises_descends_if_for_while():
+    # if/for/while are plain control flow that cannot swallow a raise, so a raise
+    # nested in them escapes. (``with`` is handled separately: a context manager
+    # COULD suppress, so a raise under it is refused — see the with-swallow tests.)
     fn = _fn(
         "def f():\n"
         "    for x in y:\n"
         "        while c:\n"
-        "            with z:\n"
-        "                if a:\n"
-        "                    raise IndexError()\n"
+        "            if a:\n"
+        "                raise IndexError()\n"
     )
     assert _escaping_raises(fn) == ["IndexError"]
 
@@ -178,6 +183,80 @@ def test_try_finally_raise_in_finally_attributes():
     assert _escaping_raises(fn) == ["RuntimeError"]
 
 
+def test_with_suppress_swallow_refuses():
+    # contextlib.suppress(ValueError).__exit__ returns truthy -> it SWALLOWS the
+    # raise. The CM body cannot be proven escaping, so the function is refused.
+    fn = _fn(
+        "def f():\n"
+        "    with contextlib.suppress(ValueError):\n"
+        "        raise ValueError('x')\n"
+    )
+    assert _escaping_raises(fn) is None
+
+
+def test_with_raise_refused_even_if_it_would_escape():
+    # We cannot prove an ARBITRARY context manager is non-suppressing (its __exit__
+    # may return truthy), so a raise inside ANY with body is refused — sound even
+    # though this particular `open()` CM would let the raise escape. A false
+    # NEGATIVE (a missed real Raises:) is acceptable; a false positive is not.
+    fn = _fn(
+        "def f(p):\n"
+        "    with open(p) as fh:\n"
+        "        raise IOError('boom')\n"
+    )
+    assert _escaping_raises(fn) is None
+
+
+def test_async_with_raise_refused():
+    # async with has the same swallow surface as with -> a raise in its body is
+    # refused (the __aexit__ may suppress).
+    fn = _fn(
+        "async def f(ctx):\n"
+        "    async with ctx:\n"
+        "        raise ValueError('x')\n"
+    )
+    assert _escaping_raises(fn) is None
+
+
+def test_raise_before_with_in_same_body_attributes():
+    # A raise OUTSIDE any with is still provably escaping; only the with-body raise
+    # would be refused. Here the only raise is before the (raise-free) with body,
+    # so it lands normally.
+    fn = _fn(
+        "def f():\n"
+        "    raise KeyError()\n"
+        "    with lock:\n"
+        "        do_work()\n"
+    )
+    assert _escaping_raises(fn) == ["KeyError"]
+
+
+def test_try_star_with_except_star_swallow_refuses():
+    # PEP 654 try/except* can catch-and-swallow a raise exactly like a plain
+    # try/except, so the TryStar swallow guard refuses it too.
+    fn = _fn(
+        "def f():\n"
+        "    try:\n"
+        "        raise ValueError('x')\n"
+        "    except* ValueError:\n"
+        "        pass\n"
+    )
+    assert _escaping_raises(fn) is None
+
+
+def test_try_star_is_an_ast_try_star_node():
+    # Guard the precondition: ``try/except*`` parses to ``ast.TryStar`` (NOT
+    # ``ast.Try``), so the swallow guard must name BOTH types — which it now does.
+    node = _fn(
+        "def f():\n"
+        "    try:\n"
+        "        g()\n"
+        "    except* ValueError:\n"
+        "        pass\n"
+    ).body[0]
+    assert isinstance(node, ast.TryStar)
+
+
 def test_async_function_escaping_raises():
     fn = _fn("async def f():\n    raise ValueError()\n")
     assert _escaping_raises(fn) == ["ValueError"]
@@ -277,6 +356,66 @@ def test_zero_escaping_raise_function_is_a_noop():
 
 def test_unprovable_shape_function_is_a_noop():
     assert document_raises("def f(e):\n    raise e\n") is None
+
+
+def test_with_suppress_lands_no_raises_docstring():
+    # End-to-end: a function whose ONLY raise is under contextlib.suppress is
+    # refused -> nothing lands (no false ``Raises:``).
+    src = (
+        "def f():\n"
+        "    with contextlib.suppress(ValueError):\n"
+        "        raise ValueError('x')\n"
+    )
+    assert document_raises(src) is None
+
+
+def test_with_open_raise_lands_no_raises_docstring():
+    # End-to-end: a raise inside ``with open(...)`` is refused (the CM could
+    # suppress), so no docstring is landed even though it would really escape.
+    src = (
+        "def f(p):\n"
+        "    with open(p) as fh:\n"
+        "        raise IOError('boom')\n"
+    )
+    assert document_raises(src) is None
+
+
+def test_try_star_swallow_lands_no_raises_docstring():
+    # End-to-end: a try/except* that swallows the raise is refused -> nothing lands.
+    src = (
+        "def f():\n"
+        "    try:\n"
+        "        raise ValueError('x')\n"
+        "    except* ValueError:\n"
+        "        pass\n"
+    )
+    assert document_raises(src) is None
+
+
+def test_try_finally_still_lands_raises_docstring():
+    # Regression guard: a try/finally with NO except does NOT swallow, so the
+    # escaping ``KeyError`` is STILL documented end-to-end.
+    src = (
+        "def f():\n"
+        "    try:\n"
+        "        raise KeyError('k')\n"
+        "    finally:\n"
+        "        cleanup()\n"
+    )
+    out = document_raises(src)
+    assert out is not None
+    assert '"""f.\n' in out
+    assert "        KeyError\n" in out
+
+
+def test_plain_top_level_raise_still_lands_raises_docstring():
+    # Regression guard: a bare top-level raise (no with/try) is documented exactly
+    # as before — only CM-enclosed raises change behaviour.
+    src = "def f(x):\n    raise ValueError('bad')\n"
+    out = document_raises(src)
+    assert out is not None
+    assert "    Raises:\n" in out
+    assert "        ValueError\n" in out
 
 
 def test_unparseable_source_is_none():
