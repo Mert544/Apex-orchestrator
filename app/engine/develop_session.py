@@ -174,6 +174,22 @@ class SessionReport:
     # the evidence behind a ``regression_rolled_back``. Empty unless a regression
     # was detected (and rolled back), so a clean session's artifact is unchanged.
     regressed_nodes: list[str] = field(default_factory=list)
+    # Did a GREEN baseline go RED *during* the session — self-inflicted by a late
+    # objective — triggering the session-level restore? On a GREEN baseline every
+    # per-move gate runs the FULL suite, so a single objective's own gate cannot
+    # miss a break it caused; but in a MULTI-objective session a late objective can
+    # break code an EARLIER objective already landed (an interaction the per-move
+    # gate, run against the tree as it stood for that objective, never re-checks).
+    # When the end-of-session full-suite backstop sees RED after a GREEN baseline,
+    # that is by definition a self-inflicted regression: the whole session is
+    # restored to its pre-session bytes (every objective's edits reverted) and
+    # ``regression_rolled_back`` is set too. This flag is DISTINCT from
+    # ``baseline_suite_green is False`` (a genuinely RED *baseline*): when ``True``
+    # the renderer must say the RED was self-inflicted-then-reverted, NEVER "RED
+    # before any change (pre-existing failures)". ``regressed_nodes`` stays empty
+    # here — a green baseline diffs no failing-node set, the green→red transition
+    # IS the proof. Defaults falsy, so a clean session's artifact is unchanged.
+    self_inflicted_red: bool = False
     # VERIFICATION-UNAVAILABLE short-circuit. ``True`` when the interpreter Apex
     # would invoke for this project HAS a pytest suite to run but cannot import
     # pytest — so NOTHING could be verified. This is DISTINCT from a RED baseline
@@ -224,6 +240,7 @@ class SessionReport:
             "baseline_suite_green": self.baseline_suite_green,
             "regression_rolled_back": self.regression_rolled_back,
             "regressed_nodes": self.regressed_nodes,
+            "self_inflicted_red": self.self_inflicted_red,
             "pytest_missing": self.pytest_missing,
             "pytest_interpreter": self.pytest_interpreter,
             "objectives": [o.to_dict() for o in self.objectives],
@@ -440,6 +457,28 @@ def _regressed_nodes(baseline_failing: frozenset[str],
     return regressed_functions(baseline_failing, after_failing)
 
 
+def _restore_and_zero(
+    report: SessionReport, root: Path, before: dict[str, str],
+    after: dict[str, str],
+) -> None:
+    """Roll the whole tree back to ``before`` and zero every landed move.
+
+    The shared core of BOTH session-level rollbacks (the red-baseline failing-node
+    backstop and the green-baseline self-inflicted-RED backstop): restore every
+    modified file to its pre-session bytes (delete created ones) via
+    ``_restore_snapshot``, mark ``regression_rolled_back``, and drop every landed
+    move so the artifact reflects the rollback, not phantom contributions. The
+    caller sets whichever EVIDENCE field is appropriate (``regressed_nodes`` on the
+    red path; ``self_inflicted_red`` on the green path) — this only does the part
+    that is identical for both."""
+    _restore_snapshot(root, before, after)
+    report.regression_rolled_back = True
+    # The tree is back at baseline: drop every landed move so the artifact
+    # reflects the rollback, not phantom contributions.
+    for obj in report.objectives:
+        obj.moves = []
+
+
 def _maybe_rollback_regression(
     report: SessionReport, root: Path, before: dict[str, str],
     after: dict[str, str], baseline_failing: frozenset[str],
@@ -459,13 +498,8 @@ def _maybe_rollback_regression(
     regressed = _regressed_nodes(baseline_failing, after_failing)
     if not regressed:
         return after
-    _restore_snapshot(root, before, after)
-    report.regression_rolled_back = True
+    _restore_and_zero(report, root, before, after)
     report.regressed_nodes = sorted(regressed)
-    # The tree is back at baseline: drop every landed move so the artifact
-    # reflects the rollback, not phantom contributions.
-    for obj in report.objectives:
-        obj.moves = []
     return before
 
 
@@ -477,10 +511,12 @@ def _finalize_apply(
 
     The baseline-diff ROLLBACK backstop runs ONLY when the baseline was RED, the
     run gated (``verify``), and files actually changed — the precondition for the
-    transitive-regression hole; the GREEN path (full-suite per-move gating) never
-    reaches it and is byte-identical. Then the unified diff is recomputed against
-    the EFFECTIVE after (which is ``before`` if a regression rolled the session
-    back) and the disclosure-only full-suite backstop runs as before."""
+    transitive-regression hole. Then the unified diff is computed against the
+    EFFECTIVE after (which is ``before`` if a regression rolled the session back)
+    and the disclosure full-suite backstop runs. On a GREEN baseline that backstop
+    can ALSO observe RED — a late objective self-inflicting a regression a per-move
+    gate missed (e.g. breaking an EARLIER objective's already-landed edits) — and
+    THAT, too, restores the whole tree to its pre-session bytes (see below)."""
     after = _snapshot(root)
     if verify and baseline_green is False and after != before:
         after = _maybe_rollback_regression(
@@ -498,6 +534,31 @@ def _finalize_apply(
     if verify:
         report.suite_available, report.suite_green_after = _full_suite_green(root)
         report.backstop_ran = True
+        # GREEN-baseline self-inflicted-RED backstop. The baseline was GREEN, so a
+        # RED full suite AFTER the (gated) session is, by definition, a regression
+        # the session caused — most plausibly a late objective breaking code an
+        # EARLIER objective already landed (the per-move full-suite gate checks the
+        # tree as it stood for THAT objective and never re-runs once a later one
+        # edits over it). No failing-node diff is needed: green→red IS the proof.
+        # Restore the WHOLE tree to its session-start bytes (the earlier objective's
+        # edits reverted too) so the session never leaves the project worse than it
+        # found it. Reuses ``before``/``_restore_snapshot`` — no new snapshot, no
+        # extra suite run (the backstop result above is reused). Guards: ``after !=
+        # before`` (a no-op session never restores) and ``suite_available`` (a
+        # suite-less repo, whose ``suite_green_after`` defaults True, is untouched),
+        # so a clean all-green session takes the exact same path as before — no
+        # over-rollback. The red-baseline branch already handled its own RED, so this
+        # only fires on a GREEN baseline.
+        if (baseline_green is True and after != before
+                and report.suite_available and not report.suite_green_after):
+            _restore_and_zero(report, root, before, after)
+            report.self_inflicted_red = True
+            after = before
+            files, added, removed, diff = _diff_snapshots(before, after)
+            report.files_changed = files
+            report.lines_added = added
+            report.lines_removed = removed
+            report.diff = diff
 
 
 def run_develop_session(
@@ -659,15 +720,30 @@ def _verification_lines(report: SessionReport) -> list[str]:
     lines = ["Verification: " + ", ".join(parts) + ".",
              f"Full-suite backstop: {_backstop_phrase(report)}."]
     if report.regression_rolled_back:
-        # The end-of-session baseline-diff backstop caught a previously-GREEN test
-        # the (impact-scoped) per-move gate missed and rolled the WHOLE session
-        # back to its pre-session bytes. Disclose it loudly and name the regressed
-        # nodes — never silently keep a regression.
-        nodes = ", ".join(f"`{n}`" for n in report.regressed_nodes)
-        lines.append(
-            "⚠️ Auto-rollback: a previously-GREEN test regressed "
-            f"({nodes}) — the entire session was ROLLED BACK to its "
-            "pre-session state; no contribution landed.")
+        # The end-of-session backstop caught a regression the per-move gate missed
+        # and rolled the WHOLE session back to its pre-session bytes. Disclose it
+        # loudly — never silently keep a regression. Two shapes, distinct wording:
+        #   * self-inflicted (GREEN baseline went RED mid-session): no failing-node
+        #     diff was computed, so ``regressed_nodes`` is empty — say a previously-
+        #     GREEN baseline went RED, without implying named nodes there are none.
+        #   * red-baseline transitive: name the specific previously-GREEN nodes the
+        #     impact-scoped gate missed.
+        if report.self_inflicted_red:
+            lines.append(
+                "⚠️ Auto-rollback: a GREEN baseline went RED mid-session "
+                "(self-inflicted by a later objective) — the entire session was "
+                "ROLLED BACK to its pre-session state; no contribution landed.")
+        elif report.regressed_nodes:
+            nodes = ", ".join(f"`{n}`" for n in report.regressed_nodes)
+            lines.append(
+                "⚠️ Auto-rollback: a previously-GREEN test regressed "
+                f"({nodes}) — the entire session was ROLLED BACK to its "
+                "pre-session state; no contribution landed.")
+        else:
+            lines.append(
+                "⚠️ Auto-rollback: a previously-GREEN test regressed — the entire "
+                "session was ROLLED BACK to its pre-session state; no contribution "
+                "landed.")
     return lines
 
 
@@ -723,6 +799,21 @@ def _nothing_landed_lines(report: SessionReport) -> list[str]:
             "_⚠️ "
             + _verification_unavailable_message(report.pytest_interpreter)
             + "_",
+        ]
+    if report.self_inflicted_red:
+        # The baseline suite was GREEN, but a LATER objective regressed it
+        # MID-SESSION (self-inflicted) — most plausibly by breaking code an earlier
+        # objective already landed. The whole session was restored to its
+        # pre-session bytes (the earlier objectives' edits reverted too). This is
+        # NEITHER a pre-existing failure ("RED before any change") NOR an "already
+        # satisfied" project; say so plainly so the wording is never misleading.
+        return [
+            "_No contribution stands: the baseline suite was GREEN, but a later "
+            "objective REGRESSED it MID-SESSION (self-inflicted), so Apex rolled "
+            "the ENTIRE session back to its pre-session bytes (auto-rollback). The "
+            "earlier objectives' edits were reverted too — your tree is "
+            "byte-identical to session start. This is NOT a pre-existing failure "
+            "and NOT an 'already satisfied' project._",
         ]
     if report.regression_rolled_back:
         # The empty contribution list here is NOT "nothing to do" — work landed

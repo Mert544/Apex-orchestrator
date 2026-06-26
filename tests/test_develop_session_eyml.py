@@ -978,3 +978,341 @@ def test_genuine_regression_still_charged_alongside_unmask():
                        "tests/test_real.py::test_broke"})         # genuine
     assert _regressed_nodes(baseline, after) == frozenset(
         {"tests/test_real.py::test_broke"})
+
+
+# --- the marshmallow trust gap: a GREEN baseline self-inflicts RED mid-session -
+#
+# THE VIOLATION (the marshmallow buyer pilot found): on a GREEN baseline a session
+# runs MANY objectives over ONE shared tree. An EARLY objective lands a good edit;
+# a LATE objective corrupts the tree (a NameError). Every per-move gate ran the
+# FULL suite against the tree AS IT STOOD FOR THAT OBJECTIVE, so the late break —
+# an interaction with the earlier objective's already-applied edits — was never
+# re-checked, the post-session full-suite backstop only DISCLOSED "RED after", and
+# BOTH the good and the broken edits were LEFT ON DISK. The session honestly
+# credited 0 but did NOT restore the tree (violates "never leaves your project
+# worse than it found it"). It also MISLABELLED the cause as "RED before any change
+# (pre-existing failures)" when the baseline was GREEN.
+#
+# THE FIX: on a GREEN baseline, a RED full-suite backstop IS by definition a
+# self-inflicted regression — restore the WHOLE tree to its session-start bytes
+# (the early objective's edits reverted too), zero every move, and tell the honest
+# self-inflicted story (never "RED before any change").
+#
+# The scenario is provoked DETERMINISTICALLY by faking ``compile_objective`` so an
+# early objective writes a benign-but-real edit and a late one writes a corrupting
+# edit (the same monkeypatch strategy as the rolled-back-move test above). The
+# session's OWN machinery — the up-front GREEN baseline probe, the post-session
+# full-suite backstop, ``_snapshot``/``_restore_snapshot`` — runs for real against
+# the real tree; only the per-objective move loop is stubbed.
+
+
+def _green_two_module_project(root: Path) -> Path:
+    """A GREEN-at-baseline foreign package with two independently-tested modules.
+
+    ``pkg/early.py`` (covered by ``test_early.py``) is what the EARLY objective
+    edits; ``pkg/late.py`` (covered by ``test_late.py``) is what the LATE objective
+    corrupts. Both pass at baseline, so the session's up-front probe sees a GREEN
+    baseline and keeps full-suite per-move gating — the exact happy-path the gap
+    hides behind."""
+    (root / "pkg").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='pkg'\nversion='0'\n", encoding="utf-8")
+    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pkg" / "early.py").write_text(
+        "def early(n):\n    return n + 1\n", encoding="utf-8")
+    (root / "pkg" / "late.py").write_text(
+        "def late(n):\n    return n * 2\n", encoding="utf-8")
+    (root / "tests" / "test_early.py").write_text(
+        "from pkg.early import early\n"
+        "def test_early():\n    assert early(2) == 3\n", encoding="utf-8")
+    (root / "tests" / "test_late.py").write_text(
+        "from pkg.late import late\n"
+        "def test_late():\n    assert late(3) == 6\n", encoding="utf-8")
+    return root
+
+
+# The benign edit the EARLY objective lands: a real, suite-green change (adds a
+# docstring) on pkg/early.py — its test still passes.
+_EARLY_GOOD = ('def early(n):\n    """Return n + 1 (landed by the early '
+               'objective)."""\n    return n + 1\n')
+# The corrupting edit the LATE objective lands: references an undefined name, so
+# pkg/late.py's test fails at run time (a self-inflicted RED).
+_LATE_BROKEN = "def late(n):\n    return n * undefined_name_xyz\n"
+
+
+def _fake_compile_factory(root: Path, *, early="infer-type-hints",
+                          late="shrink-functions"):
+    """A fake ``compile_objective`` that lands a good early edit then a broken late
+    one, returning a landed ``CompileStep`` for each (every other objective is a
+    no-op). The same fold-through the real loop produces, so the session's
+    accumulation + backstop + restore run exactly as in production."""
+    from app.engine.objective_compiler import CompileResult, CompileStep
+
+    def fake_compile(root_arg, *, objective, **kw):
+        if objective == early:
+            (root / "pkg" / "early.py").write_text(_EARLY_GOOD, encoding="utf-8")
+            return CompileResult(
+                objective=objective, fitness_start=1.0, fitness_end=0.0,
+                applied=True,
+                steps=[CompileStep(
+                    operator="document", target="pkg/early.py",
+                    description="add a docstring to early()",
+                    fitness_before=1.0, fitness_after=0.0,
+                    verified=True, coverage="module")])
+        if objective == late:
+            (root / "pkg" / "late.py").write_text(_LATE_BROKEN, encoding="utf-8")
+            return CompileResult(
+                objective=objective, fitness_start=1.0, fitness_end=0.0,
+                applied=True,
+                steps=[CompileStep(
+                    operator="shrink", target="pkg/late.py",
+                    description="shrink late() (self-inflicts a NameError)",
+                    fitness_before=1.0, fitness_after=0.0,
+                    verified=True, coverage="module")])
+        return CompileResult(objective=objective, fitness_start=0.0,
+                             fitness_end=0.0, applied=True)
+
+    return fake_compile
+
+
+def test_green_baseline_self_inflicted_red_byte_restores_whole_tree(
+        tmp_path: Path, monkeypatch):
+    # THE MARSHMALLOW FIX, end-to-end. A GREEN baseline; an early objective lands a
+    # real edit; a late objective corrupts the tree. After the session the WHOLE
+    # tree is byte-identical to session start — including the EARLY objective's
+    # edit (the precise property the pilot found violated) — nothing landed, and
+    # the message is the honest self-inflicted story (NOT "RED before any change").
+    from app.engine import develop_session as ds
+
+    _green_two_module_project(tmp_path)
+    before = {p.relative_to(tmp_path).as_posix(): p.read_text()
+              for p in sorted(tmp_path.rglob("*.py"))}
+
+    monkeypatch.setattr(ds, "compile_objective",
+                        _fake_compile_factory(tmp_path))
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+
+    # Self-inflicted RED was detected and the whole session rolled back.
+    assert report.self_inflicted_red is True
+    assert report.regression_rolled_back is True
+    assert report.total_moves == 0
+    # The baseline WAS green (so this is NOT a pre-existing-failure case).
+    assert report.baseline_suite_green is True
+    # The green path computes no failing-node diff: the green->red transition IS
+    # the proof, so no named nodes.
+    assert report.regressed_nodes == []
+
+    # EVERY .py file is byte-identical to session start — the early objective's
+    # docstring edit is reverted too, and the broken late edit is gone.
+    after = {p.relative_to(tmp_path).as_posix(): p.read_text()
+             for p in sorted(tmp_path.rglob("*.py"))}
+    assert after == before
+    assert (tmp_path / "pkg" / "early.py").read_text() == (
+        "def early(n):\n    return n + 1\n")
+    assert (tmp_path / "pkg" / "late.py").read_text() == (
+        "def late(n):\n    return n * 2\n")
+    # The restored diff is empty (no phantom contribution diff).
+    assert report.files_changed == []
+    assert report.diff == ""
+
+    # The message is the honest self-inflicted story, NOT the misleading
+    # pre-existing-failure or already-satisfied wording.
+    md = render_session_markdown(report)
+    assert "self-inflicted" in md
+    assert "byte-identical to session start" in md
+    assert "MID-SESSION" in md
+    assert "RED before any change" not in md
+    assert "every objective is already satisfied" not in md
+
+
+def test_green_baseline_self_inflicted_red_writes_no_proof(
+        tmp_path: Path, monkeypatch):
+    # CO-TENANT SYNERGY (Batch 1 proof wiring): the green-baseline rollback zeroes
+    # obj.moves -> report.total_moves == 0, and the proof writer is gated on
+    # total_moves, so a self-inflicted-RED --apply session writes NO
+    # proof-of-fix.json (no held value to record). We drive the SAME CLI helper the
+    # proof wiring uses and confirm nothing is written.
+    from app.cli_autonomy import _develop_session_write_proof
+    from app.engine import develop_session as ds
+
+    _green_two_module_project(tmp_path)
+    monkeypatch.setattr(ds, "compile_objective",
+                        _fake_compile_factory(tmp_path))
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+    assert report.self_inflicted_red is True
+    assert report.total_moves == 0
+
+    # The proof writer is gated on (apply AND total_moves); total_moves==0 -> it
+    # writes nothing. (build_session_proof / the proof helpers are UNCHANGED.)
+    class _Args:
+        apply = True
+        json = False
+
+    _develop_session_write_proof(_Args(), report, tmp_path)
+    assert not (tmp_path / ".apex" / "proof-of-fix.json").exists()
+    assert not (tmp_path / ".apex").exists()
+
+
+def test_green_baseline_all_succeed_does_not_over_rollback(
+        tmp_path: Path, monkeypatch):
+    # THE NO-OVER-ROLLBACK GUARD (the second half of the spec). A GREEN-baseline
+    # session whose objectives all land cleanly (suite still green) must NOT be
+    # restored: self_inflicted_red stays False, the landed file genuinely differs
+    # from session start, and the moves are kept. Fake ONLY a clean early landing
+    # (no late corruption), so the post-session backstop stays GREEN.
+    from app.engine import develop_session as ds
+    from app.engine.objective_compiler import CompileResult, CompileStep
+
+    _green_two_module_project(tmp_path)
+    early_before = (tmp_path / "pkg" / "early.py").read_text()
+
+    def clean_compile(root_arg, *, objective, **kw):
+        if objective == "infer-type-hints":
+            (tmp_path / "pkg" / "early.py").write_text(_EARLY_GOOD,
+                                                       encoding="utf-8")
+            return CompileResult(
+                objective=objective, fitness_start=1.0, fitness_end=0.0,
+                applied=True,
+                steps=[CompileStep(
+                    operator="document", target="pkg/early.py",
+                    description="add a docstring to early()",
+                    fitness_before=1.0, fitness_after=0.0,
+                    verified=True, coverage="module")])
+        return CompileResult(objective=objective, fitness_start=0.0,
+                             fitness_end=0.0, applied=True)
+
+    monkeypatch.setattr(ds, "compile_objective", clean_compile)
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+
+    # No self-inflicted RED, no rollback — the clean landing stands.
+    assert report.self_inflicted_red is False
+    assert report.regression_rolled_back is False
+    assert report.suite_green_after is True
+    assert report.total_moves >= 1
+    # The landed file genuinely differs from session start (NOT over-rolled-back).
+    assert (tmp_path / "pkg" / "early.py").read_text() == _EARLY_GOOD
+    assert (tmp_path / "pkg" / "early.py").read_text() != early_before
+    assert "pkg/early.py" in report.files_changed
+    assert report.diff != ""
+
+
+def test_real_green_baseline_clean_session_no_self_inflicted_flag(tmp_path: Path):
+    # End-to-end with the REAL objective loop (no monkeypatch): a genuinely GREEN
+    # baseline with real tidy work lands cleanly and never sets self_inflicted_red
+    # — the field is purely additive on the unchanged green happy path.
+    _green_baseline_with_tidy_work(tmp_path)
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+    assert report.self_inflicted_red is False
+    assert report.regression_rolled_back is False
+    assert report.suite_green_after is True
+    assert report.total_moves >= 1
+
+
+# --- renderer units: the misleading-message regression guard ------------------
+
+def test_self_inflicted_red_renders_honest_wording():
+    # A self_inflicted_red report renders the honest self-inflicted story and NEVER
+    # the misleading "RED before any change (pre-existing failures)" wording — the
+    # exact mislabel the pilot flagged.
+    report = SessionReport(applied=True)
+    report.regression_rolled_back = True
+    report.self_inflicted_red = True
+    report.baseline_suite_green = True  # the baseline WAS green
+    report.suite_available = True
+    report.suite_green_after = False
+    report.backstop_ran = True
+
+    md = render_session_markdown(report)
+    # The honest self-inflicted disclosure (both the backstop line and the
+    # nothing-landed body).
+    assert "self-inflicted" in md
+    assert "MID-SESSION" in md
+    assert "byte-identical to session start" in md
+    assert "Auto-rollback" in md
+    # NOT the misleading pre-existing-failure wording, and NOT "already satisfied".
+    assert "RED before any change" not in md
+    assert "pre-existing failures" not in md
+    assert "every objective is already satisfied" not in md
+    # And it must NOT imply named regressed nodes (none were computed on the green
+    # path): the empty () clause the old code would have rendered is absent.
+    assert "()" not in md
+
+
+def test_red_baseline_message_byte_identical_after_fix():
+    # REGRESSION GUARD: a genuinely-RED baseline report (self_inflicted_red False)
+    # must still render the OLD "RED before any change (pre-existing failures)"
+    # message byte-for-byte — the new self-inflicted branch must not churn it.
+    report = SessionReport(applied=True)
+    report.baseline_suite_green = False
+    report.self_inflicted_red = False
+    report.regression_rolled_back = False
+    report.suite_available = True
+    report.suite_green_after = False
+    report.backstop_ran = True
+
+    md = render_session_markdown(report)
+    assert ("_No concrete contribution available, but the project's test suite is "
+            "RED before any change (pre-existing failures). Apex verifies each "
+            "contribution against the tests it impacts and will not claim a green "
+            "it didn't earn — this is NOT an 'already satisfied' project._") in md
+    assert "self-inflicted" not in md
+    assert "MID-SESSION" not in md
+
+
+def test_red_baseline_transitive_rollback_message_unchanged():
+    # REGRESSION GUARD: the red-baseline transitive rollback (regression_rolled_back
+    # True, self_inflicted_red False, named nodes) must still name its nodes and use
+    # the previously-GREEN-test wording — the self-inflicted branch must not steal
+    # it.
+    report = SessionReport(applied=True)
+    report.regression_rolled_back = True
+    report.self_inflicted_red = False
+    report.regressed_nodes = ["tests/test_wrapper.py::test_missing_is_blank"]
+    report.baseline_suite_green = True
+    report.suite_available = True
+    report.suite_green_after = False
+    report.backstop_ran = True
+
+    md = render_session_markdown(report)
+    assert "a previously-GREEN test regressed" in md
+    assert "tests/test_wrapper.py::test_missing_is_blank" in md
+    assert "the session landed work that REGRESSED a previously-green test" in md
+    assert "self-inflicted" not in md
+
+
+def test_self_inflicted_red_field_serialises(tmp_path: Path, monkeypatch):
+    # The new field is on the dict artifact for downstream consumers.
+    from app.engine import develop_session as ds
+
+    _green_two_module_project(tmp_path)
+    monkeypatch.setattr(ds, "compile_objective",
+                        _fake_compile_factory(tmp_path))
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+    d = report.to_dict()
+    assert d["self_inflicted_red"] is True
+    # A clean report serialises it falsy (additive, off by default).
+    assert SessionReport(applied=True).to_dict()["self_inflicted_red"] is False
+
+
+def test_self_inflicted_red_rollback_is_deterministic_byte_for_byte(
+        tmp_path: Path, monkeypatch):
+    # Same self-inflicted scenario -> identical rollback outcome + report bytes +
+    # restored tree across two independent runs (no clock/random).
+    from app.engine import develop_session as ds
+
+    a = _green_two_module_project(tmp_path / "a")
+    b = _green_two_module_project(tmp_path / "b")
+
+    monkeypatch.setattr(ds, "compile_objective", _fake_compile_factory(a))
+    ra = run_develop_session(str(a), apply=True, verify=True)
+    monkeypatch.setattr(ds, "compile_objective", _fake_compile_factory(b))
+    rb = run_develop_session(str(b), apply=True, verify=True)
+
+    assert ra.self_inflicted_red is rb.self_inflicted_red is True
+    assert ra.regression_rolled_back is rb.regression_rolled_back is True
+    assert ra.files_changed == rb.files_changed == []
+    assert render_session_markdown(ra) == render_session_markdown(rb)
+    # The restored trees are byte-identical too.
+    for rel in ("pkg/early.py", "pkg/late.py", "pkg/__init__.py"):
+        assert (a / rel).read_text() == (b / rel).read_text()
