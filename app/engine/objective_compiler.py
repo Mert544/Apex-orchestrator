@@ -304,11 +304,30 @@ def _content_plan(project_root: str | Path, rel: str, apply_fn: Callable,
         res = None
     if res and getattr(res, "patch_requests", None):
         new = res.patch_requests[0].get("new_content", "")
-        if new and new != source:
+        if new and new != source and _content_parses(rel, new):
             plan.originals[rel] = source
             plan.new_contents[rel] = new
             plan.edits_by_file[rel] = 1
     return plan
+
+
+def _content_parses(rel: str, new: str) -> bool:
+    """Never-fake-green floor: a ``.py`` rewrite must re-``ast.parse`` to be recorded.
+
+    No content-plan move may land non-parsing Python (e.g. a security flag inserted
+    into a backslash line-continuation): if the new text doesn't parse, the move is
+    refused rather than applied. Only Python rel paths are guarded — java/js carry
+    their own reparse oracles upstream — mirroring the slots ``rejoin_guarded``
+    precedent that re-parses before returning a rewrite.
+    """
+    if not rel.endswith(".py"):
+        return True
+    import ast
+    try:
+        ast.parse(new)
+    except SyntaxError:
+        return False
+    return True
 
 
 def _modernize_candidates(project_root: str | Path) -> list[tuple[str, str, str, Callable]]:

@@ -170,17 +170,35 @@ def _patch_zip_slip(rel_path: str, source: str, tree: ast.Module) -> SemanticPat
     return None
 
 
+def _prev_line_is_continuation(lines: list[str], lineno: int) -> bool:
+    """True when the physical line *before* ``lineno`` ends with a ``\\`` splice.
+
+    Inserting a comment between a backslash line-continuation and the call it
+    continues (``x = \\`` / ``# SECURITY`` / ``call()``) produces a SyntaxError
+    (``\\`` may only be followed by a newline). The flaggers refuse such a site
+    rather than land non-parsing Python.
+    """
+    if lineno < 2:
+        return False
+    prev = lines[lineno - 2]
+    return prev.rstrip("\r\n").endswith("\\")
+
+
 def _flag_call_site(rel_path: str, source: str, lineno: int, marker: str,
                     warning_text: str, transform_type: str,
                     rationale: str) -> SemanticPatchResult | None:
     """Insert a ``# SECURITY (<warning_text>)`` comment above line ``lineno``.
 
-    Returns None when the line is out of range or already carries ``marker`` (on
-    that line or the one before), so the caller can try the next occurrence.
+    Returns None when the line is out of range, already carries ``marker`` (on
+    that line or the one before), or sits on the continuation of a backslash
+    line-splice (where a comment would break the parse), so the caller can try
+    the next occurrence.
     """
     lines = source.splitlines(keepends=True)
     if lineno > len(lines):
         return None
+    if _prev_line_is_continuation(lines, lineno):
+        return None  # comment between `\` and the call would be a SyntaxError
     line_content = lines[lineno - 1]
     prev_line = lines[lineno - 2] if lineno >= 2 else ""
     if marker in line_content or marker in prev_line:
@@ -285,6 +303,8 @@ def _patch_mktemp(rel_path: str, source: str, tree: ast.Module) -> SemanticPatch
         lines = source.splitlines(keepends=True)
         if lineno > len(lines):
             continue
+        if _prev_line_is_continuation(lines, lineno):
+            continue  # comment between `\` and the call would be a SyntaxError
         line_content = lines[lineno - 1]
         prev_line = lines[lineno - 2] if lineno >= 2 else ""
         if "Apex: insecure temp file" in line_content or "Apex: insecure temp file" in prev_line:
@@ -370,6 +390,8 @@ def _patch_sql_injection(rel_path: str, source: str, tree: ast.Module) -> Semant
         lines = source.splitlines(keepends=True)
         if lineno > len(lines):
             continue
+        if _prev_line_is_continuation(lines, lineno):
+            continue  # comment between `\` and the call would be a SyntaxError
         line_content = lines[lineno - 1]
         prev_line = lines[lineno - 2] if lineno >= 2 else ""
         if "Apex: SQL injection" in line_content or "Apex: SQL injection" in prev_line:
@@ -413,6 +435,8 @@ def _patch_pickle(rel_path: str, source: str, tree: ast.Module) -> SemanticPatch
         lines = source.splitlines(keepends=True)
         if lineno > len(lines):
             continue
+        if _prev_line_is_continuation(lines, lineno):
+            continue  # comment between `\` and the call would be a SyntaxError
         line_content = lines[lineno - 1]
         prev_line = lines[lineno - 2] if lineno >= 2 else ""
         if "Apex: untrusted pickle" in line_content or "Apex: untrusted pickle" in prev_line:
@@ -545,7 +569,11 @@ def _eval_arg_rewritable(arg_node: ast.expr) -> bool:
 
     Declines f-strings (never a literal, would always crash) and string literals
     whose content is a runtime expression rather than a Python literal (e.g.
-    ``eval("a * b")``) — rewriting those would ship code that crashes.
+    ``eval("a * b")``) — rewriting those would ship code that crashes. A Name or
+    Call argument (e.g. ``eval(data)`` / ``eval(get())``) IS rewritten: the value
+    is unknown statically, so we narrow to ``ast.literal_eval``, which accepts a
+    literal and raises ``ValueError``/``SyntaxError`` on anything else at runtime
+    — the intended hardening (a non-literal eval was the vulnerability).
     """
     if isinstance(arg_node, ast.JoinedStr):
         return False
@@ -606,62 +634,143 @@ def _patch_eval(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchRe
     return None
 
 
-def _patch_os_system(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        if not isinstance(node.func, ast.Attribute):
-            continue
-        if not isinstance(node.func.value, ast.Name):
-            continue
-        if node.func.value.id != "os":
-            continue
-        if node.func.attr != "system":
-            continue
+def _is_os_system_call(node: ast.AST) -> bool:
+    """``os.system(...)`` with at least one positional argument."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return False
+    func = node.func
+    if not (isinstance(func.value, ast.Name) and func.value.id == "os"):
+        return False
+    return func.attr == "system" and bool(node.args)
 
-        if not node.args:
+
+def _discarded_os_system_calls(tree: ast.Module) -> set[int]:
+    """ids of ``os.system(...)`` calls that are bare expression-statements.
+
+    Only those discard the return value. Any other position (an assignment RHS,
+    an ``if``/``while`` test, a comparison operand, an argument) USES the int
+    wait-status, which ``subprocess.run`` does not reproduce (it returns a
+    truthy ``CompletedProcess`` and ``check=True`` raises on non-zero) — so a
+    used result must be annotated, never rewritten.
+    """
+    discarded: set[int] = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                and _is_os_system_call(node.value)):
+            discarded.add(id(node.value))
+    return discarded
+
+
+def _os_system_literal_has_metachar(arg_node: ast.expr) -> bool:
+    """True when a string-literal command carries a shell metacharacter.
+
+    ``shlex.split('a && b')`` -> ``['a', '&&', 'b']`` runs ``a`` with ``&&`` and
+    ``b`` as literal args, NOT ``a`` then ``b`` — so a metachar literal has no
+    behaviour-preserving shell-free form and must be annotated, not rewritten
+    (mirrors ``_safe_literal_command`` for the subprocess-shell case).
+    """
+    if not (isinstance(arg_node, ast.Constant) and isinstance(arg_node.value, str)):
+        return False
+    return any(ch in _SHELL_METACHARS for ch in arg_node.value)
+
+
+_OS_SYSTEM_WARNING = (
+    "Apex: os.system runs a shell (injection-prone); use "
+    "subprocess.run([...], check=...) — left as-is because a safe rewrite would "
+    "change the result/exit-code semantics here"
+)
+
+
+def _flag_os_system(rel_path: str, source: str, lineno: int) -> SemanticPatchResult | None:
+    """Annotate an ``os.system(...)`` call whose result/command can't be safely rewritten."""
+    return _flag_call_site(
+        rel_path, source, lineno, "Apex: os.system", _OS_SYSTEM_WARNING,
+        "flag_os_system",
+        f"Flagged os.system() with a security warning in {rel_path}.")
+
+
+def _rewrite_os_system(rel_path: str, source: str, tree: ast.Module,
+                       node: ast.Call, arg_source: str) -> SemanticPatchResult | None:
+    """``os.system(cmd)`` -> ``subprocess.run(shlex.split(cmd), check=True)`` + imports.
+
+    Returns None when the verbatim ``os.system(<arg>)`` text isn't found on the
+    call's line (so we never inject unused ``import subprocess``/``import shlex``
+    against an unchanged call — the eval patcher's no-op guard).
+    """
+    lineno = node.lineno
+    lines = source.splitlines(keepends=True)
+    line_content = lines[lineno - 1] if lineno <= len(lines) else ""
+    # os.system runs its argument through a shell, which TOKENISES it. The
+    # equivalent shell-free call must split the command the same way, so we use
+    # shlex.split — wrapping the whole string in a one-element list
+    # (subprocess.run([cmd], shell=False)) would seek a single executable
+    # literally named e.g. "ls -la" and fail at runtime.
+    new_line = line_content.replace(
+        f"os.system({arg_source})",
+        f"subprocess.run(shlex.split({arg_source}), check=True)")
+    if new_line == line_content:
+        return None  # arg source didn't match the line verbatim — don't inject imports
+    new_lines = list(lines)
+    new_lines[lineno - 1] = new_line
+    at = import_insert_index(tree)
+    if "import shlex" not in source:
+        new_lines.insert(at, "import shlex\n")
+    if "import subprocess" not in source:
+        new_lines.insert(at, "import subprocess\n")
+    return SemanticPatchResult(
+        patch_requests=[{
+            "path": rel_path,
+            "new_content": "".join(new_lines),
+            "expected_old_content": source,
+        }],
+        transform_type="os_system_to_subprocess",
+        rationale=[f"Replaced os.system() with subprocess.run() for safety in {rel_path}."],
+    )
+
+
+def _patch_os_system(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
+    """Rewrite a discarded, shell-safe ``os.system(...)``; ANNOTATE every other case.
+
+    Rewriting to ``subprocess.run(shlex.split(...), check=True)`` is only
+    behaviour-preserving when (a) the result is DISCARDED (a bare
+    expression-statement — otherwise the int wait-status is used and the
+    CompletedProcess/`check=True` swap changes semantics) and (b) the command,
+    if a string literal, carries no shell metacharacter (otherwise ``shlex.split``
+    tokenises it wrongly). Any other case is annotated with a ``# SECURITY``
+    comment instead of silently changing behaviour.
+    """
+    discarded = _discarded_os_system_calls(tree)
+    for node in ast.walk(tree):
+        if not _is_os_system_call(node):
             continue
-        arg_source = _get_arg_source(node.args[0], source)
+        arg_node = node.args[0]
+        arg_source = _get_os_system_arg_source(arg_node, source)
         if not arg_source:
             continue
 
-        lineno = node.lineno
-        lines = source.splitlines(keepends=True)
-        line_content = lines[lineno - 1] if lineno <= len(lines) else ""
-        _get_indent(line_content)
+        if id(node) not in discarded or _os_system_literal_has_metachar(arg_node):
+            flagged = _flag_os_system(rel_path, source, node.lineno)
+            if flagged is not None:
+                return flagged
+            continue
 
-        # os.system runs its argument through a shell, which TOKENISES it. The
-        # equivalent shell-free call must split the command the same way, so we
-        # use shlex.split — wrapping the whole string in a one-element list
-        # (subprocess.run([cmd], shell=False)) would seek a single executable
-        # literally named e.g. "ls -la" and fail at runtime.
-        new_line = line_content.replace(
-            f"os.system({arg_source})",
-            f"subprocess.run(shlex.split({arg_source}), check=True)"
-        )
-
-        new_lines = list(lines)
-        new_lines[lineno - 1] = new_line
-
-        needs_subprocess = "import subprocess" not in source
-        needs_shlex = "import shlex" not in source
-        at = import_insert_index(tree)
-        if needs_shlex:
-            new_lines.insert(at, "import shlex\n")
-        if needs_subprocess:
-            new_lines.insert(at, "import subprocess\n")
-
-        return SemanticPatchResult(
-            patch_requests=[{
-                "path": rel_path,
-                "new_content": "".join(new_lines),
-                "expected_old_content": source,
-            }],
-            transform_type="os_system_to_subprocess",
-            rationale=[f"Replaced os.system() with subprocess.run() for safety in {rel_path}."],
-        )
+        rewritten = _rewrite_os_system(rel_path, source, tree, node, arg_source)
+        if rewritten is not None:
+            return rewritten
 
     return None
+
+
+def _get_os_system_arg_source(arg_node: ast.expr, source: str) -> str:
+    """The verbatim source of the command argument, preferring the exact segment.
+
+    Using ``ast.get_source_segment`` keeps the original quote style (a
+    double-quoted ``"ls"`` stays ``"ls"``) so the line replacement matches and a
+    real fix lands, instead of ``repr`` emitting ``'ls'`` and silently no-opping.
+    Falls back to the legacy ``_get_arg_source`` reconstruction when the segment
+    can't be recovered.
+    """
+    return ast.get_source_segment(source, arg_node) or _get_arg_source(arg_node, source)
 
 
 def _patch_base_exception(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
@@ -705,35 +814,70 @@ def _patch_base_exception(rel_path: str, source: str, tree: ast.Module) -> Seman
     return None
 
 
+_BARE_EXCEPT_WARNING = (
+    "Apex: bare except swallows SystemExit/KeyboardInterrupt; catch Exception "
+    "(or re-raise) so the process can still be interrupted"
+)
+
+
 def _patch_bare_except(rel_path: str, source: str, tree: ast.Module) -> SemanticPatchResult | None:
+    """Narrow a bare ``except:`` to ``except Exception:`` ONLY when the handler re-raises.
+
+    A bare ``except:`` that SWALLOWS (the body never re-raises) may be
+    deliberately catching ``SystemExit``/``KeyboardInterrupt``; narrowing it to
+    ``Exception`` would change that behaviour. So we rewrite only when the body
+    re-raises (``except:`` + bare ``raise`` is the broad-catch-then-rethrow
+    pattern, where ``Exception`` is equivalent for the re-raise path) and
+    ANNOTATE-only otherwise — mirroring ``_patch_base_exception``'s guard.
+    """
+    from app.engine.detectors import _reraises
+
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ExceptHandler):
+        if not isinstance(node, ast.ExceptHandler) or node.type is not None:
             continue
-        if node.type is not None:
-            continue
-
-        lineno = node.lineno
-        lines = source.splitlines(keepends=True)
-        line_content = lines[lineno - 1] if lineno <= len(lines) else ""
-
-        new_line = line_content.replace("except:", "except Exception:")
-        if new_line == line_content:
+        if not _reraises(node.body):
+            flagged = _flag_bare_except(rel_path, source, node.lineno)
+            if flagged is not None:
+                return flagged
             continue
 
-        new_lines = list(lines)
-        new_lines[lineno - 1] = new_line
-
-        return SemanticPatchResult(
-            patch_requests=[{
-                "path": rel_path,
-                "new_content": "".join(new_lines),
-                "expected_old_content": source,
-            }],
-            transform_type="bare_except_to_exception",
-            rationale=[f"Replaced bare except with except Exception in {rel_path}."],
-        )
+        rewritten = _rewrite_bare_except(rel_path, source, node.lineno)
+        if rewritten is not None:
+            return rewritten
 
     return None
+
+
+def _rewrite_bare_except(rel_path: str, source: str, lineno: int) -> SemanticPatchResult | None:
+    """``except:`` -> ``except Exception:`` on line ``lineno`` (safe re-raise case)."""
+    lines = source.splitlines(keepends=True)
+    line_content = lines[lineno - 1] if lineno <= len(lines) else ""
+    new_line = line_content.replace("except:", "except Exception:")
+    if new_line == line_content:
+        return None
+    new_lines = list(lines)
+    new_lines[lineno - 1] = new_line
+    return SemanticPatchResult(
+        patch_requests=[{
+            "path": rel_path,
+            "new_content": "".join(new_lines),
+            "expected_old_content": source,
+        }],
+        transform_type="bare_except_to_exception",
+        rationale=[f"Replaced bare except with except Exception in {rel_path}."],
+    )
+
+
+def _flag_bare_except(rel_path: str, source: str, lineno: int) -> SemanticPatchResult | None:
+    """Annotate a SWALLOWING bare ``except:`` with a ``# SECURITY`` comment.
+
+    No rewrite: narrowing a swallowing handler to ``Exception`` would stop it
+    catching ``SystemExit``/``KeyboardInterrupt`` and change behaviour.
+    """
+    return _flag_call_site(
+        rel_path, source, lineno, "Apex: bare except", _BARE_EXCEPT_WARNING,
+        "flag_bare_except",
+        f"Flagged swallowing bare except with a security warning in {rel_path}.")
 
 
 def _get_arg_source(arg_node: ast.expr, source: str) -> str:

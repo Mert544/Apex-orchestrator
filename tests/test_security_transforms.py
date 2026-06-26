@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from app.execution.semantic.transforms.security import apply as security_apply
 
 
@@ -46,11 +44,28 @@ class TestSecurityTransforms:
         _ast.parse(content)  # result is valid Python
 
     def test_bare_except_to_exception(self):
-        source = 'import os\ntry:\n    x\nexcept:\n    pass\n'
+        # A bare except that RE-RAISES is the broad-catch-then-rethrow pattern;
+        # narrowing to Exception is safe there, so it is rewritten.
+        source = 'import os\ntry:\n    x\nexcept:\n    raise\n'
         result = security_apply("test.py", source, "bare except clause")
         assert result is not None
         assert result.transform_type == "bare_except_to_exception"
         assert "except Exception:" in result.patch_requests[0]["new_content"]
+
+    def test_bare_except_that_swallows_is_annotated_not_narrowed(self):
+        # A bare except that SWALLOWS (body never re-raises) may be deliberately
+        # catching SystemExit/KeyboardInterrupt; narrowing to Exception would
+        # change behaviour, so it is annotated with a # SECURITY comment instead.
+        import ast as _ast
+        source = 'import os\ntry:\n    x\nexcept:\n    pass\n'
+        result = security_apply("test.py", source, "bare except clause")
+        assert result is not None
+        assert result.transform_type == "flag_bare_except"
+        out = result.patch_requests[0]["new_content"]
+        assert "except Exception:" not in out  # NOT narrowed
+        assert "# SECURITY (Apex: bare except" in out
+        assert "except:" in out  # the handler itself is unchanged
+        _ast.parse(out)
 
     def test_no_match_returns_none(self):
         source = 'import os\nx = 1\n'

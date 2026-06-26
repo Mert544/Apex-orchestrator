@@ -222,9 +222,10 @@ def test_tier1_yaml_load_to_safe_load(tmp_path: Path):
 
 
 def test_tier1_bare_except_to_exception(tmp_path: Path):
+    # A RE-RAISING bare except is the safe-to-narrow case (Tier-1 rewrite).
     out = _landed_content(
         tmp_path, "app/m.py",
-        "def f():\n    try:\n        g()\n    except:\n        pass\n",
+        "def f():\n    try:\n        g()\n    except:\n        raise\n",
         "bare except")
     assert "except Exception:" in out
 
@@ -427,3 +428,109 @@ def test_refuses_on_python_soundness_corpus():
     assert cells, "harden should be swept on the cheap corpus path"
     for shape, verdict in cells.items():
         assert verdict == "refused", f"{shape}: {verdict}"
+
+
+# --- conservative on UNTESTED code: never land broken / behaviour-changing ----
+# These pin the adversarial-audit fixes (the suite-gate only catches TESTED
+# modules; harden must be sound even on untested files it touches).
+
+def test_never_lands_syntax_error_on_pickle_continuation(tmp_path: Path):
+    # The flag would split a backslash line-continuation and produce a SyntaxError;
+    # the patcher refuses the site, so harden surfaces NO landable move (and could
+    # never land non-parsing Python even if it did — see the floor test below).
+    src = "import pickle\nval = \\\n    pickle.loads(raw)\n"
+    _own_project(tmp_path, "app/m.py", src)
+    assert _content_plan(str(tmp_path), "app/m.py", "pickle").new_contents == {}
+    assert ("app/m.py", "pickle") not in _landable(str(tmp_path))
+
+
+def test_content_plan_floor_refuses_non_parsing_python(tmp_path: Path, monkeypatch):
+    # The never-fake-green floor in objective_compiler._content_plan: even if a
+    # patcher (hypothetically) emitted non-parsing Python, the .py reparse guard
+    # drops it rather than recording it — harden can NEVER land a SyntaxError.
+    from app.execution.semantic.result import SemanticPatchResult
+
+    def _broken(rel, source, title):
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel,
+                "new_content": "def broken(:\n    pass\n",  # SyntaxError
+                "expected_old_content": source,
+            }],
+            transform_type="x", rationale=["x"])
+
+    monkeypatch.setattr(
+        "app.execution.semantic.transforms.security.apply", _broken)
+    _own_project(tmp_path, "app/m.py", "x = 1\n")
+    assert _content_plan(str(tmp_path), "app/m.py", "anything").new_contents == {}
+
+
+def test_content_plan_floor_records_parsing_python(tmp_path: Path, monkeypatch):
+    # The floor is not over-eager: a VALID rewrite is still recorded.
+    from app.execution.semantic.result import SemanticPatchResult
+
+    def _ok(rel, source, title):
+        return SemanticPatchResult(
+            patch_requests=[{
+                "path": rel,
+                "new_content": "x = 2\n",
+                "expected_old_content": source,
+            }],
+            transform_type="x", rationale=["x"])
+
+    monkeypatch.setattr(
+        "app.execution.semantic.transforms.security.apply", _ok)
+    _own_project(tmp_path, "app/m.py", "x = 1\n")
+    assert _content_plan(str(tmp_path), "app/m.py", "anything").new_contents == {
+        "app/m.py": "x = 2\n"}
+
+
+def test_swallowing_bare_except_lands_annotation_not_narrowing(tmp_path: Path):
+    # A SWALLOWING bare except is annotated (behaviour-preserving), not narrowed to
+    # Exception (which could stop catching SystemExit/KeyboardInterrupt).
+    out = _landed_content(
+        tmp_path, "app/m.py",
+        "def f():\n    try:\n        g()\n    except:\n        pass\n",
+        "bare except")
+    assert "except Exception:" not in out
+    assert "# SECURITY (Apex: bare except" in out
+
+
+def test_os_system_used_result_lands_annotation_not_rewrite(tmp_path: Path):
+    # os.system whose int result is USED is annotated, not rewritten to
+    # subprocess.run(check=True) (which would change result/exit-code semantics).
+    out = _landed_content(
+        tmp_path, "app/m.py",
+        "import os\ndef f(cmd):\n    rc = os.system(cmd)\n    return rc\n",
+        "os.system")
+    assert "shlex.split" not in out  # NOT rewritten
+    assert "import subprocess" not in out
+    assert "rc = os.system(cmd)" in out  # call unchanged
+    assert "# SECURITY (Apex: os.system" in out
+
+
+def test_os_system_metachar_literal_lands_annotation(tmp_path: Path):
+    out = _landed_content(
+        tmp_path, "app/m.py",
+        'import os\nos.system("a && b")\n',
+        "os.system")
+    assert "shlex.split" not in out
+    assert "# SECURITY (Apex: os.system" in out
+
+
+def test_os_system_double_quoted_discarded_still_rewrites_cleanly(tmp_path: Path):
+    # The safe case STILL lands a real rewrite — and with a double-quoted literal
+    # no longer injects orphan imports (the F401 the audit found).
+    out = _landed_content(
+        tmp_path, "app/m.py",
+        'import os\nos.system("ls -la")\n',
+        "os.system")
+    assert 'subprocess.run(shlex.split("ls -la"), check=True)' in out
+    assert "import subprocess" in out
+    assert "import shlex" in out
+
+
+def test_os_system_bare_discarded_still_landable(tmp_path: Path):
+    # No over-refusal: the canonical safe os.system case remains a landable finding.
+    _own_project(tmp_path, "app/m.py", "import os\ndef f(cmd):\n    os.system(cmd)\n")
+    assert ("app/m.py", "os.system") in _landable(str(tmp_path))

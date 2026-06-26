@@ -42,8 +42,27 @@ def test_os_system_absent_is_noop():
 # --- bare except -------------------------------------------------------------
 
 def test_bare_except_rewritten():
-    out = _new("try:\n    x = 1\nexcept:\n    pass\n", "fix bare except security")
+    # Re-raising handler: narrowing the bare catch to Exception is behaviour-safe.
+    out = _new("try:\n    x = 1\nexcept:\n    raise\n", "fix bare except security")
     assert out and "except Exception:" in out
+
+
+def test_bare_except_that_swallows_is_annotated_not_narrowed():
+    # Swallowing handler: a narrow to Exception would change behaviour (it might
+    # be catching SystemExit/KeyboardInterrupt), so annotate instead of rewrite.
+    out = _new("try:\n    x = 1\nexcept:\n    pass\n", "fix bare except security")
+    assert out is not None
+    assert "except Exception:" not in out
+    assert "# SECURITY (Apex: bare except" in out
+
+
+def test_bare_except_swallow_flag_is_idempotent():
+    # Re-flagging an already-annotated swallowing bare except is a no-op (so the
+    # harden ladder converges instead of stacking comments).
+    src = "try:\n    x = 1\nexcept:\n    pass\n"
+    once = _new(src, "fix bare except security")
+    assert once is not None
+    assert sec.apply("m.py", once, "fix bare except security") is None
 
 
 def test_bare_except_absent_is_noop():
