@@ -4164,10 +4164,76 @@ def _python_for(root: Path) -> str:
     return sys.executable
 
 
+def _call_targets(func: ast.expr, name: str) -> bool:
+    """Whether ``func`` invokes the bare name ``name`` or an attribute ending in it
+    (``name(...)`` or ``mod.name(...)``)."""
+    if isinstance(func, ast.Name):
+        return func.id == name
+    return isinstance(func, ast.Attribute) and func.attr == name
+
+
+def _compares_call_result(fn: ast.AST, name: str) -> bool:
+    """Whether ``fn`` COMPARES a call of ``name`` to a value — ``name(args) == v`` /
+    ``is None`` inline, or ``r = name(args); ... r == v`` via a local binding.
+
+    A type-only check (``isinstance(name(x), str)`` — the call is an *argument*, not
+    a comparison operand) and a discarded call (``name(x)`` standing alone) have no
+    such comparison, so they read as NOT value-pinning. Robust to parenthesised
+    arguments (tuples, nested calls) the literal witness regex cannot parse."""
+    bound: set[str] = set()
+    for node in ast.walk(fn):
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+                and _call_targets(node.value.func, name)):
+            bound.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Compare):
+            continue
+        for operand in (node.left, *node.comparators):
+            if isinstance(operand, ast.Call) and _call_targets(operand.func, name):
+                return True
+            if isinstance(operand, ast.Name) and operand.id in bound:
+                return True
+    return False
+
+
+def _stub_call_result_compared(root: Path, test_files: list[str],
+                               stub: StubFunction) -> bool:
+    """True when an ENFORCED test COMPARES the stub's call result to a value — an
+    AST value-pinning signal robust to parenthesised arguments the witness regex
+    cannot see.
+
+    ``_function_witnesses`` mines witnesses with a regex whose argument capture
+    (``[^()]*``) cannot match a parenthesised argument, so a tuple / nested-call
+    witness like ``f((3, 1)) == [3, 1]`` yields NO witness even though the test
+    clearly pins a value. This AST check closes that gap by looking for a comparison
+    (``==`` / ``is`` / ``<`` …) whose operand is a call of the stub (or a local bound
+    to one). The genuinely vacuous shapes still read as NOT value-pinning:
+    ``callable(f)`` never CALLS the stub, ``isinstance(f(x), str)`` checks only the
+    type (the call is an argument, never a comparison operand), and a bare ``f(x)``
+    statement compares nothing — so the vacuous-oracle refusal still holds.
+    Deterministic; a parse failure is skipped (the witness/constant checks still
+    decide and the run gate is final)."""
+    for rel in sorted(test_files):
+        try:
+            text = (root / rel).read_text(encoding="utf-8", errors="ignore")
+            tree = ast.parse(text)
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
+            continue
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if any(_is_unenforced_decorator(d) for d in fn.decorator_list):
+                continue
+            if _compares_call_result(fn, stub.name):
+                return True
+    return False
+
+
 def _pins_a_value(root: Path, test_files: list[str], stub: StubFunction) -> bool:
     """True when at least one enforceable witness CONSTRAINS the stub's return — a
     ``func(<args>) == <expected>`` / ``is None/True/False`` assertion, a doctest
-    example, or the >=2-distinct-tuples constant ``_expected_constant`` clears.
+    example, the >=2-distinct-tuples constant ``_expected_constant`` clears, or an
+    AST-visible call whose result is COMPARED (:func:`_stub_call_result_compared`).
 
     This is the never-fake-green floor the candidate search was missing: a test may
     REFERENCE the symbol by name (``assert callable(fn)``) — satisfying
@@ -4179,14 +4245,18 @@ def _pins_a_value(root: Path, test_files: list[str], stub: StubFunction) -> bool
     doctest path's behavior (and agreeing with the cheap scan, which already
     reports such a stub NOT fillable).
 
-    ``_function_witnesses`` is a SUPERSET of the literals ``_expected_constant``
-    reads (it also mines parametrize / module-local-helper / ``is``-singleton /
-    doctest witnesses), so a non-empty witness set is the general value-pinning
-    signal; the explicit ``_expected_constant`` check is a belt-and-suspenders
-    guarantee that the legitimate constant last-resort (which the search yields
-    only after that >=2-tuple floor) is never refused here. Deterministic,
-    offline, stdlib-only — same project, same verdict."""
+    Three independent signals say "a value is pinned"; ANY one suffices:
+    ``_function_witnesses`` (the regex/parametrize/helper/doctest miner),
+    ``_stub_call_result_compared`` (the AST fallback that catches a COMPARED call the
+    regex can't parse — e.g. a parenthesised tuple argument), and
+    ``_expected_constant`` (the >=2-distinct-tuple constant last-resort). The AST
+    fallback is what keeps a legitimate ``f((3, 1)) == [3, 1]`` from being wrongly
+    refused while still refusing the genuinely vacuous ``callable(fn)`` (no call),
+    the type-only ``isinstance(f(x), str)``, and a discarded smoke call.
+    Deterministic, offline, stdlib-only — same project, same verdict."""
     if _function_witnesses(root, test_files, stub):
+        return True
+    if _stub_call_result_compared(root, test_files, stub):
         return True
     return _expected_constant(root, test_files, stub) is not None
 
