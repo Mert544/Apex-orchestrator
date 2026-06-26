@@ -483,7 +483,19 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # js-document-param-types), refusing a zero-throw or
                              # unprovable-throw shape. Appended, so the originals still
                              # lead and emit first.
-                             "the thrown error types to document in jsdoc"],
+                             "the thrown error types to document in jsdoc",
+                             # added: a DOCUMENTED public Python function with no
+                             # `-> T` annotation whose docstring records no return —
+                             # the pin-return-type objective splices ONE `Returns: <T>`
+                             # line into the existing docstring, the <T> from the same
+                             # proven return oracle infer-type-hints lands as `-> T`
+                             # (the document-signature-but-DOCUMENTED sibling: it fires
+                             # where document-signature refuses, on a function that
+                             # already has a docstring). Refuses an undocumented /
+                             # already-annotated / generator / ambiguous function and a
+                             # docstring that already states a return. Appended, so the
+                             # originals still lead and emit first.
+                             "the documented return type to pin"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
     "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown",
                         # added: the package's USAGE.md generated from its public

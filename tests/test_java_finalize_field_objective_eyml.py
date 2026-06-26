@@ -504,8 +504,8 @@ def test_objective_spec_is_callable_and_flagged():
 def test_objective_total_is_seventy_three():
     from app.engine.objective_compiler import available_objectives
 
-    # 74 after document-raises (the Python Raises: sibling of document-raises-jsdoc).
-    assert len(set(available_objectives())) == 74
+    # 75 after pin-return-type (the documented-function image of infer-type-hints).
+    assert len(set(available_objectives())) == 75
 
 
 # --- PARITY ROW 1: move_value tier (matches add-final's runtime-noop tier) ----
@@ -538,7 +538,7 @@ def test_parity_concrete_count_is_thirty_one():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 32  # rose from 31 with document-raises
+    assert len(buckets["CONCRETE"]) == 33  # rose from 32 with pin-return-type
 
 
 # --- PARITY ROW 3: soundness-strategy manifest --------------------------------

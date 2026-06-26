@@ -507,7 +507,7 @@ def test_objective_total_is_sixty_seven():
     # 74 after document-raises (the Python Raises: sibling of document-raises-jsdoc)
     # self-registered; this count pin is the tripwire each new objective round
     # bumps by one.
-    assert len(set(available_objectives())) == 74
+    assert len(set(available_objectives())) == 75
 
 
 def test_objective_spec_is_callable():
@@ -554,7 +554,7 @@ def test_parity_concrete_count_is_twenty_five():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 32  # rose from 31 with document-raises
+    assert len(buckets["CONCRETE"]) == 33  # rose from 32 with pin-return-type
 
 
 # --- PARITY ROW 3: soundness-strategy manifest ------------------------------

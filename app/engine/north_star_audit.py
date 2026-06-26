@@ -84,6 +84,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "generate-usage-doc",
         "document-signature",
         "document-raises",
+        "pin-return-type",
         "document-export-jsdoc",
         "js-document-param-types",
         "document-raises-jsdoc",

@@ -318,6 +318,28 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # order is free.
     "the raised exceptions to document": "document-raises",
 
+    # DOCUMENTED Python function missing a return type: the "signatures and types"
+    # lens also names a PUBLIC function that HAS a docstring (and so is NOT
+    # document-signature's territory) but carries no ``-> T`` annotation and whose
+    # docstring records no return. The pin-return-type objective LANDS exactly that
+    # — it splices ONE ``Returns: <T>`` line into the existing docstring, the ``<T>``
+    # read from the SAME proven return-type oracle infer-type-hints lands as ``-> T``
+    # (agreeing literals / fixed-result builtin / pure-procedure ``None``). It is the
+    # DOCUMENTED-function image of infer-type-hints, for annotation-averse codebases:
+    # it REFUSES an undocumented function (document-signature's lane), an
+    # already-annotated function (the oracle returns ``None`` on ``fn.returns``, so
+    # the documented return would only echo the signature), a generator / ambiguous /
+    # fall-through return (oracle ``None``), and a docstring that already records a
+    # return in ANY spelling (``Returns:`` / ``:return:`` / ``@returns`` — never
+    # overwrite a human's contract). A ``Returns:`` line is docstring TEXT (zero
+    # runtime bytes), so it is behaviour-identical by construction. Its phrasing is
+    # not a substring of any other key (nor any of them of it) — in particular it is
+    # distinct from "the public signature to document" ("documented return type … to
+    # pin" vs "public signature … to document") and "the unenforced doctest examples
+    # to pin" ("documented return type" vs "unenforced doctest examples") — so its
+    # order is free.
+    "the documented return type to pin": "pin-return-type",
+
     # Undocumented EXPORTED JS/TS signature: the JS/TS sibling of the above. The
     # document-export-jsdoc objective LANDS a minimal JSDoc on an exported
     # function/const-arrow that carries NO leading JSDoc — one ``@param <name>``

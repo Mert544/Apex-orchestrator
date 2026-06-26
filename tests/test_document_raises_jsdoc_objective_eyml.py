@@ -695,8 +695,8 @@ def test_counts_are_twenty_nine_concrete_of_seventy_one():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 74  # 74 after document-raises (32nd concrete)
-    assert len(classify_objectives(names)["CONCRETE"]) == 32
+    assert len(names) == 75  # 75 after pin-return-type (33rd concrete)
+    assert len(classify_objectives(names)["CONCRETE"]) == 33
 
 
 def test_refuses_on_python_soundness_corpus():

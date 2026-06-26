@@ -504,13 +504,13 @@ def test_north_star_and_soundness_audits_pass():
     assert snd["violations"] == []
 
 
-def test_counts_are_thirty_two_concrete_of_seventy_four():
+def test_counts_are_thirty_three_concrete_of_seventy_five():
     from app.engine.north_star_audit import classify_objectives
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 74  # 74 after document-raises (32nd concrete)
-    assert len(classify_objectives(names)["CONCRETE"]) == 32
+    assert len(names) == 75  # 75 after pin-return-type (33rd concrete)
+    assert len(classify_objectives(names)["CONCRETE"]) == 33
 
 
 def test_refuses_on_python_soundness_corpus():
