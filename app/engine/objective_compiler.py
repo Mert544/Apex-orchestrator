@@ -38,7 +38,7 @@ __all__ = [
     "dead_parameter_fitness", "inlinable_helper_fitness", "long_function_fitness",
     "modernize_fitness", "dead_code_fitness", "duplication_fitness",
     "bool_return_fitness", "magic_constant_fitness",
-    "compile_objective", "compile_all", "available_objectives",
+    "compile_objective", "compile_all", "run_moves", "available_objectives",
     "ALL_OBJECTIVES", "SESSION_OBJECTIVES",
     "render_compile_markdown", "render_from_dream_markdown", "render_all_markdown",
     "resolve_objective", "objective_synonyms",
@@ -1026,6 +1026,41 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     _record_composition(result, root)
     if apply and result.steps:
         _archive_campaign(result, root, objective, start, current)
+    return result
+
+
+def run_moves(project_root: str | Path, moves: list[Move], *,
+              label: str = "moves", max_steps: int = 25, verify: bool = True,
+              apply: bool = False, scope_verify: bool = False) -> CompileResult:
+    """Drive an ALREADY-BUILT move list through the same gated loop as
+    :func:`compile_objective`, without an objective registration.
+
+    A composition PRIMITIVE (e.g. ``multifile_moves``) produces a ready ``list[Move]``
+    that is not an entry in ``_objectives_map()`` — so it has no fitness function and
+    no registry parity obligation. This runs those moves through the EXISTING engine:
+    ``apply=False`` lists what each move WOULD land via :func:`_fill_dry_run` (no
+    writes, no suite); ``apply=True`` lands them via :func:`_run_pass` — each plan
+    re-derived against the current tree, suite-gated through the one legal
+    ``apply_rename`` call site, auto-rolled-back on any regression. ``scope_verify``
+    is forwarded to that gate (the multifile halves are red-baseline objectives, so
+    the caller opts in). Fitness here is the COUNT of supplied moves (one unit of
+    debt per move; monotone like the objective loop), so the report reads identically
+    to a single objective's. Deterministic: moves are taken in the given order — the
+    primitive owns the (sorted) ordering, this runner never re-sorts."""
+    from app.engine.idea_memory import IdeaMemory
+
+    root = str(project_root)
+    start = float(len(moves))
+    result = CompileResult(objective=label, fitness_start=start,
+                           fitness_end=start, applied=apply)
+    if not apply:
+        return _fill_dry_run(result, moves[:max_steps], start, max_steps)
+    memory = IdeaMemory.load(root)
+    _progressed, current, _last = _run_pass(
+        result, moves, root, start, max_steps, verify, scope_verify,
+        last_operator="", memory=memory)
+    result.fitness_end = current
+    _record_composition(result, root)
     return result
 
 

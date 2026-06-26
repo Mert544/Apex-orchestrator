@@ -794,6 +794,37 @@ def _develop_from_dream(args, target, objective, max_steps, verify, apply) -> in
     return 0
 
 
+def _develop_multifile(args, target, max_steps, verify, apply) -> int:
+    """`apex develop --multifile`: land the COORDINATED multi-file change —
+    implement a tested stub in a module AND wire its export in the owning
+    package ``__init__.py`` — as ONE verified-or-rolled-back unit.
+
+    Surfaces the shipped composition primitive: ``multifile_moves(target)`` offers
+    one composed implement-and-wire :class:`Move` per (stub-module, owning-package)
+    pair, and ``run_moves`` drives them through the EXISTING compile loop — the same
+    suite-gated, auto-rolled-back ``apply_rename`` engine every objective uses (here
+    impact-scoped, since both composed halves are red-baseline objectives). Each move's
+    composed plan still flows through the one legal gated-writer call site; a pair whose
+    composition refuses (no wireable export, file overlap, unsynthesizable stub) simply
+    no-ops. Default is a dry run (lists what would land, no writes); ``--apply`` writes.
+    Reuses the develop report (``render_compile_markdown``) so the unified per-move
+    breakdown reads exactly like a single-objective campaign."""
+    from app.engine.objective_compiler import render_compile_markdown, run_moves
+    from app.execution.multifile_landing import multifile_moves
+
+    moves = multifile_moves(str(target))
+    result = run_moves(str(target), moves, label="multifile-landing",
+                       max_steps=max_steps, verify=verify, apply=apply,
+                       scope_verify=True)
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        print(render_compile_markdown(result))
+        if result.applied and result.steps:
+            print(_APPLIED_TREE_NOTE)
+    return 0
+
+
 def _develop_objective(args, target, objective, grade_before, max_steps, verify, apply) -> int:
     """`apex develop` default: compose verified transforms toward one objective metric."""
     from app.engine.objective_compiler import compile_objective, render_compile_markdown
@@ -867,6 +898,8 @@ def cmd_develop(args: argparse.Namespace) -> int:
         return _develop_auto(args, target, grade_before, max_steps, verify, apply)
     if getattr(args, "all_objectives", False):
         return _develop_all(args, target, grade_before, max_steps, verify, apply)
+    if getattr(args, "multifile", False):
+        return _develop_multifile(args, target, max_steps, verify, apply)
     if getattr(args, "from_dream", False):
         return _develop_from_dream(args, target, objective, max_steps, verify, apply)
     return _develop_objective(args, target, objective, grade_before,
@@ -1515,6 +1548,12 @@ def register_parsers(subparsers) -> None:
     develop_parser.add_argument("--all", action="store_true", dest="all_objectives",
                                 help="Sweep EVERY objective in order (modernize, dead-params, "
                                      "shrink-functions, inline-helpers) — clean everything")
+    develop_parser.add_argument(
+        "--multifile", action="store_true",
+        help="Land the COORDINATED multi-file change — implement a tested stub in "
+             "a module AND wire its export in the owning package __init__.py — as "
+             "ONE verified-or-rolled-back unit (per stub-module/package pair). "
+             "Default dry run; --apply writes")
     develop_parser.add_argument(
         "--auto", action="store_true",
         help="AUTONOMOUS: land everything-applicable with NO objective-naming — "
