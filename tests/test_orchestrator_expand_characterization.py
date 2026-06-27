@@ -8,6 +8,8 @@ stop reasons, scores, evidence, questions, and debug stats. They are the safety
 net proving the refactor preserved behaviour byte-for-byte.
 """
 
+import pytest
+
 from app.orchestrator import FractalResearchOrchestrator
 from app.skills.decomposer import Decomposer
 from app.skills.relevance_scorer import RelevanceScorer
@@ -52,6 +54,10 @@ def _snapshot(orch):
     return rows, dict(orch.debug_stats)
 
 
+@pytest.mark.timeout(300)  # heavy: builds + runs the orchestrator 2x across 4
+# cases (one is 120 nodes / depth 4), each run repo-scanning the (growing) tree.
+# Determinism is still fully asserted below; this only raises the hang-tripwire
+# above the default 120s so tree growth / load contention can't flake it.
 def test_expansion_is_deterministic_across_runs():
     # Same objective + config must yield an identical expanded tree every time.
     for objective, cfg in _CASES:

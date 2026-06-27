@@ -52,7 +52,8 @@ class _RecordingBridge(IdeaActionBridge):
         super().__init__()
         self.applied_targets: list[str] = []
 
-    def apply_step(self, step, project_root, mode="supervised", verify=False):
+    def apply_step(self, step, project_root, mode="supervised", verify=False,
+                   covered_only=False):
         self.applied_targets.append(step.target)
         # Empty changed_files so the harden_security convergence loop (which
         # re-applies while the target keeps changing) does NOT fire — one

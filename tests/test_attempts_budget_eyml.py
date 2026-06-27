@@ -93,7 +93,8 @@ def _rollback_apply_step(*outcomes):
     calls = {"i": 0}
     seq = list(outcomes)
 
-    def _stub(step, project_root, mode="supervised", verify=False):
+    def _stub(step, project_root, mode="supervised", verify=False,
+              covered_only=False):
         idx = min(calls["i"], len(seq) - 1)
         calls["i"] += 1
         return dict(seq[idx])
@@ -239,7 +240,8 @@ def _drain_replan(counter):
 # Each apply call: the applied step reports its OWN new changed file (drain
 # progresses); the rollback step reports none. Drive this by step.branch suffix.
 def _drain_apply_step():
-    def _stub(step, project_root, mode="supervised", verify=False):
+    def _stub(step, project_root, mode="supervised", verify=False,
+              covered_only=False):
         if step.branch_path.endswith(".a") or step.branch_path == "x.0":
             # An applying step exposes a brand-new file so the drain has a
             # non-empty changed set and keeps going.
