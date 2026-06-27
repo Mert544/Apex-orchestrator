@@ -55,6 +55,15 @@ class GoalRanking:
     # applied set). Default 0.0 ⇒ ``to_dict`` omits it (additive, like
     # ``CompileStep.value``), so ``apex plan --json`` is byte-identical when off.
     preview_value: float = 0.0
+    # A PURELY DISPLAY-ONLY blast-radius lens, stamped ONLY by the read-only value
+    # preview (``cli_autonomy._auto_value_board``) with the import in-degree of the
+    # objective's most-central target module. It is a SECONDARY display sort key
+    # there — between two equal-buyer-value objectives the one whose top target is
+    # more central is shown first — and is NEVER read by ``priority`` or the
+    # ``rank_objectives`` sort key, so the apply-driving order is untouched (the
+    # round-21 safety). Default 0 ⇒ ``to_dict`` omits it (additive, exactly like
+    # ``preview_value``), so ``apex plan --json`` is byte-identical when off.
+    preview_centrality: int = 0
 
     @property
     def priority(self) -> float:
@@ -87,6 +96,12 @@ class GoalRanking:
         # mirroring ``CompileStep.to_dict``'s additive ``value`` omission.
         if self.preview_value:
             d["preview_value"] = round(self.preview_value, 3)
+        # ``preview_centrality`` is the SAME purely-additive display disclosure:
+        # populated ONLY by the read-only value preview's blast-radius lens
+        # (default 0 ⇒ key omitted ⇒ ``apex plan --json`` byte-identical), exactly
+        # mirroring the ``preview_value`` omission above.
+        if self.preview_centrality:
+            d["preview_centrality"] = self.preview_centrality
         return d
 
 

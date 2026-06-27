@@ -374,16 +374,85 @@ def _auto_deep_disclosure(args) -> str:
 # verification claim.
 
 
+def _module_in_degrees(target) -> dict:
+    """Import IN-DEGREE per module (``path -> count of importers``) for the
+    blast-radius display lens, via the CHEAP ``DependencyGraphBuilder`` graph walk.
+
+    A pure read of the dependency graph — a structural parse + import resolve, the
+    SAME walk ``apex impact``/``blast-radius`` already use. It runs NO pytest, so
+    stamping it on the read-only preview keeps that path strictly suite-free (the
+    cli_autonomy read-only/suite-free invariant). Best-effort, like the rest of the
+    preview: any failure degrades to an empty map (every in-degree then reads 0, so
+    the lens is simply inert — never a correctness gate). Deterministic: the graph
+    is a pure function of the tree (no clock/random)."""
+    try:
+        from app.tools.dependency_graph import DependencyGraphBuilder
+
+        graph = DependencyGraphBuilder(str(target)).build()
+    except Exception:
+        return {}
+    return {path: node.in_degree for path, node in graph.items()}
+
+
+def _objective_top_centrality(objective: str, target, in_degrees: dict) -> int:
+    """The blast-radius of an objective's MOST-CENTRAL target: the max import
+    in-degree over the modules its moves would touch (0 when it has no resolvable
+    central target, or on any error).
+
+    Generates the objective's candidate moves against the current tree — a DRY
+    listing (the same ``generate`` thunk ``compile_objective(apply=False)`` lists
+    from), which writes nothing and runs NO pytest — and reads each target's module
+    in-degree from the pre-built ``in_degrees`` map. A DISPLAY-only signal for the
+    read-only value preview; never fed to an apply. Best-effort: a failing
+    generator yields 0 (the lens stays inert), never breaking the preview."""
+    if not in_degrees:
+        return 0
+    try:
+        from app.engine.objective_compiler import _move_module, _objectives_map
+
+        table = _objectives_map()
+        if objective not in table:
+            return 0
+        generate = table[objective][1]
+        modules = {_move_module(mv) for mv in generate(str(target))}
+    except Exception:
+        return 0
+    return max((in_degrees.get(module, 0) for module in modules), default=0)
+
+
+def _result_top_centrality(result, in_degrees: dict) -> int:
+    """The blast-radius of an ALREADY-COMPUTED result's most-central step target:
+    the max import in-degree over the modules its previewed steps touch (0 when it
+    has no step, or none resolves to a central module).
+
+    Reads ``result.steps[*].target`` (the modules a dry-run preview already listed)
+    against the pre-built ``in_degrees`` map — no move regeneration, no writes, no
+    pytest. The display-only secondary sort key for ``_develop_auto_value_preview``."""
+    if not in_degrees:
+        return 0
+    from app.engine.objective_compiler import _move_module_from_target
+
+    return max((in_degrees.get(_move_module_from_target(s.target), 0)
+                for s in result.steps), default=0)
+
+
 def _auto_value_board(target, *, concrete: bool) -> list:
     """The default-path objective board, value-RANKED for the read-only preview.
 
     Reuses the same fitness board ``apex plan``/``apex develop --auto`` select
     from (``rank_objectives``, with the expensive concrete objectives included
     only when ``concrete``), keeps the ones carrying qualifying work right now
-    (``pending > 0``), and orders them by buyer value desc with the objective
-    name as a stable tie-break — a total order, no clock/random. The
-    ``value_weight_preview`` lens stamps each ranking's display-only
-    ``preview_value`` WITHOUT touching ``priority`` (the apply-driving order).
+    (``pending > 0``), and orders them by buyer value desc, then by the
+    BLAST-RADIUS lens (the in-degree of the objective's most-central target, so
+    between two equal-buyer-value objectives the one whose top target is more
+    central is shown first), with the objective name as the final stable tie-break
+    — a total order, no clock/random. The ``value_weight_preview`` lens stamps each
+    ranking's display-only ``preview_value``, and ``_objective_top_centrality``
+    stamps the display-only ``preview_centrality``, BOTH WITHOUT touching
+    ``priority`` (the apply-driving order) — only this read-only DISPLAY is
+    reordered (the round-21 safety; ``apex plan``/the applied set are untouched and
+    byte-identical, the ``preview_centrality`` field omitted from ``to_dict`` when
+    0).
 
     Best-effort, like ``_auto_memory_line``: a failing board must never break the
     brief — on any error the value preview degrades to empty (it is a read-only
@@ -398,7 +467,14 @@ def _auto_value_board(target, *, concrete: bool) -> list:
                  if r.pending > 0]
     except Exception:
         return []
-    board.sort(key=lambda r: (-objective_value_weight(r.objective), r.objective))
+    # Blast-radius DISPLAY lens (cheap graph walk, NO pytest): stamp each ranking's
+    # display-only ``preview_centrality`` with its top target's in-degree, then use
+    # it as the SECONDARY sort key. Computed once for the whole board.
+    in_degrees = _module_in_degrees(target)
+    for r in board:
+        r.preview_centrality = _objective_top_centrality(r.objective, target, in_degrees)
+    board.sort(key=lambda r: (-objective_value_weight(r.objective),
+                              -r.preview_centrality, r.objective))
     return board
 
 
@@ -959,12 +1035,15 @@ def _develop_auto(args, target, grade_before, max_steps, verify, apply) -> int:
 
 def _develop_auto_value_preview(target, results: list, concrete: bool) -> str:
     """The DEFAULT-path dry-run preview for ``develop --auto``, value-RANKED:
-    render the per-objective breakdowns ordered by buyer value desc (name as a
-    stable tie-break), each headed by its buyer-value, then disclose the highest
-    -value concrete objective ``--concrete`` would unlock. Pure string assembly
-    over the already-computed ``results`` — it reorders/annotates the DISPLAY
-    only, never the applied set (which a dry run does not produce anyway), and
-    "buyer-value" names the KIND of work, never a verification claim."""
+    render the per-objective breakdowns ordered by buyer value desc, then by the
+    BLAST-RADIUS lens (the in-degree of the result's most-central previewed-step
+    target, so between two equal-buyer-value objectives the one whose top target is
+    more central leads), with the objective name as the final stable tie-break,
+    each headed by its buyer-value, then disclose the highest-value concrete
+    objective ``--concrete`` would unlock. Pure string assembly over the already
+    -computed ``results`` — it reorders/annotates the DISPLAY only, never the
+    applied set (which a dry run does not produce anyway), and "buyer-value" names
+    the KIND of work, never a verification claim."""
     from app.engine.objective_compiler import (
         render_all_markdown, render_compile_markdown,
     )
@@ -977,8 +1056,13 @@ def _develop_auto_value_preview(target, results: list, concrete: bool) -> str:
         # whole point: the high buyer-value work isn't hidden) when it applies.
         body = render_all_markdown(results)
         return f"{body}\n{unlock}\n" if unlock else body
+    # Blast-radius DISPLAY lens (cheap graph walk, NO pytest): the SECONDARY sort
+    # key is the in-degree of each result's most-central previewed-step target.
+    in_degrees = _module_in_degrees(target)
     ordered = sorted(results,
-                     key=lambda r: (-objective_value_weight(r.objective), r.objective))
+                     key=lambda r: (-objective_value_weight(r.objective),
+                                    -_result_top_centrality(r, in_degrees),
+                                    r.objective))
     total_moves = sum(len(r.steps) for r in ordered)
     total_gain = sum(r.fitness_start - r.fitness_end for r in ordered)
     lines = [f"# Develop — all objectives ({len(ordered)} with work), value-ranked", "",
