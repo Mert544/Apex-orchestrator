@@ -125,6 +125,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "document-signature": "behavior-identical-docstring-only",
     "document-raises": "behavior-identical-docstring-only+raises-from-literal-raise-Name-verbatim+escape-only(stop-at-nested-scope,try-with-except-refuses)",
     "document-returns": "behavior-identical-docstring-only+returns-from-declared-annotation-verbatim+refuse-None/NoReturn/generator/overload/setter/already-documented",
+    "document-param": "behavior-identical-docstring-only+args-from-declared-annotation-verbatim+refuse-no-declared-param-type/already-documented(incl-partial)/overload/setter/unreadable-collector",
     "pin-return-type": "behavior-identical-docstring-only+returns-from-proven-return-oracle",
     "document-export-jsdoc": "jsdoc-leading-trivia-insert+reparse-identical-or-refuse(no-suite-needed)",
     "js-document-param-types": "jsdoc-leading-trivia-insert+declared-param-types-verbatim+reparse-identical-or-refuse(no-suite-needed)",
@@ -451,6 +452,17 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # (every function is already ``-> T``-annotated, so the inferred oracle declines),
     # so the standing corpus needs no second annotation-free shape for that sibling.
     "returns_already_documented": frozenset({"document-returns"}),
+    # The document-param double-doc trap: a PUBLIC, DOCUMENTED function carrying a
+    # DECLARED parameter annotation whose docstring ALREADY records its parameters —
+    # one shape per convention (a Google ``Args:`` header, a Sphinx ``:param:`` field,
+    # a NumPy ``Parameters`` underline) AND a PARTIAL shape (some ``:param:`` present,
+    # a sibling missing). document-param MUST refuse every one — appending a second
+    # ``Args:`` block (or merging into a half-filled one) would be a redundant /
+    # corrupting double-doc its re-parse floor cannot catch (a docstring changes no
+    # runtime value). The functions carry no ``-> T`` and no provable return, so
+    # document-returns / pin-return-type refuse them on the annotation/oracle gates.
+    "params_already_documented": frozenset({"document-param"}),
+    "partial_params_documented": frozenset({"document-param"}),
     "syntax_error": frozenset(),  # universal-refuse rule covers every objective
     "already_applied": frozenset(
         {"wire-module-exports", "add-final", "freeze-dataclass"}),

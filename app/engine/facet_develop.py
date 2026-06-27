@@ -375,6 +375,31 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # free.
     "the annotated return type to document": "document-returns",
 
+    # DOCUMENTED Python function whose PARAMETER TYPES are undocumented: the
+    # "signatures and types" lens also names a PUBLIC function that HAS a docstring
+    # and carries at least one DECLARED parameter annotation but whose docstring
+    # records no parameters. The document-param objective LANDS exactly that — it
+    # splices a faithful ``Args:`` section into the existing docstring listing one
+    # ``name (TYPE):`` line per declared-annotated parameter, the type read VERBATIM
+    # off ``arg.annotation`` (``ast.unparse``), MATCHING the docstring's convention
+    # (a Google ``Args:`` block, or a Sphinx ``:param:``/``:type:`` field list). It is
+    # the Python mirror of js-document-param-types (``@param {T} name``) and the
+    # input-contract sibling of document-returns (``Returns:``). It inherits the
+    # signature-restatement honesty gate — it lands ONLY when a parameter carries a
+    # DECLARED annotation and emits a line ONLY for annotated params (an unannotated
+    # one is skipped — never a bare ``name`` line). It REFUSES an undocumented
+    # function (document-signature's lane), an ``@overload`` / property setter, an
+    # unreadable ``*args``/``**kwargs`` annotation, and a docstring that already
+    # records its parameters in ANY convention — including the PARTIAL case (some
+    # documented, not all), which refuses WHOLE rather than merging into a half-filled
+    # block. An ``Args:`` section is docstring TEXT (zero runtime bytes), so it is
+    # behaviour-identical by construction. Its phrasing is not a substring of any
+    # other key (nor any of them of it) — in particular it is distinct from "the
+    # exported parameter types to document in jsdoc" below ("the parameter types" vs
+    # "the exported parameter types … in jsdoc") and "the annotated return type to
+    # document" above ("parameter" vs "return") — so its order is free.
+    "the parameter types to document": "document-param",
+
     # Undocumented EXPORTED JS/TS signature: the JS/TS sibling of the above. The
     # document-export-jsdoc objective LANDS a minimal JSDoc on an exported
     # function/const-arrow that carries NO leading JSDoc — one ``@param <name>``

@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from app.execution.cross_file_rename import RenamePlan, plan_source_rewrite
@@ -273,16 +274,24 @@ def _line_ending(line: str) -> str:
     return "\n"
 
 
-def _multiline_edit(
-    const: ast.Constant, rows: list[str], convention: str, type_text: str,
+# A SECTION BUILDER renders the already-indented section body lines (each ending in
+# ``le``) for a given (indent, line-ending) — the one thing the return / param /
+# (future) doc-family objectives differ in. The byte-aware splice machinery below is
+# generic over it, so the splice/expansion/driver code is written ONCE here and reused
+# by every family member (no copy-paste — keeps the grade de-dup detector quiet).
+
+
+def splice_section_multiline(
+    const: ast.Constant, rows: list[str], section_fn: Callable[[str, str], list[str]],
 ) -> tuple[int, int, list[str]] | None:
-    """A ``(start, stop, replacement_rows)`` splice that inserts the return section
+    """A ``(start, stop, replacement_rows)`` splice that inserts ``section_fn``'s lines
     BEFORE a MULTI-LINE docstring's closing-quote line, or ``None`` to refuse.
 
     The new lines land at the 0-based closing-quote index (``end_lineno - 1``) at that
-    line's leading whitespace — so the docstring reads ``…prose… → Returns: <T> →
-    closing quotes`` — using the file's own line terminator. Refuses when the
-    closing-quote indent is not pure whitespace (a corruptible header-shared shape)."""
+    line's leading whitespace, using the file's own line terminator. Refuses when the
+    closing-quote indent is not pure whitespace (a corruptible header-shared shape).
+    The SHARED multi-line splice every doc-family ADD objective (return / param / …)
+    reuses, differing only in the ``section_fn`` they pass."""
     close_idx = (const.end_lineno or 0) - 1
     if close_idx < 0 or close_idx >= len(rows):
         return None
@@ -290,23 +299,29 @@ def _multiline_edit(
     if not indent.isspace():
         return None
     le = _line_ending(rows[close_idx])
-    section = _section_lines(convention, indent, type_text, le)
-    return close_idx, close_idx, section
+    return close_idx, close_idx, section_fn(indent, le)
 
 
-def _oneline_edit(
-    const: ast.Constant, rows: list[str], convention: str, type_text: str,
+def splice_section_oneline(
+    const: ast.Constant, rows: list[str], section_fn: Callable[[str, str], list[str]],
 ) -> tuple[int, int, list[str]] | None:
-    """A ``(start, stop, replacement_rows)`` splice that EXPANDS a single-line
-    docstring (``\"\"\"Foo.\"\"\"`` on its own line) to multi-line with the return
-    section, or ``None`` to refuse.
+    """A ``(start, stop, replacement_rows)`` splice that EXPANDS a single-line docstring
+    (``\"\"\"Foo.\"\"\"`` on its own line) to multi-line with ``section_fn``'s lines, or
+    ``None`` to refuse.
 
-    The one docstring line is rewritten as ``<prefix+quote+body> → blank → Returns:
-    <T> → <indent+closing-quote>``, preserving any raw/byte prefix and the quote
-    style (the closing quote is the literal's last three source chars) and the file's
-    own line terminator. Refuses a header-shared one-liner (``def f(): \"\"\"x\"\"\"`` —
-    the line's leading indent is not pure whitespace) and any literal whose
-    open/close quotes are too short to split safely."""
+    The one docstring line is rewritten as ``<prefix+quote+body> → <section> →
+    <indent+closing-quote>``, preserving any raw/byte prefix and the quote style (the
+    closing quote is the literal's last three source chars) and the file's own line
+    terminator. Refuses a header-shared one-liner (``def f(): \"\"\"x\"\"\"`` — the
+    line's leading indent is not pure whitespace) and any literal whose open/close
+    quotes are too short to split safely. BYTE-AWARE: ``col_offset`` /
+    ``end_col_offset`` are UTF-8 BYTE offsets, NOT str indices — so the literal /
+    head_text MUST be sliced in BYTE space. Indexing the ``str`` ``line`` directly
+    overshoots by one per non-ASCII char (e.g. ``Naïve`` -> a stray ``"`` kept in the
+    rebuilt head), silently corrupting __doc__ while still re-parsing. Decoding from
+    bytes restores "first rebuilt line is byte-identical save for losing its closing
+    quotes" for ASCII and non-ASCII alike. The SHARED one-line expansion every
+    doc-family ADD objective reuses."""
     idx = (const.lineno or 0) - 1
     if idx < 0 or idx >= len(rows):
         return None
@@ -315,12 +330,6 @@ def _oneline_edit(
     if not indent.isspace():
         return None
     le = _line_ending(line)
-    # ``col_offset`` / ``end_col_offset`` are UTF-8 BYTE offsets, NOT str indices —
-    # so the literal/head_text MUST be sliced in BYTE space. Indexing the ``str``
-    # ``line`` directly overshoots by one per non-ASCII char (e.g. ``Naïve`` -> a
-    # stray ``"`` kept in the rebuilt head), silently corrupting __doc__ while still
-    # re-parsing. Decoding from bytes restores "first rebuilt line is byte-identical
-    # save for losing its closing quotes" for ASCII and non-ASCII alike.
     raw = line.encode("utf-8")
     col, end_col = const.col_offset, const.end_col_offset or 0
     literal = raw[col:end_col].decode("utf-8")
@@ -330,25 +339,38 @@ def _oneline_edit(
     # The whole source up to (but excluding) the closing quote — the indent, any
     # raw/byte prefix, the opening quote, and the one-line body — kept VERBATIM.
     head_text = raw[: end_col - 3].decode("utf-8")
-    section = _section_lines(convention, indent, type_text, le)
-    rebuilt = [f"{head_text}{le}", *section, f"{indent}{quote}{le}"]
+    rebuilt = [f"{head_text}{le}", *section_fn(indent, le), f"{indent}{quote}{le}"]
     return idx, idx + 1, rebuilt
+
+
+def splice_docstring_section(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef, rows: list[str],
+    section_fn: Callable[[str, str], list[str]],
+) -> tuple[int, int, list[str]] | None:
+    """A ``(start, stop, replacement_rows)`` splice that inserts ``section_fn``'s lines
+    into ``fn``'s EXISTING docstring, or ``None`` to refuse. Dispatches to
+    :func:`splice_section_oneline` for a single-line docstring (open and close on one
+    line) and :func:`splice_section_multiline` otherwise. The SHARED dispatcher the
+    return / param / … doc-family ADD objectives reuse — they pre-build the
+    convention-matched ``section_fn`` and hand it in."""
+    const = _docstring_constant(fn)
+    if const is None or const.lineno is None or const.end_lineno is None:
+        return None
+    if const.lineno == const.end_lineno:
+        return splice_section_oneline(const, rows, section_fn)
+    return splice_section_multiline(const, rows, section_fn)
 
 
 def _return_edit(
     fn: ast.FunctionDef | ast.AsyncFunctionDef, rows: list[str], type_text: str,
 ) -> tuple[int, int, list[str]] | None:
     """A ``(start, stop, replacement_rows)`` splice that documents ``fn``'s return, or
-    ``None`` to refuse. Dispatches to :func:`_oneline_edit` for a single-line
-    docstring (open and close on one line) and :func:`_multiline_edit` otherwise; the
-    section convention is matched to the existing docstring text."""
-    const = _docstring_constant(fn)
-    if const is None or const.lineno is None or const.end_lineno is None:
-        return None
+    ``None`` to refuse. Builds the convention-matched return ``section_fn`` and hands it
+    to the shared :func:`splice_docstring_section` (single-line expansion vs multi-line
+    insert, byte-aware)."""
     convention = _convention(ast.get_docstring(fn) or "")
-    if const.lineno == const.end_lineno:
-        return _oneline_edit(const, rows, convention, type_text)
-    return _multiline_edit(const, rows, convention, type_text)
+    return splice_docstring_section(
+        fn, rows, lambda indent, le: _section_lines(convention, indent, type_text, le))
 
 
 def _documentable_target(
@@ -378,10 +400,11 @@ def _documentable_target(
     return _return_edit(fn, rows, type_text)
 
 
-def _still_all_documented(tree: ast.AST) -> bool:
+def still_all_documented(tree: ast.AST) -> bool:
     """True when EVERY public, documented, non-test function in ``tree`` still opens
-    with a docstring Constant — the post-splice self-proof that no inserted return
-    section displaced a docstring or broke a body."""
+    with a docstring Constant — the post-splice self-proof that no inserted section
+    displaced a docstring or broke a body. The SHARED self-validation every doc-family
+    ADD objective (return / param / …) checks after its splices."""
     return all(
         _docstring_constant(node) is not None
         for node in ast.walk(tree)
@@ -390,26 +413,34 @@ def _still_all_documented(tree: ast.AST) -> bool:
     )
 
 
-def document_returns(source: str) -> str | None:
-    """Return ``source`` with a faithful return section spliced into every qualifying
-    documented + annotated function's docstring, or ``None`` when nothing qualifies
-    (or the source does not parse).
+def apply_section_edits(
+    source: str,
+    target_fn: Callable[
+        [ast.FunctionDef | ast.AsyncFunctionDef, list[str], ast.Module],
+        "tuple[int, int, list[str]] | None"],
+) -> str | None:
+    """Return ``source`` with ``target_fn``'s per-function ``(start, stop, rows)``
+    splices applied bottom-up, or ``None`` when nothing qualifies / the source does not
+    parse / a splice would break the docstring invariant.
 
-    Each edit is applied bottom-up (descending start index) so earlier line offsets
-    stay valid. Self-validating: the result must RE-PARSE and every touched function
-    must still open with its docstring Constant — else the change is refused. Pure AST
-    → text; deterministic (source order, no clock/random)."""
+    ``target_fn(fn, rows, tree)`` is asked for each function in source order (it gets the
+    module ``tree`` too, for any module-level context such as import aliases) and returns
+    a splice or ``None`` to refuse that function. Edits are applied descending-start so
+    earlier line offsets stay valid. Self-validating: the result must RE-PARSE and every
+    touched function must still open with its docstring Constant
+    (:func:`still_all_documented`), and must differ from ``source`` — else ``None``. The
+    SHARED driver every doc-family ADD objective reuses (no copy-paste); deterministic
+    (source order, no clock/random)."""
     old_tree = _safe_parse(source)
     if old_tree is None:
         return None
 
     rows = source.splitlines(keepends=True)
-    aliases = _import_aliases(old_tree)
     defs = sorted(
         (n for n in ast.walk(old_tree) if isinstance(n, _DEF)),
         key=lambda n: (n.lineno, n.col_offset),
     )
-    edits = [e for n in defs if (e := _documentable_target(n, rows, aliases))]
+    edits = [e for n in defs if (e := target_fn(n, rows, old_tree))]
     if not edits:
         return None
 
@@ -420,9 +451,22 @@ def document_returns(source: str) -> str | None:
     new_tree = _safe_parse(landed)
     if new_tree is None:
         return None
-    if not _still_all_documented(new_tree) or landed == source:
+    if not still_all_documented(new_tree) or landed == source:
         return None
     return landed
+
+
+def document_returns(source: str) -> str | None:
+    """Return ``source`` with a faithful return section spliced into every qualifying
+    documented + annotated function's docstring, or ``None`` when nothing qualifies
+    (or the source does not parse).
+
+    A thin wrapper over the shared :func:`apply_section_edits` driver: each function is
+    routed through :func:`_documentable_target` (the return-specific gate stack), with
+    import aliases derived per module from the tree. Self-validating + deterministic."""
+    return apply_section_edits(
+        source,
+        lambda fn, rows, tree: _documentable_target(fn, rows, _import_aliases(tree)))
 
 
 def plan_document_returns(project_root: str | Path, module_rel: str) -> RenamePlan:

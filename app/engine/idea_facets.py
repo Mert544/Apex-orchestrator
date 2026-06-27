@@ -511,7 +511,25 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # return, an @overload/property setter, and a docstring
                              # already recording a return in ANY convention. Appended
                              # after its inferred-oracle sibling, so the originals lead.
-                             "the annotated return type to document"],
+                             "the annotated return type to document",
+                             # added: a DOCUMENTED public Python function carrying at
+                             # least one DECLARED parameter annotation whose docstring
+                             # records no parameters — the document-param objective
+                             # splices a faithful `Args:` section into the existing
+                             # docstring, one `name (TYPE):` line per declared-annotated
+                             # parameter, the type read VERBATIM off `arg.annotation`,
+                             # MATCHING the docstring's convention (Google `Args:` /
+                             # Sphinx `:param:`+`:type:` / the Google default). The
+                             # Python mirror of js-document-param-types and the
+                             # input-contract sibling of document-returns; inherits the
+                             # signature-restatement honesty gate (lands only when a
+                             # param is annotated, a line only for annotated params).
+                             # Refuses an undocumented function, an @overload/property
+                             # setter, an unreadable *args/**kwargs annotation, and a
+                             # docstring already recording params in ANY convention
+                             # (incl. the PARTIAL case — refuses whole). Appended after
+                             # its return sibling, so the originals lead.
+                             "the parameter types to document"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
     "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown",
                         # added: the package's USAGE.md generated from its public
