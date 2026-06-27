@@ -66,17 +66,20 @@ class ApexDaemon:
     def _build_command(self) -> list[str]:
         """The CLI command run each cycle.
 
-        Autonomous: `apex auto` — the AutonomyPolicy only edits a clean working
-        tree (and commits when mode is autonomous), so a periodic run can never
-        clobber work-in-progress. Legacy: the older goal-driven `apex run`.
+        Autonomous: `apex auto --apply` — the daemon is the EXPLICIT opt-in to
+        unattended application, so it passes ``--apply`` (the bare `apex auto`
+        now PREVIEWS by default, the footgun fix). The covered-only sweep still
+        lands only moves a test exercises, and the AutonomyPolicy + git gate keep
+        it from clobbering a dirty tree (it commits when mode is autonomous).
+        Legacy: the older goal-driven `apex run`.
         """
         if not self.autonomous:
             return [
                 sys.executable, "-m", "app.cli", "run",
                 "--goal", self.goal, "--target", self.target, "--mode", self.mode,
             ]
-        cmd = [sys.executable, "-m", "app.cli", "auto", "--target", self.target,
-               "--mode", self.mode]
+        cmd = [sys.executable, "-m", "app.cli", "auto", "--apply",
+               "--target", self.target, "--mode", self.mode]
         if self.goal:
             cmd.append(self.goal)
         if self.mode == "autonomous":

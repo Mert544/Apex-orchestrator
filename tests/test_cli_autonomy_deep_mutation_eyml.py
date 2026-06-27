@@ -106,7 +106,7 @@ class _FakeBridge:
         return self._prove
 
     def apply_plan(self, plan, root, mode="supervised", verify=True,
-                   max_apply=None, commit=False):
+                   max_apply=None, commit=False, covered_only=False):
         self.applied.append(dict(mode=mode, verify=verify, max_apply=max_apply,
                                  commit=commit))
         return self._apply_summary
@@ -448,7 +448,7 @@ def test_develop_top_apply_json_indent(tmp_path, capsys, monkeypatch):
 # =========================================================================== #
 class _CapturingBridge(_FakeBridge):
     def apply_plan(self, plan, root, mode="supervised", verify=True,
-                   max_apply=None, commit=False):
+                   max_apply=None, commit=False, covered_only=False):
         _CapturingBridge.last_plan = plan
         _CapturingBridge.last_verify = verify
         _CapturingBridge.last_max_apply = max_apply
@@ -1342,7 +1342,7 @@ class _ActBridge:
         return _plan([])
 
     def apply_plan(self, plan, root, mode="supervised", verify=True,
-                   max_apply=None, commit=False):
+                   max_apply=None, commit=False, covered_only=False):
         _ActBridge.last.update(max_apply=max_apply, verify=verify, mode=mode,
                                commit=commit)
         return {"results": []}

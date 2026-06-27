@@ -312,7 +312,7 @@ def test_act_discloses_n_of_m_cap(tmp_path: Path, monkeypatch) -> None:
     # Apply nothing for real, but report a non-empty results list so the act
     # path runs its full disclosure block (the apply/rollback path is unchanged).
     def _fake_apply(self, plan, root_, mode="supervised", verify=True,
-                    max_apply=None, commit=False):
+                    max_apply=None, commit=False, covered_only=False):
         return {"results": [{"applied": True}], "applied": 1}
 
     monkeypatch.setattr(IdeaActionBridge, "plan_roadmap", _fake_plan)
@@ -368,10 +368,12 @@ def test_clean_project_is_a_no_op(tmp_path: Path) -> None:
 # verified, auto-rolled-back guarded apply path.                                #
 # --------------------------------------------------------------------------- #
 def test_apply_gating_still_holds_with_synthesis(tmp_path: Path) -> None:
-    """``apex auto --apply`` on a CLEAN git tree still routes through the
-    verified, auto-rolled-back guarded loop: a real (security) fix lands and is
+    """``apex auto --apply --allow-weak`` on a CLEAN git tree still routes through
+    the verified, auto-rolled-back guarded loop: a real (security) fix lands and is
     verified, exactly as before — proving the synthesis opt-ins changed only the
-    OFFERED objective set, never the apply/verify/rollback path."""
+    OFFERED objective set, never the apply/verify/rollback path. ``--allow-weak``
+    is needed because the yaml fix is on a module no test exercises (the SAFE
+    covered-only sweep withholds it by default)."""
     root = tmp_path / "g"
     root.mkdir()
     (root / "cfg.py").write_text(
@@ -379,7 +381,7 @@ def test_apply_gating_still_holds_with_synthesis(tmp_path: Path) -> None:
     (root / "tests").mkdir()
     (root / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n")
     _git_init(root)
-    rc, out = _run_auto(root, "--apply", "--max-apply", "3")
+    rc, out = _run_auto(root, "--apply", "--allow-weak", "--max-apply", "3")
     assert rc == 0
     assert "applying autonomously" in out.lower()
     # The yaml.load -> safe_load hardening landed and was verified.

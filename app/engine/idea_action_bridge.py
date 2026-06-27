@@ -1663,6 +1663,7 @@ class IdeaActionBridge:
         mode: str = "supervised",
         run_tests: bool = False,
         verify: bool = False,
+        covered_only: bool = False,
     ) -> dict:
         """Apply an executable step's patch — strictly gated, opt-in.
 
@@ -1674,6 +1675,12 @@ class IdeaActionBridge:
         before writing; after applying, the test suite is run and — if it
         fails — every changed file is restored to its pre-patch content
         (automatic rollback). Returns a result dict describing what happened.
+
+        When ``covered_only`` (the SAFE-by-default autonomous SWEEP, default off
+        ⇒ byte-identical), a move whose green suite NO test exercises (``coverage
+        == "none"``) is ROLLED BACK and reported ``withheld_uncovered`` instead of
+        landed — so a broad sweep never silently lands a change a green suite can't
+        vouch for. An explicitly-chosen objective leaves it off.
 
         ``implement_stub`` and ``cover_gaps`` are the actions NOT routed through
         the SemanticPatchResult gate (``_DELEGATED_ACTIONS``): implement_stub's
@@ -1695,7 +1702,8 @@ class IdeaActionBridge:
         # brand-new test file — both need impact-scoped verify); delegate to the
         # develop-core apply path, which owns its own snapshot/verify/rollback.
         if step.action_type in self._DELEGATED_ACTIONS:
-            return self._apply_delegated_synthesis(step, project_root, verify)
+            return self._apply_delegated_synthesis(step, project_root, verify,
+                                                   covered_only)
 
         result = self._generate(step, project_root)
         if result is None:
@@ -1731,7 +1739,7 @@ class IdeaActionBridge:
         from app.execution.risk_tiers import tier_for
         return self._verify_or_rollback(project_root, out, snapshot,
                                         patch_requests, applied,
-                                        tier_for(step.action_type))
+                                        tier_for(step.action_type), covered_only)
 
     # The develop-core synthesis objectives that do NOT fit the in-memory
     # SemanticPatchResult gate and are DELEGATED to the proven ``apply_rename``
@@ -1949,7 +1957,7 @@ class IdeaActionBridge:
     _DELEGATED_ACTIONS = frozenset(_DELEGATED_SYNTHESIS)
 
     def _apply_delegated_synthesis(self, step: ActionStep, project_root: str,
-                                   verify: bool) -> dict:
+                                   verify: bool, covered_only: bool = False) -> dict:
         """Delegate a develop-core synthesis step to the ``apply_rename`` path.
 
         Shared by ``implement_stub`` / ``cover_gaps`` / ``wire_exports`` (see
@@ -1959,6 +1967,9 @@ class IdeaActionBridge:
         land it through :func:`apply_rename` with ``impact_scope=True`` (the gate
         runs the impacted tests and rolls back on any regression). The result is
         translated into the bridge's ``apply_step`` result shape.
+
+        ``covered_only`` is forwarded to ``apply_rename`` so the SAFE-by-default
+        sweep withholds a green-but-unreferencing synthesis move (off ⇒ unchanged).
 
         Honesty: an EMPTY plan (``not plan.new_contents``) means nothing here is
         producible — never a fake-green — so it returns a non-applied result
@@ -1972,7 +1983,8 @@ class IdeaActionBridge:
             reason = "; ".join(plan.blockers) or default_reason
             return {"applied": False, "transform_type": step.action_type,
                     "reason": reason}
-        res = apply_rename(project_root, plan, verify=verify, impact_scope=True)
+        res = apply_rename(project_root, plan, verify=verify, impact_scope=True,
+                           covered_only=covered_only)
         return self._delegated_synthesis_result(step.action_type, res)
 
     @staticmethod
@@ -2054,7 +2066,7 @@ class IdeaActionBridge:
     def _verify_or_rollback(project_root: str, out: dict,
                             snapshot: dict[str, str | None],
                             patch_requests: list[dict], applied,
-                            tier: int = 0) -> dict:
+                            tier: int = 0, covered_only: bool = False) -> dict:
         """Run the suite; on red, restore every changed file to its snapshot."""
         from app.engine.proof_of_fix import summarize_test_run
         from app.engine.verification_strength import assess_strength
@@ -2091,6 +2103,25 @@ class IdeaActionBridge:
             out["rolled_back"] = False
             return out
         if summary.ok:
+            # COVERED-ONLY (opt-in): the broad autonomous sweep lands ONLY moves a
+            # green suite GENUINELY vouches for (``out["verified"]`` — a test
+            # exercises the change at a level appropriate to its risk tier). A
+            # green-but-unreferencing move (``coverage == "none"``, or a tier-1
+            # behaviour change a mere import can't vouch for) is the false-green
+            # blind spot — withhold it (restore + report ``withheld_uncovered``)
+            # rather than land it. A test-only change (``test-change`` — the tests
+            # ARE the suite) is never withheld. Off ⇒ byte-identical to today.
+            if (covered_only and not out["verified"]
+                    and coverage != "test-change"):
+                IdeaActionBridge._restore_snapshot(
+                    project_root, snapshot, applied.changed_files)
+                out["applied"] = False
+                out["rolled_back"] = True
+                out["withheld_uncovered"] = True
+                out["reason"] = ("withheld (covered-only): suite green but no test "
+                                 "exercises this change — previewed, not landed "
+                                 "(use --allow-weak to land)")
+                return out
             # Suite ran and passed -> nothing to roll back.
             out["rolled_back"] = False
             return out
@@ -2336,6 +2367,7 @@ class IdeaActionBridge:
         drain: bool = False,
         max_rounds: int = 8,
         replan=None,
+        covered_only: bool = False,
     ) -> dict:
         """Run a whole maintenance pass: apply each executable step in turn,
         verifying + rolling back individually, and return an aggregate summary.
@@ -2408,7 +2440,8 @@ class IdeaActionBridge:
 
         run = _MaintenancePass(self, project_root, mode=mode, verify=verify,
                                test_first=test_first, commit=commit,
-                               avoid_signatures=avoid_signatures)
+                               avoid_signatures=avoid_signatures,
+                               covered_only=covered_only)
         steps = plan.executable_steps()
         if prefer_reliable:
             steps = self._rerank_by_fix_risk(steps, project_root)
@@ -2452,6 +2485,11 @@ class IdeaActionBridge:
         if drain:
             summary["drain_rounds"] = drain_rounds
             summary["converged"] = drain_rounds < max(0, max_rounds)
+        # Additive + opt-in: the covered-only sweep's withheld tally appears ONLY
+        # when at least one move was withheld (a green-but-unreferencing move
+        # PREVIEWED, not landed), so a default run's keys are byte-identical.
+        if run.withheld_uncovered:
+            summary["withheld_uncovered"] = run.withheld_uncovered
         return summary
 
     def _default_replan(self, project_root: str, mode: str):
@@ -3002,7 +3040,8 @@ class _MaintenancePass:
 
     def __init__(self, bridge: IdeaActionBridge, project_root: str, *,
                  mode: str, verify: bool, test_first: bool, commit: bool,
-                 avoid_signatures: dict | None = None) -> None:
+                 avoid_signatures: dict | None = None,
+                 covered_only: bool = False) -> None:
         from app.policies.mode_policy import ModePolicy, mode_from_string
 
         self.bridge = bridge
@@ -3010,6 +3049,13 @@ class _MaintenancePass:
         self.mode = mode
         self.verify = verify
         self.test_first = test_first
+        # COVERED-ONLY sweep (opt-in, default off ⇒ byte-identical): when set, an
+        # APPLIED step a green suite couldn't vouch for (no test exercises the
+        # change — ``coverage == "none"``) is RESTORED from its pre-apply snapshot
+        # and recorded as ``withheld_uncovered`` instead of landed, so the broad
+        # autonomous ``auto --apply`` sweep never silently lands a weak move.
+        self.covered_only = covered_only
+        self.withheld_uncovered = 0
         # Opt-in closed-loop guard: when non-empty, a fix the proof history
         # predicts will fail is skipped BEFORE its wasted apply+rollback. An
         # empty/None map (the default) means the guard never fires, so the run
@@ -3338,9 +3384,12 @@ class _MaintenancePass:
             return
 
         # The first apply classifies the step (applied / rolled-back /
-        # blocked), exactly one result row per step.
+        # blocked), exactly one result row per step. COVERED-ONLY (the SAFE-by-
+        # default sweep) is forwarded so a green-but-unreferencing move is
+        # withheld (rolled back, reported) rather than landed; off ⇒ unchanged.
         r = self.bridge.apply_step(step, self.project_root, mode=self.mode,
-                                   verify=self.verify)
+                                   verify=self.verify,
+                                   covered_only=self.covered_only)
         # BASELINE-RED: when the suite was already failing before any fix, the
         # post-apply suite result cannot be attributed to this fix — downgrade
         # the verification to inconclusive (the green-baseline path leaves ``r``
@@ -3481,6 +3530,12 @@ class _MaintenancePass:
             # ATTEMPTS BUDGET: a rolled-back step DID reach apply (transform +
             # verify ran) — it counts as one attempt.
             self.attempted += 1
+            # COVERED-ONLY: a move the sweep PREVIEWED but withheld (green suite,
+            # no test exercises it) is a distinct, reportable outcome — counted so
+            # the run can say how many + that ``--allow-weak`` lands them. Inert
+            # without the gate (the key is never set), so byte-identical.
+            if r.get("withheld_uncovered"):
+                self.withheld_uncovered += 1
         elif r.get("applied"):
             # ATTEMPTS BUDGET: an applied step also reached apply — one attempt.
             self.attempted += 1

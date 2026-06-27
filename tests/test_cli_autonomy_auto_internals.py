@@ -98,7 +98,7 @@ class _FakeBridge:
         return _FakeScout(self._executable)
 
     def apply_plan(self, plan, root, mode="supervised", verify=True,
-                   max_apply=None, commit=False):
+                   max_apply=None, commit=False, covered_only=False):
         type(self).applied.append((mode, verify, max_apply, commit))
         return self._apply_summary
 

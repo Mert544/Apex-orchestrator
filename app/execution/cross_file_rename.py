@@ -492,14 +492,44 @@ def _verify_scoped(root: Path, plan: RenamePlan) -> tuple[bool, dict] | None:
                 "deselected": sorted(plan.scoped_excluded_nodes), "passed": ok}
 
 
+def _withhold_uncovered(root: Path, plan: RenamePlan, created: list[str],
+                        out: dict) -> bool:
+    """COVERED-ONLY gate (opt-in): roll back a move whose suite went green but no
+    test actually EXERCISED the change (``coverage == "none"``), and report it as
+    withheld — not failed. True when the move was withheld (so the caller returns
+    the withheld result), False otherwise (the move stands, byte-identical to a
+    run without the gate).
+
+    A green-but-unreferencing suite (``none``) cannot vouch for the change, so on
+    the broad autonomous SWEEP we PREVIEW it instead of landing it. A move the
+    suite genuinely covered (``function``/``module``), a test-only change
+    (``test-change``), or a verification-unavailable / no-suite tier is left
+    applied — those are never the silent ``none`` blind spot this gate exists for.
+    Deterministic and static: it only reads the coverage verdict already stamped."""
+    if out.get("coverage") != "none":
+        return False
+    _rollback(root, plan, created)
+    out.update(applied=False, rolled_back=True, withheld_uncovered=True,
+               reason="withheld (covered-only): suite green but no test exercises "
+                      "this change — previewed, not landed (use --allow-weak to land)")
+    return True
+
+
 def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True,
-                 impact_scope: bool = False) -> dict:
+                 impact_scope: bool = False, covered_only: bool = False) -> dict:
     """Write the plan, verify with the project's tests, roll back on failure.
 
     With ``impact_scope`` the per-move gate runs only the tests that exercise the
     changed files (seconds, not the whole suite) — the speed that lets the
     organism develop its own large body. The full suite stays the backstop, and
-    is used automatically when nothing covers the change."""
+    is used automatically when nothing covers the change.
+
+    With ``covered_only`` (opt-in, default off ⇒ byte-identical to today) a move
+    whose suite went green but which NO test actually exercises (``coverage ==
+    "none"`` — the false-green blind spot) is ROLLED BACK and reported as
+    ``withheld_uncovered``, not landed. This is the SAFE-by-default autonomous
+    sweep policy: a broad ``develop --auto --apply`` never silently lands an
+    uncovered move that a green suite can't vouch for."""
     if not plan.ok:
         return {"applied": False, "reason": "; ".join(plan.blockers) or "nothing to rename"}
     root = Path(project_root)
@@ -527,28 +557,54 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
     )
 
     # Fast path: verify against just the impacted tests. Falls through to the
-    # full suite when nothing covers the change (scoped result is None).
+    # full suite when nothing covers the change (scoped result is None). A
+    # genuinely impact-covered move is never ``coverage == "none"``, so the
+    # covered-only gate is a no-op on this path (only the full-suite tail can hit
+    # the blind spot) and is applied there.
     if impact_scope:
-        scoped = _verify_scoped(root, plan)
+        scoped = _verify_impact_scope(root, plan, created, out, strength_inputs)
         if scoped is not None:
-            ok, evidence = scoped
-            out["verified"] = ok
-            out["test_evidence"] = evidence
-            if ok:
-                # The scoped run executed the tests that IMPORT the changed
-                # files, so the suite genuinely exercised them — grade exactly
-                # how strongly (function vs. module) with the same machinery.
-                stamp_coverage_strength(root, out, *strength_inputs)
-                out["rolled_back"] = False
-                return out
-            _rollback(root, plan, created)
-            out.update(applied=False, rolled_back=True,
-                       reason="impacted tests failed after change; files restored")
-            return out
+            return scoped
 
     if run_full_suite_verification(root, out, strength_inputs=strength_inputs):
+        # COVERED-ONLY (opt-in): the full suite went green, but if NO test
+        # exercises the change (``coverage == "none"``) it is the false-green
+        # blind spot — withhold it (roll back, report ``withheld_uncovered``)
+        # rather than land it on the broad autonomous sweep. Off ⇒ byte-identical.
+        if covered_only:
+            _withhold_uncovered(root, plan, created, out)
         return out
     _rollback(root, plan, created)
     out.update(applied=False, rolled_back=True,
                reason="tests failed after rename; all files restored")
+    return out
+
+
+def _verify_impact_scope(root: Path, plan: RenamePlan, created: list[str],
+                         out: dict, strength_inputs) -> dict | None:
+    """The impact-scoped verification tail of :func:`apply_rename`, extracted to
+    keep that function under the complexity ceiling (behaviour byte-identical).
+
+    Runs ONLY the tests that import the changed files. Returns the finished result
+    dict when an impacted scope existed (green ⇒ kept + coverage-graded; red ⇒
+    rolled back), or ``None`` when nothing covers the change so the caller falls
+    through to the full-suite backstop. A genuinely impact-covered green is never
+    the ``coverage == "none"`` blind spot, so no covered-only gate is needed
+    here."""
+    scoped = _verify_scoped(root, plan)
+    if scoped is None:
+        return None
+    ok, evidence = scoped
+    out["verified"] = ok
+    out["test_evidence"] = evidence
+    if ok:
+        # The scoped run executed the tests that IMPORT the changed files, so the
+        # suite genuinely exercised them — grade exactly how strongly
+        # (function vs. module) with the same machinery.
+        stamp_coverage_strength(root, out, *strength_inputs)
+        out["rolled_back"] = False
+        return out
+    _rollback(root, plan, created)
+    out.update(applied=False, rolled_back=True,
+               reason="impacted tests failed after change; files restored")
     return out

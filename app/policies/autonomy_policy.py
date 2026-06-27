@@ -31,10 +31,15 @@ class AutonomyPolicy:
     Order of precedence:
       1. An explicit ``--recommend`` always wins → never touch the tree.
       2. An explicit ``--apply`` always applies (autonomous if committing).
-      3. Nothing safe to do → recommend.
-      4. A dirty working tree → recommend (don't mix Apex's edits into a WIP
+      3. ``require_explicit_apply`` (the PREVIEW-by-default safety) → recommend
+         unless ``--apply`` was passed. This is the footgun fix: a bare ``apex
+         auto`` must PREVIEW, never silently edit a clean tree (it once edited
+         Apex's own repo). Off by default, so the unattended daemon / dashboard
+         decision is byte-identical.
+      4. Nothing safe to do → recommend.
+      5. A dirty working tree → recommend (don't mix Apex's edits into a WIP
          tree the user can't cleanly review/undo); tell them how to proceed.
-      5. Otherwise (clean tree + safe verified fixes) → apply autonomously,
+      6. Otherwise (clean tree + safe verified fixes) → apply autonomously,
          supervised (apply but don't commit) so the user reviews via ``git diff``.
     """
 
@@ -46,6 +51,7 @@ class AutonomyPolicy:
         explicit_apply: bool = False,
         explicit_recommend: bool = False,
         commit: bool = False,
+        require_explicit_apply: bool = False,
     ) -> AutonomyDecision:
         if explicit_recommend:
             return AutonomyDecision(False, "report", "recommend-only requested")
@@ -54,6 +60,17 @@ class AutonomyPolicy:
             return AutonomyDecision(True, mode, "apply explicitly requested")
         if executable_steps <= 0:
             return AutonomyDecision(False, "report", "no safe, auto-applicable fixes found")
+        # PREVIEW-BY-DEFAULT (opt-in): with safe work available but no explicit
+        # ``--apply`` we never touch the tree — we surface the fixes for the user
+        # to apply on purpose. Checked AFTER "nothing to do" so a clean, debt-free
+        # project still reads honestly. Default off ⇒ the historical clean-tree
+        # auto-apply is unchanged (the unattended daemon/dashboard path).
+        if require_explicit_apply:
+            return AutonomyDecision(
+                False, "report",
+                "preview only — re-run with --apply to land the safe, "
+                "test-verified fixes (Apex never edits without --apply)",
+            )
         if not working_tree_clean:
             return AutonomyDecision(
                 False, "report",

@@ -550,18 +550,24 @@ def _auto_recommend(args, target, goal, shape, roadmap, sec_n,
 
 def _auto_act(args, target, goal, bridge, engine, report, mode,
               commit, decision, emit_json) -> int:
-    """The act path: roadmap-ordered, verified, capped guarded apply + report."""
+    """The act path: roadmap-ordered, verified, capped guarded apply + report.
+
+    SAFE-by-default SWEEP: lands ONLY moves a test actually exercises (covered ⇒
+    verified). A green-but-unreferencing move is PREVIEWED but withheld unless
+    ``--allow-weak`` restores today's behaviour (byte-identical apply)."""
     from app.engine.idea_action_bridge import render_maintenance_markdown
 
     plan = bridge.plan_roadmap(report, mode=mode, project_root=str(target), draft=True,
                                **_auto_synthesis_kwargs(args))
     available = plan.stats.get("executable_steps", 0)
     cap = (getattr(args, "max_apply", 0) or 8)
+    covered_only = not getattr(args, "allow_weak", False)
     summary = bridge.apply_plan(
         plan, str(target), mode=mode,
         verify=not getattr(args, "no_verify", False),
         max_apply=cap,
         commit=commit,
+        covered_only=covered_only,
     )
     from app.engine.idea_memory import IdeaMemory
 
@@ -584,6 +590,12 @@ def _auto_act(args, target, goal, bridge, engine, report, mode,
         # this run will land (honest about both the cap and the remainder).
         if available > cap:
             print(f"\n_Applying {cap} of {available} this run; re-run for the rest._")
+        n_withheld = summary.get("withheld_uncovered", 0)
+        if n_withheld:
+            print(f"\n_Withheld {n_withheld} uncovered move(s) (suite green but no "
+                  "test exercises them — a green suite can't vouch for the change). "
+                  "They were PREVIEWED, not landed. Re-run with `--allow-weak` to "
+                  "land them too._")
         if proof_path is not None:
             print(f"\n_Proof-of-fix evidence written to `{proof_path}`._")
         if not commit:
@@ -648,7 +660,11 @@ def cmd_auto(args: argparse.Namespace) -> int:
     executable = scout.stats.get("executable_steps", 0)
     tree_clean = _working_tree_clean(target)
 
-    # Apex decides — autonomously — whether to act or recommend.
+    # Apex decides — autonomously — whether to act or recommend. PREVIEW-BY-
+    # DEFAULT: ``require_explicit_apply`` makes a bare ``apex auto`` recommend
+    # (never edit) unless ``--apply`` is passed — the footgun fix so the
+    # one-command entry point can't silently edit a clean tree (it once edited
+    # Apex's own repo). ``--apply`` still applies, byte-for-byte as before.
     from app.policies.autonomy_policy import AutonomyPolicy
 
     decision = AutonomyPolicy().decide(
@@ -657,6 +673,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
         explicit_apply=explicit_apply,
         explicit_recommend=explicit_recommend,
         commit=commit,
+        require_explicit_apply=True,
     )
     mode = explicit_mode or decision.mode
     if decision.act and mode == "report":
@@ -865,12 +882,36 @@ def _auto_selected_objectives(target, concrete: bool) -> list[str]:
             if r.pending > 0]
 
 
+def _withheld_summary(results: list) -> tuple[int, str]:
+    """``(count, message)`` for the moves the covered-only sweep PREVIEWED but did
+    NOT land — a green-but-unreferencing change a green suite can't vouch for.
+
+    The message is empty when nothing was withheld (so a fully-covered sweep reads
+    exactly as before). When something was withheld it states the count and that
+    ``--allow-weak`` lands them too — clear, honest, and actionable. Pure string
+    assembly over ``CompileResult.withheld``; no clock/random."""
+    withheld = [d for r in results for d in getattr(r, "withheld", [])]
+    n = len(withheld)
+    if not n:
+        return 0, ""
+    msg = (f"\n_Withheld {n} uncovered move(s) (suite green but no test exercises "
+           "them — a green suite can't vouch for the change). They were PREVIEWED, "
+           "not landed. Re-run with `--allow-weak` to land them too._")
+    return n, msg
+
+
 def _develop_auto(args, target, grade_before, max_steps, verify, apply) -> int:
     """`apex develop --auto`: AUTONOMOUSLY land everything-applicable — no
     objective-naming. Selects the objectives that carry qualifying targets via the
     fitness-ranked board (``_auto_selected_objectives``), then runs each through
     the EXISTING ``compile_objective`` loop (suite-gated, auto-rollback) and emits
     the same combined report as ``--all``.
+
+    SAFE-by-default sweep: ``--apply`` lands ONLY moves a test actually exercises
+    (covered ⇒ verified). A move whose green suite NO test references is PREVIEWED
+    but withheld (the broad sweep must never silently land a change a green suite
+    can't vouch for — the buyer-proof regression). ``--allow-weak`` opts back into
+    today's behaviour (lands weak moves too), byte-identical to before.
 
     Honest about cost: the EXPENSIVE concrete objectives (implement-stub,
     wire-exports, strengthen-tests, … — they run pytest) are OFF by default and
@@ -880,24 +921,31 @@ def _develop_auto(args, target, grade_before, max_steps, verify, apply) -> int:
     from app.engine.objective_compiler import compile_objective, render_all_markdown
 
     concrete = getattr(args, "concrete", False)
+    # COVERED-ONLY is the sweep default; ``--allow-weak`` restores today's apply.
+    covered_only = apply and not getattr(args, "allow_weak", False)
     selected = _auto_selected_objectives(target, concrete)
     results = []
     for objective in selected:
         result = compile_objective(str(target), objective=objective,
                                    max_steps=max_steps, verify=verify, apply=apply,
                                    scope_verify=getattr(args, "fast", False),
-                                   min_move_value=_min_move_value(args))
+                                   min_move_value=_min_move_value(args),
+                                   covered_only=covered_only)
         if result.steps or result.fitness_start > 0:
             results.append(result)
     changed = apply and any(r.steps for r in results)
+    _n_withheld, withheld_msg = _withheld_summary(results)
     if args.json:
         # BYTE-IDENTICAL apply/dry-run JSON contract: the step contract is
         # untouched; the value-ranked PREVIEW is a CLI-string-layer concern only.
+        # ``withheld`` is purely additive (present only when the gate withheld).
         print(json.dumps([r.to_dict() for r in results], indent=2))
     elif apply:
         print(render_all_markdown(results))
         if changed:
             print(_APPLIED_TREE_NOTE)
+        if withheld_msg:
+            print(withheld_msg)
     else:
         # DEFAULT (dry-run, human-readable): value-rank the DISPLAY so the
         # highest buyer-value work leads, and disclose the concrete moat
@@ -1682,7 +1730,15 @@ def register_parsers(subparsers) -> None:
     auto_parser.add_argument("--target", default="", help="Target project root")
     auto_parser.add_argument(
         "--apply", action="store_true",
-        help="Force-apply the safe, test-verified fixes (overrides the autonomy gate)",
+        help="Apply the safe, test-verified fixes (PREVIEW by default — Apex never "
+             "edits without --apply). The sweep lands only COVERED moves a test "
+             "exercises; weak/uncovered moves are previewed (see --allow-weak)",
+    )
+    auto_parser.add_argument(
+        "--allow-weak", action="store_true", dest="allow_weak",
+        help="With --apply: also land WEAK moves — ones a green suite passed but "
+             "no test exercises (uncovered). Off by default so the sweep is SAFE "
+             "(covered-only); this restores the prior land-everything behaviour",
     )
     auto_parser.add_argument(
         "--recommend", action="store_true",
@@ -1785,12 +1841,19 @@ def register_parsers(subparsers) -> None:
              "objective's own fitness) and run each suite-gated, auto-rolled-back. "
              "Cheap objectives only by default; add --concrete to also sweep the "
              "EXPENSIVE concrete ones (implement-stub, wire-exports, "
-             "strengthen-tests). Default dry run; --apply writes")
+             "strengthen-tests). SAFE: --apply lands only COVERED moves (a test "
+             "exercises them); weak/uncovered moves are previewed (--allow-weak "
+             "lands them). Default dry run; --apply writes")
     develop_parser.add_argument(
         "--concrete", action="store_true",
         help="With --auto: also sweep the EXPENSIVE concrete objectives "
              "(implement-stub, wire-exports, strengthen-tests — they run pytest), "
              "off the fast default board")
+    develop_parser.add_argument(
+        "--allow-weak", action="store_true", dest="allow_weak",
+        help="With --auto --apply: also land WEAK moves — ones a green suite "
+             "passed but no test exercises (uncovered). Off by default so the "
+             "broad sweep is SAFE (covered-only); this restores land-everything")
     develop_parser.add_argument("--grade", action="store_true",
                                 help="Measure the health grade before and after — prove the gain")
     develop_parser.add_argument("--history", action="store_true",

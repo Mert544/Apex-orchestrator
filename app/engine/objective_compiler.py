@@ -116,13 +116,19 @@ class CompileResult:
     steps: list[CompileStep] = field(default_factory=list)
     blocked: list[str] = field(default_factory=list)
     applied: bool = False  # were any moves actually written (vs. dry run)?
+    # COVERED-ONLY (opt-in): moves a green suite couldn't vouch for (no test
+    # exercises them) that the safe-by-default sweep PREVIEWED instead of landing
+    # — one human description per withheld move. Empty for every run that did not
+    # arm ``covered_only`` (the broad sweep without ``--allow-weak``), so the
+    # default ``develop``/``--all``/``ascend`` report is byte-identical.
+    withheld: list[str] = field(default_factory=list)
 
     @property
     def improved(self) -> bool:
         return self.fitness_end < self.fitness_start
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "objective": self.objective,
             "fitness_start": self.fitness_start,
             "fitness_end": self.fitness_end,
@@ -132,6 +138,12 @@ class CompileResult:
             "blocked": self.blocked,
             "applied": self.applied,
         }
+        # Purely ADDITIVE: the key appears ONLY when the covered-only sweep
+        # actually withheld a move, so ``to_dict()`` is byte-identical for every
+        # campaign that didn't arm the gate (mirrors how ``value`` is additive).
+        if self.withheld:
+            d["withheld"] = list(self.withheld)
+        return d
 
 
 # --- Objective: dead-parameter elimination -----------------------------------
@@ -862,7 +874,8 @@ def _fill_dry_run(result: CompileResult, moves: list[Move], start: float,
 
 def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
                     verify: bool, scope_verify: bool, memory: Any = None,
-                    value_aware: bool = False) -> tuple[bool, float]:
+                    value_aware: bool = False, covered_only: bool = False,
+                    skip_targets: set | None = None) -> tuple[bool, float]:
     """Try to land one move against the CURRENT tree, recording its outcome.
 
     Builds the move's plan fresh (line numbers stay exact even as earlier moves
@@ -874,15 +887,36 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
     When ``value_aware`` (the buyer opted in), the landed step also records its
     ``scored_move_value`` — an honest disclosure of WHAT KIND of value landed,
     kept separate from the ``verified``/``coverage`` correctness tier. Off ⇒ the
-    step's ``value`` stays 0.0 ⇒ ``to_dict()`` is byte-identical."""
+    step's ``value`` stays 0.0 ⇒ ``to_dict()`` is byte-identical.
+
+    When ``covered_only`` (the broad autonomous SWEEP without ``--allow-weak``),
+    ``apply_rename`` rolls back a move a green suite couldn't vouch for (no test
+    exercises it) and reports ``withheld_uncovered``: it is recorded on
+    ``result.withheld`` (PREVIEWED, not landed) and counts as not landed, so the
+    sweep stays SAFE-by-default. Off ⇒ byte-identical to today."""
     from app.execution.cross_file_rename import apply_rename
 
+    # COVERED-ONLY: a move already withheld this campaign (a green-but-unreferencing
+    # candidate that re-surfaces every pass because it is real work) is skipped
+    # WITHOUT re-writing/re-running the suite — so the sweep neither loops nor
+    # double-counts it. Inert without the gate (``skip_targets`` is None).
+    if skip_targets is not None and mv.target in skip_targets:
+        return False, current
     plan = mv.build_plan()
     if plan.blockers or not plan.new_contents:
         if plan.blockers:
             result.blocked.append(f"{mv.target}: {plan.blockers[0]}")
         return False, current
-    res = apply_rename(root, plan, verify=verify, impact_scope=scope_verify)
+    res = apply_rename(root, plan, verify=verify, impact_scope=scope_verify,
+                       covered_only=covered_only)
+    if res.get("withheld_uncovered"):
+        # PREVIEWED, not landed: a green-but-unreferencing move the covered-only
+        # sweep declined to land. Surface it once for the report's messaging and
+        # remember it so later passes don't re-attempt (and re-run the suite on) it.
+        result.withheld.append(mv.description)
+        if skip_targets is not None:
+            skip_targets.add(mv.target)
+        return False, current
     if not res.get("applied"):
         # Suite failed (rolled back) or nothing applied — not a valid move.
         if res.get("reason"):
@@ -904,7 +938,9 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
 def _run_pass(result: CompileResult, moves: list[Move], root: str, current: float,
               max_steps: int, verify: bool, scope_verify: bool,
               last_operator: str, memory: Any = None, value_aware: bool = False,
-              min_move_value: float = 0.0) -> tuple[bool, float, str]:
+              min_move_value: float = 0.0,
+              covered_only: bool = False,
+              skip_targets: set | None = None) -> tuple[bool, float, str]:
     """Apply every move in one pass's scan that still lands, in order.
 
     Each move's plan is re-derived against the CURRENT tree, so line numbers stay
@@ -917,7 +953,11 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
     ``min_move_value`` is SKIPPED and recorded as a blocked-by-policy reason
     (honest about the refusal, exactly like a blocked plan), so a buyer who set
     "land only things worth my review" never sees the Tier-3 ceremony. Default
-    ``min_move_value=0.0`` ⇒ the guard never fires ⇒ byte-identical to today."""
+    ``min_move_value=0.0`` ⇒ the guard never fires ⇒ byte-identical to today.
+
+    COVERED-ONLY (opt-in): forwarded to ``_apply_one_move`` so a green-but-
+    unreferencing move is withheld (previewed, not landed) on the broad sweep.
+    Default off ⇒ byte-identical to today."""
     progressed = False
     for mv in moves:
         if len(result.steps) >= max_steps:
@@ -931,7 +971,8 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
                     f"({mv_value:g} < {min_move_value:g})")
                 continue
         landed, current = _apply_one_move(
-            result, mv, root, current, verify, scope_verify, memory, value_aware)
+            result, mv, root, current, verify, scope_verify, memory, value_aware,
+            covered_only, skip_targets)
         if landed:
             last_operator = mv.operator  # bias the next move's ordering
             progressed = True
@@ -956,7 +997,8 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
                       max_steps: int = 25, verify: bool = True,
                       apply: bool = True, scope_module: str | None = None,
                       scope_verify: bool = False,
-                      min_move_value: float = 0.0) -> CompileResult:
+                      min_move_value: float = 0.0,
+                      covered_only: bool = False) -> CompileResult:
     """Greedily compose verified moves toward ``objective``.
 
     Each iteration: regenerate candidate moves against the current tree, apply
@@ -977,7 +1019,15 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     any move below the floor. A buyer passes e.g. ``0.35`` to drop the Tier-3
     ceremony and lead with substance; the safety gate (suite + rollback) is
     untouched, so value never overrides correctness. At 0.0 nothing is reordered,
-    recorded, or refused — every existing campaign is unchanged."""
+    recorded, or refused — every existing campaign is unchanged.
+
+    ``covered_only`` (DEFAULT False = byte-identical to today) is the SAFE-by-
+    default autonomous SWEEP policy: a move whose green suite NO test exercises
+    (``coverage == "none"``) is rolled back and PREVIEWED on ``result.withheld``
+    instead of landed, so a broad sweep never silently lands a move a green suite
+    can't vouch for. A per-objective explicit campaign leaves it off (the user
+    chose the objective), and ``--allow-weak`` turns it off to restore today's
+    apply byte-for-byte."""
     objectives = _objectives_map()
     objective_name, blocked = _resolve_compile_target(objective, objectives)
     if objective_name is None:
@@ -1039,6 +1089,10 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     # move clears one unit of debt, so fitness decrements by one (these
     # objectives are monotone) — no re-measure scan per step.
     current = start
+    # COVERED-ONLY: the per-campaign set of already-withheld move targets, so an
+    # uncovered candidate that re-surfaces every pass is skipped (not re-run/double
+    # -counted). None when the gate is off ⇒ the apply loop is byte-identical.
+    skip_targets: set | None = set() if covered_only else None
     for _pass in range(max_steps + 1):
         if len(result.steps) >= max_steps:
             break
@@ -1047,7 +1101,8 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
             break
         progressed, current, last_operator = _run_pass(
             result, moves, root, current, max_steps, verify, effective_scope,
-            last_operator, memory, value_aware, min_move_value)
+            last_operator, memory, value_aware, min_move_value, covered_only,
+            skip_targets)
         if not progressed:
             break
 
