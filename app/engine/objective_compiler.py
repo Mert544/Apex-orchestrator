@@ -828,7 +828,8 @@ def _resolve_compile_target(
 
 def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
                         scope_module: str | None, memory: Any,
-                        last_operator: str, value_aware: bool = False) -> list[Move]:
+                        last_operator: str, value_aware: bool = False,
+                        centrality: dict[str, int] | None = None) -> list[Move]:
     """The candidate moves for one scan, scoped and ordered.
 
     Generates the objective's moves against the CURRENT tree, confines them to
@@ -846,7 +847,16 @@ def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
     SUBORDINATE tiebreak and a final stable ``m.target`` tiebreak for a total,
     deterministic order. This bites on the multi-operator objectives (``modernize``
     and the dedup family) and on interleaved sweeps, where the high-value move
-    precedes the ceremony move within a capped budget."""
+    precedes the ceremony move within a capped budget.
+
+    ``centrality`` (a ``module path -> fan-in`` map, ONLY supplied on the
+    value-aware path) inserts a blast-radius tiebreak BETWEEN the learned-sequence
+    credit and the final ``m.target`` tiebreak: among moves the buyer values
+    equally, the one touching the module the MOST other modules import lands
+    first, so a capped ``--max-steps`` budget banks the highest-blast-radius move.
+    When it is ``None`` (the DEFAULT — and the only state on a non-value-aware
+    run) the slot is a constant ``0``, so the order is byte-identical to before
+    this signal existed: the same move lands first on every default campaign."""
     from app.engine.move_value import scored_move_value
 
     moves = generate(root)
@@ -856,6 +866,7 @@ def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
         moves = sorted(moves, key=lambda m: (
             -scored_move_value(m.operator, memory),                 # buyer value first
             -memory.sequence_factor(last_operator, m.operator),     # learned-sequence credit
+            -centrality.get(_move_module(m), 0) if centrality else 0,  # blast-radius desc
             m.target,                                               # stable, deterministic
         ))
     elif last_operator:
@@ -1078,9 +1089,17 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     # so every default ``develop``/``--all``/``ascend`` campaign is byte-identical.
     value_aware = min_move_value > 0.0
 
+    # Blast-radius tiebreak rides the SAME opt-in gate: the fan-in map is computed
+    # (once, then memoized per root by ``module_in_degrees``) ONLY on the value-
+    # aware path, and stays ``None`` otherwise — so a default run never even walks
+    # the dependency graph and its move order is byte-identical to today. On the
+    # value-aware path it breaks equal-value ties toward the highest-fan-in move.
+    from app.engine.move_centrality import module_in_degrees
+    move_centrality = module_in_degrees(root) if value_aware else None
+
     def candidates() -> list[Move]:
         return _ordered_candidates(generate, root, scope_module, memory,
-                                   last_operator, value_aware)
+                                   last_operator, value_aware, move_centrality)
 
     def measure() -> float:
         # Scoped runs measure the local debt (remaining scoped moves); a global
