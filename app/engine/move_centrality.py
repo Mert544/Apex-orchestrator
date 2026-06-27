@@ -47,6 +47,13 @@ def module_in_degrees(root: str | Path) -> dict[str, int]:
     from app.tools.dependency_graph import DependencyGraphBuilder
 
     graph = DependencyGraphBuilder(root).build()
-    degrees = {node.path: node.in_degree for node in graph.values()}
+    # Normalise keys to POSIX separators so they match a move's ``_move_module``,
+    # which yields ``Path.as_posix()`` (forward slashes). On POSIX ``node.path``
+    # is already ``/``-separated so this is a no-op; on Windows ``str(node.path)``
+    # would be ``\``-separated and the lookup would silently miss (degrading the
+    # tiebreak to an inert uniform-zero) — ``as_posix`` keeps the signal working
+    # cross-platform, which matters for the teams Apex serves on Windows.
+    degrees = {Path(node.path).as_posix(): node.in_degree
+               for node in graph.values()}
     _IN_DEGREES_CACHE[key] = degrees
     return degrees
