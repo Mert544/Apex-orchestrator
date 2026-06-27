@@ -157,3 +157,107 @@ def test_apply_plan_default_does_not_thread_covered_only(tmp_path, monkeypatch):
                       steps=[step], stats={"total_steps": 1, "executable_steps": 1})
     bridge.apply_plan(plan, str(tmp_path), mode="supervised", verify=True)
     assert seen and not any(seen)
+
+
+# --------------------------------------------------------------------------- #
+# TIER-AWARE withhold (denetçi P0): a smoke-only `module`-coverage move is a    #
+# FALSE green for a Tier-1 behaviour change — it must NOT land. A Tier-0        #
+# semantics-preserving move with the SAME `module` coverage MUST still land.    #
+# --------------------------------------------------------------------------- #
+def _module_only_covered(root: Path, body: str, *, names_changed_fn: bool = False) -> None:
+    """A package whose module is imported by a test that DOES NOT name the changed
+    function (``parse``) — so ``assess_strength`` grades the change ``module``, the
+    smoke-only false-green a Tier-1 rewrite must not ride. ``body`` is the source of
+    ``pkg/sec.py``; the test always calls ``other()`` only."""
+    (root / "pkg").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='pkg'\nversion='0'\n", encoding="utf-8")
+    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pkg" / "sec.py").write_text(body, encoding="utf-8")
+    call = ("from pkg.sec import parse\ndef test_p():\n    assert parse('1') == 1\n"
+            if names_changed_fn
+            else "import pkg.sec\ndef test_i():\n    assert pkg.sec.other() == 1\n")
+    (root / "tests" / "test_sec.py").write_text(call, encoding="utf-8")
+
+
+_EVAL_BODY = "def parse(s):\n    return eval(s)\n\n\ndef other():\n    return 1\n"
+_NONE_BODY = "def parse(s):\n    return s == None\n\n\ndef other():\n    return 1\n"
+
+
+def test_tier1_module_coverage_is_withheld(tmp_path: Path):
+    # harden (eval -> literal_eval) is Tier 1: a test that only IMPORTS the module
+    # (coverage == "module", never names parse) can't vouch for the behaviour
+    # change. The covered-only sweep WITHHOLDS it — the false-green this fix closes.
+    _module_only_covered(tmp_path, _EVAL_BODY)
+    r = compile_objective(str(tmp_path), objective="harden", apply=True,
+                          verify=True, covered_only=True)
+    assert r.steps == []                                   # nothing landed
+    assert any("sec.py" in w for w in r.withheld)          # surfaced as withheld
+    # The file is restored byte-exact — the eval rewrite did NOT land.
+    assert (tmp_path / "pkg" / "sec.py").read_text() == _EVAL_BODY
+
+
+def test_tier0_module_coverage_still_lands(tmp_path: Path):
+    # modernize (== None -> is None) is Tier 0 / semantics-preserving: module
+    # coverage IS sound proof, so the SAME `module`-coverage situation LANDS — the
+    # tier-aware gate is not over-strict.
+    _module_only_covered(tmp_path, _NONE_BODY)
+    r = compile_objective(str(tmp_path), objective="modernize", apply=True,
+                          verify=True, covered_only=True)
+    assert any(s.target.endswith(":modernize") for s in r.steps)
+    assert r.withheld == []
+    assert "is None" in (tmp_path / "pkg" / "sec.py").read_text()
+
+
+def test_tier1_function_coverage_lands(tmp_path: Path):
+    # When a test NAMES the changed function (coverage == "function"), the Tier-1
+    # harden is genuinely vouched-for and LANDS — covered-only is about the blind
+    # spot, not blocking real coverage.
+    _module_only_covered(tmp_path, _EVAL_BODY, names_changed_fn=True)
+    r = compile_objective(str(tmp_path), objective="harden", apply=True,
+                          verify=True, covered_only=True)
+    assert any(s.coverage_verified for s in r.steps)
+    assert "literal_eval" in (tmp_path / "pkg" / "sec.py").read_text()
+
+
+def test_tier1_module_coverage_compiler_and_bridge_agree(tmp_path: Path):
+    # The two sweep paths must give the SAME verdict on the SAME logical move (the
+    # matrix-consistency invariant): the Tier-1 harden on module-only coverage is
+    # withheld by BOTH the compiler (objective) and the bridge (apply_step).
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.models.idea import ActionStep
+
+    _module_only_covered(tmp_path, _EVAL_BODY)
+    comp = compile_objective(str(tmp_path), objective="harden", apply=True,
+                             verify=True, covered_only=True)
+    compiler_withheld = comp.steps == [] and "literal_eval" not in (
+        tmp_path / "pkg" / "sec.py").read_text()
+
+    # Reset and run the identical move via the bridge's gated writer.
+    (tmp_path / "pkg" / "sec.py").write_text(_EVAL_BODY, encoding="utf-8")
+    step = ActionStep(
+        branch_path="x.h", title="harden pkg/sec.py", operator="harden",
+        subject="pkg/sec.py", action_type="harden_security",
+        target="pkg/sec.py", executable=True)
+    br = IdeaActionBridge().apply_step(step, str(tmp_path), mode="supervised",
+                                       verify=True, covered_only=True)
+    bridge_withheld = (not br.get("applied")) and br.get("verified") is not True
+
+    assert compiler_withheld and bridge_withheld           # both refuse — they agree
+
+
+def test_coverage_verifies_is_shared_one_predicate():
+    # No copy-paste: the bridge's coverage verdict IS the shared risk_tiers one
+    # (the grade dedup detector would dock a duplicated copy).
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.execution.risk_tiers import coverage_verifies
+
+    for tier in (0, 1, 2):
+        for cov in ("function", "module", "none", "test-change", ""):
+            assert (IdeaActionBridge._coverage_verifies(tier, cov)
+                    == coverage_verifies(tier, cov))
+    # The behaviour the fix turns on: Tier-1 module is a FALSE green, Tier-0 isn't.
+    assert coverage_verifies(0, "module") is True
+    assert coverage_verifies(1, "module") is False
+    assert coverage_verifies(1, "function") is True

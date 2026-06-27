@@ -85,3 +85,65 @@ def tier_for_transform(transform_type: str | None, action_type: str) -> int:
     if transform_type in ANNOTATION_FLAG_TRANSFORMS:
         return 0
     return tier_for(action_type)
+
+
+# The objective-compiler ``Move.operator`` strings whose change is
+# BEHAVIOUR-ADJACENT (Tier 1) — a green suite that merely IMPORTS the module
+# (``coverage == "module"``) does NOT prove the new behaviour; only a test that
+# exercises the changed function (``coverage == "function"``) does. Two families:
+#   * security REWRITES — ``harden`` (eval -> literal_eval, yaml.load ->
+#     safe_load, os.system -> subprocess, …) literally changes what the call
+#     does;
+#   * code SYNTHESIS — operators that mint a real executable BODY where there was
+#     a stub / missing symbol (implement-stub, tdd-implement, the doctest/JSDoc
+#     synthesisers, protocol scaffolding, dunder synthesis, test strengthening,
+#     cover-gaps) introduce behaviour the suite must actually run to vouch for;
+#   * ``raise_from`` rewrites a re-raise into ``raise X from err`` — a real
+#     (if small) runtime traceback-chaining change.
+# Every OTHER compiler operator is a provably semantics-preserving refactor or
+# idiom (modernize, sort-imports, drop never-read param, inline/extract, dedup,
+# the doc-surface comment inserts, …): a test that references the module is a
+# sound proof, so those stay Tier 0. New behaviour-changing operators MUST be
+# added here (the soundness audit + the covered-only matrix test guard this).
+BEHAVIOUR_CHANGING_OPERATORS: frozenset[str] = frozenset({
+    "harden",
+    "raise_from",
+    "implement_stub", "tdd_implement", "implement_from_doctest",
+    "js_tdd_implement", "js_implement_from_jsdoc",
+    "scaffold_from_protocol", "synthesize_dunders",
+    "strengthen_tests", "cover_gaps",
+})
+
+
+def tier_for_operator(operator: str) -> int:
+    """The risk tier of an objective-compiler ``Move.operator``.
+
+    Tier 1 for the behaviour-adjacent operators (security rewrites + body
+    synthesis + ``raise_from`` — see ``BEHAVIOUR_CHANGING_OPERATORS``), where a
+    mere module import can't vouch for the change; Tier 0 for every other
+    operator, which is a semantics-preserving refactor / idiom / doc-surface
+    insert that a module-referencing test soundly proves. Pure + deterministic."""
+    return 1 if operator in BEHAVIOUR_CHANGING_OPERATORS else 0
+
+
+def coverage_verifies(tier: int, coverage: str) -> bool:
+    """Does ``coverage`` let a green suite actually VOUCH for a tier-``tier``
+    change? The SINGLE honest verdict shared by every apply path (the bridge's
+    ``apply_step`` and the develop-core ``apply_rename`` / ``compile_objective``),
+    so the two sweeps can never disagree (the covered-only matrix invariant).
+
+    A green run only verifies what it exercised:
+      * ``test-change`` — only test files changed (they ARE the suite);
+      * Tier 0 (semantics-preserving / additive) — a test that references the
+        module (``module``) or names the change (``function``) suffices;
+      * Tier 1+ (behaviour-adjacent) — require ``function``: a mere import (a
+        smoke-import shield) is NOT a test of the changed behaviour and must
+        never green-light it.
+
+    ``none`` (no test references the change at all) never verifies anything.
+    """
+    if coverage == "test-change":
+        return True
+    if tier <= 0:
+        return coverage in ("function", "module")
+    return coverage == "function"

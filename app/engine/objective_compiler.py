@@ -79,15 +79,24 @@ class CompileStep:
     # kind* of value landed (a real body vs. a sorted import), not just how many.
     # Default 0.0 keeps ``to_dict`` additive (mirrors how ``coverage`` was added).
     value: float = 0.0
+    # Behaviour-change RISK tier of this move's operator (0 = semantics-preserving,
+    # 1 = behaviour-adjacent — ``risk_tiers.tier_for_operator``). Default 0 keeps
+    # ``coverage_verified`` byte-identical for every existing (Tier-0) campaign:
+    # only a Tier-1 move with mere ``module`` coverage flips to NOT verified (a
+    # smoke import can't vouch for a behaviour change — the honest verdict).
+    tier: int = 0
 
     @property
     def coverage_verified(self) -> bool:
-        """Did a test GENUINELY exercise the change? True only when the suite ran
-        green AND a test references the changed module/function (or only test
-        files changed). A green suite that never looked at the change is NOT
-        coverage-verified — this is the honest tier the develop report counts."""
-        return self.verified and self.coverage in (
-            "function", "module", "test-change")
+        """Did a test GENUINELY exercise the change at the level its risk needs?
+        Uses the SHARED ``risk_tiers.coverage_verifies`` (the SAME verdict the
+        bridge applies), so a green suite that merely IMPORTS a Tier-1 rewrite's
+        module is NOT counted as verified — only a test that names the changed
+        function is. A green suite that never looked at the change is never
+        coverage-verified. This is the honest tier the develop report counts."""
+        from app.execution.risk_tiers import coverage_verifies
+
+        return self.verified and coverage_verifies(self.tier, self.coverage)
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -902,17 +911,24 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
     # double-counts it. Inert without the gate (``skip_targets`` is None).
     if skip_targets is not None and mv.target in skip_targets:
         return False, current
+    from app.execution.risk_tiers import tier_for_operator
+
     plan = mv.build_plan()
     if plan.blockers or not plan.new_contents:
         if plan.blockers:
             result.blocked.append(f"{mv.target}: {plan.blockers[0]}")
         return False, current
+    # The move's behaviour-change risk tier drives the covered-only verdict (a
+    # Tier-1 rewrite needs a test that NAMES the changed function; a Tier-0 idiom
+    # is soundly proven by module coverage) AND the step's honest ``coverage_
+    # verified`` label — the SAME tier-aware predicate the bridge applies.
+    tier = tier_for_operator(mv.operator)
     res = apply_rename(root, plan, verify=verify, impact_scope=scope_verify,
-                       covered_only=covered_only)
+                       covered_only=covered_only, tier=tier)
     if res.get("withheld_uncovered"):
-        # PREVIEWED, not landed: a green-but-unreferencing move the covered-only
-        # sweep declined to land. Surface it once for the report's messaging and
-        # remember it so later passes don't re-attempt (and re-run the suite on) it.
+        # PREVIEWED, not landed: a move the covered-only sweep could not vouch for
+        # at its tier. Surface it once for the report's messaging and remember it
+        # so later passes don't re-attempt (and re-run the suite on) it.
         result.withheld.append(mv.description)
         if skip_targets is not None:
             skip_targets.add(mv.target)
@@ -931,7 +947,7 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
         operator=mv.operator, target=mv.target, description=mv.description,
         fitness_before=current, fitness_after=nxt,
         verified=res.get("verified") is True,
-        coverage=str(res.get("coverage") or ""), value=value))
+        coverage=str(res.get("coverage") or ""), value=value, tier=tier))
     return True, nxt
 
 

@@ -1976,6 +1976,7 @@ class IdeaActionBridge:
         (carrying any disclosed blocker reason) and writes nothing.
         """
         from app.execution.cross_file_rename import apply_rename
+        from app.execution.risk_tiers import tier_for
 
         lander_name, default_reason = self._DELEGATED_SYNTHESIS[step.action_type]
         plan = getattr(self, lander_name)()(project_root, step.target)
@@ -1983,8 +1984,11 @@ class IdeaActionBridge:
             reason = "; ".join(plan.blockers) or default_reason
             return {"applied": False, "transform_type": step.action_type,
                     "reason": reason}
+        # Tier-aware covered-only: pass the action's risk tier so a behaviour-
+        # introducing delegated synthesis (implement_stub/tdd_implement) needs
+        # function-level coverage, exactly like the compiler path (one verdict).
         res = apply_rename(project_root, plan, verify=verify, impact_scope=True,
-                           covered_only=covered_only)
+                           covered_only=covered_only, tier=tier_for(step.action_type))
         return self._delegated_synthesis_result(step.action_type, res)
 
     @staticmethod
@@ -2045,22 +2049,12 @@ class IdeaActionBridge:
     @staticmethod
     def _coverage_verifies(tier: int, coverage: str) -> bool:
         """Does ``coverage`` let a green suite actually VOUCH for a tier-``tier``
-        change? A green run only verifies what it exercised:
+        change? Delegates to the SHARED ``risk_tiers.coverage_verifies`` so the
+        bridge and the develop-core apply path enforce ONE identical verdict (the
+        covered-only matrix invariant — no copy-paste, no drift)."""
+        from app.execution.risk_tiers import coverage_verifies
 
-          * ``test-change`` — only test files changed (they ARE the suite);
-          * Tier 0 (semantics-preserving / additive) — a test that references
-            the module (``module``) or names the change (``function``) suffices;
-          * Tier 1+ (behaviour-adjacent) — require ``function``: a mere import
-            (a smoke-import shield) is NOT a test of the changed behaviour and
-            must never green-light it.
-
-        ``none`` (no test references the change at all) never verifies anything.
-        """
-        if coverage == "test-change":
-            return True
-        if tier <= 0:
-            return coverage in ("function", "module")
-        return coverage == "function"
+        return coverage_verifies(tier, coverage)
 
     @staticmethod
     def _verify_or_rollback(project_root: str, out: dict,

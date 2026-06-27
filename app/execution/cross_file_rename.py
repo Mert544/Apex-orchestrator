@@ -493,30 +493,35 @@ def _verify_scoped(root: Path, plan: RenamePlan) -> tuple[bool, dict] | None:
 
 
 def _withhold_uncovered(root: Path, plan: RenamePlan, created: list[str],
-                        out: dict) -> bool:
-    """COVERED-ONLY gate (opt-in): roll back a move whose suite went green but no
-    test actually EXERCISED the change (``coverage == "none"``), and report it as
-    withheld — not failed. True when the move was withheld (so the caller returns
-    the withheld result), False otherwise (the move stands, byte-identical to a
-    run without the gate).
+                        out: dict, tier: int = 0) -> bool:
+    """COVERED-ONLY gate (opt-in): roll back a move whose green suite cannot
+    actually VOUCH for the change at its risk ``tier``, and report it as withheld
+    — not failed. True when the move was withheld (so the caller returns the
+    withheld result), False otherwise (the move stands, byte-identical to a run
+    without the gate).
 
-    A green-but-unreferencing suite (``none``) cannot vouch for the change, so on
-    the broad autonomous SWEEP we PREVIEW it instead of landing it. A move the
-    suite genuinely covered (``function``/``module``), a test-only change
-    (``test-change``), or a verification-unavailable / no-suite tier is left
-    applied — those are never the silent ``none`` blind spot this gate exists for.
-    Deterministic and static: it only reads the coverage verdict already stamped."""
-    if out.get("coverage") != "none":
+    The verdict is the SHARED ``risk_tiers.coverage_verifies`` — the SAME one the
+    bridge's ``apply_step`` uses, so the two sweep paths can never disagree: for a
+    Tier-1 behaviour change a mere module import (``coverage == "module"``) is a
+    FALSE green and is withheld (only a test that names the changed function
+    vouches); for a Tier-0 semantics-preserving move ``module`` is sound proof and
+    lands. ``none`` (no test references the change at all) never verifies and is
+    always withheld. Deterministic + static: it only reads the stamped coverage."""
+    from app.execution.risk_tiers import coverage_verifies
+
+    if coverage_verifies(tier, str(out.get("coverage") or "none")):
         return False
     _rollback(root, plan, created)
     out.update(applied=False, rolled_back=True, withheld_uncovered=True,
-               reason="withheld (covered-only): suite green but no test exercises "
-                      "this change — previewed, not landed (use --allow-weak to land)")
+               reason="withheld (covered-only): no test exercises this change at "
+                      "the level its risk needs — previewed, not landed "
+                      "(use --allow-weak to land)")
     return True
 
 
 def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True,
-                 impact_scope: bool = False, covered_only: bool = False) -> dict:
+                 impact_scope: bool = False, covered_only: bool = False,
+                 tier: int = 0) -> dict:
     """Write the plan, verify with the project's tests, roll back on failure.
 
     With ``impact_scope`` the per-move gate runs only the tests that exercise the
@@ -525,11 +530,14 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
     is used automatically when nothing covers the change.
 
     With ``covered_only`` (opt-in, default off ⇒ byte-identical to today) a move
-    whose suite went green but which NO test actually exercises (``coverage ==
-    "none"`` — the false-green blind spot) is ROLLED BACK and reported as
-    ``withheld_uncovered``, not landed. This is the SAFE-by-default autonomous
-    sweep policy: a broad ``develop --auto --apply`` never silently lands an
-    uncovered move that a green suite can't vouch for."""
+    whose green suite cannot VOUCH for the change at its risk ``tier`` — the
+    false-green blind spot — is ROLLED BACK and reported as ``withheld_uncovered``,
+    not landed. ``tier`` (default 0, so every non-covered_only caller is
+    byte-identical) is the move's behaviour-change risk: a Tier-1 rewrite needs a
+    test that NAMES the changed function (a mere module import is a false green),
+    while a Tier-0 semantics-preserving move is soundly proven by module coverage.
+    This is the SAFE-by-default autonomous sweep policy: a broad ``develop --auto
+    --apply`` never silently lands a move a green suite can't vouch for."""
     if not plan.ok:
         return {"applied": False, "reason": "; ".join(plan.blockers) or "nothing to rename"}
     root = Path(project_root)
@@ -556,23 +564,24 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
         dict(plan.new_contents),
     )
 
-    # Fast path: verify against just the impacted tests. Falls through to the
-    # full suite when nothing covers the change (scoped result is None). A
-    # genuinely impact-covered move is never ``coverage == "none"``, so the
-    # covered-only gate is a no-op on this path (only the full-suite tail can hit
-    # the blind spot) and is applied there.
+    # Fast path: verify against just the impacted tests. Falls through to the full
+    # suite when nothing covers the change (scoped result is None). The impacted
+    # run can still stamp only ``module`` (a smoke import that names the module but
+    # not the changed function), which is a FALSE green for a Tier-1 move — so the
+    # covered-only gate is applied on this path too, not just the full-suite tail.
     if impact_scope:
-        scoped = _verify_impact_scope(root, plan, created, out, strength_inputs)
+        scoped = _verify_impact_scope(root, plan, created, out, strength_inputs,
+                                      covered_only, tier)
         if scoped is not None:
             return scoped
 
     if run_full_suite_verification(root, out, strength_inputs=strength_inputs):
-        # COVERED-ONLY (opt-in): the full suite went green, but if NO test
-        # exercises the change (``coverage == "none"``) it is the false-green
-        # blind spot — withhold it (roll back, report ``withheld_uncovered``)
-        # rather than land it on the broad autonomous sweep. Off ⇒ byte-identical.
+        # COVERED-ONLY (opt-in): the full suite went green, but if it can't vouch
+        # for the change at its tier (``none`` for any tier; ``module`` for Tier 1)
+        # it is the false-green blind spot — withhold it (roll back, report
+        # ``withheld_uncovered``) rather than land it. Off ⇒ byte-identical.
         if covered_only:
-            _withhold_uncovered(root, plan, created, out)
+            _withhold_uncovered(root, plan, created, out, tier)
         return out
     _rollback(root, plan, created)
     out.update(applied=False, rolled_back=True,
@@ -581,16 +590,17 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
 
 
 def _verify_impact_scope(root: Path, plan: RenamePlan, created: list[str],
-                         out: dict, strength_inputs) -> dict | None:
+                         out: dict, strength_inputs, covered_only: bool = False,
+                         tier: int = 0) -> dict | None:
     """The impact-scoped verification tail of :func:`apply_rename`, extracted to
-    keep that function under the complexity ceiling (behaviour byte-identical).
+    keep that function under the complexity ceiling (behaviour byte-identical when
+    ``covered_only`` is off).
 
     Runs ONLY the tests that import the changed files. Returns the finished result
-    dict when an impacted scope existed (green ⇒ kept + coverage-graded; red ⇒
-    rolled back), or ``None`` when nothing covers the change so the caller falls
-    through to the full-suite backstop. A genuinely impact-covered green is never
-    the ``coverage == "none"`` blind spot, so no covered-only gate is needed
-    here."""
+    dict when an impacted scope existed (green ⇒ kept + coverage-graded, then the
+    covered-only gate may withhold a tier-unvouched move; red ⇒ rolled back), or
+    ``None`` when nothing covers the change so the caller falls through to the
+    full-suite backstop."""
     scoped = _verify_scoped(root, plan)
     if scoped is None:
         return None
@@ -603,6 +613,10 @@ def _verify_impact_scope(root: Path, plan: RenamePlan, created: list[str],
         # (function vs. module) with the same machinery.
         stamp_coverage_strength(root, out, *strength_inputs)
         out["rolled_back"] = False
+        # COVERED-ONLY: a smoke-only import stamps ``module``, a false green for a
+        # Tier-1 behaviour change — withhold it here too. Off ⇒ byte-identical.
+        if covered_only:
+            _withhold_uncovered(root, plan, created, out, tier)
         return out
     _rollback(root, plan, created)
     out.update(applied=False, rolled_back=True,
