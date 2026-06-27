@@ -352,6 +352,29 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # order is free.
     "the documented return type to pin": "pin-return-type",
 
+    # DOCUMENTED + ANNOTATED Python function whose return is undocumented: the
+    # "signatures and types" lens also names a PUBLIC function that HAS a docstring
+    # AND carries an explicit ``-> T`` annotation but whose docstring records no
+    # return. The document-returns objective LANDS exactly that — it splices a
+    # faithful return section into the existing docstring rendering the DECLARED
+    # annotation ``T`` VERBATIM (``ast.unparse(fn.returns)``), MATCHING the
+    # docstring's convention (a Google ``Returns:`` section, a Sphinx ``:returns:``/
+    # ``:rtype:`` field, or the Google default for plain prose). It is the
+    # ANNOTATION-sourced, style-matching sibling of pin-return-type (which reads the
+    # INFERRED oracle, firing on an UN-annotated function): the two are mutually
+    # exclusive by the annotation predicate. It REFUSES an undocumented function
+    # (document-signature's lane), a ``-> None`` / ``-> NoReturn`` (incl. aliases), a
+    # generator / async-generator return (the value is YIELDED), an ``@overload`` /
+    # property setter, and a docstring that already records a return in ANY
+    # convention (no double-doc). A return section is docstring TEXT (zero runtime
+    # bytes), so it is behaviour-identical by construction. Its phrasing is not a
+    # substring of any other key (nor any of them of it) — in particular it is
+    # distinct from "the documented return type to pin" ("annotated return type … to
+    # document" vs "documented return type … to pin") and "the public signature to
+    # document" ("annotated return type" vs "public signature") — so its order is
+    # free.
+    "the annotated return type to document": "document-returns",
+
     # Undocumented EXPORTED JS/TS signature: the JS/TS sibling of the above. The
     # document-export-jsdoc objective LANDS a minimal JSDoc on an exported
     # function/const-arrow that carries NO leading JSDoc — one ``@param <name>``

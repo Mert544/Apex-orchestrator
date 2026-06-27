@@ -124,6 +124,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "annotate-self-returns": "behavior-identical-annotation-only+self/cls-class-bound-forward-ref",
     "document-signature": "behavior-identical-docstring-only",
     "document-raises": "behavior-identical-docstring-only+raises-from-literal-raise-Name-verbatim+escape-only(stop-at-nested-scope,try-with-except-refuses)",
+    "document-returns": "behavior-identical-docstring-only+returns-from-declared-annotation-verbatim+refuse-None/NoReturn/generator/overload/setter/already-documented",
     "pin-return-type": "behavior-identical-docstring-only+returns-from-proven-return-oracle",
     "document-export-jsdoc": "jsdoc-leading-trivia-insert+reparse-identical-or-refuse(no-suite-needed)",
     "js-document-param-types": "jsdoc-leading-trivia-insert+declared-param-types-verbatim+reparse-identical-or-refuse(no-suite-needed)",
@@ -441,6 +442,15 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # shape — the honest verdict is ``behavior-identical``, not a refusal. The corpus
     # still exercises it (proving the string literal is no longer corrupted), and a
     # dedicated test asserts the splice lands past the real raise.
+    # The document-returns double-doc trap: a PUBLIC, DOCUMENTED, ``-> T``-annotated
+    # function whose docstring ALREADY records its return (one in each convention —
+    # a Google ``Returns:`` section, a Sphinx ``:rtype:`` field, a NumPy ``Returns``
+    # underline). document-returns MUST refuse every one (appending a second return
+    # section on top would be a redundant double-doc its re-parse floor would not
+    # catch — a docstring changes no runtime value). pin-return-type refuses it too
+    # (every function is already ``-> T``-annotated, so the inferred oracle declines),
+    # so the standing corpus needs no second annotation-free shape for that sibling.
+    "returns_already_documented": frozenset({"document-returns"}),
     "syntax_error": frozenset(),  # universal-refuse rule covers every objective
     "already_applied": frozenset(
         {"wire-module-exports", "add-final", "freeze-dataclass"}),

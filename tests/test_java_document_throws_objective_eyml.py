@@ -596,8 +596,8 @@ def test_objective_spec_is_callable_and_flagged():
 def test_objective_total_is_seventy_nine():
     from app.engine.objective_compiler import available_objectives
 
-    # 79 after java-document-throws (the Java @throws Javadoc develop objective).
-    assert len(set(available_objectives())) == 79
+    # 80 after document-returns (the annotation-sourced return-section objective).
+    assert len(set(available_objectives())) == 80
 
 
 # --- PARITY ROW 1: move_value tier (the doc-surface 0.66 tier) ----------------
@@ -629,7 +629,7 @@ def test_parity_concrete_count_is_thirty_seven():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 37  # rose from 36 with java-document-throws
+    assert len(buckets["CONCRETE"]) == 38  # rose from 37 with document-returns
 
 
 # --- PARITY ROW 3: soundness-strategy manifest --------------------------------

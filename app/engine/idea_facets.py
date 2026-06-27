@@ -495,7 +495,23 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # already-annotated / generator / ambiguous function and a
                              # docstring that already states a return. Appended, so the
                              # originals still lead and emit first.
-                             "the documented return type to pin"],
+                             "the documented return type to pin",
+                             # added: a DOCUMENTED public Python function that DOES
+                             # carry an explicit `-> T` annotation whose docstring
+                             # records no return — the document-returns objective
+                             # splices a faithful return section into the existing
+                             # docstring rendering the DECLARED annotation `T`
+                             # VERBATIM, MATCHING the docstring's convention (Google
+                             # `Returns:` / Sphinx `:returns:`+`:rtype:` / the Google
+                             # default for plain prose). The annotation-sourced,
+                             # style-matching sibling of pin-return-type (which reads
+                             # the INFERRED oracle on an UN-annotated function);
+                             # mutually exclusive by the annotation predicate. Refuses
+                             # `-> None`/`NoReturn` (incl. aliases), a generator
+                             # return, an @overload/property setter, and a docstring
+                             # already recording a return in ANY convention. Appended
+                             # after its inferred-oracle sibling, so the originals lead.
+                             "the annotated return type to document"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
     "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown",
                         # added: the package's USAGE.md generated from its public
