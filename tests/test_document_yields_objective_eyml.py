@@ -238,6 +238,60 @@ def test_apply_preserves_crlf_one_line_expansion():
     assert "    Yields:\r\n" in out
 
 
+# --- content-on-close-line (dogfood P-class: mid-paragraph split) --------------
+# The iter_statement_blocks dogfood that CAUGHT this bug: a multi-line docstring whose
+# LAST body line is ``    text."""`` (content + closing quotes on the SAME line). The
+# ``Yields:`` section must land at the END of the body — before the quotes moved to
+# their own line — never spliced mid-paragraph (the shared splice_section_multiline fix).
+
+def test_apply_content_on_close_line_lands_after_body_not_mid_paragraph():
+    src = ('def f() -> Iterator[int]:\n'
+           '    """Head line.\n\n'
+           '    A paragraph whose final sentence ends with content and then\n'
+           '    the closing triple quotes right here."""\n'
+           '    yield 1\n')
+    orig_doc = ast.get_docstring(ast.parse(src).body[0])
+    out = document_yields(src)
+    assert out is not None
+    new_doc = ast.get_docstring(ast.parse(out).body[0])  # must re-parse
+    assert new_doc.startswith(orig_doc), (orig_doc, new_doc)
+    assert new_doc[len(orig_doc):] == "\n\nYields:\n    int"
+    lines = out.splitlines()
+    assert "    the closing triple quotes right here." in lines  # content intact
+    assert lines.index("    Yields:") > lines.index(
+        "    the closing triple quotes right here.")
+    assert lines[-2] == '    """'  # closing quotes moved to their own line
+
+
+def test_apply_content_on_close_line_preserves_crlf():
+    src = ('def f() -> Iterator[int]:\r\n    """Head.\r\n\r\n    body end here."""\r\n'
+           '    yield 1\r\n')
+    out = document_yields(src)
+    assert out is not None
+    assert "\n" not in out.replace("\r\n", "")
+    assert "    Yields:\r\n" in out
+    assert out.splitlines()[-2] == '    """'
+
+
+def test_apply_content_on_close_line_refuses_trailing_comment_and_concat():
+    cmt = ('def f() -> Iterator[int]:\n    """Head.\n\n    body end."""  # c\n'
+           '    yield 1\n')
+    assert ast.get_docstring(ast.parse(cmt).body[0]) is not None
+    assert document_yields(cmt) is None
+    concat = ('def f() -> Iterator[int]:\n    """one.""" \\\n'
+              '    """two ends here."""\n    yield 1\n')
+    assert ast.get_docstring(ast.parse(concat).body[0]) is not None
+    assert document_yields(concat) is None
+
+
+def test_apply_dedicated_close_line_stays_byte_identical():
+    src = ('def f() -> Iterator[int]:\n    """Head.\n\n    body.\n    """\n'
+           '    yield 1\n')
+    assert document_yields(src) == (
+        'def f() -> Iterator[int]:\n    """Head.\n\n    body.\n\n'
+        '    Yields:\n        int\n    """\n    yield 1\n')
+
+
 # --- @property getter generator, methods --------------------------------------
 
 def test_apply_documents_method_generator():

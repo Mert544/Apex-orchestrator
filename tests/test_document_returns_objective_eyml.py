@@ -353,6 +353,90 @@ def test_apply_preserves_crlf_one_line_expansion():
     assert "    Returns:\r\n" in out
 
 
+# --- content-on-close-line (dogfood P-class: mid-paragraph split) --------------
+# A multi-line docstring whose LAST body line is ``    text."""`` (content + the
+# closing quotes on the SAME line). The section must land at the END of the body —
+# before the quotes, now moved onto their own line — never spliced mid-paragraph
+# (the iter_statement_blocks dogfood: the old guard only checked the indent was
+# whitespace, so ``    text."""`` passed and the section landed BEFORE the content).
+
+def test_apply_content_on_close_line_lands_after_body_not_mid_paragraph():
+    src = ('def f() -> dict[str, int]:\n'
+           '    """Head line.\n\n'
+           '    A paragraph whose final sentence ends with content and then\n'
+           '    the closing triple quotes right here."""\n'
+           '    return {}\n')
+    orig_doc = ast.get_docstring(ast.parse(src).body[0])
+    out = document_returns(src)
+    assert out is not None
+    new_doc = ast.get_docstring(ast.parse(out).body[0])  # must re-parse
+    # the entire original body is preserved verbatim — only a section is GAINED
+    assert new_doc.startswith(orig_doc), (orig_doc, new_doc)
+    assert new_doc[len(orig_doc):] == "\n\nReturns:\n    dict[str, int]"
+    # the section is AFTER the body content, and the close quotes moved to own line
+    lines = out.splitlines()
+    assert "    the closing triple quotes right here." in lines  # content intact, no quotes
+    assert lines.index("    Returns:") > lines.index(
+        "    the closing triple quotes right here.")
+    assert lines[-2] == '    """'  # closing quotes now alone on their own line
+
+
+def test_apply_content_on_close_line_preserves_quote_style_and_raw_prefix():
+    # single-quote ''' style and a raw r''' prefix both carry through the split.
+    out_sq = document_returns(
+        "def f() -> int:\n    '''Head.\n\n    body ends here.'''\n    return 1\n")
+    assert out_sq is not None
+    assert out_sq.splitlines()[-2] == "    '''"  # close keeps the ''' style
+    assert ast.get_docstring(ast.parse(out_sq).body[0]) == \
+        "Head.\n\nbody ends here.\n\nReturns:\n    int"
+    out_raw = document_returns(
+        'def f() -> int:\n    r"""Head \\d.\n\n    body \\w end."""\n    return 1\n')
+    assert out_raw is not None
+    assert '    body \\w end.' in out_raw  # raw body line byte-identical (no unescape)
+    assert ast.get_docstring(ast.parse(out_raw).body[0]).startswith(
+        "Head \\d.\n\nbody \\w end.")
+
+
+def test_apply_content_on_close_line_preserves_crlf():
+    src = ('def f() -> int:\r\n    """Head.\r\n\r\n    body end here."""\r\n'
+           '    return 1\r\n')
+    out = document_returns(src)
+    assert out is not None
+    assert "\n" not in out.replace("\r\n", "")  # no bare LF leaked in
+    assert "    Returns:\r\n" in out
+    assert out.splitlines()[-2] == '    """'
+
+
+def test_apply_content_on_close_line_refuses_trailing_comment():
+    # bytes after the closing quotes are NOT just a line terminator -> refuse (a split
+    # would strand the ``# c`` comment, corrupting the line).
+    src = ('def f() -> int:\n    """Head.\n\n    body end."""  # c\n    return 1\n')
+    assert ast.get_docstring(ast.parse(src).body[0]) is not None  # IS a docstring
+    assert document_returns(src) is None
+
+
+def test_apply_content_on_close_line_refuses_implicit_concatenation():
+    # an implicitly-concatenated docstring (the closing quotes terminate only the LAST
+    # part) cannot be split without orphaning the earlier part -> refuse both spellings.
+    parens = ('def f() -> int:\n    ("""part one.\n\n'
+              '    still one."""\n    """part two ends here.""")\n    return 1\n')
+    assert ast.get_docstring(ast.parse(parens).body[0]) is not None
+    assert document_returns(parens) is None
+    backslash = ('def f() -> int:\n    """part one.""" \\\n'
+                 '    """part two ends here."""\n    return 1\n')
+    assert ast.get_docstring(ast.parse(backslash).body[0]) is not None
+    assert document_returns(backslash) is None
+
+
+def test_apply_dedicated_close_line_stays_byte_identical():
+    # the closing """ alone on its own line — UNCHANGED behaviour (this is a fix, not a
+    # rewrite): the section is inserted BEFORE that line, byte-for-byte as before.
+    src = 'def f() -> int:\n    """Head.\n\n    body.\n    """\n    return 1\n'
+    assert document_returns(src) == (
+        'def f() -> int:\n    """Head.\n\n    body.\n\n'
+        '    Returns:\n        int\n    """\n    return 1\n')
+
+
 # --- the FULL refuse set on the transform (the denetçi corpus) ----------------
 
 def test_transform_refuses_every_no_value_and_generator_return():

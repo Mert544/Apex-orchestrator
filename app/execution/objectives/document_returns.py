@@ -69,7 +69,9 @@ NOT ``expensive`` (a pure-AST scan). Stdlib-only, zero-token, offline.
 from __future__ import annotations
 
 import ast
+import io
 import re
+import tokenize
 from collections.abc import Callable
 from pathlib import Path
 
@@ -281,25 +283,100 @@ def _line_ending(line: str) -> str:
 # by every family member (no copy-paste — keeps the grade de-dup detector quiet).
 
 
+def _is_single_string_literal(literal_src: str) -> bool:
+    """True when ``literal_src`` (the SOURCE TEXT of a string literal, possibly spanning
+    lines) is ONE string token — NOT an implicit concatenation (``\"a\" \"b\"`` /
+    ``\"a\"\\\n\"b\"`` / ``(\"a\"\n\"b\")``), which the AST folds into a single
+    ``Constant`` but which is UNSAFE to split (its closing quotes terminate only the LAST
+    part; moving them would orphan the earlier part's text into the docstring body).
+
+    Counts ``STRING`` tokens by tokenising the literal in isolation: exactly one is a
+    plain single literal (safe to split); two or more is concatenation (refuse). A
+    tokeniser error (a shape too exotic to lex on its own) is treated as NOT single — the
+    conservative answer. f-strings (``FSTRING_START``) are never docstrings, but any
+    non-``STRING`` lead token also fails the ``== 1`` count, so they refuse too."""
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(literal_src).readline))
+    except (tokenize.TokenError, SyntaxError, ValueError):
+        return False
+    return sum(1 for t in toks if t.type == tokenize.STRING) == 1
+
+
+def _multiline_literal_source(const: ast.Constant, rows: list[str]) -> str | None:
+    """The exact SOURCE TEXT of ``const``'s multi-line string literal — from its opening
+    ``col_offset`` on the first row to its ``end_col_offset`` on the last — or ``None``
+    when the spanned rows are out of range.
+
+    BYTE-AWARE on the two boundary rows (``col_offset`` / ``end_col_offset`` are UTF-8
+    BYTE offsets, not str indices): the first row is sliced from ``col_offset`` in BYTE
+    space and the last row to ``end_col_offset``; interior rows are taken whole. The
+    span used by :func:`_is_single_string_literal` to refuse an implicit concatenation."""
+    start = (const.lineno or 0) - 1
+    stop = (const.end_lineno or 0) - 1
+    if start < 0 or stop >= len(rows) or start > stop:
+        return None
+    col, end_col = const.col_offset, const.end_col_offset or 0
+    if start == stop:
+        return rows[start].encode("utf-8")[col:end_col].decode("utf-8")
+    first = rows[start].encode("utf-8")[col:].decode("utf-8")
+    last = rows[stop].encode("utf-8")[:end_col].decode("utf-8")
+    return "".join([first, *rows[start + 1:stop], last])
+
+
 def splice_section_multiline(
     const: ast.Constant, rows: list[str], section_fn: Callable[[str, str], list[str]],
 ) -> tuple[int, int, list[str]] | None:
     """A ``(start, stop, replacement_rows)`` splice that inserts ``section_fn``'s lines
-    BEFORE a MULTI-LINE docstring's closing-quote line, or ``None`` to refuse.
+    at the END of a MULTI-LINE docstring's BODY — immediately before its closing quotes
+    — or ``None`` to refuse.
 
-    The new lines land at the 0-based closing-quote index (``end_lineno - 1``) at that
-    line's leading whitespace, using the file's own line terminator. Refuses when the
-    closing-quote indent is not pure whitespace (a corruptible header-shared shape).
-    The SHARED multi-line splice every doc-family ADD objective (return / param / …)
-    reuses, differing only in the ``section_fn`` they pass."""
+    Two close-line shapes, both landing the section AFTER all body content:
+
+    * DEDICATED CLOSE LINE (the closing ``\"\"\"`` sits alone on its own line, just
+      ``<indent><quotes>``): the section lines are inserted BEFORE that line, BYTE-
+      IDENTICAL to the original behaviour. ``start == stop == close_idx``.
+    * CONTENT ON THE CLOSE LINE (the last body line is ``<indent><body text>\"\"\"`` —
+      content followed by the closing quotes on the SAME line): the close line is SPLIT
+      so the section never lands mid-paragraph. The body content stays on its line, the
+      section lines follow, then the closing quotes move to their OWN new line
+      (``<indent><quotes>``). The body text is preserved byte-for-byte (it only gains the
+      section + a newline before the close); the indent, the file's line terminator, and
+      the literal's own quote style (its last three source chars) are all carried through.
+
+    Refuses (returns ``None``): a closing-quote indent that is not pure whitespace (a
+    corruptible header-shared shape); and — for the content-on-close-line split only — a
+    close line carrying anything after the quotes (a trailing comment / a closing paren,
+    i.e. the bytes after the quotes are not just a line terminator) or an IMPLICITLY
+    CONCATENATED literal (:func:`_is_single_string_literal`), either of which cannot be
+    split without corrupting the docstring. The SHARED multi-line splice every doc-family
+    ADD objective (return / param / …) reuses, differing only in the ``section_fn``."""
     close_idx = (const.end_lineno or 0) - 1
     if close_idx < 0 or close_idx >= len(rows):
         return None
-    indent = _get_indent(rows[close_idx])
+    close_line = rows[close_idx]
+    indent = _get_indent(close_line)
     if not indent.isspace():
         return None
-    le = _line_ending(rows[close_idx])
-    return close_idx, close_idx, section_fn(indent, le)
+    le = _line_ending(close_line)
+    raw = close_line.encode("utf-8")
+    end_col = const.end_col_offset or 0
+    head_text = raw[: max(end_col - 3, 0)].decode("utf-8")
+    # The closing ``\"\"\"`` sits on its OWN line: ``head_text`` is just the indent. Keep
+    # the original insert-before-the-close-line splice, byte-identical to today.
+    if head_text == indent:
+        return close_idx, close_idx, section_fn(indent, le)
+    # Otherwise the close line is ``<indent><body content>\"\"\"`` — split it so the
+    # section lands at the END of the body, before the quotes moved onto their own line.
+    quote = raw[max(end_col - 3, 0):end_col].decode("utf-8")
+    if quote not in ('"""', "'''"):
+        return None
+    if raw[end_col:].decode("utf-8") != le:
+        return None  # a trailing comment / closing paren after the quotes -> refuse
+    literal_src = _multiline_literal_source(const, rows)
+    if literal_src is None or not _is_single_string_literal(literal_src):
+        return None  # implicitly-concatenated literal -> unsafe to split -> refuse
+    rebuilt = [f"{head_text}{le}", *section_fn(indent, le), f"{indent}{quote}{le}"]
+    return close_idx, close_idx + 1, rebuilt
 
 
 def splice_section_oneline(

@@ -273,6 +273,57 @@ def test_apply_preserves_crlf_one_line_expansion():
     assert "    Attributes:\r\n" in out
 
 
+# --- content-on-close-line (dogfood P-class: mid-paragraph split) --------------
+# The SHARED splice_section_multiline fix, on the CLASS family: a multi-line class
+# docstring whose LAST body line is ``    text."""`` (content + closing quotes on the
+# SAME line) must take the ``Attributes:`` section at the END of the body — before the
+# quotes moved to their own line — never spliced mid-paragraph.
+
+def test_apply_content_on_close_line_lands_after_body_not_mid_paragraph():
+    src = ('class C:\n'
+           '    """Head line.\n\n'
+           '    A paragraph whose final sentence ends with content and then\n'
+           '    the closing triple quotes right here."""\n'
+           '    x: int\n    y: int\n')
+    orig_doc = ast.get_docstring(ast.parse(src).body[0])
+    out = document_attributes(src)
+    assert out is not None
+    new_doc = ast.get_docstring(ast.parse(out).body[0])  # must re-parse
+    assert new_doc.startswith(orig_doc), (orig_doc, new_doc)
+    assert new_doc[len(orig_doc):] == "\n\nAttributes:\n    x (int)\n    y (int)"
+    lines = out.splitlines()
+    assert "    the closing triple quotes right here." in lines  # content intact
+    assert lines.index("    Attributes:") > lines.index(
+        "    the closing triple quotes right here.")
+    assert lines[-3] == '    """'  # closing quotes moved to their own line (before x/y)
+
+
+def test_apply_content_on_close_line_preserves_crlf():
+    src = ('class C:\r\n    """Head.\r\n\r\n    body end here."""\r\n'
+           '    x: int\r\n')
+    out = document_attributes(src)
+    assert out is not None
+    assert "\n" not in out.replace("\r\n", "")
+    assert "    Attributes:\r\n" in out
+
+
+def test_apply_content_on_close_line_refuses_trailing_comment_and_concat():
+    cmt = ('class C:\n    """Head.\n\n    body end."""  # c\n    x: int\n')
+    assert ast.get_docstring(ast.parse(cmt).body[0]) is not None
+    assert document_attributes(cmt) is None
+    concat = ('class C:\n    """one.""" \\\n'
+              '    """two ends here."""\n    x: int\n')
+    assert ast.get_docstring(ast.parse(concat).body[0]) is not None
+    assert document_attributes(concat) is None
+
+
+def test_apply_dedicated_close_line_stays_byte_identical():
+    src = 'class C:\n    """Head.\n\n    body.\n    """\n    x: int\n'
+    assert document_attributes(src) == (
+        'class C:\n    """Head.\n\n    body.\n\n'
+        '    Attributes:\n        x (int)\n    """\n    x: int\n')
+
+
 # --- the unreadable-annotation drop / refuse ----------------------------------
 
 def test_apply_documents_only_readable_fields_when_some_unreadable(monkeypatch):
