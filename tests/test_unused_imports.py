@@ -7,6 +7,7 @@ import ast
 from app.execution.cross_file_rename import _py_files
 from app.execution.unused_imports import (
     _is_fixture_path,
+    _is_package_init,
     plan_remove_unused_imports,
 )
 
@@ -363,3 +364,88 @@ def test_is_fixture_path():
     assert _is_fixture_path("pkg/test_helper.py")
     assert _is_fixture_path("a/fixtures/b.py")
     assert not _is_fixture_path("app/execution/unused_imports.py")
+
+
+# ── package __init__.py: re-exports are NEVER pruned ────────────────────────
+#
+# The buyer-facing trap: a package ``__init__.py`` whose public API is a re-export
+# (``from .a import foo``) carrying NO module-level ``__all__``. The name is
+# imported but never USED locally, so a path-blind pruner reads it as dead and
+# drops the package's public export. A top-level import in ``__init__.py`` is a
+# presumptive re-export, so remove-unused-imports must REFUSE the whole file.
+
+def test_init_reexport_without_all_is_refused(tmp_path):
+    # from .a import foo, no __all__: foo is the package's public surface. Without
+    # the guard this import reads as "unused" and is pruned (the bug); with it the
+    # whole __init__.py is refused and the re-export survives.
+    _write(tmp_path, "pkg/__init__.py", "from .a import foo\n")
+    plan = plan_remove_unused_imports(tmp_path, "pkg/__init__.py")
+    assert not plan.ok          # honest no-op, not a failure
+    assert not plan.new_contents  # the re-export line is kept verbatim
+    assert not plan.blockers
+    assert not plan.edits_by_file
+
+
+def test_init_reexport_with_multiple_names_is_refused(tmp_path):
+    # A multi-name re-export with one locally-used and one purely-exported name is
+    # STILL refused wholesale — __init__.py is off-limits, never partially pruned.
+    _write(
+        tmp_path, "pkg/__init__.py",
+        "from .a import foo, bar\n"
+        "\n"
+        "value = foo()\n",  # foo used locally, bar only re-exported
+    )
+    plan = plan_remove_unused_imports(tmp_path, "pkg/__init__.py")
+    assert not plan.new_contents  # bar (the re-export) is not stripped
+
+
+def test_non_init_module_unused_import_still_pruned(tmp_path):
+    # Regression guard: a NON-__init__ module's genuinely-unused ``import os`` is
+    # STILL pruned — the guard must not over-refuse ordinary modules.
+    _write(
+        tmp_path, "pkg/feature.py",
+        "import os\n"
+        "\n"
+        "x = 1\n",
+    )
+    plan = plan_remove_unused_imports(tmp_path, "pkg/feature.py")
+    assert plan.ok
+    new = plan.new_contents["pkg/feature.py"]
+    assert "import os" not in new
+    assert "x = 1" in new
+    ast.parse(new)
+
+
+def test_init_with_explicit_all_still_works(tmp_path):
+    # Regression guard: an __init__.py WITH an explicit __all__ was already
+    # protected (the exported name is in the keep-set). The new path guard refuses
+    # the file outright before that even matters — either way the re-export
+    # survives and nothing is pruned. (A truly-dead import alongside it is the rare
+    # accepted false-negative — soundness over recall.)
+    _write(
+        tmp_path, "pkg/__init__.py",
+        "from .a import foo\n"
+        "import os\n"           # genuinely unused, but __init__ is off-limits
+        "\n"
+        "__all__ = ['foo']\n",
+    )
+    plan = plan_remove_unused_imports(tmp_path, "pkg/__init__.py")
+    assert not plan.new_contents  # exported foo kept; os left alone (init refused)
+    assert not plan.blockers
+
+
+def test_dunder_init_in_subpackage_is_refused(tmp_path):
+    # The guard keys on the basename, so a nested package __init__ is refused too.
+    _write(tmp_path, "pkg/sub/__init__.py", "from .impl import api\n")
+    plan = plan_remove_unused_imports(tmp_path, "pkg/sub/__init__.py")
+    assert not plan.new_contents
+
+
+def test_is_package_init():
+    assert _is_package_init("pkg/__init__.py")
+    assert _is_package_init("a/b/c/__init__.py")
+    assert _is_package_init("__init__.py")
+    assert _is_package_init("pkg\\__init__.py")  # windows separator normalized
+    assert not _is_package_init("pkg/module.py")
+    assert not _is_package_init("pkg/__main__.py")
+    assert not _is_package_init("not_init.py")

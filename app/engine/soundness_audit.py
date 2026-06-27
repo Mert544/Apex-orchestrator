@@ -371,6 +371,15 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     "external_subclasser": frozenset({"add-final", "seal-final-method"}),
     "star_consumer": frozenset({"wire-module-exports"}),
     "relative_star_consumer": frozenset({"wire-module-exports"}),
+    # The re-export trap a buyer-facing pilot caught: a package ``__init__.py``
+    # that does ``from .mod import public_fn`` (a public re-export) with NO
+    # module-level ``__all__`` to mark the name as kept. The name is imported but
+    # never USED locally, so a path-blind pruner reads it as dead and DROPS the
+    # package's public export — and a suite that imports the submodule directly
+    # stays green, so the move ships ``weak (uncovered)`` and lands on a broad
+    # sweep. remove-unused-imports MUST refuse every ``__init__.py`` (a top-level
+    # import there is a presumptive re-export), never shrink the public surface.
+    "init_reexport": frozenset({"remove-unused-imports"}),
     "env_fragile_return": frozenset({"strengthen-tests", "cover-gaps"}),
     "walrus_binder": frozenset({"wire-module-exports"}),
     "unpack_decorator": frozenset({"freeze-dataclass", "add-dataclass-order"}),

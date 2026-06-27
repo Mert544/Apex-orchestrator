@@ -150,6 +150,7 @@ def test_corpus_present():
         "shebang_coding", "external_subclasser", "star_consumer",
         "relative_star_consumer", "env_fragile_return", "walrus_binder",
         "unpack_decorator", "provenance_trap", "syntax_error", "already_applied",
+        "init_reexport",
     } <= set(shapes)
 
 
@@ -167,6 +168,13 @@ def test_wire_module_exports_refuses_star_consumer():
 
 def test_wire_module_exports_refuses_relative_star_consumer():
     assert _verdict("wire-module-exports", "relative_star_consumer") == "refused"
+
+
+def test_remove_unused_imports_refuses_init_reexport():
+    # The buyer-facing trap: a package __init__.py whose public re-export carries
+    # no __all__. remove-unused-imports must refuse the whole file, never prune the
+    # re-export that IS the package's public surface.
+    assert _verdict("remove-unused-imports", "init_reexport") == "refused"
 
 
 def test_wire_module_exports_refuses_walrus_binder():

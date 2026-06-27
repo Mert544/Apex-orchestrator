@@ -18,6 +18,9 @@ module other than the import statement itself — plus any name listed as a stri
 in a module-level ``__all__`` (treated as used, conservatively).
 
 Conservative by design — any ambiguity is left alone, never guessed:
+  - a package ``__init__.py`` is REFUSED outright (a top-level import there is a
+    presumptive public re-export, so dropping it can shrink the package's public
+    API — see :func:`_is_package_init`);
   - only TOP-LEVEL (module body) imports are considered;
   - ``from __future__ import ...`` is never touched;
   - a star import (``from x import *``) makes the whole module a no-op — names
@@ -55,6 +58,21 @@ def _is_fixture_path(path: str) -> bool:
         or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
         or Path(p).name.startswith("test_")
     )
+
+
+def _is_package_init(path: str) -> bool:
+    """Is ``path`` a package ``__init__.py``? A top-level import there is
+    presumptively a public RE-EXPORT (the standard package-init convention:
+    ``from .submod import Foo`` surfaces ``Foo`` as the package's public name),
+    so it reads as "imported, never used locally" yet IS the public API. Pruning
+    it would silently drop the package's exports — a buyer-facing pilot caught
+    exactly this on an ``__init__.py`` whose re-exports carried NO module-level
+    ``__all__`` (so the ``__all__`` keep-set could not protect them) while the
+    suite stayed green (it imported the submodules directly). Refusing every
+    ``__init__.py`` (matching ruff's lenient ``__init__.py`` default and this
+    module's soundness-over-recall posture) trades a rare unused-import false
+    negative there for never dropping a real re-export."""
+    return Path(path.replace("\\", "/")).name == "__init__.py"
 
 
 def _bound_name(alias: ast.alias) -> str:
@@ -285,6 +303,8 @@ def plan_remove_unused_imports(project_root: str | Path,
     are dropped; an empty plan means nothing was unused (a no-op, not a
     failure)."""
     plan = RenamePlan(old=module_rel, new="remove-unused-imports")
+    if _is_package_init(module_rel):
+        return plan  # public re-export surface — never prune a package __init__.py
     source = _read_module_source(plan, project_root, module_rel)
     if source is None:
         return plan
