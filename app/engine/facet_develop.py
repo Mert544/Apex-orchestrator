@@ -400,6 +400,49 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # document" above ("parameter" vs "return") — so its order is free.
     "the parameter types to document": "document-param",
 
+    # DOCUMENTED Python CLASS whose CLASS-LEVEL ATTRIBUTES are undocumented: the
+    # "signatures and types" lens also names a PUBLIC class that HAS a docstring and at
+    # least one class-body annotated field (``ast.AnnAssign``) but whose docstring
+    # records no attributes. The document-attributes objective LANDS exactly that — it
+    # splices a faithful ``Attributes:`` section into the existing docstring listing one
+    # ``name (TYPE)`` line per class-level annotated field, the type read VERBATIM off
+    # ``field.annotation`` (``ast.unparse``), MATCHING the docstring's convention (a
+    # Google ``Attributes:`` block, or a Sphinx ``:ivar:``/``:vartype:`` field list). It
+    # is the CLASS-attribute sibling of document-returns (``Returns:``) and selects only
+    # ``ast.ClassDef`` nodes, so it never collides with the function-scoped doc
+    # objectives. It REFUSES an undocumented class (document-signature's lane), a class
+    # with NO class-level annotated field (an instance-only ``self.x`` class would be
+    # inference — out of scope), a class whose every annotated field is unreadable, and a
+    # docstring that already records its attributes in ANY convention — including the
+    # PARTIAL case (some documented, not all), which refuses WHOLE rather than merging
+    # into a half-filled block. An ``Attributes:`` section is docstring TEXT (zero
+    # runtime bytes), so it is behaviour-identical by construction. Its phrasing is not a
+    # substring of any other key (nor any of them of it) — in particular it is distinct
+    # from "the parameter types to document" above ("class attributes" vs "parameter
+    # types") — so its order is free.
+    "the class attributes to document": "document-attributes",
+
+    # DOCUMENTED Python GENERATOR whose YIELDED element type is undocumented: the
+    # "signatures and types" lens also names a PUBLIC generator (a ``yield`` / ``yield
+    # from`` in its OWN scope) that HAS a docstring AND a subscripted iterator/generator
+    # return annotation (``-> Iterator[T]`` / ``Generator[Y, S, R]`` / async variants,
+    # and their ``typing.``/``collections.abc.``/alias spellings) but whose docstring
+    # records no yield. The document-yields objective LANDS exactly that — it splices a
+    # faithful ``Yields:`` section into the existing docstring rendering the ELEMENT type
+    # (the first subscript arg) VERBATIM (``ast.unparse``), MATCHING the docstring's
+    # convention (a Google ``Yields:`` section, a Sphinx ``:yields:``/``:ytype:`` field,
+    # or the Google default). It is the GENERATOR sibling of document-returns and fires
+    # exactly where document-returns REFUSES (its ``_GENERATOR_RETURNS`` refuse-head set):
+    # the two are mutually exclusive on a generator, which gets a ``Yields:`` and never a
+    # ``Returns:``. It REFUSES a non-generator (no own-scope ``yield``), a non-iterator /
+    # missing / bare-unsubscripted annotation, an undocumented function, and a docstring
+    # that already records a yield in ANY convention. A ``Yields:`` section is docstring
+    # TEXT (zero runtime bytes), so it is behaviour-identical by construction. Its
+    # phrasing is not a substring of any other key (nor any of them of it) — in
+    # particular it is distinct from "the annotated return type to document"
+    # ("yielded type" vs "annotated return type") — so its order is free.
+    "the yielded type to document": "document-yields",
+
     # Undocumented EXPORTED JS/TS signature: the JS/TS sibling of the above. The
     # document-export-jsdoc objective LANDS a minimal JSDoc on an exported
     # function/const-arrow that carries NO leading JSDoc — one ``@param <name>``

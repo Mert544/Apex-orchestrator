@@ -416,31 +416,36 @@ def still_all_documented(tree: ast.AST) -> bool:
 def apply_section_edits(
     source: str,
     target_fn: Callable[
-        [ast.FunctionDef | ast.AsyncFunctionDef, list[str], ast.Module],
+        [ast.AST, list[str], ast.Module],
         "tuple[int, int, list[str]] | None"],
+    node_types: tuple[type, ...] = _DEF,
+    still_valid: Callable[[ast.AST], bool] = still_all_documented,
 ) -> str | None:
-    """Return ``source`` with ``target_fn``'s per-function ``(start, stop, rows)``
-    splices applied bottom-up, or ``None`` when nothing qualifies / the source does not
-    parse / a splice would break the docstring invariant.
+    """Return ``source`` with ``target_fn``'s per-node ``(start, stop, rows)`` splices
+    applied bottom-up, or ``None`` when nothing qualifies / the source does not parse /
+    a splice would break the docstring invariant.
 
-    ``target_fn(fn, rows, tree)`` is asked for each function in source order (it gets the
-    module ``tree`` too, for any module-level context such as import aliases) and returns
-    a splice or ``None`` to refuse that function. Edits are applied descending-start so
-    earlier line offsets stay valid. Self-validating: the result must RE-PARSE and every
-    touched function must still open with its docstring Constant
-    (:func:`still_all_documented`), and must differ from ``source`` — else ``None``. The
-    SHARED driver every doc-family ADD objective reuses (no copy-paste); deterministic
-    (source order, no clock/random)."""
+    ``target_fn(node, rows, tree)`` is asked for each ``node_types`` node in source order
+    (it gets the module ``tree`` too, for any module-level context such as import
+    aliases) and returns a splice or ``None`` to refuse that node. Edits are applied
+    descending-start so earlier line offsets stay valid. Self-validating: the result must
+    RE-PARSE and pass ``still_valid`` (every touched node still opens with its docstring
+    Constant), and must differ from ``source`` — else ``None``. The SHARED driver every
+    doc-family ADD objective reuses (no copy-paste); ``node_types`` / ``still_valid``
+    default to the FUNCTION family (:data:`_DEF` + :func:`still_all_documented`, so
+    document-returns / document-param are byte-identical) and are OVERRIDDEN by the CLASS
+    family (document-attributes walks ``ast.ClassDef`` and validates classes).
+    Deterministic (source order, no clock/random)."""
     old_tree = _safe_parse(source)
     if old_tree is None:
         return None
 
     rows = source.splitlines(keepends=True)
-    defs = sorted(
-        (n for n in ast.walk(old_tree) if isinstance(n, _DEF)),
+    nodes = sorted(
+        (n for n in ast.walk(old_tree) if isinstance(n, node_types)),
         key=lambda n: (n.lineno, n.col_offset),
     )
-    edits = [e for n in defs if (e := target_fn(n, rows, old_tree))]
+    edits = [e for n in nodes if (e := target_fn(n, rows, old_tree))]
     if not edits:
         return None
 
@@ -451,7 +456,7 @@ def apply_section_edits(
     new_tree = _safe_parse(landed)
     if new_tree is None:
         return None
-    if not still_all_documented(new_tree) or landed == source:
+    if not still_valid(new_tree) or landed == source:
         return None
     return landed
 

@@ -67,6 +67,8 @@ OPERATOR_VALUE: dict[str, float] = {
     "document_export_jsdoc": 0.68,   # the JS/TS sibling: a JSDoc with a proven @returns {T} (same tier as document_signature)
     "js_document_param_types": 0.68,  # the missing half of document_export_jsdoc: a JSDoc with @param {T} from declared param types (same tier)
     "document_param": 0.68,          # the Python mirror of js_document_param_types: an Args: section with name (T): lines from declared param annotations verbatim (same doc-surface cluster tier)
+    "document_attributes": 0.68,     # the CLASS-ATTRIBUTE sibling of document_returns: an Attributes: section with name (T) lines from class-level AnnAssign annotations verbatim (same doc-surface existing-docstring-splice tier)
+    "document_yields": 0.68,         # the GENERATOR sibling of document_returns: a Yields: section rendering the element type of a subscripted iterator/generator return verbatim, fired where document_returns refuses (same doc-surface tier)
     "document_raises_jsdoc": 0.68,   # JSDoc @throws set from proven throw-new-Identifier (the failure-contract sibling of document_export_jsdoc / js_document_param_types)
     "pin_return_type": 0.66,         # one Returns: <T> line spliced into an EXISTING docstring from the proven return oracle (a doc-surface line, not a minted docstring — generate_usage_doc's tier, below the docstring-MINTING document_signature/document_raises)
     "document_returns": 0.66,        # a :returns:/Returns: section spliced into an EXISTING docstring from the DECLARED return annotation verbatim (the annotation-sourced, style-matching sibling of pin_return_type; same doc-surface existing-docstring-splice tier)

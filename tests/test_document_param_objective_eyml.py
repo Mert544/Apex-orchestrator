@@ -621,13 +621,13 @@ def test_north_star_and_soundness_audits_pass():
     assert snd["violations"] == []
 
 
-def test_counts_are_thirty_nine_concrete_of_eighty_one():
+def test_counts_are_forty_one_concrete_of_eighty_three():
     from app.engine.north_star_audit import classify_objectives
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 81  # 81 after document-param (39th concrete)
-    assert len(classify_objectives(names)["CONCRETE"]) == 39
+    assert len(names) == 83  # 83 after document-attributes (40th) + document-yields (41st)
+    assert len(classify_objectives(names)["CONCRETE"]) == 41
 
 
 # --- the soundness-corpus refusals (the must-refuse shapes) -------------------

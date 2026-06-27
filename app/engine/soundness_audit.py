@@ -126,6 +126,8 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "document-raises": "behavior-identical-docstring-only+raises-from-literal-raise-Name-verbatim+escape-only(stop-at-nested-scope,try-with-except-refuses)",
     "document-returns": "behavior-identical-docstring-only+returns-from-declared-annotation-verbatim+refuse-None/NoReturn/generator/overload/setter/already-documented",
     "document-param": "behavior-identical-docstring-only+args-from-declared-annotation-verbatim+refuse-no-declared-param-type/already-documented(incl-partial)/overload/setter/unreadable-collector",
+    "document-attributes": "behavior-identical-docstring-only+attributes-from-class-level-annotation-verbatim+refuse-no-annotated-field/instance-only-self-assign/already-documented(incl-partial)/all-unreadable",
+    "document-yields": "behavior-identical-docstring-only+yields-element-from-subscripted-iterator-generator-annotation-verbatim+refuse-non-generator/no-recognised-annotation/bare-unsubscripted/already-documented",
     "pin-return-type": "behavior-identical-docstring-only+returns-from-proven-return-oracle",
     "document-export-jsdoc": "jsdoc-leading-trivia-insert+reparse-identical-or-refuse(no-suite-needed)",
     "js-document-param-types": "jsdoc-leading-trivia-insert+declared-param-types-verbatim+reparse-identical-or-refuse(no-suite-needed)",
@@ -463,6 +465,24 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # document-returns / pin-return-type refuse them on the annotation/oracle gates.
     "params_already_documented": frozenset({"document-param"}),
     "partial_params_documented": frozenset({"document-param"}),
+    # The document-attributes double-doc trap: a PUBLIC, DOCUMENTED class with a
+    # class-level annotated field whose docstring ALREADY records its attributes —
+    # one shape per convention (a Google ``Attributes:`` header, a Sphinx ``:ivar:``
+    # field, a NumPy ``Attributes`` underline) AND a PARTIAL shape (a half-filled
+    # ``Attributes:`` block naming only one of two fields). document-attributes MUST
+    # refuse every one — appending a second ``Attributes:`` section (or merging into a
+    # half-filled one) would be a redundant / corrupting double-doc its re-parse floor
+    # cannot catch (a docstring changes no runtime value).
+    "attributes_already_documented": frozenset({"document-attributes"}),
+    # The document-yields double-doc trap: a PUBLIC, DOCUMENTED generator (a ``yield``
+    # in its own scope) carrying a subscripted iterator/generator return whose docstring
+    # ALREADY records its yield — one shape per convention (a Google ``Yields:`` header,
+    # a Sphinx ``:ytype:`` field). document-yields MUST refuse every one — appending a
+    # second ``Yields:`` section would be a redundant double-doc its re-parse floor
+    # cannot catch. document-returns refuses these too BY CONSTRUCTION (each carries an
+    # iterator/generator return, in its ``_GENERATOR_RETURNS`` refuse-head set — a
+    # generator never gets a ``Returns:``), so the fixture also pins the boundary.
+    "yields_already_documented": frozenset({"document-yields"}),
     "syntax_error": frozenset(),  # universal-refuse rule covers every objective
     "already_applied": frozenset(
         {"wire-module-exports", "add-final", "freeze-dataclass"}),

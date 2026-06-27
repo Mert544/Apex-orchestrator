@@ -529,7 +529,40 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # docstring already recording params in ANY convention
                              # (incl. the PARTIAL case — refuses whole). Appended after
                              # its return sibling, so the originals lead.
-                             "the parameter types to document"],
+                             "the parameter types to document",
+                             # added: a DOCUMENTED public Python CLASS with at least one
+                             # class-level annotated field (`ast.AnnAssign`) whose
+                             # docstring records no attributes — the document-attributes
+                             # objective splices a faithful `Attributes:` section into
+                             # the existing docstring, one `name (TYPE)` line per
+                             # class-level annotated field, the type read VERBATIM off
+                             # `field.annotation`, MATCHING the docstring's convention
+                             # (Google `Attributes:` / Sphinx `:ivar:`+`:vartype:` / the
+                             # Google default). The CLASS-attribute sibling of
+                             # document-returns; selects only `ast.ClassDef`, so it never
+                             # collides with the function-scoped doc objectives. Refuses
+                             # an undocumented class, a class with no class-level
+                             # annotated field (instance-only `self.x` is inference, out
+                             # of scope), an all-unreadable class, and a docstring already
+                             # recording attributes in ANY convention (incl. the PARTIAL
+                             # case — refuses whole). Appended, so the originals lead.
+                             "the class attributes to document",
+                             # added: a DOCUMENTED public Python GENERATOR (a `yield` in
+                             # its own scope) carrying a subscripted iterator/generator
+                             # return annotation whose docstring records no yield — the
+                             # document-yields objective splices a faithful `Yields:`
+                             # section into the existing docstring rendering the ELEMENT
+                             # type (the first subscript arg) VERBATIM, MATCHING the
+                             # docstring's convention (Google `Yields:` / Sphinx
+                             # `:yields:`+`:ytype:` / the Google default). The GENERATOR
+                             # sibling of document-returns; fires exactly where
+                             # document-returns refuses (its `_GENERATOR_RETURNS`
+                             # refuse-head set), so a generator gets a `Yields:` and never
+                             # a `Returns:` (mutually exclusive). Refuses a non-generator,
+                             # a non-iterator / missing / bare-unsubscripted annotation,
+                             # an undocumented function, and a docstring already recording
+                             # a yield in ANY convention. Appended, so the originals lead.
+                             "the yielded type to document"],
     "pre and postconditions": ["required state before", "guaranteed state after", "invariants preserved"],
     "worked examples": ["minimal runnable example", "realistic scenario", "a common mistake shown",
                         # added: the package's USAGE.md generated from its public

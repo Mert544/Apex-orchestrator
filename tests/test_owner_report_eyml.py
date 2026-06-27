@@ -60,18 +60,18 @@ def test_owner_report_composes_real_apex_verdicts():
     report = _apex_report()
     # Headline: every underlying audit passes on Apex today, so the owner sees YES.
     assert report["trustworthy"] is True
-    # North Star: the real PASS verdict, no drift, the live 39/81 concrete split.
+    # North Star: the real PASS verdict, no drift, the live 41/83 concrete split.
     ns = report["north_star"]
     assert ns["verdict"] == "PASS"
     assert ns["drift"] is False
-    assert ns["total_objectives"] == 81
-    assert ns["concrete_count"] == 39
+    assert ns["total_objectives"] == 83
+    assert ns["concrete_count"] == 41
     assert 0.0 <= ns["ratio"] <= 1.0
-    # Soundness: PASS with all 81 objectives declaring a proof-strategy, plus the
+    # Soundness: PASS with all 83 objectives declaring a proof-strategy, plus the
     # single-gated-writer and scope_verify allow-list booleans.
     sound = report["soundness"]
     assert sound["verdict"] == "PASS"
-    assert sound["strategies"] == "81/81"
+    assert sound["strategies"] == "83/83"
     assert sound["single_writer"] is True
     assert sound["scope_verify_ok"] is True
     # Grade: the real letter + score.
@@ -80,7 +80,7 @@ def test_owner_report_composes_real_apex_verdicts():
 
 def test_owner_report_capabilities_summary():
     cap = _apex_report()["capabilities"]
-    assert cap["concrete_count"] == 39
+    assert cap["concrete_count"] == 41
     # Apex lands Python, Java, AND JS/TS concrete objectives, Python listed first,
     # then Java, then JavaScript/TypeScript (the stable display order).
     assert cap["languages"] == ["Python", "Java", "JavaScript/TypeScript"]

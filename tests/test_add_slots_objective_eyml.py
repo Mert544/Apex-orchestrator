@@ -778,10 +778,10 @@ def test_objective_registers_and_is_available():
 def test_objective_total_is_seventy_eight():
     from app.engine.objective_compiler import available_objectives
 
-    # 81 after document-param (the declared-parameter Args:-section objective)
-    # self-registered; this count pin is the tripwire each new objective round bumps
-    # by one.
-    assert len(set(available_objectives())) == 81
+    # 83 after document-attributes + document-yields (the class-attribute and
+    # generator-yield doc-splice objectives) self-registered; this count pin is the
+    # tripwire each new objective round bumps.
+    assert len(set(available_objectives())) == 83
 
 
 def test_objective_spec_is_callable():
@@ -828,7 +828,7 @@ def test_parity_concrete_count_is_thirty_six():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 39  # rose from 38 with document-param
+    assert len(buckets["CONCRETE"]) == 41  # rose from 39 with document-attributes + document-yields
 
 
 # --- PARITY ROW 3: soundness-strategy manifest ------------------------------

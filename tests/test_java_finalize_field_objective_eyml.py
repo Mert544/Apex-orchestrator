@@ -513,8 +513,9 @@ def test_objective_spec_is_callable_and_flagged():
 def test_objective_total_is_seventy_eight():
     from app.engine.objective_compiler import available_objectives
 
-    # 81 after document-param (the declared-parameter Args:-section objective).
-    assert len(set(available_objectives())) == 81
+    # 83 after document-attributes + document-yields (the class-attribute and
+    # generator-yield doc-splice objectives).
+    assert len(set(available_objectives())) == 83
 
 
 # --- PARITY ROW 1: move_value tier (matches add-final's runtime-noop tier) ----
@@ -547,7 +548,7 @@ def test_parity_concrete_count_is_thirty_six():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 39  # rose from 38 with document-param
+    assert len(buckets["CONCRETE"]) == 41  # rose from 39 with document-attributes + document-yields
 
 
 # --- PARITY ROW 3: soundness-strategy manifest --------------------------------
