@@ -283,6 +283,48 @@ def test_apply_refuses_header_shared_one_liner():
     assert document_returns('def f() -> int: """Doc."""\n') is None
 
 
+def test_apply_one_line_non_ascii_no_trailing_newline_no_stray_quote():
+    # denetçi P0: col_offset / end_col_offset are UTF-8 BYTE offsets. A one-line
+    # docstring with a non-ASCII char and NO trailing newline made the old str-index
+    # slice over-read by one per non-ASCII char, keeping a stray ``"`` in the rebuilt
+    # head (silent __doc__ corruption that still re-parsed). The body must round-trip
+    # EXACTLY, with a Returns section added.
+    src = 'def naive() -> bool:\n    """Naïve validation."""'  # final line, no \n
+    out = document_returns(src)
+    assert out is not None
+    tree = ast.parse(out)  # must re-parse
+    doc = ast.get_docstring(tree.body[0])
+    assert doc is not None
+    assert doc.startswith("Naïve validation.\n")  # NO stray trailing quote on body
+    assert '."' not in doc.splitlines()[0]  # the summary line is clean
+    assert "Returns:\n    bool" in doc
+
+
+def test_apply_one_line_multi_non_ascii_skew_greater_than_one():
+    # Two 2-byte chars (``é``×2) => a TWO-byte skew the old slice would show as ``""``.
+    src = 'def f() -> bool:\n    """Résumé."""'  # no trailing newline
+    out = document_returns(src)
+    assert out is not None
+    doc = ast.get_docstring(ast.parse(out).body[0])
+    assert doc.splitlines()[0] == "Résumé."  # exactly the original body, no stray quotes
+    assert "Returns:\n    bool" in doc
+
+
+def test_apply_one_line_non_ascii_with_trailing_newline_is_clean():
+    # The trailing-newline case the old code refused "by luck" (the over-read grabbed
+    # the \n so the quote check failed) must now LAND a CORRECT expansion.
+    src = 'def f() -> int:\n    """Naïve."""\n    return 1\n'
+    out = document_returns(src)
+    assert out is not None
+    assert out.splitlines()[1] == '    """Naïve.'  # opener kept verbatim, no stray quote
+    doc = ast.get_docstring(ast.parse(out).body[0])
+    assert doc.splitlines()[0] == "Naïve."
+    # A 4-byte astral char (emoji) round-trips too.
+    out2 = document_returns('def g() -> int:\n    """Counts 🎯 hits."""\n    return 1\n')
+    assert out2 is not None
+    assert ast.get_docstring(ast.parse(out2).body[0]).splitlines()[0] == "Counts 🎯 hits."
+
+
 # --- the apply path: @property getter, methods --------------------------------
 
 def test_apply_documents_property_getter():
@@ -431,6 +473,17 @@ def test_plan_refuses_test_file(tmp_path: Path):
         'def f() -> int:\n    """Compute."""\n    return 1\n', encoding="utf-8")
     plan = plan_document_returns(str(tmp_path), "test_mod.py")
     assert not plan.new_contents
+
+
+def test_plan_lands_non_ascii_one_liner_without_corruption(tmp_path: Path):
+    # The denetçi P0 lands via the plan layer too — a module-on-disk one-line
+    # non-ASCII docstring must expand with a byte-perfect body, no stray quote.
+    (tmp_path / "mod.py").write_text(
+        'def f() -> bool:\n    """Naïve check."""\n    return True\n', encoding="utf-8")
+    plan = plan_document_returns(str(tmp_path), "mod.py")
+    assert plan.new_contents
+    landed = plan.new_contents["mod.py"]
+    assert ast.get_docstring(ast.parse(landed).body[0]).splitlines()[0] == "Naïve check."
 
 
 # --- the FIVE-registry 1:1 parity + count pins --------------------------------

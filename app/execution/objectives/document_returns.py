@@ -315,15 +315,21 @@ def _oneline_edit(
     if not indent.isspace():
         return None
     le = _line_ending(line)
+    # ``col_offset`` / ``end_col_offset`` are UTF-8 BYTE offsets, NOT str indices —
+    # so the literal/head_text MUST be sliced in BYTE space. Indexing the ``str``
+    # ``line`` directly overshoots by one per non-ASCII char (e.g. ``Naïve`` -> a
+    # stray ``"`` kept in the rebuilt head), silently corrupting __doc__ while still
+    # re-parsing. Decoding from bytes restores "first rebuilt line is byte-identical
+    # save for losing its closing quotes" for ASCII and non-ASCII alike.
+    raw = line.encode("utf-8")
     col, end_col = const.col_offset, const.end_col_offset or 0
-    literal = line[col:end_col]
+    literal = raw[col:end_col].decode("utf-8")
     quote = literal[-3:]
     if quote not in ('"""', "'''") or len(literal) < 6:
         return None
     # The whole source up to (but excluding) the closing quote — the indent, any
-    # raw/byte prefix, the opening quote, and the one-line body — kept VERBATIM so
-    # the first rebuilt line is byte-identical save for losing its closing quote.
-    head_text = line[: end_col - 3]
+    # raw/byte prefix, the opening quote, and the one-line body — kept VERBATIM.
+    head_text = raw[: end_col - 3].decode("utf-8")
     section = _section_lines(convention, indent, type_text, le)
     rebuilt = [f"{head_text}{le}", *section, f"{indent}{quote}{le}"]
     return idx, idx + 1, rebuilt
