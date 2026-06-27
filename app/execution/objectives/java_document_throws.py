@@ -73,7 +73,7 @@ from app.execution.java.java_tool import (
     reparse_facts_identical,
 )
 from app.execution.lang.java_adapter import JAVA_SOURCE_SUFFIXES as _JAVA_SUFFIXES
-from app.execution.lang.java_adapter import _read, _walk_files, is_java_source
+from app.execution.lang.java_adapter import _walk_files, is_java_source
 
 __all__ = [
     "plan_java_document_throws",
@@ -82,6 +82,7 @@ __all__ = [
     "documentable_targets",
     "render_throws_javadoc",
     "splice_javadoc",
+    "dominant_eol",
 ]
 
 # The single-Java-project markers, reused verbatim from java-finalize-field: either a
@@ -94,6 +95,37 @@ def _is_java_project(root: Path) -> bool:
     """True when ``root`` carries a single-Java-project marker (``pom.xml`` or
     ``build.gradle``) — the single-project gate."""
     return any((root / marker).exists() for marker in _JAVA_PROJECT_MARKERS)
+
+
+def _read_unnormalized(path: Path) -> str:
+    """The target's UTF-8 text with line endings PRESERVED (NOT universal-newline
+    normalized), or ``""`` on an OS error.
+
+    CRITICAL for the splice offset to be valid: the driver reads RAW bytes
+    (``Files.readAllBytes``), so every ``insert_offset`` it reports from
+    ``SourcePositions`` counts each ``\\r`` of a CRLF file. The shared
+    :func:`app.execution.lang.java_adapter._read` normalizes CRLF -> LF (``read_text``
+    uses universal newlines), which would shift every offset left by the number of
+    ``\\r`` before the method and splice the Javadoc MID-SIGNATURE on a Windows-authored
+    file — a fact-neutral corruption the re-parse oracle cannot catch (a comment still
+    parses). Reading via ``read_bytes().decode`` keeps the splice in the SAME byte-space
+    as the driver's offsets, so the block lands at the right place AND the file's
+    original line endings survive byte-for-byte."""
+    try:
+        return path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def dominant_eol(source: str) -> str:
+    """The line ending the spliced Javadoc block should use: ``"\\r\\n"`` when ``source``
+    contains any CRLF, else ``"\\n"``.
+
+    Emitting the block with the file's own EOL keeps the documented file internally
+    consistent (no mixed endings) AND makes a second run a byte-identical no-op — the
+    driver re-parses the now-documented method, sees its Javadoc, and omits it, so the
+    plan is idempotent on CRLF and LF alike. Deterministic: a pure substring test."""
+    return "\r\n" if "\r\n" in source else "\n"
 
 
 def documentable_targets(root: Path, rel: str) -> list[JavaDocTarget]:
@@ -127,25 +159,27 @@ def _line_indent(source: str, offset: int) -> str:
     return "".join(indent_chars)
 
 
-def render_throws_javadoc(name: str, throws_types: tuple[str, ...], indent: str) -> str:
+def render_throws_javadoc(name: str, throws_types: tuple[str, ...], indent: str,
+                          eol: str = "\n") -> str:
     """The Javadoc block (a fact-only summary + one ``@throws <Type>`` line per declared
-    type) for a method at column ``indent``, ending with ``indent`` so the method keeps
-    its column.
+    type) for a method at column ``indent``, joined with ``eol`` and ending with
+    ``eol + indent`` so the method keeps its column AND the file's line ending.
 
     The block is ``/**`` / a ``<name>.`` summary line / a blank ``*`` separator / one
     ``* @throws <Type>`` line per declared throws-type (IN SOURCE ORDER, verbatim) /
     ``*/`` / the method's indentation. It splices at the method-START offset, where the
     method's own leading indentation is ALREADY in the source just before the offset —
     so the OPENING ``/**`` line carries NO indent (the existing indent precedes it); only
-    the continuation ``*`` lines and the trailing method re-indent carry ``indent``. NO
-    invented prose: the summary is the method name and the only contract lines are the
-    DECLARED throws types. Deterministic: source-order types, fixed layout, no
-    clock/random."""
+    the continuation ``*`` lines and the trailing method re-indent carry ``indent``. The
+    ``eol`` is the file's dominant line ending (``"\\r\\n"`` on a CRLF file), so the block
+    matches the surrounding source. NO invented prose: the summary is the method name and
+    the only contract lines are the DECLARED throws types. Deterministic: source-order
+    types, fixed layout, no clock/random."""
     lines = ["/**", f"{indent} * {name}.", f"{indent} *"]
     lines += [f"{indent} * @throws {t}" for t in throws_types]
     lines.append(f"{indent} */")
-    # Trailing newline + indent re-indents the method declaration that follows the block.
-    return "\n".join(lines) + "\n" + indent
+    # Trailing EOL + indent re-indents the method declaration that follows the block.
+    return eol.join(lines) + eol + indent
 
 
 def splice_javadoc(source: str, targets: list[JavaDocTarget]) -> str | None:
@@ -158,8 +192,15 @@ def splice_javadoc(source: str, targets: list[JavaDocTarget]) -> str | None:
     untouched; the only added bytes are the Javadoc block (rendered at the method's
     own indentation via :func:`render_throws_javadoc`), which alters ZERO declared
     structure. A target with no declared throws types would render an empty contract,
-    so such a (driver-impossible) target is skipped rather than emitting a bare block."""
+    so such a (driver-impossible) target is skipped rather than emitting a bare block.
+
+    ``source`` MUST be the UN-normalized file text (see :func:`_read_unnormalized`): the
+    ``insert_offset`` counts CRLF bytes exactly as the driver does, so a normalized
+    (CRLF -> LF) ``source`` would splice at a shifted, mid-signature offset. The block is
+    emitted with the file's :func:`dominant_eol` so a CRLF file stays CRLF and a second
+    run is a byte no-op."""
     new_source = source
+    eol = dominant_eol(source)
     for target in sorted(targets, key=lambda t: t.insert_offset, reverse=True):
         off = target.insert_offset
         if not 0 <= off <= len(new_source):
@@ -167,7 +208,7 @@ def splice_javadoc(source: str, targets: list[JavaDocTarget]) -> str | None:
         if not target.throws_types:
             continue  # nothing to document (the driver never emits this) — skip
         indent = _line_indent(new_source, off)
-        block = render_throws_javadoc(target.name, target.throws_types, indent)
+        block = render_throws_javadoc(target.name, target.throws_types, indent, eol)
         new_source = new_source[:off] + block + new_source[off:]
     return new_source if new_source != source else None
 
@@ -204,7 +245,10 @@ def plan_java_document_throws(project_root: str | Path, rel: str) -> RenamePlan:
     if not targets:
         return plan  # non-Java / test / nothing to document — honest no-op
     target_file = root / rel
-    original = _read(target_file)
+    # Read WITHOUT newline normalization so the splice operates in the SAME byte-space as
+    # the driver's CRLF-counting offsets (see _read_unnormalized) — never the shared
+    # `_read`, which would normalize CRLF -> LF and shift the offset mid-signature.
+    original = _read_unnormalized(target_file)
     if not original and not target_file.exists():
         return plan  # unreadable / missing target — no-op
     documented = splice_javadoc(original, targets)

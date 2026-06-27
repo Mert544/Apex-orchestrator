@@ -46,6 +46,7 @@ from app.execution.java.java_tool import (
 from app.execution.objectives.java_document_throws import (
     detect_doc_targets,
     documentable_targets,
+    dominant_eol,
     is_java_source,
     plan_java_document_throws,
     render_throws_javadoc,
@@ -80,6 +81,40 @@ _LOADER_JAVA = (
     "}\n"
 )
 
+# A CRLF (Windows-authored) source with a package+import HEADER before the throwing
+# method — the shape that reproduces the offset mismatch: the driver counts each `\r`,
+# so a normalized (LF) splice would land mid-signature (`void /**...*/ f()`). The fix
+# reads raw bytes so the offset is valid and emits the block with CRLF.
+_CRLF_HEADER_JAVA = (
+    "package com.x;\r\n"
+    "\r\n"
+    "import java.io.IOException;\r\n"
+    "\r\n"
+    "class Foo {\r\n"
+    "    int load(String p) throws IOException {\r\n"
+    "        throw new IOException(p);\r\n"
+    "    }\r\n"
+    "}\r\n"
+)
+
+# The WORST case the audit hit: a CRLF source whose header is a MULTI-LINE license/
+# copyright block comment (many `\r` before the method), maximising the offset drift.
+_CRLF_LICENSE_JAVA = (
+    "/*\r\n"
+    " * Copyright 2026 Example Corp.\r\n"
+    " * Licensed under the Apache License, Version 2.0.\r\n"
+    " */\r\n"
+    "package com.x;\r\n"
+    "\r\n"
+    "import java.io.IOException;\r\n"
+    "\r\n"
+    "class Svc {\r\n"
+    "    int load(String p) throws IOException {\r\n"
+    "        throw new IOException(p);\r\n"
+    "    }\r\n"
+    "}\r\n"
+)
+
 
 # --- environment guards (the heavy java path is opt-in by availability) -------
 
@@ -95,6 +130,14 @@ _needs_jdk = pytest.mark.skipif(not _jdk_ok(), reason="no JDK (java) on PATH")
 def _project(tmp_path: Path, rel: str, src: str) -> Path:
     (tmp_path / Path(rel).parent).mkdir(parents=True, exist_ok=True)
     (tmp_path / rel).write_text(src, encoding="utf-8")
+    return tmp_path
+
+
+def _project_bytes(tmp_path: Path, rel: str, src: str) -> Path:
+    """Write ``src`` as RAW bytes (no ``write_text`` newline translation), so a CRLF
+    source lands on disk byte-for-byte — the state a Windows-authored file is in."""
+    (tmp_path / Path(rel).parent).mkdir(parents=True, exist_ok=True)
+    (tmp_path / rel).write_bytes(src.encode("utf-8"))
     return tmp_path
 
 
@@ -182,6 +225,37 @@ def test_splice_javadoc_skips_target_with_no_throws_types():
     # A (driver-impossible) target with an empty throws list renders no contract, so it
     # is skipped rather than emitting a bare block -> a pure no-op -> None.
     assert splice_javadoc("void f() {}", [JavaDocTarget("f", (), 0)]) is None
+
+
+# --- CRLF EOL handling (pure — the P0 regression guard, no java) --------------
+
+def test_dominant_eol_detects_crlf_vs_lf():
+    assert dominant_eol("a\r\nb\r\n") == "\r\n"
+    assert dominant_eol("a\nb\n") == "\n"
+    assert dominant_eol("no newline at all") == "\n"  # default LF
+
+
+def test_render_throws_javadoc_uses_crlf_when_asked():
+    block = render_throws_javadoc("f", ("IOException",), "    ", "\r\n")
+    # every line break in the block is CRLF (no bare LF), and it ends with EOL + indent.
+    assert block == ("/**\r\n     * f.\r\n     *\r\n     * @throws IOException\r\n"
+                     "     */\r\n    ")
+    assert "\n" not in block.replace("\r\n", "")  # no LF-only line break leaked
+
+
+def test_splice_javadoc_on_crlf_source_lands_attached_with_crlf():
+    # THE P0 REGRESSION: the offset counts each `\r` (as the driver does), so the block
+    # must land ATTACHED before `void f` (NOT mid-signature) and use CRLF throughout.
+    # On the pre-fix code (which mixed a CRLF-space offset with an LF block) this lands
+    # `void /**...*/ f()` — mid-signature corruption.
+    src = "class Foo {\r\n    void f() throws E {\r\n    }\r\n}\r\n"
+    off = src.index("void f()")
+    out = splice_javadoc(src, [JavaDocTarget("f", ("E",), off)])
+    assert out is not None
+    # the method signature is intact and the block is attached immediately before it.
+    assert "    /**\r\n     * f.\r\n     *\r\n     * @throws E\r\n     */\r\n    void f() throws E" in out
+    assert "void f() throws E" in out  # signature NOT split by the comment
+    assert "\n" not in out.replace("\r\n", "")  # the whole file stays pure CRLF
 
 
 def test_plan_refuses_non_java_file_outright(tmp_path: Path):
@@ -303,6 +377,67 @@ def test_plan_lands_javadoc_on_eligible_file(tmp_path: Path):
     # the already-documented / no-throws methods are UNTOUCHED.
     assert "/** Reads the cache. */\n    int cached()" in out
     assert "    int pure() {" in out
+
+
+# --- CRLF (Windows-authored) end-to-end: the P0 the audit found ---------------
+
+@_needs_jdk
+def test_plan_lands_on_crlf_header_file_attached_and_idempotent(tmp_path: Path):
+    # THE P0: a CRLF file with a package+import header. The driver's offset counts each
+    # `\r`; reading raw bytes keeps the splice in that byte-space, so the Javadoc lands
+    # ATTACHED before `int load` (NOT mid-signature), the file stays pure CRLF, the
+    # fact-set is identical, and a 2nd run is a byte no-op. On the pre-fix code (which
+    # normalized CRLF -> LF before splicing) the block landed `int /**...*/ load(...)`.
+    from app.execution.java.java_tool import parse_facts
+
+    root = _with_gradle(tmp_path)
+    _project_bytes(root, "src/Foo.java", _CRLF_HEADER_JAVA)
+    before = parse_facts(root, "src/Foo.java")
+
+    plan = plan_java_document_throws(str(root), "src/Foo.java")
+    assert plan.ok
+    out = plan.new_contents["src/Foo.java"]
+    # the block lands attached, immediately before the (intact) method signature, in CRLF.
+    assert (
+        "    /**\r\n"
+        "     * load.\r\n"
+        "     *\r\n"
+        "     * @throws IOException\r\n"
+        "     */\r\n"
+        "    int load(String p) throws IOException {"
+    ) in out
+    assert "\n" not in out.replace("\r\n", "")  # the documented file stays pure CRLF
+    # the captured original is the RAW (CRLF) bytes, so rollback restores byte-for-byte.
+    assert plan.originals["src/Foo.java"] == _CRLF_HEADER_JAVA
+
+    # land it + prove the fact-set is unchanged (a comment is behaviour-identical).
+    (root / "src" / "Foo.java").write_bytes(out.encode("utf-8"))
+    assert parse_facts(root, "src/Foo.java") == before
+    # a SECOND run over the documented CRLF file is a byte-identical no-op (idempotent).
+    assert not plan_java_document_throws(str(root), "src/Foo.java").new_contents
+
+
+@_needs_jdk
+def test_plan_lands_on_crlf_multiline_license_header(tmp_path: Path):
+    # The worst case the audit hit: a CRLF file whose header is a MULTI-LINE license
+    # block comment (many `\r` before the method, maximising the drift). The block still
+    # lands attached, the license header survives, and the fact-set is identical.
+    from app.execution.java.java_tool import parse_facts
+
+    root = _with_gradle(tmp_path)
+    _project_bytes(root, "src/Svc.java", _CRLF_LICENSE_JAVA)
+    before = parse_facts(root, "src/Svc.java")
+
+    out = plan_java_document_throws(str(root), "src/Svc.java").new_contents["src/Svc.java"]
+    # the multi-line license header is preserved verbatim at the top.
+    assert out.startswith("/*\r\n * Copyright 2026 Example Corp.\r\n")
+    # the Javadoc lands attached to the (intact) method, not inside its signature.
+    assert "     */\r\n    int load(String p) throws IOException {" in out
+    assert "\n" not in out.replace("\r\n", "")  # stays pure CRLF
+
+    (root / "src" / "Svc.java").write_bytes(out.encode("utf-8"))
+    assert parse_facts(root, "src/Svc.java") == before
+    assert not plan_java_document_throws(str(root), "src/Svc.java").new_contents
 
 
 @_needs_jdk
