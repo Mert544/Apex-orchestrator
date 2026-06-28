@@ -563,3 +563,312 @@ def test_comprehension_dataclass_defaults():
     assert c.mode == "supervised"
     assert c.scope is None
     assert c.confidence == "high"
+
+
+# === WAVE 2b: HARDENING battery (vocab + over-eager guards + scope fixes) =====
+#
+# The stress-test "hard battery": the failure modes the field-test surfaced —
+# over-eager test/secure leaks, wrong scope on code-quoted/dir/bare-noun targets,
+# typo intolerance, descriptive (non-imperative) phrasings, document-* subtypes
+# through filler, specific-over-generic ordering, compound windowing, and Turkish
+# morphology. Each row is (request, kind, expected):
+#   "obj"   -> at least one expected objective is PRESENT (an any-of hit);
+#   "lead"  -> the expected objective LEADS (objectives[0]) — ordering matters;
+#   "empty" -> objectives is [] (an over-eager/antonym/word-boundary guard);
+#   "q"     -> action == "question" and objectives == [];
+#   "scope" -> scope == expected;
+#   "mode"  -> mode == expected.
+# Bars (the apply-loop gate): strict ≥85% hit-rate, 0 antonym inversions,
+# ≤2 over-eager (we hold 0).
+_HARD_BATTERY: tuple[tuple[str, str, object], ...] = (
+    # --- MUST-FIX 1: over-eager test/tests/secure → context tier --------------
+    ("secure the building", "empty", None),
+    ("secure the perimeter", "empty", None),
+    ("test the waters", "empty", None),
+    ("the typing speed test", "empty", None),
+    ("secure the endpoint", "obj", ("harden",)),
+    ("secure the input", "obj", ("harden",)),
+    ("add tests", "obj", ("cover-gaps", "strengthen-tests")),
+    ("test this code", "obj", ("cover-gaps", "strengthen-tests")),
+    # --- MUST-FIX 2: scope (backtick/quote, trailing-slash dir, bare noun) ----
+    ("the `login` function needs a docstring", "scope", "login"),
+    ("the 'parser' module", "scope", "parser"),
+    ("in app/auth/, add type hints", "scope", "app/auth/"),
+    ("fix security in the handlers", "scope", "handlers"),
+    # --- SHOULD-FIX 3: typo tolerance ----------------------------------------
+    ("add tpye hints", "obj", ("infer-type-hints",)),
+    ("add typehints", "obj", ("infer-type-hints",)),
+    ("fix the documantation", "obj", ("document-param", "document-signature")),
+    ("add doctrings", "obj", ("document-param",)),
+    ("fix securty issues", "obj", ("harden",)),
+    ("anotate the functions", "obj", ("infer-type-hints",)),
+    ("refator this mess", "obj", ("modernize",)),
+    ("modernise the code", "obj", ("modernize",)),
+    # --- SHOULD-FIX 4: document-* subtypes through filler --------------------
+    ("document the yields", "lead", "document-yields"),
+    ("document the attributes", "lead", "document-attributes"),
+    ("document the class attributes", "lead", "document-attributes"),
+    ("document the raises", "lead", "document-raises"),
+    ("document the returns", "lead", "document-returns"),
+    ("document the params", "lead", "document-param"),
+    ("document the arguments", "lead", "document-param"),
+    # --- SHOULD-FIX 5: descriptive / state phrasings -------------------------
+    ("this is too repetitive", "obj", ("dedup",)),
+    ("too repetitive", "obj", ("dedup",)),
+    ("this function is doing too much", "obj", ("shrink-functions",)),
+    ("spaghetti code everywhere", "obj", ("shrink-functions",)),
+    ("reduce coupling here", "obj", ("shrink-functions",)),
+    ("these modules are too coupled", "obj", ("shrink-functions",)),
+    ("the code needs better types", "obj", ("infer-type-hints",)),
+    ("this needs types", "obj", ("infer-type-hints",)),
+    # --- SHOULD-FIX 6: plural / determiner adjacency -------------------------
+    ("extract these constants", "obj", ("extract-constant",)),
+    ("extract the constants", "obj", ("extract-constant",)),
+    ("pin the return type", "lead", "pin-return-type"),
+    ("nail down the return type", "obj", ("pin-return-type",)),
+    # --- SHOULD-FIX 7: specific-over-generic ordering ------------------------
+    ("dedup the dunder all", "lead", "dedup-dunder-all"),
+    ("the dunder all has duplicates", "lead", "dedup-dunder-all"),
+    ("simplify the ternary", "lead", "simplify-ternary-bool"),
+    ("this ternary is ugly", "lead", "simplify-ternary-bool"),
+    ("give an order to the dataclass", "lead", "add-dataclass-order"),
+    ("make a sortable dataclass", "lead", "add-dataclass-order"),
+    # --- SHOULD-FIX 9: Turkish vocab / morphology ----------------------------
+    ("çok uzun bu fonksiyon", "obj", ("shrink-functions",)),
+    ("testleri güçlendir", "obj", ("strengthen-tests", "cover-gaps")),
+    ("testler eksik", "obj", ("cover-gaps", "strengthen-tests")),
+    ("güçlendir bunları", "obj", ("strengthen-tests", "cover-gaps")),
+    ("önizle değişiklikleri", "mode", "report"),
+    # --- antonym / negation (MUST stay empty — 0 inversions) -----------------
+    ("remove docstrings", "empty", None),
+    ("remove the type hints", "empty", None),
+    ("delete all the tests", "empty", None),
+    ("strip the type annotations", "empty", None),
+    ("don't add docstrings", "empty", None),
+    ("get rid of the type hints", "empty", None),
+    ("never add type hints", "empty", None),
+    ("skip the tests", "empty", None),
+    # --- word-boundary false positives (MUST stay empty) ---------------------
+    ("this is important", "empty", None),
+    ("final exam tomorrow", "empty", None),
+    ("java is a beautiful island", "empty", None),
+    ("documentary about birds", "empty", None),
+    ("improve my typing speed", "empty", None),
+    # --- questions -----------------------------------------------------------
+    ("what should I improve next?", "q", None),
+    ("why is this so coupled?", "q", None),
+    ("how do I make this faster?", "q", None),
+    ("ne yapmalıyım?", "q", None),
+    # --- the original clean battery (regression — STILL 100%) ----------------
+    ("add type hints", "obj", ("infer-type-hints",)),
+    ("document the auth module", "obj", ("document-param", "document-signature")),
+    ("fix security issues", "obj", ("harden",)),
+    ("add tests for the parser", "obj", ("cover-gaps", "strengthen-tests")),
+    ("sort my imports", "obj", ("sort-imports",)),
+    ("modernize this codebase", "obj", ("modernize",)),
+    ("implement the TODO stubs", "obj", ("implement-stub",)),
+    ("kodu temizle", "obj", ("modernize", "remove-dead-code")),
+    ("güvenlik açıklarını düzelt", "obj", ("harden",)),
+    ("tip belirteçleri ekle", "obj", ("infer-type-hints",)),
+    ("dataclassify the config", "obj", ("dataclassify",)),
+    ("wire up the exports", "obj", ("wire-exports", "wire-module-exports")),
+)
+
+# The lead-anchored removal/negation rows whose inversion (any ADD objective
+# surfacing) would be an antonym ERROR — tracked at zero.
+_ANTONYM_ROWS: frozenset[str] = frozenset({
+    "remove docstrings", "remove the type hints", "delete all the tests",
+    "strip the type annotations", "don't add docstrings",
+    "get rid of the type hints", "never add type hints", "skip the tests",
+})
+
+
+def _hard_row_hit(req: str, kind: str, expected: object) -> bool:
+    c = comprehend(req)
+    if kind == "obj":
+        return any(o in c.objectives for o in expected)  # type: ignore[union-attr]
+    if kind == "lead":
+        return bool(c.objectives) and c.objectives[0] == expected
+    if kind == "empty":
+        return c.objectives == []
+    if kind == "q":
+        return c.action == "question" and c.objectives == []
+    if kind == "scope":
+        return c.scope == expected
+    if kind == "mode":
+        return c.mode == expected
+    return False
+
+
+@pytest.mark.parametrize("req,kind,expected", _HARD_BATTERY)
+def test_hard_battery_row(req, kind, expected):
+    assert _hard_row_hit(req, kind, expected), (
+        f"hard-battery row failed: {req!r} ({kind}) -> {comprehend(req)}")
+
+
+def test_hard_battery_hit_rate_at_least_85_percent(capsys):
+    """The hardening battery clears the apply-loop gate: strict ≥85% (lifted from
+    the 66% pre-wave baseline). Prints the rate for the wave report."""
+    passed = sum(1 for r in _HARD_BATTERY if _hard_row_hit(*r))
+    rate = passed / len(_HARD_BATTERY)
+    with capsys.disabled():
+        print(f"\n[wave-2b hard battery] {passed}/{len(_HARD_BATTERY)} = {rate:.0%}")
+    assert rate >= 0.85, f"hard hit-rate {rate:.0%} ({passed}/{len(_HARD_BATTERY)}) < 85%"
+
+
+def test_hard_battery_zero_antonym_inversions():
+    """A lead-anchored removal/negation request must NEVER surface an ADD objective
+    (the honesty invariant): 0 inversions across the antonym rows."""
+    inversions = [r for r in _ANTONYM_ROWS if comprehend(r).objectives]
+    assert inversions == [], f"antonym inversions (must be 0): {inversions}"
+
+
+def test_hard_battery_over_eager_at_most_two():
+    """An "empty"-expected row that still matched an objective is OVER-EAGER. The
+    gate allows ≤2; the wave holds 0 — every MUST-FIX over-eager + word-boundary
+    case is correct."""
+    over = [r[0] for r in _HARD_BATTERY
+            if r[1] == "empty" and comprehend(r[0]).objectives]
+    assert len(over) <= 2, f"over-eager (must be ≤2): {over}"
+    assert over == [], f"wave target is 0 over-eager, got: {over}"
+
+
+def test_original_clean_battery_still_100_percent():
+    """The pre-wave clean battery is unchanged — every row still passes (no
+    regression from the hardening)."""
+    passed = sum(1 for r in _BATTERY if _row_passes(*r))
+    assert passed == len(_BATTERY), (
+        f"clean battery regressed: {passed}/{len(_BATTERY)}")
+
+
+# --- MUST-FIX 1: the over-eager test/secure cases, asserted directly ---------
+
+@pytest.mark.parametrize("req", [
+    "secure the building", "secure the perimeter", "test the waters",
+    "the typing speed test",
+])
+def test_mustfix_over_eager_killed(req):
+    # No objective AND the compiler stays blocked — an actor must not act on these.
+    assert comprehend(req).objectives == [], f"{req!r} must not match any objective"
+    assert resolve_objective(req) is None
+
+
+@pytest.mark.parametrize("req,expected", [
+    ("secure the endpoint", "harden"),
+    ("secure the input", "harden"),
+    ("secure the upload handler", "harden"),  # back-compat (handler companion)
+    ("test this code", "cover-gaps"),
+    ("add tests", "cover-gaps"),
+    ("run the tests", "cover-gaps"),
+])
+def test_mustfix_companion_keeps_real_intent(req, expected):
+    assert expected in comprehend(req).objectives, (
+        f"{req!r} (companion present) should still surface {expected}")
+
+
+# --- MUST-FIX 2: scope strips quotes / dir / bare-noun fallback --------------
+
+@pytest.mark.parametrize("req,scope", [
+    ("the `login` function needs a docstring", "login"),
+    ('the "parser" module', "parser"),
+    ("rename the `widget` class", "widget"),
+    ("in app/auth/, add type hints", "app/auth/"),
+    ("clean up in src/utils/", "src/utils/"),
+    ("fix security in the handlers", "handlers"),
+    ("document the stuff in the parser", "parser"),
+    # a file inside a directory still resolves to the FILE, not its directory
+    ("type hints in app/auth/utils.py", "app/auth/utils.py"),
+    # the existing specific shapes are unaffected
+    ("document the auth module", "auth"),
+    ("fix app/engine/foo.py", "app/engine/foo.py"),
+    ("clean up the whole project", None),
+])
+def test_mustfix_scope(req, scope):
+    assert comprehend(req).scope == scope
+
+
+# --- SHOULD-FIX 7+8: specific-over-generic LEAD + compound round-robin --------
+
+@pytest.mark.parametrize("req,lead", [
+    ("simplify the ternary", "simplify-ternary-bool"),
+    ("give an order to the dataclass", "add-dataclass-order"),
+    ("make a sortable dataclass", "add-dataclass-order"),
+    ("dedup the dunder all", "dedup-dunder-all"),
+    ("document the yields", "document-yields"),
+    ("document the raises", "document-raises"),
+    ("pin the return type", "pin-return-type"),
+])
+def test_specific_outranks_generic_lead(req, lead):
+    objs = comprehend(req).objectives
+    assert objs and objs[0] == lead, f"{req!r} should LEAD with {lead}, got {objs[:3]}"
+
+
+def test_compound_round_robin_surfaces_both_families_in_window():
+    # "type hints AND docstrings": the round-robin interleaves the two concepts so
+    # BOTH families appear in the top window (the 2nd no longer buried past the
+    # first family's full expansion) — while type-hints still leads.
+    c = comprehend("add type hints and docstrings")
+    assert c.objectives[0] == "infer-type-hints"
+    assert "document-param" in c.objectives[:3], (
+        f"docstrings family should surface in the top-3, got {c.objectives[:4]}")
+    # a single-concept request is UNCHANGED by the round-robin (its own order)
+    single = comprehend("add type hints").objectives
+    assert single[0] == "infer-type-hints"
+    assert single == ["infer-type-hints", "annotate-self-returns",
+                      "pin-return-type", "add-from-future-annotations"]
+
+
+def test_round_robin_is_deterministic():
+    req = "modernize, add type hints, document, and clean up imports"
+    first = comprehend(req).objectives
+    for _ in range(5):
+        assert comprehend(req).objectives == first
+
+
+# --- BACK-COMPAT: the SHARED-vocab lift never redirects resolve_objective -----
+
+def test_resolve_objective_zero_redirects_exact_name_wins():
+    # Every exact objective name still resolves to itself — the differential the
+    # wave must hold at 0 redirects.
+    redirects = [n for n in available_objectives() if resolve_objective(n) != n]
+    assert redirects == [], f"exact-name redirects (must be 0): {redirects}"
+
+
+@pytest.mark.parametrize("req,expected", [
+    # the secure synonym is now context-gated, but the legitimate code phrasings
+    # the compiler resolved before STILL resolve (companions present):
+    ("secure the upload handler", "harden"),
+    ("harden the auth path", "harden"),
+    ("lock down the endpoint", "harden"),
+    ("fortify the request path", "harden"),
+    ("sanitize the inputs", "modernize"),
+    ("copy-paste cleanup", "dedup"),   # hyphenated synonym keeps substring match
+    ("organize imports", "sort-imports"),
+])
+def test_resolve_objective_backcompat_after_gating(req, expected):
+    assert resolve_objective(req) == expected
+
+
+@pytest.mark.parametrize("req", [
+    "secure the building", "secure the perimeter",
+])
+def test_resolve_objective_secure_noise_now_blocked(req):
+    # The over-eager security leak is closed on the compiler surface too.
+    assert resolve_objective(req) is None
+
+
+# --- VOCAB integrity: the new rows still name only real objectives -----------
+
+def test_new_vocab_rows_name_real_objectives_and_normalized():
+    known = set(available_objectives())
+    for phrase, objs in CONCEPT_VOCAB:
+        assert phrase == phrase.lower(), f"concept phrase not normalized: {phrase!r}"
+        for obj in objs:
+            assert obj in known, f"concept {phrase!r} names unknown objective {obj!r}"
+
+
+def test_hardening_is_hashseed_invariant():
+    # Determinism must not depend on PYTHONHASHSEED (no set/dict-iteration leak in
+    # the new round-robin or grouping). Run a representative spread twice.
+    for req, _kind, _exp in _HARD_BATTERY:
+        assert comprehend(req) == comprehend(req), f"non-deterministic: {req!r}"

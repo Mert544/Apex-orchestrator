@@ -72,9 +72,35 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("typing", ("infer-type-hints", "annotate-self-returns", "pin-return-type")),
     ("annotate", ("infer-type-hints", "annotate-self-returns", "pin-return-type")),
     ("add types", ("infer-type-hints", "pin-return-type")),
+    # The return-type lens by its noun — declared so "pin the return type"/"return
+    # type" lead with pin-return-type (not the broad infer-type-hints from the
+    # plural "type hints" key, which this phrase doesn't even contain).
+    ("return type", ("pin-return-type", "annotate-self-returns", "infer-type-hints")),
+    # Descriptive/state phrasings for "the types are weak" (not the imperative
+    # "add type hints", which the keys above already catch).
+    ("better types", ("infer-type-hints", "pin-return-type")),
+    ("needs types", ("infer-type-hints", "pin-return-type")),
+    ("missing types", ("infer-type-hints", "pin-return-type")),
+    # Common misspellings (literal rows — a bounded edit-distance pass is a bigger
+    # future lever; these are the highest-frequency typos seen in the field test).
+    ("tpye hints", ("infer-type-hints", "pin-return-type")),
+    ("tpye hint", ("infer-type-hints", "pin-return-type")),
+    ("typehints", ("infer-type-hints", "pin-return-type")),
+    ("typehint", ("infer-type-hints", "pin-return-type")),
+    ("anotate", ("infer-type-hints", "annotate-self-returns", "pin-return-type")),
     ("tip belirteç", ("infer-type-hints", "annotate-self-returns", "pin-return-type")),
     ("tip ekle", ("infer-type-hints", "pin-return-type")),
     # --- docstrings / documentation -------------------------------------------
+    # Docstring SUBTYPES first, by their section noun — so "document the yields"
+    # leads with document-yields (not document-param). A filler word ("the") breaks
+    # the contiguous ``document yields`` name match, so the bare noun keys catch it.
+    # Declared BEFORE the generic ``document``/``docstrings`` rows so the specific
+    # section outranks the generic document-param at the same (family) weight.
+    ("class attributes", ("document-attributes",)),
+    ("attributes", ("document-attributes",)),
+    ("yields", ("document-yields",)),
+    ("raises", ("document-raises",)),
+    ("returns", ("document-returns",)),
     ("docstrings", ("document-param", "document-returns", "document-attributes",
                     "document-raises", "document-yields", "document-signature",
                     "generate-usage-doc")),
@@ -83,6 +109,11 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
                    "generate-usage-doc")),
     ("documentation", ("document-param", "document-returns", "document-signature",
                        "generate-usage-doc")),
+    # Common misspellings (literal rows): "documantation", "doctring(s)".
+    ("documantation", ("document-param", "document-returns", "document-signature",
+                       "generate-usage-doc")),
+    ("doctrings", ("document-param", "document-returns", "document-signature")),
+    ("doctring", ("document-param", "document-returns", "document-signature")),
     ("api docs", ("generate-usage-doc", "document-signature", "document-param")),
     ("usage doc", ("generate-usage-doc", "document-signature")),
     ("readme", ("generate-usage-doc", "document-signature")),
@@ -106,6 +137,13 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("tests", ("cover-gaps", "strengthen-tests", "pin-doctest")),
     ("test ekle", ("cover-gaps", "strengthen-tests")),
     ("kapsam", ("cover-gaps", "strengthen-tests")),
+    # Turkish test vocabulary — agglutinative ``-ler``/``-leri`` plural/accusative
+    # suffixes defeat the English ``\btests?\b`` boundary key, so the TR stems are
+    # listed directly. ``güçlendir(me)`` ("strengthen") leads with strengthen-tests.
+    ("testleri", ("cover-gaps", "strengthen-tests")),
+    ("testler", ("cover-gaps", "strengthen-tests")),
+    ("güçlendir", ("strengthen-tests", "cover-gaps")),
+    ("test yaz", ("cover-gaps", "strengthen-tests")),
     # --- implement / scaffold (concrete value) --------------------------------
     ("notimplementederror", ("implement-stub", "implement-from-doctest",
                              "tdd-implement")),
@@ -119,7 +157,9 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("hayata geçir", ("implement-stub", "implement-from-doctest")),
     # --- security -------------------------------------------------------------
     ("security", ("harden",)),
-    ("secure", ("harden",)),
+    ("securty", ("harden",)),     # common misspelling of "security"
+    ("secure", ("harden",)),      # CONTEXT-gated (needs a code companion) — see
+                                  # _CONTEXT_KEY_PATTERNS: kills "secure the building"
     ("vulnerab", ("harden",)),
     ("injection", ("harden",)),
     ("unsafe", ("harden",)),
@@ -127,6 +167,11 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("zafiyet", ("harden",)),
     ("açık", ("harden",)),
     # --- modernize / idiom (the broad surface-tidy family) --------------------
+    # The ternary-bool lens by its noun — declared BEFORE the modernize family (and
+    # before the ``simplify``→modernize SYNONYM, since concepts are scanned first)
+    # so "simplify the ternary"/"this ternary" lead with simplify-ternary-bool, not
+    # the generic modernize.
+    ("ternary", ("simplify-ternary-bool", "modernize")),
     # Listed AFTER the specific families above so e.g. "simplify the type hints"
     # still leads with infer-type-hints. The family head (``modernize``) is first
     # so the broad ask leads with the broad lens, then the specific idiom fixers.
@@ -144,6 +189,13 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("lint", ("modernize", "remove-unused-imports", "sort-imports")),
     ("iyileştir", ("modernize", "simplify-bool-return")),
     # --- dataclass / immutability ---------------------------------------------
+    # The ordering lens by its phrasing — declared BEFORE the generic ``dataclass``
+    # row so "give the dataclass an order"/"sortable dataclass" lead with
+    # add-dataclass-order, not dataclassify (these are SPECIFIC multiword phrases,
+    # so they also outrank the single-word ``dataclass`` family key by weight).
+    ("sortable dataclass", ("add-dataclass-order", "dataclassify")),
+    ("order to the dataclass", ("add-dataclass-order", "dataclassify")),
+    ("dataclass order", ("add-dataclass-order", "dataclassify")),
     ("dataclass", ("dataclassify", "freeze-dataclass", "add-slots",
                    "add-dataclass-order", "synthesize-dunders")),
     ("frozen", ("freeze-dataclass", "dataclassify")),
@@ -157,6 +209,14 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
               "seal-total-ordering")),
     ("mühürle", ("add-final", "seal-final-method")),
     # --- exports / public API -------------------------------------------------
+    # The dunder-all dedup lens by its spoken name — declared BEFORE the generic
+    # ``dedup`` (which is reached via the objective NAME scan) so "dedup the dunder
+    # all" leads with dedup-dunder-all, not the generic dedup. "dunder all" is a
+    # SPECIFIC multiword phrase, so it also outranks the single-token dedup by
+    # weight. (The literal ``__all__`` collapses to "all" under normalization, so
+    # the spoken form is the reliable trigger.)
+    ("dedup dunder all", ("dedup-dunder-all", "sort-dunder-all")),
+    ("dunder all", ("dedup-dunder-all", "sort-dunder-all", "wire-exports")),
     ("public api", ("wire-exports", "wire-module-exports", "sort-dunder-all")),
     ("__all__", ("wire-exports", "wire-module-exports", "sort-dunder-all",
                  "dedup-dunder-all")),
@@ -189,6 +249,27 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("break into", ("shrink-functions", "inline-helpers")),
     ("too long", ("shrink-functions",)),
     ("too big", ("shrink-functions",)),
+    # Descriptive/state phrasings (the user describes the smell, doesn't command):
+    # "doing too much"/"spaghetti"/"coupled" → the shrink/inline lenses; "too
+    # repetitive" → the dedup lens. The imperative forms ("split function") stay in
+    # the compiler synonym table; these broaden to how people actually describe it.
+    ("doing too much", ("shrink-functions", "inline-helpers")),
+    ("too much", ("shrink-functions", "inline-helpers")),
+    ("spaghetti", ("shrink-functions", "inline-helpers")),
+    ("reduce coupling", ("shrink-functions", "inline-helpers")),
+    ("coupling", ("shrink-functions", "inline-helpers")),
+    ("coupled", ("shrink-functions", "inline-helpers")),
+    ("too repetitive", ("dedup", "inline-helpers")),
+    ("repetitive", ("dedup", "inline-helpers")),
+    ("çok uzun", ("shrink-functions",)),     # Turkish: "too long"
+    # --- constants (plural/determiner adjacency) ------------------------------
+    # The compiler synonym ``extract constant`` only matches the contiguous,
+    # singular form; "extract these constants"/"extract the constants" (a
+    # determiner between, plural noun) slipped through. These rows recover them.
+    ("extract these constants", ("extract-constant",)),
+    ("extract the constants", ("extract-constant",)),
+    ("extract constants", ("extract-constant",)),
+    ("name the constants", ("extract-constant",)),
     # --- imports (the noun) ---------------------------------------------------
     # The imports-management family, named by the noun so "sort my imports",
     # "fix the imports", "organize imports" all land here (the verb-specific
@@ -209,6 +290,7 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("kodu temizle", ("modernize", "remove-dead-code", "sort-imports")),
     ("temizle", ("modernize", "remove-dead-code", "sort-imports")),
     ("refactor", ("modernize", "shrink-functions", "inline-helpers")),
+    ("refator", ("modernize", "shrink-functions", "inline-helpers")),  # misspelling
 )
 
 
@@ -262,16 +344,29 @@ _BOUNDARY_KEY_PATTERNS: dict[str, re.Pattern[str]] = {
     "type hints": re.compile(r"\btype hints?\b"),
     "typing": re.compile(r"\btyping\b(?!\s+speed)"),  # the module, not keyboard typing
     "annotate": re.compile(r"\bannotate[ds]?\b"),
-    "tests": re.compile(r"\btests?\b"),      # not "latest"/"testament"
     "stub": re.compile(r"\bstubs?\b"),
     "todo": re.compile(r"\btodos?\b"),
 }
 # (B) CONTEXT keys — a genuine common ENGLISH word (``final``, ``java``, ``slot``,
-#     ``seal``) where even a word boundary isn't enough ("final exam", "java is my
-#     favorite island", "slot machine", "seal the envelope"). These match only
-#     when a CODE-CONTEXT companion co-occurs (an add/make/seal verb, or a domain
-#     noun like method/class/throws/dataclass), so "make it final"/"add slots"/
-#     "java throws" KEEP working while the unrelated noun phrases are killed.
+#     ``seal``, ``test``/``tests``, ``secure``) where even a word boundary isn't
+#     enough ("final exam", "java is my favorite island", "slot machine", "seal the
+#     envelope", "test the waters", "secure the building"). These match only when a
+#     CODE-CONTEXT companion co-occurs (an add/make/seal verb, or a domain noun like
+#     method/class/throws/dataclass/code/endpoint/input), so "make it final"/"add
+#     slots"/"java throws"/"test this code"/"secure the endpoint" KEEP working while
+#     the unrelated noun phrases are killed.
+# The shared code-context companion for ``test``/``tests``/``secure`` — an
+# add/run/write verb or a code-domain noun. ``handler`` is included so the
+# legitimate "secure the upload handler" keeps resolving; the bare verb/noun is
+# what separates a code request from "test the waters"/"secure the building".
+# The removal/negation verbs (delete/remove/strip/drop/skip) are companions too,
+# so a removal-framed request ("delete all the tests", "skip the tests") STILL
+# surfaces the additive match — which the lead-anchored removal guard then
+# suppresses with the honest "Apex has no removal capability" rationale, rather
+# than silently falling through as an unmatched request.
+_CODE_COMPANION = (r"add|run|write|cover|more|unit|integration|code|module|"
+                   r"function|method|class|api|endpoint|route|input|call|handler|"
+                   r"path|service|upload|request|delete|remove|strip|drop|skip")
 _CONTEXT_KEY_PATTERNS: dict[str, re.Pattern[str]] = {
     "final": re.compile(
         r"\b(method|class|attribute|field|var|variable|constant)\b.{0,25}\bfinal\b"
@@ -287,6 +382,17 @@ _CONTEXT_KEY_PATTERNS: dict[str, re.Pattern[str]] = {
     "seal": re.compile(
         r"\bseal\b.{0,16}\b(method|class|final|hashable|ordering|eq|dunder)\b"
         r"|\b(make|mark)\b.{0,16}\bseal\b"),
+    # ``test``/``tests`` — the bare noun is a code request only with a companion;
+    # ``\btests?\b`` covers both singular and plural so "test this code" and "add
+    # tests" survive while "test the waters"/"the typing speed test" are killed.
+    "tests": re.compile(
+        rf"\b({_CODE_COMPANION})\b.{{0,20}}\btests?\b"
+        rf"|\btests?\b.{{0,20}}\b({_CODE_COMPANION})\b"),
+    # ``secure`` — KEEP "secure the endpoint"/"secure the input"/"secure the upload
+    # handler"; KILL "secure the building"/"secure the perimeter".
+    "secure": re.compile(
+        rf"\bsecure\b.{{0,20}}\b({_CODE_COMPANION})\b"
+        rf"|\b({_CODE_COMPANION})\b.{{0,20}}\bsecure\b"),
 }
 
 

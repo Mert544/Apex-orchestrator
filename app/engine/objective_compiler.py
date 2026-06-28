@@ -804,17 +804,20 @@ def resolve_objective(request: str | None) -> str | None:
     known = {name.lower(): name for name in available_objectives()}
     if text in known:
         return known[text]
-    for phrase, objective in _OBJECTIVE_SYNONYMS:
-        if phrase in text:
-            return objective
-    # Shared-vocabulary fallback (only reached when the synonym table missed, so
-    # back-compat is preserved): the objective NAME phrases, then the concept map.
-    # Imported from the stdlib-only LEAF ``app.intent.vocabulary`` (NOT from
-    # ``comprehension``), passing the objectives list IN — so this module's only
-    # intent edge is to the leaf, and there is no import cycle through comprehend.
+    # Shared-vocabulary matchers from the stdlib-only LEAF ``app.intent.vocabulary``
+    # (NOT from ``comprehension``), passing the objectives list IN — so this module's
+    # only intent edge is to the leaf, and there is no import cycle through
+    # comprehend. ``phrase_in`` gates the synonym scan exactly as ``comprehend``
+    # does, so a CONTEXT-gated key (``secure``) needs a code companion in both
+    # surfaces ("secure the building" ↛ harden; "secure the endpoint" → harden);
+    # every other (un-patterned) synonym keeps plain-substring semantics.
     from app.intent.vocabulary import (
-        concept_matches, name_phrase_match, normalize, suppress_removal, tokenize,
+        concept_matches, name_phrase_match, normalize, phrase_in,
+        suppress_removal, tokenize,
     )
+    for phrase, objective in _OBJECTIVE_SYNONYMS:
+        if phrase_in(phrase, text):
+            return objective
     norm = normalize(request)
     names = name_phrase_match(norm, list(known.values()))
     concepts = concept_matches(norm)

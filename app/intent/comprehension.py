@@ -94,7 +94,7 @@ class Comprehension:
 # Everything here is also a key in ``CONCEPT_VOCAB`` above.
 _GENERIC_PHRASES: frozenset[str] = frozenset({
     "clean up", "cleanup", "clean code", "tidy", "kodu temizle", "temizle",
-    "refactor",
+    "refactor", "refator",
 })
 
 
@@ -107,15 +107,25 @@ _GENERIC_PHRASES: frozenset[str] = frozenset({
 # A scope is a module/file/function name: the FIRST capture of whichever of these
 # ordered patterns matches first. Specific shapes (``the X module``, ``in a.py``)
 # precede the bare-path fallback so "the auth module" yields ``auth``, not a file.
+# A trailing-slash directory ("in app/auth/,") is read AFTER the ``.py`` shapes so a
+# file path still beats its directory; the bare ``in the X`` fallback is read LAST
+# so a specific shape always wins ("fix security in the handlers" → ``handlers``).
 _SCOPE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"the (\w+) module"),
     re.compile(r"module (\w+)"),
     re.compile(r"in ([\w/]+\.py)"),
     re.compile(r"([\w./]+\.py)"),
+    re.compile(r"in ([\w/]+/)"),                 # trailing-slash directory
     re.compile(r"the (\w+) function"),
     re.compile(r"function (\w+)"),
     re.compile(r"the (\w+) class"),
+    re.compile(r"in the (\w+)"),                 # bare "in the X" fallback (last)
 )
+# Quote/backtick characters stripped before scope matching so a code-quoted name
+# (``the `login` function``, "the 'parser' module") is read as the bare name
+# (``login``/``parser``), not skipped — otherwise the ``\w+`` capture slides onto a
+# later word ("needs"). Stripping (not pattern edits) keeps every pattern simple.
+_SCOPE_QUOTES = str.maketrans("", "", "`'\"")
 # Question OPENERS — English interrogatives/auxiliaries that signal a question
 # only when they LEAD the request (English word order: "what should I do",
 # "should I refactor"). A request opening with one — or ending with "?" — is a
@@ -141,6 +151,7 @@ _REPORT_TRIGGERS: tuple[str, ...] = (
     "just show", "don't change", "do not change", "dont change", "preview",
     "dry run", "dry-run", "only show", "show only", "report only", "no changes",
     "without changing", "sadece göster", "sadece rapor", "değiştirme", "dokunma",
+    "önizle", "önizleme",  # Turkish: "preview"
 )
 _AUTONOMOUS_TRIGGERS: tuple[str, ...] = (
     "automatically", "no confirm", "no-confirm", "without confirm", "autonomous",
@@ -220,11 +231,14 @@ def _detect_mode(request: str) -> str:
 def _detect_scope(request: str) -> str | None:
     """A best-effort target hint (module/file/function name) or ``None``.
 
-    Runs the ordered scope patterns against the RAW request (paths keep their
-    ``.py`` and ``/``) and returns the first capture of the first pattern that
-    matches — so "document the auth module" yields ``auth`` and "fix app/x.py"
-    yields ``app/x.py``. Deterministic: pattern order is fixed."""
-    low = request.lower()
+    Runs the ordered scope patterns against the lowercased request with
+    backticks/quotes stripped (paths keep their ``.py`` and ``/``) and returns the
+    first capture of the first pattern that matches — so "document the auth module"
+    yields ``auth``, "fix app/x.py" yields ``app/x.py``, ``the `login` function``
+    yields ``login`` (quotes stripped first, so the capture lands on the name, not
+    "needs"), "in app/auth/," yields ``app/auth/``, and "fix it in the handlers"
+    yields ``handlers``. Deterministic: pattern order is fixed."""
+    low = request.lower().translate(_SCOPE_QUOTES)
     for pattern in _SCOPE_PATTERNS:
         m = pattern.search(low)
         if m:
@@ -257,26 +271,35 @@ def _phrase_weight(phrase: str) -> int:
     return _RANK_SPECIFIC if specific else _RANK_FAMILY
 
 
-def _candidates(text: str, available: list[str]) -> list[tuple[str, int]]:
-    """Every (objective, weight) candidate for ``text``, gathered from the four
-    sources in a fixed order so first-seen rank ties break deterministically:
-    (3) the whole request IS an exact slug; (2)/(1) concept phrases; (2)/(1)
-    objective-NAME phrases; (1) hand-tuned family synonyms. Presence uses
-    :func:`phrase_in` for the concept/name scans (short ambiguous keys are
-    word-bounded); the synonym triggers keep their literal substring semantics."""
+def _candidates(text: str, available: list[str]) -> list[tuple[str, int, str]]:
+    """Every ``(objective, weight, group)`` candidate for ``text``, gathered from
+    the four sources in a fixed order so first-seen rank ties break
+    deterministically: (3) the whole request IS an exact slug; (2)/(1) concept
+    phrases; (2)/(1) objective-NAME phrases; (1) hand-tuned family synonyms.
+    Presence uses :func:`phrase_in` for the concept/name scans (short ambiguous
+    keys are word-bounded); the synonym triggers keep their literal substring
+    semantics. ``group`` names the SOURCE CONCEPT an objective came from (the
+    vocab phrase, the name, or ``"="``/``"syn:"`` sentinels) so the rank can
+    round-robin distinct concepts and surface a compound's families in the top
+    window — see :func:`_rank_objectives`."""
     available_set = set(available)
-    out: list[tuple[str, int]] = []
+    out: list[tuple[str, int, str]] = []
     if text in available_set:                                   # (3) exact slug
-        out.append((text, _RANK_EXACT))
+        out.append((text, _RANK_EXACT, "="))
     for phrase, objs in CONCEPT_VOCAB:                          # (2)/(1) concepts
         if phrase_in(phrase, text):
             weight = _phrase_weight(phrase)
-            out.extend((obj, weight) for obj in objs)
+            out.extend((obj, weight, f"c:{phrase}") for obj in objs)
     for name in name_phrase_match(text, available):             # (2)/(1) names
-        out.append((name, _phrase_weight(name.replace("-", " "))))
+        out.append((name, _phrase_weight(name.replace("-", " ")), f"n:{name}"))
     for phrase, obj in _synonym_table():                        # (1) synonyms
-        if phrase in text and obj in available_set:
-            out.append((obj, _RANK_FAMILY))
+        # ``phrase_in`` (not bare substring) so a CONTEXT-gated synonym key
+        # (``secure``) needs a code companion here too — "secure the building"
+        # must not reach ``harden`` through the synonym table, while "secure the
+        # endpoint" still does. Every other synonym phrase keeps plain-substring
+        # semantics (``phrase_in`` falls back to ``in`` for un-patterned keys).
+        if phrase_in(phrase, text) and obj in available_set:
+            out.append((obj, _RANK_FAMILY, f"s:{phrase}"))
     return out
 
 
@@ -284,16 +307,48 @@ def _rank_objectives(text: str, available: list[str]) -> list[str]:
     """The ranked, dedup'd objective list for a develop request.
 
     Scores every candidate from :func:`_candidates` by its STRONGEST source
-    weight; within a score, first-seen (discovery) order is preserved, giving a
-    stable, deterministic ranking. Returns ``[]`` when nothing matched."""
+    weight, then orders by a weighted ROUND-ROBIN over the distinct source
+    concepts: the concept groups are ranked by their best member weight (then
+    discovery order), and the result interleaves each group's HEAD before its tail
+    — so a compound request ("add type hints and docstrings") surfaces BOTH
+    families in the top window instead of burying the second past the first
+    family's full expansion. A single-concept request is unchanged (one group's
+    round-robin is just its own order); an exact-slug group (weight 3) still leads
+    absolutely. Fully deterministic — every order key is integer/declaration-based.
+    Returns ``[]`` when nothing matched."""
     score: dict[str, int] = {}
     order: dict[str, int] = {}
-    for obj, weight in _candidates(text, available):
-        if obj not in order:
-            order[obj] = len(order)
+    members: dict[str, list[str]] = {}
+    for obj, weight, group in _candidates(text, available):
         score[obj] = max(score.get(obj, 0), weight)
+        if obj not in order:                       # first discovery fixes the
+            order[obj] = len(order)                # objective's group + position
+            members.setdefault(group, []).append(obj)
 
-    return sorted(score, key=lambda o: (-score[o], order[o]))
+    # Order the groups by their strongest member, then earliest discovery; emit
+    # round-robin across them so distinct concepts interleave at the head.
+    def _group_key(g: str) -> tuple[int, int]:
+        best = max(score[o] for o in members[g])
+        first = min(order[o] for o in members[g])
+        return (-best, first)
+
+    group_order = sorted(members, key=_group_key)
+    return _round_robin(group_order, members)
+
+
+def _round_robin(group_order: list[str],
+                 members: dict[str, list[str]]) -> list[str]:
+    """Interleave the groups' members head-first, in ``group_order``: round 0 emits
+    every group's 1st objective, round 1 every group's 2nd, and so on, skipping a
+    group once it is exhausted. Each objective is emitted once (it belongs to a
+    single group by first-discovery). Deterministic — purely positional."""
+    out: list[str] = []
+    depth = max((len(members[g]) for g in group_order), default=0)
+    for i in range(depth):
+        for g in group_order:
+            if i < len(members[g]):
+                out.append(members[g][i])
+    return out
 
 
 def _build_rationale(action: str, objectives: list[str], mode: str,
