@@ -129,6 +129,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "use_enumerate": 0.20,           # manual index loop -> enumerate
     "set_literal": 0.20,             # set([...]) -> {...}
     "fold_literal_string_concat": 0.20,  # "a" "b" -> "ab"
+    "dedup_dunder_all": 0.20,        # de-dup an existing __all__, keep first-seen order
     "percent_to_fstring": 0.19,      # %-format -> f-string
     "format_to_fstring": 0.19,       # str.format(spec) -> f-string
     "fstring_convert": 0.19,         # str.format placeholder -> f-string

@@ -660,7 +660,12 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                          # added: an existing module-level __all__ whose names are out
                          # of order — sort-dunder-all sorts + de-duplicates it
                          # (behaviour-identical). Appended, originals still lead.
-                         "the module __all__ to sort"],
+                         "the module __all__ to sort",
+                         # added: an existing module-level __all__ that REPEATS an
+                         # entry — dedup-dunder-all removes the duplicate, preserving
+                         # first-appearance order (behaviour-identical — __all__
+                         # membership is a set). Appended, originals still lead.
+                         "the duplicate __all__ entries to remove"],
     # decouple — the constructive "break the knot" lens. Its two structural L1
     # aspects ("dependency inversion", "seam interface") previously had NO L2
     # vocabulary, so zooming "Decouple X → dependency inversion" fell straight to

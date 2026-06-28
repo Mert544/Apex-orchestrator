@@ -299,6 +299,15 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # Phrasing is substring-order-safe vs every other key.
     "the module __all__ to sort": "sort-dunder-all",
 
+    # An existing module-level __all__ that REPEATS a string entry: dedup-dunder-all
+    # removes the duplicate while PRESERVING first-appearance order (behaviour-
+    # identical — __all__ membership is a set, so a repeat changes nothing observable).
+    # DISTINCT from sort-dunder-all above, which canonically ORDERS __all__ (and
+    # de-dupes only as a side effect); this keeps the author's order and removes ONLY
+    # the duplicates — a no-op on a duplicate-free list. Phrasing is substring-order-
+    # safe vs every other key.
+    "the duplicate __all__ entries to remove": "dedup-dunder-all",
+
     # Undocumented public signature: the document lens's "signatures and types"
     # aspect also names a public function that carries NO docstring. The
     # document-signature objective LANDS exactly that — a docstring listing the

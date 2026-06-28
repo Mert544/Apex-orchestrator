@@ -678,8 +678,8 @@ def test_counts_are_forty_one_concrete_of_eighty_three():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 83  # 83 after document-attributes (40th) + document-yields (41st)
-    assert len(classify_objectives(names)["CONCRETE"]) == 41
+    assert len(names) == 84  # 84 after dedup-dunder-all (42nd concrete) registered
+    assert len(classify_objectives(names)["CONCRETE"]) == 42  # 42nd concrete: dedup-dunder-all
 
 
 # --- the soundness-corpus refusals (the must-refuse shapes) -------------------

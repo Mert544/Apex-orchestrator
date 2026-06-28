@@ -152,6 +152,27 @@ def _render_all_block(indent: str, value: ast.expr, names: list[str]) -> list[st
     return block
 
 
+def resplice_all_names(source: str, stmt: ast.stmt, new_names: list[str]) -> str | None:
+    """Re-render the ``__all__`` statement ``stmt`` in ``source`` with element list
+    ``new_names``, preserving its container kind and header indentation — the shared
+    "splice the new ``__all__`` block back in, guard the result" tail of BOTH
+    public-surface ``__all__`` rewriters (``sort_module_all`` reorders, the
+    dedup-dunder-all transform de-dupes; they differ ONLY in how ``new_names`` is
+    derived). Splices the statement's whole line span and runs the standard
+    :func:`~app.execution.dataclass_rewrite.rejoin_guarded` epilogue (preserve the
+    trailing newline; ``None`` on a no-op or non-re-parsing result). One source of
+    truth, so neither caller re-copies the index arithmetic."""
+    value = _all_assign_value(stmt)
+    lines = source.splitlines()
+    start = stmt.lineno - 1
+    end = getattr(stmt, "end_lineno", stmt.lineno)
+    header = lines[start]
+    indent = header[: len(header) - len(header.lstrip())]
+    out_lines = list(lines)
+    out_lines[start:end] = _render_all_block(indent, value, new_names)  # type: ignore[arg-type]
+    return rejoin_guarded(source, out_lines)
+
+
 def _sortable_all(source: str) -> tuple[ast.Module, ast.stmt, list[str]] | None:
     """The ``(tree, stmt, current_names)`` of a module with exactly ONE plain
     string-literal ``__all__`` that is NOT dynamically assembled, or ``None``.
@@ -207,13 +228,4 @@ def sort_module_all(source: str) -> str | None:
     canonical = sorted(set(current))
     if canonical == current:
         return None  # already sorted AND de-duplicated — byte-identical no-op
-
-    value = _all_assign_value(stmt)  # type: ignore[assignment]
-    lines = source.splitlines()
-    start = stmt.lineno - 1
-    end = getattr(stmt, "end_lineno", stmt.lineno)
-    header = lines[start]
-    indent = header[: len(header) - len(header.lstrip())]
-    out_lines = list(lines)
-    out_lines[start:end] = _render_all_block(indent, value, canonical)  # type: ignore[arg-type]
-    return rejoin_guarded(source, out_lines)
+    return resplice_all_names(source, stmt, canonical)

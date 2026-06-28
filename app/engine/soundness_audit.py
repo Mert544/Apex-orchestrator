@@ -150,6 +150,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "add-dataclass-order": "runtime-additive(generated-order-ops)+stdlib-dataclass-provenance+no-existing-comparison-dunder+static-refusal",
     "harden": "suite-catches-runtime+security-rewrite(tier1)+behavior-identical-annotation(tier0)+engine-decline-on-unsafe",
     "raise-from": "behavior-preserving-traceback-chain-only+raise-from-except-binding-verbatim+refuse-when-no-binding",
+    "dedup-dunder-all": "behavior-preserving-idiom(__all__-membership-is-a-set)+refuse-dynamic/non-string/multiple/comment-loss",
     # --- TIDY: behavior-preserving idiom rewrites ---------------------------
     "modernize": "behavior-preserving-idiom",
     "simplify-bool-return": "behavior-preserving-idiom",
@@ -483,6 +484,15 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # iterator/generator return, in its ``_GENERATOR_RETURNS`` refuse-head set — a
     # generator never gets a ``Returns:``), so the fixture also pins the boundary.
     "yields_already_documented": frozenset({"document-yields"}),
+    # The dedup-dunder-all dynamic-__all__ trap: a module whose ``__all__`` is
+    # assembled DYNAMICALLY (``__all__ = _BASE + ["x", "x"]``) yet carries a literal
+    # duplicate in its appended fragment. A parser that de-duped only the literal
+    # fragment would change the exported SET the dynamic ``_BASE`` part composes with —
+    # so dedup-dunder-all MUST refuse any non-pure-literal ``__all__`` (the shared
+    # sort-dunder-all gate sees the ``BinOp`` and declines), never editing a fragment of
+    # a computed surface. sort-dunder-all refuses it for the same reason, so the
+    # fixture also pins that sibling boundary.
+    "dynamic_dunder_all": frozenset({"dedup-dunder-all"}),
     "syntax_error": frozenset(),  # universal-refuse rule covers every objective
     "already_applied": frozenset(
         {"wire-module-exports", "add-final", "freeze-dataclass"}),
