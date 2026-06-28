@@ -1072,3 +1072,207 @@ def test_seed_landable_family_empty_on_no_candidates():
     profile = ProjectProfile(root=".", ci_files=["ci.yml"])
     deep = seeder.seed(profile, landability_deep=True)
     assert not any("::landable-" in r.subject for r in deep)
+
+
+# --- landable RE-ROUTE of dreamed/confluence discoveries (OPT-IN) -------------
+# When ``landability_deep`` is ON, a dreamed/confluence module that ALSO carries a
+# concrete-landable move routes to that EXECUTABLE objective instead of the
+# recommend-only ``design_task``. Default OFF = byte-identical (round-21 lock).
+
+def _reroute_stub_project(tmp_path):
+    """A real on-disk project whose ``app/calc.py`` holds a genuinely fillable stub
+    (pinned by two witnesses) AND a linked test, so it is a TESTED module that lights
+    up ``fillable_stub_modules`` — the re-route's highest-value probe. Returns
+    (root, seeder)."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "calc.py").write_text(
+        "def total(xs) -> int:\n    ...\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "from app.calc import total\n\n\n"
+        "def test_total():\n"
+        "    assert total([1, 2, 3]) == 6\n"
+        "    assert total([10, 20]) == 30\n",
+        encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    return tmp_path, IdeaSeeder(str(tmp_path))
+
+
+def _tested_confluence_profile(root):
+    """A confluence on ``app/calc.py`` whose families do NOT include "untested"
+    (so the untested test-first exception does not apply) and a linked test."""
+    return ProjectProfile(
+        root=str(root),
+        confluence_modules=[
+            {"module": "app/calc.py", "family_count": 3,
+             "families": ("high-churn", "symbol-hub", "complexity")},
+        ],
+        module_to_tests={"app/calc.py": ["tests/test_calc.py"]},
+        ci_files=["ci.yml"],
+    )
+
+
+def test_confluence_reroute_off_by_default_is_byte_identical(tmp_path):
+    # Flag OFF: a confluence module that COULD re-route stays the recommend-only
+    # confluence root, byte-identical to a plain seed (the round-21 lock).
+    root, seeder = _reroute_stub_project(tmp_path)
+    profile = _tested_confluence_profile(root)
+    plain = seeder.seed(profile)
+    off = seeder.seed(profile, landability_deep=False)
+    assert _snapshot(plain) == _snapshot(off)
+    calc = next(r for r in off if r.subject == "app/calc.py")
+    assert calc.source_facts[0].split(":", 1)[0].strip() == "confluence"
+
+
+def test_confluence_reroute_routes_to_executable_objective(tmp_path):
+    # Flag ON: the TESTED confluence with a fillable stub re-routes to the
+    # implement-stub EXECUTABLE objective, keeping the bare-module subject (so dedup
+    # is unchanged) and a traceable confluence provenance in the fact.
+    from app.engine.idea_action_bridge import _FACT_ACTIONS
+
+    root, seeder = _reroute_stub_project(tmp_path)
+    profile = _tested_confluence_profile(root)
+    deep = seeder.seed(profile, landability_deep=True)
+    calc = next(r for r in deep if r.subject == "app/calc.py")
+    label = calc.source_facts[0].split(":", 1)[0].strip()
+    assert label == "implement-stub"
+    action_type, _desc, executable = _FACT_ACTIONS[label]
+    assert action_type == "implement_stub" and executable is True
+    # Provenance: the fact still names the confluence convergence behind the move.
+    assert "confluence re-route" in calc.source_facts[0]
+    assert "signal families converge" in calc.source_facts[0]
+    # Same bare-module subject as the recommend-only root (dedup preserved).
+    assert calc.subject == "app/calc.py"
+
+
+def test_confluence_reroute_maps_to_real_objective_and_target(tmp_path):
+    # The re-routed root maps through the bridge to a REAL objective + target, and
+    # the lander would produce a real diff (honest, never an over-promise).
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.execution.objectives.implement_stub import plan_implement_stub
+
+    root, seeder = _reroute_stub_project(tmp_path)
+    profile = _tested_confluence_profile(root)
+    deep = seeder.seed(profile, landability_deep=True)
+    calc = next(r for r in deep if r.subject == "app/calc.py")
+    step = IdeaActionBridge().plan_idea(calc)
+    assert step.action_type == "implement_stub"
+    assert step.target == "app/calc.py"
+    assert step.executable is True
+    plan = plan_implement_stub(str(root), step.target)
+    assert plan.new_contents  # the routed objective+target are REAL
+
+
+def test_untested_confluence_keeps_test_first_route(tmp_path):
+    # The SOLE exception: an UNTESTED confluence is NOT re-routed — it keeps its
+    # grounded test-first route even with the flag on and a fillable stub present.
+    root, seeder = _reroute_stub_project(tmp_path)
+    profile = ProjectProfile(
+        root=str(root),
+        confluence_modules=[
+            {"module": "app/calc.py", "family_count": 3,
+             "families": ("high-churn", "symbol-hub", "untested")},
+        ],
+        module_to_tests={"app/calc.py": []},
+        ci_files=["ci.yml"],
+    )
+    deep = seeder.seed(profile, landability_deep=True)
+    calc = next(r for r in deep if r.subject == "app/calc.py")
+    assert calc.source_facts[0].split(":", 1)[0].strip() == "confluence"
+    assert "untested" in calc.source_facts[0]
+
+
+def test_confluence_reroute_is_deterministic(tmp_path):
+    # Two identical deep seeds yield a byte-identical re-routed confluence root.
+    root, seeder = _reroute_stub_project(tmp_path)
+    profile = _tested_confluence_profile(root)
+    a = _snapshot(seeder.seed(profile, landability_deep=True))
+    b = _snapshot(seeder.seed(profile, landability_deep=True))
+    assert a == b
+
+
+def test_confluence_reroute_highest_value_signal_wins(tmp_path):
+    # When a confluence module carries BOTH a fillable stub (implement-stub, 1.00)
+    # and is cover-gaps-able, the HIGHER-value implement-stub wins the re-route.
+    root, seeder = _reroute_stub_project(tmp_path)
+    objective = seeder._landable_reroute("app/calc.py")
+    assert objective is not None
+    assert objective[0] == "implement-stub"
+
+
+def test_reroute_helper_ignores_non_py_subject(tmp_path):
+    # A non-``.py`` subject (an abstract dream insight like "project structure")
+    # carries no per-module move, so the helper returns None (no re-route).
+    _, seeder = _reroute_stub_project(tmp_path)
+    assert seeder._landable_reroute("project structure") is None
+    assert seeder._landable_reroute("app/calc.py::landable-x") is None
+
+
+def test_reroute_helper_none_when_no_landable_move(tmp_path):
+    # A real ``.py`` module with NO landable move yields None — the confluence keeps
+    # its recommend-only route. The module is fully-implemented, fully-annotated AND
+    # already has a linked test, so NONE of the per-module probes (implement-stub /
+    # cover-gaps / wire-exports) fire (no stub, no cover-gap, not a package init).
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "done.py").write_text(
+        "def f(x: int) -> int:\n    return x + 1\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_done.py").write_text(
+        "from app.done import f\n\n\ndef test_f():\n    assert f(1) == 2\n",
+        encoding="utf-8")
+    seeder = IdeaSeeder(str(tmp_path))
+    assert seeder._landable_reroute("app/done.py") is None
+
+
+def _dream_promotions_project(tmp_path, key):
+    """A project with a graduated dream promotion keyed ``key`` and a fillable-stub
+    ``app/calc.py`` so a ``confluence:<module>`` promotion can re-route."""
+    root, seeder = _reroute_stub_project(tmp_path)
+    (tmp_path / ".apex").mkdir()
+    (tmp_path / ".apex" / "dream-promotions.json").write_text(
+        '[{"key": "' + key + '", "text": "calc converges repeatedly", '
+        '"confidence": 0.91, "streak": 4}]', encoding="utf-8")
+    return root, seeder
+
+
+def test_dream_insight_reroute_off_by_default_is_byte_identical(tmp_path):
+    # Flag OFF: a module-bound dream insight stays the recommend-only dream-insight
+    # root, byte-identical to a plain seed.
+    root, seeder = _dream_promotions_project(tmp_path, "confluence:app/calc.py")
+    profile = ProjectProfile(root=str(root), ci_files=["ci.yml"],
+                             module_to_tests={"app/calc.py": ["tests/test_calc.py"]})
+    plain = seeder.seed(profile)
+    off = seeder.seed(profile, landability_deep=False)
+    assert _snapshot(plain) == _snapshot(off)
+    ins = next(r for r in off if r.subject == "app/calc.py")
+    assert ins.source_facts[0].split(":", 1)[0].strip() == "dream-insight"
+
+
+def test_dream_insight_reroute_routes_module_bound_to_objective(tmp_path):
+    # Flag ON: a dream insight BOUND to a module (confluence:<module>) that carries a
+    # fillable stub re-routes to the implement-stub EXECUTABLE objective, with a
+    # traceable dream provenance.
+    from app.engine.idea_action_bridge import _FACT_ACTIONS
+
+    root, seeder = _dream_promotions_project(tmp_path, "confluence:app/calc.py")
+    profile = ProjectProfile(root=str(root), ci_files=["ci.yml"],
+                             module_to_tests={"app/calc.py": ["tests/test_calc.py"]})
+    deep = seeder.seed(profile, landability_deep=True)
+    ins = next(r for r in deep if r.subject == "app/calc.py")
+    label = ins.source_facts[0].split(":", 1)[0].strip()
+    assert label == "implement-stub"
+    assert _FACT_ACTIONS[label][0] == "implement_stub"
+    assert "dream re-route" in ins.source_facts[0]
+    assert "confirmed 4 dreams" in ins.source_facts[0]
+
+
+def test_dream_insight_abstract_not_rerouted(tmp_path):
+    # An ABSTRACT, project-wide dream insight (association → subject "project
+    # structure", not a .py path) carries no per-module move, so even with the flag
+    # on it keeps its recommend-only dream-insight route.
+    root, seeder = _dream_promotions_project(tmp_path, "association:layering")
+    profile = ProjectProfile(root=str(root), ci_files=["ci.yml"])
+    deep = seeder.seed(profile, landability_deep=True)
+    ins = next(r for r in deep if r.subject == "project structure")
+    assert ins.source_facts[0].split(":", 1)[0].strip() == "dream-insight"

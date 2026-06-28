@@ -526,6 +526,26 @@ class IdeaSeeder:
          "Implement the missing function {s} a red test calls — Apex can write and verify it"),
     )
 
+    # The PER-MODULE Tier-1 landable signals a dreamed/confluence module is probed
+    # against to decide whether it should ROUTE to an executable develop objective
+    # instead of the recommend-only ``design_task`` (OPT-IN behind ``landability_deep``;
+    # default OFF = byte-identical seeding). Each is a subset of
+    # ``_LANDABLE_OPPORTUNITY_SIGNALS`` whose hit IS the module path itself, so the
+    # re-routed root keeps the confluence/dream subject (the bare module) — the
+    # bridge derives the action ``target`` straight from it (``subject.split("::")[0]``
+    # → a ``.py`` path) and dedup stays unchanged (the module is claimed exactly
+    # once, as it was before the re-route). ``tdd-implement`` is deliberately
+    # EXCLUDED: it is per-SYMBOL (target ``"<module>:<name>"``), which a bare-module
+    # subject cannot carry without breaking dedup, so it stays a value-led
+    # opportunity (``_seed_landable_opportunities``), never a re-route. Probed in the
+    # SAME descending-buyer-value order, so the highest-value executable move wins.
+    _LANDABLE_REROUTE_SIGNALS: tuple[tuple[str, str], ...] = (
+        # (synthesis signal, objective name = fact_label routing via the bridge)
+        ("fillable_stub_modules", "implement-stub"),
+        ("cover_gaps_modules", "cover-gaps"),
+        ("wire_export_packages", "wire-exports"),
+    )
+
     # Coverage-gradient exposure seed family (DISCOVERY sharpener). A module's
     # exposure = norm(fan-in) * (1 - coverage_depth) * norm(churn) — peaks only
     # for a hub that is BOTH thinly covered AND actively churned. The family is
@@ -580,7 +600,7 @@ class IdeaSeeder:
         # higher-priority family claims a module before a lower one can).
         self._seed_correctness_bugs(roots, seen_subjects, profile)
         self._seed_security_findings(roots, seen_subjects, profile)
-        self._seed_confluences(roots, seen_subjects, profile)
+        self._seed_confluences(roots, seen_subjects, profile, landability_deep)
         self._seed_fragile_modules(roots, seen_subjects, profile)
         self._seed_rule_families(roots, seen_subjects, profile)
         self._seed_shallow_coverage(roots, seen_subjects, profile)
@@ -597,7 +617,7 @@ class IdeaSeeder:
         self._seed_coordinators(roots, seen_subjects, profile)
         self._seed_deep_nesting(roots, seen_subjects, profile)
         self._seed_god_classes(roots, seen_subjects, profile)
-        self._seed_dream_insights(roots, seen_subjects, profile)
+        self._seed_dream_insights(roots, seen_subjects, profile, landability_deep)
         self._seed_knowledge_risks(roots, seen_subjects, profile)
         self._seed_doc_drift(roots, seen_subjects, profile)
         self._seed_python_tooling(roots, seen_subjects, profile)
@@ -827,8 +847,38 @@ class IdeaSeeder:
                 fact_value=fact_value,
             )
 
+    def _landable_reroute(self, module: str) -> tuple[str, str] | None:
+        """The highest-value EXECUTABLE move a dreamed/confluence ``module`` carries,
+        as ``(objective, signal_name)`` — or ``None`` when none honestly holds.
+
+        OPT-IN only (every caller gates this on ``landability_deep``). Probes the
+        PER-MODULE Tier-1 landable signals in fixed descending-buyer-value order
+        (``_LANDABLE_REROUTE_SIGNALS``), each the REAL lander's own diff-producing
+        gate, so a returned objective is one ``apex develop`` could actually land on
+        this exact module — never an over-promise. Best-effort + deterministic: a
+        non-``.py`` subject (an abstract dream insight), an import failure, or a
+        signal that raises all yield ``None``, leaving the caller on its existing
+        ``design_task``/test route. No clock, no randomness — same module → same
+        verdict."""
+        if not module.endswith(".py"):
+            return None
+        try:
+            from app.engine import idea_synthesis_signals as sigs
+        except Exception:
+            return None
+        for signal_name, objective in self._LANDABLE_REROUTE_SIGNALS:
+            try:
+                hits = getattr(sigs, signal_name)(
+                    self.project_root, [module], limit=1)
+            except Exception:
+                continue
+            if module in hits:
+                return objective, signal_name
+        return None
+
     def _seed_confluences(
-        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile,
+        landability_deep: bool = False,
     ) -> None:
         # Confluences (signal convergence): modules named by >= 3 DISTINCT signal
         # families at once — no single lens names them, yet a module under
@@ -844,6 +894,20 @@ class IdeaSeeder:
             count = conv.get("family_count", len(families))
             shown = ", ".join(families)
             untested = "untested" in families
+            # OPT-IN landable re-route (default OFF = byte-identical below): when a
+            # confluence module ALSO carries a concrete-landable move, route it to
+            # that EXECUTABLE objective instead of the recommend-only design_task —
+            # the dream's discovery becomes LANDED code, not a human to-do. An
+            # UNTESTED confluence is the SOLE exception: it keeps its grounded
+            # test-first route (resolved in the bridge's _root_action, which reads
+            # the "untested" marker), the correct first move before changing it.
+            if landability_deep and not untested:
+                routed = self._landable_reroute(module)
+                if routed is not None:
+                    self._seed_confluence_landable(
+                        roots, seen_subjects, profile, module,
+                        count, shown, families, routed)
+                    continue
             explanation, extra_facts = self._abductive_enrichment(families)
             self._append_root(
                 roots, seen_subjects,
@@ -859,6 +923,40 @@ class IdeaSeeder:
                 explanation=explanation,
                 extra_facts=extra_facts,
             )
+
+    def _seed_confluence_landable(
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile,
+        module: str, count: int, shown: str, families: object,
+        routed: tuple[str, str],
+    ) -> None:
+        """Seed a confluence module that carries a concrete-landable move as the
+        EXECUTABLE objective (OPT-IN re-route).
+
+        Keeps the confluence ``subject`` (the bare ``module``) so the bridge derives
+        the action target straight from it and dedup stays identical to the
+        recommend-only confluence root (the module is claimed exactly once — no
+        extra root, no displaced budget). The ``fact_label`` carries the OBJECTIVE
+        name, which the bridge's fact→action mapping routes straight to the
+        resolving executable objective; the title/fact keep a TRACEABLE confluence
+        provenance so a reader sees the dreamed convergence behind the landed move.
+        Abductive enrichment still rides along (the convergence reasoning is part of
+        the fact), exactly as on the recommend-only confluence root."""
+        objective, signal_name = routed
+        explanation, extra_facts = self._abductive_enrichment(families)
+        self._append_root(
+            roots, seen_subjects,
+            title=(f"Land {objective} on {module} — {count} independent pressures "
+                   f"converge ({shown}), and Apex can finish this one"),
+            subject=module,
+            fact_label=objective,
+            fact_value=(f"{module} ({objective} would produce a verified diff here; "
+                        f"{count} signal families converge: {shown}) "
+                        f"[confluence re-route via {signal_name}]"),
+            anchors=self._module_anchors(profile, module),
+            quantified=self._quantified_clause(profile, module, name_targets=True),
+            explanation=explanation,
+            extra_facts=extra_facts,
+        )
 
     @staticmethod
     def _abductive_enrichment(
@@ -1546,7 +1644,8 @@ class IdeaSeeder:
             )
 
     def _seed_dream_insights(
-        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
+        self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile,
+        landability_deep: bool = False,
     ) -> None:
         # Dream insights: discoveries the nightly dream CONFIRMED across multiple
         # dreams and graduated (high confidence + persistence). The organism
@@ -1554,6 +1653,20 @@ class IdeaSeeder:
         # repeatedly-confirmed law ever becomes a development idea.
         for insight in self._dream_promotions()[:2]:
             subject = insight.get("subject") or "project structure"
+            # OPT-IN landable re-route (default OFF = byte-identical below): a dream
+            # insight BOUND to a concrete module (a graduated ``confluence:<module>``
+            # promotion, whose subject is that ``.py`` path) that ALSO carries a
+            # concrete-landable move routes to that EXECUTABLE objective instead of
+            # the recommend-only design_task — the dream's hardest-won discovery
+            # becomes LANDED code. An abstract, project-wide insight (subject
+            # "project structure", not a ``.py`` path) carries no per-module move, so
+            # ``_landable_reroute`` returns None and it keeps its recommend-only route.
+            if landability_deep:
+                routed = self._landable_reroute(subject)
+                if routed is not None:
+                    self._seed_dream_insight_landable(
+                        roots, seen_subjects, subject, insight, routed)
+                    continue
             self._append_root(
                 roots, seen_subjects,
                 title=f"Act on a confirmed pattern — {insight['text']}",
@@ -1562,6 +1675,33 @@ class IdeaSeeder:
                 fact_value=(f"{insight['key']} ({int(insight.get('confidence', 0) * 100)}% "
                             f"confidence, confirmed {insight.get('streak', 0)} dreams)"),
             )
+
+    def _seed_dream_insight_landable(
+        self, roots: list[IdeaNode], seen_subjects: set, subject: str,
+        insight: dict, routed: tuple[str, str],
+    ) -> None:
+        """Seed a module-bound dream insight that carries a concrete-landable move
+        as the EXECUTABLE objective (OPT-IN re-route).
+
+        Keeps the insight ``subject`` (the bare module) so the bridge derives the
+        action target from it and dedup is identical to the recommend-only insight
+        root (the module is claimed exactly once — no extra root). The ``fact_label``
+        carries the OBJECTIVE name (routed to the resolving executable objective by
+        the bridge), and the title/fact keep a TRACEABLE dream provenance (the
+        confirmed pattern + confidence/streak) so the landed move stays auditable to
+        the discovery behind it."""
+        objective, signal_name = routed
+        self._append_root(
+            roots, seen_subjects,
+            title=(f"Land {objective} on {subject} — a confirmed pattern Apex can "
+                   f"finish: {insight['text']}"),
+            subject=subject,
+            fact_label=objective,
+            fact_value=(f"{subject} ({objective} would produce a verified diff here) "
+                        f"[dream re-route via {signal_name}: {insight['key']}, "
+                        f"{int(insight.get('confidence', 0) * 100)}% confidence, "
+                        f"confirmed {insight.get('streak', 0)} dreams]"),
+        )
 
     def _seed_knowledge_risks(
         self, roots: list[IdeaNode], seen_subjects: set, profile: ProjectProfile
