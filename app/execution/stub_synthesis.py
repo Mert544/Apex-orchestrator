@@ -154,14 +154,33 @@ def find_stub_functions(source: str) -> list[StubFunction]:
     """Every stub function in ``source`` (module- or class-level), source-ordered.
 
     A function is a stub when :func:`_is_stub_body` holds. Deterministic: the
-    list is in (lineno, col) order. Returns ``[]`` on a syntax error."""
+    list is in (lineno, col) order. Returns ``[]`` on a syntax error.
+
+    INTERFACE DECLARATIONS are NOT stubs and are never yielded — filling them
+    would land type-incorrect garbage in code the runtime never executes as
+    written (a body that can even pass a test-based gate WITHOUT running it: a
+    false-green). Three shapes are refused, all conservatively read from the AST:
+
+    * a method of a class that DIRECTLY subclasses ``Protocol`` (any base named
+      ``Protocol``, incl. ``typing.Protocol``) — the ``...`` is the structural
+      contract, not an unimplemented body;
+    * a function/method decorated ``@abstractmethod`` / ``@abc.abstractmethod`` —
+      the ``raise NotImplementedError`` IS the abstract declaration;
+    * a function/method decorated ``@overload`` / ``@typing.overload`` — the
+      ``...`` is an overload SIGNATURE; the real impl follows separately.
+
+    Refusing is always safe (worst case: an under-fill); a genuine module-level or
+    plain-class stub in a NON-Protocol, NON-abstract, NON-overload context is
+    discovered exactly as before (byte-identical)."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return []
     lines = source.splitlines()
     out: list[StubFunction] = []
-    for node, is_method in _iter_functions(tree):
+    for node, is_method, enclosing in _iter_functions(tree):
+        if _is_interface_declaration(node, enclosing):
+            continue  # Protocol method / @abstractmethod / @overload — never fill
         if not _is_stub_body(node, lines):
             continue
         lineno = node.lineno
@@ -179,29 +198,86 @@ def find_stub_functions(source: str) -> list[StubFunction]:
 
 
 def _iter_functions(tree: ast.Module):
-    """Yield ``(func_node, is_method)`` for every function defined directly at
-    module level or directly inside a class body. Nested functions are skipped —
-    their contract is not independently testable from outside."""
+    """Yield ``(func_node, is_method, enclosing_class)`` for every function defined
+    directly at module level or directly inside a class body. ``enclosing_class``
+    is the owning :class:`ast.ClassDef` for a method, or ``None`` at module level —
+    the caller needs it to tell a Protocol-interface method from a real stub.
+    Nested functions are skipped — their contract is not independently testable
+    from outside."""
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            yield node, False
+            yield node, False, None
         elif isinstance(node, ast.ClassDef):
             for child in node.body:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    yield child, True
+                    yield child, True, node
+
+
+def _is_interface_declaration(node: ast.FunctionDef | ast.AsyncFunctionDef,
+                              enclosing: ast.ClassDef | None) -> bool:
+    """True when ``node`` is an INTERFACE DECLARATION rather than a fillable stub:
+    a method of a ``Protocol`` class, or a function/method decorated
+    ``@abstractmethod`` or ``@overload``. Such bodies (``...`` / ``raise
+    NotImplementedError``) are contracts, not unimplemented code — filling them
+    lands garbage the runtime never runs as written. Conservative: decided from the
+    AST alone, no import/MRO resolution (a refusal is always the safe direction)."""
+    if enclosing is not None and _is_protocol_class(enclosing):
+        return True
+    return _has_refusing_decorator(node)
+
+
+def _is_protocol_class(cls: ast.ClassDef) -> bool:
+    """True when ``cls`` DIRECTLY subclasses ``Protocol`` — any base whose name is
+    ``Protocol``, matching both a bare ``Protocol`` (``ast.Name``) and a dotted
+    ``typing.Protocol`` (``ast.Attribute``). Conservative by design: a direct
+    Protocol base is enough; we do not resolve imports or a transitive MRO."""
+    for base in cls.bases:
+        if isinstance(base, ast.Name) and base.id == "Protocol":
+            return True
+        if isinstance(base, ast.Attribute) and base.attr == "Protocol":
+            return True
+    return False
+
+
+def _has_refusing_decorator(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when ``node`` carries an ``@abstractmethod`` or ``@overload`` decorator
+    (``abc.abstractmethod`` / ``typing.overload`` included). Matches the bare-name
+    (``ast.Name``) and dotted (``ast.Attribute``) forms, and defensively unwraps a
+    call form (``ast.Call`` -> ``.func``) though these decorators take no args."""
+    for dec in node.decorator_list:
+        if isinstance(dec, ast.Call):
+            dec = dec.func
+        if isinstance(dec, ast.Name) and dec.id in _REFUSING_DECORATORS:
+            return True
+        if isinstance(dec, ast.Attribute) and dec.attr in _REFUSING_DECORATORS:
+            return True
+    return False
+
+
+# Decorators whose presence means the ``...``/``raise NotImplementedError`` body is
+# a DECLARATION, never an unimplemented stub: an abstract method or an overload
+# signature. Filling either lands code the runtime never runs as written.
+_REFUSING_DECORATORS = frozenset({"abstractmethod", "overload"})
 
 
 # --- pinned-test discovery ---------------------------------------------------
 
 def _is_test_or_fixture(rel: str) -> bool:
-    """True for an example/test/fixture path — files Apex must never edit."""
+    """True for an example/test/fixture path — files Apex must never edit.
+
+    A ``.pyi`` STUB file is refused here too: every body in a type stub is ``...``
+    by definition (it is a signature-only INTERFACE, never executed), so each one
+    would look like a fillable stub and get garbage spliced in. Refusing the whole
+    file at this path gate is the soundest place — ``find_stub_functions`` sees only
+    source text, not the path, so the ``.pyi`` decision must live where the rel IS
+    known (this gate feeds the implement-stub scan oracle)."""
     p = rel.replace("\\", "/").lower()
     name = Path(p).name
     return (
         p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
         or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
         or name.startswith("test_") or name.endswith("_test.py")
-        or name == "conftest.py"
+        or name == "conftest.py" or name.endswith(".pyi")
     )
 
 
@@ -4096,7 +4172,7 @@ def _header_last_line(source: str, stub: StubFunction) -> int | None:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return None
-    for node, _is_method in _iter_functions(tree):
+    for node, _is_method, _enclosing in _iter_functions(tree):
         if node.lineno == stub.lineno and node.name == stub.name:
             first = node.body[0]
             # Keep a leading docstring intact; start the new body after it.

@@ -429,14 +429,20 @@ def _union_passes(root: Path, module_rel: str, candidate: str,
 
 def _is_fixture_path(path: str) -> bool:
     """Example/test/fixture files are REFUSED — Apex never edits the suite it is
-    gated by (a local copy on purpose: this objective stays self-contained)."""
+    gated by (a local copy on purpose: this objective stays self-contained).
+
+    A ``.pyi`` type-stub file is refused too: every body in it is ``...`` by
+    definition (a signature-only INTERFACE, never executed), so filling one would
+    splice garbage into a declaration. This is the apply-side twin of the same
+    ``.pyi`` guard the discovery scan applies — the planner sees the rel here, so
+    this is where a ``.pyi`` is turned away before any stub is even looked for."""
     p = path.replace("\\", "/").lower()
     name = Path(p).name
     return (
         p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
         or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
         or name.startswith("test_") or name.endswith("_test.py")
-        or name == "conftest.py"
+        or name == "conftest.py" or name.endswith(".pyi")
     )
 
 
