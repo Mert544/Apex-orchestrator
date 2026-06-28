@@ -441,11 +441,40 @@ def _subject_text(lines: list[str], expr: ast.expr) -> str:
     return lines[expr.lineno - 1][expr.col_offset: expr.end_col_offset]
 
 
+def _last_in_block_ids(tree: ast.Module) -> set[int]:
+    """The ``id()``s of every statement that is the LAST one in its immediate suite —
+    every non-empty ``body``/``orelse``/``finalbody``, every ``except``-handler body,
+    every ``match``-case body. A dispatch HEAD whose id is here ends its block, so an
+    unhandled discriminant value falls off that block SILENTLY and the sentinel makes it
+    loud (the targeted case). A dispatch NOT here is FOLLOWED by code that already reaches
+    the unhandled value, so a sentinel would change behaviour — the two ``mode.py``
+    failures (a guard-``return`` before later handlers; an ``if``/``elif`` before a
+    fall-through ``return``). We test only the head's membership of its PARENT suite; the
+    head's own ``orelse`` (the ``elif`` links) is a different node id and irrelevant."""
+    out: set[int] = set()
+    for node in ast.walk(tree):
+        for attr in ("body", "orelse", "finalbody"):
+            block = getattr(node, attr, None)
+            if isinstance(block, list) and block:
+                out.add(id(block[-1]))
+        for handler in getattr(node, "handlers", ()):
+            if handler.body:
+                out.add(id(handler.body[-1]))
+        for case in getattr(node, "cases", ()):
+            if case.body:
+                out.add(id(case.body[-1]))
+    return out
+
+
 def _match_edit(node: ast.Match, tree: ast.Module, lines: list[str],
-                enums: dict[str, frozenset[str]]) -> _Edit | None:
+                enums: dict[str, frozenset[str]], last_ids: set[int]) -> _Edit | None:
     """The append edit for one ``match`` dispatch, or ``None`` (refuse). Refuses unless
-    the subject is a bare Name, its set is provably closed, the cases carry no
-    catch-all and only mappable patterns, and at least one member is unhandled."""
+    the dispatch is the LAST statement in its block (else following code already reaches
+    the unhandled value — a sentinel would change behaviour), the subject is a bare Name,
+    its set is provably closed, the cases carry no catch-all and only mappable patterns,
+    and at least one member is unhandled."""
+    if id(node) not in last_ids:
+        return None  # code follows the match — the unhandled value is not a fall-through
     subject = _subject_name(node.subject)
     if subject is None:
         return None  # an unmodelled match subject
@@ -460,10 +489,15 @@ def _match_edit(node: ast.Match, tree: ast.Module, lines: list[str],
 
 
 def _if_edit(node: ast.If, tree: ast.Module, lines: list[str],
-             enums: dict[str, frozenset[str]]) -> _Edit | None:
+             enums: dict[str, frozenset[str]], last_ids: set[int]) -> _Edit | None:
     """The append edit for one ``if``/``elif`` chain head, or ``None`` (refuse).
-    Refuses unless every branch tests the SAME bare-Name subject against a member, the
-    set is provably closed, there is no trailing ``else:``, and a member is unhandled."""
+    Refuses unless the chain is the LAST statement in its block (else following code —
+    a later guard or a fall-through ``return`` — already reaches the unhandled value, so
+    the sentinel would change behaviour), every branch tests the SAME bare-Name subject
+    against a member, the set is provably closed, there is no trailing ``else:``, and a
+    member is unhandled."""
+    if id(node) not in last_ids:
+        return None  # code follows the chain — the unhandled value is not a fall-through
     if _has_trailing_else(node):
         return None  # an existing catch-all — already total
     subject = _subject_name(node.test.left) if isinstance(node.test, ast.Compare) else None
@@ -500,12 +534,13 @@ def _collect_edits(tree: ast.Module, lines: list[str]) -> list[_Edit]:
     fillable closed-set dispatch."""
     enums = _enum_member_map(tree)
     elif_ids = _elif_if_nodes(tree)
+    last_ids = _last_in_block_ids(tree)
     edits: list[_Edit] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Match):
-            edit = _match_edit(node, tree, lines, enums)
+            edit = _match_edit(node, tree, lines, enums, last_ids)
         elif isinstance(node, ast.If) and id(node) not in elif_ids:
-            edit = _if_edit(node, tree, lines, enums)
+            edit = _if_edit(node, tree, lines, enums, last_ids)
         else:
             continue
         if edit is not None:

@@ -299,6 +299,124 @@ def test_refuses_syntax_error():
     assert complete_match_exhaustiveness("def (:\n") is None
 
 
+# --- the "dispatch must be the LAST statement in its block" soundness guard ---
+# When code FOLLOWS the dispatch, the "unhandled" value is NOT a silent
+# fall-through — that following code (a later guard, or the function's fall-through
+# return) already reaches it, so a sentinel ``else:`` / ``case _:`` would CHANGE
+# behaviour. Refuse. Only a TERMINAL dispatch (nothing after it in the block) has
+# the silent fall-through the sentinel is allowed to make loud. Field bug: both
+# shapes below are exactly what fired on ``app/policy/mode.py``.
+
+def test_refuses_guard_return_before_later_handlers():
+    # The ``_default_safety_policy`` shape: a standalone ``if mode == E.REPORT:
+    # return ...`` guard, then SUBSEQUENT statements handle SUPERVISED / default.
+    # An ``else: raise`` after the guard makes those later handlers UNREACHABLE, so
+    # the dispatch (not the last statement in its block) must be refused.
+    src = (
+        "from enum import Enum\n\n\nclass Mode(Enum):\n"
+        "    REPORT = 1\n    SUPERVISED = 2\n    AUTO = 3\n\n\n"
+        "def policy(mode: Mode) -> int:\n"
+        "    if mode == Mode.REPORT:\n        return 0\n"
+        "    if mode == Mode.SUPERVISED:\n        return 5\n"
+        "    return 20\n"
+    )
+    assert complete_match_exhaustiveness(src) is None  # later code reaches the value
+
+
+def test_refuses_if_elif_before_fallthrough_return():
+    # The ``from_env`` shape: an ``if E.SUPERVISED / elif E.AUTO`` chain that does
+    # NOT return, followed by a ``return ...``. ``E.REPORT`` intentionally falls
+    # through the chain to that return. An ``else: raise`` would CRASH the valid
+    # unhandled member — the chain is not the last statement in its block, so refuse.
+    src = (
+        "from enum import Enum\n\n\nclass Mode(Enum):\n"
+        "    REPORT = 1\n    SUPERVISED = 2\n    AUTO = 3\n\n\n"
+        "def build(mode: Mode) -> dict:\n    flags = {}\n"
+        "    if mode == Mode.SUPERVISED:\n        flags['s'] = True\n"
+        "    elif mode == Mode.AUTO:\n        flags['a'] = True\n"
+        "    return flags\n"
+    )
+    assert complete_match_exhaustiveness(src) is None  # REPORT falls through to return
+
+
+def test_refuses_match_before_following_code():
+    # The symmetric ``match`` case: a ``match`` missing a member, but followed by
+    # more statements — the unhandled value reaches that code today, so a trailing
+    # ``case _: raise`` would change behaviour. Refuse.
+    src = (
+        "from enum import Enum\n\n\nclass S(Enum):\n"
+        "    A = 1\n    B = 2\n    C = 3\n\n\n"
+        "def f(s: S) -> int:\n    seen = 0\n"
+        "    match s:\n        case S.A:\n            seen = 1\n"
+        "        case S.B:\n            seen = 2\n"
+        "    return seen\n"
+    )
+    assert complete_match_exhaustiveness(src) is None  # the match is not last in block
+
+
+def test_still_fires_on_terminal_if_chain_missing_arm():
+    # No over-refusal: a closed ``if``/``elif`` missing a member with NOTHING after
+    # it in the block IS the silent fall-through — it still gains a trailing
+    # ``else:`` sentinel.
+    src = (
+        "from enum import Enum\n\n\nclass S(Enum):\n"
+        "    A = 1\n    B = 2\n    C = 3\n\n\n"
+        "def f(s: S) -> int:\n"
+        "    if s == S.A:\n        return 1\n"
+        "    elif s == S.B:\n        return 2\n"
+    )
+    out = complete_match_exhaustiveness(src)
+    assert out is not None
+    compile(out, "<m>", "exec")
+    assert out.rstrip().endswith('raise AssertionError(f"unhandled s: {s!r}")')
+
+
+def test_still_fires_on_terminal_match_missing_case():
+    # No over-refusal: a closed ``match`` missing a member with NOTHING after it
+    # still gains a trailing ``case _:`` sentinel.
+    src = (
+        "from enum import Enum\n\n\nclass S(Enum):\n"
+        "    A = 1\n    B = 2\n    C = 3\n\n\n"
+        "def f(s: S) -> int:\n    match s:\n"
+        "        case S.A:\n            return 1\n"
+        "        case S.B:\n            return 2\n"
+    )
+    out = complete_match_exhaustiveness(src)
+    assert out is not None
+    compile(out, "<m>", "exec")
+    assert "        case _:\n" in out
+    assert out.rstrip().endswith('raise AssertionError(f"unhandled s: {s!r}")')
+
+
+def test_nested_terminal_dispatch_inside_block_still_fires():
+    # A dispatch that is the LAST statement of a NESTED block (an ``if`` body) is
+    # still terminal in ITS suite — the unhandled value falls off that nested block
+    # silently — so it still fires. Guards the helper against only checking top level.
+    src = (
+        "from enum import Enum\n\n\nclass S(Enum):\n"
+        "    A = 1\n    B = 2\n    C = 3\n\n\n"
+        "def f(s: S, go: bool) -> int:\n    if go:\n"
+        "        if s == S.A:\n            return 1\n"
+        "        elif s == S.B:\n            return 2\n"
+        "    return 0\n"
+    )
+    out = complete_match_exhaustiveness(src)
+    assert out is not None
+    compile(out, "<m>", "exec")
+    assert out.count("raise AssertionError") == 1
+
+
+def test_does_not_edit_the_live_mode_policy_source():
+    # SANITY-REPRO of the field bug: running the transform over the LITERAL shipped
+    # ``app/policy/mode.py`` must return NO edit. Both its dispatches are followed by
+    # code (a guard-return before later handlers; an if/elif before a fall-through
+    # ``return cls(...)``), so a sentinel would have made valid modes crash/unreachable.
+    from pathlib import Path
+
+    src = Path("app/policy/mode.py").read_text(encoding="utf-8")
+    assert complete_match_exhaustiveness(src) is None
+
+
 # --- idempotency / determinism ----------------------------------------------
 
 def test_idempotent_second_run_is_noop():
