@@ -116,6 +116,12 @@ def test_session_lands_multiple_objective_types_in_one_motion(tmp_path: Path):
 
 def test_combined_report_counts_and_diff_present(tmp_path: Path):
     _foreign_project(tmp_path)
+    # A GENUINELY-uncovered module: no test imports ``widgets.orphan`` (not even
+    # transitively), so a modernize move on it is the honest ``weak`` tier — the
+    # fixture's standing witness that uncovered moves are never blended into the
+    # verified headline.
+    (tmp_path / "widgets" / "orphan.py").write_text(
+        "def is_blank(v):\n    return v == None\n", encoding="utf-8")
     report = run_develop_session(str(tmp_path), apply=True, verify=True)
 
     # The combined report aggregates files + line deltas + the unified diff.
@@ -123,13 +129,19 @@ def test_combined_report_counts_and_diff_present(tmp_path: Path):
     assert report.lines_added > 0 and report.lines_removed > 0
     assert "return a + b" in report.diff
     # COVERAGE-AWARE honesty: a green suite is "verified" ONLY for moves a test
-    # actually exercises. The four moves on modules a test imports
-    # (mathlib/models/util) earn ``verified``; the ``wire-exports`` move edits
-    # ``widgets/__init__.py`` — which NO test imports — so it is the honest
-    # ``weak`` tier (suite green but nothing references the change), never blended
-    # into the verified headline. Split must add back up to the total.
+    # actually exercises. The ``wire-exports`` edit to ``widgets/__init__.py`` is
+    # ``verified``: importing ``widgets.mathlib`` transitively executes the
+    # package ``__init__`` at runtime, so its ``__all__`` edit is genuinely
+    # module-covered (a Tier-0 refactor verified at module coverage). The
+    # modernize edit to ``widgets/orphan.py`` — which NO test imports — is the
+    # honest ``weak`` tier (suite green but nothing references the change). Split
+    # must add back up to the total.
     assert report.verified_moves + report.weak_moves == report.total_moves
-    assert report.weak_moves >= 1  # the uncovered __init__ edit
+    assert report.weak_moves >= 1  # the uncovered widgets/orphan.py modernize edit
+    assert any(
+        m.objective == "wire-exports" and m.tier == TIER_VERIFIED
+        for o in report.objectives for m in o.moves
+    )  # the __init__ export edit is now correctly module-covered, not weak
     assert report.no_suite_moves == 0
 
     md = render_session_markdown(report)
