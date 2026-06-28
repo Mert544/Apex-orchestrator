@@ -1508,16 +1508,6 @@ def _entry_guard_bindings(stmt: ast.stmt) -> list[tuple[str, str]]:
     return _if_negation_bindings(stmt)
 
 
-def _if_negation_raises(stmt: ast.stmt) -> tuple[str, str] | None:
-    """``(param, class)`` for a SINGLE ``if not isinstance(p, Cls): raise ...``,
-    else ``None``. The single-binding view kept for backward compatibility;
-    :func:`_if_negation_bindings` is the conjunction-aware form the prologue
-    uses. Returns the lone binding only when the guard test binds EXACTLY one
-    parameter (a bare single-class isinstance)."""
-    bindings = _if_negation_bindings(stmt)
-    return bindings[0] if len(bindings) == 1 else None
-
-
 def _entry_guard_binding(stmt: ast.stmt) -> tuple[str, str] | None:
     """``(param, class)`` when ``stmt`` is an accepted SINGLE-parameter runtime
     type guard, else ``None``. The single-binding view kept for backward
