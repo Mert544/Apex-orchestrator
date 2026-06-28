@@ -238,10 +238,28 @@ def land_factors(project_root: str | Path) -> dict[str, float]:
     return out
 
 
+def _board_value_weight(name: str, *, active: bool) -> float:
+    """The buyer-value weight an objective carries in ``priority`` for this board:
+    the real ``objective_value_weight`` when the value lens is ``active`` (the
+    ``--concrete`` board OR an opted-in ``value_lead`` board), else the NEUTRAL 1.0
+    that keeps the default fast board byte-identical. Factored out of
+    ``rank_objectives`` so the gate is one named, testable decision."""
+    return objective_value_weight(name) if active else 1.0
+
+
+def _preview_value(name: str, *, on: bool) -> float:
+    """The display-only ``preview_value`` annotation: the real buyer value when the
+    read-only preview lens is ``on``, else 0.0 (so ``to_dict`` omits it and
+    ``apex plan --json`` stays byte-identical). Factored out of ``rank_objectives``;
+    NEVER read by ``priority`` or the sort key."""
+    return objective_value_weight(name) if on else 0.0
+
+
 def rank_objectives(project_root: str | Path,
                     objectives: list[str] | None = None,
                     *, include_expensive: bool = False,
                     exclude: set[str] | None = None,
+                    value_lead: bool = False,
                     value_weight_preview: bool = False) -> list[GoalRanking]:
     """Every objective ranked by pending fixable debt AMPLIFIED by learned
     payoff, worst-and-most-profitable first.
@@ -257,6 +275,19 @@ def rank_objectives(project_root: str | Path,
     proved cannot move (every candidate blocked) so the board stops re-ranking
     them to the top each round. It only drops names — it never reorders the
     survivors — and an empty/None set leaves the board byte-identical to before.
+
+    ``value_lead`` (opt-in, default OFF) lets the buyer-value weight LEAD the
+    DEFAULT fast board too — the same ``objective_value_weight`` lens that already
+    drives the ``--concrete`` board, only now WITHOUT pulling in the expensive
+    objectives. It RE-WEIGHTS the objectives already on the board (so a cheap
+    Tier-1 ``harden``/``raise-from`` leads a high-pending ``sort-imports``); it
+    NEVER changes board MEMBERSHIP — that stays gated SOLELY by
+    ``include_expensive``, so an expensive objective (e.g. ``implement-stub``)
+    is STILL filtered when ``value_lead=True`` and ``include_expensive=False``,
+    and the cheap board still runs ZERO pytest for selection. With
+    ``value_lead=False`` AND ``include_expensive=False`` the value weight is held
+    NEUTRAL at exactly 1.0, so the default board's priority and ordering are
+    byte-identical to before (the round-21 trust property).
 
     ``value_weight_preview`` is a READ-ONLY display lens: when on it stamps each
     ranking's NEW ``preview_value`` field with ``objective_value_weight(name)``
@@ -284,6 +315,13 @@ def rank_objectives(project_root: str | Path,
     if exclude:
         names = [n for n in names if n not in exclude]
     order = {name: i for i, name in enumerate(available_objectives())}
+    # The buyer-value weight ENTERS priority on the include_expensive (--concrete)
+    # board, where expensive concrete is already surfaced, OR when value_lead opts
+    # the SAME lens onto the default fast board (re-weighting only — membership
+    # stays gated solely by include_expensive above). With NEITHER flag it is held
+    # NEUTRAL at 1.0 so priority and ordering are byte-identical to today (the trust
+    # property is STRUCTURAL, not a comment). Computed once for the whole board.
+    value_on = include_expensive or value_lead
     rankings: list[GoalRanking] = []
     for name in names:
         if name not in table:
@@ -293,22 +331,18 @@ def rank_objectives(project_root: str | Path,
             pending = float(fitness_fn(project_root))
         except Exception:
             pending = 0.0
-        # The buyer-value weight ENTERS priority ONLY on the include_expensive
-        # (--concrete) board, where expensive concrete is already surfaced; on the
-        # default fast board it is held NEUTRAL at 1.0 so priority and ordering are
-        # byte-identical to today (the trust property is STRUCTURAL, not a comment).
         rankings.append(GoalRanking(objective=name, pending=pending,
                                     goal=objective_parent(name),
                                     payoff=weights.get(name, 0.0),
                                     reliability=reliab.get(name, 1.0),
                                     expensive=name in exp,
-                                    value_weight=(objective_value_weight(name)
-                                                  if include_expensive else 1.0),
+                                    value_weight=_board_value_weight(name,
+                                                                     active=value_on),
                                     # Display-only buyer-value annotation for the
                                     # read-only preview; NEVER read by priority or
                                     # the sort key (apply order stays identical).
-                                    preview_value=(objective_value_weight(name)
-                                                   if value_weight_preview else 0.0)))
+                                    preview_value=_preview_value(name,
+                                                                 on=value_weight_preview)))
     # Highest priority first; among priority ties the higher buyer-value objective
     # leads (so on the --concrete board an equal-priority concrete banks before a
     # cheaper tidy), then the cheaper objective (expensive=False) banks before an
@@ -366,7 +400,8 @@ def _take_first_landing_move(project_root: str | Path, ranked: list[GoalRanking]
 def ascend(project_root: str | Path, max_rounds: int = 4,
            target_score: int | None = None, apply: bool = True,
            verify: bool = True, goal: str = "", max_steps: int = 25,
-           scope_verify: bool = False, include_expensive: bool = False) -> AscendReport:
+           scope_verify: bool = False, include_expensive: bool = False,
+           value_lead: bool = False) -> AscendReport:
     """Climb the project's health by repeatedly developing its worst fixable
     debt, each round suite-gated and grade-proven, to a fixpoint.
 
@@ -374,13 +409,19 @@ def ascend(project_root: str | Path, max_rounds: int = 4,
     is a preview: it ranks the board and reports the move it WOULD make next,
     changing nothing. ``scope_verify`` gates each move against only the impacted
     tests (fast enough to climb a large project's OWN body); run the full suite
-    afterwards as the backstop."""
+    afterwards as the backstop.
+
+    ``value_lead`` (opt-in, default OFF) re-weights the board by buyer value so a
+    cheap Tier-1 fix leads a high-pending tidy; it NEVER unlocks expensive
+    objectives (membership stays gated solely by ``include_expensive``). Off ⇒
+    byte-identical to before."""
     restrict = _goal_objectives(goal)
     report = AscendReport(applied=apply, target_score=target_score)
 
     if not apply:
         report.preview = [r for r in rank_objectives(project_root, restrict,
-                                                      include_expensive=include_expensive)
+                                                      include_expensive=include_expensive,
+                                                      value_lead=value_lead)
                           if r.pending > 0]
         return report
 
@@ -393,7 +434,8 @@ def ascend(project_root: str | Path, max_rounds: int = 4,
     for n in range(1, max_rounds + 1):
         ranked = [r for r in rank_objectives(project_root, restrict,
                                               include_expensive=include_expensive,
-                                              exclude=blocked_run)
+                                              exclude=blocked_run,
+                                              value_lead=value_lead)
                   if r.pending > 0]
         if not ranked:
             report.fixpoint = True

@@ -943,19 +943,35 @@ def _develop_all(args, target, grade_before, max_steps, verify, apply) -> int:
     return 0
 
 
-def _auto_selected_objectives(target, concrete: bool) -> list[str]:
+def _auto_selected_objectives(target, concrete: bool,
+                              value_lead: bool = False) -> list[str]:
     """The objectives the autonomous develop sweep will pursue — chosen by each
     objective's OWN fitness/grounding, not by name. Reuses the same fitness-ranked
     board ``apex plan`` / ``apex ascend`` use (``rank_objectives``), keeping ONLY
     the ones that carry qualifying targets right now (``pending > 0``). Off the
     fast default board are the EXPENSIVE concrete objectives (implement-stub,
     wire-exports, strengthen-tests, …); ``concrete=True`` opts them in, exactly as
-    ``--concrete`` does for plan/ascend. Deterministic: the board's order is a
-    fixed function of measured fitness — no clock/random."""
+    ``--concrete`` does for plan/ascend. ``value_lead=True`` (opt-in) re-orders the
+    SAME board by buyer value (a cheap Tier-1 fix leads a high-pending tidy) WITHOUT
+    unlocking the expensive objectives — membership stays gated solely by
+    ``concrete``. Deterministic: the board's order is a fixed function of measured
+    fitness — no clock/random."""
     from app.engine.ascend import rank_objectives
 
-    return [r.objective for r in rank_objectives(str(target), include_expensive=concrete)
+    return [r.objective for r in rank_objectives(str(target), include_expensive=concrete,
+                                                 value_lead=value_lead)
             if r.pending > 0]
+
+
+def _select_for_sweep(target, concrete: bool, value_lead: bool) -> list[str]:
+    """The autonomous sweep's objective set. ``value_lead`` is opt-in: when OFF
+    (the default) the selector is called with the SAME two-arg signature as before,
+    so the byte-identical default path — and every existing 2-arg test stub of
+    ``_auto_selected_objectives`` — is preserved; the third arg only ever appears
+    once the user opted in."""
+    if value_lead:
+        return _auto_selected_objectives(target, concrete, value_lead)
+    return _auto_selected_objectives(target, concrete)
 
 
 def _withheld_summary(results: list) -> tuple[int, str]:
@@ -999,7 +1015,8 @@ def _develop_auto(args, target, grade_before, max_steps, verify, apply) -> int:
     concrete = getattr(args, "concrete", False)
     # COVERED-ONLY is the sweep default; ``--allow-weak`` restores today's apply.
     covered_only = apply and not getattr(args, "allow_weak", False)
-    selected = _auto_selected_objectives(target, concrete)
+    selected = _select_for_sweep(target, concrete,
+                                 getattr(args, "value_lead", False))
     results = []
     for objective in selected:
         result = compile_objective(str(target), objective=objective,
@@ -1722,7 +1739,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
         from app.engine.fractal_develop import resolve_goal
         restrict = resolve_goal(goal)
     rankings = rank_objectives(str(target), restrict,
-                               include_expensive=getattr(args, "concrete", False))
+                               include_expensive=getattr(args, "concrete", False),
+                               value_lead=getattr(args, "value_lead", False))
     if args.json:
         print(json.dumps([r.to_dict() for r in rankings], indent=2))
     else:
@@ -1744,7 +1762,8 @@ def cmd_ascend(args: argparse.Namespace) -> int:
         goal=getattr(args, "goal", "") or "",
         max_steps=getattr(args, "max_steps", 25),
         scope_verify=getattr(args, "fast", False),
-        include_expensive=getattr(args, "concrete", False))
+        include_expensive=getattr(args, "concrete", False),
+        value_lead=getattr(args, "value_lead", False))
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
     else:
@@ -1770,6 +1789,13 @@ def register_parsers(subparsers) -> None:
         help="Include the EXPENSIVE concrete objectives (implement-stub, "
              "wire-exports, strengthen-tests) in the climb — the highest-value "
              "develop moves, off the fast default board")
+    plan_parser.add_argument(
+        "--value-lead", action="store_true", dest="value_lead",
+        help="Re-weight the board by BUYER VALUE so a cheap Tier-1 fix (harden, "
+             "raise-from, infer-type-hints) leads a high-pending idiom tidy "
+             "(sort-imports). Does NOT unlock the expensive concrete objectives "
+             "(membership still needs --concrete); only re-orders the cheap board. "
+             "Off by default (byte-identical); deterministic")
     plan_parser.add_argument("--json", action="store_true", help="Emit JSON")
     plan_parser.set_defaults(func=cmd_plan)
 
@@ -1801,6 +1827,13 @@ def register_parsers(subparsers) -> None:
         help="Include the EXPENSIVE concrete objectives (implement-stub, "
              "wire-exports, strengthen-tests) in the climb — the highest-value "
              "develop moves, off the fast default board")
+    ascend_parser.add_argument(
+        "--value-lead", action="store_true", dest="value_lead",
+        help="Re-weight the board by BUYER VALUE so a cheap Tier-1 fix (harden, "
+             "raise-from, infer-type-hints) leads a high-pending idiom tidy "
+             "(sort-imports). Does NOT unlock the expensive concrete objectives "
+             "(membership still needs --concrete); only re-orders the cheap board. "
+             "Off by default (byte-identical); deterministic")
     ascend_parser.add_argument("--json", action="store_true", help="Emit JSON")
     ascend_parser.set_defaults(func=cmd_ascend)
 
@@ -1933,6 +1966,14 @@ def register_parsers(subparsers) -> None:
         help="With --auto: also sweep the EXPENSIVE concrete objectives "
              "(implement-stub, wire-exports, strengthen-tests — they run pytest), "
              "off the fast default board")
+    develop_parser.add_argument(
+        "--value-lead", action="store_true", dest="value_lead",
+        help="With --auto: re-order the OBJECTIVE board by BUYER VALUE so a cheap "
+             "Tier-1 fix (harden, raise-from) leads a high-pending idiom tidy "
+             "(sort-imports). Does NOT unlock the expensive concrete objectives "
+             "(membership still needs --concrete); only re-orders the cheap board. "
+             "Distinct from --value-led (which orders a --goal's leaves). Off by "
+             "default (byte-identical)")
     develop_parser.add_argument(
         "--allow-weak", action="store_true", dest="allow_weak",
         help="With --auto --apply: also land WEAK moves — ones a green suite "
