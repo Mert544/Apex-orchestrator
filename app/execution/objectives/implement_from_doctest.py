@@ -260,14 +260,16 @@ def _scope_apply_gate(plan: RenamePlan, root: Path, module_rel: str,
 
 def _is_fixture_path(path: str) -> bool:
     """Example/test/fixture files are REFUSED — Apex never edits the suite it is
-    gated by (a local copy on purpose: this objective stays self-contained)."""
+    gated by (a local copy on purpose: this objective stays self-contained). A
+    ``.pyi`` stub file is refused too: every body is an interface ``...``, never an
+    implementable doctest target (mirrors the implement-stub twin's guard)."""
     p = path.replace("\\", "/").lower()
     name = Path(p).name
     return (
         p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
         or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
         or name.startswith("test_") or name.endswith("_test.py")
-        or name == "conftest.py"
+        or name == "conftest.py" or name.endswith(".pyi")
     )
 
 
