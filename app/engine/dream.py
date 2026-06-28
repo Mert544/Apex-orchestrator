@@ -260,6 +260,91 @@ PROMOTE_STREAK = 3
 PROMOTE_CONFIDENCE = 0.80
 PROMOTIONS_REL = ".apex/dream-promotions.json"
 
+# The PER-MODULE Tier-1 landable signals a below-confidence confluence is probed
+# against to decide whether it carries a VERIFIED-LANDABLE move, in fixed
+# descending-buyer-value order — the SAME signals (and the same honest, real-
+# lander-grounded probes) the seeder's ``_landable_reroute`` consults, so a
+# value-aware graduation promises exactly what ``apex develop`` could land on the
+# module. Each pair is ``(synthesis-signal function name, develop objective)``;
+# the first signal that claims the module wins. ``tdd-implement`` is excluded for
+# the same reason the seeder excludes it (per-symbol target, not a bare module).
+_LANDABLE_PROMOTE_SIGNALS: tuple[tuple[str, str], ...] = (
+    ("fillable_stub_modules", "implement-stub"),
+    ("cover_gaps_modules", "cover-gaps"),
+    ("wire_export_packages", "wire-exports"),
+)
+
+
+def _module_landable_objective(root: Path, module: str) -> str | None:
+    """The highest-buyer-value EXECUTABLE objective a confluence ``module`` carries,
+    or ``None`` when none honestly holds.
+
+    Reuses the same real-lander-grounded synthesis probes as the seeder's
+    ``_landable_reroute`` (``fillable_stub_modules`` / ``cover_gaps_modules`` /
+    ``wire_export_packages``), so a returned objective is one ``apex develop``
+    could ACTUALLY land a diff on this exact module — never an over-promise.
+    Best-effort + deterministic: a non-``.py`` subject, an import failure, or a
+    probe that raises all yield ``None`` (the module simply graduates by the
+    confidence gate or not at all). No clock, no randomness — same module → same
+    verdict."""
+    if not module.endswith(".py"):
+        return None
+    try:
+        from app.engine import idea_synthesis_signals as sigs
+    except Exception:
+        return None
+    for signal_name, objective in _LANDABLE_PROMOTE_SIGNALS:
+        try:
+            hits = getattr(sigs, signal_name)(root, [module], limit=1)
+        except Exception:
+            continue
+        if module in hits:
+            return objective
+    return None
+
+
+def _is_value_landable_confluence(root: Path, d: dict) -> bool:
+    """A discovery graduates on VALUE (below the confidence gate) only when it is a
+    confluence whose module carries a verified-landable move.
+
+    The value-aware second promote path: a confluence that sits BELOW
+    ``PROMOTE_CONFIDENCE`` (the common case on a real project, where confluences
+    confirm at ~0.60) still graduates IF the dream can PROVE a concrete landing
+    exists on its module — so the curated ``dream --land`` scope is no longer
+    permanently empty. Design-level confluences (no landable move) keep the
+    existing 0.80 bar. Pure read over the discovery + a real-lander probe; the
+    STREAK requirement is applied by the caller, so this is never a one-off."""
+    if d.get("kind") != "confluence":
+        return False
+    if d.get("confidence", 0.0) >= PROMOTE_CONFIDENCE:
+        return False  # already graduates by the design-level confidence path
+    module = d["key"].split(":", 1)[1]
+    return _module_landable_objective(root, module) is not None
+
+
+def _promotable_discoveries(root: Path, report: DreamReport,
+                            streaks: dict[str, int]) -> list[dict]:
+    """The confirmed discoveries that graduate this dream — TWO promote paths,
+    both still streak-gated (never a one-off).
+
+    1. **design-level** (unchanged): ``confidence >= PROMOTE_CONFIDENCE`` —
+       a strong, broadly-confirmed law.
+    2. **value-aware** (new): a confluence BELOW that confidence whose module
+       carries a verified-landable move (:func:`_is_value_landable_confluence`)
+       — the dream graduates a discovery it can PROVE it can act on.
+
+    Discovery order is preserved (the source ``discovery_objs`` order), so the
+    digest stays byte-stable; a discovery never appears twice (the two predicates
+    are mutually exclusive — path 2 requires confidence < the gate path 1 needs)."""
+    promotable: list[dict] = []
+    for d in report.discovery_objs:
+        if streaks.get(d["key"], 1) < PROMOTE_STREAK:
+            continue
+        if (d.get("confidence", 0.0) >= PROMOTE_CONFIDENCE
+                or _is_value_landable_confluence(root, d)):
+            promotable.append(d)
+    return promotable
+
 
 def _promote(root: Path, report: DreamReport, curate: bool) -> None:
     """Graduate confirmed discoveries into a seed store the waking engine reads.
@@ -267,13 +352,14 @@ def _promote(root: Path, report: DreamReport, curate: bool) -> None:
     Default mode only proposes (inputs untouched, like the rest of the dream);
     ``--curate`` rewrites the promotions store FRESH each run — so a law that
     stops holding simply drops out, never leaving a stale idea behind.
-    """
+
+    Two streak-gated promote paths feed it (:func:`_promotable_discoveries`): the
+    design-level confidence gate, and a value-aware gate that graduates a
+    below-confidence confluence ONLY when it carries a verified-landable move — so
+    the dream can act on what it can prove it can fix, while a default run with no
+    prior journal (streak 1) graduates nothing either way (byte-identical)."""
     streaks: dict[str, int] = getattr(report, "_streaks", {}) or {}
-    promotable = [
-        d for d in report.discovery_objs
-        if streaks.get(d["key"], 1) >= PROMOTE_STREAK
-        and d.get("confidence", 0.0) >= PROMOTE_CONFIDENCE
-    ]
+    promotable = _promotable_discoveries(root, report, streaks)
     if not curate:
         for d in promotable:
             report.proposed.append(

@@ -170,12 +170,21 @@ def _cmd_dream_land(args: argparse.Namespace) -> int:
     DRY-RUN by default; ``--apply`` writes, ``--fast`` scopes the per-move gate.
     Exit 0 even on an empty chain — a project with nothing landable is an honest
     refusal, not a failure."""
-    from app.engine.dream_develop import dream_develop, render_dream_chain_markdown
+    from app.engine.dream_develop import (
+        dream_develop,
+        record_dream_outcomes,
+        render_dream_chain_markdown,
+    )
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
     report = dream_develop(str(target), apply=getattr(args, "apply", False),
                            fast=getattr(args, "fast", False))
     _dream_land_write_proof(args, report, target)
+    # Learn-loop: feed the chain's OWN landed/withheld per-direction outcomes back
+    # into IdeaMemory so the next-night dream ranking learns which dreamed
+    # directions actually land here. A strict no-op on a dry run / empty chain, so
+    # the off-by-default tree stays byte-identical.
+    record_dream_outcomes(report, str(target))
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
     else:

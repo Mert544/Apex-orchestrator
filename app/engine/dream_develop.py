@@ -48,7 +48,7 @@ from app.engine.objective_compiler import CompileResult, compile_objective
 __all__ = [
     "LandedContribution", "DreamChainReport",
     "dream_develop", "render_dream_chain_markdown",
-    "build_dream_proof",
+    "build_dream_proof", "record_dream_outcomes",
 ]
 
 # The composed concrete goal: the North-Star LAND-working-code chain. Run
@@ -385,3 +385,69 @@ def build_dream_proof(report: DreamChainReport, project_root: str | Path) -> dic
         },
         "fixes": fixes,
     }
+
+
+# --- Learn-loop: the dream's OWN landings feed back into outcome memory --------
+#
+# The dream READS ``IdeaMemory`` land-rates to rank directions, but its OWN
+# ``dream --land --apply`` landings never fed back — so it could never learn which
+# DREAMED DIRECTIONS (the chain's objectives) actually land on this project. This
+# closes that loop: after an apply, the realized outcome of each move is recorded
+# into the SAME ``.apex/idea-memory.json`` learn store the ranking already reads,
+# keyed by the dreamed direction (the objective) as a ``label``.
+#
+# HONEST + no-double-count: a LANDED step (one that ran green and HELD — a failed
+# gate was rolled back and never appended) is an ``applied`` outcome; a WITHHELD
+# move (previewed, not landed) is recorded as not-landed (``blocked``). The
+# PER-OPERATOR dimension is deliberately NOT recorded here — the verified-with-
+# rollback ``compile_objective`` the chain composes ALREADY credits each landed
+# operator to ``by_operator``/``by_sequence`` (its ``_record_composition`` step),
+# so re-recording it would inflate the sample count and betray never-fake-green.
+# We add ONLY the missing per-label (dreamed-direction) dimension, so the chain's
+# operator AND its dreamed direction both reflect the realized outcome.
+
+
+def _dream_outcome_results(report: DreamChainReport) -> list[dict[str, Any]]:
+    """The chain's per-LABEL outcome rows, in ``record_outcomes``' contract.
+
+    One ``applied`` row per LANDED step and one ``blocked`` row per WITHHELD move,
+    each keyed by the dreamed direction (``label`` = the chain objective). NO
+    ``operator`` key — the compiler already credited landed operators, so we add
+    only the per-label dimension (no double-count). Pure projection of the report:
+    no clock, no randomness, no I/O — honest over only what actually landed/was
+    withheld."""
+    rows: list[dict[str, Any]] = []
+    for r in report.results:
+        for _step in r.steps:
+            rows.append({"label": r.objective, "applied": True})
+        for _withheld in r.withheld:
+            rows.append({"label": r.objective, "blocked": True})
+    return rows
+
+
+def record_dream_outcomes(report: DreamChainReport,
+                          project_root: str | Path) -> None:
+    """Record the LANDED chain's realized per-direction outcomes into IdeaMemory.
+
+    The one record call the ``dream --land --apply`` path makes AFTER the apply:
+    each dreamed direction (chain objective) that LANDED a move is credited as
+    ``applied`` and each that WITHHELD a move as not-landed (``blocked``) in the
+    SAME ``.apex/idea-memory.json`` store the next-night dream ranking reads — so
+    the dream learns which of its OWN dreamed directions actually land here.
+
+    Best-effort and a STRICT no-op unless the chain actually applied AND landed or
+    withheld something: a dry run (``applied`` False), an empty chain, or a chain
+    that produced no outcome rows writes NOTHING, so the off-by-default tree stays
+    byte-identical. Honest: records only ACTUAL landed/withheld outcomes — never a
+    fabricated success. A write failure is swallowed (learning never fails a
+    successful apply); deterministic and offline."""
+    if not report.applied:
+        return  # a dry run measured nothing to learn from
+    results = _dream_outcome_results(report)
+    if not results:
+        return  # nothing landed or withheld → nothing to learn (byte-identical)
+    from app.engine.idea_memory import IdeaMemory
+    try:
+        IdeaMemory.learn_from({"results": results}, project_root)
+    except OSError:
+        pass  # learning is best-effort; never fail a good apply on a memory write
