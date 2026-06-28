@@ -115,12 +115,14 @@ def test_strengthen_tests_lands_a_despite_red_b(tmp_path: Path):
 
     result = compile_objective(str(tmp_path), "strengthen-tests", apply=True)
 
-    a_test_text = (tmp_path / "tests" / "test_a.py").read_text()
-    # A real mutant-killing assertion landed on A's test, even though the FULL
-    # suite is still red because of b (which was never touched).
-    assert "def test_a_kills_surviving_mutants():" in a_test_text
-    assert a_test_text != original_a_test
-    assert "def test_pos():" in a_test_text  # the original test is preserved
+    # A real mutant-killing assertion landed in A's OWN generated file (a unique
+    # ``_apex_mutants`` basename), even though the FULL suite is still red because
+    # of b (which was never touched). The idiomatic ``tests/test_a.py`` is left
+    # byte-for-byte untouched — Apex only ADDS its own collision-proof file.
+    gen = (tmp_path / "tests" / "test_a_apex_mutants.py")
+    assert gen.exists()
+    assert "def test_a_kills_surviving_mutants():" in gen.read_text()
+    assert (tmp_path / "tests" / "test_a.py").read_text() == original_a_test
     assert result.steps  # something landed (the deadlock is broken)
     # The landing is honestly verified: A's REAL test file was exercised scoped.
     assert any(s.verified for s in result.steps)
@@ -130,12 +132,12 @@ def test_strengthen_tests_lands_a_despite_red_b(tmp_path: Path):
     # The full suite is STILL red (b still fails) — we never faked green.
     assert _full_suite_green(tmp_path) is False
 
-    # tests/test_a.py now passes on its own (the honest, scoped verification).
+    # The generated mutants file passes on its own (the honest, scoped verification).
     import subprocess
     import sys
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-         str(tmp_path / "tests" / "test_a.py")],
+         str(gen)],
         cwd=str(tmp_path), capture_output=True, text=True)
     assert proc.returncode == 0
 
@@ -148,6 +150,7 @@ def test_full_suite_gate_rolls_back_scoped_gate_lands(tmp_path: Path):
 
     _two_module_project(tmp_path)
     original_a_test = (tmp_path / "tests" / "test_a.py").read_text()
+    gen = (tmp_path / "tests" / "test_a_apex_mutants.py")
 
     # The same plan, twice. With impact_scope=False (full-suite gating), the gate
     # sees b still red and ROLLS BACK A's correct strengthening.
@@ -156,17 +159,20 @@ def test_full_suite_gate_rolls_back_scoped_gate_lands(tmp_path: Path):
     res_full = apply_rename(tmp_path, plan, impact_scope=False)
     assert res_full.get("applied") is False
     assert res_full.get("rolled_back") is True
+    # The created file is rolled back (deleted), and the idiomatic test is untouched.
+    assert not gen.exists()
     assert (tmp_path / "tests" / "test_a.py").read_text() == original_a_test
 
-    # With impact_scope=True, the gate runs ONLY A's own test file (which passes),
-    # so the SAME strengthening LANDS — the scope flag is what breaks the deadlock.
+    # With impact_scope=True, the gate runs ONLY A's own (generated) test file
+    # (which passes), so the SAME strengthening LANDS — the scope flag is what
+    # breaks the deadlock.
     plan2 = plan_strengthen_tests(tmp_path, "app/a.py")
     res_scoped = apply_rename(tmp_path, plan2, impact_scope=True)
     assert res_scoped.get("applied") is True
     assert res_scoped.get("verified") is True
-    a_test_text = (tmp_path / "tests" / "test_a.py").read_text()
-    assert "def test_a_kills_surviving_mutants():" in a_test_text
-    assert "def test_pos():" in a_test_text
+    assert "def test_a_kills_surviving_mutants():" in gen.read_text()
+    # The idiomatic test is STILL untouched — Apex only added its own file.
+    assert (tmp_path / "tests" / "test_a.py").read_text() == original_a_test
 
 
 # --- determinism: identical fixtures -> byte-identical landed test -----------

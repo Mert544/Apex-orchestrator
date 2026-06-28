@@ -178,9 +178,10 @@ def test_strengthen_tests_refuses_every_fragile_survivor(tmp_path):
         sub = tmp_path / label
         rel = _setup_strengthen(sub, modbody, _STRENGTHEN_TEST)
         plan = plan_strengthen_tests(str(sub), rel)
-        content = plan.new_contents.get("tests/test_m.py", "")
-        # No pinned classify(...) == <fragile> assertion landed.
-        assert "assert classify(" not in content, f"{label} pinned a fragile value"
+        # The output is Apex's own collision-proof file; on a refusal it is absent.
+        content = plan.new_contents.get("tests/test_m_apex_mutants.py", "")
+        # No pinned classify(...) == <fragile> assertion landed (called via alias).
+        assert "_apex_fn_classify(" not in content, f"{label} pinned a fragile value"
         assert "0.30000000000000004" not in content, label
 
 
@@ -194,9 +195,11 @@ def test_strengthen_tests_still_lands_stable_survivor(tmp_path):
     )
     rel = _setup_strengthen(tmp_path, modbody, _STRENGTHEN_TEST)
     plan = plan_strengthen_tests(str(tmp_path), rel)
-    content = plan.new_contents.get("tests/test_m.py", "")
-    # A stable value oracle IS landed (the boundary mutant is killed honestly).
-    assert "assert classify(" in content
+    # The stable oracle lands in Apex's own collision-proof generated file.
+    content = plan.new_contents.get("tests/test_m_apex_mutants.py", "")
+    # A stable value oracle IS landed (the boundary mutant is killed honestly),
+    # addressed through the self-contained submodule alias import.
+    assert "_apex_fn_classify(" in content
     assert "== 'pos'" in content or "== 'nonpos'" in content
 
 

@@ -28,8 +28,12 @@ The pipeline (deterministic, no LLM, no clock, no randomness):
    FAILS against the recorded mutant (proven mutant-killing). An assertion that
    does not kill its target mutant is discarded — it would add no signal.
 5. Propose the surviving, double-gated assertions as a :class:`RenamePlan` that
-   creates or EXTENDS ``tests/test_<stem>.py``, applied under the full-suite
-   gate with auto-rollback (so a regression restores the file byte-for-byte).
+   CREATES Apex's own ``tests/test_<stem>_apex_mutants.py`` — a collision-proof
+   unique basename (mirrors ``pin-doctest``'s ``_doctest`` suffix) that shares a
+   basename with NO hand-written ``test_<stem>.py``, so it can never trigger
+   pytest's "import file mismatch" collection abort (the live-run finding). The
+   file is self-contained (its own submodule alias imports) and is applied under
+   the gate with auto-rollback (a regression deletes the created file).
 
 The double gate is the never-fake-green proof: a kept assertion is one we have
 PROVEN both holds on the real code and would have caught a specific real fault.
@@ -106,6 +110,32 @@ def _is_fixture_path(path: str) -> bool:
 def _dotted_name(module_rel: str) -> str:
     """Importable dotted path for a module given relative to the project root."""
     return ".".join(Path(module_rel).with_suffix("").parts)
+
+
+# The Apex-owned suffix for the generated test file. A COLLISION-PROOF unique
+# basename — mirrors :mod:`app.execution.objectives.pin_doctest`'s ``_doctest``
+# convention (which writes ``tests/test_<stem>_doctest.py``) for the SAME reason:
+# a project very commonly ALREADY has a ``test_<stem>.py`` of the bare basename
+# elsewhere (e.g. a root-level ``test_calc.py``), and when ``tests/`` has no
+# ``__init__.py`` pytest's rootdir-relative import names ``test_calc`` twice and
+# ABORTS collection with "import file mismatch" — turning a green suite RED and
+# leaving the project WORSE (the live-run finding this suffix fixes). The
+# ``_apex_mutants`` suffix is unmistakably Apex-owned and shares a basename with
+# NO hand-written ``test_<stem>.py``, so the generated file always collects
+# alongside the project's own tests instead of clobbering one of them.
+_GENERATED_TEST_SUFFIX = "_apex_mutants"
+
+
+def _generated_test_rel(module_rel: str) -> str:
+    """The project-relative path of the mutant-killing test file Apex CREATES for
+    ``module_rel`` — ``tests/test_<stem>_apex_mutants.py``.
+
+    The single source of truth for the output path: every reader (the binding /
+    rollback source) and the writer go through here, so the file Apex owns can
+    never drift from a collision-proof unique basename (see
+    :data:`_GENERATED_TEST_SUFFIX`). Deterministic — a pure function of the
+    module stem, no clock/random."""
+    return f"tests/test_{Path(module_rel).stem}{_GENERATED_TEST_SUFFIX}.py"
 
 
 def _function_for_line(tree: ast.Module, line: int) -> ast.FunctionDef | None:
@@ -610,14 +640,16 @@ def plan_strengthen_tests(project_root: str | Path, module_rel: str,
     """Build the mutant-killing test plan for one module, or an empty no-op plan.
 
     Runs the mutation engine over ``module_rel`` to find surviving mutants, then
-    generates double-gated killing assertions for them. The plan creates or
-    EXTENDS ``tests/test_<stem>.py`` with those assertions. An empty plan means
+    generates double-gated killing assertions for them. The plan CREATES Apex's
+    own ``tests/test_<stem>_apex_mutants.py`` (a collision-proof unique basename —
+    see :func:`_generated_test_rel`) with those assertions; the project's own
+    hand-written ``tests/test_<stem>.py`` is never edited. An empty plan means
     there was nothing to land — no survivors (the suite already kills them all),
     no survivor in a blindly-callable function, or none killable with an honest
     oracle. The MODULE target is refused outright for a test/fixture file. The
-    write goes in ``new_contents`` (with the original in ``originals`` when the
-    test file already exists, so the verified-apply engine rolls it back on a
-    full-suite regression).
+    write goes in ``new_contents`` (with the original in ``originals`` only when
+    Apex's OWN generated file already exists from a prior run, so the
+    verified-apply engine rolls it back on a regression).
 
     ``budget`` (a :class:`app.execution._verify_budget._Budget` or ``None``) is a
     DETERMINISTIC mutant-RUN COUNT — never a clock — threaded into the mutation
@@ -631,8 +663,14 @@ def plan_strengthen_tests(project_root: str | Path, module_rel: str,
     if not rel.endswith(".py") or _is_fixture_path(rel):
         return plan  # never treat a test/fixture (or non-module) as the subject
     root = Path(project_root)
+    # ``existing`` is Apex's OWN prior generated file (the collision-proof
+    # ``_apex_mutants`` basename), kept ONLY as the rollback original. The
+    # assertions are derived with NO binding source (the second arg below is
+    # ``None``) so every call emits its OWN submodule alias import — the generated
+    # file is self-contained and regenerated whole each run, never relying on (or
+    # appending to) any other test file.
     existing = _read_existing_test(root, rel)
-    killers = _module_killing_assertions(root, rel, existing, budget)
+    killers = _module_killing_assertions(root, rel, None, budget)
     if killers is None:
         return plan  # nothing to land (no survivors / unkillable / unreadable)
     assertions, imports = killers
@@ -640,9 +678,17 @@ def plan_strengthen_tests(project_root: str | Path, module_rel: str,
 
 
 def _read_existing_test(root: Path, rel: str) -> str | None:
-    """The text of the module's ``tests/test_<stem>.py`` if it exists and reads,
-    else ``None`` — both the binding source and the file we extend."""
-    target = root / f"tests/test_{Path(rel).stem}.py"
+    """The text of Apex's OWN generated ``tests/test_<stem>_apex_mutants.py`` if it
+    exists and reads, else ``None`` — the rollback ORIGINAL for a re-run.
+
+    We read the file Apex OWNS (the unique ``_apex_mutants`` basename), NOT the
+    project's hand-written ``tests/test_<stem>.py``: the generated file is
+    regenerated whole each run and a regression rolls exactly IT back, while the
+    project's own test files are never edited. Reading the project's
+    ``test_<stem>.py`` instead would have appended assertions to a file we then ALSO
+    wrote at a colliding basename — the live-run bug. A first run sees no generated
+    file (``None`` -> a fresh create with nothing to roll back to)."""
+    target = root / _generated_test_rel(rel)
     if not target.exists():
         return None
     try:
@@ -659,8 +705,12 @@ def _module_killing_assertions(root: Path, rel: str, existing: str | None,
     ``None`` for: a packaging module (``__init__``/``__main__``), an
     unreadable/unparseable source, an unsound (red) or already-saturated mutation
     baseline, or a survivor set from which nothing could be killed honestly.
-    ``existing`` (the current test file, if any) seeds the import-binding reuse so
-    appended assertions address the function the way that file already does.
+    ``existing`` is the import-binding SOURCE; production passes ``None`` so the
+    bindings are empty and every call resolves through a self-contained submodule
+    alias import — the generated file owns its imports and never relies on the
+    project's hand-written test. (The parameter is retained so a direct caller can
+    still exercise binding reuse; the rollback original is handled separately in
+    :func:`_attach_test_write`.)
 
     ``budget`` is the deterministic mutant-run COUNT threaded into the mutation
     engine (``None`` = unbounded, byte-identical to before). The per-module mutant
@@ -690,14 +740,24 @@ def _module_killing_assertions(root: Path, rel: str, existing: str | None,
 
 def _attach_test_write(plan: RenamePlan, root: Path, rel: str, assertions: list,
                        imports: list, existing: str | None) -> RenamePlan:
-    """Render the killing assertions into ``tests/test_<stem>.py`` on ``plan``.
+    """Render the killing assertions into Apex's own
+    ``tests/test_<stem>_apex_mutants.py`` (the collision-proof unique basename —
+    :func:`_generated_test_rel`) on ``plan``.
 
-    Extends an existing test file (recording the original for rollback) or creates
-    a new one, emitting ``imports`` on whichever path applies. A degenerate render
-    that does not re-parse leaves the plan empty (a no-op)."""
+    The generated file is REGENERATED whole each run (rendered with the fresh-file
+    form, ``existing=None``), so a re-run OVERWRITES the same unique file and never
+    appends a second ``def test_<stem>_kills_surviving_mutants`` that would shadow
+    the first (the task's "never duplicates" invariant — and the same own-the-file
+    discipline ``pin-doctest`` keeps). Apex's prior generated content (``existing``,
+    when the file already exists) is still recorded as the rollback ``original`` so
+    a regression restores it byte-for-byte; the project's hand-written
+    ``tests/test_<stem>.py`` is never touched. A degenerate render that does not
+    re-parse leaves the plan empty (a no-op)."""
     module_stem = Path(rel).stem
-    test_path = f"tests/test_{module_stem}.py"
-    content = _render_appended(_dotted_name(rel), module_stem, assertions, imports, existing)
+    test_path = _generated_test_rel(rel)
+    # Render the FRESH-file form (``existing=None``) so the Apex-owned file is a
+    # clean whole-file regeneration — never an append onto its own prior text.
+    content = _render_appended(_dotted_name(rel), module_stem, assertions, imports, None)
     try:
         ast.parse(content)
     except (SyntaxError, RecursionError, MemoryError):

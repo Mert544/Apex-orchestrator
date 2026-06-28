@@ -325,12 +325,14 @@ def test_apply_step_lands_strengthen_assertion(tmp_path: Path) -> None:
     assert out["applied"] is True
     assert out["transform_type"] == "strengthen_tests"
     assert out.get("suite_green") is True  # the extended suite still passes
-    # The existing thin test was EXTENDED with a mutant-killing assertion that
-    # actually calls the function (the boundary the old test missed).
-    landed = (root / "tests" / "test_m.py").read_text(encoding="utf-8")
-    assert "def test_pos():" in landed  # the original test is preserved
+    # The mutant-killing assertion lands in Apex's OWN file at a collision-proof
+    # unique basename (it calls the function across the boundary the old test
+    # missed); the project's idiomatic ``tests/test_m.py`` is left untouched.
+    original_thin = (root / "tests" / "test_m.py").read_text(encoding="utf-8")
+    landed = (root / "tests" / "test_m_apex_mutants.py").read_text(encoding="utf-8")
     assert "def test_m_kills_surviving_mutants():" in landed
-    assert "m.classify(" in landed
+    assert "_apex_fn_classify(" in landed
+    assert "def test_pos():" in original_thin  # the original test is preserved
 
 
 def test_apply_step_strengthen_noops_on_saturated_module(tmp_path: Path) -> None:
