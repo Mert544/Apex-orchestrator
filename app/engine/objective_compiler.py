@@ -786,7 +786,7 @@ def resolve_objective(request: str | None) -> str | None:
     2. the SHARED objective-NAME phrase match (``"sort imports"`` → ``sort-imports``,
        ``"infer type hints"`` → ``infer-type-hints``) — the deepening that lets a
        request name the capability the way it reads, without a synonym entry;
-    3. the SHARED :data:`~app.intent.comprehension.CONCEPT_VOCAB` (the same concept
+    3. the SHARED :data:`~app.intent.vocabulary.CONCEPT_VOCAB` (the same concept
        map ``comprehend`` ranks against) — its first matching concept's first
        objective.
 
@@ -809,10 +809,13 @@ def resolve_objective(request: str | None) -> str | None:
             return objective
     # Shared-vocabulary fallback (only reached when the synonym table missed, so
     # back-compat is preserved): the objective NAME phrases, then the concept map.
-    from app.intent.comprehension import (
-        _norm, _suppress_removal, _tokens, concept_matches, name_phrase_match,
+    # Imported from the stdlib-only LEAF ``app.intent.vocabulary`` (NOT from
+    # ``comprehension``), passing the objectives list IN — so this module's only
+    # intent edge is to the leaf, and there is no import cycle through comprehend.
+    from app.intent.vocabulary import (
+        concept_matches, name_phrase_match, normalize, suppress_removal, tokenize,
     )
-    norm = _norm(request)
+    norm = normalize(request)
     names = name_phrase_match(norm, list(known.values()))
     concepts = concept_matches(norm)
     # HONESTY GUARD (fallback-only): a removal/negation-framed request whose ONLY
@@ -822,7 +825,7 @@ def resolve_objective(request: str | None) -> str | None:
     # blocked). Legitimate removals already returned above via the synonym/exact
     # branch, so this never suppresses "remove dead code"/"drop param". The SAME
     # shared predicate ``comprehend`` uses, so both surfaces agree.
-    if _suppress_removal(_tokens(request), names + concepts):
+    if suppress_removal(tokenize(request), names + concepts):
         return None
     if names:
         return names[0]

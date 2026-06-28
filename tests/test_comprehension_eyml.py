@@ -250,6 +250,56 @@ def test_concept_matches_dedups_preserving_order():
     assert out[0] == "infer-type-hints"
 
 
+# --- ARCHITECTURE: the shared leaf breaks the import cycle -------------------
+
+def test_vocabulary_leaf_imports_no_app_modules():
+    # The leaf must depend on stdlib ONLY (re/dataclasses) — that is what keeps
+    # objective_compiler ↔ comprehension cycle-free. Assert it via its source AST.
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "app" / "intent" / "vocabulary.py")
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            modules.add(node.module)
+        elif isinstance(node, ast.Import):
+            modules.update(a.name for a in node.names)
+    assert not any(m.startswith("app.") for m in modules), (
+        f"vocabulary leaf must not import any app module, found: {sorted(modules)}")
+
+
+def test_comprehension_reexports_are_the_leaf_definitions():
+    # The re-exports keep ``app.intent.comprehension.concept_matches`` etc. working
+    # for existing callers, but the REAL definitions live in the leaf — same object.
+    import app.intent.comprehension as comp
+    import app.intent.vocabulary as vocab
+
+    assert comp.concept_matches is vocab.concept_matches
+    assert comp.name_phrase_match is vocab.name_phrase_match
+    assert comp.CONCEPT_VOCAB is vocab.CONCEPT_VOCAB
+    assert comp.is_removal_framed is vocab.is_removal_framed
+    assert comp.suppress_removal is vocab.suppress_removal
+
+
+def test_objective_compiler_does_not_import_comprehension():
+    # resolve_objective's fallback imports the matchers from the LEAF, never from
+    # comprehension — so objective_compiler has no edge back to comprehend (no
+    # cycle). Assert no top-level OR lazy import of comprehension in its source.
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "app" / "engine"
+           / "objective_compiler.py")
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert node.module != "app.intent.comprehension", (
+                "objective_compiler must not import comprehension (would re-introduce "
+                "the cycle); import the shared leaf app.intent.vocabulary instead")
+
+
 # --- FIX 1: removal / negation honesty guard (LEAD-ANCHORED) -----------------
 #
 # Apex has no "un-add" capability, so a removal/negation-framed request that would
