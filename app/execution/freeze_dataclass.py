@@ -540,15 +540,26 @@ def all_module_sources(project_root, module_rel: str, this_source: str) -> list[
     DOES catch (and roll back), so it keeps the tighter own-module ``project_sources``
     scan.
 
-    Falls back to JUST ``this_source`` when the file walk is unavailable (e.g. a
-    bare directory with no project shape) — then the scan is single-module, which
-    is STILL sound for an in-module subclass/override and is the conservative floor."""
-    from pathlib import Path
+    Routed through the memoized, mtime-invalidated source index
+    (:func:`~app.engine.source_index.indexed_project`) via its tests-INCLUSIVE
+    ``all_source_texts()`` map, so the whole-project ``.py`` set is read+captured
+    ONCE per scan campaign instead of re-walking every file from disk on EVERY call
+    (the O(modules x all-sources) cost that made the ``@final`` family unusable on
+    large repos). ``all_source_texts()`` is captured in the index's own
+    ``_py_files`` walk — same enumerator, same skip-dirs, tests/fixtures INCLUDED —
+    so the returned multiset of source texts is byte-identical to the old direct
+    ``_py_files`` read (with ``module_rel`` overridden to ``this_source``). The
+    index rebuilds when the project's ``(path, mtime)`` fingerprint changes, so a
+    mid-campaign edit is picked up; the ``module_rel`` override still pins the
+    in-flight module's exact rewritten bytes regardless.
 
+    Falls back to JUST ``this_source`` when the index is unavailable (e.g. a bare
+    directory with no project shape) — then the scan is single-module, which is
+    STILL sound for an in-module subclass/override and is the conservative floor."""
     try:
-        from app.engine.source_index import _py_files
+        from app.engine.source_index import indexed_project
 
-        sources = {rel: src for rel, src in _py_files(Path(project_root))}
+        sources = indexed_project(project_root).all_source_texts()
     except Exception:
         sources = {}
     sources[module_rel] = this_source

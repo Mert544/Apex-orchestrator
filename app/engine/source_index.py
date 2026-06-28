@@ -62,9 +62,22 @@ class IndexedModule:
 
 @dataclass
 class SourceIndex:
-    """A parse-once view of a project's own modules, in sorted ``rel`` order."""
+    """A parse-once view of a project's own modules, in sorted ``rel`` order.
+
+    ``all_sources`` is the FULL, tests+fixtures-INCLUSIVE raw-source map captured in
+    the SAME single ``_py_files`` walk that builds ``modules`` (zero extra I/O). It
+    exists for the soundness-critical whole-project scans — the ``@typing.final``
+    family (add-final / seal-final-method / add-slots / synthesize-dunders) — where a
+    class subclassed, or a method overridden, ONLY in a test file is a REAL
+    subclass/override that ``@final`` breaks for a type checker (a pure runtime no-op
+    a pytest suite can never catch). Those scans MUST see tests, so they read
+    ``all_sources`` rather than the own-only ``modules`` (which DROPS tests/fixtures
+    — using it would manufacture a false 'final'). Both views come from one walk and
+    never diverge; the own-only ``modules`` / ``own_sources`` / ``get`` are
+    unchanged."""
 
     modules: list[IndexedModule] = field(default_factory=list)
+    all_sources: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def build(cls, project_root: str | Path) -> SourceIndex:
@@ -81,13 +94,23 @@ class SourceIndex:
         once and parsed once (``SyntaxError`` → ``tree=None``), and the result is
         stored in deterministic sorted ``rel`` order.
 
+        The SAME walk ALSO captures EVERY ``(rel, source)`` pair — tests and
+        fixtures INCLUDED, recorded BEFORE the fixture / non-library ``continue`` —
+        into ``all_sources``, so the tests-inclusive whole-project scan
+        :func:`~app.execution.freeze_dataclass.all_module_sources` gets the full raw
+        source set without a SECOND disk walk. This is zero extra I/O (the walk
+        already happens); the own-only ``modules`` list and its accessors are
+        byte-identical to before.
+
         The gate is BASENAME-only on purpose (see ``_is_non_library_file``): real
         PEP-420 namespace-package modules with no ``__init__.py`` (``app/intent``,
         ``app/k8s``, ``scripts/*.py``, …) stay indexed, so the duplication /
         complexity / dead-code scans built on this index keep seeing them."""
         root = Path(project_root)
         modules: list[IndexedModule] = []
+        all_sources: dict[str, str] = {}
         for rel, source in _py_files(root):
+            all_sources[rel] = source  # tests+fixtures INCLUDED — before the gate
             if _is_fixture_path(rel) or _is_non_library_file(rel):
                 continue
             try:
@@ -96,7 +119,18 @@ class SourceIndex:
                 tree = None
             modules.append(IndexedModule(rel=rel, source=source, tree=tree))
         modules.sort(key=lambda m: m.rel)
-        return cls(modules=modules)
+        return cls(modules=modules, all_sources=all_sources)
+
+    def all_source_texts(self) -> dict[str, str]:
+        """A COPY of the FULL ``{rel: source}`` map — tests and fixtures INCLUDED —
+        in deterministic sorted ``rel`` order.
+
+        This is the tests-INCLUSIVE raw-source set the ``@final`` family scans need
+        (a test-only subclass/override is a real one ``@final`` breaks). It is a
+        fresh copy, so a caller may override one entry (e.g. the in-flight module's
+        exact rewritten bytes) without mutating the cache. ``own_sources`` /
+        ``parsed_modules`` / ``get`` are unaffected — they stay own-only."""
+        return {rel: self.all_sources[rel] for rel in sorted(self.all_sources)}
 
     def own_sources(self) -> list[tuple[str, str]]:
         """``(rel, source)`` for each indexed module — a drop-in for the common

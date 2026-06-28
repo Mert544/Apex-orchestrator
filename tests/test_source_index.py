@@ -173,3 +173,77 @@ def test_indexed_project_keys_by_resolved_root(tmp_path: Path) -> None:
     # A non-normalized path to the same root resolves to the same cache entry.
     via_dot = indexed_project(tmp_path / "pkg" / "..")
     assert direct is via_dot
+
+
+def test_all_source_texts_is_tests_inclusive(tmp_path: Path) -> None:
+    # ``all_source_texts`` is the FULL, tests+fixtures-INCLUSIVE raw-source map the
+    # ``@final`` family needs (a test-only subclass/override is a real one ``@final``
+    # breaks). Unlike the own-only ``modules`` view, it KEEPS tests/examples/fixtures.
+    _make_project(tmp_path)
+    index = SourceIndex.build(tmp_path)
+
+    full = index.all_source_texts()
+    # Own modules AND the test/example/fixture files are all present.
+    assert full["pkg/a.py"] == "def a():\n    return 1\n"
+    assert full["broken.py"] == "def oops(:\n"  # broken file kept verbatim
+    assert full["tests/test_a.py"] == "def test_a():\n    pass\n"
+    assert full["examples/demo.py"] == "x = 1\n"
+    assert full["test_top.py"] == "y = 1\n"
+    # The own-only views still DROP the tests/fixtures — they are unchanged.
+    own_rels = {rel for rel, _ in index.own_sources()}
+    assert "tests/test_a.py" not in own_rels
+    assert "examples/demo.py" not in own_rels
+
+
+def test_all_source_texts_matches_py_files_walk(tmp_path: Path) -> None:
+    # BYTE-IDENTICAL to a direct ``_py_files`` walk: same rels, same bytes. This is
+    # the soundness contract that lets ``all_module_sources`` route through the index
+    # without changing the scan set.
+    from app.execution.cross_file_rename import _py_files
+
+    _make_project(tmp_path)
+    index = SourceIndex.build(tmp_path)
+
+    walked = dict(_py_files(tmp_path))
+    assert index.all_source_texts() == walked
+
+
+def test_all_source_texts_is_sorted_and_a_copy(tmp_path: Path) -> None:
+    # Deterministic sorted-``rel`` order, and a fresh COPY: a caller may override one
+    # entry (the in-flight module's exact bytes) without mutating the cached index.
+    _make_project(tmp_path)
+    index = SourceIndex.build(tmp_path)
+
+    first = index.all_source_texts()
+    assert list(first) == sorted(first)  # sorted by rel
+
+    first["pkg/a.py"] = "MUTATED = 1\n"
+    second = index.all_source_texts()
+    assert second["pkg/a.py"] == "def a():\n    return 1\n"  # cache untouched
+    # The own-only modules are likewise untouched by the override.
+    assert index.get("pkg/a.py").source == "def a():\n    return 1\n"
+
+
+def test_all_source_texts_empty_project(tmp_path: Path) -> None:
+    # The empty/edge path: no ``.py`` files -> an empty map (no crash), mirroring the
+    # empty own-only index.
+    index = SourceIndex.build(tmp_path)
+    assert index.all_source_texts() == {}
+    assert index.all_sources == {}
+
+
+def test_all_source_texts_rebuilds_after_edit(tmp_path: Path) -> None:
+    # mtime-invalidation is inherited: after a mid-campaign edit (bumped mtime), the
+    # index rebuilds and ``all_source_texts`` reflects the fresh bytes.
+    _make_project(tmp_path)
+    first = indexed_project(tmp_path)
+    assert first.all_source_texts()["pkg/a.py"] == "def a():\n    return 1\n"
+
+    target = tmp_path / "pkg" / "a.py"
+    target.write_text("def a():\n    return 99\n", encoding="utf-8")
+    st = target.stat()
+    os.utime(target, (st.st_atime, st.st_mtime + 10))
+
+    second = indexed_project(tmp_path)
+    assert second is not first
+    assert second.all_source_texts()["pkg/a.py"] == "def a():\n    return 99\n"

@@ -645,3 +645,96 @@ def test_fix1_all_module_sources_includes_test_files():
     assert "all_module_sources" in fz.__all__
     only = fz.all_module_sources(".", "app/x.py", "class X:\n    pass\n")
     assert "class X:\n    pass\n" in only  # this_source always present
+
+
+def _old_all_module_sources(project_root, module_rel, this_source):
+    """The PRE-FIX body: re-walk + re-read every ``.py`` from disk on EVERY call,
+    via the same ``_py_files`` enumerator. Kept here ONLY as the byte-identical
+    oracle the cached-index path is proven equal to."""
+    from app.execution.cross_file_rename import _py_files
+
+    try:
+        sources = {rel: src for rel, src in _py_files(Path(project_root))}
+    except Exception:
+        sources = {}
+    sources[module_rel] = this_source
+    return list(sources.values())
+
+
+def test_all_module_sources_byte_identical_to_py_files_walk(tmp_path: Path):
+    # The load-bearing invariant of the O(N^2)->O(N) fix: routing
+    # ``all_module_sources`` through the cached index must produce a BYTE-IDENTICAL
+    # scan set vs the old direct ``_py_files`` re-walk — same rels, same bytes, with
+    # ``module_rel`` overridden to ``this_source``. Proven on a project with own
+    # modules AND a test file (tests-inclusive) AND a fixture.
+    import app.execution.freeze_dataclass as fz
+
+    _project(tmp_path, "app/__init__.py", "")
+    _project(tmp_path, "app/core.py", "class Core:\n    pass\n")
+    _project(tmp_path, "app/util.py", "VALUE = 1\n")
+    test_src = "from app.core import Core\n\n\nclass FakeCore(Core):\n    pass\n"
+    _project(tmp_path, "tests/test_core.py", test_src)
+    _project(tmp_path, "tests/fixtures/sample.py", "x = 2\n")
+
+    rel, src = "app/core.py", "class Core:\n    pass\n"
+    new_out = fz.all_module_sources(str(tmp_path), rel, src)
+    old_out = _old_all_module_sources(str(tmp_path), rel, src)
+
+    # Multiset equality (the contract: consumers parse each source independently, so
+    # the SET of texts is what matters) AND exact list equality (also order).
+    from collections import Counter
+
+    assert Counter(new_out) == Counter(old_out)
+    assert new_out == old_out
+    # The override pinned this_source exactly once, and the test-only file is in the
+    # scan set (tests-inclusive — a test-only subclass must be seen verbatim).
+    assert new_out.count(src) == 1
+    assert test_src in new_out  # the test file's FULL source is in the scan set
+    assert "x = 2\n" in new_out  # fixture included too
+
+
+def test_all_module_sources_uses_cached_index_no_rewalk(tmp_path: Path, monkeypatch):
+    # The FIX itself: ``all_module_sources`` routes through ``indexed_project`` (the
+    # memoized, mtime-invalidated index), NOT a fresh ``_py_files`` re-walk per call.
+    # If the new path called ``_py_files`` directly on every call this would fire.
+    import app.engine.source_index as si
+    import app.execution.freeze_dataclass as fz
+
+    _project(tmp_path, "app/__init__.py", "")
+    _project(tmp_path, "app/core.py", "class Core:\n    pass\n")
+    _project(tmp_path, "app/util.py", "VALUE = 1\n")
+
+    # Prime the index cache once (one legitimate walk).
+    fz.all_module_sources(str(tmp_path), "app/core.py", "class Core:\n    pass\n")
+
+    calls = {"n": 0}
+    real_py_files = si._py_files
+
+    def _counting(root):
+        calls["n"] += 1
+        return real_py_files(root)
+
+    monkeypatch.setattr(si, "_py_files", _counting)
+
+    # Many calls with the tree UNCHANGED: the fingerprint matches, so the cached
+    # index is reused and ``_py_files`` is never re-invoked (zero re-walks).
+    for _ in range(25):
+        out = fz.all_module_sources(str(tmp_path), "app/core.py",
+                                    "class Core:\n    pass\n")
+    assert calls["n"] == 0  # O(N), not O(N x calls): no per-call disk re-walk
+    assert "class Core:\n    pass\n" in out
+
+
+def test_all_module_sources_falls_back_when_index_unavailable(monkeypatch):
+    # Fallback posture preserved: if ``indexed_project`` raises (e.g. a bare path
+    # with no project shape), the scan degrades to JUST this_source — the
+    # conservative single-module floor — instead of crashing.
+    import app.engine.source_index as si
+    import app.execution.freeze_dataclass as fz
+
+    def _boom(*a, **k):
+        raise RuntimeError("no project")
+
+    monkeypatch.setattr(si, "indexed_project", _boom)
+    out = fz.all_module_sources("/nonexistent", "app/x.py", "class X:\n    pass\n")
+    assert out == ["class X:\n    pass\n"]
