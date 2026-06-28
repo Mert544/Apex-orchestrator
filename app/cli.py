@@ -223,8 +223,48 @@ def cmd_comprehend(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_assist(args: argparse.Namespace) -> int:
+    """The conversational UNDERSTAND→PLAN→ACT→EXPLAIN loop — zero-token, offline.
+
+    Maps a natural request to the right SHIPPED organ and narrates the grounded
+    answer: a "what should I build next?" routes to the DREAM core (ranked,
+    value-led concrete directions); a plain question routes to the health grade; a
+    develop request runs the named objectives value-led through the existing
+    covered-only / suite-gated / auto-rollback compiler; an unmappable request gets
+    an honest no-capability answer plus the roadmap's best next moves. SAFE by
+    default — nothing is written unless ``--apply`` is set AND the understood mode
+    is patch-capable. ``--json`` emits the machine-readable result."""
+    from app.agent.assist import assist
+
+    target = args.target or _get_project_root()
+    result = assist(args.request, target=str(target),
+                    apply=getattr(args, "apply", False))
+    if getattr(args, "json", False):
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(result.narrative)
+    return 0
+
+
 def _register_local_parsers(subparsers) -> None:
-    """Subcommands whose cmd_* still lives in this module: comprehend, bench, run."""
+    """Subcommands whose cmd_* still lives in this module: assist, comprehend,
+    bench, run."""
+    # assist — the conversational UNDERSTAND→PLAN→ACT→EXPLAIN loop (zero-token)
+    assist_parser = subparsers.add_parser(
+        "assist",
+        help="Talk to Apex: understand a request, plan, act (safe/gated), and "
+             "explain — routes 'what should I build next?' into the dream core",
+    )
+    assist_parser.add_argument(
+        "request", help="The natural-language request, e.g. 'what should I build "
+                        "next?' or 'add type hints to the auth module'")
+    assist_parser.add_argument("--target", default="", help="Target project root")
+    assist_parser.add_argument("--apply", action="store_true",
+                               help="Land develop changes (covered-only, "
+                                    "suite-gated, auto-rollback); default previews")
+    assist_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    assist_parser.set_defaults(func=cmd_assist)
+
     # comprehend — preview the NL→objective understanding (read-only, zero-token)
     comprehend_parser = subparsers.add_parser(
         "comprehend",

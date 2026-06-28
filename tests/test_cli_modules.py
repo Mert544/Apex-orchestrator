@@ -100,7 +100,7 @@ def test_family_parser_registration_covers_every_command():
         "auto", "simulate", "evolve", "maintain", "develop", "shield", "plan", "ascend",
         "grade", "impact", "mutants", "duplication", "brief", "dream", "intelligence", "polyglot", "readiness", "fix-risk", "discoveries", "outcomes", "recipes", "changelog", "explain", "objectives", "trackrecord", "scope",
         "ideate", "review", "rename", "move", "signature", "rewrite", "teach", "extract", "inline",
-        "comprehend", "bench", "run", "canvas", "changed", "idea-html", "partition",
+        "assist", "comprehend", "bench", "run", "canvas", "changed", "idea-html", "partition",
         "scan", "agents", "consensus", "daemon", "self-audit",
         "fix-docstrings", "fix-coverage", "lsp", "metrics", "owner-report",
         "dashboard", "hotspots", "deadcode", "city", "report", "fractal", "debug", "pulse", "gate", "deps",
