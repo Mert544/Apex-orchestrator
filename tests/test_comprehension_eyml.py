@@ -29,6 +29,7 @@ from app.intent.comprehension import (
     Comprehension,
     comprehend,
     concept_matches,
+    is_removal_framed,
     name_phrase_match,
 )
 
@@ -247,6 +248,130 @@ def test_concept_matches_dedups_preserving_order():
     out = concept_matches("type hints and more type hints")
     assert out == list(dict.fromkeys(out))  # no duplicates
     assert out[0] == "infer-type-hints"
+
+
+# --- FIX 1: removal / negation honesty guard (LEAD-ANCHORED) -----------------
+#
+# Apex has no "un-add" capability, so a removal/negation-framed request that would
+# otherwise match an ADD lens must NOT invert intent. comprehend → objectives=[],
+# confidence="low"; resolve_objective → None (the compiler stays honestly blocked).
+
+_MUST_SUPPRESS: tuple[str, ...] = (
+    "remove docstrings", "remove type hints", "delete all the tests",
+    "remove the security checks", "don't add type hints", "do not document this",
+    "get rid of the type hints", "strip the docstrings",
+    # a few more lead-anchored inversions
+    "delete the type annotations", "never add docstrings", "skip the tests",
+    "disable the security checks", "no type hints please",
+)
+
+
+@pytest.mark.parametrize("req", _MUST_SUPPRESS)
+def test_removal_framed_comprehend_is_suppressed(req):
+    c = comprehend(req)
+    assert c.objectives == [], f"{req!r} should suppress all (additive) matches"
+    assert c.confidence == "low"
+    assert "removal" in c.rationale.lower() or "negation" in c.rationale.lower()
+
+
+@pytest.mark.parametrize("req", _MUST_SUPPRESS)
+def test_removal_framed_resolve_is_none(req):
+    # The honest pre-vocabulary verdict: unknown objective → compiler stays blocked.
+    assert resolve_objective(req) is None
+
+
+# (request, an objective that MUST still be in the result) — the cue is buried
+# (not leading) or an add-verb leads, so the guard must NOT over-suppress.
+_MUST_NOT_OVER_SUPPRESS: tuple[tuple[str, str], ...] = (
+    ("add type hints to remove ambiguity", "infer-type-hints"),
+    ("document how to remove a user", "document-param"),
+    ("add tests for the delete endpoint", "cover-gaps"),
+    ("cover the remove_user function with tests", "cover-gaps"),
+    ("harden the delete path", "harden"),
+    ("implement the function that deletes a row", "implement-stub"),
+)
+
+
+@pytest.mark.parametrize("req,expected", _MUST_NOT_OVER_SUPPRESS)
+def test_not_over_suppressed_comprehend(req, expected):
+    c = comprehend(req)
+    assert expected in c.objectives, f"{req!r} should still surface {expected}"
+    assert c.confidence == "high"
+
+
+@pytest.mark.parametrize("req,expected", _MUST_NOT_OVER_SUPPRESS)
+def test_not_over_suppressed_resolve(req, expected):
+    assert resolve_objective(req) is not None
+
+
+# Legitimate removals resolve via the synonym/exact branch BEFORE the fallback,
+# so the guard never touches them — they must still work.
+@pytest.mark.parametrize("req,expected", [
+    ("remove dead code", "remove-dead-code"),
+    ("remove unused imports", "remove-unused-imports"),
+    ("drop param", "dead-params"),
+    ("strip unreachable branches", "remove-dead-code"),
+    ("strip dead", "remove-dead-code"),
+    ("prune import", "remove-unused-imports"),
+])
+def test_legitimate_removals_still_resolve(req, expected):
+    assert resolve_objective(req) == expected
+    assert expected in comprehend(req).objectives
+
+
+def test_is_removal_framed_lead_anchored():
+    # leading cue → framed
+    assert is_removal_framed(["remove", "docstrings"])
+    assert is_removal_framed(["get", "rid", "of", "the", "hints"])
+    assert is_removal_framed(["don", "t", "add", "tests"])
+    assert is_removal_framed(["do", "not", "document"])
+    # buried cue → NOT framed
+    assert not is_removal_framed(["add", "tests", "for", "the", "delete", "endpoint"])
+    assert not is_removal_framed(["document", "how", "to", "remove", "a", "user"])
+    assert not is_removal_framed([])
+
+
+# --- FIX 2: word-boundary on short/ambiguous concept keys --------------------
+#
+# Substring matching mis-fired ("important"→import, "final exam"→add-final,
+# "documentary"→document-*, "java is my favorite island"→java-*). These must die;
+# the real code-intent phrasings must keep working.
+
+@pytest.mark.parametrize("req", [
+    "important", "this is important", "the most important thing",
+    "final exam", "final thoughts", "the final answer",
+    "java is my favorite island", "i visited java last summer",
+    "slot machine", "a free time slot",
+    "documentary about code", "documentary",
+    "typing speed", "improve my typing speed",
+    "enumerate the items", "enumerate over the list",
+    "seal the envelope",
+])
+def test_word_boundary_kills_false_positives(req):
+    c = comprehend(req)
+    assert c.objectives == [], f"{req!r} must not match any objective, got {c.objectives}"
+    assert resolve_objective(req) is None
+
+
+@pytest.mark.parametrize("req,expected", [
+    ("sort imports", "sort-imports"),
+    ("imports", "sort-imports"),
+    ("clean up the imports", "sort-imports"),
+    ("make it final", "add-final"),
+    ("make this method final", "add-final"),
+    ("enum", "enforce-enum-unique"),
+    ("enforce enum uniqueness", "enforce-enum-unique"),
+    ("java throws", "java-document-throws"),
+    ("document the java throws", "java-document-throws"),
+    ("add slots", "add-slots"),
+    ("add __slots__ to the dataclass", "add-slots"),
+    ("type hints", "infer-type-hints"),
+    ("add type annotations", "infer-type-hints"),
+    ("seal the class as final", "add-final"),
+])
+def test_word_boundary_keeps_real_intent(req, expected):
+    assert expected in comprehend(req).objectives, (
+        f"{req!r} should still surface {expected}")
 
 
 # --- resolve_objective: the SHARED vocabulary lifts it, BACK-COMPAT preserved -

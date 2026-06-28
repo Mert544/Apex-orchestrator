@@ -810,13 +810,22 @@ def resolve_objective(request: str | None) -> str | None:
     # Shared-vocabulary fallback (only reached when the synonym table missed, so
     # back-compat is preserved): the objective NAME phrases, then the concept map.
     from app.intent.comprehension import (
-        _norm, concept_matches, name_phrase_match,
+        _norm, _suppress_removal, _tokens, concept_matches, name_phrase_match,
     )
     norm = _norm(request)
     names = name_phrase_match(norm, list(known.values()))
+    concepts = concept_matches(norm)
+    # HONESTY GUARD (fallback-only): a removal/negation-framed request whose ONLY
+    # fallback matches are ADDITIVE lenses (no real removal objective) would invert
+    # intent — "remove docstrings" must NOT compile to document-param. Restore the
+    # honest pre-vocabulary verdict (unknown objective → the compiler stays
+    # blocked). Legitimate removals already returned above via the synonym/exact
+    # branch, so this never suppresses "remove dead code"/"drop param". The SAME
+    # shared predicate ``comprehend`` uses, so both surfaces agree.
+    if _suppress_removal(_tokens(request), names + concepts):
+        return None
     if names:
         return names[0]
-    concepts = concept_matches(norm)
     if concepts:
         return concepts[0]
     return None

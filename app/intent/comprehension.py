@@ -292,6 +292,83 @@ _AUTONOMOUS_TRIGGERS: tuple[str, ...] = (
     "otonom", "otomatik", "onaysız", "kendi kendine",
 )
 
+# --- Removal / negation honesty guard (LEAD-ANCHORED) ------------------------
+#
+# Apex has ADD capabilities (document, type, test, …) but no "un-document" /
+# "un-type" inverse. A naive concept match turns "remove docstrings" into
+# document-param — HIGH confidence, the exact OPPOSITE of intent, and the
+# additive edit passes the green gate so auto-rollback can't catch the inversion.
+# The guard suppresses that ONLY when the request is removal-FRAMED at its LEAD
+# (not "cue anywhere", which over-suppresses "add tests for the delete endpoint").
+#
+# Removal verbs that, AS THE FIRST meaningful token, frame the whole request as a
+# deletion ("remove docstrings", "strip the type hints").
+_REMOVAL_LEAD_VERBS: frozenset[str] = frozenset({
+    "remove", "delete", "strip", "drop", "disable", "undo", "revert", "purge",
+    "eliminate", "kill",
+})
+# Multi-token removal/negation LEADS — matched as the request's first tokens. Each
+# inverts intent ("get rid of …", "don't add …", "do not document", "never add").
+# ``don't`` tokenizes to ``don`` + ``t``, so both forms are listed.
+_NEGATION_LEADS: tuple[tuple[str, ...], ...] = (
+    ("get", "rid", "of"), ("get", "rid"),
+    ("don", "t"), ("don",), ("do", "not"), ("dont",),
+    ("never",), ("no",), ("without",), ("stop",), ("skip",), ("avoid",),
+)
+# Objectives that GENUINELY remove/reduce code — a removal-framed request that
+# matches one of these is a legitimate removal (e.g. "remove dead code"), so the
+# guard must NOT fire. Membership is by name prefix/family, computed once.
+_REMOVAL_OBJECTIVE_PREFIXES: tuple[str, ...] = (
+    "remove-", "dedup", "merge-", "inline-", "dead-params",
+    "collapse-", "fold-", "combine-", "simplify-", "fix-not-in-is",
+)
+
+# --- Word-boundary matching for short/ambiguous concept keys (FIX 2) ---------
+#
+# Substring matching makes "important" → ``import`` → sort-imports, "final exam"
+# → add-final, "documentary" → document-*, "typing speed" → infer-type-hints —
+# all false. Two tiers fix this deterministically:
+#
+# (A) WORD-BOUNDARY keys — a distinctive token whose only problem is being a
+#     substring of a longer word: require a real word boundary (with the sensible
+#     inflections). ``\benum\b`` won't match "enumerate"; ``\bdocument…\b`` won't
+#     match "documentary"; ``import`` won't match "important".
+_BOUNDARY_KEY_PATTERNS: dict[str, re.Pattern[str]] = {
+    "import": re.compile(r"\bimport(s|ing|ed)?\b"),
+    "imports": re.compile(r"\bimports\b"),
+    "enum": re.compile(r"\benum\b"),         # not "enumerate"
+    "document": re.compile(r"\bdocument(s|ed|ing|ation)?\b"),  # not "documentary"
+    "type hint": re.compile(r"\btype hints?\b"),
+    "type hints": re.compile(r"\btype hints?\b"),
+    "typing": re.compile(r"\btyping\b(?!\s+speed)"),  # the module, not keyboard typing
+    "annotate": re.compile(r"\bannotate[ds]?\b"),
+    "tests": re.compile(r"\btests?\b"),      # not "latest"/"testament"
+    "stub": re.compile(r"\bstubs?\b"),
+    "todo": re.compile(r"\btodos?\b"),
+}
+# (B) CONTEXT keys — a genuine common ENGLISH word (``final``, ``java``, ``slot``,
+#     ``seal``) where even a word boundary isn't enough ("final exam", "java is my
+#     favorite island", "slot machine", "seal the envelope"). These match only
+#     when a CODE-CONTEXT companion co-occurs (an add/make/seal verb, or a domain
+#     noun like method/class/throws/dataclass), so "make it final"/"add slots"/
+#     "java throws" KEEP working while the unrelated noun phrases are killed.
+_CONTEXT_KEY_PATTERNS: dict[str, re.Pattern[str]] = {
+    "final": re.compile(
+        r"\b(method|class|attribute|field|var|variable|constant)\b.{0,25}\bfinal\b"
+        r"|\bfinal\b.{0,25}\b(method|class|attribute|field|var|variable|constant)\b"
+        r"|\b(add|make|mark|set|seal|declare|keep)\b.{0,25}\bfinal\b"),
+    "java": re.compile(
+        r"\bjava\b.{0,25}\b(throw|throws|finalize|field|class|method|document|"
+        r"interface|annotation)\b"
+        r"|\b(document|finalize|seal|harden)\b.{0,25}\bjava\b"),
+    "slots": re.compile(
+        r"\b(add|use|with|give|generate|introduce)\b.{0,16}\bslots?\b"
+        r"|\bslots?\b.{0,12}\b(to|on|for|dataclass|class)\b|\b__slots__\b"),
+    "seal": re.compile(
+        r"\bseal\b.{0,16}\b(method|class|final|hashable|ordering|eq|dunder)\b"
+        r"|\b(make|mark)\b.{0,16}\bseal\b"),
+}
+
 
 def _norm(request: str) -> str:
     """Lowercase the request to its token alphabet (ASCII + TR), joined by single
@@ -305,20 +382,39 @@ def _tokens(request: str) -> list[str]:
     return _WORD.findall(request.lower())
 
 
+def _phrase_in(phrase: str, text: str) -> bool:
+    """Is ``phrase`` present in already-normalized ``text``?
+
+    Three tiers, in order: a WORD-BOUNDARY key (``import``, ``enum``, ``document``,
+    ``type hints`` …) matches with boundaries + inflections, so "important" ↛
+    ``import`` and "documentary" ↛ ``document``; a CONTEXT key (``final``,
+    ``java``, ``slot``, ``seal`` — genuine common words) matches ONLY with a
+    code-context companion, so "final exam"/"slot machine"/"java is my favorite
+    island" are killed while "make it final"/"add slots"/"java throws" keep
+    working; every other phrase keeps fast exact substring matching. The single
+    matcher is shared by the concept, name, and synonym scans so comprehend() and
+    resolve_objective() agree on what "present" means. Deterministic."""
+    pattern = _BOUNDARY_KEY_PATTERNS.get(phrase) or _CONTEXT_KEY_PATTERNS.get(phrase)
+    if pattern is not None:
+        return pattern.search(text) is not None
+    return phrase in text
+
+
 def name_phrase_match(text: str, objectives: list[str]) -> list[str]:
     """Objectives whose NAME appears as a phrase in already-normalized ``text``.
 
-    An objective name matches when its slug-with-hyphens-as-spaces is a substring
-    of ``text`` (``sort imports`` for ``sort-imports``, ``infer type hints`` for
+    An objective name matches when its slug-with-hyphens-as-spaces is present in
+    ``text`` (``sort imports`` for ``sort-imports``, ``infer type hints`` for
     ``infer-type-hints``); a single-token name (``modernize``, ``harden``) equals
     that phrase and so matches the same way. A bare hyphen-token is deliberately
     NOT matched on its own (``document`` heads ten objectives, ``simplify`` seven
     — a lone token would be hopelessly ambiguous and could mis-route a request
-    that used to resolve precisely); only the full, specific name counts. Returns
-    hits in declaration order of ``objectives``; deterministic, substring-only."""
+    that used to resolve precisely); only the full, specific name counts.
+    Presence uses :func:`_phrase_in`, so an ambiguous short name is word-bounded.
+    Returns hits in declaration order of ``objectives``; deterministic."""
     hits: list[str] = []
     for name in objectives:
-        if name.replace("-", " ") in text:
+        if _phrase_in(name.replace("-", " "), text):
             hits.append(name)
     return hits
 
@@ -326,13 +422,14 @@ def name_phrase_match(text: str, objectives: list[str]) -> list[str]:
 def concept_matches(text: str) -> list[str]:
     """Objectives named by the CONCEPT_VOCAB for already-normalized ``text``.
 
-    Every concept phrase that is a substring of ``text`` contributes its
-    objectives, in vocab declaration order, dedup'd preserving first-seen. Pure,
-    deterministic, substring-only — the shared concept fallback both
-    :func:`comprehend` and ``resolve_objective`` consult."""
+    Every concept phrase PRESENT in ``text`` (via :func:`_phrase_in`, so a short
+    ambiguous key is word-bounded) contributes its objectives, in vocab
+    declaration order, dedup'd preserving first-seen. Pure, deterministic — the
+    shared concept fallback both :func:`comprehend` and ``resolve_objective``
+    consult."""
     out: list[str] = []
     for phrase, objs in CONCEPT_VOCAB:
-        if phrase in text:
+        if _phrase_in(phrase, text):
             for obj in objs:
                 if obj not in out:
                     out.append(obj)
@@ -367,9 +464,14 @@ def _detect_action(request: str, tokens: list[str]) -> str:
     interrogative/auxiliary word (English word order), OR contains a TR
     interrogative word anywhere (TR word order is flexible — "bu modül neden
     bağımlı"), OR contains a TR question particle (``mı/mi/mu/mü``) as a standalone
-    token. Otherwise it is a develop command."""
+    token. Otherwise it is a develop command. A ``?`` always wins; but a
+    removal/negation IMPERATIVE ("do not document this") is a command, not a
+    question, even though "do" is an auxiliary opener — so lead-anchored removal
+    framing overrides the bare-opener question heuristic."""
     if request.rstrip().endswith("?"):
         return "question"
+    if is_removal_framed(tokens):
+        return "develop"  # "do not …"/"don't …" is an imperative, not a question
     if tokens and tokens[0] in _QUESTION_OPENERS:
         return "question"
     if any(t in _TR_QUESTION_WORDS for t in tokens):
@@ -409,6 +511,52 @@ def _detect_scope(request: str) -> str | None:
     return None
 
 
+# --- Removal / negation honesty guard ----------------------------------------
+
+def is_removal_framed(tokens: list[str]) -> bool:
+    """Is the request framed as a REMOVAL/negation at its LEAD?
+
+    True iff the FIRST meaningful token is a removal verb ({remove, delete, strip,
+    drop, …} — covering "get rid of …" via its "rid" lead), OR the first 1–2
+    tokens are a negation lead ({don't → "don"/"dont", "do not", never, no,
+    without, stop, skip, avoid}). LEAD-anchored on purpose: a cue buried later
+    ("add tests for the delete endpoint", "document how to remove a user") does
+    NOT frame the request as a removal, so those are unaffected. Deterministic."""
+    if not tokens:
+        return False
+    if tokens[0] in _REMOVAL_LEAD_VERBS:
+        return True
+    head = tuple(tokens[:3])
+    for lead in _NEGATION_LEADS:
+        if head[:len(lead)] == lead:
+            return True
+    return False
+
+
+def _is_removal_objective(name: str) -> bool:
+    """Does ``name`` genuinely REMOVE/reduce code (so a removal-framed request can
+    legitimately mean it — "remove dead code" → remove-dead-code)? Matched by the
+    removal name families, with ``scaffold-from-protocol`` explicitly excluded (it
+    only shares the ``fold`` letters, it does not remove code)."""
+    if name == "scaffold-from-protocol":
+        return False
+    return any(name.startswith(p) or p in name for p in _REMOVAL_OBJECTIVE_PREFIXES)
+
+
+def _suppress_removal(tokens: list[str], objectives: list[str]) -> bool:
+    """Should a removal-framed request's ADDITIVE matches be suppressed?
+
+    True iff (1) the request is lead-anchored removal-framed, (2) at least one
+    objective matched, and (3) EVERY matched objective is additive (none is a real
+    removal capability). In that case the fallback inverted intent — Apex would
+    ADD what the user asked to REMOVE — so the honest move is to drop the matches.
+    A legitimate removal ("remove dead code") matches a removal objective and is
+    NOT suppressed; a non-removal-framed request is never touched."""
+    if not objectives or not is_removal_framed(tokens):
+        return False
+    return not any(_is_removal_objective(o) for o in objectives)
+
+
 # --- Ranking ------------------------------------------------------------------
 
 # Source weights for the rank: an EXACT objective name typed verbatim is the
@@ -432,13 +580,15 @@ def _candidates(text: str, available: list[str]) -> list[tuple[str, int]]:
     """Every (objective, weight) candidate for ``text``, gathered from the four
     sources in a fixed order so first-seen rank ties break deterministically:
     (3) the whole request IS an exact slug; (2)/(1) concept phrases; (2)/(1)
-    objective-NAME phrases; (1) hand-tuned family synonyms. Pure, substring-only."""
+    objective-NAME phrases; (1) hand-tuned family synonyms. Presence uses
+    :func:`_phrase_in` for the concept/name scans (short ambiguous keys are
+    word-bounded); the synonym triggers keep their literal substring semantics."""
     available_set = set(available)
     out: list[tuple[str, int]] = []
     if text in available_set:                                   # (3) exact slug
         out.append((text, _RANK_EXACT))
     for phrase, objs in CONCEPT_VOCAB:                          # (2)/(1) concepts
-        if phrase in text:
+        if _phrase_in(phrase, text):
             weight = _phrase_weight(phrase)
             out.extend((obj, weight) for obj in objs)
     for name in name_phrase_match(text, available):             # (2)/(1) names
@@ -466,13 +616,19 @@ def _rank_objectives(text: str, available: list[str]) -> list[str]:
 
 
 def _build_rationale(action: str, objectives: list[str], mode: str,
-                     scope: str | None) -> str:
+                     scope: str | None, suppressed: bool = False) -> str:
     """A grounded, human one-liner explaining the understanding — no jargon, the
     same facts the report shows, so a buyer can sanity-check the routing."""
     if action == "question":
         focus = f" about {scope}" if scope else ""
         return (f"Understood a QUESTION{focus} → analyze/explain "
                 f"(no changes; ask routes to a scan).")
+    if suppressed:
+        # The request was removal/negation-framed and only matched ADD lenses —
+        # honest refusal rather than inverting the user's intent.
+        return ("Looks like a removal/negation request — Apex has no removal "
+                "capability for that concept, so it proposes nothing (a "
+                "matching ADD objective would invert your intent).")
     if not objectives:
         return ("Understood a DEVELOP request but matched no specific objective "
                 f"({mode} mode) → fall back to a project scan.")
@@ -517,6 +673,13 @@ def comprehend(request: str, *,
 
     available = _available()
     ranked = _rank_objectives(text, available)
+    # HONESTY GUARD: a removal/negation-framed request that matched ONLY additive
+    # lenses (no real removal objective) would invert intent — Apex has no "un-add"
+    # capability — so the matches are dropped and the result is low-confidence
+    # (the caller falls back to a scan rather than ADDING what was asked removed).
+    suppressed = _suppress_removal(tokens, ranked)
+    if suppressed:
+        ranked = []
     if objectives is not None:
         # Constrain to the caller's allow-list, preserving the computed rank.
         allow = set(objectives)
@@ -524,7 +687,8 @@ def comprehend(request: str, *,
     confidence = "high" if ranked else "low"
     return Comprehension(
         request=request, action="develop", objectives=ranked, mode=mode,
-        scope=scope, rationale=_build_rationale("develop", ranked, mode, scope),
+        scope=scope,
+        rationale=_build_rationale("develop", ranked, mode, scope, suppressed),
         confidence=confidence)
 
 
