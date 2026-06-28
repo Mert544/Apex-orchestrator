@@ -648,8 +648,8 @@ def test_counts_are_thirty_six_concrete_of_seventy_eight():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 84  # 84 after dedup-dunder-all (42nd concrete) registered
-    assert len(classify_objectives(names)["CONCRETE"]) == 42  # 42nd concrete: dedup-dunder-all
+    assert len(names) == 84  # 84 after dedup-dunder-all (84th, TIDY) registered
+    assert len(classify_objectives(names)["CONCRETE"]) == 41  # dedup-dunder-all (84th) is TIDY, not CONCRETE
 
 
 def test_refuses_on_python_soundness_corpus():

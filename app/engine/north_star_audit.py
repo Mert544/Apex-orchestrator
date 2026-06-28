@@ -109,7 +109,6 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "wire-module-exports",
         "harden",
         "raise-from",
-        "dedup-dunder-all",
         # NOTE: "fix-docstrings" was REMOVED here — it is a standalone CLI
         # subcommand (`apex fix-docstrings`), NOT a registered develop objective,
         # so it never appears in ``available_objectives()``. Listing it left the
@@ -130,6 +129,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "remove-unused-imports",
         "sort-imports",
         "sort-dunder-all",
+        "dedup-dunder-all",
         "remove-dead-code",
         "remove-double-negation",
         "remove-pointless-pass",

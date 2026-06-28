@@ -19,7 +19,7 @@ conditional re-binding, a non-string element, more than one ``__all__``, a COMME
 the ``__all__`` span (comment-loss — a dropped dup line would orphan it), a syntax
 error; plus idempotency and determinism; objective registration / reachability (the
 1:1 facet-map<->registry parity invariant, substring-safety, the north-star manifest
-classing it CONCRETE with the reverse tripwire clean, the soundness strategy + the
+classing it TIDY with the reverse tripwire clean, the soundness strategy + the
 ``dynamic_dunder_all`` corpus shape it must refuse, the facet ladder carrying the
 phrase with the originals still leading); and the plan + END-TO-END landing
 (``apply_rename`` verify=True de-dupes the ``__all__`` in place and the suite stays
@@ -307,15 +307,20 @@ def test_facet_phrase_is_substring_order_safe():
         assert other not in _PHRASE, f"{other!r} is a substring of {_PHRASE!r}"
 
 
-def test_manifest_classes_it_concrete_and_reverse_tripwire_clean():
+def test_manifest_classes_it_tidy_and_reverse_tripwire_clean():
     from app.engine.north_star_audit import (
         classify_objectives,
         manifest_subset_of_registry,
     )
     from app.engine.objective_compiler import available_objectives
 
+    # Filed TIDY (a behavior-preserving idiom — removing a duplicate from an EXISTING
+    # __all__ lands no new code), alongside its sibling sort-dunder-all; CONCRETE is
+    # reserved for objectives that land code that did not exist before. Keeping it out
+    # of CONCRETE keeps the anti-drift concrete_ratio honest.
     buckets = classify_objectives(available_objectives())
-    assert "dedup-dunder-all" in buckets["CONCRETE"]
+    assert "dedup-dunder-all" in buckets["TIDY"]
+    assert "dedup-dunder-all" not in buckets["CONCRETE"]
     assert manifest_subset_of_registry() == []
 
 

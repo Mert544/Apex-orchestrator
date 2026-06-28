@@ -150,7 +150,6 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "add-dataclass-order": "runtime-additive(generated-order-ops)+stdlib-dataclass-provenance+no-existing-comparison-dunder+static-refusal",
     "harden": "suite-catches-runtime+security-rewrite(tier1)+behavior-identical-annotation(tier0)+engine-decline-on-unsafe",
     "raise-from": "behavior-preserving-traceback-chain-only+raise-from-except-binding-verbatim+refuse-when-no-binding",
-    "dedup-dunder-all": "behavior-preserving-idiom(__all__-membership-is-a-set)+refuse-dynamic/non-string/multiple/comment-loss",
     # --- TIDY: behavior-preserving idiom rewrites ---------------------------
     "modernize": "behavior-preserving-idiom",
     "simplify-bool-return": "behavior-preserving-idiom",
@@ -164,6 +163,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "remove-unused-imports": "behavior-preserving-idiom",
     "sort-imports": "behavior-preserving-idiom",
     "sort-dunder-all": "behavior-preserving-idiom(__all__-order-irrelevant)",
+    "dedup-dunder-all": "behavior-preserving-idiom(__all__-membership-is-a-set)+refuse-dynamic/non-string/multiple/comment-loss",
     "remove-dead-code": "behavior-preserving-idiom",
     "remove-double-negation": "behavior-preserving-idiom",
     "remove-pointless-pass": "behavior-preserving-idiom",
