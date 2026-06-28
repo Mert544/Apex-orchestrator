@@ -114,6 +114,29 @@ def _imported_modules(text: str) -> set[str] | None:
     return mods
 
 
+def _module_identity(rel_path: str) -> tuple[str, str] | None:
+    """The (dotted_path, own_name) by which a test would IMPORT ``rel_path``,
+    or ``None`` if it is not an importable module.
+
+    Flat module: ``pkg/danger.py`` → (``"pkg.danger"``, ``"danger"``).
+    Package init: ``inflection/__init__.py`` is imported as the PACKAGE, not as
+    ``inflection.__init__`` — the importable name is the parent directory(ies),
+    so ``inflection/__init__.py`` → (``"inflection"``, ``"inflection"``) and
+    ``a/b/__init__.py`` → (``"a.b"``, ``"b"``). ``import inflection`` /
+    ``from inflection import camelize`` then correctly reference the init file,
+    where the old ``inflection.__init__`` form matched no real import. A bare
+    top-level ``__init__.py`` (no parent package) is not importable → ``None``."""
+    norm = rel_path.replace("\\", "/")
+    if not norm.endswith(".py"):
+        return None
+    parts = norm[:-3].split("/")
+    if parts[-1] == "__init__":
+        parts = parts[:-1]  # the package IS the parent dir(s), not ``__init__``
+        if not parts:
+            return None  # a root ``__init__.py`` has no importable package name
+    return ".".join(parts), parts[-1]
+
+
 def _references_module(text: str, rel_path: str) -> bool:
     """Does this test text actually IMPORT the module at ``rel_path``?
 
@@ -121,11 +144,15 @@ def _references_module(text: str, rel_path: str) -> bool:
     does NOT count as coverage — a green suite that only *names* the module in a
     comment proves nothing about a change to it (the over-counting a substring
     match used to allow). Falls back to an import-line regex only when the test
-    text cannot be parsed."""
-    if not rel_path.endswith(".py"):
+    text cannot be parsed.
+
+    A ``<pkg>/__init__.py`` is keyed on its PACKAGE name (its parent dir), so
+    ``import inflection`` references ``inflection/__init__.py`` — see
+    :func:`_module_identity`."""
+    identity = _module_identity(rel_path)
+    if identity is None:
         return False
-    dotted = rel_path[:-3].replace("\\", "/").replace("/", ".")
-    stem = Path(rel_path).stem
+    dotted, name = identity
     mods = _imported_modules(text)
     if mods is not None:
         if dotted in mods:
@@ -133,10 +160,10 @@ def _references_module(text: str, rel_path: str) -> bool:
         # The module's own name as a clean dotted component of a real import
         # (``from pkg import danger`` / ``import a.danger``) — covers layouts
         # whose project-root-relative dotted path differs from the test's root.
-        return any(stem == part for m in mods for part in m.split("."))
-    # Unparsable test text: match the stem only in an import position, not a
+        return any(name == part for m in mods for part in m.split("."))
+    # Unparsable test text: match the name only in an import position, not a
     # bare-word match (function names like ``run`` would otherwise flood).
-    return bool(re.search(rf"(?:^|\n)\s*(?:from|import)\s+[\w.]*\b{re.escape(stem)}\b", text))
+    return bool(re.search(rf"(?:^|\n)\s*(?:from|import)\s+[\w.]*\b{re.escape(name)}\b", text))
 
 
 def module_referenced_by_suite(project_root: str | Path, rel_path: str) -> bool:
