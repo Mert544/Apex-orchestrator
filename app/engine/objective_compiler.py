@@ -778,11 +778,24 @@ def resolve_objective(request: str | None) -> str | None:
 
     An exact (case-insensitive) objective name always wins and resolves to
     itself — so the literal keys (``dead-params``, ``modernize``, …) never change
-    meaning. Otherwise the request's lowercased text is scanned against the
-    append-only synonym table and the FIRST matching trigger's objective is
-    returned (earlier, more-specific phrases listed first). Returns ``None`` when
-    nothing matches, so the caller can keep its existing "unknown objective"
-    handling. Deterministic, stdlib-only, no fuzzy/LLM matching."""
+    meaning. Otherwise the request is matched in PRIORITY order, returning the
+    first hit (single-return contract preserved):
+
+    1. the append-only hand-tuned synonym table (earlier, more-specific phrases
+       first) — every phrase that resolved a precise way before still does;
+    2. the SHARED objective-NAME phrase match (``"sort imports"`` → ``sort-imports``,
+       ``"infer type hints"`` → ``infer-type-hints``) — the deepening that lets a
+       request name the capability the way it reads, without a synonym entry;
+    3. the SHARED :data:`~app.intent.comprehension.CONCEPT_VOCAB` (the same concept
+       map ``comprehend`` ranks against) — its first matching concept's first
+       objective.
+
+    Steps 2–3 are pure FALLBACKS: an exact name already matched, and the synonym
+    table is consulted first, so this only RESOLVES a request that used to return
+    ``None`` — it can never redirect a previously-correct resolution. Returns
+    ``None`` when nothing matches, so the caller keeps its "unknown objective"
+    handling. Deterministic, stdlib-only, no fuzzy/LLM matching. The comprehension
+    helpers are imported lazily so the two modules never form an import cycle."""
     if not request:
         return None
     text = request.strip().lower()
@@ -794,6 +807,18 @@ def resolve_objective(request: str | None) -> str | None:
     for phrase, objective in _OBJECTIVE_SYNONYMS:
         if phrase in text:
             return objective
+    # Shared-vocabulary fallback (only reached when the synonym table missed, so
+    # back-compat is preserved): the objective NAME phrases, then the concept map.
+    from app.intent.comprehension import (
+        _norm, concept_matches, name_phrase_match,
+    )
+    norm = _norm(request)
+    names = name_phrase_match(norm, list(known.values()))
+    if names:
+        return names[0]
+    concepts = concept_matches(norm)
+    if concepts:
+        return concepts[0]
     return None
 
 

@@ -206,8 +206,37 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_comprehend(args: argparse.Namespace) -> int:
+    """Preview how Apex UNDERSTANDS a natural-language request — read-only.
+
+    The zero-token "small-LLM" surface: maps the free-text request to an action
+    (develop / question), a RANKED objective list, a safety mode, and a best-effort
+    scope, with a grounded rationale — deterministic, offline, no model. Writes
+    nothing; it is the transparency preview a buyer reads before a develop run."""
+    from app.intent.comprehension import comprehend, render_comprehension_markdown
+
+    result = comprehend(args.request)
+    if getattr(args, "json", False):
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(render_comprehension_markdown(result))
+    return 0
+
+
 def _register_local_parsers(subparsers) -> None:
-    """Subcommands whose cmd_* still lives in this module: bench, run."""
+    """Subcommands whose cmd_* still lives in this module: comprehend, bench, run."""
+    # comprehend — preview the NL→objective understanding (read-only, zero-token)
+    comprehend_parser = subparsers.add_parser(
+        "comprehend",
+        help="Preview how Apex understands a request: action, ranked objectives, "
+             "mode, scope (read-only, no changes)",
+    )
+    comprehend_parser.add_argument(
+        "request", help="The natural-language request, e.g. 'add type hints to the "
+                        "auth module'")
+    comprehend_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    comprehend_parser.set_defaults(func=cmd_comprehend)
+
     # bench — grade pinned external codebases (calibration, reproducible)
     bench_parser = subparsers.add_parser(
         "bench",
