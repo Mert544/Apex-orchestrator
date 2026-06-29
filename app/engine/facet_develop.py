@@ -732,6 +732,25 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # in particular from "the raised exceptions to document" ("unchained re-raise …
     # from its cause" vs "raised exceptions to document") — so its order is free.
     "the unchained re-raise to chain from its cause": "raise-from",
+
+    # A god-class / coupled class with methods that provably never touch ``self``:
+    # the decouple lens's "the incidental coupling to remove" L3 phrase deepens into
+    # this concrete, EXECUTABLE first slice. promote-staticmethod LANDS the
+    # ``@staticmethod`` promotion on each such self-free method (two AST line edits:
+    # +``@staticmethod`` and a dropped leading ``self``) — a real coupling-surface
+    # reduction that changes NO call site (a ``@staticmethod`` stays a class
+    # attribute, so ``self.m()``/``Cls.m()``/``inst.m()`` all keep resolving).
+    # THE OVER-CLAIM GUARD: it does NOT reduce the method count or split
+    # responsibilities (the full decomposition into collaborators stays a design
+    # task), so the phrase names the @staticmethod promotion, never a decomposition.
+    # Its refusal set blocks anything unsafe (uses-self / decorated / dunder /
+    # classmethod / non-self-first / super / name-defined-in->1-class (override/MRO)
+    # / name-as-string-literal (dynamic) / nested-class), and a class with no
+    # self-free method is an HONEST no-op. Routed through the same suite-gated,
+    # auto-rollback engine. Its phrasing ("self-free methods to promote to
+    # staticmethod") is not a substring of any other key (nor any of them of it), so
+    # its order is free.
+    "the self-free methods to promote to staticmethod": "promote-staticmethod",
 }
 
 

@@ -160,6 +160,11 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "set-literal",
         "use-enumerate",
         "merge-duplicate-imports",
+        # Autonomous-39 W3a: a behaviour-preserving structural refactor (promote a
+        # class's self-free methods to @staticmethod — a coupling-surface reduction
+        # that changes no call site), so it sits in TIDY alongside its structural
+        # neighbours extract-guard-clause / dedup-parameterized.
+        "promote-staticmethod",
     }),
     "SAFETY": frozenset(),
 }

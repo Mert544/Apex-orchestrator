@@ -1106,7 +1106,11 @@ _FACT_EXPECTED = {
     # Autonomous-39 W2: flipped from design_task → the delegated extract_guard_clause
     # lander (deterministic guard-invert flatten, gated + auto-rollback).
     "deep-nesting": ("extract_guard_clause", True),
-    "god-class": ("design_task", False),
+    # Autonomous-39 W3a: flipped from design_task → the delegated promote_staticmethod
+    # lander (deterministic self-free-method → @staticmethod decoupling, gated +
+    # auto-rollback; a class with no self-free method ⇒ an honest no-op, so the full
+    # responsibility-split stays a design task).
+    "god-class": ("promote_staticmethod", True),
     "modernization": ("modernize_comparisons", True),
     "mutable-default": ("fix_mutable_defaults", True),
     "merge-nested-if": ("merge_nested_if", True),

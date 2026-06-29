@@ -86,6 +86,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "seal_total_ordering": 0.50,     # @functools.total_ordering fills 3 comparison ops from one (synthesize_dunders' comparison-dunder sibling)
     "seal_hashable_eq": 0.50,        # canonical __hash__ restoring set/dict usability where __eq__ made instances unhashable (synthesize_dunders' hash sibling)
     "inline": 0.45,                  # fold a single-use helper back into its caller
+    "promote_staticmethod": 0.45,    # promote a class's self-free methods to @staticmethod (a real coupling-surface decoupling that changes no call site; the full responsibility-split stays a design task)
     "extract_guard_clause": 0.45,    # flatten nesting into early-exit guards
     "guard_clause": 0.45,            # a trailing-guard-after-setup rewrite
     "freeze_dataclass": 0.45,        # add frozen=True to a never-mutated dataclass

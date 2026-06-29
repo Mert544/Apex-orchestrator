@@ -194,6 +194,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "set-literal": "behavior-preserving-idiom",
     "use-enumerate": "behavior-preserving-idiom",
     "merge-duplicate-imports": "behavior-preserving-idiom",
+    "promote-staticmethod": "behavior-preserving-decouple(self-free-method→@staticmethod-stays-class-attribute,no-call-site-change)+refuse-uses-self/decorated/dunder/classmethod/non-self-first/super/name-in->1-class(override-MRO)/name-as-string-literal(dynamic)/nested-class/fixture-non-library",
 }
 
 # The ONLY objectives allowed to set ``ObjectiveSpec.scope_verify=True`` (Layer A3).

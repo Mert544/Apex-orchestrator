@@ -697,6 +697,20 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
     "narrow the seam to a single contract": ["the one responsibility to keep",
                                              "the incidental coupling to remove",
                                              "the callers to migrate"],
+    # decouple L4: "the incidental coupling to remove" (an L3 phrase that already
+    # emits under "narrow the seam to a single contract") deepens once more into the
+    # CONCRETE, EXECUTABLE first slice of that removal — promoting a class's
+    # self-free methods to @staticmethod. THE OVER-CLAIM GUARD (Autonomous-39 W3a):
+    # this phrase routes (via FACET_OBJECTIVE_MAP) to the promote-staticmethod
+    # objective, which promotes ONLY the methods that provably never touch `self` —
+    # a real coupling-surface reduction that changes no call site. It does NOT
+    # reduce the method count or split responsibilities (the full decomposition
+    # stays a design task), so the phrase names the @staticmethod promotion, not a
+    # decomposition. This is a new key for an L3 phrase that ALREADY emits — no new
+    # L1/L2 node is introduced, so the per-level beam and every pinned phrase's
+    # order are untouched; it only lowers the case-split floor under this one L3
+    # phrase. Appended as the sole sub-aspect, so the case split still follows.
+    "the incidental coupling to remove": ["the self-free methods to promote to staticmethod"],
     # verify — the constructive "make it reversible" lens. The three verify L1
     # aspects ("stated invariants", "boundary assertions", "proof obligations")
     # previously had NO L2 vocabulary, so zooming "Verify X → proof obligations"

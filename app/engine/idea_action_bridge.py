@@ -110,14 +110,26 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                      "Flatten the deeply-nested function {s} — invert a leading "
                      "guard into an early return", True),
     # God-class: a top-level class with too many methods is a Single-
-    # Responsibility violation. HOW to decompose it — which responsibilities to
-    # split into which collaborators, where the seams are — is a DESIGN decision,
-    # so Apex RECOMMENDS the split and names the class; it must NOT auto-write it.
-    # Strictly recommend-only (executable False).
-    "god-class": ("design_task",
-                  "Decompose the god-class {s} — split its many responsibilities "
-                  "into smaller, cohesive collaborators (Apex names the class, "
-                  "you design the decomposition)", False),
+    # Responsibility violation. The HONEST EXECUTABLE move (Autonomous-39 W3a) is
+    # ``promote_staticmethod``: it promotes the class's SELF-FREE methods (those
+    # that provably never touch ``self``) to ``@staticmethod`` — a real DECOUPLING
+    # step that makes the coupling surface honest WITHOUT changing any call site (a
+    # ``@staticmethod`` is still a class attribute, so ``self.m()``/``Cls.m()``/
+    # ``inst.m()`` all keep resolving). THE OVER-CLAIM GUARD (the load-bearing
+    # honesty): this does NOT reduce the method count or split responsibilities, so
+    # the description must NOT claim "decompose into collaborators" — it states what
+    # the action DELIVERS (self-free-method promotion, executable now) AND that the
+    # full responsibility-split into cohesive collaborators stays a DESIGN task. A
+    # god-class with NO self-free method ⇒ an HONEST no-op (the delegated lander
+    # finds nothing eligible and yields an empty plan with a disclosed reason —
+    # never a fabricated decomposition). The lander runs over the MODULE so it may
+    # promote eligible methods in OTHER classes there too — broader but SAFE
+    # (suite-gated + rolled back on any regression), and its refusal set blocks
+    # override/MRO/dunder/decorated/dynamic methods.
+    "god-class": ("promote_staticmethod",
+                  "Decouple the god-class {s} — promote its self-free methods to "
+                  "@staticmethod (executable now); the full responsibility-split "
+                  "into cohesive collaborators remains a design task", True),
     "modernization": ("modernize_comparisons", "Modernize None comparisons in {s}", True),
     "mutable-default": ("fix_mutable_defaults", "Fix mutable default arguments in {s}", True),
     # Behaviour-preserving readability simplifications (pure AST, each re-parses
@@ -953,6 +965,14 @@ class IdeaActionBridge:
         # from here.
         "dedup_total_return": ["lift always-returning exact-duplicate block to shared helper"],
         "dedup_parameterized": ["parameterize near-duplicate group into shared helper"],
+        # promote_staticmethod (Autonomous-39 W3a, the honest god-class flip), like
+        # the dedup landers above, is NOT a SemanticPatchResult transform —
+        # ``apply_step`` delegates it to the develop-core ``apply_rename`` path.
+        # Listed here so ``_step_targets`` recognises it as a real transform
+        # objective (a ``.py`` target → ``[step.target]``); the module rewrite is
+        # produced by the objective's own lander (``plan_promote_staticmethods``),
+        # not from here.
+        "promote_staticmethod": ["promote self-free method to staticmethod"],
     }
 
     # Behaviour-preserving readability simplifications dispatched STRAIGHT to
@@ -2058,6 +2078,64 @@ class IdeaActionBridge:
 
         return _plan
 
+    @staticmethod
+    def _plan_promote_staticmethod_lander():
+        """The promote-staticmethod lander adapted to the delegated ``(project_root,
+        target)`` shape every delegated synthesis uses.
+
+        promote-staticmethod is SINGLE-MODULE — its real lander is already
+        ``plan_promote_staticmethods(root, module_rel) -> RenamePlan``, so (unlike
+        the CROSS-MODULE dedup landers) there is NO actionable-group gate to re-run
+        and NO joined "A + B" subject to split. The ``god-class`` seeder subject is
+        ``"<module_rel>::<Class>"`` (``idea_seeder._seed_god_classes``), so this
+        wrapper strips any trailing ``::Class`` to recover the module rel and
+        DELEGATES straight to ``plan_promote_staticmethods``. A non-``.py`` /
+        unreadable / unparseable target yields an empty no-op :class:`RenamePlan`
+        from the real lander, so the delegated apply path honestly no-ops rather
+        than fakes a change.
+
+        HONESTY — the DECOUPLING-not-DECOMPOSITION boundary (the over-claim guard):
+        promote-staticmethod promotes a god-class's SELF-FREE methods (those that
+        provably never touch ``self``) to ``@staticmethod`` — a real coupling-surface
+        reduction — but it does NOT reduce the method count or split
+        responsibilities, so the FULL decomposition into cohesive collaborators
+        stays a DESIGN task. The god-class fact row says exactly this; it must NEVER
+        claim the executable action "decomposes into collaborators". A god-class with
+        NO self-free method (e.g. a method-bag whose every method reads ``self``, or
+        all are decorated / dunder / overridden / dynamically referenced) routes
+        here, finds nothing eligible, and yields an EMPTY plan ⇒ an HONEST no-op (the
+        disclosed reason rides through), NEVER a fabricated decomposition.
+
+        SOUNDNESS — promote-staticmethod's refusal set is the guarantee it only ever
+        DECOUPLES (never CHANGES behaviour): it promotes ONLY a method that uses no
+        ``self``, is not already static/classmethod, carries NO decorator, is not a
+        dunder, leads with ``self``, uses no ``super``, whose NAME is defined by a
+        SINGLE class in the repo (no override / MRO branch to desync), whose class is
+        top-level, and whose NAME is NOT referenced as a bare string literal anywhere
+        (no dynamic getattr / monkeypatch-by-name target). The only edits are
+        ``+@staticmethod`` and a dropped leading ``self`` — a ``@staticmethod`` stays
+        a class attribute, so ``self.m()``/``Cls.m()``/``inst.m()`` all keep
+        resolving with the same arguments.
+
+        SCOPE — broader but SAFE: ``plan_promote_staticmethods`` runs over the whole
+        MODULE (it takes a rel, not a class), so it may also promote eligible
+        self-free methods in OTHER classes of that module, not just the named one.
+        This is SAFE exactly as W1's cross-module lift is: the plan lands through
+        ``apply_rename(impact_scope=True)``, whose impacted-test gate auto-rolls-back
+        on ANY regression — so a broader-than-named but behaviour-preserving promotion
+        either verifies green or is reverted, never a silent overreach."""
+        from app.execution.promote_staticmethods import plan_promote_staticmethods
+
+        def _plan(project_root: str, target: str):
+            # The god-class subject is "<module_rel>::<Class>"; strip any "::Class"
+            # suffix to recover the own-module rel (a plain module target — no "::" —
+            # is unchanged). plan_promote_staticmethods runs over that module and
+            # no-ops with an empty plan on a non-.py / unreadable / no-eligible rel.
+            module_rel = target.split("::", 1)[0]
+            return plan_promote_staticmethods(project_root, module_rel)
+
+        return _plan
+
     _DELEGATED_SYNTHESIS = {
         "implement_stub": (
             "_plan_implement_stub_lander",
@@ -2097,6 +2175,10 @@ class IdeaActionBridge:
             "_plan_seal_hashable_eq_lander",
             "no protocol completion (no eq-without-hash class / a context-manager "
             "gap needs design / not eligible)"),
+        "promote_staticmethod": (
+            "_plan_promote_staticmethod_lander",
+            "no promotion (no self-free method / all decorated, dunder, overridden, "
+            "or dynamically referenced)"),
     }
 
     # The action types ``apply_step`` / ``_generate`` route to the develop-core

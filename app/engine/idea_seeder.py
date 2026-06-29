@@ -1617,16 +1617,25 @@ class IdeaSeeder:
     ) -> None:
         # God-classes: a top-level class declaring an unusually high number of
         # methods is a Single-Responsibility violation — too many behaviours have
-        # accreted onto one type, so it is a decomposition candidate ("split into
-        # smaller, cohesive collaborators"). The subject is ``module::classname``
-        # so it never collides with the module's own idea (mirroring incomplete-
-        # protocol's ``module::Class`` and deep-nesting's ``module::function``).
-        # Recommend-only: HOW to decompose the class is a DESIGN call, Apex names
-        # it but does NOT auto-write the split. A repo with no god-class yields
-        # nothing here and seeding stays byte-identical. The fact value
-        # deliberately avoids the token "untested" (which would auto-promote it to
-        # an executable test) and any leading "<int> <unit>" magnitude shape (no
-        # method-count word leads it — the label "god-class" leads instead).
+        # accreted onto one type, so it is a decomposition candidate. The subject is
+        # ``module::classname`` so it never collides with the module's own idea
+        # (mirroring incomplete-protocol's ``module::Class`` and deep-nesting's
+        # ``module::function``).
+        #
+        # AUTONOMOUS-39 W3a + THE OVER-CLAIM GUARD: the EXECUTABLE move the bridge
+        # routes this to (``promote_staticmethod``) promotes the class's SELF-FREE
+        # methods to ``@staticmethod`` — a real coupling-surface DECOUPLING that
+        # changes no call site — but it does NOT reduce the method count or split
+        # responsibilities. So the surfaced idea TITLE must NOT over-promise what the
+        # executable action delivers: it states the executable step (promote self-free
+        # methods to @staticmethod) AND that the full responsibility-split into
+        # cohesive collaborators stays a DESIGN task. A god-class with no self-free
+        # method ⇒ an HONEST no-op downstream (never a fabricated decomposition). A
+        # repo with no god-class yields nothing here and seeding stays byte-identical.
+        # The fact value deliberately avoids the token "untested" (which would
+        # auto-promote it to an executable test) and any leading "<int> <unit>"
+        # magnitude shape (no method-count word leads it — the label "god-class"
+        # leads instead).
         for gc in (getattr(profile, "god_classes", []) or [])[:3]:
             module = gc.get("module")
             classname = gc.get("classname")
@@ -1634,13 +1643,15 @@ class IdeaSeeder:
                 continue
             self._append_root(
                 roots, seen_subjects,
-                title=(f"Decompose the god-class `{classname}` in {module} "
-                       f"— split its many responsibilities into smaller, "
-                       f"cohesive collaborators"),
+                title=(f"Decouple the god-class `{classname}` in {module} "
+                       f"— promote its self-free methods to @staticmethod now; "
+                       f"the full split into cohesive collaborators stays a "
+                       f"design task"),
                 subject=f"{module}::{classname}",
                 fact_label="god-class",
                 fact_value=(f"god-class: {module}::{classname} carries many "
-                            f"responsibilities — a decomposition candidate"),
+                            f"responsibilities — self-free methods are a "
+                            f"@staticmethod decoupling candidate"),
             )
 
     def _seed_dream_insights(

@@ -598,7 +598,7 @@ def test_objective_total_is_seventy_nine():
 
     # 83 after document-attributes + document-yields (the class-attribute and
     # generator-yield doc-splice objectives).
-    assert len(set(available_objectives())) == 84
+    assert len(set(available_objectives())) == 85
 
 
 # --- PARITY ROW 1: move_value tier (the doc-surface 0.66 tier) ----------------
@@ -630,7 +630,7 @@ def test_parity_concrete_count_is_thirty_seven():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 41  # dedup-dunder-all (84th) is TIDY, not CONCRETE
+    assert len(buckets["CONCRETE"]) == 41  # promote-staticmethod (85th) is TIDY, not CONCRETE
 
 
 # --- PARITY ROW 3: soundness-strategy manifest --------------------------------

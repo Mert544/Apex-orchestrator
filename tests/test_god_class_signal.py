@@ -216,7 +216,14 @@ def test_seeds_god_class_root_naming_the_class():
     assert root.subject == "app/x.py::Mega"
     assert "Mega" in root.title
     assert "app/x.py" in root.title
-    assert "Decompose" in root.title
+    # Autonomous-39 W3a + the over-claim guard: the title must HONESTLY name the
+    # executable step (promote self-free methods to @staticmethod) and NOT
+    # over-promise a full decomposition — the responsibility-split stays a design
+    # task. So the title states @staticmethod promotion + "design task", never
+    # "decompose into collaborators".
+    assert "@staticmethod" in root.title
+    assert "design task" in root.title
+    assert "decompose" not in root.title.lower()
     assert root.source_facts[0].startswith("god-class")
 
 
@@ -301,15 +308,23 @@ def test_fact_hint_registered():
 
 # --- action bridge ----------------------------------------------------------
 
-def test_action_is_recommend_only():
+def test_action_is_executable_promote_staticmethod():
     profile = _profile(god_classes=[_entry("app/x.py", "Mega", 20)])
     idea = _god_roots(profile)[0]
     step = IdeaActionBridge().plan_idea(idea)
-    # HOW to decompose the class is a DESIGN decision: Apex points, it does not
-    # auto-write — so it must NOT claim to be executable.
-    assert step.executable is False
-    assert step.action_type == "design_task"
+    # Autonomous-39 W3a: the EXECUTABLE move is promote_staticmethod — promote the
+    # class's self-free methods to @staticmethod (a real decoupling that changes no
+    # call site). The full responsibility-split stays a DESIGN task, so the
+    # description must HONESTLY say so and must NOT claim a decomposition.
+    assert step.executable is True
+    assert step.action_type == "promote_staticmethod"
+    # The subject is "module::Class"; the surfaced target is the own-module rel
+    # (the lander strips the suffix), so the step has a real patchable file.
+    assert step.target == "app/x.py"
     assert "app/x.py::Mega" in step.description
+    assert "@staticmethod" in step.description
+    assert "design task" in step.description
+    assert "decompose" not in step.description.lower()
 
 
 # --- roadmap ----------------------------------------------------------------

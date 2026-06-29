@@ -243,8 +243,11 @@ def test_other_fact_actions_unchanged():
         "Decouple the coordinator module {s} — it imports many "
         "internal modules; split its responsibilities (Apex names "
         "the god-module, you design the seams)", False)
-    assert _FACT_ACTIONS["god-class"][0] == "design_task"
-    assert _FACT_ACTIONS["god-class"][2] is False
+    # god-class was design_task at W2 time; Autonomous-39 W3a later flipped it to
+    # the executable promote_staticmethod lander (self-free-method → @staticmethod
+    # decoupling; full split stays a design task) — assert that current reality.
+    assert _FACT_ACTIONS["god-class"][0] == "promote_staticmethod"
+    assert _FACT_ACTIONS["god-class"][2] is True
     # The W1 sibling stays as W1 left it (this wave touches only deep-nesting).
     assert _FACT_ACTIONS["generalizable-duplication"][0] == "dedup_parameterized"
     # incomplete-protocol was design_task at W2 time; Autonomous-39 W5 later flipped

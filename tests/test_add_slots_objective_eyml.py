@@ -781,7 +781,7 @@ def test_objective_total_is_seventy_eight():
     # 83 after document-attributes + document-yields (the class-attribute and
     # generator-yield doc-splice objectives) self-registered; this count pin is the
     # tripwire each new objective round bumps.
-    assert len(set(available_objectives())) == 84
+    assert len(set(available_objectives())) == 85
 
 
 def test_objective_spec_is_callable():
@@ -828,7 +828,7 @@ def test_parity_concrete_count_is_thirty_six():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 41  # dedup-dunder-all (84th) is TIDY, not CONCRETE
+    assert len(buckets["CONCRETE"]) == 41  # promote-staticmethod (85th) is TIDY, not CONCRETE
 
 
 # --- PARITY ROW 3: soundness-strategy manifest ------------------------------
