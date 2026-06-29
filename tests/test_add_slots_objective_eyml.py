@@ -781,7 +781,7 @@ def test_objective_total_is_seventy_eight():
     # 83 after document-attributes + document-yields (the class-attribute and
     # generator-yield doc-splice objectives) self-registered; this count pin is the
     # tripwire each new objective round bumps.
-    assert len(set(available_objectives())) == 85
+    assert len(set(available_objectives())) == 86
 
 
 def test_objective_spec_is_callable():

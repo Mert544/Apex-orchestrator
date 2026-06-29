@@ -150,6 +150,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "add-dataclass-order": "runtime-additive(generated-order-ops)+stdlib-dataclass-provenance+no-existing-comparison-dunder+static-refusal",
     "harden": "suite-catches-runtime+security-rewrite(tier1)+behavior-identical-annotation(tier0)+engine-decline-on-unsafe",
     "raise-from": "behavior-preserving-traceback-chain-only+raise-from-except-binding-verbatim+refuse-when-no-binding",
+    "modernize-typing": "behavior-identical-annotation-only(PEP585/604)+future-import-gated(has_future_annotations-or-refuse)+annotation-slot-only(AnnAssign/arg/returns-never-expression-position)+typing-binding-scan-or-refuse(star/alias-ambiguity)+shadow-scan-or-refuse(non-import-binding)+Tuple[()]/string-literal-refuse+union-flatten-sound+reparse-or-refuse(no-suite-needed)",
     # --- TIDY: behavior-preserving idiom rewrites ---------------------------
     "modernize": "behavior-preserving-idiom",
     "simplify-bool-return": "behavior-preserving-idiom",

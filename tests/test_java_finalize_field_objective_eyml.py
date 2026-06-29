@@ -515,7 +515,7 @@ def test_objective_total_is_seventy_eight():
 
     # 83 after document-attributes + document-yields (the class-attribute and
     # generator-yield doc-splice objectives).
-    assert len(set(available_objectives())) == 85
+    assert len(set(available_objectives())) == 86
 
 
 # --- PARITY ROW 1: move_value tier (matches add-final's runtime-noop tier) ----

@@ -165,6 +165,12 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         # that changes no call site), so it sits in TIDY alongside its structural
         # neighbours extract-guard-clause / dedup-parameterized.
         "promote-staticmethod",
+        # Codemods W1: rewrites EXISTING annotations to the modern PEP 585 / PEP 604
+        # spellings (typing.List[x]->list[x], Optional[X]->X | None) in place —
+        # modernizes existing code, not new working code that did not exist, so it is
+        # TIDY alongside `modernize` and the other idiom modernizers (future-import-
+        # gated + annotation-position-only, so behaviour-identical).
+        "modernize-typing",
     }),
     "SAFETY": frozenset(),
 }

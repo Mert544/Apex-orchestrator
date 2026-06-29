@@ -567,7 +567,7 @@ def test_counts_are_forty_one_concrete_of_eighty_three():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 85  # 85 after promote-staticmethod (85th, TIDY) registered
+    assert len(names) == 86  # 86 after modernize-typing (86th, TIDY) registered
     assert len(classify_objectives(names)["CONCRETE"]) == 41  # promote-staticmethod (85th) is TIDY, not CONCRETE
 
 

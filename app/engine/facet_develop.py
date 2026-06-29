@@ -751,6 +751,24 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # staticmethod") is not a substring of any other key (nor any of them of it), so
     # its order is free.
     "the self-free methods to promote to staticmethod": "promote-staticmethod",
+
+    # Legacy typing spellings: the "signatures and types" / modernize lens's
+    # PEP-585/604 sub-aspect names a module whose ANNOTATIONS still spell
+    # ``typing.List[x]`` / ``Optional[X]`` / ``Union[A, B]`` instead of the modern
+    # builtins (``list[x]``) and ``|`` union. The modernize-typing objective LANDS
+    # exactly that migration in ANNOTATION positions, gated by the SAME
+    # ``from __future__ import annotations`` the add-from-future-annotations facet
+    # establishes (under PEP 563 the deferred annotations are version-safe on any
+    # parsing Python) — so the natural composition is "make lazy with a future
+    # import" first, then "upgrade the typing imports". It refuses without the gate,
+    # on a star/aliased/shadowed binding, and on a ``Tuple[()]`` / string-literal
+    # annotation; an expression-position typing use is never touched. Routed through
+    # the same suite-gated, auto-rollback engine. THREE distinct phrasings reach it;
+    # none is a substring of any other key (nor any of them of it) — in particular
+    # none contains the broader ``modernize`` key — so their insertion order is free.
+    "the typing imports to upgrade to pep 585 and pep 604": "modernize-typing",
+    "pep 585 generics": "modernize-typing",
+    "optional to union syntax": "modernize-typing",
 }
 
 
