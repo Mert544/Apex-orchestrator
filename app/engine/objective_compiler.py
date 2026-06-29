@@ -935,7 +935,9 @@ def _fill_dry_run(result: CompileResult, moves: list[Move], start: float,
 def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
                     verify: bool, scope_verify: bool, memory: Any = None,
                     value_aware: bool = False, covered_only: bool = False,
-                    skip_targets: set | None = None) -> tuple[bool, float]:
+                    skip_targets: set | None = None,
+                    baseline_failing: frozenset[str] | None = None,
+                    ) -> tuple[bool, float]:
     """Try to land one move against the CURRENT tree, recording its outcome.
 
     Builds the move's plan fresh (line numbers stay exact even as earlier moves
@@ -953,7 +955,12 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
     ``apply_rename`` rolls back a move a green suite couldn't vouch for (no test
     exercises it) and reports ``withheld_uncovered``: it is recorded on
     ``result.withheld`` (PREVIEWED, not landed) and counts as not landed, so the
-    sweep stays SAFE-by-default. Off ⇒ byte-identical to today."""
+    sweep stays SAFE-by-default. Off ⇒ byte-identical to today.
+
+    ``baseline_failing`` (the campaign's cached RED-baseline node set, or None on a
+    green baseline) is forwarded to ``apply_rename`` as the DELTA-GREEN gate, so a
+    correct move lands on a project that was already red on checkout while a true
+    regression is still rolled back. None ⇒ absolute-green, byte-identical."""
     from app.execution.cross_file_rename import apply_rename
 
     # COVERED-ONLY: a move already withheld this campaign (a green-but-unreferencing
@@ -975,7 +982,8 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
     # verified`` label — the SAME tier-aware predicate the bridge applies.
     tier = tier_for_operator(mv.operator)
     res = apply_rename(root, plan, verify=verify, impact_scope=scope_verify,
-                       covered_only=covered_only, tier=tier)
+                       covered_only=covered_only, tier=tier,
+                       baseline_failing=baseline_failing)
     if res.get("withheld_uncovered"):
         # PREVIEWED, not landed: a move the covered-only sweep could not vouch for
         # at its tier. Surface it once for the report's messaging and remember it
@@ -1007,7 +1015,9 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
               last_operator: str, memory: Any = None, value_aware: bool = False,
               min_move_value: float = 0.0,
               covered_only: bool = False,
-              skip_targets: set | None = None) -> tuple[bool, float, str]:
+              skip_targets: set | None = None,
+              baseline_failing: frozenset[str] | None = None,
+              ) -> tuple[bool, float, str]:
     """Apply every move in one pass's scan that still lands, in order.
 
     Each move's plan is re-derived against the CURRENT tree, so line numbers stay
@@ -1024,7 +1034,10 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
 
     COVERED-ONLY (opt-in): forwarded to ``_apply_one_move`` so a green-but-
     unreferencing move is withheld (previewed, not landed) on the broad sweep.
-    Default off ⇒ byte-identical to today."""
+    Default off ⇒ byte-identical to today.
+
+    ``baseline_failing`` (the campaign's cached RED-baseline node set, or None) is
+    forwarded to each move's gate for DELTA-GREEN apply. None ⇒ absolute-green."""
     progressed = False
     for mv in moves:
         if len(result.steps) >= max_steps:
@@ -1039,7 +1052,7 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
                 continue
         landed, current = _apply_one_move(
             result, mv, root, current, verify, scope_verify, memory, value_aware,
-            covered_only, skip_targets)
+            covered_only, skip_targets, baseline_failing)
         if landed:
             last_operator = mv.operator  # bias the next move's ordering
             progressed = True
@@ -1060,12 +1073,46 @@ def _archive_campaign(result: CompileResult, root: str, objective: str,
         pass  # the playbook is best-effort; never fail a good compile on it
 
 
+def _campaign_baseline(root: str, apply: bool, verify: bool,
+                       baseline_failing: frozenset[str] | None,
+                       ) -> frozenset[str] | None:
+    """The DELTA-GREEN baseline failing-node set for one campaign, captured ONCE.
+
+    Resolves the gate baseline the apply loop threads to every move:
+
+      * a caller-supplied ``baseline_failing`` (the develop session, which probed
+        the suite once for the whole session) is HONORED verbatim — non-empty ⇒
+        delta-green against that set; an EMPTY frozenset ⇒ the session saw a GREEN
+        baseline, so stay absolute-green (return None) and the run is byte-identical;
+      * ``None`` AND this is a gated apply (``apply and verify``) ⇒ probe the suite
+        ONCE here (``suite_failing_nodes``) and cache the result for the whole
+        campaign. A RED baseline returns its failing-node set (delta-green engages);
+        a GREEN baseline returns None (absolute-green, byte-identical — Apex's own
+        green suite and every existing caller are unaffected);
+      * a dry run / ``verify=False`` never gates, so it returns None and pays no
+        probe.
+
+    ONE extra suite run per campaign, never per move. Deterministic: the set comes
+    from ``suite_failing_nodes`` (sorted, no clock/random)."""
+    if baseline_failing is not None:
+        # An empty set means the caller proved the baseline GREEN → absolute-green.
+        return baseline_failing or None
+    if not (apply and verify):
+        return None
+    from app.execution._apply_verify import suite_failing_nodes
+
+    _available, failing = suite_failing_nodes(Path(root))
+    return failing or None
+
+
 def compile_objective(project_root: str | Path, objective: str = "dead-params",
                       max_steps: int = 25, verify: bool = True,
                       apply: bool = True, scope_module: str | None = None,
                       scope_verify: bool = False,
                       min_move_value: float = 0.0,
-                      covered_only: bool = False) -> CompileResult:
+                      covered_only: bool = False,
+                      baseline_failing: frozenset[str] | None = None,
+                      ) -> CompileResult:
     """Greedily compose verified moves toward ``objective``.
 
     Each iteration: regenerate candidate moves against the current tree, apply
@@ -1094,7 +1141,19 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     instead of landed, so a broad sweep never silently lands a move a green suite
     can't vouch for. A per-objective explicit campaign leaves it off (the user
     chose the objective), and ``--allow-weak`` turns it off to restore today's
-    apply byte-for-byte."""
+    apply byte-for-byte.
+
+    DELTA-GREEN (``baseline_failing``): a gated apply (``apply and verify``)
+    captures, ONCE per campaign and caches, the SET of test node ids already
+    FAILING at baseline, and threads it to every move's gate so a correct,
+    harmless contribution LANDS on a project that wasn't 100% green on checkout
+    (flaky / env / optional-dep / missing-data tests — the real-world norm) while a
+    move that breaks ANY previously-green test is STILL rolled back (never-fake-
+    green). A caller that already probed the suite (the develop session) passes the
+    set in to avoid a second probe; an EMPTY set means a proven-GREEN baseline, so
+    the gate stays absolute-green and the run is byte-identical. A fully-green
+    baseline (the common case, and Apex's own suite) captures an empty set ⇒
+    absolute-green ⇒ unchanged."""
     objectives = _objectives_map()
     objective_name, blocked = _resolve_compile_target(objective, objectives)
     if objective_name is None:
@@ -1164,6 +1223,11 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     # move clears one unit of debt, so fitness decrements by one (these
     # objectives are monotone) — no re-measure scan per step.
     current = start
+    # DELTA-GREEN: the campaign's baseline failing-node SET, captured ONCE here (or
+    # honored from the caller) and threaded to every move's gate, so a correct move
+    # lands on a project red on checkout while a true regression is still rolled
+    # back. None on a green baseline / dry run ⇒ absolute-green, byte-identical.
+    campaign_baseline = _campaign_baseline(root, apply, verify, baseline_failing)
     # COVERED-ONLY: the per-campaign set of already-withheld move targets, so an
     # uncovered candidate that re-surfaces every pass is skipped (not re-run/double
     # -counted). None when the gate is off ⇒ the apply loop is byte-identical.
@@ -1177,7 +1241,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
         progressed, current, last_operator = _run_pass(
             result, moves, root, current, max_steps, verify, effective_scope,
             last_operator, memory, value_aware, min_move_value, covered_only,
-            skip_targets)
+            skip_targets, campaign_baseline)
         if not progressed:
             break
 

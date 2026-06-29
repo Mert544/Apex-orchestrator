@@ -447,13 +447,39 @@ def _rollback(root: Path, plan: RenamePlan, created: list[str]) -> None:
                 pass
 
 
-def _verify_scoped(root: Path, plan: RenamePlan) -> tuple[bool, dict] | None:
+def _baseline_for_files(baseline_failing: frozenset[str], files: list[str]) -> frozenset[str]:
+    """The baseline failing-node set RESTRICTED to the impacted ``files``.
+
+    The delta-green scoped gate diffs against ONLY the pre-existing reds that live
+    in the test files it actually runs (a node in some other file is irrelevant to
+    a scoped run that never executes it), so the baseline is scoped to the SAME
+    node set the verify uses. A node id's file is everything before ``::``; a bare
+    collection-error file node (no ``::``) is matched by its own path. Deterministic
+    sorted-stable ``frozenset`` — no clock/random."""
+    wanted = set(files)
+    return frozenset(n for n in baseline_failing if n.split("::", 1)[0] in wanted)
+
+
+def _verify_scoped(root: Path, plan: RenamePlan,
+                   baseline_failing: frozenset[str] | None = None,
+                   ) -> tuple[bool, dict] | None:
     """Verify a change by running ONLY the tests that exercise its changed files.
 
     Returns ``(ok, evidence)`` when an impacted-test scope exists, or ``None``
     when nothing covers the change (so the caller falls back to the full suite —
     an unreferenced change can't be impact-verified). Deterministic: the scope
-    comes from AST import linkage, and the tests run in a fresh process."""
+    comes from AST import linkage, and the tests run in a fresh process.
+
+    DELTA-GREEN (``baseline_failing`` not None ⇒ a RED baseline): the impacted
+    files may themselves carry a pre-existing failure unrelated to the change, so
+    an absolute-green scoped gate would veto a correct fill. In that mode the
+    scoped run drops ``-x`` (so EVERY failure surfaces, not just the first) and
+    threads ``--continue-on-collection-errors`` (so its node ids are byte-comparable
+    to the baseline capture), the after-failing nodes are parsed, and the verdict is
+    ``regressed_functions`` over the baseline RESTRICTED to the impacted files
+    (:func:`_baseline_for_files`) — keep iff NO previously-green test broke.
+    ``baseline_failing=None`` (the default, and the ONLY state on a green baseline)
+    is the established ``-x`` command, byte-identical to before."""
     import os
     import subprocess
     import sys
@@ -473,9 +499,16 @@ def _verify_scoped(root: Path, plan: RenamePlan) -> tuple[bool, dict] | None:
     deselect: list[str] = []
     for node in sorted(plan.scoped_excluded_nodes):
         deselect += ["--deselect", node]
+    delta = baseline_failing is not None
+    # DELTA-GREEN drops ``-x`` (run ALL impacted tests, so the full after-failing
+    # set is observable, not just the first failure) and threads the collection-
+    # error flag so its node ids match the baseline capture. Absolute-green keeps
+    # the exact established ``-x`` shape — green baseline is byte-identical.
+    flags = ["-p", "no:cacheprovider"]
+    flags = (["--continue-on-collection-errors", *flags] if delta
+             else ["-x", *flags])
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider",
-         *deselect, *impacted],
+        [sys.executable, "-m", "pytest", "-q", *flags, *deselect, *impacted],
         cwd=str(root), capture_output=True, text=True, env={
             **os.environ,
             # Never write ``.pyc`` for the project under test. CPython's default
@@ -487,9 +520,41 @@ def _verify_scoped(root: Path, plan: RenamePlan) -> tuple[bool, dict] | None:
             # the import-oracle / test-shield probes, which already set this.
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONPATH": str(root) + os.pathsep + os.environ.get("PYTHONPATH", "")})
-    ok = proc.returncode == 0
-    return ok, {"scoped": True, "tests": impacted,
-                "deselected": sorted(plan.scoped_excluded_nodes), "passed": ok}
+    if not delta:
+        ok = proc.returncode == 0
+        return ok, {"scoped": True, "tests": impacted,
+                    "deselected": sorted(plan.scoped_excluded_nodes), "passed": ok}
+    return _scoped_delta_verdict(proc, impacted, plan, baseline_failing)
+
+
+def _scoped_delta_verdict(proc: object, impacted: list[str], plan: RenamePlan,
+                          baseline_failing: frozenset[str],
+                          ) -> tuple[bool, dict]:
+    """The DELTA-GREEN verdict for a scoped run: keep iff no previously-green test
+    broke, tolerating the impacted files' pre-existing reds.
+
+    Parses the after-failing nodes from the scoped output, restricts the cached
+    baseline to the impacted files, and diffs at TEST-FUNCTION granularity via
+    ``regressed_functions``. ``ok`` is True iff that diff is empty (never-fake-green:
+    a baseline-green test now red — including a NEW collection error — still blocks).
+    The evidence discloses, honestly, how many pre-existing failures it tolerated
+    and what (if anything) the change introduced."""
+    from app.execution._apply_verify import (
+        _NODE_LINE,
+        delta_green_disclosure,
+        regressed_functions,
+    )
+
+    text = (getattr(proc, "stdout", "") or "") + (getattr(proc, "stderr", "") or "")
+    after = frozenset(_NODE_LINE.findall(text))
+    scoped_baseline = _baseline_for_files(baseline_failing, impacted)
+    introduced = regressed_functions(scoped_baseline, after)
+    ok = not introduced
+    return ok, {
+        "scoped": True, "tests": impacted,
+        "deselected": sorted(plan.scoped_excluded_nodes), "passed": ok,
+        "delta_green": delta_green_disclosure(scoped_baseline, after),
+    }
 
 
 def _withhold_uncovered(root: Path, plan: RenamePlan, created: list[str],
@@ -521,7 +586,8 @@ def _withhold_uncovered(root: Path, plan: RenamePlan, created: list[str],
 
 def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True,
                  impact_scope: bool = False, covered_only: bool = False,
-                 tier: int = 0) -> dict:
+                 tier: int = 0,
+                 baseline_failing: frozenset[str] | None = None) -> dict:
     """Write the plan, verify with the project's tests, roll back on failure.
 
     With ``impact_scope`` the per-move gate runs only the tests that exercise the
@@ -537,7 +603,17 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
     test that NAMES the changed function (a mere module import is a false green),
     while a Tier-0 semantics-preserving move is soundly proven by module coverage.
     This is the SAFE-by-default autonomous sweep policy: a broad ``develop --auto
-    --apply`` never silently lands a move a green suite can't vouch for."""
+    --apply`` never silently lands a move a green suite can't vouch for.
+
+    ``baseline_failing`` is the DELTA-GREEN gate (default None ⇒ byte-identical to
+    today). The caller captures, ONCE per campaign and caches, the SET of test
+    node ids that already FAIL at baseline; when it is non-None (the campaign saw a
+    RED baseline) the change VERIFIES iff it broke no previously-green test
+    (tolerating the pre-existing reds it did not cause), so a correct, harmless
+    contribution lands on a project that wasn't 100% green on checkout. A fully-
+    green baseline passes None here, so the gate is unchanged and never-fake-green
+    holds: delta-green forgives ONLY tests already red at baseline; a regression is
+    still rolled back."""
     if not plan.ok:
         return {"applied": False, "reason": "; ".join(plan.blockers) or "nothing to rename"}
     root = Path(project_root)
@@ -571,11 +647,12 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
     # covered-only gate is applied on this path too, not just the full-suite tail.
     if impact_scope:
         scoped = _verify_impact_scope(root, plan, created, out, strength_inputs,
-                                      covered_only, tier)
+                                      covered_only, tier, baseline_failing)
         if scoped is not None:
             return scoped
 
-    if run_full_suite_verification(root, out, strength_inputs=strength_inputs):
+    if run_full_suite_verification(root, out, strength_inputs=strength_inputs,
+                                   baseline_failing=baseline_failing):
         # COVERED-ONLY (opt-in): the full suite went green, but if it can't vouch
         # for the change at its tier (``none`` for any tier; ``module`` for Tier 1)
         # it is the false-green blind spot — withhold it (roll back, report
@@ -591,22 +668,31 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
 
 def _verify_impact_scope(root: Path, plan: RenamePlan, created: list[str],
                          out: dict, strength_inputs, covered_only: bool = False,
-                         tier: int = 0) -> dict | None:
+                         tier: int = 0,
+                         baseline_failing: frozenset[str] | None = None,
+                         ) -> dict | None:
     """The impact-scoped verification tail of :func:`apply_rename`, extracted to
     keep that function under the complexity ceiling (behaviour byte-identical when
-    ``covered_only`` is off).
+    ``covered_only`` is off and no ``baseline_failing`` is threaded).
 
     Runs ONLY the tests that import the changed files. Returns the finished result
     dict when an impacted scope existed (green ⇒ kept + coverage-graded, then the
     covered-only gate may withhold a tier-unvouched move; red ⇒ rolled back), or
     ``None`` when nothing covers the change so the caller falls through to the
-    full-suite backstop."""
-    scoped = _verify_scoped(root, plan)
+    full-suite backstop. ``baseline_failing`` is forwarded to :func:`_verify_scoped`
+    for the DELTA-GREEN scoped gate (tolerate the impacted files' pre-existing reds,
+    block a true regression); None ⇒ the established absolute-green scoped run."""
+    scoped = _verify_scoped(root, plan, baseline_failing)
     if scoped is None:
         return None
     ok, evidence = scoped
     out["verified"] = ok
     out["test_evidence"] = evidence
+    # Surface the delta-green disclosure (P5 honesty) when the scoped run ran in
+    # that mode — additive: absolute-green evidence has no such key, so a green
+    # baseline's result is byte-identical.
+    if isinstance(evidence, dict) and "delta_green" in evidence:
+        out["delta_green"] = evidence["delta_green"]
     if ok:
         # The scoped run executed the tests that IMPORT the changed files, so the
         # suite genuinely exercised them — grade exactly how strongly

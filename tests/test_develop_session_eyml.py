@@ -302,25 +302,34 @@ _SATISFIED_LINE = ("_No concrete contribution available — every objective is "
 
 
 def _red_baseline_project(root: Path) -> Path:
-    """A multi-module foreign package whose suite is RED *before* any change: one
-    module is an UNSYNTHESIZABLE stub (its pinned test asserts a contract no fixed
-    template can satisfy), so ``implement-stub`` REFUSES — nothing lands for it —
-    and the raised ``NotImplementedError`` keeps the baseline suite RED. A second,
-    already-complete module proves the project is genuinely multi-module."""
+    """A multi-module foreign package whose suite is RED *before* any change AND
+    that has NO landable debt, so a session lands NOTHING and the only reason for
+    the empty outcome is the RED baseline (the disclosure these tests pin).
+
+    One module is an UNSYNTHESIZABLE stub (its pinned test asserts a contract no
+    fixed template can satisfy), so ``implement-stub`` REFUSES; the raised
+    ``NotImplementedError`` keeps the baseline RED. Exports are already wired, both
+    signatures are already TYPE-HINTED, and neither body carries idiom debt — so
+    every other objective (infer-type-hints, modernize, …) also has nothing to
+    land. (Before delta-green this fixture left the signatures untyped and relied on
+    the absolute-green gate vetoing the correct hint move on the red baseline — that
+    veto was the field bug; now a harmless hint move WOULD land, so the fixture is
+    made genuinely debt-free to keep testing the disclosure, not the bug.)"""
     (root / "pkg").mkdir(parents=True)
     (root / "tests").mkdir()
     (root / "pyproject.toml").write_text(
         "[project]\nname='pkg'\nversion='0'\n", encoding="utf-8")
-    # Exports already wired + an already-implemented module, so wire-exports and
-    # the other objectives have NOTHING to land — the ONLY reason the session
-    # lands nothing is the RED baseline, not a clean project.
+    # Exports already wired + an already-implemented, already-typed module, so every
+    # objective has NOTHING to land — the ONLY reason the session lands nothing is
+    # the RED baseline, not a clean project.
     (root / "pkg" / "__init__.py").write_text(
         'from .stub import f\nfrom .done import g\n\n'
         '__all__ = [\n    "f",\n    "g",\n]\n', encoding="utf-8")
     (root / "pkg" / "stub.py").write_text(
-        "def f(a, b):\n    raise NotImplementedError\n", encoding="utf-8")
+        "def f(a: int, b: int) -> int:\n    raise NotImplementedError\n",
+        encoding="utf-8")
     (root / "pkg" / "done.py").write_text(
-        "def g(a, b):\n    return a + b\n", encoding="utf-8")
+        "def g(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8")
     (root / "tests" / "test_pkg.py").write_text(
         "from pkg.stub import f\nfrom pkg.done import g\n"
         "def test_f():\n    assert f(2, 3) == 999999\n"
@@ -540,17 +549,14 @@ def test_red_baseline_lands_tidy_work_despite_unrelated_red_suite(tmp_path: Path
     assert "full suite RED after the session" in md
 
 
-def test_red_baseline_lands_nothing_without_the_fix(tmp_path: Path):
-    # Proves the blocker existed: with the OLD full-suite gating (scope_verify
-    # False, as the session forwarded on a red baseline before the fix), every
-    # tidy change is vetoed by the unrelated red suite — ZERO land.
-    #
-    # NOTE: wire-exports is intentionally EXCLUDED here — it now carries its own
-    # ``scope_verify=True`` spec flag (the red-baseline value-leak fix), so
-    # ``effective_scope = scope_verify or spec.scope_verify`` keeps it impact-scoped
-    # even when the caller passes ``scope_verify=False``; it correctly lands. The
-    # session-level forcing this test pins is still demonstrated by the objectives
-    # WITHOUT a spec flag.
+def test_red_baseline_lands_tidy_work_even_on_full_suite_path(tmp_path: Path):
+    # DELTA-GREEN is the MORE-GENERAL fix (was: this asserted ZERO land on the
+    # full-suite path — the old absolute-green blocker). ``compile_objective`` now
+    # captures the RED baseline ONCE per campaign and gates delta-green, so a
+    # behaviour-preserving tidy move LANDS even WITHOUT impact-scoping
+    # (``scope_verify=False``) — the unrelated red suite no longer vetoes it. The
+    # impact-scoped session path still works (see the test above); this proves the
+    # full-suite path is no longer the blocker it was.
     from app.engine.objective_compiler import compile_objective
 
     _red_baseline_with_tidy_work(tmp_path)
@@ -559,7 +565,10 @@ def test_red_baseline_lands_nothing_without_the_fix(tmp_path: Path):
         r = compile_objective(str(tmp_path), objective=obj, apply=True,
                               verify=True, scope_verify=False)
         landed += len(r.steps)
-    assert landed == 0
+    assert landed > 0  # delta-green lands the correct tidy work despite the red baseline
+    # never-fake-green: the unsynthesizable stub is UNTOUCHED in body (still raising);
+    # only harmless signatures/idioms were rewritten, so no previously-green test broke.
+    assert "raise NotImplementedError" in (tmp_path / "pkg" / "stub.py").read_text()
 
 
 def _spy_session(monkeypatch, root, **kw):

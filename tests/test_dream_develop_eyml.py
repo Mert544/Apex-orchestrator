@@ -105,8 +105,16 @@ def test_chain_dry_run_writes_nothing(tmp_path):
 
 def test_chain_lands_and_rolls_back_on_regression(tmp_path):
     # A stub whose test PINS a wrong contract: any synthesised body that passes
-    # the recorded examples would still leave the suite red on apply, so the move
-    # is rolled back and the file stays byte-identical — never a faked landing.
+    # the recorded examples would still leave the suite red on apply, so the FILL
+    # is rolled back — never a faked landing.
+    #
+    # never-fake-green under DELTA-GREEN: the unsatisfiable fill is STILL rolled
+    # back (the moat), but harmless behaviour-preserving tidy moves (wire-exports'
+    # ``__all__``, a defensible ``-> None`` hint) now correctly LAND on this red-
+    # baseline module — they break no previously-green test (``test_add`` stays red
+    # because the stub still raises). So the assertion is the STUB BODY is untouched
+    # (still raising) and ``implement_stub`` never landed — NOT byte-identity, which
+    # would re-assert the old absolute-green veto this whole change fixes.
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
@@ -121,8 +129,10 @@ def test_chain_lands_and_rolls_back_on_regression(tmp_path):
         "[project]\nname='m'\nversion='0'\n", encoding="utf-8")
 
     report = dream_develop(str(tmp_path), apply=True, verify=True)
-    # The contradictory stub is NEVER filled (rolled back); the file is unchanged.
-    assert (tmp_path / "app" / "s.py").read_text(encoding="utf-8") == stub
+    # The contradictory stub's BODY is NEVER filled (the fill rolled back); it still
+    # raises — the never-fake-green moat (harmless hints/exports may wrap it).
+    assert "raise NotImplementedError" in (tmp_path / "app" / "s.py").read_text(
+        encoding="utf-8")
     # No move that touched s.py with a fill is counted as landed.
     filled = [s for r in report.results for s in r.steps
               if s.operator == "implement_stub"]

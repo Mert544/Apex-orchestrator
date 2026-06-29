@@ -24,12 +24,14 @@ import re
 __all__ = [
     "NO_SUITE",
     "VERIFICATION_UNAVAILABLE",
+    "delta_green_disclosure",
     "function_of",
     "mark_no_suite",
     "mark_verification_unavailable",
     "regressed_functions",
     "run_full_suite_verification",
     "stamp_coverage_strength",
+    "suite_after_failing",
     "suite_baseline_green",
     "suite_failing_nodes",
     "verification_unavailable_interpreter",
@@ -106,6 +108,22 @@ def _collection_error_files(failing: frozenset[str]) -> frozenset[str]:
     return frozenset(n for n in failing if "::" not in n)
 
 
+def _failing_nodes_of(summary: object) -> frozenset[str]:
+    """The failing/erroring pytest node ids parsed from a run summary's output.
+
+    Reads every command's ``stdout``/``stderr`` and pulls the short-summary
+    ``FAILED <node>`` / ``ERROR <node>`` tokens via :data:`_NODE_LINE`, returning a
+    deterministic ``frozenset`` (same output in → same set out). Shared by
+    :func:`suite_failing_nodes` (the baseline/end-of-session capture) and
+    :func:`suite_after_failing` (the delta-green per-move after-set) so both diff
+    on byte-identical parsing rules."""
+    nodes: set[str] = set()
+    for res in getattr(summary, "results", None) or []:
+        text = (res.get("stdout") or "") + (res.get("stderr") or "")
+        nodes.update(_NODE_LINE.findall(text))
+    return frozenset(nodes)
+
+
 def suite_failing_nodes(
     root: Path,
 ) -> tuple[bool, frozenset[str]]:
@@ -135,11 +153,32 @@ def suite_failing_nodes(
     if not commands:
         return False, frozenset()
     summary = RunTestsSkill().run(str(root), commands=commands)
-    nodes: set[str] = set()
-    for res in summary.results or []:
-        text = (res.get("stdout") or "") + (res.get("stderr") or "")
-        nodes.update(_NODE_LINE.findall(text))
-    return bool(summary.commands), frozenset(nodes)
+    return bool(summary.commands), _failing_nodes_of(summary)
+
+
+def suite_after_failing(root: Path) -> tuple[object, frozenset[str]]:
+    """One AFTER-change suite run for the DELTA-GREEN gate: ``(summary, failing)``.
+
+    Runs the project's suite ONCE with the SAME command the baseline capture used
+    (``_pytest_failing_cmd`` → ``--continue-on-collection-errors``), so the
+    after-failing node set is byte-comparable to the cached baseline set: a node
+    failing in BOTH is a tolerated pre-existing failure, a baseline-GREEN node
+    failing here is the regression :func:`regressed_functions` charges. Returns the
+    full ``summary`` too (so the caller can stamp ``test_evidence`` and honour the
+    ``pytest_missing`` short-circuit exactly as the absolute-green tail does) and
+    the parsed failing-node ``frozenset``.
+
+    Why the comparable command (not the plain ``RunTestsSkill().run``): the
+    baseline set was captured with collection errors made non-fatal, so a module
+    un-collectable at baseline appears as the SAME ``ERROR <file>`` node in both
+    runs and is never mistaken for a regression — while a collection error the
+    CHANGE introduced (a brand-new ``ERROR <file>`` absent at baseline) IS charged
+    as a regression. Deterministic, stdlib-only, runner imported lazily."""
+    from app.skills.execution.run_tests import RunTestsSkill
+
+    commands = _pytest_failing_cmd(root)
+    summary = RunTestsSkill().run(str(root), commands=commands)
+    return summary, _failing_nodes_of(summary)
 
 
 def regressed_functions(
@@ -316,12 +355,104 @@ def stamp_coverage_strength(
     return level
 
 
+def delta_green_disclosure(
+    baseline_failing: frozenset[str], after_failing: frozenset[str]
+) -> dict:
+    """The HONEST delta-green narrative fields for a change kept on a RED baseline.
+
+    Stamped onto the result (and surfaced by the report / CompileResult) when a
+    change LANDS on a project whose suite was already RED before any edit, so the
+    artifact discloses — never papers over — that the gate FORGAVE pre-existing
+    failures it did not cause:
+
+      * ``baseline_failing`` — how many tests were ALREADY failing at baseline
+        (unrelated to this change), the count the gate tolerated;
+      * ``introduced`` — the sorted node ids this change made newly RED (a TRUE
+        regression). The delta-green gate only KEEPS a change when this is empty,
+        so a kept change always reports ``0``; it is included so the schema is the
+        same shape whether the change stood or was rolled back.
+      * ``delta_green`` — the flag a reader keys the "N pre-existing failures,
+        this change introduced none" disclosure off.
+
+    Pure projection of two node sets via :func:`regressed_functions` — no clock,
+    no randomness, no I/O — so it is deterministic. Counts are at TEST-FUNCTION
+    granularity for the introduced set (matching the gate's own diff)."""
+    introduced = regressed_functions(baseline_failing, after_failing)
+    return {
+        "delta_green": True,
+        "baseline_failing": len(baseline_failing),
+        "introduced": sorted(introduced),
+    }
+
+
+def _verify_delta_green(
+    root: Path,
+    out: dict,
+    baseline_failing: frozenset[str],
+    strength_inputs: tuple[list[str], dict[str, str | None], dict[str, str]]
+    | None,
+) -> bool:
+    """The DELTA-GREEN verification tail: keep a change iff it broke NO
+    previously-green test, tolerating the ``baseline_failing`` pre-existing reds.
+
+    Reached ONLY when the caller passed a non-None ``baseline_failing`` — i.e. the
+    campaign captured a RED baseline (a green baseline passes ``None`` and takes
+    the absolute-green path, byte-identical). Runs the suite ONCE with the
+    baseline-comparable command (:func:`suite_after_failing`), so the after-failing
+    node set diffs soundly against the cached baseline set.
+
+    NEVER-FAKE-GREEN is preserved: ``verified`` is set from
+    :func:`regressed_functions` — the SET of baseline-green test functions, not a
+    count — so a change that breaks ANY previously-green test (even while a
+    DIFFERENT pre-existing red happens to recover, keeping the count equal) is
+    BLOCKED and rolled back. A collection error the change introduces is a brand-new
+    ``ERROR <file>`` node absent at baseline → charged as a regression → blocked.
+    The ``pytest_missing`` and ``no-suite`` states short-circuit exactly as the
+    absolute-green tail (they are not RED-baseline states). Returns ``True`` when
+    the change stands (no regression), ``False`` when a regression must be rolled
+    back."""
+    from app.engine.proof_of_fix import summarize_test_run
+
+    summary, after_failing = suite_after_failing(root)
+    if getattr(summary, "pytest_missing", False):
+        # Verification unavailable — identical handling to the absolute-green tail.
+        out["verified"] = False
+        out["test_evidence"] = summarize_test_run(summary)
+        mark_verification_unavailable(
+            out, getattr(summary, "pytest_interpreter", ""))
+        out["rolled_back"] = False
+        return True
+    out["test_evidence"] = summarize_test_run(summary)
+    if not getattr(summary, "commands", None):
+        # No suite to run — not a RED baseline state; keep the no-suite disclosure.
+        out["verified"] = False
+        mark_no_suite(out)
+        out["rolled_back"] = False
+        return True
+    introduced = regressed_functions(baseline_failing, after_failing)
+    # verified == "no previously-green test broke" — the delta-green meaning of the
+    # never-fake-green moat. A baseline-red test still red is FORGIVEN; a
+    # baseline-green test now red blocks.
+    out["verified"] = not introduced
+    # Disclose, always, that the gate ran in delta-green mode against a red baseline
+    # (P5 honesty): how many pre-existing failures it tolerated and what — if
+    # anything — this change introduced (empty on a kept change).
+    out["delta_green"] = delta_green_disclosure(baseline_failing, after_failing)
+    if not introduced:
+        if strength_inputs is not None:
+            stamp_coverage_strength(root, out, *strength_inputs)
+        out["rolled_back"] = False
+        return True
+    return False
+
+
 def run_full_suite_verification(
     root: Path,
     out: dict,
     *,
     strength_inputs: tuple[list[str], dict[str, str | None], dict[str, str]]
     | None = None,
+    baseline_failing: frozenset[str] | None = None,
 ) -> bool:
     """Run the project's full test suite and stamp the verdict onto ``out``.
 
@@ -340,9 +471,24 @@ def run_full_suite_verification(
     graded with the maintain path's ``assess_strength`` and ``out["coverage"]`` is
     stamped, so a green-but-unreferencing suite is never blended with one the
     tests genuinely vouched for. ``strength_inputs=None`` (the default, and the
-    move_module caller) skips this and is byte-identical to the prior tail."""
+    move_module caller) skips this and is byte-identical to the prior tail.
+
+    DELTA-GREEN (``baseline_failing`` not None) — the gate that lets Apex land on a
+    project whose suite was ALREADY red on checkout (flaky / env / optional-dep /
+    missing-data tests — the real-world NORM). The caller passes the cached SET of
+    node ids that FAIL at baseline; the change then VERIFIES iff it broke no
+    previously-green test (:func:`regressed_functions`), tolerating the pre-existing
+    reds it did not cause. ``baseline_failing=None`` (the default, and the ONLY
+    state on a fully-green baseline — the campaign passes None there) is the
+    absolute-green path above, byte-identical to before, so Apex's own green suite
+    and every existing caller are UNAFFECTED. never-fake-green holds: delta-green
+    forgives ONLY tests already red at baseline; a regression is still rolled
+    back."""
     from app.engine.proof_of_fix import summarize_test_run
     from app.skills.execution.run_tests import RunTestsSkill
+
+    if baseline_failing is not None:
+        return _verify_delta_green(root, out, baseline_failing, strength_inputs)
 
     summary = RunTestsSkill().run(str(root))
     if getattr(summary, "pytest_missing", False):

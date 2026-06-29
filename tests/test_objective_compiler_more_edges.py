@@ -262,9 +262,14 @@ def test_available_objectives_contains_builtins():
         assert n in names
 
 
-def test_move_rolled_back_when_suite_fails_is_blocked_with_reason(tmp_path):
-    # A real dead-param move exists, but the project's suite fails, so each
-    # verified apply rolls back and is recorded as blocked with the suite reason.
+def test_dead_param_move_lands_despite_unrelated_pre_existing_red(tmp_path):
+    # DELTA-GREEN (was: absolute-green expected an empty ``r.steps`` here). The
+    # project's suite has a PRE-EXISTING failure (``test_fail: assert False``) that
+    # is unrelated to the ``render`` function being changed — the real-world shape
+    # Apex must tolerate. The behaviour-preserving dead-param drop breaks no
+    # previously-green test, so under delta-green it LANDS instead of being vetoed
+    # by the unrelated red. (A move that actually regressed a green test is still
+    # rolled back — see tests/test_delta_green_apply_gate_eyml.py.)
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "app" / "m.py").write_text(
@@ -276,8 +281,9 @@ def test_move_rolled_back_when_suite_fails_is_blocked_with_reason(tmp_path):
         "[project]\nname='m'\nversion='0'\n", encoding="utf-8")
     r = compile_objective(str(tmp_path), objective="dead-params",
                           apply=True, verify=True, max_steps=2)
-    assert r.steps == []
-    assert any("render(color)" in b for b in r.blocked)
+    # The correct move landed; the pre-existing red did not block it.
+    assert any("render(color)" in s.target for s in r.steps)
+    assert "color" not in (tmp_path / "app" / "m.py").read_text()
 
 
 def test_compile_all_skips_objectives_already_at_zero(tmp_path):

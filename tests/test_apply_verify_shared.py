@@ -91,9 +91,12 @@ def test_apply_rename_uses_the_shared_tail(tmp_path: Path, monkeypatch) -> None:
         "from pkg.mod import helper\n\ndef go():\n    return helper(1)\n")
 
     calls: dict[str, int] = {"verify": 0}
+    seen: dict[str, object] = {}
 
-    def _fake_verify(root, out, *, strength_inputs=None):  # noqa: ANN001 - test double
+    def _fake_verify(root, out, *, strength_inputs=None,
+                     baseline_failing=None):  # noqa: ANN001 - test double
         calls["verify"] += 1
+        seen["baseline_failing"] = baseline_failing
         out["verified"] = True
         out["rolled_back"] = False
         return True
@@ -104,6 +107,9 @@ def test_apply_rename_uses_the_shared_tail(tmp_path: Path, monkeypatch) -> None:
     assert calls["verify"] == 1
     assert res["verified"] is True
     assert res["rolled_back"] is False
+    # A default ``apply_rename`` (no baseline threaded) calls the tail with
+    # ``baseline_failing=None`` — the absolute-green path, byte-identical to before.
+    assert seen["baseline_failing"] is None
 
 
 def test_apply_move_uses_the_shared_tail(tmp_path: Path, monkeypatch) -> None:

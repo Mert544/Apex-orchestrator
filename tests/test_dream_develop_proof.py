@@ -197,8 +197,15 @@ def test_dream_proof_hash_deterministic_under_pythonhashseed(tmp_path):
 
 def test_contradictory_stub_produces_no_applied_record(tmp_path):
     # A stub whose test PINS an unsatisfiable contract: any synthesised body is
-    # rolled back, so the move never reaches report.results and NO applied record
+    # rolled back, so the FILL never reaches report.results and NO applied record
     # for that target is ever written.
+    #
+    # DELTA-GREEN: the unsatisfiable FILL is still rolled back (the moat — asserted
+    # below via the proof records), but harmless behaviour-preserving tidy moves
+    # (``__all__``, a defensible ``-> None`` hint) now correctly land on this
+    # red-baseline module without breaking any previously-green test. So the body
+    # check is "the stub still RAISES" (untouched fill), NOT byte-identity — which
+    # would re-assert the old absolute-green veto this change fixes.
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
@@ -212,8 +219,10 @@ def test_contradictory_stub_produces_no_applied_record(tmp_path):
 
     rc = _dream_land_apply(tmp_path)
     assert rc == 0
-    # The unfilled stub stays byte-identical (rolled back, never faked).
-    assert (tmp_path / "app" / "s.py").read_text(encoding="utf-8") == stub
+    # The contradictory stub's BODY is never filled (the fill rolled back); it still
+    # raises — never-fake-green (harmless hints/exports may wrap it).
+    assert "raise NotImplementedError" in (tmp_path / "app" / "s.py").read_text(
+        encoding="utf-8")
 
     proof_path = tmp_path / ".apex" / "proof-of-fix.json"
     if proof_path.exists():

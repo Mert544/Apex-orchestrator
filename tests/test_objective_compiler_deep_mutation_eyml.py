@@ -448,15 +448,23 @@ def test_l923_compile_all_includes_objective_with_nonzero_start_no_steps(tmp_pat
                             fitness_end=1.0)
     keep = blocked.steps or blocked.fitness_start > 0
     assert keep is True
-    # End-to-end: a project where the only move is blocked by a failing suite
-    # still yields a reported (work-having) result.
+    # End-to-end: a project where the only move is genuinely BLOCKED (the dead
+    # ``color`` param is passed POSITIONALLY at the call site, so ``drop_param``
+    # refuses — "convert to keywords first") still yields a reported (work-having)
+    # result with ``steps == []`` and ``fitness_start > 0``.
+    #
+    # NOTE: the block is a REAL plan blocker on a GREEN suite — NOT an unrelated
+    # pre-existing red. Under delta-green a move vetoed only by an unrelated red
+    # baseline now correctly LANDS, so this fixture pins the L923 branch with a true
+    # blocker instead of the (now-fixed) absolute-green veto.
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "app" / "m.py").write_text(
         "def render(text, color=None, width=80):\n    return text[:width]\n"
-        "def use():\n    return render('hi', width=3)\n", encoding="utf-8")
+        "def use():\n    return render('hi', 'red')\n", encoding="utf-8")
     (tmp_path / "tests" / "test_m.py").write_text(
-        "def test_fail():\n    assert False\n", encoding="utf-8")
+        "from app.m import use\ndef test_use():\n    assert use() == 'hi'\n",
+        encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text(
         "[project]\nname='m'\nversion='0'\n", encoding="utf-8")
     results = compile_all(str(tmp_path), verify=True)

@@ -628,11 +628,22 @@ def run_develop_session(
             baseline_failing = _failing_nodes(root)
     effective_scope = scope_verify or baseline_green is False
 
+    # DELTA-GREEN baseline the per-move gate forgives. The session already probed
+    # the suite ONCE up front, so it hands that SET to each ``compile_objective``
+    # rather than letting every objective re-probe (one session-wide probe, not one
+    # per objective). On a RED baseline this is the non-empty failing set (the gate
+    # tolerates pre-existing reds, blocks a regression); on a GREEN baseline — and
+    # on an un-gated run (dry / ``--no-verify``, where ``baseline_failing`` stayed
+    # the default empty set) — it is the EMPTY set, which ``compile_objective`` reads
+    # as absolute-green (no re-probe, per-move full-suite gating UNCHANGED), exactly
+    # what the green-baseline self-inflicted-RED backstop relies on. Deterministic:
+    # same set in, same set out.
     report = SessionReport(applied=apply)
     for objective in objectives:
         result = compile_objective(
             str(root), objective=objective, max_steps=max_steps,
-            verify=verify, apply=apply, scope_verify=effective_scope)
+            verify=verify, apply=apply, scope_verify=effective_scope,
+            baseline_failing=baseline_failing)
         report.objectives.append(_collect_objective(result))
 
     if apply:
