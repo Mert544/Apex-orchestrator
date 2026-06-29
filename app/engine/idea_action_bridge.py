@@ -87,10 +87,23 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                                   "duplication in {s} — parameterize the differing "
                                   "constants/free names into a single function", True),
     # Coordinator (god-module): a module with high fan-OUT (it imports many
-    # internal modules) is a coordination chokepoint. HOW to decouple it — which
-    # responsibilities to split, where the seams are — is a DESIGN decision, so
-    # Apex RECOMMENDS the split and names the module; it must NOT auto-write it.
-    # Strictly recommend-only (executable False).
+    # internal modules) is a coordination chokepoint. Strictly recommend-only
+    # (executable False) — and this is PROVEN, not provisional (the Autonomous-39
+    # W4 design pass; docs/PROGRESS.md). Unlike god-class (W3a — a single-module
+    # @staticmethod promotion that changes NO call site), reducing fan-out means
+    # moving code OUT to another module: an inherently CROSS-MODULE move that
+    # rewires importers, and on the real flagged coordinators that is not
+    # deterministically safe — there is no move-a-FUNCTION primitive (only
+    # whole-module ``move_module`` / within-file ``extract_method``); the targets
+    # carry many names referenced as bare STRING LITERALS (getattr/monkeypatch,
+    # unfollowable once a name changes module) plus dense test-by-path import pins;
+    # a cluster extraction risks an import CYCLE the "0 cycles" gate forbids; and
+    # WHICH responsibilities to split is a design judgment, not a graph cut. So
+    # Apex RECOMMENDS the split and names the module; it must NOT auto-write it
+    # (like ``polyglot-hotspot``). Becoming executable would require a cross-module
+    # function-move primitive + a whole-program import/usage acyclicity oracle + a
+    # deterministic cohesion partition — net-new whole-program analysis, on-mission
+    # only if it then LANDS a verified decouple on a real project.
     "coordinator": ("design_task",
                     "Decouple the coordinator module {s} — it imports many "
                     "internal modules; split its responsibilities (Apex names "
