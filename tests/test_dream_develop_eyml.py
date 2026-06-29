@@ -299,3 +299,144 @@ def test_chain_report_to_dict_shape():
     assert d["goal"] == "ship-value"
     assert d["modules"] == [] and d["whole_tree"] is True
     assert d["contributions"] == []
+
+
+# --- the INTERACTIVITY BOUND (opt-in; default off = byte-identical) -----------
+#
+# ``apex assist "what should I build next?"`` calls ``dream_develop`` as a DRY-RUN
+# preview with a human waiting; the unbounded chain's whole-tree mutation
+# generation makes that ~7 min on a multi-module project. ``max_modules`` /
+# ``preview_skip_mutation`` bound the preview deterministically WITHOUT touching
+# the exhaustive ``apex dream --land`` path (both default off ⇒ byte-identical).
+
+def test_bound_off_default_is_byte_identical(tmp_path):
+    # The explicit bound-OFF call (None / False) must produce the IDENTICAL report
+    # as the bare default — the round-21 trust property: the bound only exists when
+    # a caller opts in, so ``apex dream --land`` (which passes neither) is unchanged.
+    _stub_project(tmp_path)
+    bare = dream_develop(str(tmp_path), apply=False, verify=False)
+    off = dream_develop(str(tmp_path), apply=False, verify=False,
+                        max_modules=None, preview_skip_mutation=False)
+    assert off.to_dict() == bare.to_dict()
+    # And the default chain still carries the full ship-value objective list.
+    assert "strengthen-tests" in bare.objectives
+
+
+def test_preview_skip_mutation_drops_strengthen_in_dry_run(tmp_path):
+    # The bound drops ONLY the un-previewable mutation objective from the dry-run
+    # preview; every other ship-value objective stays, and the move set is the
+    # unbounded set minus any strengthen-tests move (an honest top-value subset).
+    _stub_project(tmp_path)
+    full = dream_develop(str(tmp_path), apply=False, verify=False)
+    bounded = dream_develop(str(tmp_path), apply=False, verify=False,
+                            preview_skip_mutation=True)
+    assert "strengthen-tests" in full.objectives
+    assert "strengthen-tests" not in bounded.objectives
+    # Exactly that one objective is removed; the rest of the chain is unchanged.
+    assert bounded.objectives == [o for o in full.objectives
+                                  if o != "strengthen-tests"]
+    # No bounded contribution comes from the skipped objective (never fabricated).
+    assert all(c.objective != "strengthen-tests" for c in bounded.contributions)
+
+
+def test_preview_skip_mutation_refused_on_apply(tmp_path):
+    # The skip is PREVIEW-only: an apply run must still attempt every objective
+    # (including strengthen-tests), so ``--land --apply`` lands the full chain —
+    # only the interactive dry run trades the mutation direction for latency.
+    _stub_project(tmp_path)
+    applied = dream_develop(str(tmp_path), apply=True, verify=False,
+                            preview_skip_mutation=True)
+    assert "strengthen-tests" in applied.objectives
+
+
+def test_preview_skip_mutation_dry_run_is_deterministic(tmp_path):
+    # Same (project, bound) → byte-identical report body run to run (the bound
+    # selects by a fixed name set, no clock/random enters the selection).
+    _stub_project(tmp_path)
+    a = dream_develop(str(tmp_path), apply=False, verify=False,
+                      preview_skip_mutation=True)
+    b = dream_develop(str(tmp_path), apply=False, verify=False,
+                      preview_skip_mutation=True)
+    assert a.to_dict() == b.to_dict()
+
+
+def _multi_confluence_project(tmp_path: Path) -> Path:
+    """Three stored confluences with DISTINCT fan-in (hub imported by two others,
+    mid by one, leaf by none) — so the ``max_modules`` centrality cap has a real
+    ranking to keep the highest-fan-in confluences first."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / ".apex").mkdir()
+    (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "app" / "hub.py").write_text(
+        "def add(a, b):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "app" / "mid.py").write_text(
+        "from app.hub import add\ndef mid(x):\n    raise NotImplementedError\n",
+        encoding="utf-8")
+    (tmp_path / "app" / "leaf.py").write_text(
+        "from app.hub import add\nfrom app.mid import mid\n"
+        "def leaf(x):\n    raise NotImplementedError\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "from app.hub import add\ndef test_x():\n    assert True\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='m'\nversion='0'\n", encoding="utf-8")
+    (tmp_path / ".apex" / "dream-promotions.json").write_text(
+        json.dumps([{"key": f"confluence:app/{m}.py", "kind": "confluence",
+                     "streak": 20} for m in ("hub", "mid", "leaf")]),
+        encoding="utf-8")
+    return tmp_path
+
+
+def test_max_modules_caps_confluences_by_centrality(tmp_path):
+    # With several graduated confluences, ``max_modules=2`` keeps the top-2 by
+    # FAN-IN centrality (hub=2 importers, mid=1, leaf=0) — a deterministic SUBSET
+    # of the dream's own confluences, highest blast-radius first.
+    _multi_confluence_project(tmp_path)
+    full = dream_develop(str(tmp_path), apply=False, verify=False)
+    assert full.modules == ["app/hub.py", "app/leaf.py", "app/mid.py"]
+    bounded = dream_develop(str(tmp_path), apply=False, verify=False, max_modules=2)
+    assert bounded.modules == ["app/hub.py", "app/mid.py"]  # top-2 by fan-in
+    # A real subset of the unbounded confluences — never a fabricated module.
+    assert set(bounded.modules) <= set(full.modules)
+    # Deterministic: the same cap keeps the same modules run to run.
+    again = dream_develop(str(tmp_path), apply=False, verify=False, max_modules=2)
+    assert again.modules == bounded.modules
+
+
+def test_bounded_preview_deterministic_under_pythonhashseed(tmp_path):
+    # The BOUNDED preview (both bounds on) is hashseed-invariant — the selection
+    # keys are an integer fan-in + a path tiebreak and a fixed name set, so the
+    # cut never depends on dict/set iteration order across processes.
+    _multi_confluence_project(tmp_path)
+    repo = str(Path(__file__).resolve().parents[1])
+    src = ("import json,sys;from app.engine.dream_develop import dream_develop;"
+           "print(json.dumps(dream_develop(sys.argv[1], apply=False, "
+           "verify=False, max_modules=2, preview_skip_mutation=True).to_dict(), "
+           "sort_keys=True))")
+    out0 = subprocess.run(
+        [sys.executable, "-c", src, str(tmp_path)], capture_output=True, text=True,
+        env={"PYTHONHASHSEED": "0", "PATH": "/usr/bin:/bin", "PYTHONPATH": repo},
+        cwd=repo)
+    out1 = subprocess.run(
+        [sys.executable, "-c", src, str(tmp_path)], capture_output=True, text=True,
+        env={"PYTHONHASHSEED": "12345", "PATH": "/usr/bin:/bin", "PYTHONPATH": repo},
+        cwd=repo)
+    assert out0.returncode == 0 and out1.returncode == 0, (out0.stderr, out1.stderr)
+    assert out0.stdout == out1.stdout  # the bounded report body is hashseed-invariant
+    assert '"app/hub.py"' in out0.stdout  # and it actually applied the centrality cap
+
+
+def test_max_modules_noop_when_at_or_under_cap(tmp_path):
+    # A cap >= the confluence count (and the common whole-tree run) is a no-op —
+    # the bound can only ever shrink a multi-confluence set, never grow/reorder one
+    # that already fits.
+    _multi_confluence_project(tmp_path)
+    full = dream_develop(str(tmp_path), apply=False, verify=False)
+    big = dream_develop(str(tmp_path), apply=False, verify=False, max_modules=9)
+    assert big.modules == full.modules  # nothing to cap → unchanged order
+    # Whole-tree (no confluence) is unaffected by max_modules.
+    wt_root = tmp_path / "wt"
+    wt_root.mkdir()
+    _stub_project(wt_root)  # a fresh whole-tree project
+    wt = dream_develop(str(wt_root), apply=False, verify=False, max_modules=1)
+    assert wt.modules == [] and wt.whole_tree

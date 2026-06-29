@@ -124,6 +124,51 @@ def test_dream_route_narrates_grounded_directions(tmp_path):
     assert "buyer-value" in md
 
 
+# --- the DREAM ROUTE is BOUNDED for interactivity (opt-in, honest) -----------
+
+def test_dream_route_is_bounded_for_interactivity(tmp_path):
+    """The proactive preview passes the interactivity bound to ``dream_develop``
+    (``max_modules`` + ``preview_skip_mutation``) so a multi-module project answers
+    in seconds — the un-previewable mutation objective is SKIPPED (and disclosed),
+    while the leading value-led directions are preserved. Here we pin the bound's
+    CONTRACT on a tiny project: the skip is recorded, never silent."""
+    from app.engine.dream_develop import _PREVIEW_SKIP_OBJECTIVES
+
+    root = _stub_project(tmp_path)
+    result = assist("what should I build next?", target=str(root))
+
+    assert result.route == "dream"
+    # The skipped mutation objective(s) are disclosed in the payload AND narrative —
+    # the bound is transparent (an honest preview, not a silent omission).
+    assert result.payload["skipped"] == sorted(_PREVIEW_SKIP_OBJECTIVES)
+    assert "strengthen-tests" in result.payload["skipped"]
+    assert "Bounded for an interactive answer" in result.narrative
+    assert "apex dream --land" in result.narrative
+    # No surfaced direction comes from a skipped objective (a real top-value subset).
+    objectives = [d["objective"] for d in result.payload["directions"]]
+    assert "strengthen-tests" not in objectives
+    # The stub project's highest-value direction (implement-stub, 1.00) survives the
+    # bound — the leading direction is preserved, never dropped.
+    assert "implement-stub" in objectives
+
+
+def test_dream_route_bounded_directions_capped_and_deterministic(tmp_path):
+    """The displayed directions are capped (a stable head, never a flood) and the
+    whole bounded answer is deterministic — the same request renders byte-identical
+    run to run (the bound selects by a fixed key, no clock/random)."""
+    root = _stub_project(tmp_path)
+    a = assist("what should I build next?", target=str(root))
+    b = assist("what should I build next?", target=str(root))
+    # Deterministic narrative AND payload.
+    assert a.narrative == b.narrative
+    assert a.payload["directions"] == b.payload["directions"]
+    # The rendered list is capped to a stable head; the rest is an honest "+N more".
+    shown = a.narrative.count("buyer-value")
+    assert shown <= 5
+    if a.payload["total"] > shown:
+        assert "more." in a.narrative
+
+
 # --- the QUESTION route: grade ----------------------------------------------
 
 def test_plain_question_routes_to_grade(tmp_path):

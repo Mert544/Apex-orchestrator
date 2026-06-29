@@ -55,6 +55,38 @@ __all__ = [
 # value-led so the highest-buyer-value concrete objective is attempted first.
 CHAIN_GOAL = "ship-value"
 
+# --- Interactivity bound (OPT-IN; default OFF = byte-identical to today) -------
+#
+# The unbounded chain composes ``compile_objective`` move-GENERATION for every
+# ``ship-value`` objective over the whole module tree. That is the right
+# exhaustive behaviour for ``apex dream --land`` (it runs overnight), but the
+# proactive ``apex assist "what should I build next?"`` surface calls it as a
+# DRY-RUN preview and a human is waiting — and one objective dominates the wall
+# time by orders of magnitude.
+#
+# ``strengthen-tests`` GENERATES its candidate directions by MUTATION TESTING:
+# it copies the project and runs the suite once per mutant, per module, across
+# the whole source index (``app.execution.objectives.strengthen_tests._scan`` →
+# ``mutation_tester``). Measured on humanize-4.15.0 (6 src modules) that single
+# objective's dry-run is ~405s of a ~412s chain; every OTHER ``ship-value``
+# objective's dry-run is sub-second to ~3s (~7s combined). The cost is NOT a
+# per-module ``compile_objective`` fan-out (a whole-tree run has ONE scope) — it
+# is that one generator's internal whole-tree mutation scan, which neither a
+# ``scope_module`` (the generator scans the tree, then filters) nor a tighter
+# mutant budget can bring to interactive latency: even scoped to a single module
+# it costs ~60s (a full-suite pytest run per mutant is irreducibly seconds).
+#
+# So the interactivity bound EXCLUDES the un-previewable mutation objective(s)
+# from the DRY-RUN preview — a small, explicit, reviewable set (mirroring
+# ``soundness_audit._ORACLE_BACKED``), NOT the broad registry ``expensive`` flag:
+# that flag also marks ``wire-exports`` / ``implement-stub`` / ``generate-usage-
+# doc``, which are the HIGHEST-value directions AND cheap in a dry run (a bounded
+# budget of suite runs), so skipping by the flag would drop the LEADING direction
+# (``wire-exports``, value 0.90) — exactly what must be preserved. The excluded
+# direction (``strengthen-tests``, value 0.88) is disclosed in the bounded
+# narrative so the preview stays HONEST about what an interactive run skips.
+_PREVIEW_SKIP_OBJECTIVES: frozenset[str] = frozenset({"strengthen-tests"})
+
 
 @dataclass
 class LandedContribution:
@@ -199,9 +231,63 @@ def _chain_scope(project_root: str | Path,
     return dream_confluence_modules(project_root)
 
 
+def _bounded_chain(project_root: str | Path, value_ranked: bool, apply: bool,
+                   max_modules: int | None,
+                   preview_skip_mutation: bool) -> tuple[list[str], list[str]]:
+    """The chain's ``(objectives, modules)`` AFTER the optional interactivity bound.
+
+    Resolves the value-led ``ship-value`` objective order and the dream-derived
+    confluence scope, then applies the two opt-in bounds:
+
+    * ``preview_skip_mutation`` (a DRY-RUN-only bound — ``not apply``) drops the
+      un-previewable mutation objective(s) (:data:`_PREVIEW_SKIP_OBJECTIVES`), so an
+      apply run still lands every objective;
+    * ``max_modules`` caps a multi-confluence scope to the top-K by centrality
+      (:func:`_centrality_capped`), a no-op on a whole-tree / single-confluence run.
+
+    With both bounds off (``None`` / ``False``) the result is the unbounded chain
+    EXACTLY — the off-by-default byte-identity ``apex dream --land`` relies on."""
+    objectives = _chain_objectives(value_led=True)
+    if preview_skip_mutation and not apply:
+        objectives = [o for o in objectives if o not in _PREVIEW_SKIP_OBJECTIVES]
+    modules = _chain_scope(project_root, value_ranked=value_ranked)
+    if max_modules is not None and modules:
+        modules = _centrality_capped(modules, project_root, max_modules)
+    return objectives, modules
+
+
+def _centrality_capped(modules: list[str], project_root: str | Path,
+                       max_modules: int) -> list[str]:
+    """The top ``max_modules`` confluence ``modules`` by FAN-IN centrality —
+    the cheap, deterministic pre-rank that bounds a multi-confluence chain's
+    per-module ``compile_objective`` fan-out for an interactive preview.
+
+    Reuses ``move_centrality.module_in_degrees`` (the SAME ``module path ->
+    number of internal importers`` map the value-aware move loop already trusts —
+    a pure full-tree walk, no clock, memoized per root) and keeps the highest-
+    fan-in modules first, every tie broken by the existing alphabetical key, so
+    the kept SET is total and fully deterministic (two runs on the same tree keep
+    the identical modules). A module the centrality map does not name scores 0 and
+    sorts by its path, so the bound never drops a module non-deterministically.
+
+    Ordering+truncation ONLY: the result is a deterministic top-K SUBSET of the
+    input — a real subset of the dream's own graduated confluences, never a
+    different membership — so a bounded run can only land FEWER of the same
+    confluences, never a fabricated one. ``max_modules <= 0`` or a list already at
+    or under the cap is returned unchanged (nothing to bound)."""
+    if max_modules <= 0 or len(modules) <= max_modules:
+        return list(modules)
+    from app.engine.move_centrality import module_in_degrees
+    degrees = module_in_degrees(project_root)
+    ranked = sorted(modules, key=lambda m: (-degrees.get(m, 0), m))
+    return ranked[:max_modules]
+
+
 def dream_develop(project_root: str | Path, max_steps: int = 25,
                   verify: bool = True, apply: bool = False,
-                  fast: bool = False, value_ranked: bool = False) -> DreamChainReport:
+                  fast: bool = False, value_ranked: bool = False,
+                  max_modules: int | None = None,
+                  preview_skip_mutation: bool = False) -> DreamChainReport:
     """Land the value-led concrete chain, scoped to the dream's confluences.
 
     In one motion: derive the concrete-first objective order
@@ -223,11 +309,37 @@ def dream_develop(project_root: str | Path, max_steps: int = 25,
     default caller stay byte-for-byte unchanged — the value order can only front-
     load value the alphabetical order would have landed anyway, never fake-green.
 
+    ``max_modules`` and ``preview_skip_mutation`` are the INTERACTIVITY BOUND for
+    the proactive ``apex assist`` preview (BOTH DEFAULT off ⇒ ``None`` / ``False``
+    ⇒ byte-identical to today; ``apex dream --land`` never passes them, so its
+    exhaustive path is untouched). They make the DRY-RUN preview answer in seconds
+    on a multi-module project while keeping the leading value-led directions:
+
+    * ``max_modules`` (DEFAULT None = every graduated confluence) caps a multi-
+      confluence chain's per-module ``compile_objective`` fan-out to the top-K
+      confluences by FAN-IN centrality (:func:`_centrality_capped`). A real top-K
+      subset of the dream's own confluences, fully deterministic; a no-op on the
+      common whole-tree / single-confluence run.
+    * ``preview_skip_mutation`` (DEFAULT False) drops the un-previewable MUTATION-
+      testing objective(s) (:data:`_PREVIEW_SKIP_OBJECTIVES` — ``strengthen-
+      tests``) from the DRY-RUN preview: their generation runs the suite once per
+      mutant per module, which is irreducibly seconds-per-module and dominates the
+      wall time (measured ~405s of ~412s on humanize), and no scope/budget brings
+      it to interactive latency. The skip is REFUSED on an apply run (``apply``
+      True), so ``--land --apply`` still lands every objective — only the preview
+      is bounded. The displayed directions stay a HONEST subset (the leading
+      ``wire-exports`` is preserved; the skipped ``strengthen-tests`` is disclosed
+      by the narrative), never fabricated.
+
     Soundness: a move that fails its gate is rolled back and NOT counted, and a
     project with nothing landable yields an honest EMPTY chain — never a faked
-    one. Deterministic: the report body carries no clock or randomness."""
-    objectives = _chain_objectives(value_led=True)
-    modules = _chain_scope(project_root, value_ranked=value_ranked)
+    one. Deterministic: the report body carries no clock or randomness, and both
+    bounds select by a stable key (centrality+path / a fixed name set), so the
+    SAME (project, bound) preview renders byte-identical run to run."""
+    # Resolve the value-led objective order + dream scope, applying the optional
+    # interactivity bound (both off ⇒ the unbounded chain, byte-identical to today).
+    objectives, modules = _bounded_chain(
+        project_root, value_ranked, apply, max_modules, preview_skip_mutation)
     before = _grade(project_root) if apply else -1
     report = DreamChainReport(goal=CHAIN_GOAL, objectives=objectives,
                               modules=modules, applied=apply, grade_before=before)

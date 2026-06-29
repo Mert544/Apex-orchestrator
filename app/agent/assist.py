@@ -124,6 +124,20 @@ def _resolve_apply(comprehension: Comprehension, apply: bool) -> bool:
 
 # --- The DREAM ROUTE: "what should I build next?" ---------------------------
 
+# The INTERACTIVITY BOUND the assist preview passes to ``dream_develop`` (it is
+# the one caller that opts in; ``apex dream --land`` never does, so its exhaustive
+# path stays byte-identical). ``apex assist`` has a HUMAN waiting, so the proactive
+# "what should I build next?" preview must answer in seconds, not the ~7 min the
+# unbounded chain takes on a multi-module project. The bound is the CHEAPEST one
+# that keeps the leading value-led directions (see ``dream_develop`` for the
+# profile): cap the per-confluence module fan-out to the top ``_DREAM_MAX_MODULES``
+# by centrality, and skip the un-previewable mutation-testing objective (its
+# generation runs the suite per mutant per module — irreducibly minutes — and is
+# disclosed by the narrative, never silently dropped). Both are deterministic, so
+# the same request renders byte-identical run to run.
+_DREAM_MAX_MODULES = 12
+
+
 def _dream_route(request: str, comprehension: Comprehension,
                  target: str) -> AssistResult:
     """Route the next-work question into the DREAM core — read-only.
@@ -131,10 +145,21 @@ def _dream_route(request: str, comprehension: Comprehension,
     Runs :func:`dream_develop` as a DRY RUN (writes nothing) and surfaces its
     ranked, value-led concrete directions, each already carrying objective +
     target + buyer-value + verification tier. The proactive-agent surface: a
-    vague "what should I build?" becomes an executable, value-ordered plan."""
-    from app.engine.dream_develop import dream_develop
+    vague "what should I build?" becomes an executable, value-ordered plan.
 
-    report = dream_develop(target, apply=False)
+    BOUNDED for interactivity: the preview passes ``max_modules`` /
+    ``preview_skip_mutation`` so a multi-module project answers in seconds while
+    the leading value-led directions are preserved (see :data:`_DREAM_MAX_MODULES`
+    and ``dream_develop``). The exhaustive ``apex dream --land`` path is unbounded
+    and unchanged; only this read-only preview opts in. ``skipped`` records the
+    directions the bound traded for latency, so the narrative stays HONEST."""
+    from app.engine.dream_develop import (
+        _PREVIEW_SKIP_OBJECTIVES,
+        dream_develop,
+    )
+
+    report = dream_develop(target, apply=False, max_modules=_DREAM_MAX_MODULES,
+                           preview_skip_mutation=True)
     contributions = report.contributions
     payload = {
         "goal": report.goal,
@@ -142,6 +167,9 @@ def _dream_route(request: str, comprehension: Comprehension,
         "modules": list(report.modules),
         "directions": [c.to_dict() for c in contributions],
         "total": len(contributions),
+        # The directions the interactivity bound skipped (un-previewable mutation
+        # objectives) — disclosed so the preview never hides what a full run lands.
+        "skipped": sorted(_PREVIEW_SKIP_OBJECTIVES),
     }
     result = AssistResult(request=request, route="dream",
                           comprehension=comprehension, applied=False,
@@ -383,10 +411,26 @@ def _echo_lines(c: Comprehension, route: str) -> list[str]:
     ]
 
 
+def _skipped_note(skipped: list[str]) -> list[str]:
+    """The HONEST one-line disclosure of what the interactivity bound skipped.
+
+    The proactive preview drops the un-previewable mutation-testing objective(s)
+    so it answers in seconds; this names them and points to the exhaustive
+    ``apex dream --land`` so the bound is transparent, never a silent omission.
+    Empty when the bound skipped nothing (e.g. an unbounded caller)."""
+    if not skipped:
+        return []
+    names = ", ".join(f"`{s}`" for s in skipped)
+    return [f"_Bounded for an interactive answer: skipped {names} (mutation-"
+            "testing, too slow to preview). `apex dream --land` runs the full "
+            "chain._", ""]
+
+
 def _render_dream(result: AssistResult) -> list[str]:
     """The DREAM ROUTE body: the ranked value-led directions + the offer to act."""
     p = result.payload
     directions = p.get("directions", [])
+    skipped = p.get("skipped", [])
     scope = ("whole-tree (the dream graduated no confluence)" if p.get("whole_tree")
              else "dream confluences: " + ", ".join(p.get("modules", [])))
     lines = ["## Plan — the DREAM core (what to build next)",
@@ -395,6 +439,7 @@ def _render_dream(result: AssistResult) -> list[str]:
         lines += ["_Nothing landable yet — the chain refused honestly rather than "
                   "faking a move. Run `apex dream` to accrue confluences, or add "
                   "fillable stubs / untested code for it to land on._", ""]
+        lines += _skipped_note(skipped)
         return lines
     total = p.get("total", len(directions))
     lines.append(f"**{total} concrete direction(s)**, highest buyer-value first:")
@@ -405,8 +450,10 @@ def _render_dream(result: AssistResult) -> list[str]:
                      f"— buyer-value {c.get('value', 0):.2f} · {tag}")
     if total > _MAX_SHOWN:
         lines.append(f"   …and {total - _MAX_SHOWN} more.")
+    lines.append("")
+    lines += _skipped_note(skipped)
     lines += [
-        "", "## Next — one command to act on this",
+        "## Next — one command to act on this",
         "- Land the whole value-led chain:  `apex dream --land --apply`",
         f"- Land just the top move:  "
         f"`apex develop {directions[0]['objective']} "
