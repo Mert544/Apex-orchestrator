@@ -51,6 +51,12 @@ __all__ = ["plan_extract_constant"]
 # Integers so common they read as structure, not magic — naming them adds noise.
 _TRIVIAL_INTS = {-1, 0, 1, 2}
 
+# flake8/ruff E741: a bare ``I``, ``O``, or ``l`` is an ambiguous variable name
+# (reads as 1/0/1 in many fonts). A short literal can slug straight to one of
+# these (``'i!'`` -> ``I``), so a derived name landing here is widened to a
+# readable, non-ambiguous form rather than shipping lint-dirty code.
+_AMBIGUOUS_NAMES = {"I", "O", "l"}
+
 # Well-known idioms a human writes inline; naming them HURTS readability. This is
 # a conservative, hand-curated denylist — a literal here is never extracted (so
 # the objective's fitness/moves stop counting modules that only repeat idioms).
@@ -198,7 +204,8 @@ def _base_name(value: object) -> str:
     Numbers have no natural name, so they fall back to a neutral ``VALUE_<n>``
     base (``86400`` -> ``VALUE_86400``, ``-1`` would be denylisted; ``3.14`` ->
     ``VALUE_3_14``) — deterministic and clearly placeholder-shaped for a human
-    to rename. The result is always a valid, non-keyword identifier."""
+    to rename. The result is always a valid, non-keyword identifier, and never a
+    single ambiguous ``I``/``O``/``l`` (E741) — those widen to ``VALUE_I`` etc."""
     if isinstance(value, str):
         # The slug is UPPER_SNAKE, so it can never be a (lowercase) keyword;
         # only a leading digit or an all-symbol value blocks the bare name.
@@ -218,6 +225,10 @@ def _base_name(value: object) -> str:
         name = f"VALUE_{text}"
     if not name.isidentifier() or keyword.iskeyword(name):
         name = "VALUE"
+    # A short literal can slug to a bare E741 name (``'i!'`` -> ``I``); widen it
+    # to a readable, non-ambiguous base so the emitted constant stays lint-clean.
+    if name in _AMBIGUOUS_NAMES:
+        name = f"VALUE_{name.upper()}"
     return name
 
 

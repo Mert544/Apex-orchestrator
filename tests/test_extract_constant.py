@@ -459,3 +459,130 @@ def test_leading_digit_slug_falls_back_to_value_prefix(tmp_path):
     assert "VALUE_3D_MODEL = '3d-model'\n" in new
     assert "CONST_" not in new
     ast.parse(new)
+
+
+# --- E741 ambiguous single-char names ----------------------------------------
+
+# flake8/ruff forbids a bare ``I``/``O``/``l`` (ambiguous variable name). A short
+# literal can slug straight to one of these, so the emitted constant must widen.
+_AMBIGUOUS = {"I", "O", "l"}
+
+
+def _assigned_name(new_source: str, value_repr: str) -> str:
+    """The LHS name of the synthesized ``NAME = <value_repr>`` assignment."""
+    for ln in new_source.splitlines():
+        stripped = ln.strip()
+        if stripped.endswith(f"= {value_repr}"):
+            return stripped.split("=", 1)[0].strip()
+    raise AssertionError(f"no `... = {value_repr}` assignment in:\n{new_source}")
+
+
+def test_slug_to_i_widens_off_ambiguous_e741_name(tmp_path):
+    # 'i!' slugs to a bare 'I' — an E741 ambiguous name. The fix widens it to a
+    # readable, non-ambiguous constant rather than landing lint-dirty code.
+    src = (
+        "def a():\n"
+        "    return tag('i!')\n"
+        "def b():\n"
+        "    return tag('i!')\n"
+        "def c():\n"
+        "    return tag('i!')\n"
+        "\n"
+        "def tag(x):\n"
+        "    return x\n"
+    )
+    _write(tmp_path, "app/amb_i.py", src)
+
+    plan = plan_extract_constant(tmp_path, "app/amb_i.py", min_occurrences=3)
+    assert plan.ok, plan.blockers
+    new = plan.new_contents["app/amb_i.py"]
+    name = _assigned_name(new, "'i!'")
+    assert name not in _AMBIGUOUS, name          # the whole point: not 'I'
+    assert name == "VALUE_I"
+    assert name.isidentifier()
+    assert plan.edits_by_file["app/amb_i.py"] == 3
+    ast.parse(new)
+
+
+def test_slug_to_o_widens_off_ambiguous_e741_name(tmp_path):
+    # 'o.' slugs to a bare 'O' — likewise widened off the ambiguous set.
+    src = (
+        "def a():\n"
+        "    return tag('o.')\n"
+        "def b():\n"
+        "    return tag('o.')\n"
+        "def c():\n"
+        "    return tag('o.')\n"
+        "\n"
+        "def tag(x):\n"
+        "    return x\n"
+    )
+    _write(tmp_path, "app/amb_o.py", src)
+
+    plan = plan_extract_constant(tmp_path, "app/amb_o.py", min_occurrences=3)
+    assert plan.ok, plan.blockers
+    new = plan.new_contents["app/amb_o.py"]
+    name = _assigned_name(new, "'o.'")
+    assert name not in _AMBIGUOUS, name
+    assert name == "VALUE_O"
+    assert name.isidentifier()
+    ast.parse(new)
+
+
+def test_ambiguous_widening_is_collision_suffixed(tmp_path):
+    # The widened base can itself collide with a top-level binding; the existing
+    # _free_name suffixing still applies at the call site (deterministic _2).
+    src = (
+        "VALUE_I = 'reserved'\n"
+        "def a():\n"
+        "    return tag('i!')\n"
+        "def b():\n"
+        "    return tag('i!')\n"
+        "def c():\n"
+        "    return tag('i!')\n"
+        "\n"
+        "def tag(x):\n"
+        "    return x\n"
+    )
+    _write(tmp_path, "app/amb_coll.py", src)
+
+    plan = plan_extract_constant(tmp_path, "app/amb_coll.py", min_occurrences=3)
+    assert plan.ok, plan.blockers
+    new = plan.new_contents["app/amb_coll.py"]
+    assert "VALUE_I_2 = 'i!'\n" in new
+    assert "VALUE_I = 'reserved'\n" in new      # original binding untouched
+    assert "\nI = " not in new and not new.startswith("I = ")
+    ast.parse(new)
+
+
+def test_base_name_never_returns_ambiguous_single_char():
+    # Unit-level guarantee: no input drives _base_name onto the E741 set.
+    from app.execution.extract_constant import _base_name
+
+    for v in ("i!", "!i!", "_i_", "i?", "o.", "O-", "(O)", "l", "I", "O"):
+        assert _base_name(v) not in _AMBIGUOUS, v
+    # An uppercase 'L' slug is NOT E741 (only lowercase 'l' is) -> left as-is,
+    # so the non-ambiguous descriptive name is preserved, not over-widened.
+    assert _base_name("(l)") == "L"
+    assert _base_name("l_") == "L"
+
+
+def test_non_ambiguous_names_unchanged_by_e741_guard(tmp_path):
+    # Regression-lock: literals that never slug to I/O/l are byte-identical to
+    # the pre-fix behaviour (the guard only touches the ambiguous outputs).
+    src = (
+        "def a():\n"
+        "    return tag('content-type')\n"
+        "def b():\n"
+        "    return tag('content-type')\n"
+        "def c():\n"
+        "    return tag('content-type')\n"
+        "\n"
+        "def tag(x):\n"
+        "    return x\n"
+    )
+    _write(tmp_path, "app/unchanged.py", src)
+
+    plan = plan_extract_constant(tmp_path, "app/unchanged.py", min_occurrences=3)
+    assert plan.ok, plan.blockers
+    assert "CONTENT_TYPE = 'content-type'\n" in plan.new_contents["app/unchanged.py"]
