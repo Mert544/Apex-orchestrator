@@ -82,10 +82,20 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                     "Decouple the coordinator module {s} — it imports many "
                     "internal modules; split its responsibilities (Apex names "
                     "the god-module, you design the seams)", False),
-    "deep-nesting": ("design_task",
-                     "Flatten the deeply-nested function {s} — invert the guards "
-                     "/ early-return / extract the inner block (Apex names the "
-                     "staircase, you design the flattening)", False),
+    # Deep-nesting: a top-level function whose control flow nests several levels.
+    # The COMMON staircase is a leading guard — a function whose whole body is one
+    # else-less ``if`` — and inverting that into an early-return is now DETERMINISTIC
+    # (``plan_extract_guard_clause`` rewrites only that exact shape and BLOCKS with
+    # an empty plan on anything ambiguous), so this is EXECUTABLE: the delegated
+    # ``extract_guard_clause`` lander strips the ``::function`` suffix to the module
+    # rel and lands through ``apply_rename(impact_scope=True)`` with auto-rollback. A
+    # non-guard nesting (loops/conditionals needing inner-block extraction) matches
+    # nothing ⇒ honest no-op (never a fake-green); the lander runs over the MODULE so
+    # it may flatten guard shapes in its other functions too — broader but SAFE
+    # (suite-gated + rolled back on any regression, exactly like W1).
+    "deep-nesting": ("extract_guard_clause",
+                     "Flatten the deeply-nested function {s} — invert a leading "
+                     "guard into an early return", True),
     # God-class: a top-level class with too many methods is a Single-
     # Responsibility violation. HOW to decompose it — which responsibilities to
     # split into which collaborators, where the seams are — is a DESIGN decision,
@@ -1934,6 +1944,49 @@ class IdeaActionBridge:
 
         return _plan
 
+    @staticmethod
+    def _plan_extract_guard_clause_lander():
+        """The extract-guard-clause lander adapted to the delegated ``(project_root,
+        target)`` shape every delegated synthesis uses.
+
+        extract-guard-clause is SINGLE-MODULE — its real lander is already
+        ``plan_extract_guard_clause(root, module_rel) -> RenamePlan``, so (unlike the
+        CROSS-MODULE dedup landers) there is NO actionable-group gate to re-run and NO
+        joined "A + B" subject to split. The ``deep-nesting`` seeder subject is
+        ``"<module_rel>::<function>"``, so this wrapper strips any trailing
+        ``::function`` to recover the module rel and DELEGATES straight to
+        ``plan_extract_guard_clause``. A non-``.py`` / unreadable / unparseable target
+        yields an empty no-op :class:`RenamePlan` from the real lander, so the
+        delegated apply path honestly no-ops rather than fakes a change.
+
+        HONESTY — what this flattens and what it does NOT: extract-guard-clause only
+        rewrites the GUARD-INVERTIBLE shape (a function whose WHOLE body is a single
+        else-less ``if`` — it inverts that into an early-return guard, dropping one
+        nesting level). A deeply-nested function whose staircase is NOT a leading
+        guard (genuinely nested loops/conditionals needing inner-block extraction)
+        matches nothing and yields an empty plan ⇒ an honest no-op (never a
+        fake-green). So deep-nesting becomes autonomous for the common guard case and
+        stays honest for the rest.
+
+        SCOPE — broader but SAFE: ``plan_extract_guard_clause`` runs over the whole
+        MODULE (it takes a rel, not a function), so it may also flatten guard shapes
+        in OTHER functions of that module, not just the named one. This is SAFE
+        exactly as W1's cross-module lift is: the plan lands through
+        ``apply_rename(impact_scope=True)``, whose impacted-test gate auto-rolls-back
+        on ANY regression — so a broader-than-named but behaviour-preserving flatten
+        either verifies green or is reverted, never a silent overreach."""
+        from app.execution.extract_guard_clause import plan_extract_guard_clause
+
+        def _plan(project_root: str, target: str):
+            # The deep-nesting subject is "<module_rel>::<function>"; strip any
+            # "::function" suffix to recover the own-module rel (a plain module
+            # target — no "::" — is unchanged). plan_extract_guard_clause runs over
+            # that module and no-ops with an empty plan on a non-.py / unreadable rel.
+            module_rel = target.split("::", 1)[0]
+            return plan_extract_guard_clause(project_root, module_rel)
+
+        return _plan
+
     _DELEGATED_SYNTHESIS = {
         "implement_stub": (
             "_plan_implement_stub_lander",
@@ -1966,6 +2019,9 @@ class IdeaActionBridge:
             "_plan_dedup_parameterized_lander",
             "no dedup-parameterized (no parameterizable near-duplicate group "
             "touches this module)"),
+        "extract_guard_clause": (
+            "_plan_extract_guard_clause_lander",
+            "no flatten (no guard-invertible nesting in this function/module)"),
     }
 
     # The action types ``apply_step`` / ``_generate`` route to the develop-core

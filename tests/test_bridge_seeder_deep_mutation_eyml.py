@@ -1099,7 +1099,9 @@ _FACT_EXPECTED = {
     # lander (deterministic shared-helper extraction, gated + auto-rollback).
     "generalizable-duplication": ("dedup_parameterized", True),
     "coordinator": ("design_task", False),
-    "deep-nesting": ("design_task", False),
+    # Autonomous-39 W2: flipped from design_task → the delegated extract_guard_clause
+    # lander (deterministic guard-invert flatten, gated + auto-rollback).
+    "deep-nesting": ("extract_guard_clause", True),
     "god-class": ("design_task", False),
     "modernization": ("modernize_comparisons", True),
     "mutable-default": ("fix_mutable_defaults", True),

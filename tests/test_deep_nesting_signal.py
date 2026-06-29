@@ -10,13 +10,14 @@ def/class body starts its own depth count), flags functions at or above the
 floor, sorts ``(-depth, module, function)`` and caps to 5. It is a whole-repo
 structural read the GRADE never consumes, so it is gated behind ``not light`` —
 light mode yields []. The idea engine promotes each into a ``deep-nesting`` root
-that is recommend-only (HOW to flatten the staircase is a DESIGN call; Apex names
-the function, it does not auto-write) and REFINE-phased.
+that is REFINE-phased and (Autonomous-39 W2) EXECUTABLE: the COMMON leading-guard
+staircase is flattened deterministically via the delegated ``extract_guard_clause``
+lander (a non-guard nesting stays an honest no-op), not handed to a human.
 
 These tests pin the vertical end to end: profile field -> seeder root -> action
 bridge -> roadmap phase, plus the invariants (deep ONLY, additive/empty,
-light-gated, determinism, recommend-only, no "untested" token, no leading
-magnitude shape, value axes in [0,1] with roots keeping novelty == 1.0).
+light-gated, determinism, executable guard-flatten, no "untested" token, no
+leading magnitude shape, value axes in [0,1] with roots keeping novelty == 1.0).
 """
 
 from __future__ import annotations
@@ -270,15 +271,20 @@ def test_fact_hint_registered():
 
 # --- action bridge ----------------------------------------------------------
 
-def test_action_is_recommend_only():
+def test_action_is_executable_guard_flatten():
     profile = _profile(deeply_nested_functions=[_entry("app/x.py", "foo", 6)])
     idea = _nest_roots(profile)[0]
     step = IdeaActionBridge().plan_idea(idea)
-    # HOW to flatten the staircase is a DESIGN decision: Apex points, it does not
-    # auto-write — so it must NOT claim to be executable.
-    assert step.executable is False
-    assert step.action_type == "design_task"
+    # Autonomous-39 W2: flattening a LEADING-GUARD staircase is now deterministic
+    # (``plan_extract_guard_clause`` inverts the guard into an early return and
+    # BLOCKS on any ambiguity), so the deep-nesting fact is EXECUTABLE — it lands
+    # through the delegated, suite-gated, auto-rollback apply path (a non-guard
+    # nesting stays an honest no-op).
+    assert step.executable is True
+    assert step.action_type == "extract_guard_clause"
     assert "app/x.py::foo" in step.description
+    # The ``::function`` suffix is stripped to the own-module rel the lander runs on.
+    assert step.target == "app/x.py"
 
 
 # --- roadmap ----------------------------------------------------------------
