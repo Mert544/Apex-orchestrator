@@ -50,15 +50,28 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "polyglot-hotspot": ("design_task",
                          "Review/cover {s} in your stack — it's outside Apex's "
                          "Python analysis but it's a large, active file", False),
-    # Incomplete protocol: a half-built Python contract (eq/hash, context
-    # manager). Finishing it is a DESIGN decision (what should the hash key on?
-    # what does __exit__ release?), so Apex RECOMMENDS the completion and names
-    # the exact class/line — it must NOT auto-write the missing method. Strictly
-    # recommend-only (executable False) even though the ``module::Class`` subject
-    # carries a real file path.
-    "incomplete-protocol": ("design_task",
-                            "Complete the half-built protocol on {s} — Apex names "
-                            "the gap; you decide the implementation", False),
+    # Incomplete protocol: a half-built Python contract. The signal covers TWO
+    # gap shapes and only ONE is deterministically completable, so this is a
+    # SPLIT-honesty flip: (a) an ``__eq__``-without-``__hash__`` class is the
+    # CANONICAL, deterministically-completable gap — ``seal_hashable_eq`` restores
+    # the canonical ``__hash__`` over the SAME pure-copy field set ``__eq__`` ranges
+    # over (re-enabling set/dict-key use that currently raises ``TypeError``), and
+    # its refusal set already blocks anything ambiguous (a ``@dataclass``, a
+    # ``__hash__ = None`` deliberate-unhashable, a non-``object`` base, an
+    # assignment-bound ``__eq__``, an unenumerable field set) — so this is
+    # EXECUTABLE: the delegated ``seal_hashable_eq`` lander strips the ``::Class``
+    # suffix to the module rel and lands through ``apply_rename(impact_scope=True)``
+    # with auto-rollback. (b) A ``__enter__``/``__exit__`` (or async) context-manager
+    # gap has NO deterministic completion (what does ``__exit__`` release? = a DESIGN
+    # decision), so it routes to ``seal_hashable_eq``, finds NO eligible eq/hash
+    # class, and stays an HONEST no-op (empty plan, disclosed reason) — never a
+    # fabricated ``__exit__`` body. So incomplete-protocol becomes autonomous for the
+    # eq/hash gap and stays honest (advisory) for context-manager gaps; the lander
+    # runs over the MODULE so it may seal another eligible eq/hash class in the same
+    # module too — broader but SAFE (suite-gated + rolled back on any regression).
+    "incomplete-protocol": ("seal_hashable_eq",
+                            "Complete the eq/hash contract on {s} — synthesize the "
+                            "canonical __hash__ over the __eq__ fields", True),
     # Generalizable duplication: near-identical blocks recurring across DISTINCT
     # modules. The parameterization decision is now DETERMINISTIC —
     # ``plan_near_dup_extract`` lifts a constant-/free-name-only-differing group
@@ -1987,6 +2000,64 @@ class IdeaActionBridge:
 
         return _plan
 
+    @staticmethod
+    def _plan_seal_hashable_eq_lander():
+        """The seal-hashable-eq lander adapted to the delegated ``(project_root,
+        target)`` shape every delegated synthesis uses.
+
+        seal-hashable-eq is SINGLE-MODULE — its real lander is already
+        ``plan_seal_hashable_eq(root, module_rel) -> RenamePlan``, so (unlike the
+        CROSS-MODULE dedup landers) there is NO actionable-group gate to re-run and NO
+        joined "A + B" subject to split. The ``incomplete-protocol`` seeder subject is
+        ``"<module_rel>::<Class>"`` (``idea_seeder._seed_incomplete_protocols``), so
+        this wrapper strips any trailing ``::Class`` to recover the module rel and
+        DELEGATES straight to ``plan_seal_hashable_eq``. A non-``.py`` / unreadable /
+        unparseable target yields an empty no-op :class:`RenamePlan` from the real
+        lander, so the delegated apply path honestly no-ops rather than fakes a change.
+
+        HONESTY — the eq/hash-ONLY boundary: the ``incomplete-protocol`` signal covers
+        TWO gap shapes, and only ONE is deterministically completable. (a) An
+        ``__eq__``-WITHOUT-``__hash__`` class is the CANONICAL gap — defining
+        ``__eq__`` implicitly sets ``__hash__ = None`` (instances raise
+        ``TypeError: unhashable`` as a ``set`` member / ``dict`` key), and
+        ``seal_hashable_eq`` restores the canonical ``def __hash__`` over the SAME
+        pure-copy field set ``__eq__`` ranges over — a RUNTIME-ADDITIVE completion that
+        re-enables what currently raises, never a contract the ``__eq__`` disagrees
+        with. (b) A ``__enter__``/``__exit__`` (or async) CONTEXT-MANAGER gap has NO
+        deterministic completion (what should ``__exit__`` release / suppress? = a
+        DESIGN decision), so it routes here, finds NO eligible eq/hash class, and
+        yields an EMPTY plan ⇒ an HONEST no-op (the disclosed reason rides through),
+        NEVER a fabricated ``__exit__`` body. So incomplete-protocol becomes autonomous
+        for the eq/hash gap and stays honest (advisory) for context-manager gaps.
+
+        SOUNDNESS — seal-hashable-eq's refusal set is the guarantee it only ever
+        COMPLETES (never CHANGES) the contract: it seals ONLY a plain class with a
+        body-``def __eq__`` and NO ``__hash__`` at all, refusing a ``@dataclass`` (its
+        own ``eq=``/hash story), a ``__hash__ = None`` (a deliberate-unhashable choice),
+        a hand-written ``__hash__``, a non-``object`` base (an inherited-hash contract),
+        an assignment-/lambda-bound ``__eq__``, and an unenumerable / empty field set —
+        and it hashes EXACTLY the ``__init__`` copy fields ``__eq__`` is built over, so
+        the landed ``__hash__`` can never disagree with ``__eq__``.
+
+        SCOPE — broader but SAFE: ``plan_seal_hashable_eq`` runs over the whole MODULE
+        (it takes a rel, not a class), so it may also seal ANOTHER eligible eq/hash
+        class in that module, not just the named one. This is SAFE exactly as W1's
+        cross-module lift is: the plan lands through ``apply_rename(impact_scope=True)``,
+        whose impacted-test gate auto-rolls-back on ANY regression — so a
+        broader-than-named but runtime-additive seal either verifies green or is
+        reverted, never a silent overreach."""
+        from app.execution.objectives.seal_hashable_eq import plan_seal_hashable_eq
+
+        def _plan(project_root: str, target: str):
+            # The incomplete-protocol subject is "<module_rel>::<Class>"; strip any
+            # "::Class" suffix to recover the own-module rel (a plain module target —
+            # no "::" — is unchanged). plan_seal_hashable_eq runs over that module and
+            # no-ops with an empty plan on a non-.py / unreadable / no-eligible-class rel.
+            module_rel = target.split("::", 1)[0]
+            return plan_seal_hashable_eq(project_root, module_rel)
+
+        return _plan
+
     _DELEGATED_SYNTHESIS = {
         "implement_stub": (
             "_plan_implement_stub_lander",
@@ -2022,6 +2093,10 @@ class IdeaActionBridge:
         "extract_guard_clause": (
             "_plan_extract_guard_clause_lander",
             "no flatten (no guard-invertible nesting in this function/module)"),
+        "seal_hashable_eq": (
+            "_plan_seal_hashable_eq_lander",
+            "no protocol completion (no eq-without-hash class / a context-manager "
+            "gap needs design / not eligible)"),
     }
 
     # The action types ``apply_step`` / ``_generate`` route to the develop-core

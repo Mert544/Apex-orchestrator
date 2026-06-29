@@ -4,12 +4,17 @@
 Python contract gaps (``__eq__`` without ``__hash__``; the sync/async
 context-manager pairs); `ProjectProfiler` carries them on
 `incomplete_protocols`; the idea engine promotes each into a CONSTRUCTIVE
-`incomplete-protocol` root framed as "finish what you started" — recommend-only
-(Apex points, it does not auto-write). These tests pin both the conservative
-detection (every false-positive guard) AND the seeding vertical end to end:
-profile field -> seeder root -> action bridge -> roadmap phase, plus the
-invariants (additive/empty, dedup, determinism, recommend-only,
-value/feasibility/novelty in [0,1], all-clean -> byte-identical seeding).
+`incomplete-protocol` root framed as "finish what you started". Autonomous-39
+W5: the eq/hash gap is now EXECUTABLE — it routes to the delegated
+``seal_hashable_eq`` action that lands the canonical ``__hash__`` over the
+``__eq__`` fields (suite-gated, auto-rollback); the context-manager gap shares
+that action but stays an HONEST no-op (no deterministic ``__exit__``, so the
+lander finds no eligible eq/hash class and writes nothing). These tests pin both
+the conservative detection (every false-positive guard) AND the seeding vertical
+end to end: profile field -> seeder root -> action bridge -> roadmap phase, plus
+the invariants (additive/empty, dedup, determinism, executable-eq/hash +
+honest-no-op-context-manager, value/feasibility/novelty in [0,1], all-clean ->
+byte-identical seeding).
 """
 
 from pathlib import Path
@@ -382,27 +387,43 @@ def test_fact_hint_registered():
     assert "complete" in hint or "finish" in hint
 
 
-# --- action bridge: recommend-only ------------------------------------------
+# --- action bridge: executable eq/hash, honest for context-manager ----------
 
-def test_action_is_recommend_only():
+def test_action_is_executable_seal_for_eq_hash():
+    # Autonomous-39 W5: the eq/hash gap is DETERMINISTICALLY completable
+    # (``seal_hashable_eq`` restores the canonical ``__hash__`` over the SAME field
+    # set ``__eq__`` ranges over and BLOCKS anything ambiguous), so the
+    # incomplete-protocol fact is EXECUTABLE for this shape — it lands through the
+    # delegated, suite-gated, auto-rollback apply path. The module::Class subject's
+    # ``::Class`` suffix is stripped to the own-module rel the lander runs on.
     profile = _profile(incomplete_protocols=[_proto()])
     idea = _proto_roots(profile)[0]
     step = IdeaActionBridge().plan_idea(idea)
-    # Recommend-only EVEN THOUGH the module::Class subject carries a real file
-    # path (app/money.py): Apex points at the gap, it does not auto-write it.
-    assert step.executable is False
-    assert step.action_type == "design_task"
+    assert step.executable is True
+    assert step.action_type == "seal_hashable_eq"
     assert "app/money.py::Money" in step.description
+    assert step.target == "app/money.py"
 
 
-def test_action_recommend_only_for_context_manager():
+def test_action_context_manager_routes_to_seal_but_is_honest_noop(tmp_path: Path):
+    # A context-manager gap shares the incomplete-protocol fact, so it routes to the
+    # SAME ``seal_hashable_eq`` action — but completing ``__exit__`` is a DESIGN
+    # decision with no deterministic answer, so the lander finds no eligible eq/hash
+    # class and yields an empty plan ⇒ an HONEST no-op (it never fabricates an
+    # ``__exit__`` body). The action type is shared; the honesty is enforced at apply.
+    _write(tmp_path, "app/res.py",
+           "class Res:\n    def __enter__(self):\n        return self\n")
     profile = _profile(incomplete_protocols=[
         _proto(module="app/res.py", cls="Res", protocol="context-manager",
                have="__enter__", missing="__exit__"),
     ])
     idea = _proto_roots(profile)[0]
     step = IdeaActionBridge().plan_idea(idea)
-    assert step.executable is False
+    assert step.action_type == "seal_hashable_eq"
+    # The lander honestly no-ops on the real context-manager module (no eq/hash
+    # class to seal) — the disclosed reason rides the delegated default downstream.
+    plan = IdeaActionBridge._plan_seal_hashable_eq_lander()(str(tmp_path), step.target)
+    assert not plan.new_contents
 
 
 # --- roadmap phase ----------------------------------------------------------

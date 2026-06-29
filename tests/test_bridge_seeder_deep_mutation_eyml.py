@@ -1094,7 +1094,11 @@ _FACT_EXPECTED = {
     "symbol-hub": ("design_task", False),
     "missing-ci": ("add_ci", True),
     "polyglot-hotspot": ("design_task", False),
-    "incomplete-protocol": ("design_task", False),
+    # Autonomous-39 W5: flipped from design_task → the delegated seal_hashable_eq
+    # lander (deterministic canonical-__hash__ completion over the __eq__ fields,
+    # gated + auto-rollback; a context-manager gap finds no eq/hash class ⇒ an honest
+    # no-op, so incomplete-protocol stays advisory for that shape).
+    "incomplete-protocol": ("seal_hashable_eq", True),
     # Autonomous-39 W1: flipped from design_task → the delegated dedup_parameterized
     # lander (deterministic shared-helper extraction, gated + auto-rollback).
     "generalizable-duplication": ("dedup_parameterized", True),

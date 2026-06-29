@@ -247,4 +247,6 @@ def test_other_fact_actions_unchanged():
     assert _FACT_ACTIONS["god-class"][2] is False
     # The W1 sibling stays as W1 left it (this wave touches only deep-nesting).
     assert _FACT_ACTIONS["generalizable-duplication"][0] == "dedup_parameterized"
-    assert _FACT_ACTIONS["incomplete-protocol"][0] == "design_task"
+    # incomplete-protocol was design_task at W2 time; Autonomous-39 W5 later flipped
+    # it to the executable seal_hashable_eq lander — assert that current reality.
+    assert _FACT_ACTIONS["incomplete-protocol"][0] == "seal_hashable_eq"
