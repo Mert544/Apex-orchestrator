@@ -14,8 +14,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.agent.assist import (
+    COUPLING_PHRASES,
     NEXT_WORK_PHRASES,
     assist,
+    is_coupling_question,
     is_next_work_question,
     render_assist_markdown,
 )
@@ -63,6 +65,20 @@ def _stub_project(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _coupled_project(tmp_path: Path) -> Path:
+    """A tiny project with a real import CYCLE (``a`` <-> ``b``) and a fan-in HUB
+    (``a`` is imported by both ``b`` and ``c``) — the dependency shape the DEPS
+    route narrates from the real import graph."""
+    (tmp_path / "a.py").write_text(
+        "import b\n\n\ndef fa():\n    return b.fb()\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text(
+        "import a\n\n\ndef fb():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "c.py").write_text(
+        "import a\nimport b\n\n\ndef fc():\n    return a.fa() + b.fb()\n",
+        encoding="utf-8")
+    return tmp_path
+
+
 def _tree_snapshot(root: Path) -> dict[str, str]:
     """Every .py file's content — to assert a read-only route changed nothing."""
     return {str(p): p.read_text(encoding="utf-8") for p in root.rglob("*.py")}
@@ -85,6 +101,30 @@ def test_next_work_classifier_rejects_plain_questions_and_commands():
     assert not is_next_work_question("")
     # every table phrase is non-empty and lowercase (deterministic substring match)
     assert all(p and p == p.lower() for p in NEXT_WORK_PHRASES)
+
+
+# --- the coupling/cycle/dependency self-classifier --------------------------
+
+def test_coupling_classifier_matches_the_phrase_set():
+    assert is_coupling_question("why is this module so coupled?")
+    assert is_coupling_question("are there circular imports?")
+    assert is_coupling_question("what are the dependencies?")
+    assert is_coupling_question("show me the fan-in")
+    assert is_coupling_question("is this tightly coupled?")
+    # Turkish surface (the loop is its own EN+TR classifier, not a comprehend field)
+    assert is_coupling_question("bağımlılık var mı")
+    assert is_coupling_question("döngü var mı")
+
+
+def test_coupling_classifier_rejects_plain_questions_and_commands():
+    # A plain health question is NOT a coupling question — it must fall through to
+    # the grade (the load-bearing regression-lock for the existing route).
+    assert not is_coupling_question("is this well tested?")
+    assert not is_coupling_question("is the security ok?")
+    assert not is_coupling_question("add type hints to the auth module")
+    assert not is_coupling_question("")
+    # every table phrase is non-empty and lowercase (deterministic substring match)
+    assert all(p and p == p.lower() for p in COUPLING_PHRASES)
 
 
 # --- the DREAM ROUTE: "what should I build next?" ---------------------------
@@ -189,6 +229,86 @@ def test_plain_question_routes_to_grade(tmp_path):
     assert "/100" in result.narrative
     # READ-ONLY.
     assert _tree_snapshot(root) == before
+
+
+# --- the DEPS route: real import cycles + fan-in hubs ------------------------
+
+def test_coupling_question_routes_to_deps_with_grounded_numbers(tmp_path):
+    root = _coupled_project(tmp_path)
+    before = _tree_snapshot(root)
+
+    result = assist("why is this module so coupled?", target=str(root))
+
+    assert result.route == "deps"
+    assert result.applied is False
+    # GROUNDED: the real import cycle (a <-> b) is detected off the import graph.
+    assert result.payload["cycle_count"] == 1
+    cyc = result.payload["cycles"][0]
+    assert cyc[0] == cyc[-1]                  # a cycle ends back at its start
+    assert set(cyc) == {"a.py", "b.py"}
+    # GROUNDED: the top fan-in hub is `a.py` (imported by both b and c).
+    hubs = result.payload["hubs"]
+    assert hubs, "the coupled project should surface fan-in hubs"
+    assert hubs[0]["module"] == "a.py"
+    assert hubs[0]["fan_in"] == 2
+    # Hubs ranked by fan-in descending (deterministic order into the payload).
+    fan_ins = [h["fan_in"] for h in hubs]
+    assert fan_ins == sorted(fan_ins, reverse=True)
+    # The narrative echoes the question and narrates the grounded shape + NEXT.
+    md = result.narrative
+    assert "why is this module so coupled?" in md
+    assert "Import cycles: 1" in md
+    assert "`a.py` → `b.py` → `a.py`" in md
+    assert "2 dependent module(s)" in md
+    assert "regression test" in md  # the highest-fan-in-hub NEXT suggestion
+    assert "Break a cycle" in md    # the cycle-breaking NEXT suggestion
+    # READ-ONLY: nothing was written.
+    assert _tree_snapshot(root) == before
+
+
+def test_cycle_question_routes_to_deps(tmp_path):
+    """A "are there circular imports?" question is a coupling question → DEPS."""
+    root = _coupled_project(tmp_path)
+    result = assist("are there circular imports?", target=str(root))
+    assert result.route == "deps"
+    assert result.payload["cycle_count"] == 1
+
+
+def test_deps_route_narrates_clean_when_no_cycles(tmp_path):
+    """A flat, acyclic project narrates "0 cycles — clean" honestly (no cycle is
+    invented) while still surfacing the fan-in hubs."""
+    (tmp_path / "leaf.py").write_text("def g():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "top.py").write_text(
+        "import leaf\ndef f():\n    return leaf.g()\n", encoding="utf-8")
+    before = _tree_snapshot(tmp_path)
+
+    result = assist("what does this depend on?", target=str(tmp_path))
+
+    assert result.route == "deps"
+    assert result.payload["cycle_count"] == 0
+    assert "0 — clean" in result.narrative
+    # leaf.py is a (single-dependent) fan-in hub.
+    assert result.payload["hubs"][0]["module"] == "leaf.py"
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_deps_route_is_deterministic(tmp_path):
+    root = _coupled_project(tmp_path)
+    a = assist("why is this module so coupled?", target=str(root))
+    b = assist("why is this module so coupled?", target=str(root))
+    # Deterministic narrative AND payload (no clock/random; sorted organ output).
+    assert a.narrative == b.narrative
+    assert a.payload == b.payload
+
+
+def test_plain_non_coupling_question_still_routes_to_grade(tmp_path):
+    """REGRESSION-LOCK: a plain, non-coupling question is unchanged — it still
+    routes to the grade, byte-identically to before the deps route existed."""
+    root = _coupled_project(tmp_path)
+    result = assist("is this well tested?", target=str(root))
+    assert result.route == "grade"
+    assert isinstance(result.payload["score"], int)
+    assert "/100" in result.narrative
 
 
 # --- the DEVELOP route: preview then land -----------------------------------

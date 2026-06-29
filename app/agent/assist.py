@@ -17,6 +17,9 @@ The flow:
      :func:`~app.engine.dream_develop.dream_develop` (dry-run) surfaces the ranked,
      value-led concrete directions (each carrying objective + target + buyer-value
      + verification tier) and OFFERS the one-command follow-ups. Read-only.
+   - a *coupling/cycle/dependency* question ("why is this module so coupled?") →
+     **the DEPS ROUTE**: the project's real import cycles + top fan-in hubs, read
+     straight off the same dependency graph ``apex grade`` reads. Read-only.
    - any other question → :func:`~app.engine.health_score.grade` (the project's
      real health numbers). Read-only.
    - a develop request WITH objectives → value-led order, scope-restricted when a
@@ -44,6 +47,7 @@ from app.intent.comprehension import Comprehension, comprehend
 __all__ = [
     "AssistResult", "assist", "render_assist_markdown",
     "is_next_work_question", "NEXT_WORK_PHRASES",
+    "is_coupling_question", "COUPLING_PHRASES",
 ]
 
 # The "what should I build next?" intent — a small, deterministic EN+TR phrase
@@ -84,12 +88,40 @@ def is_next_work_question(request: str) -> bool:
     return any(phrase in text for phrase in NEXT_WORK_PHRASES)
 
 
+# The "is this coupled / are there cycles?" intent — a second small, deterministic
+# EN+TR phrase table (a literal substring of the normalized request resolves it).
+# Kept HERE alongside :data:`NEXT_WORK_PHRASES` so the loop owns its own dependency-
+# question self-classification and never edits a shared vocabulary file: a plain
+# question about COUPLING / CYCLES / DEPENDENCIES routes to the DEPS ROUTE (the real
+# import graph), not the generic health grade.
+COUPLING_PHRASES: tuple[str, ...] = (
+    # English
+    "coupled", "coupling", "tightly coupled", "loosely coupled",
+    "cycle", "cycles", "circular", "circular import", "circular dependency",
+    "circular dependencies", "import cycle", "depends on", "depend on",
+    "dependency", "dependencies", "fan-in", "fan in", "fanin",
+    "fan-out", "fan out", "fanout", "interdependent", "entangled", "spaghetti",
+    # Turkish
+    "bağımlılık", "bagimlilik", "döngü", "dongu", "döngüsel", "dongusel",
+    "bağ", "bagimli", "bağımlı", "sıkı bağ", "siki bag",
+)
+
+
+def is_coupling_question(request: str) -> bool:
+    """True when ``request`` asks about COUPLING / CYCLES / DEPENDENCIES — a literal-
+    substring match against :data:`COUPLING_PHRASES`. Deterministic, table-driven,
+    no fuzzy/LLM matching (mirrors :func:`is_next_work_question`)."""
+    text = _norm(request)
+    return any(phrase in text for phrase in COUPLING_PHRASES)
+
+
 @dataclass
 class AssistResult:
     """The deterministic outcome of one :func:`assist` run — the buyer-facing unit.
 
-    ``route`` names which organ answered (``"dream"`` / ``"grade"`` / ``"develop"``
-    / ``"recommend"``), ``comprehension`` is the echoed understanding, ``applied``
+    ``route`` names which organ answered (``"dream"`` / ``"grade"`` / ``"deps"`` /
+    ``"develop"`` / ``"recommend"``), ``comprehension`` is the echoed understanding,
+    ``applied``
     records whether any write landed, ``payload`` carries the route's structured
     result (for ``--json``), and ``narrative`` is the rendered, grounded answer."""
 
@@ -200,6 +232,69 @@ def _grade_route(request: str, comprehension: Comprehension,
                           payload=payload)
     result.narrative = render_assist_markdown(result)
     return result
+
+
+# --- The DEPS route: narrate the project's real cycles + fan-in hubs ----------
+
+# How many top fan-in HUBS the deps narrative lists — the same display cap the
+# DREAM/grade surfaces use (a stable head, never a flood, deterministic count).
+_MAX_HUBS = 5
+
+
+def _deps_route(request: str, comprehension: Comprehension,
+                target: str) -> AssistResult:
+    """Route a coupling/cycle/dependency question to the import graph — read-only.
+
+    Runs the EXISTING dependency organ (:class:`DependencyGraphBuilder`, the same
+    one ``apex grade``'s Architecture area reads) and narrates the GROUNDED numbers:
+    the import CYCLES (``find_cycles`` — incl. indirect A->B->C->A) and the top
+    fan-in HUBS (modules many others import, ranked by ``in_degree``). So "why is
+    this module so coupled?" gets the project's real dependency shape, not a grade
+    breakdown. Writes NOTHING.
+
+    Both organ outputs are already deterministic (the graph is iterated in sorted
+    order, cycles are de-duplicated by rotation, hubs are sorted by ``-in_degree``
+    then path) — so the same ``(request, target)`` renders byte-identical. The build
+    is best-effort (an unparseable tree yields an honest empty read, never a crash),
+    mirroring the other read-only routes."""
+    cycles, hubs, total_modules = _dependency_shape(target)
+    payload = {
+        "cycles": cycles,
+        "hubs": hubs,
+        "cycle_count": len(cycles),
+        "modules": total_modules,
+    }
+    result = AssistResult(request=request, route="deps",
+                          comprehension=comprehension, applied=False,
+                          payload=payload)
+    result.narrative = render_assist_markdown(result)
+    return result
+
+
+def _dependency_shape(target: str) -> tuple[list[list[str]], list[dict[str, Any]],
+                                            int]:
+    """``(cycles, hubs, module_count)`` off the project's import graph — read-only.
+
+    ``cycles`` are :meth:`DependencyGraphBuilder.find_cycles` (each a module-path
+    list ending back at its start); ``hubs`` are the top :data:`_MAX_HUBS` modules
+    by fan-in (``in_degree`` > 0), each ``{"module", "fan_in"}``, ranked by
+    ``-fan_in`` then path (the SAME order the profile's ``module_fanin`` uses).
+    Best-effort: any build failure yields ``([], [], 0)`` so the narrative stays
+    honest rather than raising."""
+    try:
+        from app.tools.dependency_graph import DependencyGraphBuilder
+
+        builder = DependencyGraphBuilder(target)
+        graph = builder.build()
+        cycles = builder.find_cycles(limit=_MAX_HUBS)
+    except Exception:
+        return [], [], 0
+    ranked = sorted(
+        (n for n in graph.values() if n.in_degree > 0),
+        key=lambda n: (-n.in_degree, n.path),
+    )
+    hubs = [{"module": n.path, "fan_in": n.in_degree} for n in ranked[:_MAX_HUBS]]
+    return cycles, hubs, len(graph)
 
 
 # --- The DEVELOP route: land (or preview) the named objectives ---------------
@@ -343,9 +438,11 @@ def assist(request: str, target: str | Path = ".",
     through the existing covered-only / suite-gated / auto-rollback compiler.
 
     The branch order is load-bearing: the proactive next-work question (the DREAM
-    ROUTE) is detected first (it is a question that names develop work), then plain
-    questions route to the grade, then a develop request with objectives runs them
-    value-led, and anything unmapped gets the honest no-capability recommend."""
+    ROUTE) is detected first (it is a question that names develop work), then a
+    coupling/cycle/dependency question routes to the DEPS analysis (the real import
+    graph) while every other plain question routes to the grade, then a develop
+    request with objectives runs them value-led, and anything unmapped gets the
+    honest no-capability recommend."""
     target = str(target)
     comprehension = comprehend(request)
 
@@ -356,6 +453,11 @@ def assist(request: str, target: str | Path = ".",
         return _dream_route(request, comprehension, target)
 
     if comprehension.action == "question":
+        # A coupling/cycle/dependency question wants the real import graph (cycles
+        # + fan-in hubs), not the generic health grade — every other question still
+        # routes to the grade, byte-identically.
+        if is_coupling_question(request):
+            return _deps_route(request, comprehension, target)
         return _grade_route(request, comprehension, target)
 
     # A develop request that matched real objectives → plan + act (gated).
@@ -385,9 +487,10 @@ def _understood_line(c: Comprehension, route: str, scope: str) -> str:
         return (f"I **couldn't map this to a capability** (no matching develop "
                 f"objective) — so I won't fabricate one ({c.mode} mode, "
                 f"scope: {scope}).")
-    if route in ("dream", "grade"):
+    if route in ("dream", "grade", "deps"):
         topic = {"dream": "what to build next",
-                 "grade": "the project's health"}[route]
+                 "grade": "the project's health",
+                 "deps": "the project's coupling / dependencies"}[route]
         return (f"I understood a **question** → {topic} "
                 f"({c.mode} mode, scope: {scope}).")
     shown = ", ".join(c.objectives[:3]) or "(none)"
@@ -479,6 +582,71 @@ def _render_grade(result: AssistResult) -> list[str]:
         lines += [f"- {f}" for f in fixes]
     else:
         lines.append("_Clean bill of health — nothing is costing points._")
+    lines.append("")
+    return lines
+
+
+def _render_deps(result: AssistResult) -> list[str]:
+    """The DEPS-route body: the real import cycles + top fan-in hubs, grounded.
+
+    Lists the project's import CYCLES (or states "0 cycles — clean"), then the top
+    fan-in HUBS with their dependent counts, then a NEXT suggestion — mirrors
+    :func:`_render_grade`'s grounded, numbers-first style. Every figure is read
+    straight off the dependency graph (no claimed numbers); empty/clean reads are
+    stated plainly, never papered over."""
+    p = result.payload
+    cycles = p.get("cycles", [])
+    hubs = p.get("hubs", [])
+    modules = p.get("modules", 0)
+    lines = ["## Answer — the project's real dependency shape",
+             f"Read off the import graph across **{modules} module(s)** — the same "
+             "graph the grade's Architecture area reads.", ""]
+    lines += _render_deps_cycles(cycles)
+    lines += _render_deps_hubs(hubs)
+    lines += _render_deps_next(cycles, hubs)
+    return lines
+
+
+def _render_deps_cycles(cycles: list[list[str]]) -> list[str]:
+    """The import-cycle section: each cycle as a path chain, or an honest clean read."""
+    if not cycles:
+        return ["**Import cycles:** 0 — clean (no circular imports detected).", ""]
+    lines = [f"**Import cycles: {len(cycles)}** "
+             "(circular imports — a change in one can ripple back through itself):",
+             ""]
+    for cyc in cycles:
+        lines.append(f"- {' → '.join(f'`{m}`' for m in cyc)}")
+    lines.append("")
+    return lines
+
+
+def _render_deps_hubs(hubs: list[dict[str, Any]]) -> list[str]:
+    """The fan-in-hub section: the most depended-on modules + their dependent counts."""
+    if not hubs:
+        return ["**Top fan-in hubs:** none — no module is imported by another "
+                "(a flat, uncoupled tree).", ""]
+    lines = ["**Top fan-in hubs** (modules the most others depend on — coupling "
+             "concentrates here):", ""]
+    for i, h in enumerate(hubs, 1):
+        dependents = h.get("fan_in", 0)
+        lines.append(f"{i}. `{h['module']}` — {dependents} dependent module(s)")
+    lines.append("")
+    return lines
+
+
+def _render_deps_next(cycles: list[list[str]],
+                      hubs: list[dict[str, Any]]) -> list[str]:
+    """The NEXT step for a deps read: break a cycle, else guard the biggest hub."""
+    lines = ["## Next"]
+    if cycles:
+        lines.append("- Break a cycle by extracting the shared names into a new "
+                     "leaf module both sides import (one-way edges, no loop).")
+    if hubs:
+        lines.append(f"- Add a regression test to the highest-fan-in hub "
+                     f"(`{hubs[0]['module']}`) before changing it — many modules "
+                     "ride on it.")
+    if not cycles and not hubs:
+        lines.append("- Nothing to untangle — the dependency tree is clean.")
     lines.append("")
     return lines
 
@@ -601,6 +769,7 @@ def _render_recommend(result: AssistResult) -> list[str]:
 _ROUTE_BODY = {
     "dream": _render_dream,
     "grade": _render_grade,
+    "deps": _render_deps,
     "develop": _render_develop,
     "recommend": _render_recommend,
 }
