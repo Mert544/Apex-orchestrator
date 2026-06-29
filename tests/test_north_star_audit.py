@@ -120,6 +120,27 @@ def test_develop_core_scopes_are_concrete(subject):
     assert nsa._classify_subject(subject) == "concrete"
 
 
+@pytest.mark.parametrize(
+    "subject",
+    [
+        # Autonomous-39: the idea->action bridge LANDS a former design_task move
+        # through the verified-with-rollback compiler — a genuine concrete landing.
+        "feat(bridge): land generalizable-duplication autonomously as extract-shared-helper",
+        # The dream core's own scope for the `apex dream --land` landing chain — the
+        # same LANDS-code capability already credited under `dream-develop`.
+        "feat(dream): route landable confluence discoveries to executable objectives",
+        "feat(dream): value-rank the confluence landing order",
+        "fix(dream): wire dream --land landings into proof-of-fix",
+    ],
+)
+def test_autonomous_landing_and_dream_chain_scopes_are_concrete(subject):
+    # Fidelity, NOT inflation: these scopes LAND code via the verified-with-rollback
+    # compiler. feat/fix(bridge) is rare (1 of the last 200 commits) and 5/6
+    # feat/fix(dream) advance the landing chain, so crediting them corrects a
+    # mis-bucketing of genuine landing rather than padding the concrete count.
+    assert nsa._classify_subject(subject) == "concrete"
+
+
 def test_develop_core_window_is_not_misbucketed_as_neutral(monkeypatch):
     # A window of real develop-core landing commits — the exact shape the denetçi
     # mis-reported as concrete=1 before the fix.

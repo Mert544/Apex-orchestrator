@@ -269,6 +269,21 @@ _CONCRETE_SCOPES = frozenset({
     # over the verified-with-rollback compiler that LANDS the value-led concrete
     # chain, so the chain's own commits count concrete in the drift check.
     "dream-develop",
+    # ... the dream core's OWN scope for that same landing chain. The finer `dream`
+    # scope the dream-core commits use names the identical LANDS-code capability as
+    # `dream-develop`: of the last 200 feat/fix(dream) commits, 5/6 advance the
+    # `apex dream --land` autonomous landing (value-rank the landing order, route
+    # landable confluences to the executable compiler, wire landings into
+    # proof-of-fix), so the dream-core's own commits count concrete too.
+    "dream",
+    # ... and the idea->action BRIDGE's autonomous-landing path (the Autonomous-39
+    # program): `_apply_delegated_synthesis` LANDS a former design_task move
+    # (e.g. generalizable-duplication -> extract-shared-helper) through the SAME
+    # verified-with-rollback compiler + auto-rollback as `dream-develop`. A
+    # `feat(bridge): land ... autonomously` commit lands real code; feat/fix(bridge)
+    # is otherwise rare (1 of the last 200 commits), so crediting it does not
+    # inflate the concrete count — it corrects a mis-bucketing of genuine landing.
+    "bridge",
 })
 # A `fix`/`feat` whose scope names one of these is trust-foundation/safety work.
 _SAFETY_SCOPES = frozenset({
