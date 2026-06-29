@@ -50,12 +50,20 @@ byte-identical no-op). The result is re-``ast.parse``d before it is returned.
 from __future__ import annotations
 
 import ast
+import re
 
 __all__ = [
     "rewrite_dataclasses",
     "convertible_classes",
     "is_boilerplate_init",
 ]
+
+# A PEP-263 source-encoding cookie (``# -*- coding: utf-8 -*-`` / ``# coding:
+# utf-8`` / ``# coding=utf-8``). The interpreter honours this magic comment ONLY
+# on physical line 1 or 2, so the prologue scan recognises it only at those
+# positions — a normal comment that merely mentions ``coding`` further down the
+# file is never mistaken for one.
+_CODING_COOKIE = re.compile(r"coding[:=]\s*([-\w.]+)")
 
 # Mutable literal defaults that MUST become ``field(default_factory=...)`` —
 # sharing one list/dict/set across instances is the classic dataclass bug.
@@ -580,11 +588,50 @@ def _widen_existing_import(lines: list[str], needed: set[str]) -> list[str]:
     return new_lines
 
 
+def _is_coding_cookie(line: str) -> bool:
+    """True for a PEP-263 source-encoding comment (``# -*- coding: utf-8 -*-`` or
+    the bare ``# coding: utf-8`` / ``# coding=utf-8`` form).
+
+    Matched only on a ``#`` comment line whose body carries the standard
+    ``coding[:=]<name>`` token (the :data:`_CODING_COOKIE` regex), so an ordinary
+    comment that merely mentions the word ``coding`` in prose is not mistaken for
+    an encoding declaration. The caller checks it only on physical line 1 or 2
+    (the only positions PEP 263 honours)."""
+    stripped = line.strip()
+    if not stripped.startswith("#"):
+        return False
+    return _CODING_COOKIE.search(stripped) is not None
+
+
+def _prologue_length(lines: list[str]) -> int:
+    """The count of leading lines that MUST stay at the very top of the file: a
+    ``#!`` shebang on physical line 1, then a PEP-263 coding cookie on line 1 or 2.
+
+    Returns 0, 1, or 2 — these lines carry meaning ONLY at the top, so each is
+    recognised solely at its sanctioned position. A file with neither yields 0, so
+    the insertion index below is byte-identical to its pre-fix behaviour. (Mirrors
+    :func:`app.execution.module_exports._prologue_length`, kept local here to avoid
+    an import cycle — ``module_exports`` imports this module, not the reverse.)"""
+    prologue = 0
+    if prologue < len(lines) and lines[prologue].startswith("#!"):
+        prologue += 1  # a shebang only counts on physical line 1
+    if prologue < len(lines) and prologue <= 1 and _is_coding_cookie(lines[prologue]):
+        prologue += 1  # a PEP-263 coding cookie only counts on line 1 or 2
+    return prologue
+
+
 def _import_insertion_index(lines: list[str]) -> int:
-    """Where a new import should go: after a module docstring and any
-    ``from __future__`` imports, before the first real statement."""
-    i = 0
+    """Where a new import should go: after a leading shebang / PEP-263 coding
+    cookie, a module docstring, and any ``from __future__`` imports, before the
+    first real statement.
+
+    The prologue (a ``#!`` shebang on line 1 and a coding cookie on line 1/2) is
+    stepped over FIRST — those lines are inert ONLY at the top of the file, so an
+    import inserted above them would demote a real cookie past the line-1/2 window
+    and silently disable it. When there is no shebang/cookie the prologue length is
+    0 and the result is byte-identical to the docstring/``__future__`` behaviour."""
     n = len(lines)
+    i = _prologue_length(lines)  # never land an import above a shebang / cookie
     # Skip a leading module docstring (single- or triple-quoted block).
     while i < n and not lines[i].strip():
         i += 1
