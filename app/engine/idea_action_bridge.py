@@ -60,15 +60,19 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                             "Complete the half-built protocol on {s} — Apex names "
                             "the gap; you decide the implementation", False),
     # Generalizable duplication: near-identical blocks recurring across DISTINCT
-    # modules. Extracting one shared helper is a DESIGN decision (where should the
-    # abstraction live? what is the right parameterization?), so Apex RECOMMENDS
-    # the extraction and names the modules — it must NOT auto-write it. Strictly
-    # recommend-only (executable False); the ``A + B`` subject is a joined module
-    # pair, not a single editable target.
-    "generalizable-duplication": ("design_task",
-                                  "Generalize the cross-module duplication in {s} "
-                                  "— extract one shared helper; Apex names the "
-                                  "blocks, you design the abstraction", False),
+    # modules. The parameterization decision is now DETERMINISTIC —
+    # ``plan_near_dup_extract`` lifts a constant-/free-name-only-differing group
+    # into ONE shared helper (differing leaves become parameters) and BLOCKS with
+    # an empty plan on the slightest doubt — so this is EXECUTABLE: the delegated
+    # ``dedup_parameterized`` lander runs the objective's own actionable-group gate
+    # and lands through ``apply_rename(impact_scope=True)`` with auto-rollback. The
+    # ``A + B`` subject is a joined module pair; the lander splits it and matches a
+    # group touching EITHER module (an unactionable signal ⇒ honest no-op, never a
+    # fake-green).
+    "generalizable-duplication": ("dedup_parameterized",
+                                  "Extract one shared helper for the cross-module "
+                                  "duplication in {s} — parameterize the differing "
+                                  "constants/free names into a single function", True),
     # Coordinator (god-module): a module with high fan-OUT (it imports many
     # internal modules) is a coordination chokepoint. HOW to decouple it — which
     # responsibilities to split, where the seams are — is a DESIGN decision, so
@@ -1905,14 +1909,26 @@ class IdeaActionBridge:
         DELEGATES to the real ``plan_near_dup_extract``. An unmatched target (no
         actionable group touches it) yields an empty no-op :class:`RenamePlan`, so the
         delegated apply path honestly no-ops rather than fakes a change (never a
-        fake-green)."""
+        fake-green).
+
+        The PRIMARY-discovery seeder fact ``generalizable-duplication`` names its
+        idea with the JOINED pair ``"{modules[0]} + {modules[1]}"`` (kept human-
+        readable), so the surfaced step's target can be an ``"A + B"`` string rather
+        than a single module. When the target carries that ``" + "`` join we try EACH
+        side and return the first actionable group whose occurrences touch EITHER
+        module — so the joined subject still lands. A single-module target splits to a
+        one-element list, so the non-joined path stays byte-identical."""
         from app.execution.cross_file_rename import RenamePlan
         from app.execution.near_dup_extract import plan_near_dup_extract
         from app.execution.objectives.dedup_parameterized import _actionable_groups
 
         def _plan(project_root: str, target: str) -> RenamePlan:
+            # A joined "A + B" subject (the seeder's human-readable module pair)
+            # splits into its participating modules; a single-module target is just a
+            # one-element list, so this stays byte-identical for the non-joined case.
+            modules = [m.strip() for m in target.split(" + ")]
             for group in _actionable_groups(project_root):
-                if cls._unit_touches(group, target):
+                if any(cls._unit_touches(group, mod) for mod in modules):
                     return plan_near_dup_extract(project_root, group)
             return RenamePlan(old=target, new="dedup-parameterized")
 

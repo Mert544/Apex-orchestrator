@@ -190,8 +190,8 @@ def test_seeds_generalizable_duplication_root_naming_the_modules():
 
 
 def test_seed_fact_avoids_untested_token():
-    # The fact must NOT carry the "untested" token (which would auto-promote it
-    # to an executable test idea) — it is a recommend-only design signal.
+    # The fact must NOT carry the "untested" token, which would re-route it to a
+    # test-stub action; this signal routes to its own dedup_parameterized lander.
     profile = _profile(generalizable_duplications=[
         _dup(["app/a.py", "app/b.py"], occurrences=3, lines=6),
     ])
@@ -267,15 +267,22 @@ def test_fact_hint_registered():
 
 # --- action bridge ----------------------------------------------------------
 
-def test_action_is_recommend_only():
+def test_action_is_executable_extract_shared_helper():
     profile = _profile(generalizable_duplications=[_dup(["app/a.py", "app/b.py"])])
     idea = _dup_roots(profile)[0]
     step = IdeaActionBridge().plan_idea(idea)
-    # Extracting a shared abstraction across modules is a DESIGN decision: Apex
-    # points, it does not auto-write — so it must NOT claim to be executable.
-    assert step.executable is False
-    assert step.action_type == "design_task"
+    # Autonomous-39 W1: the parameterization decision is DETERMINISTIC
+    # (``plan_near_dup_extract`` lifts a constant-/free-name-only-differing group
+    # into one shared helper and BLOCKS on doubt), so this PRIMARY-discovery signal
+    # is now EXECUTABLE — the delegated ``dedup_parameterized`` lander lands it
+    # through the gated, auto-rollback ``apply_rename`` path (an unactionable signal
+    # honestly no-ops, never fakes a green).
+    assert step.executable is True
+    assert step.action_type == "dedup_parameterized"
+    # The joined "A + B" subject is carried into the description and the target
+    # (the lander splits it on " + " and matches a group touching EITHER module).
     assert "app/a.py + app/b.py" in step.description
+    assert step.target == "app/a.py + app/b.py"
 
 
 # --- roadmap ----------------------------------------------------------------

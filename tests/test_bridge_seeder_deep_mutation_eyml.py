@@ -1095,7 +1095,9 @@ _FACT_EXPECTED = {
     "missing-ci": ("add_ci", True),
     "polyglot-hotspot": ("design_task", False),
     "incomplete-protocol": ("design_task", False),
-    "generalizable-duplication": ("design_task", False),
+    # Autonomous-39 W1: flipped from design_task → the delegated dedup_parameterized
+    # lander (deterministic shared-helper extraction, gated + auto-rollback).
+    "generalizable-duplication": ("dedup_parameterized", True),
     "coordinator": ("design_task", False),
     "deep-nesting": ("design_task", False),
     "god-class": ("design_task", False),
