@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from app.cli_common import _get_project_root
@@ -1234,6 +1235,56 @@ def _develop_preview_dispatch(args, target) -> int | None:
     return None
 
 
+# Positional `mode_word` values that name a develop MODE rather than an
+# objective. `session` runs the combined concrete-objective sequence; the empty
+# default is the ordinary single-objective campaign. Every OTHER non-empty word
+# is interpreted as an objective name (DWIM) or, if unknown, a usage error — so
+# the natural `apex develop <objective>` selects that objective instead of
+# silently running the `--objective` default. Keep in sync with cmd_develop's
+# `mode_word == "session"` short-circuit.
+_DEVELOP_MODE_WORDS: frozenset[str] = frozenset({"session"})
+
+
+def _resolve_develop_mode_word(args: argparse.Namespace,
+                               objective: str) -> tuple[str, str | None]:
+    """Interpret the positional ``mode_word`` for the single-objective paths.
+
+    Returns ``(effective_objective, error)``. ``error`` is ``None`` on success;
+    otherwise it is a helpful usage message (the caller prints it to stderr and
+    exits non-zero).
+
+    The positional swallows a bare objective name (``apex develop
+    seal-hashable-eq``), which historically fell through to the ``--objective``
+    DEFAULT (``dead-params``) with no warning — the footgun. This resolver makes
+    that natural invocation Do What I Mean:
+
+    * empty word, or a recognized MODE word (``session``): objective unchanged;
+    * a word that names a registered objective: adopt it as the objective —
+      unless the user ALSO passed an explicit ``--objective`` (i.e. something
+      other than the ``dead-params`` default), in which case the explicit flag
+      wins and the positional is ignored;
+    * any other non-empty word: an unknown mode/objective — return an error.
+    """
+    mode_word = (getattr(args, "mode_word", "") or "").strip()
+    if not mode_word or mode_word in _DEVELOP_MODE_WORDS:
+        return objective, None
+    from app.engine.objective_compiler import available_objectives
+
+    if mode_word in available_objectives():
+        # An explicit `--objective X` (anything but the default) wins over the
+        # positional, so a deliberate flag is never silently overridden.
+        if objective != "dead-params":
+            return objective, None
+        return mode_word, None
+    hint = ", ".join(sorted(_DEVELOP_MODE_WORDS))
+    return objective, (
+        f"unknown develop mode/objective '{mode_word}' — expected a mode "
+        f"({hint}) or an objective name. Run `apex develop --objective "
+        f"<name>` (e.g. seal-hashable-eq), or `apex develop --all` to sweep "
+        "every objective."
+    )
+
+
 def cmd_develop(args: argparse.Namespace) -> int:
     """Goal-directed composition: drive an OBJECTIVE metric to its target by
     composing verified transforms, each suite-gated with auto-rollback.
@@ -1264,6 +1315,25 @@ def cmd_develop(args: argparse.Namespace) -> int:
             or getattr(args, "mode_word", "") == "session"):
         return _develop_session(args, target, max_steps, verify, apply)
 
+    # DWIM the bare `apex develop <objective>`: a positional mode_word that
+    # names a registered objective IS the objective (it used to fall through to
+    # the --objective default, silently running the wrong objective). A typo
+    # errors helpfully instead of running dead-params.
+    objective, mode_word_error = _resolve_develop_mode_word(args, objective)
+    if mode_word_error is not None:
+        print(mode_word_error, file=sys.stderr)
+        return 2
+
+    return _develop_campaign_dispatch(args, target, objective, grade_before,
+                                      max_steps, verify, apply)
+
+
+def _develop_campaign_dispatch(args, target, objective, grade_before,
+                               max_steps, verify, apply) -> int:
+    """The flag-driven campaign fork, reached after the preview / session /
+    mode-word resolution short-circuits. Dispatch order is load-bearing and
+    unchanged: ``--goal`` → ``--auto`` → ``--all`` → ``--multifile`` →
+    ``--from-dream`` → the default single-objective campaign."""
     goal = getattr(args, "goal", "") or ""
     if goal:
         return _develop_goal(args, target, goal, max_steps, verify, apply)

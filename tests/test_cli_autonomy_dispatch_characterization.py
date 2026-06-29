@@ -120,6 +120,82 @@ def test_develop_grade_read_only_when_grade_flag_set(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Positional `mode_word` -> objective DWIM (the field-test footgun fix)        #
+#                                                                              #
+# `apex develop seal-hashable-eq` used to fall through to the --objective      #
+# DEFAULT (dead-params) with no warning. These pin the corrected routing: a    #
+# positional that names a registered objective IS that objective; a typo       #
+# errors non-zero (not a silent dead-params run); the `session` mode and the   #
+# explicit --objective flag are unaffected.                                    #
+# --------------------------------------------------------------------------- #
+def _capture_objective(monkeypatch) -> dict:
+    """Stub the single-objective + session helpers, recording which objective
+    `_develop_objective` was handed (or that `_develop_session` ran)."""
+    seen: dict = {}
+
+    def _obj(args, target, objective, grade_before, max_steps, verify, apply):
+        seen["objective"] = objective
+        return 0
+
+    def _session(*a, **k):
+        seen["session"] = True
+        return 0
+
+    monkeypatch.setattr(m, "_develop_objective", _obj)
+    monkeypatch.setattr(m, "_develop_session", _session)
+    monkeypatch.setattr(m, "_grade_score", lambda target: 50)
+    return seen
+
+
+def test_develop_positional_objective_name_selects_that_objective(tmp_path, monkeypatch):
+    # The footgun: a bare objective name must select THAT objective, not the
+    # --objective default (dead-params).
+    seen = _capture_objective(monkeypatch)
+    rc = cmd_develop(_dev_ns(tmp_path, mode_word="seal-hashable-eq"))
+    assert rc == 0
+    assert seen.get("objective") == "seal-hashable-eq"
+    assert seen["objective"] != "dead-params"
+
+
+def test_develop_positional_session_word_still_runs_session_mode(tmp_path, monkeypatch):
+    # `session` is a recognized MODE word, not an objective — it must keep
+    # routing to the combined session run.
+    seen = _capture_objective(monkeypatch)
+    rc = cmd_develop(_dev_ns(tmp_path, mode_word="session"))
+    assert rc == 0 and seen.get("session") is True
+    assert "objective" not in seen
+
+
+def test_develop_unknown_positional_errors_nonzero_not_silent_default(tmp_path, monkeypatch, capsys):
+    # A typo must error helpfully to stderr and exit non-zero — NOT silently run
+    # dead-params (the old misleading "Fitness 0 -> 0").
+    seen = _capture_objective(monkeypatch)
+    rc = cmd_develop(_dev_ns(tmp_path, mode_word="seal-hashable-eqq"))
+    assert rc != 0
+    assert seen == {}  # neither the objective nor the session helper ran
+    err = capsys.readouterr().err
+    assert "unknown develop mode/objective 'seal-hashable-eqq'" in err
+    assert "--objective" in err  # points the user at the right flag
+
+
+def test_develop_explicit_objective_flag_wins_over_positional(tmp_path, monkeypatch):
+    # When both a positional name and an explicit --objective (not the default)
+    # are given, the explicit flag wins — a deliberate flag is never overridden.
+    seen = _capture_objective(monkeypatch)
+    rc = cmd_develop(_dev_ns(tmp_path, mode_word="seal-hashable-eq",
+                             objective="modernize"))
+    assert rc == 0 and seen.get("objective") == "modernize"
+
+
+def test_develop_bare_invocation_unchanged_defaults_to_dead_params(tmp_path, monkeypatch):
+    # No positional, no --objective: the default campaign (dead-params) is
+    # byte-identical to before the DWIM fix.
+    seen = _capture_objective(monkeypatch)
+    rc = cmd_develop(_dev_ns(tmp_path))
+    assert rc == 0 and seen.get("objective") == "dead-params"
+
+
+# --------------------------------------------------------------------------- #
 # cmd_auto dispatch (recommend vs act)                                         #
 # --------------------------------------------------------------------------- #
 def _auto_ns(tmp_path: Path, **over) -> argparse.Namespace:
