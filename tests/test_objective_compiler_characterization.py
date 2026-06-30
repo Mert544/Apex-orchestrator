@@ -25,7 +25,11 @@ def _project(tmp_path: Path, body: str) -> Path:
     return tmp_path
 
 
+# render/fetch are non-public (only ``use`` is in __all__) so the public-API rail
+# in ``_dead_param_moves`` permits dropping their dead params; the drop moves (and
+# these pinned results) are unchanged by the rail.
 _THREE_DEAD = (
+    "__all__ = ['use']\n\n\n"
     "def render(text, color=None, width=80):\n"
     "    return text[:width]\n\n\n"
     "def fetch(url, retries=3):\n"
@@ -258,10 +262,13 @@ def test_scoped_campaign_result_is_pinned(tmp_path):
     # move count, not the project-wide fitness.
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
+    # __all__ = [] makes render/fetch non-public so the public-API rail permits
+    # dropping their dead params (the explicit imports in the test are unaffected).
     (tmp_path / "app" / "hub.py").write_text(
-        "def render(text, color=None, width=80):\n    return text[:width]\n", encoding="utf-8")
+        "__all__ = []\ndef render(text, color=None, width=80):\n    return text[:width]\n",
+        encoding="utf-8")
     (tmp_path / "app" / "other.py").write_text(
-        "def fetch(url, retries=3):\n    return url\n", encoding="utf-8")
+        "__all__ = []\ndef fetch(url, retries=3):\n    return url\n", encoding="utf-8")
     (tmp_path / "tests" / "test_m.py").write_text(
         "from app.hub import render\nfrom app.other import fetch\n"
         "def test_all():\n    assert render('hi', width=2) == 'hi'\n"

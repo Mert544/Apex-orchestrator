@@ -174,7 +174,17 @@ const ts = require("typescript");
 const srcFile = process.argv[1];
 const name = process.argv[2];
 const argSources = JSON.parse(process.argv[3]);
-function decline() { process.stdout.write(JSON.stringify({ ok: false })); process.exit(0); }
+let tmpFile = null;
+// decline() exits the probe, but process.exit(0) BYPASSES the finally{} cleanup
+// below, so it must FIRST remove the sibling temp it wrote into the buyer's source
+// dir (the transient-hazard CLAUDE.md warns about). Guarded: tmpFile is null until
+// the temp is written, so a decline before that (transpile/require failure) is a
+// no-op; the unlink is wrapped so a missing/locked file never masks the exit.
+function decline() {
+  if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch (e) {} }
+  process.stdout.write(JSON.stringify({ ok: false }));
+  process.exit(0);
+}
 // A value is a SOUND oracle leaf only when every scalar it (recursively) contains
 // is a JSON-faithful, deterministic literal: a finite number (NaN/Infinity
 // stringify to `null` — a WRONG oracle, the JS image of test_shield rejecting
@@ -200,7 +210,6 @@ function isSoundValue(v, seen) {
   }
   return false;
 }
-let tmpFile = null;
 try {
   const source = fs.readFileSync(srcFile, "utf8");
   const out = ts.transpileModule(source, {
@@ -330,7 +339,15 @@ const ts = require("typescript");
 const srcFile = process.argv[1];
 const name = process.argv[2];
 const argSources = JSON.parse(process.argv[3]);
-function decline() { process.stdout.write(JSON.stringify({ ok: false })); process.exit(0); }
+let tmpFile = null;
+// decline() exits the probe, but process.exit(0) BYPASSES the finally{} cleanup
+// below, so it must FIRST remove the sibling temp it wrote into the buyer's source
+// dir (the transient-hazard CLAUDE.md warns about). Guarded as in _CAPTURE_PROBE.
+function decline() {
+  if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch (e) {} }
+  process.stdout.write(JSON.stringify({ ok: false }));
+  process.exit(0);
+}
 function isSoundValue(v, seen) {
   if (v === null) return true;
   const t = typeof v;
@@ -356,7 +373,6 @@ function serialize(value) {
   try { rt = JSON.parse(s); } catch (e) { return null; }
   return JSON.stringify(rt) === s ? s : null;
 }
-let tmpFile = null;
 try {
   const source = fs.readFileSync(srcFile, "utf8");
   const out = ts.transpileModule(source, {

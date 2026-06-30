@@ -20,7 +20,12 @@ def _project(tmp_path: Path, body: str) -> Path:
     return tmp_path
 
 
+# ``render`` / ``fetch`` are deliberately NON-public (absent from this module's
+# declared ``__all__``) so the public-API rail in ``_dead_param_moves`` permits
+# dropping their dead params — only ``use`` is the published surface. (A public
+# function's dead param is refused; that rail is exercised separately below.)
 _THREE_DEAD = (
+    "__all__ = ['use']\n\n\n"
     "def render(text, color=None, width=80):\n"
     "    return text[:width]\n\n\n"
     "def fetch(url, retries=3):\n"
@@ -76,6 +81,128 @@ def test_apply_with_verification_runs_the_suite(tmp_path):
     r = compile_objective(str(tmp_path), apply=True, verify=True)
     assert r.fitness_end == 0.0
     assert all(s.verified for s in r.steps)
+
+
+# --- field-test P1a: the public-API rail on the compiler's drop-param path -----
+#
+# The autonomous lander (idea_action_bridge._plan_drop_param_lander, #98) refuses
+# dropping a param from a PUBLIC-surface function — an external keyword caller
+# `lib.func(x, dead=1)` would break, unseen by the in-project suite. The compiler
+# path (_dead_param_moves) lacked that rail and dropped public params unsafely.
+# These tests prove the compiler now refuses identically, and (non-tautologically)
+# that REMOVING the rail makes the public case land.
+
+_PUBLIC_DEAD = (
+    # No __all__ -> a top-level non-underscore function is PUBLIC -> refuse its drop.
+    "def render(text, dead=None):\n"
+    "    return text\n\n\n"
+    "def use():\n"
+    "    return render('hi')\n"
+)
+
+_PRIVATE_DEAD = (
+    # A leading-underscore (private) function with the SAME dead param -> droppable.
+    "def _render(text, dead=None):\n"
+    "    return text\n\n\n"
+    "def use():\n"
+    "    return _render('hi')\n"
+)
+
+_ALL_EXCLUDED_DEAD = (
+    # A declared __all__ that OMITS render -> render is NON-public -> droppable
+    # even though its name is a top-level non-underscore one.
+    "__all__ = ['use']\n\n\n"
+    "def render(text, dead=None):\n"
+    "    return text\n\n\n"
+    "def use():\n"
+    "    return render('hi')\n"
+)
+
+
+def test_public_function_dead_param_is_refused_no_drop_move(tmp_path):
+    from app.engine.objective_compiler import _dead_param_moves
+
+    _project(tmp_path, _PUBLIC_DEAD)
+    # The fitness scan still SEES the dead param (the rail is in move-gen, not
+    # detection) — so a refusal is a real, disclosed no-op, not a blind miss.
+    assert dead_parameter_fitness(str(tmp_path)) == 1.0
+    # ...but NO drop move is emitted for the public function.
+    moves = _dead_param_moves(str(tmp_path))
+    assert moves == []
+    # End-to-end: a develop dead-params campaign lands nothing and leaves the
+    # signature byte-identical (the external keyword caller stays safe).
+    r = compile_objective(str(tmp_path), objective="dead-params",
+                          apply=True, verify=False)
+    assert r.steps == []
+    assert "def render(text, dead=None):" in (tmp_path / "app" / "m.py").read_text()
+
+
+def test_private_function_dead_param_still_drops(tmp_path):
+    from app.engine.objective_compiler import _dead_param_moves
+
+    _project(tmp_path, _PRIVATE_DEAD)
+    moves = _dead_param_moves(str(tmp_path))
+    assert [m.target for m in moves] == ["app/m.py:_render(dead)"]
+    r = compile_objective(str(tmp_path), objective="dead-params",
+                          apply=True, verify=False)
+    assert len(r.steps) == 1
+    assert "dead" not in (tmp_path / "app" / "m.py").read_text()
+
+
+def test_function_absent_from_declared_all_still_drops(tmp_path):
+    from app.engine.objective_compiler import _dead_param_moves
+
+    # A non-underscore name that is ABSENT from a declared __all__ is non-public,
+    # matching the lander's predicate exactly -> the drop is permitted.
+    _project(tmp_path, _ALL_EXCLUDED_DEAD)
+    moves = _dead_param_moves(str(tmp_path))
+    assert [m.target for m in moves] == ["app/m.py:render(dead)"]
+    r = compile_objective(str(tmp_path), objective="dead-params",
+                          apply=True, verify=False)
+    assert len(r.steps) == 1
+    assert "dead" not in (tmp_path / "app" / "m.py").read_text()
+
+
+def test_compiler_rail_matches_autonomous_lander_predicate(tmp_path):
+    # The crux of P1a: ONE shared rail. The compiler's refusal and the autonomous
+    # lander's refusal use the SAME is_public_name(func, source) predicate, so they
+    # agree function-for-function on the SAME module. (Both refuse the public
+    # ``render`` and both permit the private ``_helper``.)
+    from app.engine.idea_action_bridge import IdeaActionBridge
+    from app.engine.objective_compiler import _dead_param_moves
+
+    src = (
+        "def render(text, dead=None):\n    return text\n\n\n"
+        "def _helper(text, gone=None):\n    return text\n\n\n"
+        "def use():\n    return render('hi') + _helper('yo')\n"
+    )
+    _project(tmp_path, src)
+
+    # Compiler path: only the private helper's param is droppable.
+    compiler_targets = {m.target for m in _dead_param_moves(str(tmp_path))}
+    assert compiler_targets == {"app/m.py:_helper(gone)"}
+
+    # Autonomous lander path on the same module: the public ``render`` is refused,
+    # and a non-public droppable param is the only thing it can land.
+    lander = IdeaActionBridge()._plan_drop_param_lander()
+    plan = lander(str(tmp_path), "app/m.py")
+    assert plan.new_contents  # it found a landable, non-public drop (_helper)
+    # render() stays intact in the lander's plan (it refused the public function).
+    landed_src = next(iter(plan.new_contents.values()))
+    assert "def render(text, dead=None):" in landed_src
+
+
+def test_public_case_lands_when_rail_removed_non_tautological(tmp_path, monkeypatch):
+    # NON-TAUTOLOGY proof: stub is_public_name to always-False (the pre-fix world,
+    # where the rail did not exist) and the public function's param DOES drop —
+    # proving the refusal above is the rail's doing, not some other guard.
+    import app.execution.freeze_dataclass as fd
+    from app.engine.objective_compiler import _dead_param_moves
+
+    _project(tmp_path, _PUBLIC_DEAD)
+    monkeypatch.setattr(fd, "is_public_name", lambda name, source: False)
+    moves = _dead_param_moves(str(tmp_path))
+    assert [m.target for m in moves] == ["app/m.py:render(dead)"]
 
 
 def test_unknown_objective_is_blocked(tmp_path):
@@ -171,10 +298,14 @@ def _dream_project(tmp_path: Path) -> Path:
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / ".apex").mkdir()
+    # __all__ = [] makes render/fetch NON-public so the public-API rail permits
+    # dropping their dead params (the explicit `from app.hub import render` in the
+    # test is unaffected — __all__ only governs `import *`).
     (tmp_path / "app" / "hub.py").write_text(
-        "def render(text, color=None, width=80):\n    return text[:width]\n", encoding="utf-8")
+        "__all__ = []\ndef render(text, color=None, width=80):\n    return text[:width]\n",
+        encoding="utf-8")
     (tmp_path / "app" / "other.py").write_text(
-        "def fetch(url, retries=3):\n    return url\n", encoding="utf-8")
+        "__all__ = []\ndef fetch(url, retries=3):\n    return url\n", encoding="utf-8")
     (tmp_path / "tests" / "test_m.py").write_text(
         "from app.hub import render\nfrom app.other import fetch\n"
         "def test_all():\n    assert render('hi', width=2) == 'hi'\n"
@@ -380,6 +511,7 @@ def _multi_debt_project(tmp_path: Path) -> Path:
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "app" / "m.py").write_text(
+        "__all__ = []\n"
         "def render(text, color=None, width=80):\n"
         "    if text == None:\n        return dict()\n"
         "    msg = f\"out\"\n    return msg + text[:width]\n", encoding="utf-8")
@@ -445,6 +577,7 @@ def test_cmd_develop_grade_proves_the_gain(tmp_path, capsys):
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "app" / "m.py").write_text(
+        "__all__ = []\n"
         "def render(text, color=None, width=80):\n"
         "    if text == None:\n        return dict()\n    return text[:width]\n",
         encoding="utf-8")
@@ -477,6 +610,7 @@ def _graded_project(tmp_path: Path) -> Path:
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "app" / "m.py").write_text(
+        "__all__ = []\n"
         "def render(text, color=None, width=80):\n"
         "    if text == None:\n        return dict()\n    return text[:width]\n",
         encoding="utf-8")

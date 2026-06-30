@@ -113,7 +113,10 @@ def test_l910_move_module_from_target_prefix_with_extra_colons():
 # the default (verify) gate would be caught here even though the False->True
 # flip cannot be.
 
+# render/fetch are non-public (only ``use`` is exported via __all__) so the
+# public-API rail in ``_dead_param_moves`` permits dropping their dead params.
 _THREE_DEAD = (
+    "__all__ = ['use']\n\n\n"
     "def render(text, color=None, width=80):\n"
     "    return text[:width]\n\n\n"
     "def fetch(url, retries=3):\n"
@@ -150,7 +153,9 @@ def test_l834_compile_objective_default_scope_verify_lands_and_verifies(tmp_path
 # ``max_steps`` landed moves and never exceeds it.
 
 def _many_dead(n: int) -> str:
-    parts = []
+    # f0..f{n-1} are non-public (only ``use`` is exported) so the public-API rail
+    # permits dropping each one's dead param — the cap behaviour is what's pinned.
+    parts = ["__all__ = ['use']\n"]
     for i in range(n):
         parts.append(f"def f{i}(a, dead{i}=None):\n    return a\n")
     parts.append("def use():\n    return " +

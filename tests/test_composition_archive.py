@@ -108,8 +108,10 @@ def test_compile_objective_records_to_archive(tmp_path):
 
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
+    # render is non-public (empty __all__) so the public-API rail permits the drop.
     (tmp_path / "app" / "m.py").write_text(
-        "def render(text, color=None, width=80):\n    return text[:width]\n", encoding="utf-8")
+        "__all__ = []\ndef render(text, color=None, width=80):\n    return text[:width]\n",
+        encoding="utf-8")
     (tmp_path / "tests" / "test_m.py").write_text(
         "from app.m import render\ndef test_r():\n    assert render('hi', width=2) == 'hi'\n",
         encoding="utf-8")

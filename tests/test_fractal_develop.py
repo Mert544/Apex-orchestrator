@@ -67,7 +67,10 @@ def test_available_goals_includes_composites_and_objectives():
 def _multi_debt_project(tmp_path: Path) -> Path:
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
+    # render is non-public (empty __all__) so the public-API rail permits dropping
+    # its dead ``color`` param (the explicit import in the test is unaffected).
     (tmp_path / "app" / "m.py").write_text(
+        "__all__ = []\n"
         "def render(text, color=None, width=80):\n"
         "    if text == None:\n        return dict()\n"
         "    return text[:width]\n", encoding="utf-8")

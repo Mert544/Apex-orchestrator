@@ -511,11 +511,20 @@ def project_sources(project_root, module_rel: str, this_source: str) -> list[str
     Falls back to JUST ``this_source`` when the source index is unavailable (e.g.
     a bare directory with no project shape) — then the scan is single-module, which
     is STILL sound for ``__post_init__`` / in-module mutation and is the
-    conservative floor."""
-    try:
-        from app.engine.objective_compiler import _own_modules
+    conservative floor.
 
-        sources = {rel: src for rel, src in _own_modules(project_root)}
+    Reads the own-module sources straight from the memoized source index
+    (``indexed_project(...).own_sources()``) — the SAME thing
+    ``objective_compiler._own_modules`` returns, byte-for-byte. Going to the
+    ``source_index`` LEAF directly (instead of through ``objective_compiler``)
+    keeps the dependency acyclic: ``objective_compiler`` now reuses this module's
+    public-API rail (``is_public_name``), so a back-edge from here to
+    ``objective_compiler`` would form an import cycle. The source index is a leaf
+    both depend on."""
+    try:
+        from app.engine.source_index import indexed_project
+
+        sources = {rel: src for rel, src in indexed_project(str(project_root)).own_sources()}
     except Exception:
         sources = {}
     sources[module_rel] = this_source

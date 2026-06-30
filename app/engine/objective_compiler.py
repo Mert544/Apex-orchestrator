@@ -172,12 +172,45 @@ def dead_parameter_fitness(project_root: str | Path) -> float:
 
 
 def _dead_param_moves(project_root: str | Path) -> list[Move]:
-    """One drop move per never-read parameter found in the current tree."""
+    """One drop move per never-read parameter found in the current tree.
+
+    PUBLIC-API RAIL (the SAME rail the autonomous path
+    ``idea_action_bridge._plan_drop_param_lander`` carries, #98): a parameter is
+    NEVER dropped from a function on its module's PUBLIC SURFACE. An external
+    (out-of-project) caller could pass the provably-dead parameter BY KEYWORD
+    (``lib.func(x, dead=1)``) — a call the in-project dead-param scan cannot see
+    and the suite gate cannot exercise; dropping it would raise ``TypeError`` for
+    that caller. So the compiler path reuses the EXACT default-public
+    ``is_public_name(func, source)`` predicate the lander uses (a name in
+    ``__all__``, or — with no ``__all__`` — a top-level non-underscore name, is
+    public ⇒ refuse) so both paths behave identically; only a provably-non-public
+    function (underscore-prefixed, or absent from a declared ``__all__``) gets a
+    drop move, where every caller is necessarily in-project and the suite gate +
+    auto-rollback is the proof."""
+    from app.execution.freeze_dataclass import is_public_name
     from app.execution.param_drop import plan_param_drop
+
+    root = Path(project_root)
+    source_cache: dict[str, str | None] = {}
+
+    def _module_source(rel: str) -> str | None:
+        # Read each module's source ONCE (a module may carry several dead params),
+        # so the public-API gate is consistent with the bytes the drop rewrites.
+        if rel not in source_cache:
+            try:
+                source_cache[rel] = (root / rel).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                source_cache[rel] = None
+        return source_cache[rel]
 
     moves: list[Move] = []
     for dp in _dead_params(project_root):
         fn, param, mod = dp["function"], dp["param"], dp["module"]
+        source = _module_source(mod)
+        # An unreadable module (source is None) cannot be proven non-public, so —
+        # like every other refuse-on-ambiguity rail — it is left alone (no move).
+        if source is None or is_public_name(fn, source):
+            continue  # public surface (or unprovable) — an external keyword caller hazard
         moves.append(Move(
             operator="drop_param",
             target=f"{mod}:{fn}({param})",

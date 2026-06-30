@@ -51,7 +51,10 @@ def _project(tmp_path: Path, body: str, rel: str = "app/m.py") -> Path:
     return tmp_path
 
 
+# render/fetch are non-public (only ``use`` is exported via __all__) so the
+# public-API rail in ``_dead_param_moves`` permits dropping their dead params.
 _THREE_DEAD = (
+    "__all__ = ['use']\n\n\n"
     "def render(text, color=None, width=80):\n"
     "    return text[:width]\n\n\n"
     "def fetch(url, retries=3):\n"

@@ -442,6 +442,14 @@ class SecurityAgent(Agent):
                 continue
             seen_detail.add(detail_key)
             merged.append(finding)
+        # Apply the agent's OWN inline-suppression filter to the merged set. The
+        # legacy findings were already filtered in ``_scan_*`` (idempotent here),
+        # but the detect()-derived additions were not — and the rich engine no
+        # longer treats a ruff/Bandit ``# noqa: S###`` as a security opt-out (that
+        # footgun was closed for grade/harden). The agent KEEPS its documented
+        # ``# noqa: S###`` acknowledgement behaviour (mature projects like scrapy),
+        # so it must re-apply ``_line_suppresses`` to whatever detect() surfaced.
+        merged = self._drop_suppressed(merged, source)
         merged.sort(key=lambda f: (f["line"], str(f.get("details", ""))))
         return merged
 

@@ -377,7 +377,12 @@ def _kwargs_boundary_project(tmp_path: Path) -> Path:
     (tmp_path / "lib").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "lib" / "__init__.py").write_text("")
+    # __all__ = [] makes ``handler`` non-public so the compiler's public-API rail
+    # permits a drop MOVE — letting the deeper ``**kwargs``-reachability rail in
+    # ``plan_param_drop`` be the thing that refuses it end-to-end (the test's point).
+    # The explicit ``from lib.api import handler`` below is unaffected by __all__.
     (tmp_path / "lib" / "api.py").write_text(
+        "__all__ = []\n"
         "def handler(req, verbose):\n"
         "    return req.upper()\n"
     )

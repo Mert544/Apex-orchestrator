@@ -273,6 +273,7 @@ def test_dead_param_move_lands_despite_unrelated_pre_existing_red(tmp_path):
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "app" / "m.py").write_text(
+        "__all__ = ['use']\n"
         "def render(text, color=None, width=80):\n    return text[:width]\n"
         "def use():\n    return render('hi', width=3)\n", encoding="utf-8")
     (tmp_path / "tests" / "test_m.py").write_text(

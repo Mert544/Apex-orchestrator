@@ -2004,7 +2004,7 @@ def _expr_yields(
     ``expected`` type-exactly in the sandbox (a raise / type-or-value mismatch is
     False)."""
     try:
-        value = eval(expr, env_globals, {a: arg})  # noqa: S307 - fixed templates only
+        value = eval(expr, env_globals, {a: arg})  # nosec B307 - fixed templates only
     except Exception:
         return False
     return type(value) is type(expected) and value == expected
@@ -4435,7 +4435,7 @@ def _compiled_module_namespace(source: str) -> dict | None:
     write to disk, so running it here mirrors the real outcome."""
     namespace: dict = {}
     try:
-        exec(compile(source, "<apex-doctest>", "exec"), namespace)  # noqa: S102
+        exec(compile(source, "<apex-doctest>", "exec"), namespace)  # nosec B102 - fixed doctest source
     except Exception:
         return None
     return namespace
@@ -4913,7 +4913,7 @@ def _recursive_expr_matches_all(expr: str, stub: StubFunction,
     src = f"def __apex_rec__({params}):\n    return {body}\n"
     env: dict = {"__builtins__": _SAFE_BUILTINS}
     try:
-        exec(compile(src, "<apex-recursion>", "exec"), env)  # noqa: S102 - fixed templates
+        exec(compile(src, "<apex-recursion>", "exec"), env)  # nosec B102 - fixed templates
         fn = env["__apex_rec__"]
     except Exception:
         return False
@@ -5071,7 +5071,7 @@ def _expr_matches_all(expr: str, stub: StubFunction,
     for args, expected in witnesses:
         local = dict(zip(stub.params, args))
         try:
-            value = eval(expr, env_globals, local)  # noqa: S307 - fixed templates only
+            value = eval(expr, env_globals, local)  # nosec B307 - fixed templates only
         except Exception:
             return False
         if type(value) is not type(expected) or value != expected:
@@ -5239,7 +5239,7 @@ def _canary_value(expr: str, stub: StubFunction, canary: tuple) -> str:
     env_globals = {"__builtins__": _SAFE_BUILTINS}
     local = dict(zip(stub.params, canary))
     try:
-        return repr(eval(expr, env_globals, local))  # noqa: S307 - fixed templates
+        return repr(eval(expr, env_globals, local))  # nosec B307 - fixed templates
     except Exception:
         return "<err>"
 
@@ -5778,7 +5778,7 @@ def _expr_fingerprint(expr: str, stub: StubFunction, canaries: list[tuple]) -> t
     for args in canaries:
         local = dict(zip(stub.params, args))
         try:
-            value = eval(expr, env_globals, local)  # noqa: S307 - fixed templates only
+            value = eval(expr, env_globals, local)  # nosec B307 - fixed templates only
             out.append(f"{type(value).__name__}:{value!r}")
         except Exception:
             out.append("<err>")

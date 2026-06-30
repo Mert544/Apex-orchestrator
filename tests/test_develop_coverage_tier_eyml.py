@@ -41,8 +41,11 @@ from app.engine.objective_compiler import (
 # --- fixtures -----------------------------------------------------------------
 
 # A dead-parameter the dead-params objective will drop, in a module the suite
-# either DOES or does NOT import — the single knob that flips coverage.
+# either DOES or does NOT import — the single knob that flips coverage. ``render``
+# is non-public (empty __all__) so the public-API rail in ``_dead_param_moves``
+# permits the drop; the explicit ``from app.m import render`` is unaffected.
 _DEAD = (
+    "__all__ = []\n"
     "def render(text, color=None, width=80):\n"
     "    return text[:width]\n"
 )

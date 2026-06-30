@@ -67,15 +67,18 @@ def test_suppress_noqa_without_match_keeps_finding():
     assert has_none_comparison("if a == None:  # noqa: E501\n    pass\n") is True
 
 
-def test_suppress_security_requires_s_code_shape():
-    # An S-code (S + digits) suppresses a security finding...
-    assert security_label("eval(x)  # noqa: S307") is None
-    # A minimal 2-char S-code (one letter + one digit) also suppresses: pins
-    # both the prefix slice `c[:1]` and the suffix slice `c[1:]` boundaries.
-    assert security_label("eval(x)  # noqa: S5") is None
-    # ...but a non-S code on the same security finding does not.
+def test_suppress_security_needs_nosec_not_noqa_s_code():
+    # FIELD-FIX P1c (footgun closed): a coded `noqa: S###` is the dev's ruff/Bandit
+    # lint code, NOT an Apex security opt-out — it no longer zeroes a security
+    # finding (silently telling a student their live eval() is secure).
+    assert security_label("eval(x)  # noqa: S307") == "eval"
+    assert security_label("eval(x)  # noqa: S5") == "eval"
+    # ...the EXPLICIT Apex/security opt-out (# nosec) DOES suppress (the chosen
+    # convention — pins the `directive == 'nosec'` branch).
+    assert security_label("eval(x)  # nosec") is None
+    # A non-S, non-nosec code on a security finding never suppressed it.
     assert security_label("eval(x)  # noqa: E501") == "eval"
-    # A bare 'S' with no digit is not an S-code (suffix must be all digits).
+    # A bare 'S' with no digit was never an S-code either (still surfaced).
     assert security_label("eval(x)  # noqa: S") == "eval"
 
 

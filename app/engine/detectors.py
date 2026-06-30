@@ -35,10 +35,19 @@ _FIXKIND_NOQA = {"bare except": "E722", "base-exception": "B036", "raise-from": 
 def _suppressed(line: str, category: str, fix_kind: str, message: str) -> bool:
     """True if ``line`` carries a suppression comment covering this finding.
 
-    ``# nosec`` silences security findings; a bare ``# noqa`` silences everything
-    on the line; ``# noqa: <codes>`` silences a security finding when an S-code
-    is present, a bare-except when E722 is present, and the identity-literal bug
-    when F632 is present.
+    Security findings need an EXPLICIT acknowledgement to silence: only ``# nosec``
+    (Bandit's dedicated security opt-out) — or a bare ``# noqa`` that disables ALL
+    lint on the line — suppresses one. A coded ``# noqa: S###`` does NOT: ``S307`` /
+    ``S605`` are the *ruff/Bandit* codes a developer writes to quiet THEIR OWN
+    linter, and treating them as an Apex security opt-out silently zeroed Apex's
+    findings — a budget-limited student who quieted their linter would be told their
+    live ``eval`` / ``os.system`` is secure (the footgun). So an S-code in a ``noqa``
+    no longer suppresses an Apex security finding; the finding (and ``harden``
+    fitness) survives until the dev writes ``# nosec`` (or fixes the code).
+
+    Non-security findings keep their specific-code suppression: ``# noqa: <codes>``
+    silences a bare-except when ``E722`` is present, the identity-literal bug when
+    ``F632`` is present, and any :data:`_FIXKIND_NOQA` finding by its ruff code.
     """
     m = _SUPPRESS_RE.search(line)
     if not m:
@@ -50,8 +59,8 @@ def _suppressed(line: str, category: str, fix_kind: str, message: str) -> bool:
     if not codes_raw:  # a bare directive (no codes) disables all lint on the line
         return True
     codes = {c.strip().upper() for c in codes_raw.replace(",", " ").split()}
-    if category == "security" and any(c[:1] == "S" and c[1:].isdigit() for c in codes):
-        return True
+    # A coded `noqa: S###` is the dev's ruff/Bandit lint code — NOT an Apex security
+    # opt-out (that is `# nosec`), so it never silences a security finding here.
     if _FIXKIND_NOQA.get(fix_kind) in codes:
         return True
     return bool("F632" in codes and "identity check against a literal" in message)

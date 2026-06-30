@@ -267,11 +267,17 @@ def test_detect_respects_inline_suppression():
     def sec_kinds(src):
         return [i.fix_kind for i in detect(src) if i.category == "security"]
 
-    # nosec / noqa:S### / bare noqa silence the security finding...
-    assert sec_kinds("def f(c):\n    return eval(c)  # noqa: S307\n") == []
+    # An EXPLICIT security opt-out (# nosec) or a bare # noqa (all lint off the
+    # line) silences the security finding...
     assert sec_kinds("def f(c):\n    return eval(c)  # nosec\n") == []
     assert sec_kinds("def f(c):\n    return eval(c)  # noqa\n") == []
-    # ...but an unrelated code does NOT.
+    # ...but a coded `noqa: S###` does NOT — S307/S605 are the ruff/Bandit codes a
+    # dev writes for THEIR linter, not an Apex security opt-out; letting them zero
+    # the finding silently told a student their live eval()/os.system() was secure
+    # (the footgun). The finding survives until the dev writes # nosec (or fixes it).
+    assert sec_kinds("def f(c):\n    return eval(c)  # noqa: S307\n") == ["eval"]
+    assert sec_kinds("import os\ndef f(c):\n    os.system(c)  # noqa: S605\n") == ["os.system"]
+    # ...and an unrelated code never suppressed a security finding (unchanged).
     assert sec_kinds("def f(c):\n    return eval(c)  # noqa: E501\n") == ["eval"]
     # E722 silences the bare-except security finding.
     bare = detect("def f():\n    try:\n        x = 1\n    except:  # noqa: E722\n        pass\n")
