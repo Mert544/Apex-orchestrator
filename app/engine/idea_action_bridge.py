@@ -1749,6 +1749,7 @@ class IdeaActionBridge:
         run_tests: bool = False,
         verify: bool = False,
         covered_only: bool = False,
+        baseline_failing: frozenset[str] | None = None,
     ) -> dict:
         """Apply an executable step's patch — strictly gated, opt-in.
 
@@ -1766,6 +1767,16 @@ class IdeaActionBridge:
         == "none"``) is ROLLED BACK and reported ``withheld_uncovered`` instead of
         landed — so a broad sweep never silently lands a change a green suite can't
         vouch for. An explicitly-chosen objective leaves it off.
+
+        ``baseline_failing`` (DEFAULT None ⇒ ABSOLUTE-green, byte-identical) is the
+        DELTA-GREEN baseline: the SET of test node ids already RED before this
+        maintenance pass touched anything. When threaded (a RED-baseline pass), the
+        verified-apply gate KEEPS a fix iff it broke NO previously-green test —
+        tolerating the pre-existing reds it did not cause — and DISCLOSES the
+        ``delta_green`` narrative; a fix that turns a green test red is STILL rolled
+        back (never-fake-green). This is the SAME gate develop threads, so the
+        maintain/auto front door lands on a red-baseline repo exactly as develop
+        does. ``None`` (a green / suite-less baseline) keeps absolute-green.
 
         ``implement_stub`` and ``cover_gaps`` are the actions NOT routed through
         the SemanticPatchResult gate (``_DELEGATED_ACTIONS``): implement_stub's
@@ -1788,7 +1799,7 @@ class IdeaActionBridge:
         # develop-core apply path, which owns its own snapshot/verify/rollback.
         if step.action_type in self._DELEGATED_ACTIONS:
             return self._apply_delegated_synthesis(step, project_root, verify,
-                                                   covered_only)
+                                                   covered_only, baseline_failing)
 
         result = self._generate(step, project_root)
         if result is None:
@@ -1824,7 +1835,8 @@ class IdeaActionBridge:
         from app.execution.risk_tiers import tier_for
         return self._verify_or_rollback(project_root, out, snapshot,
                                         patch_requests, applied,
-                                        tier_for(step.action_type), covered_only)
+                                        tier_for(step.action_type), covered_only,
+                                        baseline_failing)
 
     # The develop-core synthesis objectives that do NOT fit the in-memory
     # SemanticPatchResult gate and are DELEGATED to the proven ``apply_rename``
@@ -2336,7 +2348,9 @@ class IdeaActionBridge:
     _DELEGATED_ACTIONS = frozenset(_DELEGATED_SYNTHESIS)
 
     def _apply_delegated_synthesis(self, step: ActionStep, project_root: str,
-                                   verify: bool, covered_only: bool = False) -> dict:
+                                   verify: bool, covered_only: bool = False,
+                                   baseline_failing: frozenset[str] | None = None,
+                                   ) -> dict:
         """Delegate a develop-core synthesis step to the ``apply_rename`` path.
 
         Shared by ``implement_stub`` / ``cover_gaps`` / ``wire_exports`` (see
@@ -2349,6 +2363,14 @@ class IdeaActionBridge:
 
         ``covered_only`` is forwarded to ``apply_rename`` so the SAFE-by-default
         sweep withholds a green-but-unreferencing synthesis move (off ⇒ unchanged).
+
+        ``baseline_failing`` (DEFAULT None ⇒ byte-identical) is the DELTA-GREEN
+        baseline forwarded to :func:`apply_rename` — the SAME gate develop's
+        ``_apply_one_move`` threads — so a delegated synthesis move LANDS (and is
+        ``verified`` + discloses ``delta_green``) on a red-baseline repo when it
+        broke no previously-green test in the impacted set, instead of landing only
+        to be downgraded to ``baseline-red``. A true regression is still rolled
+        back. ``None`` keeps the impact-scoped absolute-green path unchanged.
 
         Honesty: an EMPTY plan (``not plan.new_contents``) means nothing here is
         producible — never a fake-green — so it returns a non-applied result
@@ -2367,7 +2389,8 @@ class IdeaActionBridge:
         # introducing delegated synthesis (implement_stub/tdd_implement) needs
         # function-level coverage, exactly like the compiler path (one verdict).
         res = apply_rename(project_root, plan, verify=verify, impact_scope=True,
-                           covered_only=covered_only, tier=tier_for(step.action_type))
+                           covered_only=covered_only, tier=tier_for(step.action_type),
+                           baseline_failing=baseline_failing)
         return self._delegated_synthesis_result(step.action_type, res)
 
     @staticmethod
@@ -2436,16 +2459,67 @@ class IdeaActionBridge:
         return coverage_verifies(tier, coverage)
 
     @staticmethod
+    def _run_gate_suite(project_root: str, out: dict,
+                        baseline_failing: frozenset[str] | None,
+                        ) -> tuple[object, bool]:
+        """Run the gate's suite and return ``(summary, suite_ok)`` — the single
+        seam where ABSOLUTE-green and DELTA-GREEN differ.
+
+        ``baseline_failing is None`` (the default, and a GREEN / suite-less
+        baseline): the plain full-suite run, ``suite_ok = summary.ok`` — BYTE-
+        IDENTICAL to the historical gate (same runner, same command, same verdict).
+
+        ``baseline_failing`` not None (a RED-baseline pass): the BASELINE-COMPARABLE
+        run (:func:`suite_after_failing` → pytest ``--continue-on-collection-errors``),
+        and ``suite_ok = no previously-green test broke`` — the SET diff
+        :func:`regressed_functions` charges, NOT a count, so a fix that turns ANY
+        green test red is rejected even while an unrelated pre-existing red happens
+        to recover (never-fake-green). The honest ``delta_green`` narrative (how
+        many pre-existing reds were tolerated, what — if anything — was introduced)
+        is stamped onto ``out`` so the proof trail discloses the red-baseline gate.
+        Pre-existing failures are TOLERATED, never papered over or claimed-fixed.
+
+        Deterministic — one suite run, parsed into a sorted set; no clock/random."""
+        from app.skills.execution.run_tests import RunTestsSkill
+
+        if baseline_failing is None:
+            return RunTestsSkill().run(project_root), None  # type: ignore[return-value]
+        from app.execution._apply_verify import (
+            delta_green_disclosure,
+            regressed_functions,
+            suite_after_failing,
+        )
+
+        summary, after_failing = suite_after_failing(Path(project_root))
+        introduced = regressed_functions(baseline_failing, after_failing)
+        out["delta_green"] = delta_green_disclosure(baseline_failing, after_failing)
+        return summary, not introduced
+
+    @staticmethod
     def _verify_or_rollback(project_root: str, out: dict,
                             snapshot: dict[str, str | None],
                             patch_requests: list[dict], applied,
-                            tier: int = 0, covered_only: bool = False) -> dict:
-        """Run the suite; on red, restore every changed file to its snapshot."""
+                            tier: int = 0, covered_only: bool = False,
+                            baseline_failing: frozenset[str] | None = None) -> dict:
+        """Run the suite; on red, restore every changed file to its snapshot.
+
+        ``baseline_failing`` (DEFAULT None ⇒ ABSOLUTE-green, byte-identical) is the
+        DELTA-GREEN baseline: the SET of node ids already RED before this pass. When
+        threaded, the LANDING decision keys off "broke no previously-green test"
+        instead of "whole suite green", so a correct fix LANDS on a red-baseline
+        repo while a regression is STILL rolled back — every downstream gate
+        (coverage-aware ``verified``, covered-only withhold, no-suite, rollback) is
+        unchanged, just keyed on the delta-green verdict. The raw ``suite_green``
+        stays the honest absolute result. ``None`` is byte-identical to before."""
         from app.engine.proof_of_fix import summarize_test_run
         from app.engine.verification_strength import assess_strength
-        from app.skills.execution.run_tests import RunTestsSkill
 
-        summary = RunTestsSkill().run(project_root)
+        summary, delta_ok = IdeaActionBridge._run_gate_suite(
+            project_root, out, baseline_failing)
+        # ``suite_ok`` is the LANDING signal: the absolute-green ``summary.ok`` on a
+        # green baseline, or the delta-green "no previously-green test broke" verdict
+        # on a red baseline. ``suite_green`` below stays the raw absolute result.
+        suite_ok = bool(summary.ok) if delta_ok is None else delta_ok
         out["test_commands"] = summary.commands
         out["test_evidence"] = summarize_test_run(summary)
         # How strongly does that green suite vouch for THESE changes?
@@ -2455,14 +2529,15 @@ class IdeaActionBridge:
         )
         # Coverage-aware honesty. ``suite_green`` is the raw suite result;
         # ``coverage`` is what that green suite actually exercised. ``verified``
-        # is True ONLY when a green suite genuinely vouches for the change at a
-        # level appropriate to its risk tier — never when the suite passed but
-        # never looked at what changed (which is how a smoke-import shield used
-        # to fake a green on a real behaviour change).
+        # is True ONLY when the gate passed (absolute-green, or delta-green's
+        # no-new-failure) AND a test genuinely vouches for the change at a level
+        # appropriate to its risk tier — never when the suite passed but never
+        # looked at what changed (which is how a smoke-import shield used to fake a
+        # green on a real behaviour change).
         out["suite_green"] = bool(summary.ok)
         coverage = out["verification_strength"].get("level", "none")
         out["coverage"] = coverage
-        out["verified"] = (bool(summary.ok)
+        out["verified"] = (suite_ok
                            and IdeaActionBridge._coverage_verifies(tier, coverage))
         if not summary.commands:
             # No test command detected -> NOTHING ran. The change is kept (many
@@ -2475,7 +2550,7 @@ class IdeaActionBridge:
             mark_no_suite(out)
             out["rolled_back"] = False
             return out
-        if summary.ok:
+        if suite_ok:
             # COVERED-ONLY (opt-in): the broad autonomous sweep lands ONLY moves a
             # green suite GENUINELY vouches for (``out["verified"]`` — a test
             # exercises the change at a level appropriate to its risk tier). A
@@ -2495,11 +2570,15 @@ class IdeaActionBridge:
                                  "exercises this change — previewed, not landed "
                                  "(use --allow-weak to land)")
                 return out
-            # Suite ran and passed -> nothing to roll back.
+            # The gate passed (absolute-green, or delta-green's no-new-failure)
+            # -> nothing to roll back.
             out["rolled_back"] = False
             return out
 
-        # Tests failed -> restore every changed file to its snapshot.
+        # The gate FAILED — the whole suite went red (absolute-green) or this
+        # change broke a previously-green test (delta-green) -> restore every
+        # changed file to its snapshot. A pre-existing red alone never reaches
+        # here under delta-green (it is tolerated, not charged).
         IdeaActionBridge._restore_snapshot(project_root, snapshot, applied.changed_files)
         out["applied"] = False
         out["rolled_back"] = True
@@ -3454,13 +3533,19 @@ class _MaintenancePass:
 
                 self.committer = GitAutoCommit(project_root)
         self._shield_attempted: set[str] = set()
-        # BASELINE-RED pre-flight (lazy, computed ONCE before the first apply and
-        # cached for the whole pass — never re-run per step). ``None`` means "not
-        # yet probed"; once probed it is a bool: ``True`` when the suite was green
+        # BASELINE pre-flight (lazy, computed ONCE before the first apply and
+        # cached for the whole pass — never re-run per step). ``_baseline_green``
+        # is ``None`` until probed, then a bool: ``True`` when the suite was green
         # before any fix (the common case — behaviour is byte-identical), ``False``
-        # when the suite was ALREADY failing, in which case every applied fix's
-        # verification is downgraded to ``baseline-red`` and withheld from commit.
+        # when the suite was ALREADY failing. ``_baseline_failing`` is the SET of
+        # test node ids already RED at baseline (empty on a green / suite-less
+        # baseline), captured from the SAME single probe — the DELTA-GREEN baseline
+        # the verified-apply gate threads so a correct, harmless fix LANDS on a
+        # project red on checkout while a true regression is still rolled back
+        # (front-door parity with develop's ``_campaign_baseline``). On a green
+        # baseline the set is empty ⇒ the gate stays absolute-green ⇒ byte-identical.
         self._baseline_green: bool | None = None
+        self._baseline_failing: frozenset[str] = frozenset()
         # WITHHELD-CHANGE FENCE: files carrying an uncommitted, withheld
         # behaviour change (left applied-on-disk for review). Once a file is
         # fenced, NO later auto-commit in this pass may touch it — a sibling
@@ -3523,12 +3608,59 @@ class _MaintenancePass:
 
         Only meaningful when ``self.verify`` is on (no verify -> nothing to
         verify against, so no baseline is probed and the run is byte-identical to
-        today). Returns the cached ``baseline_green`` bool."""
-        if self._baseline_green is None:
-            from app.execution._apply_verify import suite_baseline_green
+        today). Returns the cached ``baseline_green`` bool.
 
-            self._baseline_green = suite_baseline_green(Path(self.project_root))
+        The SAME single probe also caches ``_baseline_failing`` — the SET of node
+        ids already RED at baseline — so the DELTA-GREEN gate has a baseline to
+        diff against WITHOUT a second suite run. ``suite_baseline_state`` runs the
+        suite once and derives both facts; the green bool is identical to the old
+        ``suite_baseline_green`` on every project (clean ⇒ green, any red ⇒ not),
+        so the cached value and the ``baseline-red`` attribution are unchanged."""
+        if self._baseline_green is None:
+            from app.execution._apply_verify import suite_baseline_state
+
+            self._baseline_green, self._baseline_failing = suite_baseline_state(
+                Path(self.project_root))
         return self._baseline_green
+
+    def _delta_baseline(self) -> frozenset[str] | None:
+        """The DELTA-GREEN baseline to thread into the verified-apply gate.
+
+        Resolves EXACTLY as develop's :func:`_campaign_baseline`: a non-empty
+        RED-baseline failing set engages delta-green (a correct move lands while a
+        true regression is still rolled back); ``None`` keeps the gate
+        ABSOLUTE-green, byte-identical to today. Returns ``None`` whenever the pass
+        is not verifying (no gate to thread), the baseline was never probed, or the
+        baseline was GREEN (empty failing set — the common case, and Apex's own
+        suite). Pure read of the cached probe — no clock/random, no extra run."""
+        if not self.verify:
+            return None
+        return self._baseline_failing or None
+
+    def _settle_baseline_red(self, r: dict) -> None:
+        """Record the RED-baseline outcome of a step on a project red on checkout.
+
+        Two cases, deciding whether the fix's verdict is SOUND or inconclusive:
+
+          * DELTA-GREEN owned the verdict (``r`` carries a ``delta_green``
+            disclosure — the gate ran in delta-green mode and KEPT the fix because
+            it broke no previously-green test): the ``verified``/``coverage`` the
+            delta-green gate stamped is HONEST and attributable (a regression would
+            have rolled the fix back), so it is left untouched. Only the
+            ``baseline_green=False`` disclosure is stamped — so the proof tells the
+            full story AND the auto-commit is still WITHHELD on a red baseline
+            (``_baseline_red_withheld`` keys on it — conservative, unchanged).
+          * No delta-green disclosure (a covered-only WITHHELD move, a no-suite
+            short-circuit, or a non-applied row): fall back to the original
+            ``_apply_baseline_red`` downgrade (``verified=False``,
+            ``coverage=baseline-red``) — the absolute-green attribution, unchanged.
+
+        Mutates ``r`` in place. A no-op-shaped disclosure on a non-applied row
+        (just ``baseline_green=False``), exactly as ``_apply_baseline_red`` did."""
+        if "delta_green" in r and r.get("applied"):
+            r["baseline_green"] = False
+            return
+        self._apply_baseline_red(r)
 
     def _apply_baseline_red(self, r: dict) -> None:
         """Downgrade an applied step's verification because the suite was already
@@ -3587,8 +3719,14 @@ class _MaintenancePass:
             operator="test", subject=target,
             action_type="create_test_stub", target=target, executable=True,
         )
+        # DELTA-GREEN: the shield's own characterization test is verified against
+        # the SAME red-baseline tolerance — so a shield can be generated on a
+        # project red on checkout (a new passing test that breaks nothing) instead
+        # of being rolled back by an unrelated pre-existing failure. None on a green
+        # baseline ⇒ absolute-green, byte-identical.
         return self.bridge.apply_step(shield_step, self.project_root,
-                                      mode=self.mode, verify=self.verify)
+                                      mode=self.mode, verify=self.verify,
+                                      baseline_failing=self._delta_baseline())
 
     def _tier_blocked(self, step: ActionStep, tier: int, label: str,
                       shield_result: dict | None) -> bool:
@@ -3637,41 +3775,81 @@ class _MaintenancePass:
         preserving genuinely-safe convergence."""
         extra = 0
         for _ in range(5):
+            # DELTA-GREEN: each converged fix is gated with the SAME red-baseline
+            # tolerance as the primary step, so convergence keeps cleaning a file
+            # on a red-baseline repo (each fix charged only for NEW regressions).
+            # None on a green baseline ⇒ absolute-green, byte-identical.
             r2 = self.bridge.apply_step(step, self.project_root,
-                                        mode=self.mode, verify=self.verify)
+                                        mode=self.mode, verify=self.verify,
+                                        baseline_failing=self._delta_baseline())
             if not (r2.get("applied") and step.target in (r2.get("changed_files") or [])):
                 break
             extra += 1
-            # Price the fix that ACTUALLY landed (authoritative post-apply), then
-            # apply the same withhold semantics as ``_settle_applied``: never
-            # auto-commit an unverified behaviour change. Leave it on disk, record
-            # the withheld reason, and stop converging on an uncommitted file.
-            tier2 = self._converged_fix_tier(r2, step.action_type)
-            if (self.committer is not None
-                    and self._unverified_behaviour_change(r2, tier2)):
-                entry["converged_withheld"] = True
-                entry["reason"] = (
-                    "converged fix applied, NOT committed — unverified "
-                    "behaviour change (tier-1 rewrite on a module with no "
-                    "covering test); review before committing"
-                )
-                # Fence the file: the withheld converged hunk stays on disk, so
-                # no later same-file step may commit it.
-                self._fence_files(*(r2.get("changed_files") or []), step.target)
+            if not self._converge_commit_or_stop(r2, step, entry):
                 break
-            # A fenced file (an earlier withheld change still on disk) must not
-            # be auto-committed even by a safe converged fix — whole-file
-            # staging would sweep the withheld hunk into git. Check EVERY file
-            # this commit would stage, not just ``step.target``, so a cross-file
-            # converged result can't bypass the fence on a sibling path.
-            if (self.committer is not None
-                    and self._commit_touches_fenced(r2, step)):
-                break
-            ok2, _h2 = self._commit(r2, step.action_type)
-            if ok2:
-                self.committed += 1
         if extra:
             entry["converged_fixes"] = extra
+
+    def _converge_commit_or_stop(self, r2: dict, step: ActionStep,
+                                 entry: dict) -> bool:
+        """Decide a converged fix's commit, returning True to keep converging.
+
+        The per-iteration commit gate of :meth:`_converge_harden`, extracted to
+        keep that loop under the complexity ceiling — behaviour is unchanged. In
+        order, each gate that fires WITHHOLDS the auto-commit (leaving the fix on
+        disk), fences its files so no later same-file step sweeps the hunk into
+        git, and returns False to STOP converging on an uncommitted file:
+
+          * RED-BASELINE — the suite was already failing on checkout, so a
+            green-after cannot be attributed move-by-move (the SAME conservative
+            posture ``_settle_applied`` takes for the primary step). Delta-green
+            verified the fix, but the COMMIT is still withheld. (Before delta-green
+            the absolute-green gate rolled the second fix back immediately, so this
+            path was never reached on a red baseline — no byte-identity to keep.)
+          * UNVERIFIED BEHAVIOUR CHANGE — a Tier-1 rewrite on a module no test
+            exercises (the moat the primary fix enforces, never bypassed here).
+          * FENCED FILE — an earlier withheld hunk is still on disk; whole-file
+            staging would sweep it into git.
+
+        Otherwise the fix commits freely (a genuinely-safe Tier-0 converged fix)
+        and convergence continues. The committer is ``None`` outside autonomous
+        mode, so every gate is inert there and the path is byte-identical."""
+        if self.committer is not None and self._baseline_green is False:
+            entry["converged_withheld"] = True
+            entry["baseline_red"] = True
+            entry["reason"] = (
+                "converged fix applied, NOT committed — the suite was already "
+                "failing before this pass, so a green run cannot be attributed "
+                "to it (verification inconclusive); review manually"
+            )
+            self._fence_files(*(r2.get("changed_files") or []), step.target)
+            return False
+        # Price the fix that ACTUALLY landed (authoritative post-apply), then
+        # apply the same withhold semantics as ``_settle_applied``: never
+        # auto-commit an unverified behaviour change.
+        tier2 = self._converged_fix_tier(r2, step.action_type)
+        if (self.committer is not None
+                and self._unverified_behaviour_change(r2, tier2)):
+            entry["converged_withheld"] = True
+            entry["reason"] = (
+                "converged fix applied, NOT committed — unverified "
+                "behaviour change (tier-1 rewrite on a module with no "
+                "covering test); review before committing"
+            )
+            self._fence_files(*(r2.get("changed_files") or []), step.target)
+            return False
+        # A fenced file (an earlier withheld change still on disk) must not be
+        # auto-committed even by a safe converged fix — whole-file staging would
+        # sweep the withheld hunk into git. Check EVERY file this commit would
+        # stage, not just ``step.target``, so a cross-file converged result can't
+        # bypass the fence on a sibling path.
+        if (self.committer is not None
+                and self._commit_touches_fenced(r2, step)):
+            return False
+        ok2, _h2 = self._commit(r2, step.action_type)
+        if ok2:
+            self.committed += 1
+        return True
 
     @staticmethod
     def _converged_fix_tier(r: dict, action_type: str) -> int:
@@ -3760,15 +3938,20 @@ class _MaintenancePass:
         # blocked), exactly one result row per step. COVERED-ONLY (the SAFE-by-
         # default sweep) is forwarded so a green-but-unreferencing move is
         # withheld (rolled back, reported) rather than landed; off ⇒ unchanged.
+        # DELTA-GREEN: the cached RED-baseline failing set (``None`` when green ⇒
+        # ABSOLUTE-green, byte-identical) is threaded so a correct fix LANDS on a
+        # red-baseline repo while a regression is still rolled back — front-door
+        # parity with develop, the SAME gate ``apply_rename`` uses.
         r = self.bridge.apply_step(step, self.project_root, mode=self.mode,
                                    verify=self.verify,
-                                   covered_only=self.covered_only)
-        # BASELINE-RED: when the suite was already failing before any fix, the
-        # post-apply suite result cannot be attributed to this fix — downgrade
-        # the verification to inconclusive (the green-baseline path leaves ``r``
-        # untouched, so it stays byte-identical).
+                                   covered_only=self.covered_only,
+                                   baseline_failing=self._delta_baseline())
+        # BASELINE-RED disclosure: when the suite was already failing before any
+        # fix, stamp that fact (and, where delta-green did NOT own the verdict,
+        # downgrade the attribution to inconclusive). The green-baseline path
+        # leaves ``r`` untouched, so it stays byte-identical to today.
         if self.verify and self._baseline_green is False:
-            self._apply_baseline_red(r)
+            self._settle_baseline_red(r)
         entry = {"branch": step.branch_path, "action": step.action_type,
                  "operator": step.operator, "label": label,
                  "target": step.target, "risk_tier": tier, **r}

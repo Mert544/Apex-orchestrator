@@ -33,6 +33,7 @@ __all__ = [
     "stamp_coverage_strength",
     "suite_after_failing",
     "suite_baseline_green",
+    "suite_baseline_state",
     "suite_failing_nodes",
     "verification_unavailable_interpreter",
 ]
@@ -324,6 +325,37 @@ def suite_baseline_green(root: Path) -> bool:
 
     summary = RunTestsSkill().run(str(root))
     return bool(summary.ok) or not summary.commands
+
+
+def suite_baseline_state(root: Path) -> tuple[bool, frozenset[str]]:
+    """One-time BASELINE pre-flight returning BOTH ``(baseline_green, failing)``.
+
+    Runs the project's full test suite EXACTLY ONCE — with the delta-green
+    comparable command (:func:`suite_failing_nodes` → pytest
+    ``--continue-on-collection-errors``) — and derives both facts a maintenance
+    pass needs from that single run, so there is never a second probe:
+
+      * ``baseline_green`` — was the suite already green before any fix? True when
+        no test was failing/erroring at baseline (``not failing``) OR there is no
+        detectable suite (``not suite_available`` — a suite-less project is not a
+        *failing* suite, the same convention :func:`suite_baseline_green` and
+        :func:`run_full_suite_verification` use). This matches the bool
+        :func:`suite_baseline_green` returns on every project that has a
+        suite — a clean suite is green, a suite with a red is not — so the
+        existing ``baseline-red`` attribution is unchanged.
+      * ``failing`` — the DELTA-GREEN baseline: the SET of node ids already RED at
+        baseline, captured with the SAME command :func:`suite_after_failing` uses
+        for the per-move after-set, so the diff that decides "introduced no new
+        failure" is byte-comparable. EMPTY on a green / suite-less baseline.
+
+    Deterministic and stdlib-only — one lazy ``suite_failing_nodes`` call, no
+    clock/random. The pair lets the maintain/auto apply path thread the delta-green
+    baseline (the failing set, ``None`` when green) through its verified-apply gate
+    EXACTLY as :func:`app.engine.objective_compiler._campaign_baseline` does for
+    develop, while keeping the cached green-baseline bool it already used."""
+    suite_available, failing = suite_failing_nodes(root)
+    baseline_green = (not failing) or (not suite_available)
+    return baseline_green, failing
 
 
 def stamp_coverage_strength(

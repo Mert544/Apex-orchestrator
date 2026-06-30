@@ -1,31 +1,35 @@
-"""BASELINE-RED honesty — a fix verified against an ALREADY-failing suite is
-inconclusive, not verified, and must be withheld from auto-commit.
+"""BASELINE-RED honesty — a fix on an ALREADY-failing suite is verified via
+DELTA-GREEN (front-door parity with develop) yet still withheld from auto-commit.
 
-Per-fix verification runs the suite AFTER applying a fix and treats green as
-proof the fix is safe. But if the suite was already RED *before* Apex touched
-anything, a green-after (or a still-red that merely didn't worsen) cannot be
-attributed to the fix — yet the proof/verification path used to record
-verification strength as if it were earned. This closes that gap.
+Per-fix verification runs the suite AFTER applying a fix. On a project red on
+checkout, the maintain/auto apply path now threads the SAME DELTA-GREEN baseline
+the develop loop uses (the SET of node ids failing before any move): a fix VERIFIES
+iff it broke NO previously-green test (tolerating the pre-existing reds it did not
+cause) — exactly as ``apply_rename``/``compile_objective`` gate develop. So a
+correct fix LANDS verified on a red baseline (the P0 fix: before this, the
+absolute-green gate rolled every fix back) and discloses the ``delta_green``
+narrative; a fix that turns a green test red is STILL rolled back.
 
-The fix is a ONE-TIME baseline pre-flight on the maintenance pass: before the
-first apply, run the verification command ONCE and cache ``baseline_green``
-(never re-run per step). When ``baseline_green is False`` every applied fix's
-verification is downgraded to the weakest tier ``baseline-red``,
-``verified=False``, and the autonomous-commit gate WITHHOLDS the commit with a
-clear reason; the proof artifact records ``baseline_green=False``. When
-``baseline_green is True`` (the common case) behaviour and proofs are
-BYTE-IDENTICAL to today — the pre-flight simply confirms green, with no
-downgrade and no extra per-step suite runs.
+The ONE-TIME baseline pre-flight runs the verification command ONCE and caches
+BOTH ``baseline_green`` (the bool) and ``baseline_failing`` (the delta-green set),
+never re-run per step. When the baseline is GREEN (the common case) behaviour and
+proofs are BYTE-IDENTICAL to today (the set is empty ⇒ delta-green collapses to
+absolute-green). When the baseline is RED, the fix is verified-via-delta-green but
+the autonomous-commit gate still WITHHOLDS the commit (a green-after cannot be
+attributed move-by-move for COMMIT purposes — left on disk for review) with a clear
+reason; the proof carries ``baseline_green=False``.
 
 HARD GATES pinned here:
-  * Red baseline -> applied fix recorded ``baseline-red`` / ``verified=False``,
-    NOT committed, ``commit_withheld``/``baseline_red`` flagged, reason explains
-    the suite was already failing; the proof carries ``baseline_green=False``.
+  * Red baseline -> applied fix VERIFIED via delta-green (parity with develop),
+    discloses ``delta_green``, but NOT committed: ``commit_withheld`` /
+    ``baseline_red`` flagged, reason explains the suite was already failing; the
+    proof carries ``baseline_green=False``.
   * Green baseline -> the SAME fix verifies + commits exactly as before; its
     result + proof carry NO ``baseline_green`` key (byte-identical), and the
     suite is NOT double-run per step (one pre-flight, cached).
   * Determinism: two runs of the red-baseline pass produce identical rows.
-  * The downgrade composes with (does not regress) the tier-1 / fence withholds.
+  * The delta-green verdict composes with (does not regress) the tier-1 / fence
+    / commit withholds.
 
 Deterministic, stdlib + pytest only.
 """
@@ -115,28 +119,34 @@ def _build_green(root: Path) -> None:
     _git_init(root)
 
 
-# --- PIN 1: red baseline -> inconclusive, withheld, proof says so ------------
+# --- PIN 1: red baseline -> verified via DELTA-GREEN, but withheld from commit -
 
-def test_red_baseline_fix_is_baseline_red_not_committed(tmp_path):
+def test_red_baseline_fix_is_delta_green_verified_not_committed(tmp_path):
     _build_red(tmp_path)
     summary = _run(tmp_path, [_harden_step("app/cfg.py")])
 
     row = next(r for r in summary["results"]
                if r["action"] == "harden_security")
 
-    # The fix IS applied on disk (left for review) and the post-apply suite is
-    # GREEN — but that green cannot be attributed to the fix (red baseline)...
+    # The fix IS applied on disk and verified via DELTA-GREEN — front-door parity
+    # with develop: it broke no previously-green test (the only failure, the
+    # pre-existing red on the changed function, recovered), so it is honestly
+    # ``verified`` at function coverage, NOT rolled back as the absolute-green gate
+    # used to do (the P0 this fix corrects).
     assert row["applied"] is True
     assert "yaml.safe_load" in (tmp_path / "app" / "cfg.py").read_text()
-    assert row.get("suite_green") is True            # the dangerous "fake green"
-
-    # ...so its verification is INCONCLUSIVE: the suite was already red.
-    assert row["verified"] is False
-    assert row["coverage"] == "baseline-red"
-    assert row["verification_strength"]["level"] == "baseline-red"
+    assert row["verified"] is True
+    assert row["coverage"] == "function"
+    # The delta-green narrative is disclosed (a pre-existing failure was present
+    # and tolerated; this fix introduced none) — never papered over.
+    assert row["delta_green"]["baseline_failing"] == 1
+    assert row["delta_green"]["introduced"] == []
+    # The red-baseline disclosure stands on the result + drives the commit withhold.
     assert row["baseline_green"] is False
 
-    # ...so it is NOT auto-committed, and the row says why.
+    # ...but it is STILL NOT auto-committed on a red baseline — a green-after cannot
+    # be attributed move-by-move for COMMIT purposes, so it is left on disk for
+    # review (the conservative commit posture is unchanged, the moat held).
     assert row["committed"] is False
     assert row["commit_withheld"] is True
     assert row["baseline_red"] is True
@@ -154,14 +164,10 @@ def test_red_baseline_proof_carries_baseline_green_false(tmp_path):
     fix = next(f for f in proof["fixes"]
                if f["finding"]["action"] == "harden_security")
     assert fix["outcome"] == "applied"
+    # The proof discloses the red baseline; the fix is verified via delta-green
+    # (its function-level coverage stands, parity with develop's proof trail).
     assert fix["verification"]["baseline_green"] is False
-    assert fix["verification"]["strength"]["level"] == "baseline-red"
-
-    # The manifest tallies the inconclusive fix honestly under ``baseline-red``,
-    # not silently collapsed into ``none``.
-    manifest = proof_manifest(proof)
-    assert manifest["by_coverage"]["baseline-red"] == 1
-    assert manifest["by_coverage"]["none"] == 0
+    assert fix["verification"]["strength"]["level"] == "function"
 
 
 # --- PIN 2: green baseline -> byte-identical, verified, committed, no double-run
