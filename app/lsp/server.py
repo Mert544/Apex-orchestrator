@@ -67,6 +67,7 @@ class LSPServer:
                 "textDocumentSync": {"openClose": True, "change": 1},
                 "hoverProvider": True,
                 "documentSymbolProvider": True,
+                "codeActionProvider": {"codeActionKinds": ["quickfix"]},
             },
             "serverInfo": {"name": "apex-lsp", "version": "0.1.0"},
         })
@@ -119,6 +120,86 @@ class LSPServer:
         text = self._documents.get(uri, "")
         symbols = self._extract_symbols(text)
         self._send_response(id, symbols)
+
+    @staticmethod
+    def _workspace_edit(uri: str, old_text: str, new_text: str) -> dict[str, Any]:
+        """A whole-file WorkspaceEdit replacing ``uri``'s buffer with ``new_text``.
+
+        One ``TextEdit`` over the range ``[{0,0} .. {N,0}]`` where ``N`` is the
+        line count of the OLD buffer (so the edit covers every existing line and
+        the trailing position the editor expects). Whole-file form is the v1
+        shape — simplest and provably exact, since ``new_text`` is the transform's
+        own re-parsed ``new_contents`` (range-overlap filtering is a follow-up)."""
+        end_line = old_text.count("\n") + (0 if old_text.endswith("\n") else 1)
+        return {
+            "changes": {
+                uri: [{
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": end_line, "character": 0},
+                    },
+                    "newText": new_text,
+                }],
+            },
+        }
+
+    def _quickfix_action(self, uri: str, module_rel: str, text: str,
+                         title: str, plan_fn: Any) -> dict[str, Any] | None:
+        """Dry-run ONE safe transform against the buffer; build its CodeAction or None.
+
+        Runs ``plan_from_source(plan_fn, module_rel, text)`` IN MEMORY. Offers the
+        ``quickfix`` ONLY when ``plan.ok`` (the honesty gate: a refusal/no-op has
+        empty new_contents ⇒ ``ok`` False ⇒ nothing offered). The transform's own
+        re-parse refusing the buffer is caught as 'nothing to offer', never a crash.
+        The edit's ``newText`` is the transform's byte-identical re-parsed output."""
+        from app.execution._plan_transforms import plan_from_source
+
+        try:
+            plan = plan_from_source(plan_fn, module_rel, text)
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            return None
+        if not plan.ok:
+            return None
+        new_text = plan.new_contents.get(module_rel)
+        if not new_text:
+            return None
+        return {"title": title, "kind": "quickfix",
+                "edit": self._workspace_edit(uri, text, new_text)}
+
+    def _handle_textDocument_codeAction(self, id: Any, params: dict[str, Any]) -> None:
+        """Offer Apex's behaviour-preserving transforms as one-click quick-fixes.
+
+        Range-driven RE-RUN model (not a diagnostic→transform bridge): take the
+        buffer, ``ast.parse``-guard it (a broken buffer ⇒ no actions, never a
+        crash), then for every SAFE transform in :data:`LSP_QUICKFIX_PLANS` dry-run
+        it against the buffer IN MEMORY (:meth:`_quickfix_action`). The registry is
+        the moat: ONLY TIDY/Tier-0/single-module/sibling-insensitive transforms can
+        EVER appear, so an applied edit is behaviour-preserving by construction even
+        though the LSP apply skips Apex's suite-gate. Deterministic, offline,
+        zero-token. The registry import is LAZY so importing the server module stays
+        cheap and cannot form an ``app.execution`` import cycle."""
+        import ast
+
+        uri = params.get("textDocument", {}).get("uri", "")
+        text = self._documents.get(uri, "")
+        try:
+            if text:
+                ast.parse(text)
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            text = ""  # broken/pathological buffer ⇒ offer nothing
+        if not text:
+            self._send_response(id, [])
+            return
+
+        from app.lsp.quick_fixes import LSP_QUICKFIX_PLANS
+
+        module_rel = uri.rsplit("/", 1)[-1] or uri
+        actions = [
+            action
+            for _operator, (title, plan_fn) in LSP_QUICKFIX_PLANS.items()
+            if (action := self._quickfix_action(uri, module_rel, text, title, plan_fn)) is not None
+        ]
+        self._send_response(id, actions)
 
     @staticmethod
     def _diagnostic(line: int, start_char: int, end_char: int, severity: int, message: str) -> dict[str, Any]:
@@ -242,40 +323,52 @@ class LSPServer:
 
         return symbols
 
+    def _handle_textDocument_didClose(self, params: dict[str, Any]) -> None:
+        """Drop a closed document from the in-memory buffer cache."""
+        uri = params.get("textDocument", {}).get("uri", "")
+        self._documents.pop(uri, None)
+
+    def _dispatch(self, method: str | None, msg_id: Any, params: dict[str, Any]) -> bool:
+        """Route ONE JSON-RPC message to its handler; return False to stop the loop.
+
+        A table-driven dispatch (vs a long ``if/elif`` chain) so adding an LSP
+        method is one table row, not another branch. ``shutdown`` replies then
+        stops; ``exit`` stops immediately; an unknown method with an id gets the
+        standard 'method not found' error. Behaviour is byte-identical to the
+        previous chain — same handlers, same replies, same loop control."""
+        if method == "exit":
+            return False
+        if method == "shutdown":
+            self._send_response(msg_id)
+            self._running = False
+            return True
+        id_handlers = {
+            "initialize": self._handle_initialize,
+            "textDocument/hover": self._handle_textDocument_hover,
+            "textDocument/documentSymbol": self._handle_textDocument_documentSymbol,
+            "textDocument/codeAction": self._handle_textDocument_codeAction,
+        }
+        notif_handlers = {
+            "textDocument/didOpen": self._handle_textDocument_didOpen,
+            "textDocument/didChange": self._handle_textDocument_didChange,
+            "textDocument/didClose": self._handle_textDocument_didClose,
+        }
+        if method in id_handlers:
+            id_handlers[method](msg_id, params)
+        elif method in notif_handlers:
+            notif_handlers[method](params)
+        elif method != "initialized" and msg_id is not None:
+            self._send_response(msg_id, error={"code": -32601, "message": f"Method not found: {method}"})
+        return True
+
     def run(self) -> None:
         print("Apex LSP server started (stdio transport)", file=sys.stderr)
         while self._running:
             msg = self._read_message()
             if msg is None:
                 break
-
-            method = msg.get("method")
-            msg_id = msg.get("id")
-            params = msg.get("params", {})
-
-            if method == "initialize":
-                self._handle_initialize(msg_id, params)
-            elif method == "initialized":
-                pass
-            elif method == "shutdown":
-                self._send_response(msg_id)
-                self._running = False
-            elif method == "exit":
+            if not self._dispatch(msg.get("method"), msg.get("id"), msg.get("params", {})):
                 break
-            elif method == "textDocument/didOpen":
-                self._handle_textDocument_didOpen(params)
-            elif method == "textDocument/didChange":
-                self._handle_textDocument_didChange(params)
-            elif method == "textDocument/didClose":
-                uri = params.get("textDocument", {}).get("uri", "")
-                self._documents.pop(uri, None)
-            elif method == "textDocument/hover":
-                self._handle_textDocument_hover(msg_id, params)
-            elif method == "textDocument/documentSymbol":
-                self._handle_textDocument_documentSymbol(msg_id, params)
-            else:
-                if msg_id is not None:
-                    self._send_response(msg_id, error={"code": -32601, "message": f"Method not found: {method}"})
 
 
 def main() -> int:
