@@ -52,6 +52,7 @@ this module never forms an ``app`` import cycle — the same discipline
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterable
 import json
 import os
 from pathlib import Path
@@ -640,20 +641,26 @@ def _classify_cell(shape: str, objective: str,
     return _reparse_violation(changed) or _prologue_violation(changed) or "behavior-identical"
 
 
-# Process-level memo of the (repo_root, include_heavy) -> findings result. The sweep is
-# a PURE function of the corpus bytes + the live registry, neither of which changes within
-# a run (the corpus fixtures are read-only and objectives self-register once at import), so
-# computing it ONCE per process and reusing it is byte-identical. The HEAVY sweep spawns a
-# JVM/Node per subprocess-backed cell and now takes ~2 minutes; without this memo every
-# corpus test (a dozen of them) re-ran the whole sweep, stacking past the per-test timeout
-# as the Java/JS lanes deepened. Keyed by ``(str(repo_root), include_heavy)``; the
-# heavy/light variants cache separately. Deep-copied on read so a caller mutating the dict
-# can't corrupt the shared entry.
-_CORPUS_FINDINGS_CACHE: dict[tuple[str, bool], dict[str, dict[str, str]]] = {}
+# Process-level memo of the (repo_root, include_heavy, only) -> findings result. The sweep
+# is a PURE function of the corpus bytes + the live registry, neither of which changes
+# within a run (the corpus fixtures are read-only and objectives self-register once at
+# import), so computing it ONCE per process and reusing it is byte-identical. The HEAVY
+# sweep spawns a JVM/Node per subprocess-backed cell and now takes ~2 minutes; without this
+# memo every corpus test (a dozen of them) re-ran the whole sweep, stacking past the
+# per-test timeout as the Java/JS lanes deepened. The key carries ``include_heavy`` (the
+# heavy/light variants cache separately) AND ``only`` (a single-objective slice caches apart
+# from the full sweep — see below), so no slice ever returns another slice's result. Each
+# objective's row is computed INDEPENDENTLY (``_changed_files`` per objective, no
+# cross-objective state), so a sliced row is byte-identical to that objective's row in the
+# full sweep. Deep-copied on read so a caller mutating the dict can't corrupt the entry.
+_CORPUS_FINDINGS_CACHE: dict[
+    tuple[str, bool, frozenset[str] | None], dict[str, dict[str, str]]] = {}
 
 
-def corpus_refusal_findings(repo_root: str | Path,
-                            include_heavy: bool = False) -> dict[str, dict[str, str]]:
+def corpus_refusal_findings(
+        repo_root: str | Path,
+        include_heavy: bool = False,
+        only: Iterable[str] | None = None) -> dict[str, dict[str, str]]:
     """Layer B: per (objective × fixture) corpus verdict, ``{obj: {shape: verdict}}``.
 
     Runs each registered objective's ``moves``/``build_plan`` against each corpus
@@ -664,13 +671,23 @@ def corpus_refusal_findings(repo_root: str | Path,
     sweeps them too (used by the full audit). Deterministic: sorted objectives ×
     sorted shapes, pure function of the corpus bytes + the registry.
 
+    ``only`` restricts the sweep to the named objectives (intersected with the
+    heavy/light selection ``include_heavy`` already implies) — a per-objective corpus
+    test asserting only its OWN objective's row pays just that objective's (subprocess)
+    cost instead of the whole ~2-minute heavy sweep, so it stays comfortably under the
+    per-test timeout even under a parallel-chunked gate. ``None`` (the default) sweeps
+    everything, byte-identical to before — the full audit is unaffected. A sliced row is
+    IDENTICAL to that objective's row in the full sweep (per-objective independence), so
+    the soundness verdicts are preserved exactly; ``only`` is purely a cost knob.
+
     MEMOIZED per process (see :data:`_CORPUS_FINDINGS_CACHE`): the result is a pure
     function of the read-only corpus + the once-registered objective set, so the
-    (expensive, subprocess-backed) heavy sweep is computed ONCE and reused — a returned
-    dict is a deep copy, so a caller is free to mutate it."""
+    (expensive, subprocess-backed) heavy sweep is computed ONCE per (heavy, slice) key and
+    reused — a returned dict is a deep copy, so a caller is free to mutate it."""
     import copy
 
-    cache_key = (str(repo_root), include_heavy)
+    only_key = frozenset(only) if only is not None else None
+    cache_key = (str(repo_root), include_heavy, only_key)
     cached = _CORPUS_FINDINGS_CACHE.get(cache_key)
     if cached is not None:
         return copy.deepcopy(cached)
@@ -681,6 +698,12 @@ def corpus_refusal_findings(repo_root: str | Path,
     shapes = corpus_shapes(repo_root)
     root = corpus_root(repo_root)
     names = _swept_objective_names(objectives, include_heavy)
+    if only_key is not None:
+        # Keep the heavy/light gate's ordering, just drop the unrequested objectives —
+        # a requested-but-heavy objective is still only present when include_heavy, and a
+        # name that isn't registered (or is filtered out by the gate) simply yields no row,
+        # exactly as it would be absent from the full sweep.
+        names = [n for n in names if n in only_key]
     out: dict[str, dict[str, str]] = {}
     for name in names:
         _fitness, moves_fn = objectives[name]

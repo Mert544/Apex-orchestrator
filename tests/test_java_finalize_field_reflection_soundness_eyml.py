@@ -246,7 +246,12 @@ def test_soundness_corpus_refuses_both_new_java_shapes():
     # as test_refuses_on_java_false_final_corpus_shape asserts for java_false_final.
     from app.engine.soundness_audit import corpus_refusal_findings, repo_root
 
-    corpus = corpus_refusal_findings(repo_root(), include_heavy=True)
+    # ``only`` slices the heavy sweep to THIS objective's row (byte-identical to its row
+    # in the full sweep — per-objective independent), so the test pays just this
+    # objective's JVM cost, not the whole ~2-minute sweep, staying under the per-test
+    # timeout under a parallel-chunked gate.
+    corpus = corpus_refusal_findings(repo_root(), include_heavy=True,
+                                     only={"java-finalize-field"})
     cells = corpus.get("java-finalize-field", {})
     assert cells, "java-finalize-field should be swept in the heavy corpus path"
     assert cells.get("java_reflective_field") == "refused"

@@ -705,7 +705,12 @@ def test_refuses_on_python_soundness_corpus():
     # satisfied by the package.json root-gate.
     from app.engine.soundness_audit import corpus_refusal_findings, repo_root
 
-    corpus = corpus_refusal_findings(repo_root(), include_heavy=True)
+    # ``only`` slices the sweep to THIS objective's row (byte-identical to its row in the
+    # full sweep — per-objective independent), so the test pays just this objective's cost,
+    # not the whole ~2-minute heavy sweep, staying under the per-test timeout under a
+    # parallel-chunked gate.
+    corpus = corpus_refusal_findings(repo_root(), include_heavy=True,
+                                     only={"document-raises-jsdoc"})
     cells = corpus.get("document-raises-jsdoc", {})
     assert cells, "document-raises-jsdoc should be swept in the heavy corpus path"
     for shape, verdict in cells.items():

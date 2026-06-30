@@ -185,11 +185,21 @@ def _bare_and_call_index(
 
 
 def _bind_arguments(plan: RenamePlan, source: str, fn: ast.FunctionDef,
-                    call: ast.Call, site: str) -> dict[str, str] | None:
+                    call: ast.Call, site: str,
+                    def_source: str | None = None) -> dict[str, str] | None:
     """Map each parameter name → its argument SOURCE TEXT for this call: by
     position, then by keyword, falling back to the parameter's default. Blocks
     (returns None) on a missing required argument or unknown keyword. ``site``
-    is a ``rel:line`` label woven into any blocker message."""
+    is a ``rel:line`` label woven into any blocker message.
+
+    ``source`` is the CALL SITE's module source (positional/keyword arg nodes
+    index into it). A parameter falling back to its DEFAULT, however, takes its
+    value node from the DEFINING module, so the default's source segment must be
+    read from ``def_source`` (the defining module's bytes) — the call file may be
+    shorter than the default's line number, which would otherwise raise. Defaults
+    to ``source`` only when the defining source is unavailable (same module)."""
+    if def_source is None:
+        def_source = source
     params = list(fn.args.args)
     defaults = list(fn.args.defaults)
     # Right-aligned defaults: the last len(defaults) params have one.
@@ -219,10 +229,10 @@ def _bind_arguments(plan: RenamePlan, source: str, fn: ast.FunctionDef,
         if p.arg in kw_by_name:
             bound[p.arg] = _segment(source, kw_by_name[p.arg].value)
         elif p.arg in default_for:
-            # The default lives in the DEFINING module's source.
-            bound[p.arg] = ast.get_source_segment(
-                plan.new_contents.get(plan.defined_in, source), default_for[p.arg]) \
-                or _segment(source, default_for[p.arg])
+            # The default's value node lives in the DEFINING module, so its source
+            # segment MUST be read from that module's bytes (``def_source``) — the
+            # call-site file may be shorter than the default's line number.
+            bound[p.arg] = _segment(def_source, default_for[p.arg])
         else:
             plan.blockers.append(
                 f"{site}: call site does not supply required parameter "
@@ -421,7 +431,8 @@ def _resolve_call_site(
             "positional/keyword arguments can be inlined")
         return None
 
-    bound = _bind_arguments(plan, call_source, fn, call, site)
+    bound = _bind_arguments(plan, call_source, fn, call, site,
+                            def_source=sources.get(plan.defined_in))
     if bound is None:
         return None
 

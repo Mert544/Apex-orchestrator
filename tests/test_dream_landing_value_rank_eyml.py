@@ -218,11 +218,14 @@ def test_compile_from_dream_consumes_ranked_order(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / ".apex").mkdir()
     (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
+    # ``__all__ = []`` makes ``render``/``hub`` provably NON-public so the
+    # dead-params public-API rail permits dropping their dead params (no external
+    # keyword caller can reach a non-exported name; the suite gate is sound proof).
     (tmp_path / "app" / "aaa.py").write_text(
-        "def render(text, color=None, width=80):\n    return text[:width]\n",
-        encoding="utf-8")
+        "__all__ = []\n\n\ndef render(text, color=None, width=80):\n"
+        "    return text[:width]\n", encoding="utf-8")
     (tmp_path / "app" / "zzz.py").write_text(
-        "def hub(a, dead=None):\n    return a\n", encoding="utf-8")
+        "__all__ = []\n\n\ndef hub(a, dead=None):\n    return a\n", encoding="utf-8")
     (tmp_path / "tests" / "test_aaa.py").write_text(
         "from app.aaa import render\n"
         "def test_render():\n    assert render('hi', width=2) == 'hi'\n",

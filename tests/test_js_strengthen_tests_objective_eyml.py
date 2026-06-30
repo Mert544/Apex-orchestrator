@@ -731,7 +731,12 @@ def test_refuses_on_js_strengthen_env_fragile_corpus_fixture():
     gates. And it is a clean no-op on the WHOLE (Python-shaped + JS) corpus."""
     from app.engine.soundness_audit import corpus_refusal_findings, repo_root
 
-    corpus = corpus_refusal_findings(repo_root(), include_heavy=True)
+    # ``only`` slices the heavy sweep to THIS objective's row (byte-identical to its row
+    # in the full sweep — per-objective independent), so the test pays just this
+    # objective's subprocess cost, not the whole ~2-minute sweep, staying under the
+    # per-test timeout under a parallel-chunked gate.
+    corpus = corpus_refusal_findings(repo_root(), include_heavy=True,
+                                     only={"js-strengthen-tests"})
     cells = corpus.get("js-strengthen-tests", {})
     assert cells, "js-strengthen-tests should be swept in the heavy corpus path"
     assert cells.get("js_strengthen_env_fragile") == "refused"

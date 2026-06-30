@@ -720,11 +720,14 @@ def test_behavior_identical_on_java_undocumented_throws_corpus_shape():
     # a method declaring a `throws` clause with no Javadoc. java-document-throws SHOULD
     # document it (NOT a must-refuse trap), and the insert is behaviour-identical (a
     # comment-only edit re-parses fact-identical). This is the standing proof that the
-    # Javadoc landing is sound on the sweep. (The heavy sweep is process-memoized in
-    # soundness_audit, so the first corpus test pays for it and every later one reuses it.)
+    # Javadoc landing is sound on the sweep. ``only`` slices the (process-memoized) sweep
+    # to THIS objective's row — byte-identical to its row in the full sweep (per-objective
+    # independent) — so the test pays just this objective's JVM cost, not the whole
+    # ~2-minute heavy sweep, staying under the per-test timeout under a chunked gate.
     from app.engine.soundness_audit import corpus_refusal_findings, repo_root
 
-    corpus = corpus_refusal_findings(repo_root(), include_heavy=True)
+    corpus = corpus_refusal_findings(repo_root(), include_heavy=True,
+                                     only={"java-document-throws"})
     cells = corpus.get("java-document-throws", {})
     assert cells, "java-document-throws should be swept in the heavy corpus path"
     assert cells.get("java_undocumented_throws") == "behavior-identical"

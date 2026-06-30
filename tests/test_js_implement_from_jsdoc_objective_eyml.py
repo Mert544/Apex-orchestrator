@@ -542,7 +542,12 @@ def test_refuses_on_python_soundness_corpus():
     # every existing Python corpus shape byte-identical.
     from app.engine.soundness_audit import corpus_refusal_findings, repo_root
 
-    corpus = corpus_refusal_findings(repo_root(), include_heavy=True)
+    # ``only`` slices the heavy sweep to THIS objective's row (byte-identical to its row
+    # in the full sweep — per-objective independent), so the test pays just this
+    # objective's subprocess cost, not the whole ~2-minute sweep, staying under the
+    # per-test timeout under a parallel-chunked gate.
+    corpus = corpus_refusal_findings(repo_root(), include_heavy=True,
+                                     only={"js-implement-from-jsdoc"})
     cells = corpus.get("js-implement-from-jsdoc", {})
     assert cells, "js-implement-from-jsdoc should be swept in the heavy corpus path"
     for shape, verdict in cells.items():

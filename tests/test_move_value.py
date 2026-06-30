@@ -214,7 +214,11 @@ def test_min_move_value_floor_refuses_low(tmp_path):
 
 # --- 8. default floor is byte-identical --------------------------------------
 
+# render/fetch are non-public (only ``use`` is exported) so the public-API rail
+# in ``_dead_param_moves`` permits dropping their dead params — an external
+# keyword caller cannot reach them, so the in-project suite gate is sound proof.
 _THREE_DEAD = (
+    "__all__ = ['use']\n\n\n"
     "def render(text, color=None, width=80):\n"
     "    return text[:width]\n\n\n"
     "def fetch(url, retries=3):\n"

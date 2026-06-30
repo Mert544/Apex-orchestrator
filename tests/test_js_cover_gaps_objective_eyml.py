@@ -585,7 +585,12 @@ def test_refuses_on_js_env_fragile_return_corpus_fixture():
     # env_fragile_return — proving the AST + env gates close the flaky-test hole.
     from app.engine.soundness_audit import corpus_refusal_findings, repo_root
 
-    corpus = corpus_refusal_findings(repo_root(), include_heavy=True)
+    # ``only`` slices the heavy sweep to THIS objective's row (byte-identical to its row
+    # in the full sweep — per-objective independent), so the test pays just this
+    # objective's subprocess cost, not the whole ~2-minute sweep, staying under the
+    # per-test timeout under a parallel-chunked gate.
+    corpus = corpus_refusal_findings(repo_root(), include_heavy=True,
+                                     only={"js-cover-gaps"})
     cells = corpus.get("js-cover-gaps", {})
     assert cells, "js-cover-gaps should be swept in the heavy corpus path"
     assert cells.get("js_env_fragile_return") == "refused"

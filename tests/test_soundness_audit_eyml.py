@@ -217,6 +217,45 @@ def test_full_corpus_sweep_is_clean_on_the_live_registry():
     assert bad == {}, bad
 
 
+def test_corpus_only_slice_is_identical_to_full_row():
+    # ``only`` restricts the sweep to the named objectives; the sliced row MUST be
+    # byte-identical to that objective's row in the full sweep (per-objective
+    # independence), and ONLY the requested objective(s) appear. This is the cost knob
+    # the per-objective corpus tests use to dodge the ~2-minute heavy sweep without
+    # changing any verdict. Uses cheap (light-sweep) objectives so the test stays fast.
+    full = sa.corpus_refusal_findings(_REPO)  # light sweep, all cheap objectives
+    assert "wire-module-exports" in full and "add-final" in full
+    sliced = sa.corpus_refusal_findings(_REPO, only={"wire-module-exports"})
+    assert set(sliced) == {"wire-module-exports"}  # no other objective leaks in
+    assert sliced["wire-module-exports"] == full["wire-module-exports"]  # identical row
+    # A two-name slice carries exactly those two rows, each identical to the full sweep.
+    pair = sa.corpus_refusal_findings(_REPO, only=["wire-module-exports", "add-final"])
+    assert set(pair) == {"wire-module-exports", "add-final"}
+    assert pair["add-final"] == full["add-final"]
+
+
+def test_corpus_only_unknown_and_heavy_names_are_dropped():
+    # A name that isn't in the (light) sweep selection simply yields no row — exactly as
+    # it would be absent from the full sweep — never an error. A heavy objective requested
+    # under the default (light) sweep is therefore absent too; the heavy/light gate still
+    # governs which objectives a slice can surface.
+    only_unknown = sa.corpus_refusal_findings(_REPO, only={"not-a-real-objective"})
+    assert only_unknown == {}
+    # ``cover-gaps`` is heavy (subprocess-backed) — absent from a light slice.
+    assert sa.corpus_refusal_findings(_REPO, only={"cover-gaps"}) == {}
+
+
+def test_corpus_only_returns_independent_deep_copy():
+    # The memo deep-copies on read, so mutating a sliced result cannot corrupt the cached
+    # entry a later caller receives.
+    a = sa.corpus_refusal_findings(_REPO, only={"wire-module-exports"})
+    a["wire-module-exports"]["syntax_error"] = "MUTATED"
+    a["injected"] = {}
+    b = sa.corpus_refusal_findings(_REPO, only={"wire-module-exports"})
+    assert "injected" not in b
+    assert b["wire-module-exports"]["syntax_error"] == "refused"
+
+
 # --- (B) the classifier's behavior-identical predicate -----------------------
 
 def test_classifier_flags_a_lost_shebang_prologue():

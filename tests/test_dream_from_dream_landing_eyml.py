@@ -52,9 +52,11 @@ def _confluence_project(tmp_path: Path) -> Path:
     # passes) carrying a dead parameter the sweep can actually land on.
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
+    # ``__all__ = []`` makes ``render`` non-public so the dead-params public-API
+    # rail permits dropping its dead ``color`` (only the in-project test calls it).
     (tmp_path / "app" / "big.py").write_text(
-        "def render(text, color=None, width=80):\n    return text[:width]\n",
-        encoding="utf-8")
+        "__all__ = []\n\n\ndef render(text, color=None, width=80):\n"
+        "    return text[:width]\n", encoding="utf-8")
     (tmp_path / "app" / "small.py").write_text(
         "def leaf():\n    return 2\n", encoding="utf-8")
     (tmp_path / "tests" / "test_big.py").write_text(
@@ -226,11 +228,14 @@ def _stored_project(tmp_path: Path) -> Path:
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / ".apex").mkdir()
+    # ``__all__ = []`` makes ``render``/``fetch`` non-public so the dead-params
+    # public-API rail permits dropping their dead params (only the in-project
+    # test imports them by name — that import ignores ``__all__`` and still works).
     (tmp_path / "app" / "hub.py").write_text(
-        "def render(text, color=None, width=80):\n    return text[:width]\n",
-        encoding="utf-8")
+        "__all__ = []\n\n\ndef render(text, color=None, width=80):\n"
+        "    return text[:width]\n", encoding="utf-8")
     (tmp_path / "app" / "other.py").write_text(
-        "def fetch(url, retries=3):\n    return url\n",
+        "__all__ = []\n\n\ndef fetch(url, retries=3):\n    return url\n",
         encoding="utf-8")
     (tmp_path / "tests" / "test_m.py").write_text(
         "from app.hub import render\nfrom app.other import fetch\n"

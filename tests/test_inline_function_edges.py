@@ -390,3 +390,46 @@ def test_plan_inline_characterization_blocked_plan(tmp_path):
         "m.py:4: parameter 'x' is used 2 times and its argument isn't a pure "
         "simple expression — inlining would duplicate a side-effecting evaluation"
     ]
+
+
+def test_inline_cross_file_default_reads_defining_module_source(tmp_path):
+    """A cross-file call that FALLS BACK to a parameter default must splice the
+    default's TEXT from the DEFINING module, not the (shorter) call file.
+
+    Regression: ``defs.py`` is longer than ``use.py``; the default ``y=2`` sits on
+    a line beyond ``use.py``'s length. Reading the default segment against the call
+    file produced an empty (or crashing) splice ``r = ((10) + ())``; reading it
+    against the defining module yields the correct ``r = ((10) + (2))``."""
+    defined_in, blockers, new_contents, edits = _pin(
+        tmp_path,
+        {
+            "defs.py": (
+                "PAD = 0\n"
+                "\n"
+                "\n"
+                "def fee(x, y=2):\n"
+                "    return x + y\n"
+            ),
+            "use.py": "r = fee(10)\n",
+        },
+        "fee",
+    )
+    assert blockers == []
+    assert defined_in == "defs.py"
+    # The default `2` is spliced verbatim — never empty, never a parse error.
+    assert new_contents["use.py"] == "r = ((10) + (2))\n"
+    assert "def fee" not in new_contents["defs.py"]
+    assert edits == {"defs.py": 1, "use.py": 1}
+
+
+def test_inline_same_module_default_still_byte_identical(tmp_path):
+    """The same-module default path is unchanged: defining source == call source,
+    so the default splice is byte-identical to before the cross-file fix."""
+    defined_in, blockers, new_contents, edits = _pin(
+        tmp_path,
+        {"m.py": "def fee(x, y=9):\n    return x + y\n\nz = fee(1)\n"},
+        "fee",
+    )
+    assert blockers == []
+    assert defined_in == "m.py"
+    assert new_contents["m.py"] == "z = ((1) + (9))\n"

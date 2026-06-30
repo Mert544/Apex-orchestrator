@@ -17,7 +17,12 @@ from app.engine.ascend import (
 def _debt_project(tmp_path: Path) -> Path:
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
+    # ``__all__ = []`` makes ``render`` provably NON-public so the dead-params
+    # public-API rail permits dropping its dead ``color`` param (its only caller
+    # is the in-project test, which the suite gate + auto-rollback proves). The
+    # declared (if empty) ``__all__`` also leaves wire-module-exports satisfied.
     (tmp_path / "app" / "m.py").write_text(
+        "__all__ = []\n\n\n"
         "def render(text, color=None, width=80):\n"
         "    if text == None:\n        return dict()\n"
         "    return text[:width]\n", encoding="utf-8")

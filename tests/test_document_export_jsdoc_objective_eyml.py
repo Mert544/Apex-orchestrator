@@ -393,7 +393,12 @@ def test_refuses_on_python_soundness_corpus():
         repo_root,
     )
 
-    corpus = corpus_refusal_findings(repo_root(), include_heavy=True)
+    # ``only`` slices the sweep to THIS objective's row (byte-identical to its row in the
+    # full sweep — the sweep is per-objective independent), so the test pays just this
+    # objective's cost, not the whole ~2-minute heavy sweep, staying under the per-test
+    # timeout even under a parallel-chunked gate.
+    corpus = corpus_refusal_findings(repo_root(), include_heavy=True,
+                                     only={"document-export-jsdoc"})
     cells = corpus.get("document-export-jsdoc", {})
     assert cells, "document-export-jsdoc should be swept in the heavy corpus path"
     for shape, verdict in cells.items():

@@ -645,11 +645,14 @@ def test_refuses_on_java_false_final_corpus_shape():
     # field reassigned in a nested inner class (so `final` would be a COMPILE ERROR).
     # java-finalize-field MUST refuse it — the whole-file assignment scan catches the
     # inner-class write. This is the K2-class never-fake-green guarantee for Java. (The
-    # heavy sweep is process-memoized in soundness_audit, so the first corpus test pays
-    # for it and every later one reuses the result — keeping the suite under the timeout.)
+    # heavy sweep is process-memoized in soundness_audit; ``only`` further slices it to
+    # THIS objective's row — byte-identical to its row in the full sweep (per-objective
+    # independent) — so the test pays just this objective's JVM cost, not the whole
+    # ~2-minute heavy sweep, keeping it under the per-test timeout under a chunked gate.)
     from app.engine.soundness_audit import corpus_refusal_findings, repo_root
 
-    corpus = corpus_refusal_findings(repo_root(), include_heavy=True)
+    corpus = corpus_refusal_findings(repo_root(), include_heavy=True,
+                                     only={"java-finalize-field"})
     cells = corpus.get("java-finalize-field", {})
     assert cells, "java-finalize-field should be swept in the heavy corpus path"
     assert cells.get("java_false_final") == "refused"
