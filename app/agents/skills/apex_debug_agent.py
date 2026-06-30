@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from app.agents.skills.finding import Finding, Severity
 
@@ -68,9 +68,9 @@ class ApexDebugAgent:
     def __init__(self, project_root: str | Path, min_severity: str = "low") -> None:
         self.project_root = Path(project_root).resolve()
         self.min_severity = min_severity
-        self._last_result: Optional[AgentAnalysisResult] = None
+        self._last_result: AgentAnalysisResult | None = None
 
-    def _resolve_target(self, target: Optional[str]) -> Optional[Path]:
+    def _resolve_target(self, target: str | None) -> Path | None:
         """Resolve a target to an existing path, or None if it does not exist."""
         path = Path(target) if target else self.project_root
         if not path.exists():
@@ -80,7 +80,7 @@ class ApexDebugAgent:
         return path
 
     @staticmethod
-    def _finding_from_raw(raw: dict, min_sev: Severity) -> Optional[Finding]:
+    def _finding_from_raw(raw: dict, min_sev: Severity) -> Finding | None:
         """Build a Finding from one raw scan entry, or None if below threshold."""
         sev = _SEVERITY.get(str(raw.get("severity", "low")).lower(), Severity.LOW)
         if sev < min_sev:
@@ -107,7 +107,7 @@ class ApexDebugAgent:
 
     @staticmethod
     def _apply_category_filter(
-        findings: list[Finding], categories: Optional[list[str]]
+        findings: list[Finding], categories: list[str] | None
     ) -> list[Finding]:
         """Drop findings when caller asked for categories other than security."""
         if categories and "security" not in categories:
@@ -116,9 +116,9 @@ class ApexDebugAgent:
 
     def run(
         self,
-        target: Optional[str] = None,
-        categories: Optional[list[str]] = None,
-        exclude: Optional[set[str]] = None,
+        target: str | None = None,
+        categories: list[str] | None = None,
+        exclude: set[str] | None = None,
     ) -> AgentAnalysisResult:
         """Run security analysis via Apex's SecurityAgent (AST-based, in-process)."""
         from app.agents.skills.security_agent import SecurityAgent
@@ -143,7 +143,7 @@ class ApexDebugAgent:
         self._last_result = result
         return result
 
-    def analyze(self, target: Optional[str] = None, **kwargs: Any) -> list[Finding]:
+    def analyze(self, target: str | None = None, **kwargs: Any) -> list[Finding]:
         """Alias for run() that returns the raw findings list."""
         return self.run(target=target, **kwargs).findings
 
@@ -159,7 +159,7 @@ class ApexDebugAgent:
             "message": result.message,
         }
 
-    def to_epistemic_claims(self, findings: Optional[list[Finding]] = None) -> list[dict]:
+    def to_epistemic_claims(self, findings: list[Finding] | None = None) -> list[dict]:
         """Convert findings into epistemic memory claims for the orchestrator."""
         if findings is None:
             findings = self._last_result.findings if self._last_result else []

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from app.agents.skills.finding import Finding
 
@@ -25,7 +24,7 @@ class WorkflowResult:
     findings: list[Finding] = field(default_factory=list)
     fixed_files: list[str] = field(default_factory=list)
     test_passed: bool = False
-    report_path: Optional[str] = None
+    report_path: str | None = None
     errors: list[str] = field(default_factory=list)
 
 
@@ -46,7 +45,7 @@ class CrossRepoWorkflow:
         fix: bool = False,
         test: bool = False,
         output_format: str = "html",
-        exclude: Optional[set[str]] = None,
+        exclude: set[str] | None = None,
     ) -> WorkflowResult:
         """Run the complete workflow.
 
@@ -63,7 +62,7 @@ class CrossRepoWorkflow:
         findings: list[Finding] = []
         fixed_files: list[str] = []
         test_passed = False
-        report_path: Optional[str] = None
+        report_path: str | None = None
 
         # Step 1: Analysis
         try:

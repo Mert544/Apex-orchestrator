@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -35,5 +34,5 @@ class ResearchNode(BaseModel):
     counterfactuals: list[str] = Field(default_factory=list)
 
     status: NodeStatus = NodeStatus.NEW
-    stop_reason: Optional[StopReason] = None
+    stop_reason: StopReason | None = None
     depth: int = 0
