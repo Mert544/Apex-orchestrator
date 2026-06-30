@@ -86,6 +86,29 @@
 //                          This is the Java analogue of document-param /
 //                          js-document-param-types.
 //                          Exit 2 (REFUSE) on ANY parse error diagnostic.
+//   return-targets <file> -> JSON [{name, returnType, insertOffset}]: every method that
+//                          DECLARES a NON-void, NON-constructor return type
+//                          (`MethodTree.getReturnType()` is non-null and not the `void`
+//                          PrimitiveTypeTree) but has NO Javadoc
+//                          (`Trees.getDocComment(path)` is null), in source order, where
+//                          `insertOffset` is the byte offset just before the method's
+//                          start (at its modifiers) at which splicing a
+//                          `/** ... @return <type> ... */` Javadoc block documents the
+//                          DECLARED return type. `returnType` is the VERBATIM source text
+//                          of the return-type tree (sliced out of the source between the
+//                          tree's start/end byte offsets — NOT `Tree.toString()`, which can
+//                          normalize generics/annotations/whitespace; the source slice is
+//                          byte-faithful, the "verbatim declared fact" discipline). A
+//                          Javadoc is a COMMENT, so it changes ZERO declared structure (the
+//                          fact-set re-parse oracle stays identical). REFUSES (omits) a
+//                          method that ALREADY carries a Javadoc (merging an existing block
+//                          is out of scope, AND keeps this disjoint from param-targets /
+//                          doc-targets — whichever lands first makes the method documented,
+//                          so the others then refuse it), a `void`-returning method (a
+//                          `@return void` is content-free), a CONSTRUCTOR (no return type),
+//                          or one whose return-type/start span is unreadable. This is the
+//                          Java analogue of document-returns / js-document-returns-inferred.
+//                          Exit 2 (REFUSE) on ANY parse error diagnostic.
 //
 // Determinism: no clock, no randomness; types/fields/methods are SORTED, targets are
 // reported in source order; JSON keys are emitted in a fixed order. `insertOffset`
@@ -103,6 +126,7 @@ import com.sun.source.tree.MemberSelectTree;
 import com.sun.source.tree.MethodInvocationTree;
 import com.sun.source.tree.MethodTree;
 import com.sun.source.tree.ModifiersTree;
+import com.sun.source.tree.PrimitiveTypeTree;
 import com.sun.source.tree.Tree;
 import com.sun.source.tree.UnaryTree;
 import com.sun.source.tree.VariableTree;
@@ -114,6 +138,7 @@ import com.sun.source.util.TreeScanner;
 import com.sun.source.util.Trees;
 
 import javax.lang.model.element.Modifier;
+import javax.lang.model.type.TypeKind;
 import javax.tools.DiagnosticCollector;
 import javax.tools.JavaCompiler;
 import javax.tools.JavaFileObject;
@@ -701,6 +726,111 @@ public final class ApexJavaDriver {
         offsets.add(insert);
     }
 
+    // --- return-targets: undocumented methods with a non-void return type -----
+
+    private static void cmdReturnTargets(String file) {
+        Parsed p = parseOrRefuse(file);
+        List<String> orderedNames = new ArrayList<>();
+        List<String> orderedReturns = new ArrayList<>();
+        List<Long> orderedOffsets = new ArrayList<>();
+        collectReturnTargets(p, orderedNames, orderedReturns, orderedOffsets);
+        // Emit in source order (the method-declaration order the scanner visits).
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < orderedNames.size(); i++) {
+            if (i > 0) {
+                sb.append(",");
+            }
+            sb.append("{\"name\":");
+            appendJsonString(sb, orderedNames.get(i));
+            sb.append(",\"returnType\":");
+            appendJsonString(sb, orderedReturns.get(i));
+            sb.append(",\"insertOffset\":").append(orderedOffsets.get(i)).append("}");
+        }
+        sb.append("]");
+        System.out.print(sb);
+    }
+
+    /** Every method that DECLARES a non-void, non-constructor return type but carries
+     * NO Javadoc, with the VERBATIM source text of its declared return type (read off
+     * the type tree's source span, source order) and the byte offset just before the
+     * method's start where a leading Javadoc block splices in. A TreePathScanner is used
+     * because Trees.getDocComment needs the method's TreePath: an EXISTING Javadoc is
+     * refused (merging is out of scope, exactly as the param-targets / doc-targets /
+     * Python document-returns document only the undocumented). Source order is the visit
+     * order of the methods. */
+    private static void collectReturnTargets(Parsed p, List<String> names,
+                                             List<String> returnTypes,
+                                             List<Long> offsets) {
+        Trees trees = p.trees;
+        new TreePathScanner<Void, Void>() {
+            @Override
+            public Void visitMethod(MethodTree node, Void unused) {
+                considerReturnMethod(node, getCurrentPath(), trees, p, names, returnTypes,
+                        offsets);
+                return super.visitMethod(node, unused);
+            }
+        }.scan(p.unit, null);
+    }
+
+    private static void considerReturnMethod(MethodTree method, TreePath path, Trees trees,
+                                             Parsed p, List<String> names,
+                                             List<String> returnTypes,
+                                             List<Long> offsets) {
+        Tree rt = method.getReturnType();
+        // REFUSE: a constructor has no return type (getReturnType() is null) — nothing to
+        // document, exactly as the Python document-returns refuses a function with no
+        // declared return.
+        if (rt == null) {
+            return;
+        }
+        // REFUSE: a `void` return type — a `@return` on a void method is content-free (the
+        // direct analogue of param-targets refusing zero params, and the Python
+        // document-returns refusing a `None`/`NoReturn` head). `void` is the ONLY
+        // PrimitiveTypeTree whose kind is VOID.
+        if (rt instanceof PrimitiveTypeTree
+                && ((PrimitiveTypeTree) rt).getPrimitiveTypeKind() == TypeKind.VOID) {
+            return;
+        }
+        // REFUSE: a method that ALREADY carries a Javadoc — merging an existing block is
+        // out of scope (mirrors param-targets / doc-targets / document-returns documenting
+        // only the undocumented, AND keeps java-document-returns disjoint from
+        // java-document-param / java-document-throws: whichever lands first makes the
+        // method documented, so the others then refuse it — no double Javadoc block). A
+        // null doc-comment is the "no Javadoc" signal.
+        if (trees.getDocComment(path) != null) {
+            return;
+        }
+        // Read the declared return-type text VERBATIM off the type tree's SOURCE SPAN
+        // (start..end byte offsets sliced out of p.source) — NOT Tree.toString(), which can
+        // normalize generics/annotations/whitespace. The source slice is byte-faithful,
+        // the family's "verbatim declared fact, never invented" discipline.
+        String returnType = returnTypeText(rt, p);
+        if (returnType == null) {
+            return;  // an unreadable return-type span — refuse rather than guess the text
+        }
+        long insert = methodInsertOffset(method, p);
+        if (insert < 0) {
+            return;  // an unreadable method span — refuse rather than splice at a guess
+        }
+        names.add(String.valueOf(method.getName()));
+        returnTypes.add(returnType);
+        offsets.add(insert);
+    }
+
+    /** The VERBATIM source text of a return-type tree (the slice of p.source between the
+     * tree's start and end byte offsets), or null when the span is unreadable / empty.
+     * Byte-faithful (preserves the author's generics/annotations/whitespace exactly),
+     * never an AST unparse. */
+    private static String returnTypeText(Tree rt, Parsed p) {
+        long start = p.positions.getStartPosition(p.unit, rt);
+        long end = p.positions.getEndPosition(p.unit, rt);
+        if (start < 0 || end < start || end > p.source.length()) {
+            return null;  // an unreadable/synthetic span — refuse rather than guess
+        }
+        String text = p.source.substring((int) start, (int) end);
+        return text.isEmpty() ? null : text;
+    }
+
     // --- JSON emit (fixed key order, deterministic) --------------------------
 
     private static void appendStringList(StringBuilder sb, List<String> values) {
@@ -783,8 +913,13 @@ public final class ApexJavaDriver {
             cmdParamTargets(args[1]);
             return;
         }
+        if (args.length == 2 && "return-targets".equals(args[0])) {
+            cmdReturnTargets(args[1]);
+            return;
+        }
         System.err.println("usage: ApexJavaDriver.java parse-verify <file> | "
-                + "final-targets <file> | doc-targets <file> | param-targets <file>");
+                + "final-targets <file> | doc-targets <file> | param-targets <file> | "
+                + "return-targets <file>");
         System.exit(REFUSE);
     }
 }

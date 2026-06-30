@@ -408,8 +408,8 @@ def test_object_count_pins_unchanged_by_the_bridge_flip():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 90
-    assert len(classify_objectives(names)["CONCRETE"]) == 45
+    assert len(names) == 91
+    assert len(classify_objectives(names)["CONCRETE"]) == 46
 
 
 # ── 8. the buyer-proof transcript: an INDEPENDENT tiny project ────────────────

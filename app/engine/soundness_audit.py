@@ -114,6 +114,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "java-finalize-field": "java-final-modifier-add(runtime-noop)+private-field-never-reassigned-whole-file-scan+reparse-fact-set-identical-or-refuse(no-suite-needed)",
     "java-document-throws": "java-javadoc-throws-from-declared-throws-clause-verbatim+reparse-fact-set-identical-or-refuse(no-suite-needed)+refuse-already-documented",
     "java-document-param": "java-javadoc-param-from-declared-params-verbatim+reparse-fact-set-identical-or-refuse(no-suite-needed)+refuse-already-documented/no-param",
+    "java-document-returns": "java-javadoc-return-from-declared-return-type-source-span-verbatim+reparse-fact-set-identical-or-refuse(no-suite-needed)+refuse-void/constructor/already-documented/unreadable-span",
     "seal-final-method": "runtime-noop+transitive-subclass-scan(tests-incl)",
     "wire-module-exports": "behavior-identical-or-star-consumer-scan(tests-incl)",
     "wire-exports": "oracle-gated-scaffold(import-oracle)+additive-init",
@@ -467,6 +468,18 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # refuse a blank, never-assigned field (only an initializer-bearing, definitely-
     # assigned field is ever sealed).
     "java_blank_final": frozenset({"java-finalize-field"}),
+    # The Java content-free-return trap (the standing proof java-document-returns refuses
+    # the shape with nothing to document): a class with ONLY a `void` method and a
+    # constructor. A `void` method has no value to return, so a `@return void` Javadoc line
+    # would be content-free AND wrong (the direct analogue of the Python document-returns
+    # refusing a `None`/`NoReturn` head, and java-document-param refusing a zero-parameter
+    # method); a constructor has no return type at all (`getReturnType()` is null). So
+    # java-document-returns MUST REFUSE both — it documents only a method with a DECLARED
+    # non-void return type. The other doc objectives (java-document-param: no parameters;
+    # java-document-throws: no throws clause; java-finalize-field: no field) also find
+    # nothing here and cleanly refuse, so this shape pins exactly the void/constructor
+    # boundary.
+    "java_void_return": frozenset({"java-document-returns"}),
     # The raise-from del/unbound trap: a fixable ``raise X(...)`` in an ``except E as
     # err:`` handler that ``del``\s ``err`` BEFORE the raise. Appending ``from err``
     # would raise ``UnboundLocalError`` (the WRONG exception type + changed control

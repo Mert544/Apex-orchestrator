@@ -581,8 +581,8 @@ def test_counts_are_forty_one_concrete_of_eighty_three():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 90  # 89 after js-strengthen-tests (89th, CONCRETE) registered
-    assert len(classify_objectives(names)["CONCRETE"]) == 45  # js-strengthen-tests (89th) is CONCRETE
+    assert len(names) == 91  # 91 after java-document-returns (the Java Javadoc triad)
+    assert len(classify_objectives(names)["CONCRETE"]) == 46  # java-document-returns (46th CONCRETE)
 
 
 # --- the soundness-corpus refusal (the must-refuse shape) ---------------------

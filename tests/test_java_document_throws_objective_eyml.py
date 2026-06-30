@@ -596,9 +596,9 @@ def test_objective_spec_is_callable_and_flagged():
 def test_objective_total_is_seventy_nine():
     from app.engine.objective_compiler import available_objectives
 
-    # 87 after js-document-returns-inferred (the PLAIN-JS inferred-@returns JSDoc
-    # objective).
-    assert len(set(available_objectives())) == 90
+    # 91 after java-document-returns completed the Java Javadoc triad (@param + @throws +
+    # @return).
+    assert len(set(available_objectives())) == 91
 
 
 # --- PARITY ROW 1: move_value tier (the doc-surface 0.66 tier) ----------------
@@ -630,7 +630,7 @@ def test_parity_concrete_count_is_thirty_seven():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 45  # js-strengthen-tests (89th) is CONCRETE
+    assert len(buckets["CONCRETE"]) == 46  # java-document-returns (46th CONCRETE)
 
 
 # --- PARITY ROW 3: soundness-strategy manifest --------------------------------

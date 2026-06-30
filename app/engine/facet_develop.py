@@ -726,6 +726,26 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # its relative order is free.
     "the undocumented java method params to document": "java-document-param",
 
+    # A Java method that DECLARES a non-void, non-constructor return type but carries NO
+    # Javadoc: the Java mirror of Python document-returns / JS js-document-returns-inferred,
+    # completing the Java Javadoc contract triad (@param + @throws + @return).
+    # java-document-returns lands a FRESH Javadoc block with one `@return <type>` line
+    # carrying the DECLARED return type read VERBATIM off the return-type tree's SOURCE SPAN
+    # (the byte slice of the source — NOT Tree.toString(), which can normalize generics —
+    # so the author's generics/whitespace survive exactly; unlike the JS lane it is
+    # DECLARED, never inferred). A Javadoc is a COMMENT, so the edit is BEHAVIOUR-IDENTICAL
+    # (zero declared structure changes; a re-parse fact-set-identity check, no Maven/JUnit
+    # run); an already-documented method is refused (keeping it disjoint from
+    # java-document-param / java-document-throws), a `void`-returning method is refused (a
+    # `@return void` is content-free) and a constructor is refused (no return type). Its
+    # phrasing shares no whole key with "the undocumented java method params to document"
+    # (in either direction — "method return type to document" vs "method params to
+    # document") nor with any return-doc key ("the annotated return type to document" / "the
+    # documented return type to pin" / "the inferred return type to document in jsdoc" —
+    # none is a substring of "the undocumented java method return type to document" nor vice
+    # versa), so its relative order is free.
+    "the undocumented java method return type to document": "java-document-returns",
+
     # A method proven never overridden anywhere: seal-final-method seals it with
     # @typing.final (the method-level sibling of add-final — a type-checker-only
     # no-op, behaviour-preserving; the false-final risk is closed STRUCTURALLY by a

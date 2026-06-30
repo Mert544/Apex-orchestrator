@@ -75,6 +75,7 @@ _ABILITY_PHRASES: dict[str, str] = {
     "js-wire-exports": "wiring up JavaScript/TypeScript exports",
     "java-finalize-field": "marking Java fields final where they never change",
     "java-document-param": "documenting Java method parameters",
+    "java-document-returns": "documenting Java method return values",
 }
 
 _MAX_EXAMPLE_ABILITIES = 4

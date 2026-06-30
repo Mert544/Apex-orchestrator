@@ -239,7 +239,8 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("jsdoc", ("js-document-param-types", "document-export-jsdoc",
                "document-raises-jsdoc", "js-implement-from-jsdoc")),
     # --- Java -----------------------------------------------------------------
-    ("java", ("java-document-param", "java-document-throws", "java-finalize-field")),
+    ("java", ("java-document-param", "java-document-throws", "java-document-returns",
+              "java-finalize-field")),
     # --- restructure (long/sprawling code) ------------------------------------
     # "split this up", "break into smaller pieces", "this function is too long" —
     # the structural lenses. The synonym table already routes "split function"/
@@ -374,7 +375,7 @@ _CONTEXT_KEY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"|\b(add|make|mark|set|seal|declare|keep)\b.{0,25}\bfinal\b"),
     "java": re.compile(
         r"\bjava\b.{0,25}\b(throw|throws|finalize|field|class|method|document|"
-        r"param|params|parameter|parameters|interface|annotation)\b"
+        r"param|params|parameter|parameters|return|returns|interface|annotation)\b"
         r"|\b(document|finalize|seal|harden)\b.{0,25}\bjava\b"),
     "slots": re.compile(
         r"\b(add|use|with|give|generate|introduce)\b.{0,16}\bslots?\b"

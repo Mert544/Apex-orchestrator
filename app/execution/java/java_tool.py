@@ -36,11 +36,13 @@ __all__ = [
     "JavaFinalTarget",
     "JavaDocTarget",
     "JavaParamTarget",
+    "JavaReturnTarget",
     "JavaFacts",
     "DRIVER",
     "final_targets",
     "doc_targets",
     "param_targets",
+    "return_targets",
     "parse_facts",
     "reparse_facts_identical",
 ]
@@ -92,6 +94,26 @@ class JavaParamTarget:
 
     name: str
     params: tuple[str, ...]
+    insert_offset: int
+
+
+@dataclass(frozen=True)
+class JavaReturnTarget:
+    """One method that DECLARES a non-``void``, non-constructor return type but carries
+    NO Javadoc, with the VERBATIM source text of that declared return type
+    (``return_type``) and the byte ``insert_offset`` at the method's start where a leading
+    ``/** ... @return <type> ... */`` Javadoc block splices in — a pure byte-offset insert
+    of a COMMENT, not an unparse. ``name`` is the method's simple name (the fact-only
+    summary the block leads with). ``return_type`` is read VERBATIM off the return-type
+    tree's SOURCE SPAN (``MethodTree.getReturnType()`` start..end byte offsets, sliced out
+    of the source — NOT ``Tree.toString()``, which can normalize generics/annotations/
+    whitespace), so it is byte-faithful to the declaration, NEVER inferred. A Javadoc
+    changes ZERO declared structure, so the spliced file re-parses fact-identical (see
+    :func:`reparse_facts_identical`). The Java analogue of the Python ``document-returns``
+    / JS ``js-document-returns-inferred`` target."""
+
+    name: str
+    return_type: str
     insert_offset: int
 
 
@@ -188,6 +210,27 @@ def param_targets(root: Path, rel: str) -> list[JavaParamTarget]:
     return [JavaParamTarget(name=d["name"],
                             params=tuple(d["params"]),
                             insert_offset=d["insertOffset"])
+            for d in data]
+
+
+def return_targets(root: Path, rel: str) -> list[JavaReturnTarget]:
+    """The methods in ``root/rel`` that DECLARE a non-``void``, non-constructor return
+    type but have NO Javadoc (empty on refuse). Conservative: a file that does not parse,
+    has no such method, or that the driver declines yields ``[]`` — nothing to document,
+    never a guess. The driver already applied the non-void / non-constructor /
+    no-existing-Javadoc gates.
+
+    Deterministic source order, exactly as the driver's ``return-targets`` emits. The
+    ``return_type`` text is carried VERBATIM off the return-type tree's SOURCE SPAN (the
+    declared type read byte-for-byte out of the source — ``int`` / ``String`` /
+    ``List<String>`` / ``Map<String,Integer>`` / ``boolean[]`` — never an AST unparse, so
+    the author's generics/whitespace survive exactly)."""
+    data = _driver_json(["return-targets", str(root / rel)], root)
+    if not isinstance(data, list):
+        return []
+    return [JavaReturnTarget(name=d["name"],
+                             return_type=d["returnType"],
+                             insert_offset=d["insertOffset"])
             for d in data]
 
 

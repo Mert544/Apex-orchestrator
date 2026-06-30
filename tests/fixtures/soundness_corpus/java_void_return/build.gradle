@@ -1,0 +1,13 @@
+// Marks this fixture as a single Java project root (the Gradle marker), so the
+// java-document-returns objective's single-project gate fires and it is SWEPT by the
+// soundness corpus — the Java analogue of the java_blank_final shape's marker. No
+// tasks/plugins: it is only a presence marker (parse-only, no build is ever run — the
+// objective is Tier-A structural reparse, never a Gradle run).
+//
+// Unlike java_undocumented_params (a LANDABLE), this shape is a TRAP java-document-returns
+// MUST REFUSE: it declares ONLY a `void` method (a `@return void` line is content-free AND
+// wrong) and a CONSTRUCTOR (no return type at all — `getReturnType()` is null). So it IS
+// listed in soundness_audit's `_SHAPE_MUST_REFUSE` mapped to {java-document-returns} — the
+// denetçi's standing, in-repo proof java-document-returns refuses the content-free shape,
+// never emitting a `@return void` block. Every other objective (no parameter, no throws
+// clause, no field) also finds nothing here and cleanly refuses.

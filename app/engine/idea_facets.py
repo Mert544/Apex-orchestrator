@@ -571,6 +571,23 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # refused. Appended after its Python/JS param siblings, so
                              # the originals lead.
                              "the undocumented java method params to document",
+                             # added: the JAVA mirror of document-returns /
+                             # js-document-returns-inferred — a Java method that DECLARES a
+                             # non-void, non-constructor return type but carries NO Javadoc,
+                             # which java-document-returns documents with a fresh Javadoc
+                             # block of one `@return <type>` line carrying the DECLARED
+                             # return type read VERBATIM off the return-type tree's SOURCE
+                             # SPAN (the byte slice of the source — NOT Tree.toString(); the
+                             # author's generics/whitespace survive exactly; unlike the JS
+                             # lane it is DECLARED, never inferred). A Javadoc is a COMMENT,
+                             # so the edit is behaviour-identical (a re-parse
+                             # fact-set-identity check, no Maven/JUnit run); an
+                             # already-documented method is refused (keeping it disjoint from
+                             # java-document-param / java-document-throws), a void-returning
+                             # method is refused (a `@return void` is content-free) and a
+                             # constructor is refused. Appended after its Java param sibling
+                             # (completing the Java Javadoc triad), so the originals lead.
+                             "the undocumented java method return type to document",
                              # added: a DOCUMENTED public Python CLASS with at least one
                              # class-level annotated field (`ast.AnnAssign`) whose
                              # docstring records no attributes — the document-attributes
