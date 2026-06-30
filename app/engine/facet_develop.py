@@ -211,6 +211,21 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # cover-gaps key above, so order versus them is free.
     "a surviving mutant the tests miss": "strengthen-tests",
 
+    # The JS/TS image of the surviving-mutant facet: an ALREADY-tested exported JS/TS
+    # function whose EXISTING jest test (its MINED ``expect(fn(args)).matcher(expected)``
+    # witnesses) is BLIND to a single-token mutant. The js-strengthen-tests objective
+    # (the LITE, mined-witness sibling of strengthen-tests) LANDS exactly the fix: it
+    # seeds a deterministic single-token mutant catalog, keeps the SURVIVORS (every
+    # mined witness still matches — no per-mutant buyer-suite run), and pins ONE
+    # env-gated ``expect(fn(<input>)).toEqual(<real output>)`` on an input where the
+    # real output DIVERGES from a survivor (it kills it), in an Apex-OWNED test file
+    # (the buyer's test is never edited). HONESTLY narrower than the Python mirror — it
+    # strengthens against the MINED witnesses, NOT arbitrary full-suite blind spots. Its
+    # phrasing ("the jest mutant the mined witnesses miss") is not a substring of "a
+    # surviving mutant the tests miss" above (nor of "the untested jest function to
+    # characterize" / any other key, nor any of them of it), so its order is free.
+    "the jest mutant the mined witnesses miss": "js-strengthen-tests",
+
     # Redundant control flow: equivalence-preserving tidies the ``simplify`` lens
     # now zooms into (the "redundant control flow" aspect's L3 sub-aspects in
     # idea_facets). Each phrase names one provably-equivalent-but-noisier shape and

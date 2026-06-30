@@ -137,6 +137,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "pin-doctest": "additive+oracle-gate(doctest-captured-then-verified)",
     "scaffold-from-protocol": "oracle-gated-scaffold(instantiation-oracle)+impact-scoped-derived-from-gate",
     "strengthen-tests": "additive+env-reproducible-oracle-gate",
+    "js-strengthen-tests": "additive-apex-owned-test+mined-witness-divergence(survival-vs-MINED-jest-witnesses,NO-per-mutant-suite-run)+env-reproducible-oracle-gate(js-execution-capture,varied-TZ/cwd/HOME/TMPDIR+wallclock)+green-witness-baseline-or-refuse+never-persist-mutant(in-memory-only)+never-clobber-existing-buyer-test+forced-jest-gate-RED→GREEN+byte-rollback",
     "cover-gaps": "additive+env-reproducible-oracle-gate",
     "implement-stub": "additive-fill+impact-scoped-suite-gate",
     "tdd-implement": "additive-fill+impact-scoped-suite-gate",
@@ -219,6 +220,14 @@ SCOPE_VERIFY_ALLOWLIST: frozenset[str] = frozenset({
     # is seeded from the tests exercising it; the generated test's own forced jest gate
     # is the independent correctness proof and the full suite the commit-time backstop.
     "js-cover-gaps",
+    # js-strengthen-tests lands a brand-new Apex-owned
+    # ``<dir>/__tests__/<stem>.apex-mutants.cover.test.<ext>`` that no other test
+    # imports, so on a multi-module JS project an UNRELATED still-red module would
+    # veto the jest-proven mutant-killing assertion under a full-suite gate. It
+    # carries the SOURCE module in ``RenamePlan.derived_from`` so the impact scope is
+    # seeded from the tests exercising it; the generated test's own forced jest gate
+    # is the independent correctness proof and the full suite the commit-time backstop.
+    "js-strengthen-tests",
     # scaffold-from-protocol lands a brand-new ``<stem>_impl.py`` that no test
     # imports yet, so its impact-scope gate would degrade to the full suite and an
     # unrelated still-red module would veto the oracle-proven scaffold on a
@@ -430,6 +439,18 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # re-capture gate (varied TZ/cwd/HOME/TMPDIR + a wall-clock gap). Never land a
     # fake-green value oracle on an env-fragile return.
     "js_env_fragile_return": frozenset({"js-cover-gaps"}),
+    # The js-strengthen-tests analogue of env_fragile_return (its durable soundness
+    # guarantee): an EXPORTED JS function whose return reads the clock / random source
+    # AND that HAS a linked jest test mining witnesses (so it is NOT refused at the
+    # locate/witness stage — it reaches the value gates). A mutant-killing assertion
+    # pinning its real output would pass the jest gate ONCE then go RED later — the
+    # moat's cardinal fake-green sin. js-strengthen-tests MUST refuse it: the driver's
+    # AST ``pure`` scan catches the direct ``Date``/``Math.random`` reference (so the
+    # target is dropped before any oracle), and even a transitive read that slips the
+    # scan is caught by the SAME env-reproducibility re-capture gate js-cover-gaps
+    # uses (varied TZ/cwd/HOME/TMPDIR + a wall-clock gap). Never land a fake-green
+    # mutant-killing oracle on an env-fragile return.
+    "js_strengthen_env_fragile": frozenset({"js-strengthen-tests"}),
     # The Java analogue of provenance_trap: a PRIVATE field that LOOKS never-reassigned
     # to a method-local scan (the enclosing class only READS it) but is REASSIGNED by a
     # nested inner class — so `final` would be a COMPILE ERROR, not a runtime no-op.
@@ -656,7 +677,8 @@ def corpus_refusal_findings(repo_root: str | Path,
 # module) but is not registry-``expensive``, so it is named here. Kept tiny and
 # explicit — a reviewable analogue of the manifest, validated by a test that asserts
 # the fast sweep stays cheap.
-_ORACLE_BACKED: frozenset[str] = frozenset({"cover-gaps", "js-cover-gaps"})
+_ORACLE_BACKED: frozenset[str] = frozenset(
+    {"cover-gaps", "js-cover-gaps", "js-strengthen-tests"})
 
 
 def heavy_objective_names() -> set[str]:

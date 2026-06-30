@@ -559,15 +559,15 @@ def test_north_star_and_soundness_audits_pass():
     assert snd["violations"] == []
 
 
-# --- count-pins (88 total / 43 CONCRETE after js-cover-gaps) ------------------
+# --- count-pins (89 total / 44 CONCRETE after js-strengthen-tests) ------------
 
 def test_objective_count_pins():
     from app.engine.north_star_audit import classify_objectives
     from app.engine.objective_compiler import available_objectives
 
     names = available_objectives()
-    assert len(set(names)) == 88  # 88 after js-cover-gaps (88th) registered
-    assert len(classify_objectives(names)["CONCRETE"]) == 43  # js-cover-gaps is CONCRETE
+    assert len(set(names)) == 89  # 89 after js-strengthen-tests (89th) registered
+    assert len(classify_objectives(names)["CONCRETE"]) == 44  # js-cover-gaps is CONCRETE
 
 
 # --- the new soundness-corpus fixture refuses (the durable denetçi) -----------

@@ -103,6 +103,20 @@
 //                             SOUND input slice (zero-arg / all-primitive-typed /
 //                             all-literal-default) and REFUSES the rest. Exit 2 on
 //                             parse error.
+//   mutate <file> <name>   -> JSON: the single-token MUTANT catalog for the
+//                             EXPORTED cover target <name> in <file>, as
+//                             [{operator, original, mutated, start, end}] — each a
+//                             UTF-16 code-unit span splice for the js-strengthen-tests
+//                             (LITE) gap-FINDER. Mirrors the Python mutation_tester
+//                             operator set: comparison flips (`===`->`!==`, `<`->`>=`),
+//                             off-by-one boundary (`<`->`<=`), arithmetic (`+`->`-`),
+//                             boolean (`&&`->`||`), bool-const (true<->false), numeric
+//                             `n`->`n+1`, `return X`->`return undefined`. Sites in
+//                             document order, a FIXED cap, no clock/random. Read-only:
+//                             the Python side applies each splice to an IN-MEMORY copy
+//                             (NEVER persisted) and decides survival against the
+//                             function's MINED witnesses. Empty list when <name> is not
+//                             an exported cover target. Exit 2 on parse error.
 //
 // Determinism: no clock, no randomness; functions are reported in source order;
 // JSON keys are emitted in a fixed order. A UTF-16-code-unit-span splice
@@ -1232,6 +1246,207 @@ function collectCoverTargets(sf) {
   return out;
 }
 
+// --- js-strengthen-tests: the read-only single-token MUTATION seeder ----------
+//
+// The gap-FINDER for js-strengthen-tests (the LITE mined-witness variant). Given
+// the name of one exported PURE function, locate the single-token operator/constant
+// spans in its OWN body and emit a fixed, deterministic catalog of MUTANTS — each a
+// UTF-16-code-unit span splice the Python side applies to an IN-MEMORY copy (NEVER
+// persisted). The catalog MIRRORS the Python `mutation_tester` operator set:
+// comparison flips (`===`->`!==`, `<`->`>=`, ...), the off-by-one BOUNDARY flips
+// (`<`->`<=`), arithmetic (`+`->`-`), boolean (`&&`->`||`), bool-const (true<->false),
+// numeric `n`->`n+1`, and `return X`->`return undefined`. Each mutant is a gap-finder
+// ONLY: the Python side decides SURVIVAL against the function's MINED test witnesses
+// (no per-mutant buyer-suite run) and lands a single env-gated characterization
+// assertion that kills a survivor. Deterministic: sites in document (offset) order,
+// a fixed per-token catalog, a fixed cap — no clock, no randomness.
+
+// The cap on mutants emitted per function — a fixed bound (no clock/random) so a
+// huge body's seed set stays bounded and deterministic. Mirrors the spirit of the
+// Python mutation engine's own per-module cap.
+const _MUTANT_CAP = 40;
+
+// Comparison-operator flips, keyed by the VERBATIM operator-token text (read via
+// `operatorToken.getText` so the `<`-is-`FirstBinaryOperator` kind-alias never
+// trips us). Each maps the written token to the negated/flipped token. The JS image
+// of mutation_tester's `_COMPARE_FLIPS` (`===`/`!==` are the JS strict forms).
+const _COMPARE_FLIPS = {
+  "===": "!==", "!==": "===", "==": "!=", "!=": "==",
+  "<": ">=", ">=": "<", ">": "<=", "<=": ">",
+};
+
+// Comparison BOUNDARY flips — the off-by-one fault class (`<`<->`<=`, `>`<->`>=`),
+// distinct from the negation flips above and carried under a distinct operator label
+// so the two never collide. The JS image of `_COMPARE_BOUNDARY_FLIPS`.
+const _COMPARE_BOUNDARY_FLIPS = {
+  "<": "<=", "<=": "<", ">": ">=", ">=": ">",
+};
+
+// Arithmetic-operator flips on a binary expression. The JS image of `_BINOP_FLIPS`.
+const _BINOP_FLIPS = { "+": "-", "-": "+", "*": "/", "/": "*" };
+
+// Boolean-connective flips on a binary expression (`&&`/`||`). The JS image of
+// `_BOOLOP_FLIPS` (`and`/`or` in Python).
+const _BOOLOP_FLIPS = { "&&": "||", "||": "&&" };
+
+// A binary-operator token's catalog mutations, as `[{operator, mutated}]` in a
+// fixed order: comparison flip first, then boundary, then arithmetic, then boolean.
+// A token appears under at most the categories that define it (a `<` yields both a
+// `comparison:` and a `boundary:` mutant — exactly like the Python engine seeds both
+// at one site). Pure table lookups, no clock/random.
+function binaryOpMutations(opText) {
+  const out = [];
+  if (Object.prototype.hasOwnProperty.call(_COMPARE_FLIPS, opText)) {
+    out.push({ operator: "comparison:" + opText, mutated: _COMPARE_FLIPS[opText] });
+  }
+  if (Object.prototype.hasOwnProperty.call(_COMPARE_BOUNDARY_FLIPS, opText)) {
+    out.push({ operator: "boundary:" + opText, mutated: _COMPARE_BOUNDARY_FLIPS[opText] });
+  }
+  if (Object.prototype.hasOwnProperty.call(_BINOP_FLIPS, opText)) {
+    out.push({ operator: "arith:" + opText, mutated: _BINOP_FLIPS[opText] });
+  }
+  if (Object.prototype.hasOwnProperty.call(_BOOLOP_FLIPS, opText)) {
+    out.push({ operator: "boolop:" + opText, mutated: _BOOLOP_FLIPS[opText] });
+  }
+  return out;
+}
+
+// Collect the single-token mutants of a function-like node's body, in document
+// order. Each entry is `{operator, original, mutated, start, end}` where
+// `start`/`end` are the UTF-16 code-unit span of the token to splice (the Python
+// side re-indexes them to code points). Walks the WHOLE body subtree (a mutant
+// anywhere in the body is a valid gap-finder), collecting:
+//   * binary-operator tokens -> comparison/boundary/arith/boolean flips;
+//   * `true`/`false` keyword tokens -> the bool-const flip;
+//   * numeric literals -> `n`->`<n+1>` (a deterministic numeric perturbation);
+//   * a `return <expr>` whose expression is not already `undefined`/void ->
+//     `return undefined` (splice the EXPRESSION span with `undefined`).
+// The site list is sorted by (start, operator) and capped at `_MUTANT_CAP`, so the
+// emission is deterministic and bounded.
+function collectMutants(fnNode, sf) {
+  const body = fnNode.body;
+  if (!body) return [];
+  const out = [];
+  function pushSpan(operator, original, mutated, start, end) {
+    out.push({ operator: operator, original: original, mutated: mutated,
+               start: start, end: end });
+  }
+  function visit(n) {
+    if (ts.isBinaryExpression(n)) {
+      const tok = n.operatorToken;
+      const opText = tok.getText(sf);
+      const start = tok.getStart(sf);
+      const end = tok.getEnd();
+      for (const m of binaryOpMutations(opText)) {
+        pushSpan(m.operator, opText, m.mutated, start, end);
+      }
+    }
+    // A bare `true`/`false` keyword (a value-position boolean constant).
+    if (n.kind === ts.SyntaxKind.TrueKeyword || n.kind === ts.SyntaxKind.FalseKeyword) {
+      const isTrue = n.kind === ts.SyntaxKind.TrueKeyword;
+      pushSpan("boolconst:" + (isTrue ? "true" : "false"),
+               isTrue ? "true" : "false", isTrue ? "false" : "true",
+               n.getStart(sf), n.getEnd());
+    }
+    // A numeric literal -> n+1 (a deterministic single-step perturbation). Only a
+    // plain decimal integer/float we can re-emit as `Number(text) + 1` is mutated;
+    // a non-finite or unparseable literal is skipped (conservative).
+    if (ts.isNumericLiteral(n)) {
+      const text = n.getText(sf);
+      const val = Number(text);
+      if (Number.isFinite(val)) {
+        // Integer -> integer+1; otherwise the parsed value + 1 (still a literal).
+        const next = Number.isInteger(val) ? String(val + 1) : String(val + 1);
+        pushSpan("number:" + text, text, next, n.getStart(sf), n.getEnd());
+      }
+    }
+    // `return <expr>` -> `return undefined` (splice the EXPRESSION span). Skip a
+    // bare `return;` (no expression) and an already-`undefined` return (no fault).
+    if (ts.isReturnStatement(n) && n.expression) {
+      const exprText = n.expression.getText(sf);
+      if (exprText !== "undefined") {
+        pushSpan("return:undefined", exprText, "undefined",
+                 n.expression.getStart(sf), n.expression.getEnd());
+      }
+    }
+    ts.forEachChild(n, visit);
+  }
+  visit(body);
+  // Deterministic order: by span start, then operator label (a token with two
+  // mutants — e.g. a `<` comparison + boundary — orders them by label). Capped.
+  out.sort((a, b) => (a.start - b.start) || (a.operator < b.operator ? -1
+                      : a.operator > b.operator ? 1 : 0));
+  return out.slice(0, _MUTANT_CAP);
+}
+
+// Resolve one EXPORTED, characterizable target by NAME to its function-like node,
+// or null. Reuses `collectCoverTargets`'s addressing (ESM + CJS named/reference/
+// object exports) by re-walking the SAME declaration map: the strengthen seeder
+// only mutates a function that `cover-targets` would also surface (an exported,
+// public, undecorated, non-async, non-generator, param-readable target), so the two
+// objectives agree on what a target IS. Returns the function-like node whose body
+// is mutated. Pure AST, deterministic (first matching declaration).
+function resolveCoverTargetNode(sf, name) {
+  const targets = collectCoverTargets(sf);
+  if (!targets.some((t) => t.name === name)) return null;  // not a cover target
+  // Re-walk to find the function NODE bound to `name` (collectCoverTargets returns
+  // facts, not nodes). Mirror its addressing so the node matches the surfaced name.
+  const decls = topLevelFunctionDecls(sf);
+  let found = null;
+  function consider(pubName, fnNode) {
+    if (found === null && pubName === name) found = fnNode;
+  }
+  for (const stmt of sf.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name && isExported(stmt)) {
+      consider(stmt.name.text, stmt);
+    } else if (ts.isVariableStatement(stmt) && isExported(stmt)) {
+      for (const decl of stmt.declarationList.declarations) {
+        const init = decl.initializer;
+        if (init && ts.isIdentifier(decl.name)
+            && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
+          consider(decl.name.text, init);
+        }
+      }
+    } else if (ts.isExpressionStatement(stmt) && ts.isBinaryExpression(stmt.expression)
+               && stmt.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const lhs = stmt.expression.left;
+      const rhs = stmt.expression.right;
+      if (ts.isPropertyAccessExpression(lhs)) {
+        const root = assignmentRootName(lhs);
+        if ((root === "module" || root === "exports") && lhs.name && lhs.name.text !== "exports") {
+          if (ts.isArrowFunction(rhs) || ts.isFunctionExpression(rhs)) {
+            consider(lhs.name.text, rhs);
+          } else if (ts.isIdentifier(rhs)) {
+            const d = decls.get(rhs.text);
+            if (d) consider(lhs.name.text, d.fnNode);
+          }
+        }
+      }
+      const isWholeExports = ts.isPropertyAccessExpression(lhs)
+        && assignmentRootName(lhs) === "module" && lhs.name && lhs.name.text === "exports"
+        && !ts.isPropertyAccessExpression(lhs.expression);
+      const isBareExports = ts.isIdentifier(lhs) && lhs.text === "exports";
+      if ((isWholeExports || isBareExports) && ts.isObjectLiteralExpression(rhs)) {
+        for (const prop of rhs.properties) {
+          if (ts.isShorthandPropertyAssignment(prop)) {
+            const d = decls.get(prop.name.text);
+            if (d) consider(prop.name.text, d.fnNode);
+          } else if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)
+                     && ts.isIdentifier(prop.initializer)) {
+            const d = decls.get(prop.initializer.text);
+            if (d) consider(prop.name.text, d.fnNode);
+          } else if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)
+                     && (ts.isArrowFunction(prop.initializer)
+                         || ts.isFunctionExpression(prop.initializer))) {
+            consider(prop.name.text, prop.initializer);
+          }
+        }
+      }
+    }
+  }
+  return found;
+}
+
 function fail(message) {
   process.stderr.write(String(message) + "\n");
   process.exit(REFUSE);
@@ -1316,6 +1531,18 @@ function cmdCoverTargets(file) {
   process.stdout.write(JSON.stringify(collectCoverTargets(sf)));
 }
 
+function cmdMutate(file, name) {
+  const { sf } = readSource(file);
+  // <name> must resolve to an EXPORTED cover target (the same surface js-cover-gaps
+  // characterizes); otherwise emit an empty mutant list (the Python side refuses).
+  const fnNode = resolveCoverTargetNode(sf, name);
+  if (fnNode === null) {
+    process.stdout.write(JSON.stringify([]));
+    return;
+  }
+  process.stdout.write(JSON.stringify(collectMutants(fnNode, sf)));
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const sub = argv[0];
@@ -1328,10 +1555,11 @@ function main() {
   if (sub === "wire-targets" && argv.length === 2) return cmdWireTargets(argv[1]);
   if (sub === "wire-verify" && argv.length === 2) return cmdWireVerify(argv[1]);
   if (sub === "cover-targets" && argv.length === 2) return cmdCoverTargets(argv[1]);
+  if (sub === "mutate" && argv.length === 3) return cmdMutate(argv[1], argv[2]);
   fail("usage: ts_driver.js scan <file> | mine <file> <name> "
        + "| mine-jsdoc <file> <name> | fill <file> <name> <body> "
        + "| doc-targets <file> | doc-verify <file> | wire-targets <file> | wire-verify <file> "
-       + "| cover-targets <file>");
+       + "| cover-targets <file> | mutate <file> <name>");
 }
 
 main();

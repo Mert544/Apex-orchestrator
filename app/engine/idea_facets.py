@@ -106,7 +106,15 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                             # cover-gaps), calling it with synthesized inputs and pinning
                             # the real return, env-reproducibility-gated. Appended, so the
                             # originals still lead and emit first.
-                            "the untested jest function to characterize"],
+                            "the untested jest function to characterize",
+                            # added: an ALREADY-tested exported JS/TS function whose
+                            # EXISTING jest test (its MINED witnesses) misses a
+                            # single-token mutant — js-strengthen-tests (the LITE
+                            # mined-witness sibling of strengthen-tests) lands ONE
+                            # env-gated characterization assertion that kills it,
+                            # strengthening against the MINED witnesses (NOT a full-suite
+                            # blind spot). Appended last, so the originals still lead.
+                            "the jest mutant the mined witnesses miss"],
     # simplify
     "dead code": ["unreferenced symbols", "unreachable branches", "redundant guards"],
     "duplicated logic": ["extract a shared helper", "parameterize the variants", "single source of truth"],
