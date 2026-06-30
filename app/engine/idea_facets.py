@@ -484,6 +484,18 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # unprovable-throw shape. Appended, so the originals still
                              # lead and emit first.
                              "the thrown error types to document in jsdoc",
+                             # added: an EXPORTED PLAIN-JS function/const-arrow with no
+                             # leading JSDoc and NO declared TS return type whose
+                             # return type is PROVABLE from its own literal `return`
+                             # statements — the js-document-returns-inferred objective
+                             # lands a JSDoc with one `@returns {T}` line (the literal
+                             # kind read verbatim: boolean/string/number/Array/Object/
+                             # ctor), the case document-export-jsdoc can't serve (it
+                             # needs a DECLARED TS return). DISJOINT by the typed-vs-
+                             # untyped split (fires only when no TS return is declared),
+                             # refusing a non-literal/void/null/heterogeneous return.
+                             # Appended, so the originals still lead and emit first.
+                             "the inferred return type to document in jsdoc",
                              # added: a DOCUMENTED public Python function with no
                              # `-> T` annotation whose docstring records no return —
                              # the pin-return-type objective splices ONE `Returns: <T>`

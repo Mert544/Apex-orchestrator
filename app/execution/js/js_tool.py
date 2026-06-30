@@ -83,7 +83,15 @@ class JsDocTarget:
     ``return_type`` text read VERBATIM off a TS return annotation (``None`` for
     plain JS / no annotation — the document-export-jsdoc honesty gate refuses
     those, a name+param-only JSDoc restating the signature adds nothing), the
-    ``throws_types`` — the DISTINCT thrown constructor names of the body in source
+    ``returns_inferred`` type PROVEN from the body's OWN literal ``return``
+    statements (``"boolean"``/``"string"``/``"number"``/``"Array"``/``"Object"``/a
+    constructor name), or ``None`` when ANY return is non-literal / void / ``null`` /
+    heterogeneous; js-document-returns-inferred surfaces this for PLAIN-JS exports a
+    declared annotation does not cover and the other JSDoc objectives ignore it. It
+    is DISJOINT from ``return_type`` by construction — that is the DECLARED TS
+    annotation (document-export-jsdoc's surface), this is inferred only where none is
+    declared, so js-document-returns-inferred fires ONLY when ``return_type is None``.
+    The ``throws_types`` — the DISTINCT thrown constructor names of the body in source
     order, read VERBATIM off each literal ``throw new <Identifier>(...)`` node, or
     ``None`` when ANY throw is an unprovable shape (a variable / call / member-ctor /
     re-throw); document-raises-jsdoc surfaces this as the ``@throws {Ctor}`` set and
@@ -96,6 +104,7 @@ class JsDocTarget:
     params: tuple[str, ...]
     param_types: tuple[str | None, ...]
     return_type: str | None
+    returns_inferred: str | None
     throws_types: tuple[str, ...] | None
     insert_offset: int
 
@@ -219,6 +228,7 @@ def doc_targets(root: Path, rel: str) -> list[JsDocTarget]:
     return [JsDocTarget(name=d["name"], params=tuple(d["params"]),
                         param_types=tuple(d["paramTypes"]),
                         return_type=d["returnType"],
+                        returns_inferred=d["returnsInferred"],
                         throws_types=(tuple(d["throwsTypes"])
                                       if d["throwsTypes"] is not None else None),
                         insert_offset=d["insertOffset"])

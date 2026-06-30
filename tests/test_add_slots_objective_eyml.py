@@ -778,10 +778,10 @@ def test_objective_registers_and_is_available():
 def test_objective_total_is_seventy_eight():
     from app.engine.objective_compiler import available_objectives
 
-    # 83 after document-attributes + document-yields (the class-attribute and
-    # generator-yield doc-splice objectives) self-registered; this count pin is the
-    # tripwire each new objective round bumps.
-    assert len(set(available_objectives())) == 86
+    # 87 after js-document-returns-inferred (the PLAIN-JS inferred-@returns JSDoc
+    # objective) self-registered; this count pin is the tripwire each new objective
+    # round bumps.
+    assert len(set(available_objectives())) == 87
 
 
 def test_objective_spec_is_callable():
@@ -828,7 +828,7 @@ def test_parity_concrete_count_is_thirty_six():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 41  # promote-staticmethod (85th) is TIDY, not CONCRETE
+    assert len(buckets["CONCRETE"]) == 42  # js-document-returns-inferred (87th) is CONCRETE
 
 
 # --- PARITY ROW 3: soundness-strategy manifest ------------------------------

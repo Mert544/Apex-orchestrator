@@ -513,9 +513,9 @@ def test_objective_spec_is_callable_and_flagged():
 def test_objective_total_is_seventy_eight():
     from app.engine.objective_compiler import available_objectives
 
-    # 83 after document-attributes + document-yields (the class-attribute and
-    # generator-yield doc-splice objectives).
-    assert len(set(available_objectives())) == 86
+    # 87 after js-document-returns-inferred (the PLAIN-JS inferred-@returns JSDoc
+    # objective).
+    assert len(set(available_objectives())) == 87
 
 
 # --- PARITY ROW 1: move_value tier (matches add-final's runtime-noop tier) ----
@@ -548,7 +548,7 @@ def test_parity_concrete_count_is_thirty_six():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 41  # promote-staticmethod (85th) is TIDY, not CONCRETE
+    assert len(buckets["CONCRETE"]) == 42  # js-document-returns-inferred (87th) is CONCRETE
 
 
 # --- PARITY ROW 3: soundness-strategy manifest --------------------------------

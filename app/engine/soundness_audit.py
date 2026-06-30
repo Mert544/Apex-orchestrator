@@ -132,6 +132,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "document-export-jsdoc": "jsdoc-leading-trivia-insert+reparse-identical-or-refuse(no-suite-needed)",
     "js-document-param-types": "jsdoc-leading-trivia-insert+declared-param-types-verbatim+reparse-identical-or-refuse(no-suite-needed)",
     "document-raises-jsdoc": "jsdoc-leading-trivia-insert+throws-types-from-literal-new-verbatim+reparse-identical-or-refuse(no-suite-needed)",
+    "js-document-returns-inferred": "jsdoc-leading-trivia-insert+returns-from-literal-return-verbatim+reparse-exports-identical-or-refuse(no-suite-needed)+disjoint-from-declared-return-doc(fires-only-when-return_type-None)",
     "generate-usage-doc": "oracle-gated-scaffold(doc-only-no-source-change)",
     "pin-doctest": "additive+oracle-gate(doctest-captured-then-verified)",
     "scaffold-from-protocol": "oracle-gated-scaffold(instantiation-oracle)+impact-scoped-derived-from-gate",

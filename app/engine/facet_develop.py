@@ -499,6 +499,32 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # types") — so its order is free.
     "the thrown error types to document in jsdoc": "document-raises-jsdoc",
 
+    # Undocumented EXPORTED PLAIN-JS return type: the case the typed JSDoc family
+    # CANNOT serve. document-export-jsdoc (and js-document-param-types) emit an
+    # ``@returns {T}`` ONLY from a DECLARED TS return annotation, so a plain-JS
+    # export (``export function isReady(x){ return true; }``) gets no ``@returns``.
+    # The js-document-returns-inferred objective LANDS exactly that — a JSDoc whose
+    # single ``@returns {T}`` line carries the type PROVEN from the function's OWN
+    # literal ``return`` statements (``true``/``false`` → boolean, a string/number/
+    # array/object literal → string/number/Array/Object, ``new <Ctor>()`` → that
+    # ctor), read VERBATIM off the AST literal kind (never inferred from a value flow
+    # / call result). It inherits the same honesty gate and lands ONLY when a literal
+    # return type is provable (a non-literal / void / ``null`` / heterogeneous return,
+    # or none, is refused). DISJOINT from document-export-jsdoc by THE typed-vs-
+    # untyped split: it fires ONLY when NO TS return type is declared, so no node ever
+    # gets an ``@returns`` from two planners. NO ``@param`` lines (that is
+    # js-document-param-types' surface). A JSDoc is leading trivia (zero runtime
+    # bytes), so it is behaviour-identical by construction, verified by the SAME
+    # in-driver re-parse — no jest/tsc run. Its phrasing is not a substring of any
+    # other key (nor any of them of it) — in particular it is distinct from "the
+    # exported signature to document in jsdoc" / "the exported parameter types to
+    # document in jsdoc" / "the thrown error types to document in jsdoc" above
+    # ("inferred return type" vs "signature"/"parameter types"/"thrown error types")
+    # and from the Python "the annotated return type to document" / "the documented
+    # return type to pin" ("inferred return type … in jsdoc" vs "annotated"/
+    # "documented return type") — so its order is free.
+    "the inferred return type to document in jsdoc": "js-document-returns-inferred",
+
     # Defined-but-unexported public JS/TS function: the "signatures and types" lens
     # also names a top-level public function/const-arrow a clean-ESM module DEFINES
     # but never exports. The js-wire-exports objective LANDS exactly that — it

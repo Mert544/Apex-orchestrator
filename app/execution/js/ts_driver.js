@@ -34,18 +34,31 @@
 //                             once as a fillable stub.
 //   doc-targets <file>     -> JSON: every EXPORTED function/const-arrow in <file>
 //                             with NO leading JSDoc, as [{name, params,
-//                             paramTypes, returnType|null, throwsTypes|null,
-//                             insertOffset}] — the facts the document-export-jsdoc
-//                             (names + returnType), js-document-param-types (the
-//                             verbatim per-param `paramTypes`) and
-//                             document-raises-jsdoc (the `throwsTypes` set) objectives
-//                             splice a minimal JSDoc from (pure AST). `paramTypes` is
-//                             parallel to `params` (one verbatim type or null per
-//                             param). `throwsTypes` is the DISTINCT thrown constructor
-//                             names in source order — but ONLY when EVERY `throw` in
-//                             the body is a literal `new <Identifier>(...)`; any other
+//                             paramTypes, returnType|null, returnsInferred|null,
+//                             throwsTypes|null, insertOffset}] — the facts the
+//                             document-export-jsdoc (names + returnType),
+//                             js-document-param-types (the verbatim per-param
+//                             `paramTypes`), document-raises-jsdoc (the `throwsTypes`
+//                             set) and js-document-returns-inferred (the
+//                             `returnsInferred` type) objectives splice a minimal
+//                             JSDoc from (pure AST). `paramTypes` is parallel to
+//                             `params` (one verbatim type or null per param).
+//                             `throwsTypes` is the DISTINCT thrown constructor names
+//                             in source order — but ONLY when EVERY `throw` in the
+//                             body is a literal `new <Identifier>(...)`; any other
 //                             throw shape makes it null (the document-raises-jsdoc
-//                             refusal). Exit 2 on parse error.
+//                             refusal). `returnsInferred` is the type PROVEN from the
+//                             body's own literal `return` statements (boolean/string/
+//                             number/Array/Object/ctor-name), or null when ANY return
+//                             is non-literal / void / null / heterogeneous, the body
+//                             can implicitly fall through to `undefined` (no tail
+//                             return/throw), or the function is a GENERATOR (the
+//                             js-document-returns-inferred refusals). An ASYNC function's
+//                             type is wrapped as `Promise<T>` (its literal return is a
+//                             resolved promise at runtime). It is DISJOINT from
+//                             `returnType` (the DECLARED TS annotation) — the Python
+//                             side fires only when `returnType` is null. Exit 2 on
+//                             parse error.
 //   doc-verify <file>      -> JSON: {names:[...]} the sorted EXPORTED-name set of
 //                             <file>. The behaviour-identical oracle for a JSDoc
 //                             splice: a leading comment changes ZERO runtime bytes,
@@ -184,6 +197,145 @@ function throwsTypes(node) {
   }
   visit(body);
   return provable ? names : null;
+}
+
+// True when `node` carries an `async` modifier — an `async function`, an
+// `async () => ...`, an `async method(){}`, or an async function expression.
+// Read like `isExported`, with the `ts.getModifiers`/`node.modifiers` fallback so
+// the same walk works across compiler versions. An async function's literal
+// `return T` is actually wrapped in a `Promise<T>` at runtime, so we MUST emit
+// `@returns {Promise<T>}`, never a bare `{T}` (that would be a false fact).
+function isAsync(node) {
+  const mods = ts.getModifiers ? ts.getModifiers(node) : node.modifiers;
+  if (!mods) return false;
+  return mods.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+}
+
+// The bare PROVABLE return type of a function-like node, read VERBATIM off its
+// OWN-SCOPE `return` expressions, or null when it is not provable — BEFORE any
+// async/generator wrapping (the `returnsType` wrapper applies those). The
+// js-document-returns-inferred fact — the SIBLING of `throwsTypes` for plain JS:
+// `document-export-jsdoc` can only emit `@returns {T}` from a DECLARED TS return
+// type, so a plain-JS export gets no `@returns`; this infers one from LITERAL
+// returns. Each return's expression is mapped to a type by its AST kind ONLY:
+//   `true`/`false`              -> "boolean"
+//   string / no-subst template  -> "string"
+//   numeric literal             -> "number"
+//   array literal               -> "Array"
+//   object literal              -> "Object"
+//   `new <Identifier>(...)`     -> that ctor's name (e.g. `new Date()` -> "Date")
+// A type is NEVER inferred from a value flow / call result — only copied off a
+// literal node — so the JSDoc cannot misstate it. Returns null the moment a
+// return is a shape we cannot read verbatim: a non-literal expression
+// (`return foo()`, `return a + b`, `return -1`), a bare `return;` / implicit void,
+// `return null` / `return undefined`, a member-expression ctor (`new ns.Err()`),
+// a `BigIntLiteral` / interpolated template (not in the table), OR the literal
+// kinds DISAGREE across returns (heterogeneous — `return true` + `return "x"`).
+// A node with NO return at all also yields null (nothing to document). This is
+// the same null-on-unprovable discipline `throwsTypes` ships — strict, REFUSE on
+// any ambiguity, never guess. (ASYNC wrapping to `Promise<T>` and GENERATOR
+// refusal are applied by the `returnsType` wrapper around this bare inference.)
+//
+// OWN-SCOPE only (like `throwsTypes`): a `return` inside a nested function/arrow/
+// method is THAT function's contract, not the documented one, so the walk does
+// NOT descend into any function-like child other than the root node. A concise
+// (expression-bodied) arrow — `const f = (x) => true` — has ONE implicit return
+// of its body expression, which is mapped exactly like an explicit `return`.
+//
+// DEFINITE-RETURN guard (the never-fake-green fix). Agreeing literal returns are
+// NOT enough: a body that returns a literal on SOME paths but can fall through to
+// the end returns `undefined` on the tail path — so `f(x){ if(x) return true; }`
+// is `boolean|undefined`, NOT `boolean`, and emitting `@returns {boolean}` would
+// be a FALSE fact. We require the body to provably return/throw on the TAIL path
+// via a SOUND, decidable, conservative rule: the block's LAST statement must be an
+// unconditional `return <literal>` or a `throw`. That alone guarantees no implicit-
+// undefined fall-through (`if(x) return true;` -> last stmt is the `if` -> REFUSE;
+// `if(x) return true; return false;` -> last is `return false` -> accept; a
+// trailing `for`/`while`/`switch` -> REFUSE). It is DELIBERATELY conservative —
+// it also refuses an exhaustive `if/else`-both-return with no trailing return, and
+// a switch-with-default — refuse-on-ambiguity is the correct posture (refusing some
+// valid exhaustive cases is fine; accepting ANY fall-through is not). A concise
+// arrow body always returns, so it bypasses this guard.
+
+// True when block `body`'s LAST statement provably hands off control off the tail
+// path — an unconditional `return <literal>` (a literalReturnType-readable value)
+// or a `throw` — so execution cannot fall off the end into an implicit `undefined`.
+function tailReturnsOrThrows(body) {
+  const stmts = body.statements;
+  if (!stmts || stmts.length === 0) return false;
+  const last = stmts[stmts.length - 1];
+  if (ts.isThrowStatement(last)) return true;
+  if (ts.isReturnStatement(last)) return literalReturnType(last.expression) !== null;
+  return false;
+}
+
+function literalReturnType(expr) {
+  if (!expr) return null;  // a bare `return;` / implicit void -> refuse
+  if (expr.kind === ts.SyntaxKind.TrueKeyword
+      || expr.kind === ts.SyntaxKind.FalseKeyword) return "boolean";
+  if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return "string";
+  if (ts.isNumericLiteral(expr)) return "number";
+  if (ts.isArrayLiteralExpression(expr)) return "Array";
+  if (ts.isObjectLiteralExpression(expr)) return "Object";
+  if (ts.isNewExpression(expr) && ts.isIdentifier(expr.expression)) {
+    return expr.expression.text;  // `new Date()` -> "Date", verbatim ctor name
+  }
+  return null;  // null/undefined/call/binary/member-ctor/bigint/... -> refuse
+}
+
+function inferBareReturnType(node) {
+  const body = node.body;
+  if (!body) return null;
+  // A concise arrow body (`(x) => true`) is ONE implicit return of the body
+  // expression — map it directly (it is not a block, so the walk below is moot).
+  if (!ts.isBlock(body)) return literalReturnType(body);
+  let inferred = null;     // the single agreed type so far (null = none yet)
+  let provable = true;     // a return we cannot read verbatim flips this false
+  let sawReturn = false;   // at least one return statement seen in own scope
+  function visit(n) {
+    if (ts.isReturnStatement(n)) {
+      sawReturn = true;
+      const t = literalReturnType(n.expression);
+      if (t === null) {
+        provable = false;          // a non-literal / void / null return -> refuse
+      } else if (inferred === null) {
+        inferred = t;              // first proven type sets the contract
+      } else if (inferred !== t) {
+        provable = false;          // a DIFFERENT literal kind -> heterogeneous -> refuse
+      }
+    }
+    ts.forEachChild(n, (child) => {
+      // Do NOT descend into a nested function-like node — its returns are its OWN
+      // contract, never the documented function's. Only the root body is walked.
+      if (child !== node && ts.isFunctionLike(child)) return;
+      visit(child);
+    });
+  }
+  visit(body);
+  // Provable iff every return was a literal AND they agreed AND there was one AND
+  // the body provably returns/throws on the TAIL path (no implicit-undefined
+  // fall-through — the definite-return guard).
+  return provable && sawReturn && tailReturnsOrThrows(body) ? inferred : null;
+}
+
+// The js-document-returns-inferred fact, with async/generator wrapping applied to
+// the bare inferred type. THREE soundness layers gate the emission:
+//   (1) GENERATOR (`node.asteriskToken` — `function*`, `async function*`, a
+//       generator method): a `return` inside a generator is the iterator's return
+//       value, NOT a simple `@returns` type (the produced value is a Generator /
+//       AsyncGenerator object). Documenting it properly needs `@yields` (out of
+//       scope), so REFUSE entirely (null) — the sound choice.
+//   (2) the bare inference + the definite-return guard (see `inferBareReturnType`).
+//   (3) ASYNC (`isAsync(node)`): an `async function`'s `return T` is wrapped in a
+//       `Promise<T>` at runtime, so emit `@returns {Promise<T>}`, NEVER a bare
+//       `{T}`. The fall-through guard runs on the bare inference FIRST, so an async
+//       fn that can fall through is `Promise<T | undefined>` and is already refused
+//       (null in, null out) — we never wrap a non-provable type.
+function returnsType(node) {
+  if (node.asteriskToken) return null;  // generator -> refuse (needs @yields)
+  const bare = inferBareReturnType(node);
+  if (bare === null) return null;
+  return isAsync(node) ? "Promise<" + bare + ">" : bare;
 }
 
 // A function-like declaration is a "throw-stub" iff its body is EXACTLY one
@@ -426,7 +578,12 @@ function hasLeadingJSDoc(node, sf) {
 // objective reads it; document-export-jsdoc ignores it. `throwsTypes` is the
 // document-raises-jsdoc fact (the verbatim `@throws {Ctor}` set, or null = refuse);
 // the other JSDoc objectives ignore it, exactly as document-export-jsdoc ignores
-// `paramTypes`.
+// `paramTypes`. `returnsInferred` is the js-document-returns-inferred fact (the
+// type PROVEN from this function's own literal `return` statements, or null when
+// unprovable) — DISJOINT from `returnType` by construction: that field is the
+// DECLARED TS annotation (document-export-jsdoc's surface), this is inferred only
+// for plain-JS functions a declared annotation does not cover; the Python side
+// fires js-document-returns-inferred ONLY when `returnType is None`.
 function docTargetFor(name, fnNode, stmtNode, sf) {
   if (!isExported(stmtNode) || hasLeadingJSDoc(stmtNode, sf)) return null;
   const params = paramNames(fnNode);
@@ -436,6 +593,7 @@ function docTargetFor(name, fnNode, stmtNode, sf) {
     params: params,
     paramTypes: paramTypes(fnNode, sf),
     returnType: fnNode.type ? fnNode.type.getText(sf).trim() : null,
+    returnsInferred: returnsType(fnNode),
     throwsTypes: throwsTypes(fnNode),
     insertOffset: stmtNode.getStart(sf),
   };

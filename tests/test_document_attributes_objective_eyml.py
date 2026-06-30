@@ -581,8 +581,8 @@ def test_counts_are_forty_one_concrete_of_eighty_three():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 86  # 86 after modernize-typing (86th, TIDY) registered
-    assert len(classify_objectives(names)["CONCRETE"]) == 41  # promote-staticmethod (85th) is TIDY, not CONCRETE
+    assert len(names) == 87  # 87 after js-document-returns-inferred (87th, CONCRETE) registered
+    assert len(classify_objectives(names)["CONCRETE"]) == 42  # js-document-returns-inferred (87th) is CONCRETE
 
 
 # --- the soundness-corpus refusal (the must-refuse shape) ---------------------
