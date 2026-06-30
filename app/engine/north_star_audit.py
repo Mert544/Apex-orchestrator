@@ -300,6 +300,19 @@ _CONCRETE_SCOPES = frozenset({
     # is otherwise rare (1 of the last 200 commits), so crediting it does not
     # inflate the concrete count — it corrects a mis-bucketing of genuine landing.
     "bridge",
+    # ... and the MULTI-LANGUAGE concrete-objective scopes. Apex's JS/TS and Java
+    # lanes each ship NEW CONCRETE develop objectives under a per-language scope:
+    # every recent feat/fix(js) / feat/fix(java) LANDS an objective that is itself
+    # in OBJECTIVE_MANIFEST["CONCRETE"] (js-document-returns-inferred, js-cover-gaps,
+    # js-strengthen-tests; java-document-param, java-document-returns) — the same
+    # deterministic, verified, auto-rollback LANDS-code capability already credited
+    # under `develop`. Crediting these corrects an under-count of genuine landing,
+    # NOT inflation (the type gate still drops docs/refactor(js|java); a `feat(js)`
+    # naming a real CONCRETE objective is concrete development by the same lens as
+    # `feat(develop): modernize-typing`). DELIBERATELY EXCLUDED: `lsp` — the LSP
+    # wave SURFACES existing behaviour-preserving transforms as IDE quick-fixes; it
+    # lands NO new objective, so feat(lsp) stays neutral (surface, not landing).
+    "js", "java",
 })
 # A `fix`/`feat` whose scope names one of these is trust-foundation/safety work.
 _SAFETY_SCOPES = frozenset({

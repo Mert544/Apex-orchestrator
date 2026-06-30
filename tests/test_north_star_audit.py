@@ -141,6 +141,37 @@ def test_autonomous_landing_and_dream_chain_scopes_are_concrete(subject):
     assert nsa._classify_subject(subject) == "concrete"
 
 
+@pytest.mark.parametrize(
+    "subject",
+    [
+        # The MULTI-LANGUAGE lanes: each feat/fix(js)/(java) LANDS a new CONCRETE
+        # develop objective (the name is itself in OBJECTIVE_MANIFEST["CONCRETE"])
+        # through the verified-with-rollback compiler — the same LANDS-code
+        # capability as `develop`, just in the JS/TS and Java lanes.
+        "feat(js): js-cover-gaps — characterization jest test for an untested function",
+        "feat(js): js-strengthen-tests — kill a mutant the mined witnesses miss",
+        "feat(js): js-document-returns-inferred — JSDoc @returns from a literal return",
+        "feat(java): java-document-param — Javadoc @param from declared method params",
+        "feat(java): java-document-returns — Javadoc @return from the declared return type",
+    ],
+)
+def test_multilang_objective_landing_scopes_are_concrete(subject):
+    # Fidelity, NOT inflation: each subject names an objective in
+    # OBJECTIVE_MANIFEST["CONCRETE"] and lands it deterministically with rollback.
+    assert nsa._classify_subject(subject) == "concrete"
+
+
+def test_multilang_meta_stays_neutral_and_lsp_surface_is_not_concrete():
+    # The type gate keeps housekeeping on a concrete lane neutral (only feat/fix
+    # land code), so a docs/refactor on the js/java lane is never concrete ...
+    assert nsa._classify_subject("docs(js): note the ts_driver subcommand") != "concrete"
+    assert nsa._classify_subject("refactor(java): split a driver helper") != "concrete"
+    # ... and `lsp` is DELIBERATELY excluded from the concrete scopes: the LSP wave
+    # SURFACES existing behaviour-preserving transforms as IDE quick-fixes — it
+    # lands NO new objective, so a feat(lsp) stays neutral (surface, not landing).
+    assert nsa._classify_subject("feat(lsp): textDocument/codeAction quick-fixes") == "neutral"
+
+
 def test_develop_core_window_is_not_misbucketed_as_neutral(monkeypatch):
     # A window of real develop-core landing commits — the exact shape the denetçi
     # mis-reported as concrete=1 before the fix.
