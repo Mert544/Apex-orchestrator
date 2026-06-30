@@ -74,6 +74,7 @@ _ABILITY_PHRASES: dict[str, str] = {
     "js-tdd-implement": "filling in unfinished JavaScript from its tests",
     "js-wire-exports": "wiring up JavaScript/TypeScript exports",
     "java-finalize-field": "marking Java fields final where they never change",
+    "java-document-param": "documenting Java method parameters",
 }
 
 _MAX_EXAMPLE_ABILITIES = 4

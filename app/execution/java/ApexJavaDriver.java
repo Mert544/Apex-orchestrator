@@ -66,6 +66,26 @@
 //                          clause, or whose start position is unreadable. This is the
 //                          Java analogue of document-raises / document-raises-jsdoc.
 //                          Exit 2 (REFUSE) on ANY parse error diagnostic.
+//   param-targets <file> -> JSON [{name, params:[paramName,...], insertOffset}]: every
+//                          method that DECLARES at least one parameter
+//                          (`MethodTree.getParameters()` is non-empty) but has NO Javadoc
+//                          (`Trees.getDocComment(path)` is null), in source order, where
+//                          `insertOffset` is the byte offset just before the method's
+//                          start (at its modifiers) at which splicing a
+//                          `/** ... @param <name> ... */` Javadoc block documents the
+//                          DECLARED parameters. The `params` names are the SIMPLE
+//                          declared parameter names IN SOURCE ORDER (verbatim off
+//                          `VariableTree.getName()` — no types, the standard bare
+//                          `@param name` Javadoc form). A Javadoc is a COMMENT, so it
+//                          changes ZERO declared structure (the fact-set re-parse oracle
+//                          stays identical). REFUSES (omits) a method that ALREADY carries
+//                          a Javadoc (merging an existing block is out of scope, AND keeps
+//                          this disjoint from doc-targets — whichever lands first makes
+//                          the method documented, so the other then refuses it), or that
+//                          has zero parameters, or whose start position is unreadable.
+//                          This is the Java analogue of document-param /
+//                          js-document-param-types.
+//                          Exit 2 (REFUSE) on ANY parse error diagnostic.
 //
 // Determinism: no clock, no randomness; types/fields/methods are SORTED, targets are
 // reported in source order; JSON keys are emitted in a fixed order. `insertOffset`
@@ -606,6 +626,81 @@ public final class ApexJavaDriver {
         return -1;
     }
 
+    // --- param-targets: undocumented methods with >=1 declared parameter ------
+
+    private static void cmdParamTargets(String file) {
+        Parsed p = parseOrRefuse(file);
+        List<String> orderedNames = new ArrayList<>();
+        List<List<String>> orderedParams = new ArrayList<>();
+        List<Long> orderedOffsets = new ArrayList<>();
+        collectParamTargets(p, orderedNames, orderedParams, orderedOffsets);
+        // Emit in source order (the method-declaration order the scanner visits).
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < orderedNames.size(); i++) {
+            if (i > 0) {
+                sb.append(",");
+            }
+            sb.append("{\"name\":");
+            appendJsonString(sb, orderedNames.get(i));
+            sb.append(",\"params\":");
+            appendStringList(sb, orderedParams.get(i));
+            sb.append(",\"insertOffset\":").append(orderedOffsets.get(i)).append("}");
+        }
+        sb.append("]");
+        System.out.print(sb);
+    }
+
+    /** Every method that DECLARES at least one parameter but carries NO Javadoc, with
+     * the simple names of its declared parameters (source order) and the byte offset
+     * just before the method's start where a leading Javadoc block splices in. A
+     * TreePathScanner is used because Trees.getDocComment needs the method's TreePath:
+     * an EXISTING Javadoc is refused (merging is out of scope, exactly as the
+     * doc-targets / Python document-param document only the undocumented). Source order
+     * is the visit order of the methods. */
+    private static void collectParamTargets(Parsed p, List<String> names,
+                                            List<List<String>> paramLists,
+                                            List<Long> offsets) {
+        Trees trees = p.trees;
+        new TreePathScanner<Void, Void>() {
+            @Override
+            public Void visitMethod(MethodTree node, Void unused) {
+                considerParamMethod(node, getCurrentPath(), trees, p, names, paramLists,
+                        offsets);
+                return super.visitMethod(node, unused);
+            }
+        }.scan(p.unit, null);
+    }
+
+    private static void considerParamMethod(MethodTree method, TreePath path, Trees trees,
+                                            Parsed p, List<String> names,
+                                            List<List<String>> paramLists,
+                                            List<Long> offsets) {
+        List<? extends VariableTree> declared = method.getParameters();
+        // REFUSE: no declared parameter — a `@param`-less Javadoc is content-free.
+        if (declared == null || declared.isEmpty()) {
+            return;
+        }
+        // REFUSE: a method that ALREADY carries a Javadoc — merging an existing block is
+        // out of scope (mirrors doc-targets / document-param documenting only the
+        // undocumented, AND keeps java-document-param disjoint from java-document-throws:
+        // whichever lands first makes the method documented, so the other then refuses
+        // it — no double Javadoc block). A null doc-comment is the "no Javadoc" signal.
+        if (trees.getDocComment(path) != null) {
+            return;
+        }
+        List<String> params = new ArrayList<>();
+        for (VariableTree param : declared) {
+            params.add(String.valueOf(param.getName()));  // the declared name, verbatim
+        }
+        long insert = methodInsertOffset(method, p);
+        if (insert < 0) {
+            return;  // an unreadable method span — refuse rather than splice at a guess
+        }
+        names.add(String.valueOf(method.getName()));
+        paramLists.add(params);
+        offsets.add(insert);
+    }
+
     // --- JSON emit (fixed key order, deterministic) --------------------------
 
     private static void appendStringList(StringBuilder sb, List<String> values) {
@@ -684,8 +779,12 @@ public final class ApexJavaDriver {
             cmdDocTargets(args[1]);
             return;
         }
+        if (args.length == 2 && "param-targets".equals(args[0])) {
+            cmdParamTargets(args[1]);
+            return;
+        }
         System.err.println("usage: ApexJavaDriver.java parse-verify <file> | "
-                + "final-targets <file> | doc-targets <file>");
+                + "final-targets <file> | doc-targets <file> | param-targets <file>");
         System.exit(REFUSE);
     }
 }

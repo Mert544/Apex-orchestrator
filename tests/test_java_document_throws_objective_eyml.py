@@ -598,7 +598,7 @@ def test_objective_total_is_seventy_nine():
 
     # 87 after js-document-returns-inferred (the PLAIN-JS inferred-@returns JSDoc
     # objective).
-    assert len(set(available_objectives())) == 89
+    assert len(set(available_objectives())) == 90
 
 
 # --- PARITY ROW 1: move_value tier (the doc-surface 0.66 tier) ----------------
@@ -630,7 +630,7 @@ def test_parity_concrete_count_is_thirty_seven():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 44  # js-strengthen-tests (89th) is CONCRETE
+    assert len(buckets["CONCRETE"]) == 45  # js-strengthen-tests (89th) is CONCRETE
 
 
 # --- PARITY ROW 3: soundness-strategy manifest --------------------------------
@@ -720,7 +720,8 @@ def test_behavior_identical_on_java_undocumented_throws_corpus_shape():
     # a method declaring a `throws` clause with no Javadoc. java-document-throws SHOULD
     # document it (NOT a must-refuse trap), and the insert is behaviour-identical (a
     # comment-only edit re-parses fact-identical). This is the standing proof that the
-    # Javadoc landing is sound on the sweep.
+    # Javadoc landing is sound on the sweep. (The heavy sweep is process-memoized in
+    # soundness_audit, so the first corpus test pays for it and every later one reuses it.)
     from app.engine.soundness_audit import corpus_refusal_findings, repo_root
 
     corpus = corpus_refusal_findings(repo_root(), include_heavy=True)

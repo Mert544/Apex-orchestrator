@@ -515,7 +515,7 @@ def test_objective_total_is_seventy_eight():
 
     # 87 after js-document-returns-inferred (the PLAIN-JS inferred-@returns JSDoc
     # objective).
-    assert len(set(available_objectives())) == 89
+    assert len(set(available_objectives())) == 90
 
 
 # --- PARITY ROW 1: move_value tier (matches add-final's runtime-noop tier) ----
@@ -548,7 +548,7 @@ def test_parity_concrete_count_is_thirty_six():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 44  # js-strengthen-tests (89th) is CONCRETE
+    assert len(buckets["CONCRETE"]) == 45  # js-strengthen-tests (89th) is CONCRETE
 
 
 # --- PARITY ROW 3: soundness-strategy manifest --------------------------------
@@ -644,7 +644,9 @@ def test_refuses_on_java_false_final_corpus_shape():
     # The standing soundness corpus carries a Java false-`final` trap shape: a private
     # field reassigned in a nested inner class (so `final` would be a COMPILE ERROR).
     # java-finalize-field MUST refuse it — the whole-file assignment scan catches the
-    # inner-class write. This is the K2-class never-fake-green guarantee for Java.
+    # inner-class write. This is the K2-class never-fake-green guarantee for Java. (The
+    # heavy sweep is process-memoized in soundness_audit, so the first corpus test pays
+    # for it and every later one reuses the result — keeping the suite under the timeout.)
     from app.engine.soundness_audit import corpus_refusal_findings, repo_root
 
     corpus = corpus_refusal_findings(repo_root(), include_heavy=True)

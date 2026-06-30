@@ -64,14 +64,14 @@ def test_owner_report_composes_real_apex_verdicts():
     ns = report["north_star"]
     assert ns["verdict"] == "PASS"
     assert ns["drift"] is False
-    assert ns["total_objectives"] == 89
-    assert ns["concrete_count"] == 44
+    assert ns["total_objectives"] == 90
+    assert ns["concrete_count"] == 45
     assert 0.0 <= ns["ratio"] <= 1.0
     # Soundness: PASS with all 89 objectives declaring a proof-strategy, plus the
     # single-gated-writer and scope_verify allow-list booleans.
     sound = report["soundness"]
     assert sound["verdict"] == "PASS"
-    assert sound["strategies"] == "89/89"
+    assert sound["strategies"] == "90/90"
     assert sound["single_writer"] is True
     assert sound["scope_verify_ok"] is True
     # Grade: the real letter + score.
@@ -80,7 +80,7 @@ def test_owner_report_composes_real_apex_verdicts():
 
 def test_owner_report_capabilities_summary():
     cap = _apex_report()["capabilities"]
-    assert cap["concrete_count"] == 44
+    assert cap["concrete_count"] == 45
     # Apex lands Python, Java, AND JS/TS concrete objectives, Python listed first,
     # then Java, then JavaScript/TypeScript (the stable display order).
     assert cap["languages"] == ["Python", "Java", "JavaScript/TypeScript"]

@@ -557,6 +557,20 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # (incl. the PARTIAL case — refuses whole). Appended after
                              # its return sibling, so the originals lead.
                              "the parameter types to document",
+                             # added: the JAVA mirror of document-param /
+                             # js-document-param-types — a Java method that DECLARES at
+                             # least one parameter but carries NO Javadoc, which
+                             # java-document-param documents with a fresh Javadoc block
+                             # of one bare `@param <name>` line per DECLARED parameter
+                             # (the parameter names verbatim off `VariableTree.getName()`,
+                             # no types — the standard Javadoc form). A Javadoc is a
+                             # COMMENT, so the edit is behaviour-identical (a re-parse
+                             # fact-set-identity check, no Maven/JUnit run); an already-
+                             # documented method is refused (keeping it disjoint from
+                             # java-document-throws) and a zero-parameter method is
+                             # refused. Appended after its Python/JS param siblings, so
+                             # the originals lead.
+                             "the undocumented java method params to document",
                              # added: a DOCUMENTED public Python CLASS with at least one
                              # class-level annotated field (`ast.AnnAssign`) whose
                              # docstring records no attributes — the document-attributes

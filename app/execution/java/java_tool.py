@@ -35,10 +35,12 @@ from app.runtime.command_runner import CommandResult, CommandRunner, CommandSpec
 __all__ = [
     "JavaFinalTarget",
     "JavaDocTarget",
+    "JavaParamTarget",
     "JavaFacts",
     "DRIVER",
     "final_targets",
     "doc_targets",
+    "param_targets",
     "parse_facts",
     "reparse_facts_identical",
 ]
@@ -72,6 +74,24 @@ class JavaDocTarget:
 
     name: str
     throws_types: tuple[str, ...]
+    insert_offset: int
+
+
+@dataclass(frozen=True)
+class JavaParamTarget:
+    """One method that DECLARES at least one parameter but carries NO Javadoc, with the
+    simple names of its declared parameters IN SOURCE ORDER (``params``) and the byte
+    ``insert_offset`` at the method's start where a leading
+    ``/** ... @param <name> ... */`` Javadoc block splices in — a pure byte-offset
+    insert of a COMMENT, not an unparse. ``name`` is the method's simple name (the
+    fact-only summary the block leads with). The names are VERBATIM declared parameter
+    names (no types — the standard bare ``@param name`` Javadoc form), NEVER inferred. A
+    Javadoc changes ZERO declared structure, so the spliced file re-parses fact-identical
+    (see :func:`reparse_facts_identical`). The Java analogue of the Python
+    ``document-param`` / JS ``js-document-param-types`` target."""
+
+    name: str
+    params: tuple[str, ...]
     insert_offset: int
 
 
@@ -148,6 +168,26 @@ def doc_targets(root: Path, rel: str) -> list[JavaDocTarget]:
     return [JavaDocTarget(name=d["name"],
                           throws_types=tuple(d["throws"]),
                           insert_offset=d["insertOffset"])
+            for d in data]
+
+
+def param_targets(root: Path, rel: str) -> list[JavaParamTarget]:
+    """The methods in ``root/rel`` that DECLARE at least one parameter but have NO
+    Javadoc (empty on refuse). Conservative: a file that does not parse, has no such
+    method, or that the driver declines yields ``[]`` — nothing to document, never a
+    guess. The driver already applied the at-least-one-parameter / no-existing-Javadoc
+    gates.
+
+    Deterministic source order, exactly as the driver's ``param-targets`` emits. The
+    parameter ``params`` simple names are carried IN SOURCE ORDER (the declared
+    parameter names, verbatim off ``VariableTree.getName()`` — no types, the standard
+    bare ``@param name`` form)."""
+    data = _driver_json(["param-targets", str(root / rel)], root)
+    if not isinstance(data, list):
+        return []
+    return [JavaParamTarget(name=d["name"],
+                            params=tuple(d["params"]),
+                            insert_offset=d["insertOffset"])
             for d in data]
 
 

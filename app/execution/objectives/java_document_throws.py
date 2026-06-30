@@ -74,6 +74,16 @@ from app.execution.java.java_tool import (
 )
 from app.execution.lang.java_adapter import JAVA_SOURCE_SUFFIXES as _JAVA_SUFFIXES
 from app.execution.lang.java_adapter import _walk_files, is_java_source
+from app.execution.objectives._java_doc_common import dominant_eol
+from app.execution.objectives._java_doc_common import is_java_project as _is_java_project
+from app.execution.objectives._java_doc_common import line_indent as _line_indent
+from app.execution.objectives._java_doc_common import read_unnormalized as _read_unnormalized
+from app.execution.objectives._java_doc_common import record_doc_plan as _record_doc_plan
+
+# The single-project gate / raw-bytes read / EOL detection / column-indent scan / plan
+# tail are IDENTICAL to java-document-param, so they live ONCE in :mod:`_java_doc_common`
+# (genuine reuse, not a clone) and are imported above. ``dominant_eol`` is re-exported in
+# ``__all__`` for the existing callers/tests that import it from this module.
 
 __all__ = [
     "plan_java_document_throws",
@@ -84,48 +94,6 @@ __all__ = [
     "splice_javadoc",
     "dominant_eol",
 ]
-
-# The single-Java-project markers, reused verbatim from java-finalize-field: either a
-# Maven ``pom.xml`` or a Gradle ``build.gradle`` at the project root gates the whole
-# objective — its presence is what makes this a clean NO-OP on a Python (or JS) tree.
-_JAVA_PROJECT_MARKERS = ("pom.xml", "build.gradle")
-
-
-def _is_java_project(root: Path) -> bool:
-    """True when ``root`` carries a single-Java-project marker (``pom.xml`` or
-    ``build.gradle``) — the single-project gate."""
-    return any((root / marker).exists() for marker in _JAVA_PROJECT_MARKERS)
-
-
-def _read_unnormalized(path: Path) -> str:
-    """The target's UTF-8 text with line endings PRESERVED (NOT universal-newline
-    normalized), or ``""`` on an OS error.
-
-    CRITICAL for the splice offset to be valid: the driver reads RAW bytes
-    (``Files.readAllBytes``), so every ``insert_offset`` it reports from
-    ``SourcePositions`` counts each ``\\r`` of a CRLF file. The shared
-    :func:`app.execution.lang.java_adapter._read` normalizes CRLF -> LF (``read_text``
-    uses universal newlines), which would shift every offset left by the number of
-    ``\\r`` before the method and splice the Javadoc MID-SIGNATURE on a Windows-authored
-    file — a fact-neutral corruption the re-parse oracle cannot catch (a comment still
-    parses). Reading via ``read_bytes().decode`` keeps the splice in the SAME byte-space
-    as the driver's offsets, so the block lands at the right place AND the file's
-    original line endings survive byte-for-byte."""
-    try:
-        return path.read_bytes().decode("utf-8")
-    except (OSError, UnicodeDecodeError):
-        return ""
-
-
-def dominant_eol(source: str) -> str:
-    """The line ending the spliced Javadoc block should use: ``"\\r\\n"`` when ``source``
-    contains any CRLF, else ``"\\n"``.
-
-    Emitting the block with the file's own EOL keeps the documented file internally
-    consistent (no mixed endings) AND makes a second run a byte-identical no-op — the
-    driver re-parses the now-documented method, sees its Javadoc, and omits it, so the
-    plan is idempotent on CRLF and LF alike. Deterministic: a pure substring test."""
-    return "\r\n" if "\r\n" in source else "\n"
 
 
 def documentable_targets(root: Path, rel: str) -> list[JavaDocTarget]:
@@ -139,24 +107,6 @@ def documentable_targets(root: Path, rel: str) -> list[JavaDocTarget]:
     if not is_java_source(rel):
         return []
     return list(doc_targets(root, rel))
-
-
-def _line_indent(source: str, offset: int) -> str:
-    """The leading whitespace of the line ``offset`` sits on (the run of spaces/tabs
-    from the start of the line up to the first non-blank char), used to indent the
-    spliced Javadoc block to the method's own column.
-
-    The method-start ``offset`` the driver reports sits just past this indent (at the
-    ``void``/modifier token), so the indent is the slice from the previous newline to
-    the first non-whitespace char on that line. Pure string scan — no parse."""
-    line_start = source.rfind("\n", 0, offset) + 1  # 0 when offset is on line 1
-    indent_chars = []
-    for ch in source[line_start:offset]:
-        if ch in (" ", "\t"):
-            indent_chars.append(ch)
-        else:
-            break
-    return "".join(indent_chars)
 
 
 def render_throws_javadoc(name: str, throws_types: tuple[str, ...], indent: str,
@@ -256,10 +206,7 @@ def plan_java_document_throws(project_root: str | Path, rel: str) -> RenamePlan:
         return plan  # a stale offset / no-change splice — refuse
     if not reparse_facts_identical(root, rel, documented):
         return plan  # the splice did not re-parse fact-identical — refuse, land nothing
-    plan.originals[rel] = original
-    plan.new_contents[rel] = documented
-    plan.edits_by_file[rel] = len(targets)
-    return plan
+    return _record_doc_plan(plan, rel, original, documented, len(targets))
 
 
 def _documentable_files(project_root: str | Path) -> list[str]:

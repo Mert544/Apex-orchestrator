@@ -112,6 +112,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "add-final": "runtime-noop+used-as-base-scan(tests-incl)",
     "java-finalize-field": "java-final-modifier-add(runtime-noop)+private-field-never-reassigned-whole-file-scan+reparse-fact-set-identical-or-refuse(no-suite-needed)",
     "java-document-throws": "java-javadoc-throws-from-declared-throws-clause-verbatim+reparse-fact-set-identical-or-refuse(no-suite-needed)+refuse-already-documented",
+    "java-document-param": "java-javadoc-param-from-declared-params-verbatim+reparse-fact-set-identical-or-refuse(no-suite-needed)+refuse-already-documented/no-param",
     "seal-final-method": "runtime-noop+transitive-subclass-scan(tests-incl)",
     "wire-module-exports": "behavior-identical-or-star-consumer-scan(tests-incl)",
     "wire-exports": "oracle-gated-scaffold(import-oracle)+additive-init",
@@ -639,6 +640,18 @@ def _classify_cell(shape: str, objective: str,
     return _reparse_violation(changed) or _prologue_violation(changed) or "behavior-identical"
 
 
+# Process-level memo of the (repo_root, include_heavy) -> findings result. The sweep is
+# a PURE function of the corpus bytes + the live registry, neither of which changes within
+# a run (the corpus fixtures are read-only and objectives self-register once at import), so
+# computing it ONCE per process and reusing it is byte-identical. The HEAVY sweep spawns a
+# JVM/Node per subprocess-backed cell and now takes ~2 minutes; without this memo every
+# corpus test (a dozen of them) re-ran the whole sweep, stacking past the per-test timeout
+# as the Java/JS lanes deepened. Keyed by ``(str(repo_root), include_heavy)``; the
+# heavy/light variants cache separately. Deep-copied on read so a caller mutating the dict
+# can't corrupt the shared entry.
+_CORPUS_FINDINGS_CACHE: dict[tuple[str, bool], dict[str, dict[str, str]]] = {}
+
+
 def corpus_refusal_findings(repo_root: str | Path,
                             include_heavy: bool = False) -> dict[str, dict[str, str]]:
     """Layer B: per (objective × fixture) corpus verdict, ``{obj: {shape: verdict}}``.
@@ -649,7 +662,19 @@ def corpus_refusal_findings(repo_root: str | Path,
     By default the subprocess-backed objectives (``expensive`` + the value-oracle
     ``cover-gaps``) are SKIPPED to keep the fast gate sub-second; ``include_heavy``
     sweeps them too (used by the full audit). Deterministic: sorted objectives ×
-    sorted shapes, pure function of the corpus bytes + the registry."""
+    sorted shapes, pure function of the corpus bytes + the registry.
+
+    MEMOIZED per process (see :data:`_CORPUS_FINDINGS_CACHE`): the result is a pure
+    function of the read-only corpus + the once-registered objective set, so the
+    (expensive, subprocess-backed) heavy sweep is computed ONCE and reused — a returned
+    dict is a deep copy, so a caller is free to mutate it."""
+    import copy
+
+    cache_key = (str(repo_root), include_heavy)
+    cached = _CORPUS_FINDINGS_CACHE.get(cache_key)
+    if cached is not None:
+        return copy.deepcopy(cached)
+
     from app.engine.objective_compiler import _objectives_map
 
     objectives = _objectives_map()
@@ -664,6 +689,7 @@ def corpus_refusal_findings(repo_root: str | Path,
             changed = _changed_files(moves_fn, root / shape)
             per_shape[shape] = _classify_cell(shape, name, changed)
         out[name] = per_shape
+    _CORPUS_FINDINGS_CACHE[cache_key] = copy.deepcopy(out)
     return out
 
 

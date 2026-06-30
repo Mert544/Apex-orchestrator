@@ -711,8 +711,8 @@ def test_objective_count_pins():
     from app.engine.objective_compiler import available_objectives
 
     names = available_objectives()
-    assert len(set(names)) == 89  # 89 after js-strengthen-tests (89th) registered
-    assert len(classify_objectives(names)["CONCRETE"]) == 44  # it is CONCRETE
+    assert len(set(names)) == 90  # 89 after js-strengthen-tests (89th) registered
+    assert len(classify_objectives(names)["CONCRETE"]) == 45  # it is CONCRETE
 
 
 # --- the new soundness-corpus fixture refuses (the durable denetçi) -----------

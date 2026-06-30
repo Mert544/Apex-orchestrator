@@ -708,6 +708,24 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # order is free.
     "the undocumented java throws clause to document": "java-document-throws",
 
+    # A Java method that DECLARES at least one parameter but carries NO Javadoc: the
+    # Java mirror of Python document-param / JS js-document-param-types.
+    # java-document-param lands a FRESH Javadoc block with one bare `@param <name>` line
+    # per DECLARED parameter (the method's parameter names verbatim off
+    # `VariableTree.getName()`, no types — the standard Javadoc form). A Javadoc is a
+    # COMMENT, so the edit is BEHAVIOUR-IDENTICAL (zero declared structure changes; a
+    # re-parse fact-set-identity check, no Maven/JUnit run); an already-documented method
+    # is refused (merging is out of scope) AND a zero-parameter method is refused (a
+    # `@param`-less block is content-free). The already-documented refusal keeps it
+    # disjoint from java-document-throws (whichever lands first documents the method, the
+    # other then refuses). Its phrasing shares no whole key with "the undocumented java
+    # throws clause to document" (in either direction — "method params to document" vs
+    # "throws clause to document") nor with any param-doc key ("the parameter types to
+    # document" / "the exported parameter types to document in jsdoc" — neither is a
+    # substring of "the undocumented java method params to document" nor vice versa), so
+    # its relative order is free.
+    "the undocumented java method params to document": "java-document-param",
+
     # A method proven never overridden anywhere: seal-final-method seals it with
     # @typing.final (the method-level sibling of add-final — a type-checker-only
     # no-op, behaviour-preserving; the false-final risk is closed STRUCTURALLY by a
