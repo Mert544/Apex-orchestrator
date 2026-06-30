@@ -30,6 +30,8 @@ __all__ = [
     "JsWitness",
     "JsDocTarget",
     "JsWireTarget",
+    "JsCoverParam",
+    "JsCoverTarget",
     "DRIVER",
     "global_node_modules",
     "scan_stubs",
@@ -42,6 +44,7 @@ __all__ = [
     "wire_targets",
     "all_exported_names",
     "reparse_exports_superset",
+    "cover_targets",
 ]
 
 # The bundled driver checked into this package — never a string Apex generates.
@@ -124,6 +127,39 @@ class JsWireTarget:
     name: str
     kind: str
     insert_offset: int
+
+
+@dataclass(frozen=True)
+class JsCoverParam:
+    """One parameter of a js-cover-gaps CHARACTERIZATION target: its ``name``, the
+    verbatim TS type annotation ``type`` (or ``None`` when the param carries no
+    annotation), and the verbatim literal default ``default_text`` (or ``None`` when
+    the param has no default or a non-literal default). The input synthesiser reads
+    these to build a SOUND sample argument (a primitive type maps to a fixed zero
+    sample; a literal default is re-emitted verbatim), and REFUSES the whole target
+    when a param is neither typed-primitive nor literal-defaulted (no LLM-free basis
+    for an untyped, non-defaulted param)."""
+
+    name: str
+    type: str | None
+    default_text: str | None
+
+
+@dataclass(frozen=True)
+class JsCoverTarget:
+    """One EXPORTED, public, undecorated, NON-async, NON-generator function/const-
+    arrow the driver found as a js-cover-gaps characterization candidate: its
+    ``name``, the ordered ``params`` (:class:`JsCoverParam`), the ``pure`` flag (the
+    driver's AST forbidden-call/free-identifier scan — the cheap FIRST flaky-test
+    guard, with the Python env-reproducibility re-capture gate as the load-bearing
+    second), and the ``export_kind`` addressing (``"named"`` — reached as
+    ``mod.name`` after transpile/require). The Python side decides the SOUND input
+    slice from ``params`` and refuses an impure target outright."""
+
+    name: str
+    params: tuple[JsCoverParam, ...]
+    pure: bool
+    export_kind: str
 
 
 @lru_cache(maxsize=1)
@@ -328,3 +364,26 @@ def reparse_exports_superset(root: Path, rel: str, new_source: str,
         probe.write_text(new_source, encoding="utf-8")
         after = all_exported_names(Path(tmp), probe.name)
     return after is not None and after == before | frozenset(added)
+
+
+def cover_targets(root: Path, rel: str) -> list[JsCoverTarget]:
+    """The EXPORTED, public, undecorated, non-async, non-generator function/const-
+    arrow CHARACTERIZATION targets in ``root/rel`` (empty on refuse).
+
+    Conservative: a file that does not parse, has no such target, or that the driver
+    declines yields ``[]`` — nothing to characterize, never a guess. Deterministic
+    source order, exactly as the driver's ``cover-targets`` emits. Each target
+    carries its parameter infos (name + verbatim type + verbatim literal default), a
+    ``pure`` flag (the driver's forbidden-call/free-identifier scan), and the export
+    addressing — the facts the js-cover-gaps input synthesiser + oracle need."""
+    data = _driver_json(["cover-targets", str(root / rel)], root)
+    if not isinstance(data, list):
+        return []
+    return [JsCoverTarget(
+        name=d["name"],
+        params=tuple(JsCoverParam(name=p["name"], type=p["type"],
+                                  default_text=p["defaultText"])
+                     for p in d["params"]),
+        pure=bool(d["pure"]),
+        export_kind=d["exportKind"],
+    ) for d in data]

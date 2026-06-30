@@ -99,7 +99,14 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                             # catch-all — complete-match-exhaustiveness appends a loud
                             # sentinel so the silent fall-through becomes loud (total
                             # dispatch = an exhaustiveness invariant). Originals lead.
-                            "a closed-set dispatch missing an exhaustiveness arm"],
+                            "a closed-set dispatch missing an exhaustiveness arm",
+                            # added: an UNTESTED exported JS/TS function whose current
+                            # behaviour ought to be pinned — js-cover-gaps writes the
+                            # FIRST jest characterization test for it (the JS sibling of
+                            # cover-gaps), calling it with synthesized inputs and pinning
+                            # the real return, env-reproducibility-gated. Appended, so the
+                            # originals still lead and emit first.
+                            "the untested jest function to characterize"],
     # simplify
     "dead code": ["unreferenced symbols", "unreachable branches", "redundant guards"],
     "duplicated logic": ["extract a shared helper", "parameterize the variants", "single source of truth"],

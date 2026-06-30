@@ -96,6 +96,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "js-document-returns-inferred",
         "pin-doctest",
         "cover-gaps",
+        "js-cover-gaps",
         "scaffold-from-protocol",
         "add-final",
         "java-finalize-field",

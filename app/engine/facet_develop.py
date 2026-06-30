@@ -190,6 +190,17 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     "ordering independence": "cover-gaps",
     "idempotence": "cover-gaps",
 
+    # The JS/TS image of cover-gaps: an UNTESTED exported JS/TS function whose
+    # CURRENT behaviour ought to be pinned by a jest test. The js-cover-gaps
+    # objective IS that action — it CALLS the function with synthesized inputs at
+    # generation time and pins ``expect(fn(...)).toEqual(<captured>)`` (sound by
+    # construction within the decidable input slice, env-reproducibility-gated),
+    # refusing an env-fragile/uninferable/already-covered target. The JS sibling of
+    # cover-gaps for the under-served JS lane. Its phrasing ("the untested jest
+    # function to characterize") is not a substring of any cover-gaps test key above
+    # (nor any of them of it), so its order versus them is free.
+    "the untested jest function to characterize": "js-cover-gaps",
+
     # Surviving mutant: where cover-gaps writes the FIRST test for an UNTESTED
     # module, strengthen-tests STRENGTHENS an existing-but-thin test — the "a
     # surviving mutant the tests miss" sub-aspect names a seeded fault the suite

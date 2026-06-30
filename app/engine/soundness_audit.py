@@ -143,6 +143,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "implement-from-doctest": "additive-fill+doctest-oracle+impact-scoped-suite-gate",
     "js-tdd-implement": "js-failing-test-RED→GREEN-or-refuse+byte-rollback",
     "js-implement-from-jsdoc": "js-jsdoc-example-RED→GREEN-or-refuse+byte-rollback",
+    "js-cover-gaps": "additive-characterization-test+env-reproducible-oracle-gate(js-execution-capture,varied-TZ/cwd/HOME/TMPDIR+wallclock)+ast-forbidden-call-refusal+sound-input-slice(zero-arg/all-primitive-typed/all-literal-default-or-refuse)+never-clobber-existing-test+forced-jest-gate-RED→GREEN+byte-rollback",
     "enforce-enum-unique": "runtime-noop(@unique)+static-value-collision-refusal",
     "complete-match-exhaustiveness": "runtime-additive(unreached-arm)+static-closed-set-refusal",
     "synthesize-dunders": "suite-catches-runtime+canonical-total-dunders-over-proven-fields+inherited-eq-refusal",
@@ -211,6 +212,13 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
 SCOPE_VERIFY_ALLOWLIST: frozenset[str] = frozenset({
     "implement-stub", "tdd-implement", "strengthen-tests", "wire-exports",
     "implement-from-doctest", "js-tdd-implement", "js-implement-from-jsdoc",
+    # js-cover-gaps lands a brand-new ``<dir>/__tests__/<stem>.cover.test.<ext>`` that
+    # no other test imports, so on a multi-module JS project an UNRELATED still-red
+    # module would veto the jest-proven characterization test under a full-suite gate.
+    # It carries the SOURCE module in ``RenamePlan.derived_from`` so the impact scope
+    # is seeded from the tests exercising it; the generated test's own forced jest gate
+    # is the independent correctness proof and the full suite the commit-time backstop.
+    "js-cover-gaps",
     # scaffold-from-protocol lands a brand-new ``<stem>_impl.py`` that no test
     # imports yet, so its impact-scope gate would degrade to the full suite and an
     # unrelated still-red module would veto the oracle-proven scaffold on a
@@ -413,6 +421,15 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # unsatisfiable by every fixed template — js-implement-from-jsdoc MUST refuse it
     # (no fixed body reproduces both), never land a fake-green fill.
     "jsdoc_contradiction": frozenset({"js-implement-from-jsdoc"}),
+    # The JS/TS analogue of env_fragile_return (the durable js-cover-gaps soundness
+    # guarantee): an EXPORTED JS function whose return reads the clock / random
+    # source (``Date.now()`` / ``Math.random()``) — a flaky value that would pass the
+    # jest gate ONCE then go RED later. js-cover-gaps MUST refuse it: the driver's AST
+    # ``pure`` scan catches the direct ``Date``/``Math.random`` reference, and even a
+    # transitive read that slips the scan is caught by the env-reproducibility
+    # re-capture gate (varied TZ/cwd/HOME/TMPDIR + a wall-clock gap). Never land a
+    # fake-green value oracle on an env-fragile return.
+    "js_env_fragile_return": frozenset({"js-cover-gaps"}),
     # The Java analogue of provenance_trap: a PRIVATE field that LOOKS never-reassigned
     # to a method-local scan (the enclosing class only READS it) but is REASSIGNED by a
     # nested inner class — so `final` would be a COMPILE ERROR, not a runtime no-op.
@@ -639,7 +656,7 @@ def corpus_refusal_findings(repo_root: str | Path,
 # module) but is not registry-``expensive``, so it is named here. Kept tiny and
 # explicit — a reviewable analogue of the manifest, validated by a test that asserts
 # the fast sweep stays cheap.
-_ORACLE_BACKED: frozenset[str] = frozenset({"cover-gaps"})
+_ORACLE_BACKED: frozenset[str] = frozenset({"cover-gaps", "js-cover-gaps"})
 
 
 def heavy_objective_names() -> set[str]:

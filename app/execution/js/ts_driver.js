@@ -82,6 +82,27 @@
 //                             not) AND carry exactly the prior set UNION {name} —
 //                             Python proves the splice added precisely the one
 //                             intended named export and corrupted nothing.
+//   cover-targets <file>   -> JSON: every EXPORTED, public (non-`_`), undecorated,
+//                             NON-async, NON-generator function/const-arrow (ESM
+//                             `export` or CJS `module.exports.NAME = fn`) in <file>
+//                             as [{name, params:[{name, type|null, defaultText|null}],
+//                             pure, exportKind}] — the CHARACTERIZATION targets the
+//                             js-cover-gaps objective synthesises a jest test for. The
+//                             `pure` flag is the AST forbidden-call/free-identifier
+//                             scan (the cheap FIRST flaky-test guard, before the
+//                             Python env-reproducibility re-capture gate): false the
+//                             moment the body reads the clock/random/env/IO/network
+//                             (`Date`/`Math.random`/`process`/`performance`/`fs`/
+//                             `fetch`/`require`/dynamic `import`/`globalThis`/...) or
+//                             references any FREE identifier outside its
+//                             params/locals/own-name and a small pure-globals
+//                             allow-list. `params` reuses the identifier-or-defaulted
+//                             gate (a destructuring/rest param makes it null and the
+//                             target is skipped); `defaultText` is the verbatim
+//                             literal default (or null). The Python side decides the
+//                             SOUND input slice (zero-arg / all-primitive-typed /
+//                             all-literal-default) and REFUSES the rest. Exit 2 on
+//                             parse error.
 //
 // Determinism: no clock, no randomness; functions are reported in source order;
 // JSON keys are emitted in a fixed order. A UTF-16-code-unit-span splice
@@ -122,6 +143,57 @@ function paramNames(node) {
     names.push(p.name.text);
   }
   return names;
+}
+
+// The per-parameter facts a CHARACTERIZATION target needs for input synthesis,
+// in order, or null when a param is not a plain identifier-or-defaulted-identifier
+// (a destructuring / rest param has no single sample to synthesize, so the WHOLE
+// target is refused). Unlike `paramNames` this ACCEPTS an `initializer` (a default)
+// — but reads it ONLY when it is a LITERAL the Python side can re-emit verbatim
+// (`number`/`string`/`boolean`/`null`/array-literal/object-literal/a unary minus on
+// a numeric literal), else `defaultText` is null. Each entry is
+// `{name, type|null, defaultText|null}`: `type` is the verbatim TS annotation (or
+// null), `defaultText` the verbatim literal default source (or null). The
+// js-cover-gaps input synthesiser uses these to decide the SOUND slice (zero-arg /
+// all-primitive-typed / all-literal-default) and refuses anything else.
+function coverParamInfos(node, sf) {
+  const infos = [];
+  for (const p of node.parameters) {
+    if (!ts.isIdentifier(p.name) || p.dotDotDotToken) return null;
+    infos.push({
+      name: p.name.text,
+      type: p.type ? p.type.getText(sf).trim() : null,
+      defaultText: p.initializer ? literalDefaultText(p.initializer, sf) : null,
+    });
+  }
+  return infos;
+}
+
+// The verbatim source text of a parameter DEFAULT when it is a literal the Python
+// side can re-emit as a sample argument, else null. Accepted literal shapes (the
+// JSON-serialisable, deterministic subset — mirrors the Python `_arg_literal`
+// default discipline): a numeric/string/no-substitution-template/boolean/null
+// literal, an array or object literal, or a unary `-`/`+` on a numeric literal
+// (`-1`). A `BigIntLiteral`, an interpolated template, a call, an identifier
+// reference, or any non-literal initializer yields null (the param then has no
+// usable default — the synthesiser refuses unless another rule covers it). Pure
+// AST + verbatim getText, so the emitted sample is exactly the author's bytes.
+function literalDefaultText(expr, sf) {
+  if (expr.kind === ts.SyntaxKind.TrueKeyword
+      || expr.kind === ts.SyntaxKind.FalseKeyword
+      || expr.kind === ts.SyntaxKind.NullKeyword) return expr.getText(sf).trim();
+  if (ts.isNumericLiteral(expr) || ts.isStringLiteral(expr)
+      || ts.isNoSubstitutionTemplateLiteral(expr)) return expr.getText(sf).trim();
+  if (ts.isArrayLiteralExpression(expr) || ts.isObjectLiteralExpression(expr)) {
+    return expr.getText(sf).trim();
+  }
+  if (ts.isPrefixUnaryExpression(expr)
+      && (expr.operator === ts.SyntaxKind.MinusToken
+          || expr.operator === ts.SyntaxKind.PlusToken)
+      && ts.isNumericLiteral(expr.operand)) {
+    return expr.getText(sf).trim();
+  }
+  return null;  // non-literal / bigint / interpolated / call / identifier -> refuse
 }
 
 // The DECLARED parameter TYPES of a function-like node, in order — parallel to
@@ -827,6 +899,339 @@ function collectWireTargets(sf) {
   return out;
 }
 
+// --- js-cover-gaps: the PURITY (env/clock/IO-reproducibility) AST pre-filter ---
+//
+// A characterization test pins `fn(args) === <captured>`. If the captured value
+// depends on the clock / a random source / the environment / IO, the assertion
+// passes ONCE then goes RED later — a FLAKY test, the moat's cardinal "fake-green"
+// sin. This scan is the cheap FIRST guard (the heavier env-reproducibility
+// re-capture gate on the Python side is the second, load-bearing one): it REFUSES
+// (returns false) the moment the function's OWN-SCOPE body references a known
+// non-deterministic source OR any FREE identifier it cannot prove is a param /
+// local / its own name / a small allow-list of provably-pure globals. Refuse-on-
+// uncertainty: an unknown free identifier is a possible closure over external
+// mutable state (non-reproducible), so it makes the target impure. Only the ROOT
+// function's own scope is scanned for free vars (a nested function introduces its
+// own scope), but a FORBIDDEN reference anywhere in the body — including inside a
+// nested arrow — still taints the target (a nested `() => Date.now()` the root
+// returns is just as flaky).
+
+// Member-access ROOTS that are never pure to pin: a value derived from any of
+// these reads the clock / randomness / the process env / IO / the network, so a
+// captured return embedding it is not reproducible. Matches `Date.now()`,
+// `Math.random()`, `process.env`, `performance.now()`, `crypto.*`, `fs.*`,
+// `os.*`, `globalThis.*`, ... — the JS image of test_shield's clock/IO refusals.
+const _FORBIDDEN_ROOTS = new Set([
+  "Date", "Math", "process", "performance", "crypto", "fs", "fsPromises",
+  "os", "globalThis", "global", "window", "self", "navigator", "document",
+  "fetch", "XMLHttpRequest", "WebSocket", "require", "module", "exports",
+  "__dirname", "__filename", "Intl", "Reflect", "WeakMap", "WeakSet",
+  "WeakRef", "FinalizationRegistry", "Promise", "Symbol", "Proxy", "eval",
+]);
+
+// Bare callee identifiers that are non-deterministic / impure even called free
+// (no member root): `eval`, `fetch`, `require`, `setTimeout`/`setInterval`
+// (timing), `structuredClone` (fine, but conservatively excluded as a global we
+// don't model). Most impure calls are member calls caught by `_FORBIDDEN_ROOTS`;
+// this catches the bare-global forms.
+const _FORBIDDEN_FREE = new Set([
+  "eval", "fetch", "require", "import", "setTimeout", "setInterval",
+  "setImmediate", "queueMicrotask",
+]);
+
+// The provably-pure GLOBALS a body may reference free without tainting the
+// capture: the value constructors / pure helpers whose result is deterministic
+// and JSON-stable (`Math` is NOT here — `Math.random` is forbidden, and a member
+// access is checked separately, so a free `Math` identifier is conservatively
+// refused). Deliberately small — refuse-on-uncertainty means an unknown free name
+// is impure, so this list only whitelists the few whose purity is certain. Note
+// `Math`/`Date`/`Promise`/`Symbol`/`crypto` are EXCLUDED (in `_FORBIDDEN_ROOTS`):
+// even `new Date()` or `Math.PI`-via-`Math` is refused so a clock/PI-free-id slip
+// can't happen.
+const _PURE_GLOBALS = new Set([
+  "Number", "String", "Boolean", "Array", "Object", "JSON", "parseInt",
+  "parseFloat", "isNaN", "isFinite", "Infinity", "NaN", "undefined",
+  "Map", "Set", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError",
+  "EvalError", "ReferenceError", "URIError", "encodeURIComponent",
+  "decodeURIComponent", "encodeURI", "decodeURI",
+]);
+
+// Collect the names a function-like node BINDS in its OWN scope: its parameters
+// (incl. defaulted/destructured pattern bindings), and the var/let/const,
+// function, class and catch bindings declared anywhere inside its body that are
+// NOT inside a deeper nested function (those belong to the nested scope). The
+// function's own name (a named function declaration/expression) is added by the
+// caller. Used so the free-identifier scan only flags names the body does not
+// itself define. Conservative: a name BOUND here is treated as local even if it
+// shadows a global (correct — the shadow is what runs).
+function collectBoundNames(node) {
+  const bound = new Set();
+  function addBindingName(name) {
+    if (ts.isIdentifier(name)) {
+      bound.add(name.text);
+    } else if (ts.isObjectBindingPattern(name) || ts.isArrayBindingPattern(name)) {
+      for (const el of name.elements) {
+        if (ts.isBindingElement(el)) addBindingName(el.name);
+      }
+    }
+  }
+  for (const p of node.parameters) addBindingName(p.name);
+  function walk(n, isRoot) {
+    if (!isRoot && ts.isFunctionLike(n)) {
+      // A nested function's own name leaks into THIS scope (a hoisted
+      // declaration / named expression is visible here), but its body/params are
+      // its own scope — record the name, do not descend.
+      if ((ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n)) && n.name) {
+        bound.add(n.name.text);
+      }
+      return;
+    }
+    if (ts.isVariableDeclaration(n) || ts.isBindingElement(n)) addBindingName(n.name);
+    if ((ts.isFunctionDeclaration(n) || ts.isClassDeclaration(n)) && n.name) {
+      bound.add(n.name.text);
+    }
+    if (ts.isCatchClause(n) && n.variableDeclaration) {
+      addBindingName(n.variableDeclaration.name);
+    }
+    ts.forEachChild(n, (child) => walk(child, false));
+  }
+  if (node.body) walk(node.body, true);
+  return bound;
+}
+
+// True when `node` is a PURE characterization target: its body references no
+// forbidden (clock/random/env/IO/network) source and no FREE identifier outside
+// the param/local/own-name set and the pure-globals allow-list. This is the AST
+// pre-filter; the Python env-reproducibility re-capture gate is the load-bearing
+// second layer. Refuse-on-uncertainty: ANY unrecognised free identifier, member
+// access rooted at a forbidden global, or forbidden bare call makes it false.
+function isPureTarget(node, ownName) {
+  if (!node.body) return false;
+  const bound = collectBoundNames(node);
+  if (ownName) bound.add(ownName);
+  let pure = true;
+  function rootIdentifierOf(expr) {
+    let cur = expr;
+    while (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur)) {
+      cur = cur.expression;
+    }
+    return ts.isIdentifier(cur) ? cur : null;
+  }
+  function isBindingNameId(id) {
+    // An identifier that is the NAME side of a property/binding/param/label is
+    // not a free VALUE reference — skip it (e.g. `{a: x}` key `a`, `obj.prop`
+    // member `prop`, a `case` label). Only value-position identifiers count.
+    const p = id.parent;
+    if (!p) return false;
+    if (ts.isPropertyAccessExpression(p) && p.name === id) return true;  // `.prop`
+    if (ts.isQualifiedName(p) && p.right === id) return true;
+    if ((ts.isPropertyAssignment(p) || ts.isPropertySignature(p)
+         || ts.isShorthandPropertyAssignment(p)) && p.name === id
+        && !ts.isShorthandPropertyAssignment(p)) return true;  // object KEY (non-shorthand)
+    if (ts.isBindingElement(p) && p.propertyName === id) return true;  // `{a: b}` key in pattern
+    if (ts.isParameter(p) || ts.isBindingElement(p)) {
+      if (p.name === id) return true;  // a binding NAME, not a reference
+    }
+    if (ts.isVariableDeclaration(p) && p.name === id) return true;
+    if (ts.isFunctionDeclaration(p) && p.name === id) return true;
+    if (ts.isClassDeclaration(p) && p.name === id) return true;
+    return false;
+  }
+  function visit(n) {
+    if (!pure) return;
+    // A member/element access rooted at a forbidden global (`Date.now`,
+    // `process.env`, `Math.random` ...) taints the capture.
+    if (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) {
+      const root = rootIdentifierOf(n);
+      if (root && !bound.has(root.text) && _FORBIDDEN_ROOTS.has(root.text)) {
+        pure = false;
+        return;
+      }
+    }
+    // A dynamic `import(...)` expression is IO — refuse.
+    if (n.kind === ts.SyntaxKind.ImportKeyword) { pure = false; return; }
+    if (ts.isCallExpression(n) && n.expression
+        && n.expression.kind === ts.SyntaxKind.ImportKeyword) { pure = false; return; }
+    // A free VALUE identifier: not bound locally, not a pure global -> refuse.
+    if (ts.isIdentifier(n) && !isBindingNameId(n)) {
+      const name = n.text;
+      if (bound.has(name)) {
+        // local / param / own-name — fine
+      } else if (_FORBIDDEN_FREE.has(name) || _FORBIDDEN_ROOTS.has(name)) {
+        pure = false; return;
+      } else if (!_PURE_GLOBALS.has(name)) {
+        pure = false; return;  // unknown free identifier -> refuse-on-uncertainty
+      }
+    }
+    ts.forEachChild(n, visit);
+  }
+  visit(node.body);
+  return pure;
+}
+
+// True when `node` carries ANY decorator — a decorator may change the call
+// contract entirely (the JS image of test_shield's `node.decorator_list` skip), so
+// a decorated target is refused. `ts.getDecorators` (newer TS) with the
+// `node.modifiers`/`node.decorators` fallback for older compiler versions.
+function hasDecorator(node) {
+  if (ts.canHaveDecorators && ts.canHaveDecorators(node) && ts.getDecorators) {
+    const decs = ts.getDecorators(node);
+    if (decs && decs.length > 0) return true;
+  }
+  if (node.decorators && node.decorators.length > 0) return true;
+  const mods = node.modifiers || [];
+  return mods.some((m) => m.kind === ts.SyntaxKind.Decorator);
+}
+
+// One CHARACTERIZATION target: an EXPORTED, public (non-`_`), undecorated,
+// NON-async, NON-generator function/const-arrow with its parameter infos
+// (name + verbatim type + verbatim literal default), a `pure` flag (the AST
+// forbidden-call/free-identifier scan), and the export ADDRESSING the capture
+// child needs (`exportKind`: "named" for an ESM/CJS-named export). `params` reuses
+// the `coverParamInfos` identifier-or-defaulted gate, so a destructuring/rest param
+// makes it null and the target is SKIPPED — never characterize a call we cannot
+// build args for. A function whose name starts with `_` is private (not part of
+// the public surface), and `main` is skipped (its contract is a CLI entry, like
+// test_shield skips Python `main`). The Python side decides the SOUND input slice
+// from `params` + `pure` and refuses the rest.
+function coverTargetFor(name, fnNode, stmtNode, sf, exportKind) {
+  if (name.startsWith("_") || name === "main") return null;       // private / CLI entry
+  if (hasDecorator(stmtNode) || hasDecorator(fnNode)) return null; // decorated -> skip
+  if (isAsync(fnNode)) return null;                                // async -> bare call is a Promise
+  if (fnNode.asteriskToken) return null;                           // generator -> returns an iterator
+  const params = coverParamInfos(fnNode, sf);
+  if (params === null) return null;                                // unreadable params -> skip
+  return {
+    name: name,
+    params: params,
+    pure: isPureTarget(fnNode, name),
+    exportKind: exportKind,
+  };
+}
+
+// The top-level function/const-arrow DECLARATIONS of a source file, mapped by
+// name to `{fnNode, stmtNode}`. Used to RESOLVE a CJS reference export
+// (`module.exports.foo = foo` / `module.exports = { foo }`) to the declaration the
+// name binds, so we can characterize it by its provable AST. Only a name defined
+// EXACTLY ONCE as a top-level function/arrow is recorded (a re-declared name is
+// ambiguous and dropped). Pure AST.
+function topLevelFunctionDecls(sf) {
+  const map = new Map();
+  const dup = new Set();
+  function record(name, fnNode, stmtNode) {
+    if (map.has(name)) { dup.add(name); return; }
+    map.set(name, { fnNode: fnNode, stmtNode: stmtNode });
+  }
+  for (const stmt of sf.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name) {
+      record(stmt.name.text, stmt, stmt);
+    } else if (ts.isVariableStatement(stmt)) {
+      for (const decl of stmt.declarationList.declarations) {
+        const init = decl.initializer;
+        if (init && ts.isIdentifier(decl.name)
+            && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
+          record(decl.name.text, init, stmt);
+        }
+      }
+    }
+  }
+  for (const name of dup) map.delete(name);  // ambiguous re-declaration -> drop
+  return map;
+}
+
+// Collect the characterization targets of a source file, in source order. The
+// EXPORTED, characterizable function/const-arrow declarations a capture child can
+// reach as `mod.NAME` after transpile/require. FOUR addressing forms, all NAMED
+// (never `default`/`export =`, the deferred surface):
+//   * ESM `export function foo(...){...}` / `export const foo = (...) => ...`;
+//   * inline CJS `module.exports.NAME = function...` / `exports.NAME = (...) => ...`
+//     (the RHS is the function itself);
+//   * REFERENCE CJS `module.exports.NAME = ident` / `exports.NAME = ident`, where
+//     `ident` resolves to a top-level function/arrow declaration (`coverTargetFor`
+//     is applied to the DECLARATION's node, under the EXPORTED name `NAME`);
+//   * OBJECT CJS `module.exports = { foo, bar: baz }`, where each property value is
+//     a bare identifier resolving to a top-level function/arrow declaration (the
+//     EXPORTED name is the property key). A bare `module.exports = ident` /
+//     `module.exports = expr` that is not an object literal names no single binding
+//     and is skipped (export-addressing ambiguity -> refuse).
+// The single-`package.json` gate + non-test source gate live on the Python side;
+// here we only enumerate. Deterministic (source order), pure AST. A name reached by
+// more than one form is emitted once (first occurrence). The Python side resolves
+// addressing by name (`mod.NAME`), so the EXPORTED key — not the local — is used.
+function collectCoverTargets(sf) {
+  const decls = topLevelFunctionDecls(sf);
+  const out = [];
+  const seen = new Set();
+  function push(t) {
+    if (t !== null && !seen.has(t.name)) { seen.add(t.name); out.push(t); }
+  }
+  // A target reached by an EXPORTED name `pubName` whose function body is `fnNode`
+  // (declared at `stmtNode`). `coverTargetFor` re-checks public/decorator/async/
+  // generator/param gates and computes purity off the declaration's own node.
+  function pushNamed(pubName, fnNode, stmtNode) {
+    push(coverTargetFor(pubName, fnNode, stmtNode, sf, "named"));
+  }
+  // Resolve a bare identifier export to its top-level function declaration, under
+  // the EXPORTED name `pubName` (which may differ from the local for an alias).
+  function pushByRef(pubName, localName) {
+    const d = decls.get(localName);
+    if (d) pushNamed(pubName, d.fnNode, d.stmtNode);
+  }
+  for (const stmt of sf.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name && isExported(stmt)) {
+      pushNamed(stmt.name.text, stmt, stmt);
+    } else if (ts.isVariableStatement(stmt) && isExported(stmt)) {
+      for (const decl of stmt.declarationList.declarations) {
+        const init = decl.initializer;
+        if (init && ts.isIdentifier(decl.name)
+            && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
+          pushNamed(decl.name.text, init, stmt);
+        }
+      }
+    } else if (ts.isExpressionStatement(stmt) && ts.isBinaryExpression(stmt.expression)
+               && stmt.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const expr = stmt.expression;
+      const lhs = expr.left;
+      const rhs = expr.right;
+      if (ts.isPropertyAccessExpression(lhs)) {
+        const root = assignmentRootName(lhs);
+        if ((root === "module" || root === "exports") && lhs.name) {
+          const pub = lhs.name.text;
+          if (pub === "exports") {
+            // `module.exports = ...` (root `module`, prop `exports`): a whole-object
+            // assignment, handled by the object-literal branch below.
+          } else if (ts.isArrowFunction(rhs) || ts.isFunctionExpression(rhs)) {
+            pushNamed(pub, rhs, stmt);                  // inline CJS
+          } else if (ts.isIdentifier(rhs)) {
+            pushByRef(pub, rhs.text);                   // reference CJS
+          }
+        }
+      }
+      // `module.exports = { foo, bar: baz }` — an object literal whose property
+      // values are bare identifiers resolving to top-level function declarations.
+      const isWholeExports = ts.isPropertyAccessExpression(lhs)
+        && assignmentRootName(lhs) === "module" && lhs.name && lhs.name.text === "exports"
+        && !ts.isPropertyAccessExpression(lhs.expression);
+      const isBareExports = ts.isIdentifier(lhs) && lhs.text === "exports";
+      if ((isWholeExports || isBareExports) && ts.isObjectLiteralExpression(rhs)) {
+        for (const prop of rhs.properties) {
+          if (ts.isShorthandPropertyAssignment(prop)) {
+            pushByRef(prop.name.text, prop.name.text);          // { foo }
+          } else if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)
+                     && ts.isIdentifier(prop.initializer)) {
+            pushByRef(prop.name.text, prop.initializer.text);   // { pub: local }
+          } else if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)
+                     && (ts.isArrowFunction(prop.initializer)
+                         || ts.isFunctionExpression(prop.initializer))) {
+            pushNamed(prop.name.text, prop.initializer, stmt);  // { pub: () => ... }
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
 function fail(message) {
   process.stderr.write(String(message) + "\n");
   process.exit(REFUSE);
@@ -906,6 +1311,11 @@ function cmdWireVerify(file) {
   process.stdout.write(JSON.stringify({ names: allExportedNames(sf) }));
 }
 
+function cmdCoverTargets(file) {
+  const { sf } = readSource(file);
+  process.stdout.write(JSON.stringify(collectCoverTargets(sf)));
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const sub = argv[0];
@@ -917,9 +1327,11 @@ function main() {
   if (sub === "doc-verify" && argv.length === 2) return cmdDocVerify(argv[1]);
   if (sub === "wire-targets" && argv.length === 2) return cmdWireTargets(argv[1]);
   if (sub === "wire-verify" && argv.length === 2) return cmdWireVerify(argv[1]);
+  if (sub === "cover-targets" && argv.length === 2) return cmdCoverTargets(argv[1]);
   fail("usage: ts_driver.js scan <file> | mine <file> <name> "
        + "| mine-jsdoc <file> <name> | fill <file> <name> <body> "
-       + "| doc-targets <file> | doc-verify <file> | wire-targets <file> | wire-verify <file>");
+       + "| doc-targets <file> | doc-verify <file> | wire-targets <file> | wire-verify <file> "
+       + "| cover-targets <file>");
 }
 
 main();

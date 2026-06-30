@@ -781,7 +781,7 @@ def test_objective_total_is_seventy_eight():
     # 87 after js-document-returns-inferred (the PLAIN-JS inferred-@returns JSDoc
     # objective) self-registered; this count pin is the tripwire each new objective
     # round bumps.
-    assert len(set(available_objectives())) == 87
+    assert len(set(available_objectives())) == 88
 
 
 def test_objective_spec_is_callable():
@@ -828,7 +828,7 @@ def test_parity_concrete_count_is_thirty_six():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 42  # js-document-returns-inferred (87th) is CONCRETE
+    assert len(buckets["CONCRETE"]) == 43  # js-cover-gaps (88th) is CONCRETE
 
 
 # --- PARITY ROW 3: soundness-strategy manifest ------------------------------

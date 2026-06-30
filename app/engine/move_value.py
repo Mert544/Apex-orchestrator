@@ -55,6 +55,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "js_implement_from_jsdoc": 1.00,  # JS image of implement_from_doctest — fill a JS stub from its own jsdoc @example (no jest test)
     "scaffold_from_protocol": 0.95,  # a runnable implementer for an unimplemented protocol
     "cover_gaps": 0.90,              # first characterization test for an untested module
+    "js_cover_gaps": 0.90,           # JS/TS sibling of cover_gaps — first jest characterization test for an untested function (same tier as cover_gaps)
     "wire_exports": 0.90,            # the package re-export surface (__all__ + re-exports)
     "js_wire_exports": 0.90,         # JS/TS sibling of wire_exports — add a missing ESM export (same tier as wire_exports)
     "strengthen_tests": 0.88,        # a mutant-killing assertion the suite was missing

@@ -697,8 +697,8 @@ def test_counts_bumped_to_eighty_seven_and_forty_two():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 87
-    assert len(classify_objectives(names)["CONCRETE"]) == 42
+    assert len(names) == 88
+    assert len(classify_objectives(names)["CONCRETE"]) == 43
 
 
 def test_north_star_and_soundness_audits_pass():
