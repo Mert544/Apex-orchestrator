@@ -871,7 +871,11 @@ def test_expand_idea_demotes_harden_with_no_fixable_pattern(tmp_path):
     assert step.executable is True
 
 
-def test_dead_parameter_root_maps_to_command_carrying_work_order():
+def test_dead_parameter_root_maps_to_executable_drop_param():
+    # Autonomous-39: dead-parameter flipped from a supervised ``apex signature
+    # drop`` work-order handoff to the EXECUTABLE delegated ``drop_param`` lander
+    # (drop a provably-unused param + rewrite in-project call sites; refuses a
+    # public-API function). The old handoff command text is gone from the action.
     idea = IdeaNode(
         id="d", title="Drop the dead parameter `color` from render() in app/ui.py",
         subject="app/ui.py", operator="root", branch_path="x.d",
@@ -879,9 +883,10 @@ def test_dead_parameter_root_maps_to_command_carrying_work_order():
                       "`apex signature drop render color`"],
     )
     step = IdeaActionBridge().plan_idea(idea)
-    assert step.action_type == "design_task"
-    assert step.executable is False
-    assert "apex signature drop" in step.description
+    assert step.action_type == "drop_param"
+    assert step.executable is True
+    assert "provably-unused parameter" in step.description
+    assert "apex signature drop" not in step.description
 
 
 def test_draft_fallback_is_never_an_applicable_patch(tmp_path):

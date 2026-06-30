@@ -284,13 +284,30 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                         "Drop a redundant `== True` / `is False` comparison "
                         "against a bool literal (provably-bool operand only) "
                         "in {s}", True),
-    # The hands exist (apex signature drop/keywordify) but as supervised CLI
-    # muscles, not unattended transforms — the work order carries the command.
-    "dead-parameter": ("design_task",
-                       "Drop the never-read parameter from {s} — the idea's fact "
-                       "line carries the exact `apex signature drop` command "
-                       "(chain `apex signature keywordify` first if a caller "
-                       "passes it positionally)", False),
+    # Dead-parameter: the transform hands ALREADY EXIST (``plan_param_drop`` via
+    # ``apply_rename`` — dry-run/suite-verify/auto-rollback) and were only a
+    # supervised CLI muscle (``apex signature drop``). Autonomous-39: flipped from
+    # design_task → the delegated ``drop_param`` lander, which rewrites the def
+    # WITHOUT the provably-unused parameter AND every in-project KEYWORD call site,
+    # gated + auto-rolled-back. The description states EXACTLY what lands (it does
+    # NOT over-claim a redesign): drop a provably-unused parameter and rewrite all
+    # IN-PROJECT call sites. THE AUTONOMY SOUNDNESS RAIL (the supervised CLI relied
+    # on a human to judge external impact): the lander REFUSES a PUBLIC-API function
+    # — an external (out-of-project) caller can pass the dead param BY KEYWORD
+    # (``lib.func(x, dead=1)``), invisible to the in-project scan and unexercised by
+    # the suite (positional + ``**kwargs`` are already blocked, so external-keyword
+    # is the residual hole) — so it drops ONLY from a provably NON-public function
+    # (private/underscore, or not in ``__all__``), an HONEST no-op otherwise. param
+    # _drop's own refuse-set (dead-in-body / positional-block / ``**kwargs``-block /
+    # comment-block / sole-top-level) rides through unchanged. SCOPE: top-level
+    # functions ONLY (``resolve_sole_definition`` — the dead-param scan keys on a
+    # name UNIQUE project-wide), so no method-override/Protocol/ABC LSP hazard
+    # arises; the lander runs over the named module, broader-but-safe (suite-gated +
+    # auto-rollback) exactly like the W1/W2/W3a/W5 landers.
+    "dead-parameter": ("drop_param",
+                       "Drop a provably-unused parameter from {s} and rewrite all "
+                       "in-project call sites (refuses a public-API function — an "
+                       "external caller could still pass it by keyword)", True),
     # The three DEVELOP-GRADE synthesis objectives ``apex plan --concrete`` can
     # already LAND. Unlike the readability simplifications above, these are NOT
     # emitted by the seeder — the bridge augments the action plan with them
@@ -986,6 +1003,14 @@ class IdeaActionBridge:
         # produced by the objective's own lander (``plan_promote_staticmethods``),
         # not from here.
         "promote_staticmethod": ["promote self-free method to staticmethod"],
+        # drop_param (Autonomous-39, the honest dead-parameter flip), like the
+        # landers above, is NOT a SemanticPatchResult transform — ``apply_step``
+        # delegates it to the develop-core ``apply_rename`` path. Listed here so
+        # ``_step_targets`` recognises it as a real transform objective (a ``.py``
+        # target → ``[step.target]``); the project-wide drop (def header + every
+        # in-project keyword call site) is produced by the lander's own
+        # ``plan_param_drop`` (with the public-API refusal), not from here.
+        "drop_param": ["drop a provably-unused parameter project-wide"],
     }
 
     # Behaviour-preserving readability simplifications dispatched STRAIGHT to
@@ -2149,6 +2174,114 @@ class IdeaActionBridge:
 
         return _plan
 
+    @staticmethod
+    def _plan_drop_param_lander():
+        """The dead-parameter lander adapted to the delegated ``(project_root,
+        target)`` shape every delegated synthesis uses — PLUS the new autonomy
+        soundness rail (public-API refusal).
+
+        dead-parameter is PER-PARAMETER, but the ``dead-parameter`` seeder subject
+        is the MODULE rel only (``idea_seeder._seed_dead_params``: ``subject =
+        dp["module"]``; the function/param live in the fact line, not the subject),
+        so — exactly like the tdd-implement lander re-runs ``detect_missing_symbols``
+        — this wrapper RE-RUNS the dead-parameter detector
+        (``objective_compiler._dead_params``, the SAME scan the seeder and the
+        objective compiler use) for the target module, recovers each ``(function,
+        param)`` there, and DELEGATES to ``plan_param_drop`` for the first one a
+        sound drop is producible for. A non-``.py`` / unreadable target, or a module
+        with no droppable dead parameter, yields an empty no-op :class:`RenamePlan`
+        with a disclosed blocker, so the delegated apply path honestly no-ops rather
+        than fakes a change (never a fake-green).
+
+        THE AUTONOMY SOUNDNESS RAIL — PUBLIC-API REFUSAL (the crux): the supervised
+        ``apex signature drop`` muscle relied on a HUMAN to judge external impact.
+        Autonomy removes the human, so an external (out-of-project) caller could pass
+        the provably-dead parameter BY KEYWORD (``lib.func(x, dead=1)``) — a call the
+        in-project scan cannot see and the suite-gate cannot exercise; dropping the
+        parameter would raise ``TypeError`` for that caller. (param_drop already
+        BLOCKS a POSITIONAL pass and a ``f(**mapping)`` splat, so external-keyword is
+        the one residual hole autonomy opens.) So this lander REFUSES to drop a
+        parameter from a function on the module's PUBLIC SURFACE, reusing the SAME
+        default-public ``is_public_name`` predicate add-final / freeze-dataclass use:
+        a name in ``__all__`` (or, with no ``__all__``, a top-level non-underscore
+        name) is public ⇒ REFUSE; only a provably NON-public function
+        (underscore-prefixed, or absent from a declared ``__all__``) is dropped, where
+        ALL callers are necessarily in-project and the suite-gate + impact-scope +
+        auto-rollback is the proof. Cannot prove non-public ⇒ honest no-op — the same
+        creed the round-20 public-API rails shipped.
+
+        SCOPE — top-level functions ONLY: ``plan_param_drop`` resolves the definition
+        via ``resolve_sole_definition`` (a top-level ``def`` whose name is UNIQUE
+        project-wide; the dead-param scan additionally refuses a name defined by 2+
+        modules, a bare-object reference, a decorated def, and a stub body). So NO
+        method-override / Protocol / ABC LSP hazard arises here — a parameter unused
+        in an override that a base contract requires is simply never in scope.
+        ``plan_param_drop`` keeps its full refuse-set (param read in body, ``*args`` /
+        ``**kwargs``, a POSITIONAL call site, a ``f(**mapping)`` splat that could
+        smuggle the key, a comment inside the signature span), so each is an honest
+        no-op through the autonomous path too.
+
+        SCOPE — broader but SAFE: the detector may surface SEVERAL dead parameters in
+        the module; this lander tries them in the detector's deterministic order and
+        returns the FIRST landable, non-public drop. Like the W1/W2/W3a/W5 landers it
+        lands through ``apply_rename(impact_scope=True)``, whose impacted-test gate
+        auto-rolls-back on ANY regression — so a broader-than-named but
+        behaviour-preserving drop either verifies green or is reverted, never a silent
+        overreach."""
+        from app.execution.cross_file_rename import RenamePlan
+        from app.execution.freeze_dataclass import is_public_name
+        from app.execution.param_drop import plan_param_drop
+
+        def _read(root: Path, rel: str) -> str | None:
+            fp = root / rel
+            try:
+                return fp.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                return None
+
+        def _plan(project_root: str, target: str) -> RenamePlan:
+            # The dead-parameter subject is the module rel; strip any "::suffix"
+            # defensively so a future symbol-grain subject still resolves the module.
+            module_rel = target.split("::", 1)[0]
+            root = Path(project_root)
+            source = _read(root, module_rel)
+            if source is None:
+                return RenamePlan(
+                    old=module_rel, new="drop-param",
+                    blockers=[f"{module_rel}: cannot read module — no drop"])
+
+            from app.engine.objective_compiler import _dead_params
+
+            # The detector is project-wide (it needs project-wide name-uniqueness
+            # + bare-object refs); filter its deterministic, sorted output to this
+            # module. Each entry is ``{module, function, param, line}``.
+            dead = [d for d in _dead_params(project_root)
+                    if d.get("module") == module_rel]
+
+            public_refused: list[str] = []
+            blockers: list[str] = []
+            for d in dead:
+                func, param = d["function"], d["param"]
+                # THE PUBLIC-API RAIL: refuse a public-surface function — an external
+                # caller could pass the dead param by keyword (unseen, unexercised).
+                if is_public_name(func, source):
+                    public_refused.append(
+                        f"{module_rel}: {func}() is public API (an external caller "
+                        f"could pass '{param}' by keyword) — refused")
+                    continue
+                plan = plan_param_drop(project_root, func, param)
+                if plan.new_contents:
+                    return plan  # the first landable, provably-non-public drop
+                blockers.extend(plan.blockers)
+
+            # Nothing landable here: carry the most informative disclosed reason.
+            reason = (blockers or public_refused
+                      or [f"{module_rel}: no droppable dead parameter"])
+            return RenamePlan(old=module_rel, new="drop-param",
+                              blockers=list(reason))
+
+        return _plan
+
     _DELEGATED_SYNTHESIS = {
         "implement_stub": (
             "_plan_implement_stub_lander",
@@ -2192,6 +2325,10 @@ class IdeaActionBridge:
             "_plan_promote_staticmethod_lander",
             "no promotion (no self-free method / all decorated, dunder, overridden, "
             "or dynamically referenced)"),
+        "drop_param": (
+            "_plan_drop_param_lander",
+            "no drop (no dead parameter / public-API function / positional or "
+            "**kwargs call site / param read in body / comment in signature)"),
     }
 
     # The action types ``apply_step`` / ``_generate`` route to the develop-core

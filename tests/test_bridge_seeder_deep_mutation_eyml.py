@@ -1146,7 +1146,11 @@ _FACT_EXPECTED = {
     "assert-tuple": ("fix_assert_tuple", True),
     "bool-comparison": ("simplify_bool_comparison", True),
     "or-default": ("or_default", True),
-    "dead-parameter": ("design_task", False),
+    # Autonomous-39: flipped from design_task → the delegated drop_param lander
+    # (drop a provably-unused parameter + rewrite in-project keyword call sites,
+    # gated + auto-rollback; the new PUBLIC-API rail refuses an exported function,
+    # so a public-surface param is an honest no-op).
+    "dead-parameter": ("drop_param", True),
     # The develop-grade synthesis objectives surfaced by the action-plan
     # augmentation (``_augment_synthesis_steps``). Not emitted by the seeder, but
     # routable through the standard fact path; each is executable (grounded on its

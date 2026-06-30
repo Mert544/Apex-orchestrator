@@ -33,6 +33,19 @@ TIER_BY_ACTION: dict[str, int] = {
     "modernize_comparisons": 0,
     # Additive-only: a new CI workflow file touches no existing source.
     "add_ci": 0,
+    # Dropping a provably-never-read parameter (and rewriting every in-project
+    # keyword call site) is behaviour-PRESERVING — the operator ``drop_param`` is
+    # deliberately NOT in ``BEHAVIOUR_CHANGING_OPERATORS`` (see that set's
+    # docstring: "drop never-read param" is a semantics-preserving refactor a
+    # module-referencing test soundly proves). The bridge's delegated apply path
+    # resolves the tier from the ACTION type (``tier_for(step.action_type)``), so
+    # pin it Tier 0 here to AGREE with ``tier_for_operator("drop_param")`` — the
+    # same Tier 0 the objective compiler's ``dead-params`` move already carries —
+    # rather than falling through to the cautious Tier-1 default. Soundness comes
+    # from the refuse-set (dead-in-body + positional/`**kwargs`/comment block +
+    # the autonomous PUBLIC-API refusal), not the tier; the tier only governs how
+    # strong a green-suite coverage proof must be.
+    "drop_param": 0,
     # Tier 1 — behavior-adjacent rewrites
     "harden_security": 1,
     "fix_mutable_defaults": 1,
