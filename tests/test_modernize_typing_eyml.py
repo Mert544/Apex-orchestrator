@@ -57,88 +57,92 @@ def _project(tmp_path: Path, rel: str, src: str) -> Path:
 # --- positive spellings (future-import PRESENT) -------------------------------
 
 def test_list_subscript_to_builtin():
+    # ``List`` is fully consumed by the rewrite (its only use was this annotation),
+    # so wave-2 drops the now-dead ``from typing import List`` line too.
     out = modernize_typing(_F + "from typing import List\nx: List[int]\n")
-    assert out == _F + "from typing import List\nx: list[int]\n"
+    assert out == _F + "x: list[int]\n"
 
 
 def test_dict_subscript_to_builtin():
     out = modernize_typing(_F + "from typing import Dict\nx: Dict[str, int]\n")
-    assert out == _F + "from typing import Dict\nx: dict[str, int]\n"
+    assert out == _F + "x: dict[str, int]\n"
 
 
 def test_set_frozenset_type_tuple_subscripts():
     src = (_F + "from typing import Set, FrozenSet, Type, Tuple\n"
            "a: Set[int]\nb: FrozenSet[str]\nc: Type[int]\nd: Tuple[int, str]\n")
     out = modernize_typing(src)
-    assert out == (_F + "from typing import Set, FrozenSet, Type, Tuple\n"
-                   "a: set[int]\nb: frozenset[str]\nc: type[int]\nd: tuple[int, str]\n")
+    # Every name on the line became dead -> the whole import line is dropped.
+    assert out == (_F + "a: set[int]\nb: frozenset[str]\n"
+                   "c: type[int]\nd: tuple[int, str]\n")
 
 
 def test_optional_to_union_none():
     out = modernize_typing(_F + "from typing import Optional\nx: Optional[int]\n")
-    assert out == _F + "from typing import Optional\nx: int | None\n"
+    assert out == _F + "x: int | None\n"
 
 
 def test_union_two_members():
     out = modernize_typing(_F + "from typing import Union\nx: Union[int, str]\n")
-    assert out == _F + "from typing import Union\nx: int | str\n"
+    assert out == _F + "x: int | str\n"
 
 
 def test_union_with_none_member_single_none_tail():
     out = modernize_typing(_F + "from typing import Union\nx: Union[int, str, None]\n")
-    assert out == _F + "from typing import Union\nx: int | str | None\n"
+    assert out == _F + "x: int | str | None\n"
 
 
 def test_optional_of_union_flattens_single_none():
     # Optional[Union[A, B]] -> A | B | None (one | None tail, never doubled).
     out = modernize_typing(
         _F + "from typing import Optional, Union\nx: Optional[Union[int, str]]\n")
-    assert out == _F + "from typing import Optional, Union\nx: int | str | None\n"
+    assert out == _F + "x: int | str | None\n"
 
 
 def test_nested_union_flattens():
     out = modernize_typing(
         _F + "from typing import Union\nx: Union[int, Union[str, bytes]]\n")
-    assert out == _F + "from typing import Union\nx: int | str | bytes\n"
+    assert out == _F + "x: int | str | bytes\n"
 
 
 def test_single_element_union_collapses():
     out = modernize_typing(_F + "from typing import Union\nx: Union[int]\n")
-    assert out == _F + "from typing import Union\nx: int\n"
+    assert out == _F + "x: int\n"
 
 
 def test_text_to_str():
     out = modernize_typing(_F + "from typing import Text\nx: Text\n")
-    assert out == _F + "from typing import Text\nx: str\n"
+    assert out == _F + "x: str\n"
 
 
 def test_nested_generic_inner_migrates():
     out = modernize_typing(
         _F + "from typing import Dict, List\nx: Dict[str, List[int]]\n")
-    assert out == _F + "from typing import Dict, List\nx: dict[str, list[int]]\n"
+    assert out == _F + "x: dict[str, list[int]]\n"
 
 
 def test_function_signature_and_return():
     src = (_F + "from typing import Optional, List, Dict\n"
            "def f(x: Optional[List[int]]) -> Dict[str, int]:\n    return {}\n")
     out = modernize_typing(src)
-    assert out == (_F + "from typing import Optional, List, Dict\n"
-                   "def f(x: list[int] | None) -> dict[str, int]:\n    return {}\n")
+    assert out == (_F + "def f(x: list[int] | None) -> dict[str, int]:\n"
+                   "    return {}\n")
 
 
 def test_aliased_module_import_typing_as_t():
     out = modernize_typing(_F + "import typing as t\nx: t.List[int]\n")
-    assert out == _F + "import typing as t\nx: list[int]\n"
+    # ``t`` is now fully unreferenced -> the ``import typing as t`` line is dropped.
+    assert out == _F + "x: list[int]\n"
 
 
 def test_plain_import_typing_dotted():
     out = modernize_typing(_F + "import typing\nx: typing.Optional[int]\n")
-    assert out == _F + "import typing\nx: int | None\n"
+    assert out == _F + "x: int | None\n"
 
 
 def test_from_import_as_alias():
     out = modernize_typing(_F + "from typing import List as L\nx: L[int]\n")
-    assert out == _F + "from typing import List as L\nx: list[int]\n"
+    assert out == _F + "x: list[int]\n"
 
 
 def test_args_kwargs_and_kwonly_annotations():
@@ -147,10 +151,10 @@ def test_args_kwargs_and_kwonly_annotations():
            "    return args\n")
     out = modernize_typing(src)
     # Only the annotation SPANS are spliced — the parameter default ` = None` keeps
-    # its original spacing (the transform never touches outside an annotation slot).
-    assert out == (_F + "from typing import List, Dict, Optional\n"
-                   "def f(*args: list[int], k: str | None = None, **kw: dict[str, int]):\n"
-                   "    return args\n")
+    # its original spacing (the transform never touches outside an annotation slot)
+    # — and the now-dead import line is dropped.
+    assert out == (_F + "def f(*args: list[int], k: str | None = None, "
+                   "**kw: dict[str, int]):\n    return args\n")
 
 
 def test_modernizable_annotations_predicate():
@@ -299,13 +303,176 @@ def test_rewrite_reparses():
     ast.parse(out)  # never lands broken Python
 
 
+# --- wave-2: drop the now-fully-dead typing import (land ruff-clean standalone) -
+#
+# After the modern spellings consume their typing names, a ``typing`` import this
+# transform modernized can be left FULLY unreferenced -> an F401 on a ruff-strict
+# project (the wave-1 scope cut). Wave-2 drops EXACTLY those dead names — scoped to
+# the names this transform modernized, never a name still used, exported, under a
+# star-import, or one the user didn't ask about.
+
+
+def _no_f401(src: str, tmp_path: Path) -> None:
+    """Assert ``src`` carries no ruff F401 (unused-import) finding — the buyer-facing
+    'lands ruff-clean standalone' proof. Skips cleanly if ruff isn't installed."""
+    import shutil
+    import subprocess
+
+    ruff = shutil.which("ruff")
+    if ruff is None:  # pragma: no cover - ruff is a dev dependency, present in CI
+        return
+    p = tmp_path / "mod.py"
+    p.write_text(src, encoding="utf-8")
+    proc = subprocess.run(
+        [ruff, "check", "--select", "F401", "--no-cache", str(p)],
+        capture_output=True, text=True)
+    assert "F401" not in (proc.stdout + proc.stderr), proc.stdout + proc.stderr
+
+
+def test_only_typing_use_was_optional_drops_dead_import(tmp_path: Path):
+    # (1) The ONLY typing use was Optional, all in annotations under the future
+    # gate -> after the rewrite the `from typing import Optional` line is GONE and
+    # the result is ruff-F401-clean (the wave-1 dead import no longer leaks).
+    src = (_F + "from typing import Optional\n"
+           "def f(x: Optional[int]) -> Optional[str]:\n    return None\n")
+    out = modernize_typing(src)
+    assert out == (_F + "def f(x: int | None) -> str | None:\n    return None\n")
+    assert "from typing import Optional" not in out
+    _no_f401(out, tmp_path)
+
+
+def test_partial_import_keeps_still_used_name():
+    # (2) PARTIAL: `from typing import Optional, Any` where Any is still used -> only
+    # the dead Optional is dropped; Any is kept (a name still referenced never goes).
+    src = _F + "from typing import Optional, Any\nx: Optional[int]\ny: Any\n"
+    out = modernize_typing(src)
+    assert out == _F + "from typing import Any\nx: int | None\ny: Any\n"
+
+
+def test_expression_use_keeps_import():
+    # (3) Optional used in an EXPRESSION (`cast(Optional[int], y)`) as well as an
+    # annotation -> the annotation-slot boundary never rewrote the cast, so Optional
+    # is STILL referenced -> the import is KEPT (removing it would be a NameError).
+    src = (_F + "from typing import Optional, cast\n"
+           "def f(y) -> Optional[int]:\n    return cast(Optional[int], y)\n")
+    out = modernize_typing(src)
+    assert out == (_F + "from typing import Optional, cast\n"
+                   "def f(y) -> int | None:\n    return cast(Optional[int], y)\n")
+    assert "from typing import Optional, cast" in out
+
+
+def test_name_in_dunder_all_keeps_import():
+    # (4) Optional listed in `__all__` -> a public re-export -> the import is KEPT
+    # even though no reference survives the rewrite.
+    src = _F + 'from typing import Optional\n__all__ = ["Optional"]\nx: Optional[int]\n'
+    out = modernize_typing(src)
+    assert out == _F + 'from typing import Optional\n__all__ = ["Optional"]\nx: int | None\n'
+
+
+def test_import_typing_as_t_fully_dead_dropped():
+    # (5a) `import typing as t` whose only use was a dotted annotation -> t is now
+    # fully unreferenced -> the whole `import typing as t` line is dropped.
+    src = _F + "import typing as t\nx: t.Optional[int]\n"
+    out = modernize_typing(src)
+    assert out == _F + "x: int | None\n"
+    assert "import typing as t" not in out
+
+
+def test_import_typing_as_t_still_used_kept():
+    # (5b) Same `import typing as t`, but t is still used elsewhere (a runtime
+    # `t.cast`) -> the module-alias import is KEPT.
+    src = _F + "import typing as t\nx: t.Optional[int]\nz = t.cast(int, 1)\n"
+    out = modernize_typing(src)
+    assert out == _F + "import typing as t\nx: int | None\nz = t.cast(int, 1)\n"
+    assert "import typing as t" in out
+
+
+def test_dead_import_cleanup_is_idempotent():
+    # (6) A second run finds no legacy spelling AND no dead typing import left ->
+    # byte-identical no-op (None).
+    src = (_F + "from typing import Optional, List\n"
+           "def f(x: Optional[List[int]]) -> List[str]:\n    return []\n")
+    once = modernize_typing(src)
+    assert once is not None
+    assert "from typing import" not in once  # both names died -> line dropped
+    assert modernize_typing(once) is None
+
+
+def test_byte_identical_when_no_name_becomes_dead():
+    # (7a) A module where the modernized name is ALSO used in expression position
+    # (so no name becomes dead) is byte-identical to the wave-1 splice: only the
+    # annotation changes, the import stays exactly as written.
+    src = _F + "from typing import List\nx: List[int]\nMyList = List\n"
+    out = modernize_typing(src)
+    assert out == _F + "from typing import List\nx: list[int]\nMyList = List\n"
+
+
+def test_byte_identical_no_future_import_is_noop():
+    # (7b) No future-import -> the gate refuses BEFORE any import edit -> None
+    # (wave-1 behaviour, byte-identical / unchanged on disk).
+    assert modernize_typing("from typing import Optional\nx: Optional[int]\n") is None
+
+
+def test_pre_existing_dead_typing_import_is_left_alone():
+    # FOCUS guard: a typing name the transform did NOT modernize (imported but never
+    # used from the start) is NOT this objective's job -> it is left as written, even
+    # though it is also unreferenced. Only the name we rewrote (Optional) is dropped.
+    src = _F + "from typing import Optional, Union\nx: Optional[int]\n"
+    out = modernize_typing(src)
+    assert out == _F + "from typing import Union\nx: int | None\n"
+
+
+def test_non_typing_unused_import_is_never_touched():
+    # FOCUS guard: a non-typing unused import (the user did NOT ask about it) is
+    # never removed by modernize-typing — only the dead typing name we modernized is.
+    src = _F + "import os\nfrom typing import Optional\nx: Optional[int]\n"
+    out = modernize_typing(src)
+    assert out == _F + "import os\nx: int | None\n"
+    assert "import os" in out
+
+
+def test_noqa_typing_import_is_kept():
+    # A noqa pragma on the import line means the user pinned it deliberately ->
+    # kept, honouring the reused remove-unused-imports noqa guard.
+    src = _F + "from typing import Optional  # noqa: F401\nx: Optional[int]\n"
+    out = modernize_typing(src)
+    assert out == _F + "from typing import Optional  # noqa: F401\nx: int | None\n"
+
+
+def test_function_signature_lands_ruff_clean(tmp_path: Path):
+    # BUYER-PROOF: future-import + `def f(x: Optional[int])` whose only typing use is
+    # Optional -> the result has NO `from typing import Optional` line AND is
+    # ruff-clean (the wave-1 dead-import is gone), landed standalone.
+    src = (_F + "from typing import Optional\n"
+           "def f(x: Optional[int]) -> Optional[int]:\n    return x\n")
+    out = modernize_typing(src)
+    assert out is not None
+    assert "from typing import Optional" not in out
+    assert "def f(x: int | None) -> int | None:" in out
+    _no_f401(out, tmp_path)
+
+
+def test_mixed_dead_and_kept_typing_names():
+    # A line carrying BOTH a dead modernized name (Optional) and a kept one (Union,
+    # still used in an un-rewritten EXPRESSION) -> only Optional is trimmed, the
+    # surviving name keeps its place and original order.
+    src = (_F + "from typing import Optional, Union\n"
+           "def f(x: Optional[int]):\n    return Union[int, str]\n")
+    out = modernize_typing(src)
+    # Union is in expression position (a runtime value) -> never rewritten, still
+    # referenced -> kept; Optional is consumed by the annotation -> dropped.
+    assert out == (_F + "from typing import Union\n"
+                   "def f(x: int | None):\n    return Union[int, str]\n")
+
+
 # --- objective plan layer -----------------------------------------------------
 
 def test_plan_lands_and_captures_original(tmp_path: Path):
     src = _F + "from typing import List\nx: List[int]\n"
     root = _project(tmp_path, "pkg/m.py", src)
     plan = plan_modernize_typing(str(root), "pkg/m.py")
-    assert plan.new_contents["pkg/m.py"] == _F + "from typing import List\nx: list[int]\n"
+    # The rewrite consumes ``List`` entirely -> its dead import line goes too.
+    assert plan.new_contents["pkg/m.py"] == _F + "x: list[int]\n"
     assert plan.originals["pkg/m.py"] == src  # original kept for rollback
 
 
