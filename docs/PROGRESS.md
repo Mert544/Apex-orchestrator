@@ -717,10 +717,14 @@
 
 > **🧭 32. TUR ÇIKIŞ-NOTU (DENETÇİ REDIRECT):** LSP code-actions (#97, `a254c13`) İNDİ — son iki dalga
 > (codemods-surface + LSP-surface) *yüzey/dağıtım + güven* idi. Anti-drift gereği SIRADAKİ dalga **somut-geliştirme
-> liderliğine** döner: ya yeni bir CONCRETE landing (scout-slate lideri **`document-param`**, satır ~62) ya da
-> `develop`/otonom-39 çekirdeğini derinleştir (örn. A39-W3b full-collaborator-extraction — whole-program analiz
-> gerektirdiği için ertelenmişti). Bir yüzey/safety dalgası DAHA değil. Kapanmamış: #94 (bridge impact-scope
-> `verified` vs `coverage_verifies` uzlaştırma, future-hardening, bloke-değil).
+> liderliğine** döner. ⚠️ **SLATE DÜZELTMESİ:** satır ~62'deki "document-param SIRADAKİ" notu BAYAT — `document-param`
+> ZATEN İNDİ (`app/execution/objectives/document_param.py`, 41 CONCRETE'te, 5/5 parity-registry + 708-satır test,
+> sound: annotation'dan `name (T):` verbatim, asla prose uydurmaz). **Doküman-ailesi DOYDU** (document-returns/raises/
+> yields/param + signature-noop-gate + JS aynaları) → bir doc objektifi DAHA değil. SIRADAKİ EN SADIK yön = patronun
+> LİDER direktifini ("39'u maksimize et") sürdür: **Otonom-39 sınırını derinleştir** — daha fazla design_task otonom
+> LANDED move'a çevrilebilir mi (deferred **A39-W3b full-collaborator-extraction**, whole-program analiz gerektiriyordu;
+> + extend/integrate/config honest-scaffold'ları). Alternatif: çok-dilli concrete landing derinliği (Java/TS/JS sığ).
+> Bir yüzey/safety dalgası DAHA değil. Kapanmamış: #94 (bridge impact-scope `verified` vs `coverage_verifies`, bloke-değil).
 
 **🔭 ROUND-20 SLATE (19. tur İNDİ — 3 fix + pilot + derin re-audit; capability DOYDU, yön = SOMUT objektif + buyer-proof + KÖR-NOKTA fix):**
 > **ANA KURAL (anti-drift #1):** sentez/tip-çıkarımı motoru DOYDU — **yeni kural EKLEME** (drift). Yön: yeni
