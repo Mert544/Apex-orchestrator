@@ -160,7 +160,11 @@ def compile_goal(project_root: str | Path, goal: str, max_steps: int = 25,
     for obj in objectives:
         campaign = compile_objective(project_root, objective=obj, max_steps=max_steps,
                                      verify=verify, apply=apply)
-        if campaign.steps or campaign.fitness_start > 0:
+        # Keep a VERIFICATION-UNAVAILABLE decline (fitness 0, no steps) so its loud
+        # message is surfaced rather than dropped as "no work" — the goal COULD NOT
+        # be verified, which is exactly what the buyer must be told (mirrors
+        # ``objective_compiler.compile_all``).
+        if campaign.steps or campaign.fitness_start > 0 or campaign.verification_unavailable:
             result.results.append(campaign)
     result.grade_after = _grade(project_root) if (apply and before >= 0) else before
     return result

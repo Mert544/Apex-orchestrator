@@ -85,6 +85,14 @@ class CompileStep:
     # only a Tier-1 move with mere ``module`` coverage flips to NOT verified (a
     # smoke import can't vouch for a behaviour change — the honest verdict).
     tier: int = 0
+    # VERIFICATION-UNAVAILABLE defence-in-depth: True when this move was applied but
+    # pytest was NOT importable under the interpreter Apex invoked, so NOTHING could
+    # run (the ``_apply_verify.mark_verification_unavailable`` tier apply_rename
+    # already stamped, distinct from a real RED suite and from a suite-less project).
+    # Default False keeps ``to_dict`` and the tier tag byte-identical for every
+    # existing (pytest-present) campaign — the field is only ever set when the shared
+    # verification tail reported ``verification_unavailable`` (mirrors ``coverage``).
+    verification_unavailable: bool = False
 
     @property
     def coverage_verified(self) -> bool:
@@ -114,6 +122,11 @@ class CompileStep:
         # step that ran no suite omits nothing it didn't measure.
         if self.value:
             d["value"] = self.value
+        # ``verification_unavailable`` is ADDITIVE, exactly like ``value``: the key
+        # appears ONLY when a move was applied under a pytest-missing interpreter, so
+        # a step from any pytest-present campaign omits it ⇒ byte-identical to before.
+        if self.verification_unavailable:
+            d["verification_unavailable"] = True
         return d
 
 
@@ -138,6 +151,16 @@ class CompileResult:
     # byte-identical (mirrors how ``value``/``withheld`` are additive disclosures).
     committed: bool = False
     commit_hash: str = ""
+    # VERIFICATION-UNAVAILABLE up-front decline (opt-in — set ONLY by
+    # ``compile_objective``'s ``verify``-gated pre-flight when the project HAS a
+    # pytest suite but pytest is not importable under the interpreter Apex would
+    # invoke). ``verification_unavailable`` is the LOUD, actionable message (the
+    # SAME text the develop session and maintain bridge surface); ``pytest_
+    # interpreter`` names the offending interpreter. Empty for every run where the
+    # guard did not fire — a pytest-present, suite-less, or ``--no-verify`` run — so
+    # ``to_dict()`` is byte-identical there (mirrors ``withheld``/``committed``).
+    verification_unavailable: str = ""
+    pytest_interpreter: str = ""
 
     @property
     def improved(self) -> bool:
@@ -164,6 +187,12 @@ class CompileResult:
         if self.committed:
             d["committed"] = self.committed
             d["commit_hash"] = self.commit_hash
+        # Purely ADDITIVE: appears only when the ``verify``-gated pre-flight declined
+        # because pytest is not importable (see the fields above). A pytest-present /
+        # suite-less / --no-verify run leaves these empty ⇒ byte-identical.
+        if self.verification_unavailable:
+            d["verification_unavailable"] = self.verification_unavailable
+            d["pytest_interpreter"] = self.pytest_interpreter
         return d
 
 
@@ -1105,7 +1134,8 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
         operator=mv.operator, target=mv.target, description=mv.description,
         fitness_before=current, fitness_after=nxt,
         verified=res.get("verified") is True,
-        coverage=str(res.get("coverage") or ""), value=value, tier=tier))
+        coverage=str(res.get("coverage") or ""), value=value, tier=tier,
+        verification_unavailable=bool(res.get("verification_unavailable"))))
     return True, nxt
 
 
@@ -1243,6 +1273,49 @@ def _value_aware_signals(
            operator_realization_factors(root))
 
 
+def _verification_unavailable_decline(
+    root: str, objective: str, verify: bool, apply: bool,
+) -> CompileResult | None:
+    """A zero-step ``CompileResult`` DECLINING because pytest is not importable, or
+    ``None`` to proceed normally.
+
+    The SAME up-front guard the develop session (``develop_session.py``) and the
+    maintain/ideate bridge (``idea_action_bridge.py``) already carry, ported here so
+    ``compile_objective`` — the engine every single-objective ``develop`` mode
+    bottoms out in — is CONSISTENT. When the project HAS a pytest suite but pytest is
+    NOT importable under the interpreter Apex would invoke, applying a move and
+    reading the (necessarily failing) suite as RED would roll it back — a silent
+    under-delivery — while landing it un-verified would fake-green. Instead this
+    returns a result that landed NOTHING and carries the loud, actionable message the
+    renderers surface (proof-carrying: can't verify => don't touch).
+
+    Gated on ``verify and apply`` so a ``--no-verify`` run (already unverified by the
+    user's choice) AND a dry run (which does no suite work) return ``None`` and are
+    BYTE-IDENTICAL. A pytest-present or suite-less project also returns ``None`` (the
+    shared guard's common path). Deterministic + memoized — at most one probe."""
+    if not (verify and apply):
+        return None
+    # Imported from the LEAF ``_apply_verify`` (never ``develop_session``) so this
+    # module stays cycle-free: ``develop_session`` imports ``objective_compiler`` at
+    # module level, so a back-edge to it here would form a cycle. ``_apply_verify``
+    # imports neither, so both edges are safe.
+    from app.execution._apply_verify import (
+        verification_unavailable_interpreter,
+        verification_unavailable_message,
+    )
+
+    interp = verification_unavailable_interpreter(Path(root))
+    if interp is None:
+        return None
+    # Declined before any move OR fitness scan — nothing landed, so fitness_start ==
+    # fitness_end (``improved`` is False) regardless of the value; a neutral 0.0
+    # avoids an expensive fitness scan on a project we've already refused to touch.
+    return CompileResult(
+        objective=objective, fitness_start=0.0, fitness_end=0.0, applied=apply,
+        verification_unavailable=verification_unavailable_message(interp),
+        pytest_interpreter=interp)
+
+
 def compile_objective(project_root: str | Path, objective: str = "dead-params",
                       max_steps: int = 25, verify: bool = True,
                       apply: bool = True, scope_module: str | None = None,
@@ -1312,6 +1385,15 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
 
     fitness, generate = objectives[objective]
     root = str(project_root)
+
+    # VERIFICATION-UNAVAILABLE short-circuit — the SAME up-front guard the develop
+    # session and the maintain/ideate bridge already carry (see the helper). Land
+    # NOTHING when pytest can't verify, rather than roll a move back as RED (a silent
+    # under-delivery) or land it un-verified (fake-green). ``None`` ⇒ proceed exactly
+    # as before, so a pytest-present / suite-less / --no-verify / dry run is unchanged.
+    decline = _verification_unavailable_decline(root, objective, verify, apply)
+    if decline is not None:
+        return decline
 
     # The organism uses what it learned: when several move types are available,
     # prefer the operator that has historically LANDED best right after the last
@@ -1438,7 +1520,10 @@ def compile_all(project_root: str | Path, max_steps: int = 25, verify: bool = Tr
     for objective in ALL_OBJECTIVES:
         result = compile_objective(project_root, objective=objective,
                                    max_steps=max_steps, verify=verify, apply=apply)
-        if result.steps or result.fitness_start > 0:
+        # Keep a VERIFICATION-UNAVAILABLE decline (fitness 0, no steps) so its loud
+        # message is not silently dropped as "nothing to do" — the whole point is
+        # that Apex COULD NOT verify, not that there was no work.
+        if result.steps or result.fitness_start > 0 or result.verification_unavailable:
             results.append(result)
     return results
 
@@ -1482,6 +1567,12 @@ def _compile_tier_tag(s: CompileStep) -> str:
         # Suite ran green but no test references the change — green proves nothing
         # about it. Disclose, never label "verified".
         return " ⚠️ applied — suite green but no test covers this move"
+    if s.verification_unavailable:
+        # The project HAS a pytest suite but pytest was not importable under the
+        # interpreter Apex invoked, so NOTHING could run. This is a SIBLING of, never
+        # folded into, ``no-suite`` (which means "this project has no tests"): the
+        # honest distinction the shared verification tail draws.
+        return " ⚠️ verification-unavailable — applied, pytest not importable"
     return " ⚠️ no-suite — applied, nothing verified it"
 
 
@@ -1517,6 +1608,15 @@ def render_compile_markdown(result: CompileResult) -> str:
     green suite that never looked at the change is not counted as verified)."""
     verb = "Applied" if result.applied else "Would apply"
     lines = [f"# Objective compile — `{result.objective}`", ""]
+    if result.verification_unavailable:
+        # The ``verify``-gated pre-flight declined: pytest is not importable, so
+        # NOTHING was applied or verified. Surface ONLY the loud, actionable message
+        # (the SAME wording the develop session and maintain bridge use) — not the
+        # misleading "Applied 0 move(s): 0 verified" line, which would read like a
+        # suite-less no-op rather than an honest "could not verify => did not touch".
+        lines.append(f"⚠️ {result.verification_unavailable}")
+        lines.append("")
+        return "\n".join(lines)
     if result.blocked and not result.steps:
         lines.append(f"_No improving move available. Fitness: {result.fitness_start:g}._")
     lines.append(

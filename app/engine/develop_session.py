@@ -76,18 +76,15 @@ TIER_NO_SUITE = "no-suite"   # the move landed but NO suite could verify it
 def _verification_unavailable_message(interpreter: str) -> str:
     """The LOUD, actionable decline message — names the offending interpreter.
 
-    Surfaced at every entry point when pytest is not importable under the Python
-    Apex would invoke. Honest and specific: it says what is wrong (pytest missing),
-    how to fix it (install pytest, or point Apex at the project's venv), and that
-    NOTHING was rolled back as a failure (the move loop simply declined — we never
-    fake-green, and we never roll back a move we could not verify)."""
-    return (
-        "verification unavailable — pytest is not importable under the "
-        f"interpreter running Apex ({interpreter}); install it "
-        "(pip install pytest) or point Apex at the project's interpreter "
-        "(e.g. its .venv). No contribution was rolled back as failed — "
-        "nothing could be verified."
-    )
+    Backward-compatible re-export: the canonical wording now lives in the leaf
+    ``app.execution._apply_verify`` (:func:`~app.execution._apply_verify.
+    verification_unavailable_message`) so the objective compiler can import it
+    WITHOUT forming an import cycle through this module. This thin delegator keeps
+    the public name every existing caller (the ideate/maintain bridge, this session's
+    renderers, the tests) already imports — the text is byte-identical."""
+    from app.execution._apply_verify import verification_unavailable_message
+
+    return verification_unavailable_message(interpreter)
 
 # Directories never worth snapshotting for the diff (caches, vcs, venvs, the
 # .apex memory store). Skipping them keeps the snapshot — and so the report — a

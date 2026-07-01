@@ -254,6 +254,28 @@ def mark_no_suite(out: dict) -> None:
 VERIFICATION_UNAVAILABLE = "verification-unavailable"
 
 
+def verification_unavailable_message(interpreter: str) -> str:
+    """The LOUD, actionable decline message — names the offending interpreter.
+
+    The SINGLE SOURCE OF TRUTH for the wording every entry point surfaces when
+    pytest is not importable under the Python Apex would invoke: the develop
+    session, the maintain/ideate bridge, AND the objective compiler. It lives here
+    — beside :func:`mark_verification_unavailable` /
+    :func:`verification_unavailable_interpreter` — so all three callers can import it
+    from this leaf module WITHOUT forming an import cycle through
+    ``develop_session``. Honest and specific: what is wrong (pytest missing), how to
+    fix it (install pytest, or point Apex at the project's venv), and that NOTHING
+    was rolled back as a failure (the move loop simply declined — we never
+    fake-green, and we never roll back a move we could not verify)."""
+    return (
+        "verification unavailable — pytest is not importable under the "
+        f"interpreter running Apex ({interpreter}); install it "
+        "(pip install pytest) or point Apex at the project's interpreter "
+        "(e.g. its .venv). No contribution was rolled back as failed — "
+        "nothing could be verified."
+    )
+
+
 def mark_verification_unavailable(out: dict, interpreter: str) -> None:
     """Stamp the explicit "pytest is not importable, so nothing could run"
     disclosure onto ``out`` (additive — touched ONLY on the pytest-missing path,
