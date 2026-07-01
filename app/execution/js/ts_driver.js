@@ -103,6 +103,16 @@
 //                             SOUND input slice (zero-arg / all-primitive-typed /
 //                             all-literal-default) and REFUSES the rest. Exit 2 on
 //                             parse error.
+//   imports <file>         -> JSON: {specifiers:[...]} the sorted, de-duplicated
+//                             module-specifier set <file> depends on — every static
+//                             `import ... from "m"` / `import "m"`, re-export
+//                             `export ... from "m"`, CJS `require("m")`, and dynamic
+//                             `import("m")` whose specifier is a plain string
+//                             literal. A computed specifier (`require(name)`) is
+//                             SKIPPED (unresolvable, refuse-on-uncertainty). The
+//                             READ-ONLY import-graph edge source the
+//                             js_project_profile builds a project module graph +
+//                             fan-in/out from. Exit 2 on parse error.
 //   mutate <file> <name>   -> JSON: the single-token MUTANT catalog for the
 //                             EXPORTED cover target <name> in <file>, as
 //                             [{operator, original, mutated, start, end}] — each a
@@ -1447,6 +1457,45 @@ function resolveCoverTargetNode(sf, name) {
   return found;
 }
 
+// The MODULE SPECIFIERS a source file depends on, de-duplicated and sorted — the
+// read-only import-graph edge set the js_project_profile builds a project graph
+// from. Covers every static + CJS form a dependency edge can take:
+//   - `import x from "m"` / `import { a } from "m"` / `import "m"` — an
+//     ImportDeclaration's `moduleSpecifier` (a string literal);
+//   - `export { a } from "m"` / `export * from "m"` — an ExportDeclaration WITH a
+//     `moduleSpecifier` (a re-export is a dependency edge too);
+//   - `require("m")` — a CallExpression whose callee is the bare identifier
+//     `require` with a single string-literal argument (the CJS edge);
+//   - `import("m")` — a dynamic-import CallExpression with a string-literal
+//     argument (a static-enough edge to graph).
+// A specifier that is NOT a plain string literal (a computed `require(name)` /
+// `import(expr)`) is SKIPPED — there is no LLM-free way to resolve it, and the
+// profile refuses-on-uncertainty rather than guess an edge. Pure AST walk, no
+// clock/random; the returned array is sorted + de-duplicated so the same file
+// yields byte-identical output (the determinism invariant).
+function moduleSpecifiers(sf) {
+  const specs = new Set();
+  const addLiteral = (node) => {
+    if (node && ts.isStringLiteral(node)) specs.add(node.text);
+  };
+  const visit = (node) => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+        && node.moduleSpecifier) {
+      addLiteral(node.moduleSpecifier);
+    } else if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      const isRequire = ts.isIdentifier(callee) && callee.text === "require";
+      const isDynImport = callee.kind === ts.SyntaxKind.ImportKeyword;
+      if ((isRequire || isDynImport) && node.arguments.length === 1) {
+        addLiteral(node.arguments[0]);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return Array.from(specs).sort();
+}
+
 function fail(message) {
   process.stderr.write(String(message) + "\n");
   process.exit(REFUSE);
@@ -1531,6 +1580,14 @@ function cmdCoverTargets(file) {
   process.stdout.write(JSON.stringify(collectCoverTargets(sf)));
 }
 
+function cmdImports(file) {
+  const { sf } = readSource(file);
+  // readSource already refused (exit 2) on any parse diagnostic, so reaching here
+  // proves the file parses; emit its sorted, de-duplicated module-specifier set for
+  // the js_project_profile import-graph builder (a READ-ONLY structural fact).
+  process.stdout.write(JSON.stringify({ specifiers: moduleSpecifiers(sf) }));
+}
+
 function cmdMutate(file, name) {
   const { sf } = readSource(file);
   // <name> must resolve to an EXPORTED cover target (the same surface js-cover-gaps
@@ -1556,10 +1613,11 @@ function main() {
   if (sub === "wire-verify" && argv.length === 2) return cmdWireVerify(argv[1]);
   if (sub === "cover-targets" && argv.length === 2) return cmdCoverTargets(argv[1]);
   if (sub === "mutate" && argv.length === 3) return cmdMutate(argv[1], argv[2]);
+  if (sub === "imports" && argv.length === 2) return cmdImports(argv[1]);
   fail("usage: ts_driver.js scan <file> | mine <file> <name> "
        + "| mine-jsdoc <file> <name> | fill <file> <name> <body> "
        + "| doc-targets <file> | doc-verify <file> | wire-targets <file> | wire-verify <file> "
-       + "| cover-targets <file> | mutate <file> <name>");
+       + "| cover-targets <file> | mutate <file> <name> | imports <file>");
 }
 
 main();

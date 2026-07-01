@@ -45,6 +45,7 @@ __all__ = [
     "all_exported_names",
     "reparse_exports_superset",
     "cover_targets",
+    "module_imports",
 ]
 
 # The bundled driver checked into this package — never a string Apex generates.
@@ -364,6 +365,26 @@ def reparse_exports_superset(root: Path, rel: str, new_source: str,
         probe.write_text(new_source, encoding="utf-8")
         after = all_exported_names(Path(tmp), probe.name)
     return after is not None and after == before | frozenset(added)
+
+
+def module_imports(root: Path, rel: str) -> list[str] | None:
+    """The sorted, de-duplicated module specifiers ``root/rel`` depends on — every
+    static ``import ... from "m"`` / ``import "m"``, re-export ``export ... from "m"``,
+    CJS ``require("m")`` and dynamic ``import("m")`` whose specifier is a plain string
+    literal — or ``None`` when the driver could not parse the file (its conservative-
+    refuse path).
+
+    This is the READ-ONLY import-graph edge source :mod:`app.tools.js_project_profile`
+    builds a project module graph + fan-in/fan-out from. A computed specifier
+    (``require(name)``) is skipped by the driver (unresolvable — refuse-on-
+    uncertainty, never a guessed edge). Deterministic: the driver emits the set
+    sorted, so the same file yields byte-identical output. ``None`` (parse failure)
+    is DISTINCT from ``[]`` (a file that parses but imports nothing) so the caller can
+    tell an unparseable module from a genuinely dependency-free one."""
+    data = _driver_json(["imports", str(root / rel)], root)
+    if not isinstance(data, dict) or not isinstance(data.get("specifiers"), list):
+        return None
+    return [s for s in data["specifiers"] if isinstance(s, str)]
 
 
 def cover_targets(root: Path, rel: str) -> list[JsCoverTarget]:
