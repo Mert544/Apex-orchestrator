@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import sys
@@ -177,20 +178,65 @@ class RunTestsSkill:
         return sys.executable
 
     def _detect_commands(self, root: Path) -> list[list[str]]:
-        if (
+        has_pytest_signal = (
             (root / "pytest.ini").exists()
             or (root / "tests").exists()
             or (root / "pyproject.toml").exists()
             or self._has_flat_pytest_suite(root)
-        ):
+        )
+        has_js_signal = (root / "package.json").exists()
+        if has_pytest_signal and has_js_signal and self._has_npm_test_script(root):
+            # MIXED repo — a pytest signal (tests/, pyproject.toml, ...) AND a
+            # package.json with a genuine ``scripts.test`` entry both present (the
+            # most common team-repo shape: a Python service alongside a JS/TS
+            # front end or tool). ``_detect_commands`` used to be FIRST-MATCH-WINS
+            # here — it returned the pytest command and never reached this branch,
+            # so a jest suite could regress and a "verified" proof was still
+            # written (a never-fake-green breach on the moat's own detector).
+            # Returning BOTH commands makes ``run()``'s own aggregation loop (it
+            # already ANDs ``result.ok`` across every selected command) the single
+            # place that decides green — a project is green ONLY when every
+            # detected suite is green. The JS command is the SAME one the pure-JS
+            # branch below already runs, so pinning it here changes nothing about
+            # HOW jest is invoked, only THAT it now runs alongside pytest.
+            return [
+                [self._python_for(root), "-m", "pytest", "-q"],
+                ["npm", "test", "--", "--runInBand"],
+            ]
+        if has_pytest_signal:
             # Run pytest via the target's own venv interpreter when present (so its
             # deps resolve), else the current interpreter — never a bare `pytest`
             # console script (which can resolve to a different Python without the
             # project's deps, making verify always "fail" and blocking every fix).
             return [[self._python_for(root), "-m", "pytest", "-q"]]
-        if (root / "package.json").exists():
+        if has_js_signal:
             return [["npm", "test", "--", "--runInBand"]]
         return []
+
+    @staticmethod
+    def _has_npm_test_script(root: Path) -> bool:
+        """Whether ``root/package.json`` declares a genuine ``scripts.test`` entry.
+
+        Gates the MIXED-repo branch only (never the pure-JS branch below, which
+        stays keyed off ``package.json`` existing alone — byte-identical to
+        before): a ``package.json`` with no ``test`` script (e.g. a front-end
+        build-tool config with zero tests) must not widen a Python project's
+        suite to also spawn ``npm test``, which would just fail immediately and
+        turn an honest pytest-only green into a false red. Conservative and
+        deterministic — a missing file, malformed JSON, a non-dict ``scripts``,
+        or an empty/non-string ``test`` value all read as "no script" (never
+        widen on a guess); no clock/random."""
+        try:
+            data = json.loads((root / "package.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        scripts = data.get("scripts")
+        if not isinstance(scripts, dict):
+            return False
+        test_script = scripts.get("test")
+        return isinstance(test_script, str) and bool(test_script.strip())
 
     def _has_flat_pytest_suite(self, root: Path) -> bool:
         """True when the rootdir holds pytest-discoverable tests but no config.
