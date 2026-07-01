@@ -811,11 +811,11 @@ class _FakeLoop:
 
     def __init__(self, project_root="", mode="supervised", max_cycles=3,
                  max_apply_per_cycle=5, verify=True, commit=False,
-                 objective=None):
+                 objective=None, covered_only=False):
         _FakeLoop.last_kwargs = dict(
             mode=mode, max_cycles=max_cycles,
             max_apply_per_cycle=max_apply_per_cycle, verify=verify,
-            commit=commit, objective=objective)
+            commit=commit, objective=objective, covered_only=covered_only)
 
     def run(self):
         class _Res:
@@ -852,6 +852,9 @@ def test_cmd_evolve_default_loop_args(tmp_path, capsys, monkeypatch):
     assert kw["max_apply_per_cycle"] == 5
     assert kw["verify"] is True  # not no_verify (kills 443 False->True)
     assert kw["commit"] is False
+    # The unattended evolve loop FORCES covered-only (closes the e17bcf5 --evolve
+    # gap): cmd_evolve resolves it via resolve_covered_only(unattended=True).
+    assert kw["covered_only"] is True
 
 
 def test_cmd_evolve_commit_defaults_mode_autonomous(tmp_path, capsys, monkeypatch):

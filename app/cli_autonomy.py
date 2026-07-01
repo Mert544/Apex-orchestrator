@@ -958,6 +958,16 @@ def cmd_evolve(args: argparse.Namespace) -> int:
         return 0
 
     mode = getattr(args, "mode", None) or ("autonomous" if getattr(args, "commit", False) else "supervised")
+    # The self-improvement loop is inherently UNATTENDED — no human reviews the
+    # diff between cycles — so it FORCES covered-only and REFUSES ``--allow-weak``
+    # exactly like the daemon path. Reuse the SAME single-source-of-truth policy
+    # (``resolve_covered_only`` — also on ``AutonomyPolicy``) the act path calls,
+    # with ``unattended=True`` so a green suite that merely imports a module can
+    # never land a Tier-1 behaviour change here without a human in the loop.
+    from app.policies.autonomy_policy import resolve_covered_only
+
+    covered_only = resolve_covered_only(
+        allow_weak=getattr(args, "allow_weak", False), unattended=True)
     loop = EvolutionLoop(
         project_root=str(target),
         mode=mode,
@@ -966,6 +976,7 @@ def cmd_evolve(args: argparse.Namespace) -> int:
         verify=not getattr(args, "no_verify", False),
         commit=getattr(args, "commit", False),
         objective=getattr(args, "objective", "") or None,
+        covered_only=covered_only,
     )
     result = loop.run()
     record_run(result, str(target))  # log to the trajectory (.apex/evolution-history.jsonl)

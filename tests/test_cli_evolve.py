@@ -19,7 +19,16 @@ def _ns(tmp_path: Path, **overrides) -> argparse.Namespace:
 def _git_project(tmp_path: Path) -> Path:
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "__init__.py").write_text("")
     (tmp_path / "app" / "cfg.py").write_text("import yaml\ndef load(s):\n    return yaml.load(s)\n")
+    # `apex evolve` runs the UNATTENDED loop, which now FORCES covered-only — so it
+    # lands a Tier-1 rewrite only where a test EXERCISES the module. This test
+    # imports and calls cfg.load, making the yaml.load→safe_load hardening a
+    # COVERED (test-verified) move the loop lands; without this the fixture would
+    # be asserting the exact e17bcf5 hole (an uncovered rewrite landing unattended).
+    (tmp_path / "tests" / "test_cfg.py").write_text(
+        "from app.cfg import load\n\n\ndef test_load():\n    assert load('a: 1') == {'a': 1}\n"
+    )
     (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n")
     for cmd in (["git", "init", "-q"], ["git", "config", "user.email", "t@t.com"],
                 ["git", "config", "user.name", "t"], ["git", "add", "-A"],

@@ -56,6 +56,7 @@ class EvolutionLoop:
         commit: bool = False,
         objective: str | None = None,
         max_rollbacks_per_cycle: int = 3,
+        covered_only: bool = False,
     ) -> None:
         self.project_root = str(project_root)
         self.mode = mode
@@ -67,6 +68,18 @@ class EvolutionLoop:
         # Circuit breaker: if a single cycle rolls back this many fixes, the
         # generated fixes aren't landing cleanly — stop rather than thrash.
         self.max_rollbacks_per_cycle = max(1, max_rollbacks_per_cycle)
+        # COVERED-ONLY verification gate forwarded to every ``apply_plan`` the loop
+        # runs. When on, the loop lands only moves a test actually EXERCISES and
+        # PREVIEWS a green-but-unreferencing (WEAK) move — a suite that merely
+        # imports a module can't vouch for a behaviour change there. The unattended
+        # CLI drivers (``apex evolve`` / ``apex auto --evolve`` — inherently NO human
+        # at the diff between cycles) FORCE this True via the SAME
+        # ``resolve_covered_only(unattended=True)`` policy the daemon/act path uses,
+        # which refuses ``--allow-weak``. Default False so a direct, programmatic
+        # constructor (e.g. ``apex simulate``'s disposable-copy preview) is
+        # byte-identical to before this fix — the forcing lives at the CLI layer,
+        # exactly where the unattended contract applies.
+        self.covered_only = covered_only
 
     # --- measurement ---------------------------------------------------------
 
@@ -134,6 +147,7 @@ class EvolutionLoop:
             summary = bridge.apply_plan(
                 plan, self.project_root, mode=self.mode,
                 verify=self.verify, max_apply=self.max_apply_per_cycle, commit=self.commit,
+                covered_only=self.covered_only,
             )
             memory.record_outcomes(summary)  # learn from every cycle's outcomes
             applied = int(summary.get("applied", 0))

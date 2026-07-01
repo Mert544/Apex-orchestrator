@@ -26,6 +26,7 @@ import argparse
 from pathlib import Path
 
 import app.cli_autonomy as m
+import app.engine.evolution as evolution_mod
 from app.policies.autonomy_policy import AutonomyDecision, AutonomyPolicy
 
 
@@ -229,6 +230,123 @@ def test_act_unattended_daemon_forces_covered_only_despite_allow_weak(
     captured = _spy_covered_only(monkeypatch, tmp_path)
     # Even with --allow-weak, the daemon context refuses it: covered-only forced.
     rc = m.cmd_auto(_act_ns(tmp_path, allow_weak=True))
+    capsys.readouterr()
+    assert rc == 0
+    assert captured["covered_only"] is True
+
+
+# --------------------------------------------------------------------------- #
+# END-TO-END through the --evolve / EvolutionLoop path (the gap the isolation  #
+# tests above MISSED). `cmd_auto --evolve N` short-circuits into `cmd_evolve` → #
+# a real `EvolutionLoop.run()` BEFORE the act path ever runs; the loop is       #
+# inherently UNATTENDED, so the `covered_only` it feeds `apply_plan` MUST be     #
+# forced True even with `--allow-weak`. We drive the REAL loop (not a spy sub-   #
+# class) and stub only its measurement + the `apply_plan` it calls, so this      #
+# proves the WIRING end-to-end: revert the fix (drop the kwarg / the resolve)    #
+# and `covered_only` falls back to the `apply_plan` default (False) → these fail.#
+# --------------------------------------------------------------------------- #
+def _spy_evolve_apply_plan(monkeypatch, tmp_path: Path) -> dict:
+    """Neutralise everything a real ``EvolutionLoop.run()`` touches — its
+    measurement, roadmap snapshot/diff, memory persistence and ``record_run`` —
+    and capture the ``covered_only`` handed to the ONE ``apply_plan`` the loop
+    calls per cycle. Nothing real is planned/applied and no repo is written.
+
+    A single applied fix on the FIRST cycle then a fixpoint keeps ``run()`` to
+    one ``apply_plan`` call (applied>0 → not a fixpoint on cycle 1; applied==0 on
+    cycle 2 → stop), so the captured value is unambiguous for a ``--evolve 2`` run.
+    """
+    captured: dict = {}
+    calls = {"n": 0}
+
+    from app.engine.idea_action_bridge import IdeaActionBridge
+
+    def _fake_plan(self, report, mode="report", project_root="", **kw):
+        return type("P", (), {"executable_steps": lambda self: [],
+                              "stats": {"executable_steps": 0}})()
+
+    def _fake_apply(self, plan, root_, mode="supervised", verify=True,
+                    max_apply=None, commit=False, covered_only=False, **kw):
+        calls["n"] += 1
+        captured["covered_only"] = covered_only
+        # First cycle applies one fix; later cycles apply nothing → fixpoint stop.
+        applied = 1 if calls["n"] == 1 else 0
+        return {"applied": applied, "rolled_back": 0, "blocked": 0, "committed": 0}
+
+    monkeypatch.setattr(IdeaActionBridge, "plan_roadmap", _fake_plan)
+    monkeypatch.setattr(IdeaActionBridge, "apply_plan", _fake_apply)
+    # The loop's measurement + build_report: return a trivial snapshot, no engine.
+    monkeypatch.setattr(evolution_mod.EvolutionLoop, "_build_report",
+                        lambda self: type("R", (), {"stats": {}})())
+    monkeypatch.setattr(evolution_mod.EvolutionLoop, "_measure",
+                        lambda self, report: {"security_findings": 0, "mean_roi": 0.0,
+                                              "executable_fixes": 0, "total_ideas": 0,
+                                              "_roadmap": object()})
+    monkeypatch.setattr("app.engine.roadmap_history.roadmap_to_snapshot",
+                        lambda rm: {})
+    monkeypatch.setattr("app.engine.roadmap_history.diff_roadmaps",
+                        lambda before, after: type("D", (), {
+                            "to_dict": lambda self: {}})())
+    monkeypatch.setattr("app.engine.idea_memory.IdeaMemory.load",
+                        staticmethod(lambda root_: type("Mem", (), {
+                            "record_outcomes": lambda self, s: None,
+                            "save": lambda self, root__: None})()))
+    monkeypatch.setattr(evolution_mod, "record_run",
+                        lambda result, root_: Path(root_))
+    return captured
+
+
+def _evolve_e2e_ns(tmp_path: Path, **over) -> argparse.Namespace:
+    base = dict(target=str(tmp_path), max_cycles=2, max_apply=5, mode=None,
+                commit=False, no_verify=True, dry_run=False, history=False,
+                objective="", json=True, out="", allow_weak=False)
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_cmd_evolve_forces_covered_only_true(tmp_path, monkeypatch, capsys):
+    # `apex evolve` drives EvolutionLoop.run() → apply_plan; the loop is
+    # unattended, so covered_only is forced True end-to-end.
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    captured = _spy_evolve_apply_plan(monkeypatch, tmp_path)
+    rc = m.cmd_evolve(_evolve_e2e_ns(tmp_path))
+    capsys.readouterr()
+    assert rc == 0
+    assert captured["covered_only"] is True
+
+
+def test_cmd_evolve_forces_covered_only_true_even_with_allow_weak(
+        tmp_path, monkeypatch, capsys):
+    # An unattended evolve REFUSES --allow-weak (the evolve subparser exposes no
+    # such flag, but a namespace carrying it must still be forced covered-only).
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    captured = _spy_evolve_apply_plan(monkeypatch, tmp_path)
+    rc = m.cmd_evolve(_evolve_e2e_ns(tmp_path, allow_weak=True))
+    capsys.readouterr()
+    assert rc == 0
+    assert captured["covered_only"] is True
+
+
+def test_cmd_auto_evolve_forces_covered_only_true_end_to_end(
+        tmp_path, monkeypatch, capsys):
+    # THE gap the isolation suite missed: `apex auto --evolve 2` short-circuits
+    # through _auto_evolve_delegate → cmd_evolve → EvolutionLoop BEFORE _auto_act,
+    # so the ONLY place covered-only can be forced on this path is the loop wiring.
+    # Driven end-to-end (real delegate + real loop), apply_plan gets covered_only=True.
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    captured = _spy_evolve_apply_plan(monkeypatch, tmp_path)
+    rc = m.cmd_auto(_evolve_e2e_ns(tmp_path, evolve=2))
+    capsys.readouterr()
+    assert rc == 0
+    assert captured["covered_only"] is True
+
+
+def test_cmd_auto_evolve_forces_covered_only_true_even_with_allow_weak(
+        tmp_path, monkeypatch, capsys):
+    # `apex auto --evolve 2 --allow-weak`: the evolve loop is unattended, so
+    # --allow-weak is REFUSED end-to-end — the exact hole in commit e17bcf5.
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    captured = _spy_evolve_apply_plan(monkeypatch, tmp_path)
+    rc = m.cmd_auto(_evolve_e2e_ns(tmp_path, evolve=2, allow_weak=True))
     capsys.readouterr()
     assert rc == 0
     assert captured["covered_only"] is True

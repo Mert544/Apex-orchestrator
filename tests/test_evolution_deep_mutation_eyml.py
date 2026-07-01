@@ -247,7 +247,9 @@ def _patch_run(monkeypatch, summaries, *, capture=None):
             return "PLAN"
 
         def apply_plan(self, plan, project_root, mode=None, verify=None,
-                       max_apply=None, commit=None):
+                       max_apply=None, commit=None, covered_only=None):
+            if capture is not None:
+                capture["covered_only"] = covered_only
             return seq.pop(0)
 
     import app.engine.idea_action_bridge as iab
