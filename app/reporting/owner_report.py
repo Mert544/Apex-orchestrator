@@ -15,16 +15,32 @@ through ``apex self-audit`` / ``apex grade``:
 * the objective-soundness denetçi
   (:func:`app.engine.soundness_audit.soundness_report`) — the PASS/FAIL verdict, the
   N/N declared-proof-strategy count, the single-gated-writer (A1) assertion, and the
-  ``scope_verify`` allow-list (A3) (so "does every ability carry an honest proof, and
-  can anything fake a passing test?"). Resolved against Apex's OWN tree via
-  :func:`app.engine.soundness_audit.repo_root`, exactly as the ``--soundness`` CLI does;
-* the health grade (:func:`app.engine.health_score.grade`) — the letter + score.
+  ``scope_verify`` allow-list (A3) (so "does every ABILITY Apex ships carry an honest
+  proof, and can anything fake a passing test?"). This is necessarily resolved
+  against Apex's OWN tree via :func:`app.engine.soundness_audit.repo_root` — it is a
+  structural audit of Apex's ``app/`` package layout (the objective registry, the
+  single gated-writer call-site, the adversarial corpus fixtures), not something that
+  can be re-pointed at an arbitrary ``--target`` project. Rendered under the EXPLICIT
+  label "Apex tool soundness (self-audit)" (see :func:`_honesty_line`) so it can never
+  be misread as a claim about the buyer's OWN project — the load-bearing fix for a
+  target-confusion an adversarial read of the earlier "Honest verification" wording
+  surfaced;
+* the health grade (:func:`app.engine.health_score.grade`) — the letter + score, taken
+  on ``project_root`` (the buyer's own ``--target``);
+* the buyer's OWN proof-of-fix track record
+  (:func:`app.engine.proof_history.load_proof_history` +
+  :func:`app.engine.proof_history.summarise_fix_track_record`), read from
+  ``<project_root>/.apex/`` — so the closing "promise" sentence is evidence-derived
+  ("Last N runs: ...") whenever this project has a history, instead of a static claim.
+  When there is no history yet the closing line falls back to the original, generic,
+  BYTE-IDENTICAL sentence (opt-in by evidence, neutral default).
 
 Every technical verdict is folded into ONE owner-readable English sentence by
 :func:`render_owner_report_markdown`. Like every audit it composes, this view is
 **deterministic, zero-token, offline, and CLOCK-FREE**: no ``datetime.now``, no
 timestamp, no randomness, no network, no LLM — the same repo state renders the same
-bytes. It re-implements NO analysis; it only translates.
+bytes (the proof-history read is I/O over already-written JSON, not a clock). It
+re-implements NO analysis; it only translates.
 """
 
 from __future__ import annotations
@@ -118,28 +134,70 @@ def _example_abilities(concrete_names) -> list[str]:
     return [_ABILITY_PHRASES[n] for n in present[:_MAX_EXAMPLE_ABILITIES]]
 
 
+def _track_record_for(project_root: str | Path) -> dict:
+    """This project's OWN proof-of-fix track record, as an owner-facing dict.
+
+    Reads ``<project_root>/.apex/`` via :func:`load_proof_history` and reduces it
+    with :func:`summarise_fix_track_record` (both re-used verbatim — no new
+    aggregation logic). Returns a stable-key dict:
+
+    * ``has_history`` (bool) — False when this project has never run a proof-carrying
+      apply yet (a fresh checkout, or ``.apex`` absent/empty); the caller falls back
+      to the original generic promise sentence in that case.
+    * ``runs`` — the number of proof records read (``summary["proofs"]``).
+    * ``applied`` / ``rolled_back`` / ``blocked`` — the flat outcome totals across
+      every recorded fix (``summary["totals"]``).
+
+    Pure and deterministic: same ``.apex`` contents -> same dict; no clock, no
+    randomness, no network. Never raises — an unreadable/absent ``.apex`` yields
+    ``has_history: False`` (the neutral, opt-in-by-evidence default)."""
+    from app.engine.proof_history import load_proof_history, summarise_fix_track_record
+
+    history = load_proof_history(project_root)
+    summary = summarise_fix_track_record(history)
+    totals = summary["totals"]
+    return {
+        "has_history": summary["fixes"] > 0,
+        "runs": summary["proofs"],
+        "applied": totals["applied"],
+        "rolled_back": totals["rolled_back"],
+        "blocked": totals["blocked"],
+    }
+
+
 # --- The composed report ------------------------------------------------------
 
 def owner_report(project_root: str | Path) -> dict:
     """Compose the EXISTING deterministic audits into one owner-facing dict.
 
     Reuses (never re-implements) :func:`north_star_report`, :func:`soundness_report`,
-    and :func:`grade`. ``project_root`` feeds the North Star commit-window/drift read;
-    the soundness check resolves Apex's OWN tree via
+    :func:`grade`, :func:`load_proof_history`, and :func:`summarise_fix_track_record`.
+    ``project_root`` feeds the North Star commit-window/drift read, the grade, AND the
+    proof-history track record — all three are about the buyer's OWN ``--target``
+    project. The soundness check is the one exception: it resolves Apex's OWN tree via
     :func:`app.engine.soundness_audit.repo_root` (the same subject the ``--soundness``
-    CLI audits), and the grade is taken on ``project_root``.
+    CLI audits) because it is a structural audit of Apex's ``app/`` package layout
+    (objective registry, single gated-writer, adversarial corpus) that cannot be
+    re-pointed at an arbitrary project — see :func:`_honesty_line` for the explicit
+    "Apex tool soundness (self-audit)" label this renders under, so it is never
+    mistaken for a claim about the buyer's project.
 
     Returns a structured dict with stable keys:
 
     * ``trustworthy`` (bool) — True IFF North Star PASS **and** soundness PASS **and**
       no drift. The single headline an owner reads.
     * ``north_star`` — ``{verdict, drift, concrete_count, total_objectives, ratio}``.
-    * ``soundness`` — ``{verdict, strategies "N/N", single_writer, scope_verify_ok}``.
-    * ``grade`` — ``{letter, score}``.
+    * ``soundness`` — ``{verdict, strategies "N/N", single_writer, scope_verify_ok}``
+      (Apex tool self-audit — see above).
+    * ``grade`` — ``{letter, score}`` (the buyer's OWN ``project_root``).
     * ``capabilities`` — ``{concrete_count, languages, abilities}`` (a few example
       plain-language ability names).
+    * ``track_record`` — ``{has_history, runs, applied, rolled_back, blocked}``, the
+      buyer's OWN ``.apex/`` proof-of-fix history (see :func:`_track_record_for`);
+      ``has_history`` is False on a fresh project with no proof-carrying runs yet.
 
-    Pure, deterministic, zero-token, offline: no clock, no randomness, no LLM."""
+    Pure, deterministic, zero-token, offline: no clock, no randomness, no LLM (the
+    proof-history read is file I/O over already-written JSON, not a clock)."""
     from app.engine.health_score import grade
     from app.engine.north_star_audit import north_star_report
     from app.engine.soundness_audit import repo_root, soundness_report
@@ -147,6 +205,7 @@ def owner_report(project_root: str | Path) -> dict:
     ns = north_star_report(str(project_root))
     sound = soundness_report(str(repo_root()))
     health = grade(str(project_root))
+    track_record = _track_record_for(project_root)
 
     concrete_count = ns["bucket_counts"]["CONCRETE"]
     concrete_names = ns["buckets"]["CONCRETE"]
@@ -172,6 +231,7 @@ def owner_report(project_root: str | Path) -> dict:
             "scope_verify_ok": sound["scope_verify_ok"],
         },
         "grade": {"letter": health.letter, "score": health.score},
+        "track_record": track_record,
         "capabilities": {
             "concrete_count": concrete_count,
             "languages": _languages_for(concrete_names),
@@ -202,7 +262,7 @@ def _trust_headline(report: dict) -> list[str]:
     if ns["verdict"] != "PASS":
         reasons.append("its on-mission check did not pass")
     if sound["verdict"] != "PASS":
-        reasons.append("its honest-verification check did not pass")
+        reasons.append("Apex's own tool-soundness self-check did not pass")
     if not reasons:
         reasons.append("one of its trust checks did not pass")
     return [
@@ -227,16 +287,26 @@ def _mission_line(report: dict) -> str:
 
 
 def _honesty_line(report: dict) -> str:
-    """One sentence on the soundness verdict + N/N declared-proof-strategy count."""
+    """One sentence on the soundness verdict + N/N declared-proof-strategy count.
+
+    IMPORTANT FRAMING: this audits Apex the TOOL, not the owner's own project — the
+    underlying check (:func:`app.engine.soundness_audit.soundness_report`) is a
+    structural audit of Apex's OWN ``app/`` package layout (every ability Apex ships
+    declares how it stays sound) and cannot be re-pointed at an arbitrary project. The
+    label says "Apex tool soundness (self-audit)" explicitly, and the body speaks of
+    "Apex's own abilities" rather than "your project", so a non-technical owner can
+    never mistake this line for a claim about work done ON their project — that
+    misread was the load-bearing bug this line fixes."""
     sound = report["soundness"]
     n_total = sound["strategies"].split("/")[-1]
     if sound["verdict"] == "PASS":
-        body = (f"every one of Apex's {n_total} abilities carries a declared "
+        body = (f"every one of Apex's {n_total} own abilities carries a declared "
                 "proof-strategy, and nothing is allowed to fake a passing test.")
     else:
-        body = ("not every ability could prove how it stays safe — Apex's honesty "
-                "check did not pass.")
-    return f"- Honest verification: {body}  [{sound['verdict']}, {sound['strategies']}]"
+        body = ("not every one of Apex's own abilities could prove how it stays "
+                "safe — Apex's self-check did not pass.")
+    return (f"- Apex tool soundness (self-audit): {body}  "
+            f"[{sound['verdict']}, {sound['strategies']}]")
 
 
 def _quality_line(report: dict) -> str:
@@ -257,21 +327,57 @@ def _capabilities_line(report: dict) -> str:
     )
 
 
+# The ORIGINAL generic promise sentence — byte-identical to the pre-track-record
+# text. Kept as a named constant so the neutral/no-evidence fallback in
+# :func:`_promise_line` can never accidentally drift from it (both read the SAME
+# string), and so a project with no ``.apex`` proof history yet renders exactly
+# what it always has.
+_GENERIC_PROMISE = (
+    "- The promise: every change is proven by your project's own tests or "
+    "automatically undone — Apex never leaves your project worse."
+)
+
+
+def _promise_line(report: dict) -> str:
+    """The closing "promise" sentence — evidence-derived when a track record exists.
+
+    With NO proof-of-fix history yet (a fresh project, or ``.apex`` absent/empty —
+    ``track_record`` missing or ``has_history`` False), renders the original,
+    static, BYTE-IDENTICAL generic sentence (:data:`_GENERIC_PROMISE`) — the neutral
+    default an evidence-free project always saw. Once this project has recorded
+    fixes, renders the REAL counts instead: how many proof-carrying runs, and how
+    many of the fixes across them applied cleanly, were auto-rolled-back by the
+    verify-or-revert gate, or were declined/blocked before ever touching the tree —
+    so the "Apex never leaves your project worse" claim is backed by this project's
+    own numbers rather than asserted in the abstract."""
+    tr = report.get("track_record")
+    if not tr or not tr.get("has_history"):
+        return _GENERIC_PROMISE
+    runs = tr["runs"]
+    run_word = "run" if runs == 1 else "runs"
+    return (
+        f"- The promise, backed by evidence: last {runs} proof-carrying {run_word} "
+        f"on your project — {tr['applied']} applied, {tr['rolled_back']} "
+        f"auto-rolled-back, {tr['blocked']} declined before touching your code. "
+        "Apex never leaves your project worse."
+    )
+
+
 def render_owner_report_markdown(report: dict) -> str:
     """Render :func:`owner_report` as PLAIN, non-technical English for an owner.
 
     Each technical verdict becomes ONE owner-readable sentence; a single bracketed
     evidence-stamp per line lets a technical reader cross-check it. CLOCK-FREE (no
     ``datetime.now``, no timestamp, no "UTC") and deterministic — the same report
-    dict renders byte-identical text every time."""
+    dict renders byte-identical text every time. The closing promise line is
+    evidence-derived when ``report["track_record"]`` shows a real history (see
+    :func:`_promise_line`); otherwise it is the original static sentence,
+    byte-identical to every report rendered before that feature existed."""
     lines = _trust_headline(report)
     lines.append(_mission_line(report))
     lines.append(_honesty_line(report))
     lines.append(_quality_line(report))
     lines.append(_capabilities_line(report))
-    lines.append(
-        "- The promise: every change is proven by your project's own tests or "
-        "automatically undone — Apex never leaves your project worse."
-    )
+    lines.append(_promise_line(report))
     lines.append("")
     return "\n".join(lines)
