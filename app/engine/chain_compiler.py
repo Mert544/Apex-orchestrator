@@ -256,13 +256,66 @@ def _archive_chain(report: ChainReport, project_root: str | Path) -> None:
     if not landed:
         return  # nothing landed → nothing to archive (byte-identical)
     from app.engine.composition_archive import record_campaign
-    signature = "chain:" + ">".join(report.objectives)
+    signature = _chain_signature(report)
     total = float(report.total_moves)
     try:
         record_campaign(project_root, signature, landed,
                         total, 0.0, len(landed))
     except OSError:
         pass  # the playbook is best-effort; never fail a good chain on a write
+
+
+def _chain_signature(report: ChainReport) -> str:
+    """The chain's ordered objective SIGNATURE ``chain:a>b>c`` — the SAME key the
+    composition archive and the idea-memory chain table share, so a chain's whole
+    ordered recipe is learned under ONE stable identity (no clock, no IO)."""
+    return "chain:" + ">".join(report.objectives)
+
+
+def _chain_outcome(report: ChainReport) -> str:
+    """The chain's realized outcome bucket for :meth:`IdeaMemory.record_chain_outcome`,
+    or ``""`` when there is nothing honest to record.
+
+    Never-fake-green mapping: a chain that did NOT halt and LANDED at least one
+    verified move is ``"applied"`` — the whole ordered recipe HELD (every landed
+    step's suite stayed green, nothing rolled back). A chain HALTED by a
+    rolled-back (suite-red) step is ``"rolled_back"`` (a genuine regression); a
+    chain halted for any other reason (an opted-in precondition halt) is
+    ``"blocked"``. A non-halted chain that landed NOTHING (all steps empty/skipped)
+    is an honest no-op — ``""`` records nothing, so an all-empty chain leaves
+    ``by_chain`` untouched (opt-in / byte-identical). Only a genuinely-held chain
+    is ever a success, so a halted chain can never inflate a recipe's land-rate."""
+    if report.halted:
+        return "rolled_back" if any(s.status == "red" for s in report.steps) else "blocked"
+    return "applied" if report.landed_objectives else ""
+
+
+def _record_chain_memory(report: ChainReport, project_root: str | Path) -> None:
+    """Record the chain's realized outcome into ``idea_memory.by_chain`` — the
+    LEARNING loop that lets ascend/goal-trees rank whole ordered chains by the SAME
+    Wilson-CI lower bound they already use for operators and sequences.
+
+    Reuses the EXACT ordered signature the archive is keyed by (:func:`_chain_signature`),
+    so the chain memory and the playbook speak one identity. Best-effort and a STRICT
+    no-op unless the chain APPLIED and produced an honest outcome (:func:`_chain_outcome`):
+    a dry run (``applied`` False), an empty chain, or an all-empty chain records
+    NOTHING — so ``by_chain`` stays empty until a chain genuinely lands or halts and
+    the off-by-default tree/ranking stays byte-identical. Honest: only a held chain
+    is an ``applied`` success; a rolled-back/blocked chain is recorded as a
+    NON-success and never a faked win. A write failure is swallowed (learning never
+    fails a good chain)."""
+    if not report.applied:
+        return  # a dry run measured nothing to learn from
+    outcome = _chain_outcome(report)
+    if not outcome:
+        return  # an all-empty chain did nothing to learn from (byte-identical)
+    from app.engine.idea_memory import IdeaMemory
+    try:
+        mem = IdeaMemory.load(project_root)
+        mem.record_chain_outcome(_chain_signature(report), outcome)
+        mem.save(project_root)
+    except OSError:
+        pass  # the learn store is best-effort; never fail a good chain on a write
 
 
 def run_chain(project_root: str | Path, objectives: list[str], *,
@@ -327,6 +380,7 @@ def run_chain(project_root: str | Path, objectives: list[str], *,
             report.halt_reason = f"`{objective}`: {step.reason}"
     report.grade_after = _grade(project_root) if (apply and before >= 0) else before
     _archive_chain(report, project_root)
+    _record_chain_memory(report, project_root)
     return report
 
 

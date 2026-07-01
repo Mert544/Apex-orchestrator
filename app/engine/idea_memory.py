@@ -137,8 +137,23 @@ class IdeaMemory:
     # finer, additive learning dimension — "harden lands on leaves but rolls
     # back on hubs" — derived from already-recorded context (label/target).
     by_characteristic: dict[str, _Stat] = field(default_factory=dict)
+    # Chain credit: key "chain:a>b>c" = the realized outcome of running an
+    # EXPLICIT, ordered objective SEQUENCE (a ``chain_compiler`` campaign) — one
+    # level above the adjacent-pair ``by_sequence`` signal. The key is the SAME
+    # ordered signature ``chain_compiler`` archives under, so a whole ordered
+    # recipe becomes learnable: "the chain ``implement-stub>cover-gaps`` held
+    # 9-of-10 here". Populated ONLY by landed/halted chain runs (opt-in): with no
+    # chain history this table is empty and every ranking is byte-identical.
+    by_chain: dict[str, _Stat] = field(default_factory=dict)
 
     # --- persistence ---------------------------------------------------------
+
+    @staticmethod
+    def _load_table(data: dict[str, Any], key: str) -> dict[str, _Stat]:
+        """Decode one persisted stat table by name. Backward-compatible: a missing
+        (or null) key — an OLD file that predates ``by_sequence`` /
+        ``by_characteristic`` / ``by_chain`` — decodes to an empty table."""
+        return {k: _Stat(**v) for k, v in (data.get(key) or {}).items()}
 
     @classmethod
     def load(cls, project_root: str | Path, path: str | Path | None = None) -> IdeaMemory:
@@ -150,12 +165,11 @@ class IdeaMemory:
         except (OSError, json.JSONDecodeError):
             return cls()
         return cls(
-            by_operator={k: _Stat(**v) for k, v in (data.get("by_operator") or {}).items()},
-            by_label={k: _Stat(**v) for k, v in (data.get("by_label") or {}).items()},
-            # Backward-compatible: an old memory file has no by_sequence key.
-            by_sequence={k: _Stat(**v) for k, v in (data.get("by_sequence") or {}).items()},
-            # Backward-compatible: an old file has no by_characteristic key either.
-            by_characteristic={k: _Stat(**v) for k, v in (data.get("by_characteristic") or {}).items()},
+            by_operator=cls._load_table(data, "by_operator"),
+            by_label=cls._load_table(data, "by_label"),
+            by_sequence=cls._load_table(data, "by_sequence"),
+            by_characteristic=cls._load_table(data, "by_characteristic"),
+            by_chain=cls._load_table(data, "by_chain"),
         )
 
     def save(self, project_root: str | Path, path: str | Path | None = None) -> Path:
@@ -170,6 +184,7 @@ class IdeaMemory:
             "by_label": {k: v.to_dict() for k, v in sorted(self.by_label.items())},
             "by_sequence": {k: v.to_dict() for k, v in sorted(self.by_sequence.items())},
             "by_characteristic": {k: v.to_dict() for k, v in sorted(self.by_characteristic.items())},
+            "by_chain": {k: v.to_dict() for k, v in sorted(self.by_chain.items())},
         }
 
     # --- recording -----------------------------------------------------------
@@ -210,6 +225,27 @@ class IdeaMemory:
     def _bump(table: dict[str, _Stat], key: str, outcome: str) -> None:
         stat = table.setdefault(key, _Stat())
         setattr(stat, outcome, getattr(stat, outcome) + 1)
+
+    def record_chain_outcome(self, signature: str, outcome: str) -> None:
+        """Tally ONE realized chain-campaign outcome under its ordered signature.
+
+        ``signature`` is the SAME ``chain:a>b>c`` key ``chain_compiler`` archives
+        under (the objective sequence, in source order); ``outcome`` is one of
+        ``"applied"`` (the whole ordered chain HELD — every landed step's suite
+        stayed green and nothing rolled back), ``"rolled_back"`` (a step's move
+        regressed and was auto-rolled-back, halting the chain), or ``"blocked"``
+        (the chain stopped for a non-regression reason, e.g. an opted-in
+        precondition halt). Only a genuinely-held chain is an ``applied`` success,
+        so a halted/rolled-back chain contributes as a NON-success and can never
+        fake a win.
+
+        A no-op on an empty ``signature`` or an unrecognised ``outcome`` (so a
+        malformed call cannot silently miscredit), which — with the caller
+        recording nothing for a dry run or an all-empty chain — keeps ``by_chain``
+        empty and every ranking byte-identical until real chain history exists."""
+        if not signature or outcome not in ("applied", "rolled_back", "blocked"):
+            return
+        self._bump(self.by_chain, signature, outcome)
 
     # --- influence on scoring ------------------------------------------------
 
@@ -295,13 +331,16 @@ class IdeaMemory:
         Unlike the raw-rate ordering in ``summary``'s ``most_reliable``, this
         accounts for sample size: a 9-of-10 (90%, lb≈0.61) outranks a lucky
         1-of-1 (100%, lb≈0.21). ``table`` is ``"operator"`` (default),
-        ``"label"``, or ``"sequence"``. ``best=False`` returns the least
-        reliable. Empty/zero-sample tables are safe (return ``[]``).
+        ``"label"``, ``"sequence"``, ``"characteristic"``, or ``"chain"`` (whole
+        ordered objective-sequence recipes). ``best=False`` returns the least
+        reliable. Empty/zero-sample tables are safe (return ``[]``) — so a fresh
+        project with no chain history ranks nothing here (byte-identical).
 
         Deterministic ordering: by confidence, then sample count, then key as a
         stable tiebreak. Stdlib-only math; no time/random."""
         tables = {"operator": self.by_operator, "label": self.by_label,
-                  "sequence": self.by_sequence, "characteristic": self.by_characteristic}
+                  "sequence": self.by_sequence, "characteristic": self.by_characteristic,
+                  "chain": self.by_chain}
         src = tables.get(table, self.by_operator)
         seen = [(k, s) for k, s in src.items() if s.total >= _MIN_SAMPLES]
         # Confidence and sample count descend for `best`; key always ascends as a
@@ -326,10 +365,12 @@ class IdeaMemory:
             "labels_tracked": len(self.by_label),
             "sequences_tracked": len(self.by_sequence),
             "characteristics_tracked": len(self.by_characteristic),
+            "chains_tracked": len(self.by_chain),
             "most_reliable": _top(self.by_operator, best=True),
             "least_reliable": _top(self.by_operator, best=False),
             "reliable_sequences": _top(self.by_sequence, best=True),
             "reliable_characteristics": _top(self.by_characteristic, best=True),
+            "reliable_chains": _top(self.by_chain, best=True),
             # Evidence-aware view (Wilson lower bound) — new, additive keys; the
             # raw-rate keys above are unchanged so existing callers/tests hold.
             "most_confident": self.confident_ranking("operator", best=True),
