@@ -131,6 +131,13 @@ class CompileResult:
     # arm ``covered_only`` (the broad sweep without ``--allow-weak``), so the
     # default ``develop``/``--all``/``ascend`` report is byte-identical.
     withheld: list[str] = field(default_factory=list)
+    # AUTO-COMMIT disclosure (opt-in, set by a CALLER after ``compile_objective``
+    # returns — e.g. ``apex assist --apply --commit``'s autonomous-mode gate, NOT
+    # by ``compile_objective`` itself, which never touches git). Purely additive:
+    # every existing caller leaves these at their defaults, so ``to_dict()`` stays
+    # byte-identical (mirrors how ``value``/``withheld`` are additive disclosures).
+    committed: bool = False
+    commit_hash: str = ""
 
     @property
     def improved(self) -> bool:
@@ -152,6 +159,11 @@ class CompileResult:
         # campaign that didn't arm the gate (mirrors how ``value`` is additive).
         if self.withheld:
             d["withheld"] = list(self.withheld)
+        # Purely ADDITIVE: appears only when a caller actually committed the
+        # result (see ``committed``/``commit_hash`` docstring above).
+        if self.committed:
+            d["committed"] = self.committed
+            d["commit_hash"] = self.commit_hash
         return d
 
 

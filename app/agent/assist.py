@@ -154,6 +154,20 @@ def _resolve_apply(comprehension: Comprehension, apply: bool) -> bool:
     return comprehension.mode != "report"
 
 
+def _resolve_commit(comprehension: Comprehension, apply: bool, commit: bool) -> bool:
+    """Whether a landed develop run should be AUTO-COMMITTED — LEVEL 3.
+
+    True only when the caller passed ``--commit`` AND ``--apply`` resolved to a
+    write AND comprehend read the request as ``autonomous`` (an explicit
+    "automatically…"/"otomatik…" phrasing — see ``_AUTONOMOUS_TRIGGERS``). NEVER
+    on ``supervised`` (the safe default — a bare "add type hints" stays applied-
+    but-uncommitted even with ``--commit``) or ``report`` (always a preview). This
+    mirrors ``_resolve_apply``'s shape one gate further: apply is "may I write?",
+    commit is "may I land it on the user's history without a human looking?" —
+    only an explicitly autonomous request earns that."""
+    return commit and apply and comprehension.mode == "autonomous"
+
+
 # --- The DREAM ROUTE: "what should I build next?" ---------------------------
 
 # The INTERACTIVITY BOUND the assist preview passes to ``dream_develop`` (it is
@@ -358,26 +372,96 @@ def _run_one_objective(target: str, objective: str, scope_module: str | None,
                              covered_only=apply)
 
 
+# --- LEVEL 3: autonomous APPLY + AUTO-COMMIT (covered-verified-only) ---------
+
+def _working_tree_clean(target: str) -> bool:
+    """True iff ``target`` is a git repo with an empty ``git status --porcelain``.
+
+    The AUTO-COMMIT precondition: a dirty tree may carry the user's own
+    unrelated, unstaged/uncommitted work, and ``GitAutoCommit`` stages by
+    EXPLICIT pathspec (never ``git add -A``) — but only committing when the tree
+    started clean guarantees nothing pre-existing rides along, and gives an
+    honest "nothing to commit but this run" history. A non-repo, or any git
+    failure, counts as "not clean" (refuse to commit rather than guess)."""
+    import subprocess
+
+    try:
+        inside = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=target, capture_output=True, text=True, timeout=10)
+        if inside.returncode != 0 or inside.stdout.strip() != "true":
+            return False
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=target, capture_output=True, text=True, timeout=10)
+        return status.returncode == 0 and not status.stdout.strip()
+    except Exception:
+        return False
+
+
+def _commit_result(target: str, result: Any) -> None:
+    """Auto-commit ONE objective's landed steps, in place on ``result``.
+
+    STRICT gate — stricter than ``covered_only`` alone: a step lands in
+    ``result.steps`` once its green suite passed the covered-only withhold gate,
+    but ``covered_only`` and ``coverage_verified`` are not the same predicate for
+    every future caller, so this re-checks EVERY step's own
+    :attr:`CompileStep.coverage_verified` (the tier-aware verdict: a Tier-1 move
+    proven only at ``module`` coverage is NOT verified) before committing anything
+    — one weak step withholds the WHOLE objective's commit (never a partial,
+    file-by-file trust call). Leaves the change applied-on-disk either way; only
+    the commit is withheld. No-op when ``result.steps`` is empty (nothing landed)."""
+    from app.engine.git_auto_commit import GitAutoCommit
+
+    steps = list(getattr(result, "steps", []))
+    if not steps or not all(s.coverage_verified for s in steps):
+        return
+    changed_files = sorted({str(s.target).split(":", 1)[0] for s in steps})
+    if not changed_files:
+        return
+    committer = GitAutoCommit(target)
+    outcome = committer.commit(changed_files=changed_files,
+                               finding=result.objective, action="develop")
+    if outcome.success:
+        result.committed = True
+        result.commit_hash = outcome.commit_hash
+
+
 def _develop_route(request: str, comprehension: Comprehension, target: str,
-                   apply: bool) -> AssistResult:
+                   apply: bool, commit: bool = False) -> AssistResult:
     """Plan + act on a develop request: value-led objectives, each gated.
 
     PLAN: value-led objective order (scope-restricted when a scope was named).
     ACT: each objective through :func:`_run_one_objective` (preview unless the
-    write gate resolved on). EXPLAIN is deferred to :func:`render_assist_markdown`,
-    which counts the landed / weak / blocked moves from the real results."""
+    write gate resolved on). LEVEL 3: when the commit gate resolves on (an
+    explicitly autonomous request, ``--apply --commit``, a clean tree) each
+    landed objective is auto-committed via :func:`_commit_result` — but ONLY the
+    steps a green suite genuinely vouches for at their risk tier; anything else
+    stays applied-but-uncommitted for a human to review. EXPLAIN is deferred to
+    :func:`render_assist_markdown`, which counts the landed / weak / blocked /
+    committed moves from the real results."""
     write = _resolve_apply(comprehension, apply)
+    should_commit = _resolve_commit(comprehension, write, commit)
+    if should_commit and not _working_tree_clean(target):
+        # Refuse to commit into a dirty tree — never sweep pre-existing
+        # uncommitted work into Apex's auto-commit. The run still applies (write
+        # already resolved), it just stays uncommitted, same as a bare --apply.
+        should_commit = False
     scope_hint = comprehension.scope
     scope_module = _resolve_scope_module(target, scope_hint)
     objectives = _scoped_objectives(comprehension)
     results = [_run_one_objective(target, obj, scope_module, write)
                for obj in objectives]
+    if should_commit:
+        for r in results:
+            _commit_result(target, r)
     payload = {
         "objectives": objectives,
         "capped": len(comprehension.objectives) > len(objectives),
         "scope": scope_hint,
         "scope_module": scope_module,
         "write": write,
+        "commit": should_commit,
         "results": [r.to_dict() for r in results],
     }
     landed = any(getattr(r, "steps", None) for r in results)
@@ -429,13 +513,19 @@ def _recommend_route(request: str, comprehension: Comprehension,
 # --- The entry point ---------------------------------------------------------
 
 def assist(request: str, target: str | Path = ".",
-           apply: bool = False) -> AssistResult:
+           apply: bool = False, commit: bool = False) -> AssistResult:
     """Run the conversational loop on ``request`` against ``target``.
 
     UNDERSTAND (:func:`comprehend`) → BRANCH → ACT → EXPLAIN. Deterministic,
     zero-token, offline. SAFE by default: nothing is written unless ``apply`` is
     set AND comprehend's mode is patch-capable, and every develop write flows
     through the existing covered-only / suite-gated / auto-rollback compiler.
+    ``commit`` is LEVEL 3, one gate further: nothing is auto-committed unless
+    ``apply`` resolved to a write AND comprehend read the request as explicitly
+    ``autonomous`` AND every landed step is genuinely coverage-verified at its
+    risk tier AND the working tree started clean (see :func:`_resolve_commit`)
+    — a supervised-phrased request stays applied-but-uncommitted even with
+    ``commit=True``.
 
     The branch order is load-bearing: the proactive next-work question (the DREAM
     ROUTE) is detected first (it is a question that names develop work), then a
@@ -462,7 +552,7 @@ def assist(request: str, target: str | Path = ".",
 
     # A develop request that matched real objectives → plan + act (gated).
     if comprehension.action == "develop" and comprehension.objectives:
-        return _develop_route(request, comprehension, target, apply)
+        return _develop_route(request, comprehension, target, apply, commit)
 
     # Unmappable / low-confidence / removal-of-additive → honest no-capability.
     return _recommend_route(request, comprehension, target)
@@ -684,6 +774,7 @@ def _render_develop(result: AssistResult) -> list[str]:
     lines = [f"## Plan — {len(objectives)} objective(s){capped}, value-led{where}",
              plan, ""]
     verified, weak, blocked, files = _develop_counts(results)
+    committed = sum(1 for r in results if getattr(r, "committed", False))
     heading = ("Result — landed the verified moves" if write
                else "Result — preview (nothing written)")
     lines.append(f"## {heading}")
@@ -691,6 +782,11 @@ def _render_develop(result: AssistResult) -> list[str]:
         lines.append(f"**{verified} verified move(s)** on {files} file(s)"
                      + (f"; {weak} weak (uncovered)" if weak else "")
                      + (f"; {blocked} blocked." if blocked else "."))
+        # NEVER claim a commit that didn't happen: only disclosed when at least
+        # one objective's steps were actually auto-committed (LEVEL 3).
+        if committed:
+            lines.append(f"**{committed} objective(s) auto-committed** — see the "
+                         "per-move breakdown below for each commit hash.")
     else:
         previewed = verified + weak
         lines.append(f"Preview: **{previewed} move(s)** would land across "
@@ -698,7 +794,7 @@ def _render_develop(result: AssistResult) -> list[str]:
                      + (f"; {blocked} blocked." if blocked else "."))
     lines.append("")
     lines += _render_develop_steps(results, write)
-    lines += _render_develop_next(write, weak, objectives, scope)
+    lines += _render_develop_next(write, weak, objectives, scope, committed)
     return lines
 
 
@@ -708,13 +804,22 @@ def _render_develop_steps(results: list[Any], write: bool) -> list[str]:
     On an applied run each move carries its honest coverage tier (a test-COVERED
     move is "verified", else "uncovered"); on a PREVIEW nothing ran the suite, so
     each move is shown as "(preview)" rather than claiming a coverage verdict it
-    did not measure (never-fake-green: a dry run proves nothing about coverage)."""
+    did not measure (never-fake-green: a dry run proves nothing about coverage).
+    A committed objective's header names its commit hash — "applied, not
+    committed" is stated just as plainly when a landed objective did NOT commit,
+    so the two outcomes are never conflated."""
     lines: list[str] = []
     for r in results:
         steps = getattr(r, "steps", [])
         if not steps:
             continue
-        lines.append(f"**`{r.objective}`** — {len(steps)} move(s):")
+        header = f"**`{r.objective}`** — {len(steps)} move(s)"
+        if write:
+            if getattr(r, "committed", False):
+                header += f", committed `{r.commit_hash}`"
+            else:
+                header += ", applied — not committed"
+        lines.append(header + ":")
         for s in steps:
             if not write:
                 tag = "(preview)"
@@ -727,7 +832,7 @@ def _render_develop_steps(results: list[Any], write: bool) -> list[str]:
 
 
 def _render_develop_next(write: bool, weak: int, objectives: list[str],
-                         scope: str | None) -> list[str]:
+                         scope: str | None, committed: int = 0) -> list[str]:
     """The NEXT step for a develop run: how to apply, or how to lift weak moves."""
     lines = ["## Next"]
     if not write:
@@ -739,8 +844,11 @@ def _render_develop_next(write: bool, weak: int, objectives: list[str],
     if write and weak:
         lines.append("- Add tests that exercise the uncovered moves, then re-run — "
                      "a covered move lands as verified.")
-    if write and not weak:
+    if write and not weak and not committed:
         lines.append("- Review with `git diff`; undo with `git checkout -- .`")
+    if write and committed:
+        lines.append("- Committed automatically — review with `git show`; "
+                     "undo with `git revert`.")
     lines.append("")
     return lines
 

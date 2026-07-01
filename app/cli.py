@@ -233,12 +233,18 @@ def cmd_assist(args: argparse.Namespace) -> int:
     covered-only / suite-gated / auto-rollback compiler; an unmappable request gets
     an honest no-capability answer plus the roadmap's best next moves. SAFE by
     default — nothing is written unless ``--apply`` is set AND the understood mode
-    is patch-capable. ``--json`` emits the machine-readable result."""
+    is patch-capable. LEVEL 3: ``--commit`` auto-commits the landed moves, but ONLY
+    when the request itself read as explicitly autonomous ("automatically…"),
+    every landed step is genuinely coverage-verified at its risk tier, and the
+    working tree started clean — a supervised-phrased request with ``--apply
+    --commit`` still lands applied-but-uncommitted, never auto-committed.
+    ``--json`` emits the machine-readable result."""
     from app.agent.assist import assist
 
     target = args.target or _get_project_root()
     result = assist(args.request, target=str(target),
-                    apply=getattr(args, "apply", False))
+                    apply=getattr(args, "apply", False),
+                    commit=getattr(args, "commit", False))
     if getattr(args, "json", False):
         print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     else:
@@ -262,6 +268,10 @@ def _register_local_parsers(subparsers) -> None:
     assist_parser.add_argument("--apply", action="store_true",
                                help="Land develop changes (covered-only, "
                                     "suite-gated, auto-rollback); default previews")
+    assist_parser.add_argument("--commit", action="store_true",
+                               help="Auto-commit landed, coverage-verified moves "
+                                    "(requires --apply, an explicitly autonomous "
+                                    "request, and a clean working tree)")
     assist_parser.add_argument("--json", action="store_true", help="Emit JSON")
     assist_parser.set_defaults(func=cmd_assist)
 

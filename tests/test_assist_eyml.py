@@ -11,19 +11,51 @@ it returns and verify the loop around it.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from app.agent.assist import (
     COUPLING_PHRASES,
     NEXT_WORK_PHRASES,
+    _commit_result,
+    _resolve_commit,
+    _working_tree_clean,
     assist,
     is_coupling_question,
     is_next_work_question,
     render_assist_markdown,
 )
+from app.engine.objective_compiler import CompileResult, CompileStep
+from app.intent.comprehension import comprehend
 
 
 # --- fixtures ---------------------------------------------------------------
+
+def _init_git(root: Path) -> None:
+    """Init a git repo at ``root`` with an initial commit — the AUTO-COMMIT
+    precondition fixtures need a real repo with a clean tree to start from."""
+    subprocess.run(["git", "init", "-q"], cwd=root, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root,
+                   capture_output=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=root,
+                   capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=root, capture_output=True)
+    subprocess.run(["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m",
+                    "init"], cwd=root, capture_output=True)
+
+
+def _git_log_hashes(root: Path) -> list[str]:
+    out = subprocess.run(["git", "log", "--format=%H"], cwd=root,
+                         capture_output=True, text=True)
+    return out.stdout.split()
+
+
+def _git_changed_files(root: Path, commit_hash: str) -> set[str]:
+    out = subprocess.run(
+        ["git", "show", "--name-only", "--format=", commit_hash],
+        cwd=root, capture_output=True, text=True)
+    return {line for line in out.stdout.splitlines() if line}
+
 
 def _modernize_project(tmp_path: Path) -> Path:
     """A tiny project with a ``== None`` the modernizer rewrites, covered by a
@@ -363,6 +395,289 @@ def test_report_mode_pins_preview_even_with_apply(tmp_path):
     assert result.applied is False
     assert result.payload["write"] is False
     assert _tree_snapshot(root) == before
+
+
+# --- LEVEL 3: autonomous APPLY + AUTO-COMMIT (covered-verified-only) --------
+
+def test_resolve_commit_gate_requires_apply_commit_and_autonomous_mode():
+    """The pure gate: only ``commit and apply and mode == "autonomous"``."""
+    autonomous = comprehend("automatically modernize the code")
+    supervised = comprehend("modernize the code")
+    report = comprehend("just show me how you would modernize the code")
+    assert autonomous.mode == "autonomous"
+    assert supervised.mode == "supervised"
+    assert report.mode == "report"
+
+    assert _resolve_commit(autonomous, True, True) is True
+    # Missing any one of the three inputs refuses the commit.
+    assert _resolve_commit(autonomous, True, False) is False   # no --commit
+    assert _resolve_commit(autonomous, False, True) is False   # apply resolved off
+    assert _resolve_commit(supervised, True, True) is False    # not autonomous
+    assert _resolve_commit(report, True, True) is False        # report never commits
+
+
+def test_working_tree_clean_reports_clean_and_dirty(tmp_path):
+    _init_git(tmp_path)
+    assert _working_tree_clean(str(tmp_path)) is True
+    (tmp_path / "untracked.py").write_text("x = 1\n", encoding="utf-8")
+    assert _working_tree_clean(str(tmp_path)) is False
+
+
+def test_working_tree_clean_is_false_for_a_non_repo(tmp_path):
+    assert _working_tree_clean(str(tmp_path)) is False
+
+
+def test_supervised_apply_commit_lands_but_does_not_commit(tmp_path):
+    """REGRESSION GUARD: a supervised-phrased request with --apply --commit must
+    NOT auto-commit — it lands exactly like a bare --apply (applied-uncommitted).
+    This is the human-gated default the design pins: only an EXPLICITLY
+    autonomous request may auto-commit."""
+    root = _modernize_project(tmp_path)
+    _init_git(root)
+    before_head = _git_log_hashes(root)
+
+    result = assist("modernize the code", target=str(root), apply=True, commit=True)
+
+    assert result.comprehension.mode == "supervised"
+    assert result.payload["write"] is True
+    assert result.payload["commit"] is False
+    assert result.applied is True
+    # The move actually landed on disk (write did happen) …
+    after = (root / "mod.py").read_text(encoding="utf-8")
+    assert "is None" in after
+    # … but NOTHING was committed: no new commit, and no result claims one.
+    assert _git_log_hashes(root) == before_head
+    assert all(not r.committed for r in result._results)
+    assert "committed" not in result.narrative.split("## Next")[0].lower() \
+        or "not committed" in result.narrative.lower()
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=root,
+                            capture_output=True, text=True)
+    assert status.stdout.strip()  # the applied change is still sitting uncommitted
+
+
+def test_autonomous_apply_commit_lands_and_commits_covered_move(tmp_path):
+    """The LEVEL 3 happy path: an explicitly autonomous request + a covered move
+    auto-commits — a real new git commit touching exactly the changed file(s)."""
+    root = _modernize_project(tmp_path)
+    _init_git(root)
+    before_head = _git_log_hashes(root)
+
+    result = assist("automatically modernize the code", target=str(root),
+                    apply=True, commit=True)
+
+    assert result.comprehension.mode == "autonomous"
+    assert result.payload["write"] is True
+    assert result.payload["commit"] is True
+    # A real NEW commit landed.
+    after_head = _git_log_hashes(root)
+    assert after_head != before_head
+    assert after_head[0] not in before_head
+    # Exactly the changed file(s) were committed — nothing extra swept in.
+    changed = _git_changed_files(root, after_head[0])
+    assert changed == {"mod.py"}
+    # The tree is clean of the CHANGED source afterward (the commit landed
+    # everything the move touched); the only leftover untracked entry is the
+    # organism's own ``.apex/`` idea-memory side-artifact, not part of the move.
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=root,
+                            capture_output=True, text=True)
+    remaining = {line for line in status.stdout.splitlines() if ".apex" not in line}
+    assert not remaining
+    # The result discloses the real commit.
+    committed_results = [r for r in result._results if r.committed]
+    assert committed_results
+    assert committed_results[0].commit_hash
+    assert committed_results[0].commit_hash in after_head[0]
+    assert "auto-committed" in result.narrative
+    assert committed_results[0].commit_hash in result.narrative
+
+
+def test_autonomous_apply_commit_uncovered_move_rolls_back_nothing_to_commit(
+        tmp_path):
+    """An autonomous request whose only candidate move is UNCOVERED: the
+    covered-only sweep (already armed by ``apply=True``) rolls it back before it
+    ever reaches ``result.steps`` — nothing lands, so nothing commits."""
+    (tmp_path / "mod.py").write_text(
+        "def greet(name):\n"
+        "    if name == None:\n"
+        "        return 'hi'\n"
+        "    return 'hi ' + name\n",
+        encoding="utf-8")
+    # No test references mod.py at all — coverage == "none".
+    (tmp_path / "test_other.py").write_text(
+        "def test_trivial():\n    assert True\n", encoding="utf-8")
+    _init_git(tmp_path)
+    before_head = _git_log_hashes(tmp_path)
+
+    result = assist("automatically modernize the code", target=str(tmp_path),
+                    apply=True, commit=True)
+
+    assert result.comprehension.mode == "autonomous"
+    # The covered-only gate withheld the move: nothing landed as a step.
+    modernize_results = [r for r in result._results if r.objective == "modernize"]
+    assert modernize_results
+    assert modernize_results[0].steps == []
+    assert modernize_results[0].withheld
+    assert modernize_results[0].committed is False
+    # No new commit — nothing to commit.
+    assert _git_log_hashes(tmp_path) == before_head
+
+
+def test_commit_result_withholds_tier1_move_verified_only_at_module_coverage():
+    """THE CRITICAL SOUNDNESS TEST: a Tier-1 (behaviour-adjacent) step whose green
+    suite proves only ``module`` coverage (a smoke import, not a test that names
+    the changed function) is NOT ``coverage_verified`` — so ``_commit_result``
+    must WITHHOLD the commit even though the step is present in ``result.steps``
+    and even though ``covered_only`` alone (module-coverage passes it for a
+    Tier-0 move) would have let it through. This is the extra, stricter,
+    per-step gate ``_commit_result`` adds on top of ``covered_only``."""
+    tier1_module_only = CompileStep(
+        operator="harden", target="risky.py:harden", description="harden risky.py",
+        fitness_before=1.0, fitness_after=0.0,
+        verified=True, coverage="module", tier=1)
+    assert tier1_module_only.coverage_verified is False  # the tier-aware verdict
+
+    result = CompileResult(objective="harden-security", fitness_start=1.0,
+                           fitness_end=0.0, steps=[tier1_module_only], applied=True)
+
+    _commit_result("/nonexistent/does/not/matter", result)
+
+    assert result.committed is False
+    assert result.commit_hash == ""
+
+
+def test_commit_result_commits_when_every_step_is_coverage_verified(tmp_path):
+    """A direct unit test of ``_commit_result``'s happy path, isolated from the
+    develop route: every step verified at its tier → a real commit."""
+    root = tmp_path
+    (root / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    _init_git(root)
+    (root / "mod.py").write_text("x = 2\n", encoding="utf-8")
+    before_head = _git_log_hashes(root)
+
+    tier0_ok = CompileStep(
+        operator="modernize", target="mod.py:modernize", description="tidy mod.py",
+        fitness_before=1.0, fitness_after=0.0,
+        verified=True, coverage="module", tier=0)
+    result = CompileResult(objective="modernize", fitness_start=1.0, fitness_end=0.0,
+                           steps=[tier0_ok], applied=True)
+
+    _commit_result(str(root), result)
+
+    assert result.committed is True
+    assert result.commit_hash
+    assert _git_log_hashes(root) != before_head
+
+
+def test_commit_result_is_a_noop_when_nothing_landed():
+    """No steps -> no commit, no crash, no git call needed."""
+    result = CompileResult(objective="modernize", fitness_start=0.0, fitness_end=0.0,
+                           steps=[], applied=False)
+    _commit_result("/nonexistent/does/not/matter", result)
+    assert result.committed is False
+    assert result.commit_hash == ""
+
+
+def test_commit_true_but_apply_false_never_writes_or_commits(tmp_path):
+    """``commit=True`` with ``apply=False`` (the caller's own resolved-apply
+    still gates on comprehend's mode/apply arg) must not write OR commit —
+    apply is the write gate; commit can never fire without it."""
+    root = _modernize_project(tmp_path)
+    _init_git(root)
+    before = _tree_snapshot(root)
+    before_head = _git_log_hashes(root)
+
+    result = assist("automatically modernize the code", target=str(root),
+                    apply=False, commit=True)
+
+    assert result.payload["write"] is False
+    assert result.payload["commit"] is False
+    assert result.applied is False
+    assert _tree_snapshot(root) == before
+    assert _git_log_hashes(root) == before_head
+
+
+def test_dirty_working_tree_refuses_commit_and_leaves_preexisting_change(tmp_path):
+    """A dirty tree at the START of the run refuses the commit gate entirely (the
+    develop write still lands — apply already resolved) and the PRE-EXISTING
+    uncommitted change is left completely untouched (never swept into a commit,
+    never reverted)."""
+    root = _modernize_project(tmp_path)
+    _init_git(root)
+    # A pre-existing, unrelated uncommitted change — must survive untouched.
+    unrelated = root / "unrelated.py"
+    unrelated.write_text("# a pre-existing WIP change\nvalue = 1\n", encoding="utf-8")
+    before_unrelated = unrelated.read_text(encoding="utf-8")
+    before_head = _git_log_hashes(root)
+
+    result = assist("automatically modernize the code", target=str(root),
+                    apply=True, commit=True)
+
+    assert result.comprehension.mode == "autonomous"
+    assert result.payload["write"] is True
+    # The dirty precondition refused the commit gate even though mode is autonomous.
+    assert result.payload["commit"] is False
+    assert all(not r.committed for r in result._results)
+    # No new commit landed.
+    assert _git_log_hashes(root) == before_head
+    # The pre-existing unrelated change is untouched (still there, still uncommitted).
+    assert unrelated.exists()
+    assert unrelated.read_text(encoding="utf-8") == before_unrelated
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=root,
+                            capture_output=True, text=True)
+    assert "unrelated.py" in status.stdout
+
+
+def test_narrative_discloses_applied_not_committed_distinctly(tmp_path):
+    """The narrative must never blur "applied" and "committed" — a supervised
+    landed move states plainly that it applied but did not commit."""
+    root = _modernize_project(tmp_path)
+    _init_git(root)
+
+    result = assist("modernize the code", target=str(root), apply=True, commit=True)
+
+    assert "applied — not committed" in result.narrative
+    assert "auto-committed" not in result.narrative
+
+
+def test_narrative_discloses_committed_hash_distinctly(tmp_path):
+    root = _modernize_project(tmp_path)
+    _init_git(root)
+
+    result = assist("automatically modernize the code", target=str(root),
+                    apply=True, commit=True)
+
+    committed = [r for r in result._results if r.committed]
+    assert committed
+    assert f"committed `{committed[0].commit_hash}`" in result.narrative
+    assert "applied — not committed" not in result.narrative
+
+
+def test_cli_assist_apply_commit_end_to_end(tmp_path, monkeypatch, capsys):
+    """CLI end-to-end: ``apex assist "automatically…" --apply --commit`` on a tmp
+    git fixture lands a real commit and discloses it in ``--json``."""
+    import json
+
+    import app.cli as cli
+
+    root = _modernize_project(tmp_path)
+    _init_git(root)
+    before_head = _git_log_hashes(root)
+
+    monkeypatch.setattr("sys.argv", [
+        "apex", "assist", "automatically modernize the code",
+        "--target", str(root), "--apply", "--commit", "--json"])
+
+    exit_code = cli.main()
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["route"] == "develop"
+    dev_results = payload["payload"]["results"]
+    committed_results = [r for r in dev_results if r.get("committed")]
+    assert committed_results
+    assert committed_results[0]["commit_hash"]
+    after_head = _git_log_hashes(root)
+    assert after_head != before_head
 
 
 # --- scope restriction ------------------------------------------------------
