@@ -1,5 +1,6 @@
 """Insight-family commands: explain, brief, dream, outcomes, recipes,
-changelog, grade, impact — the commands that READ the organism.
+changelog, grade, impact, trackrecord, scope, proof — the commands that READ
+the organism.
 
 Final slice of the `app/cli.py` monolith (2290 lines at its peak). Pure
 mechanical move: `app.cli` re-exports every symbol, identity-guarded.
@@ -662,6 +663,260 @@ def cmd_trackrecord(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# proof — render the proof-of-fix evidence Apex already computes but never shows
+# ("make the proof visible", ROADMAP "Next"). Read-only, LLM-free: it loads,
+# formats, and prints existing artifacts and INVENTS no new analysis.
+# ---------------------------------------------------------------------------
+
+def _proof_disposition(fix: dict, outcome: str, withheld: bool) -> tuple[str, str]:
+    """(display_outcome, committed) for one move's commit disposition.
+
+    An applied-but-WITHHELD fix is on disk for review, NOT committed — surfaced
+    as its own state (with the gate that fired) so a reader never mistakes it for
+    a committed fix. Blocked/rolled-back never committed either. Honest by
+    construction: an unverified/withheld move is never rendered as committed.
+    """
+    if outcome == "applied" and withheld:
+        gate = "fence" if fix.get("fenced") else ("baseline-red" if fix.get("baseline_red") else "")
+        return "applied & withheld", (f"no ({gate})" if gate else "no")
+    if outcome == "applied":
+        return "applied", ("yes" if fix.get("commit_hash") else "no")
+    return outcome, "no"
+
+
+def _proof_reason(fix: dict, outcome: str, withheld: bool) -> str:
+    """The one honest reason for a non-clean move — every field already present
+    in the record (blocked_reason / rollback.reason / withheld_reason)."""
+    if outcome == "blocked":
+        return str(fix.get("blocked_reason") or "")
+    if outcome == "rolled_back":
+        return str((fix.get("rollback") or {}).get("reason") or "")
+    if withheld:
+        return str(fix.get("withheld_reason") or "")
+    return ""
+
+
+def _proof_move(fix: dict) -> dict:
+    """One rendered move-row dict from a stored ``fixes[]`` record.
+
+    Reads only fields ``proof_of_fix._fix_record`` already wrote — the finding,
+    the terminal ``outcome``, the coverage level, the commit disposition and the
+    one honest reason for a non-clean move. It NEVER upgrades an unverified move
+    to look verified: a withheld/rolled-back/blocked move keeps its own outcome
+    and reason verbatim.
+    """
+    finding = fix.get("finding") or {}
+    # Coverage is the verification strength level EXACTLY as recorded (a green
+    # suite that never touched the module reads "none"/"no-suite"/"baseline-red"
+    # — honest evidence, not an implied full-coverage pass).
+    strength = (fix.get("verification") or {}).get("strength") or {}
+    outcome = str(fix.get("outcome") or "blocked")
+    withheld = bool(fix.get("commit_withheld"))
+    display_outcome, committed = _proof_disposition(fix, outcome, withheld)
+    return {
+        "outcome": display_outcome,
+        "label": str(finding.get("label") or ""),
+        "action": str(finding.get("action") or ""),
+        "target": str(finding.get("target") or ""),
+        "coverage": str(strength.get("level") or ""),
+        "committed": committed,
+        "reason": _proof_reason(fix, outcome, withheld),
+    }
+
+
+_PROOF_EMPTY_TRACK = {
+    "proofs": 0,
+    "fixes": 0,
+    "totals": {"applied": 0, "rolled_back": 0, "blocked": 0, "total": 0,
+               "reliability": 0.0},
+    "by_action": {},
+    "by_module": {},
+}
+
+
+def _proof_record(root: Path) -> dict:
+    """Assemble the proof-of-fix VISIBILITY record for ``root`` from the two
+    artifacts Apex already keeps — the latest proof pointer
+    (``.apex/proof-of-fix.json``) and the full proof history (latest + archived
+    ``proof-<hash>.json``).
+
+    Reuses the existing defensive loaders (``_read_proof_of_fix``,
+    ``proof_history.load_proof_history`` / ``summarise_fix_track_record``) and the
+    pure tamper functions (``proof_of_fix.proof_hash`` / ``proof_manifest``); it
+    computes NOTHING new. Deterministic — the moves iterate the stored file order,
+    the track-record dicts are already sorted, and ``generated_at`` is carried
+    verbatim, never regenerated. Never raises: a missing/corrupt proof collapses
+    to the honest empty state.
+    """
+    from app.engine.proof_history import (
+        load_proof_history,
+        summarise_fix_track_record,
+    )
+    from app.engine.proof_of_fix import proof_hash, proof_manifest
+
+    proof = _read_proof_of_fix(root)
+    history = load_proof_history(root)
+    has_proof = bool(proof) or bool(history)
+    if not has_proof:
+        return {"has_proof": False, "moves": [], "track_record": dict(_PROOF_EMPTY_TRACK)}
+
+    fixes = [f for f in (proof.get("fixes") or []) if isinstance(f, dict)]
+    manifest = proof_manifest(proof) if proof else {}
+    totals = proof.get("totals") or {}
+    return {
+        "has_proof": True,
+        "objective": str(proof.get("objective") or ""),
+        "mode": str(proof.get("mode") or ""),
+        "verify": bool(proof.get("verify")),
+        "generated_at": str(proof.get("generated_at") or ""),
+        "totals": {
+            "applied": _coerce_count(totals.get("applied"), 0),
+            "rolled_back": _coerce_count(totals.get("rolled_back"), 0),
+            "blocked": _coerce_count(totals.get("blocked"), 0),
+        },
+        # Iterate stored file order — the order apply_plan recorded, reproduced
+        # byte-for-byte from the JSON. No sort, no clock.
+        "moves": [_proof_move(f) for f in fixes],
+        "proof_hash": proof_hash(proof) if proof else "",
+        "verdict": str(manifest.get("verdict") or ""),
+        "track_record": summarise_fix_track_record(history),
+    }
+
+
+def render_proof_markdown(record: dict) -> str:
+    """Render the proof-of-fix VISIBILITY record as Markdown (pure, deterministic).
+
+    Honest empty state (a 3-line message pointing at ``apex maintain``) when no
+    proof exists yet; otherwise the objective/mode/verify line, the per-move
+    table (Outcome | Finding | Coverage | Committed | Reason) in stored file
+    order, the totals, the tamper-evidence line (``proof_hash`` + verdict), and
+    the track-record block. Adds no clock and no random; iterates the already
+    file-ordered moves and the already-sorted track-record dicts, so the same
+    ``.apex/proof-of-fix.json`` renders identical text every run.
+    """
+    if not record.get("has_proof"):
+        return (
+            "# Apex proof of fix\n\n"
+            "No proof-of-fix evidence yet — run `apex maintain` (or `apex maintain "
+            "--dry-run` to preview) to generate one. Apex records every "
+            "applied/rolled-back/blocked move with test evidence and a tamper-"
+            "evident hash."
+        )
+
+    lines = ["# Apex proof of fix", ""]
+    objective = record.get("objective") or "—"
+    mode = record.get("mode") or "—"
+    lines.append(
+        f"Objective: {objective}   Mode: {mode}   "
+        f"Verify: {'yes' if record.get('verify') else 'no'}"
+    )
+    lines.append("")
+
+    lines += ["## Moves (this run)", ""]
+    lines.append("| Outcome | Finding (label / action / target) | Coverage | Committed | Reason |")
+    lines.append("|---------|-----------------------------------|----------|-----------|--------|")
+    for move in record.get("moves") or []:
+        finding = " / ".join(p for p in (move["label"], move["action"], move["target"]) if p)
+        lines.append(
+            f"| {_proof_cell(move['outcome'])} | {_proof_cell(finding)} "
+            f"| {_proof_cell(move['coverage'])} | {_proof_cell(move['committed'])} "
+            f"| {_proof_cell(move['reason'])} |"
+        )
+    lines.append("")
+
+    totals = record.get("totals") or {}
+    lines.append(
+        f"Totals: {int(totals.get('applied', 0))} applied, "
+        f"{int(totals.get('rolled_back', 0))} rolled back, "
+        f"{int(totals.get('blocked', 0))} blocked."
+    )
+    lines.append("")
+
+    lines += ["## Tamper evidence", ""]
+    lines.append(f"proof_hash: {record.get('proof_hash') or '—'}")
+    lines.append(f"verdict: {record.get('verdict') or '—'}")
+    lines.append("")
+
+    lines += _render_proof_track_record(record.get("track_record") or {})
+
+    lines.append("")
+    lines.append(
+        "_Every number here is read from Apex's own evidence trail "
+        "(`.apex/proof-of-fix.json` + archived proofs) — deterministic, "
+        "zero-token, no model in the loop._"
+    )
+    return "\n".join(lines)
+
+
+def _proof_cell(text: str) -> str:
+    """Neutralize table-breaking chars in one Markdown cell (mirrors
+    ``learning_section._escape_cell``: ``|`` → entity, newlines → ``<br>``)."""
+    text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    text = "<br>".join(text.split("\n"))
+    return text.replace("|", "&#124;")
+
+
+def _render_proof_track_record(track: dict) -> list[str]:
+    """The '## Track record' block from ``summarise_fix_track_record`` output.
+
+    REUSES the orphaned ``learning_section`` helpers (``_action_row`` /
+    ``_percent`` / ``_action_sort_key``) — they already format the by-action
+    reliability table, so the By-action rows share that renderer rather than
+    duplicating it. The ``by_action``/``by_module`` dicts are already sorted by
+    the summariser, so iteration is deterministic.
+    """
+    # Reuse: learning_section already renders the by-action reliability table
+    # (Action | Reliability | Applied | Rolled back | Blocked | Total).
+    from app.reporting.learning_section import (
+        _action_row,
+        _action_sort_key,
+        _percent,
+    )
+
+    totals = track.get("totals") or {}
+    proofs = int(track.get("proofs", 0))
+    fixes = int(track.get("fixes", 0))
+    lines = ["## Track record (all runs on this repo)", ""]
+    lines.append(
+        f"Proofs: {proofs}   Fixes: {fixes}   "
+        f"Reliability: {_percent(float(totals.get('reliability', 0.0)))}"
+    )
+
+    by_action = track.get("by_action") or {}
+    if by_action:
+        lines += ["", "### By action", "",
+                  "| Action | Reliability | Applied | Rolled back | Blocked | Total |",
+                  "| --- | ---: | ---: | ---: | ---: | ---: |"]
+        for action, stats in sorted(by_action.items(), key=_action_sort_key):
+            lines.append(_action_row(action, stats))
+
+    by_module = track.get("by_module") or {}
+    if by_module:
+        lines += ["", "### By module", "",
+                  "| Module | Reliability | Applied | Rolled back | Blocked | Total |",
+                  "| --- | ---: | ---: | ---: | ---: | ---: |"]
+        for module, stats in sorted(by_module.items(), key=_action_sort_key):
+            lines.append(_action_row(module, stats))
+
+    return lines
+
+
+def cmd_proof(args: argparse.Namespace) -> int:
+    """Show the proof-of-fix evidence for the last maintain run on this repo:
+    each applied/rolled-back/blocked/withheld move with its reason, a tamper-
+    evident sha256, and the aggregate track record. Reads only Apex's own
+    artifacts; invents no analysis; LLM-free. Always exits 0 (a missing proof is
+    honest state, not an error)."""
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    record = _proof_record(target)
+    if args.json:
+        print(json.dumps(record, indent=2))
+    else:
+        print(render_proof_markdown(record))
+    return 0
+
+
 _SCOPE_EMPTY_REPORT = {
     "source_file_count": 0,
     "python_file_count": 0,
@@ -1161,6 +1416,17 @@ def register_parsers(subparsers) -> None:
     trackrecord_parser.add_argument("--target", default="", help="Target project root")
     trackrecord_parser.add_argument("--json", action="store_true", help="Emit JSON")
     trackrecord_parser.set_defaults(func=cmd_trackrecord)
+
+    # proof — render the proof-of-fix evidence Apex already computes (make it visible)
+    proof_parser = subparsers.add_parser(
+        "proof",
+        help="Show the proof-of-fix evidence for the last maintain run: each "
+             "applied/rolled-back/blocked/withheld move with reasons, a tamper-"
+             "evident sha256, and the track record (read-only, LLM-free)",
+    )
+    proof_parser.add_argument("--target", default="", help="Target project root")
+    proof_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    proof_parser.set_defaults(func=cmd_proof)
 
     # scope — how much of THIS repo Apex's Python analysis covers (and what it
     # honestly leaves outside that scope)

@@ -98,7 +98,7 @@ def test_family_parser_registration_covers_every_command():
 
     assert set(sub.choices) == {
         "auto", "simulate", "evolve", "maintain", "develop", "shield", "plan", "ascend",
-        "grade", "impact", "mutants", "duplication", "brief", "dream", "intelligence", "polyglot", "readiness", "fix-risk", "discoveries", "outcomes", "recipes", "changelog", "explain", "objectives", "trackrecord", "scope",
+        "grade", "impact", "mutants", "duplication", "brief", "dream", "intelligence", "polyglot", "readiness", "fix-risk", "discoveries", "outcomes", "recipes", "changelog", "explain", "objectives", "trackrecord", "scope", "proof",
         "ideate", "review", "rename", "move", "signature", "rewrite", "teach", "extract", "inline",
         "assist", "comprehend", "bench", "run", "canvas", "changed", "idea-html", "partition",
         "scan", "agents", "consensus", "daemon", "self-audit",
@@ -110,6 +110,7 @@ def test_family_parser_registration_covers_every_command():
     assert sub.choices["rename"].get_default("func") is app.cli_refactor.cmd_rename
     assert sub.choices["maintain"].get_default("func") is app.cli_autonomy.cmd_maintain
     assert sub.choices["dream"].get_default("func") is app.cli_insight.cmd_dream
+    assert sub.choices["proof"].get_default("func") is app.cli_insight.cmd_proof
     assert sub.choices["ideate"].get_default("func") is app.cli_ideate.cmd_ideate
     assert sub.choices["dashboard"].get_default("func") is app.cli_reporting.cmd_dashboard
     assert sub.choices["scan"].get_default("func") is app.cli_ops.cmd_scan
