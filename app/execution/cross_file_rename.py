@@ -436,11 +436,20 @@ def plan_rename(project_root: str | Path, old: str, new: str) -> RenamePlan:
 
 def _rollback(root: Path, plan: RenamePlan, created: list[str]) -> None:
     """Restore edited files to their originals and delete files the plan created
-    (a never-existed file has no original, so it must be removed, not rewritten)."""
+    (a never-existed file has no original, so it must be removed, not rewritten).
+
+    A created file is DOUBLE-TRACKED: several planners record its ``originals``
+    entry as ``""`` (generate_usage_doc, scaffold_from_protocol, wire_exports,
+    pin_doctest, …). So restore ONLY pre-existing files — those in ``originals``
+    but NOT ``created`` — and delete EVERY created file regardless of its
+    ``originals`` membership; otherwise a created file would be rewritten empty
+    (step 1) and then skipped by the delete (step 2), leaking a 0-byte artifact."""
+    made = set(created)
     for rel, original in plan.originals.items():
-        (root / rel).write_text(original, encoding="utf-8")
+        if rel not in made:  # only un-edit files that existed before the plan
+            (root / rel).write_text(original, encoding="utf-8")
     for rel in created:
-        if rel not in plan.originals:
+        if (root / rel).exists():
             try:
                 (root / rel).unlink()
             except OSError:
