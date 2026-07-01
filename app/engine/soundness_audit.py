@@ -127,7 +127,7 @@ def strategy_completeness(names) -> dict[str, str]:
         raise ValueError(
             "soundness manifest is stale: objective(s) without a declared "
             f"soundness strategy {missing} — add them to SOUNDNESS_STRATEGY in "
-            "app/engine/soundness_audit.py (state HOW the transform is sound)."
+            "app/engine/soundness_manifest.py (state HOW the transform is sound)."
         )
     return {n: SOUNDNESS_STRATEGY[n] for n in names}
 
