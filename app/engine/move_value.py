@@ -179,7 +179,8 @@ def move_value(operator: str) -> float:
     return OPERATOR_VALUE.get(operator, DEFAULT_VALUE)
 
 
-def scored_move_value(operator: str, memory: Any | None = None) -> float:
+def scored_move_value(operator: str, memory: Any | None = None,
+                      realization: dict[str, float] | None = None) -> float:
     """:func:`move_value` scaled by the operator's MEASURED reliability on this
     project — the value analogue of the objective board's Wilson reliability.
 
@@ -188,9 +189,24 @@ def scored_move_value(operator: str, memory: Any | None = None) -> float:
     ``1.0`` for too-few samples). With no memory — a fresh project, or a unit
     test driving the value directly — the factor is ``1.0``, so the result is
     byte-identical to the static table. Clamped to ``1.0`` and rounded for a
-    stable, total ordering."""
+    stable, total ordering.
+
+    A SUBORDINATE, demote-only VALUE-REALIZATION multiplier layers on when a
+    precomputed ``realization`` factors map is passed in (built by
+    ``value_reliability.operator_realization_factors`` from the proof-of-fix
+    history — passed as DATA, never imported here, so this stays a pure leaf): it
+    corrects the static prior by how much value an operator PROVENLY realized
+    (verified-and-held) here. Each factor is in ``[_REALIZATION_FLOOR, 1.0]`` — at
+    most neutral, at worst damped — so it can only DEMOTE an over-promiser and
+    never inflate selection off unverified work. With no map (a fresh repo / no
+    proofs) or an untracked operator the factor is ``1.0`` too, so the result
+    stays byte-identical to the static table. Both multipliers are
+    neutral-default; the product is re-clamped to ``1.0`` and rounded, so the
+    ``[0,1]`` range and determinism are unchanged."""
     base = move_value(operator)
     factor = memory.feasibility_factor(operator) if memory is not None else 1.0
+    if realization and operator:
+        factor *= realization.get(operator, 1.0)
     return round(min(1.0, base * factor), 4)
 
 
