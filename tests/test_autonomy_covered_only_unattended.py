@@ -1,0 +1,234 @@
+"""UNATTENDED runs force covered-only verification; ``--allow-weak`` is an
+ATTENDED-only, risk-explicit opt-out.
+
+The regression this pins (rank 9 — the second minimal autonomy-ENABLER, after
+the register-time soundness lock): once the hands-off ``--evolve`` loop / daemon
+is wired, a green suite that merely IMPORTS a module (WEAK / uncovered) must NEVER
+be allowed to land a Tier-1 behaviour-change move unattended — that is exactly
+where unattended autonomy becomes a SILENT regression. So:
+
+  * UNATTENDED (``APEX_DAEMON`` set OR ``--evolve N`` active) ⇒ ``covered_only``
+    is forced True UNCONDITIONALLY, and ``--allow-weak`` is REFUSED (ignored);
+  * ATTENDED (both absent) ⇒ ``--allow-weak`` still relaxes to land weak moves
+    (unchanged), and the DEFAULT attended gate is BYTE-IDENTICAL to the literal
+    pre-change expression ``not getattr(args, "allow_weak", False)``.
+
+Pure/deterministic: :meth:`AutonomyPolicy.resolve_covered_only` takes
+``unattended`` as a plain bool (no I/O); the CLI helpers read only the env +
+parsed flags (no clock/random). The end-to-end act-path test SPIES the
+``covered_only`` fed to ``apply_plan`` — nothing real is planned/applied and no
+repo is touched.
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import app.cli_autonomy as m
+from app.policies.autonomy_policy import AutonomyDecision, AutonomyPolicy
+
+
+# --------------------------------------------------------------------------- #
+# AutonomyPolicy.resolve_covered_only — the pure single source of truth.       #
+# --------------------------------------------------------------------------- #
+def test_resolve_attended_honours_allow_weak():
+    # ATTENDED: covered-only unless --allow-weak opts back into land-everything.
+    assert AutonomyPolicy.resolve_covered_only(allow_weak=False, unattended=False) is True
+    assert AutonomyPolicy.resolve_covered_only(allow_weak=True, unattended=False) is False
+
+
+def test_resolve_unattended_forces_covered_only_ignoring_allow_weak():
+    # UNATTENDED: covered-only is forced True REGARDLESS of --allow-weak.
+    assert AutonomyPolicy.resolve_covered_only(allow_weak=False, unattended=True) is True
+    assert AutonomyPolicy.resolve_covered_only(allow_weak=True, unattended=True) is True
+
+
+def test_resolve_attended_matches_prechange_expression():
+    """Non-tautological byte-identity anchor: the ATTENDED result equals the
+    LITERAL pre-change gate ``not allow_weak`` for BOTH flag values, so the
+    attended path is byte-for-byte what it computed before this feature."""
+    for allow_weak in (False, True):
+        assert (
+            AutonomyPolicy.resolve_covered_only(allow_weak=allow_weak, unattended=False)
+            == (not allow_weak)
+        )
+
+
+# --------------------------------------------------------------------------- #
+# _auto_unattended — env (APEX_DAEMON) OR --evolve N>=1 detection.              #
+# --------------------------------------------------------------------------- #
+def _ns(**over) -> argparse.Namespace:
+    base = dict(allow_weak=False, evolve=0)
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_unattended_false_when_attended(monkeypatch):
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    assert m._auto_unattended(_ns()) is False
+
+
+def test_unattended_true_when_daemon_env_set(monkeypatch):
+    monkeypatch.setenv("APEX_DAEMON", "1")
+    assert m._auto_unattended(_ns()) is True
+
+
+def test_unattended_true_when_evolve_active(monkeypatch):
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    assert m._auto_unattended(_ns(evolve=3)) is True
+    # --evolve 0 (the default single-pass) is NOT unattended.
+    assert m._auto_unattended(_ns(evolve=0)) is False
+
+
+def test_unattended_missing_evolve_attr_is_attended(monkeypatch):
+    """A namespace WITHOUT ``evolve`` (defensive ``getattr`` default) and no env
+    reads as attended — never raising."""
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    assert m._auto_unattended(argparse.Namespace(allow_weak=True)) is False
+
+
+def test_unattended_empty_env_value_is_attended(monkeypatch):
+    """An empty ``APEX_DAEMON`` (falsy) does not trip the guard — only a set,
+    non-empty value marks the daemon context."""
+    monkeypatch.setenv("APEX_DAEMON", "")
+    assert m._auto_unattended(_ns()) is False
+
+
+# --------------------------------------------------------------------------- #
+# _auto_covered_only — the CLI helper wiring the policy to the parsed flags.    #
+# --------------------------------------------------------------------------- #
+def test_covered_only_attended_default_true(monkeypatch):
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    assert m._auto_covered_only(_ns()) is True
+
+
+def test_covered_only_attended_allow_weak_false(monkeypatch):
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    assert m._auto_covered_only(_ns(allow_weak=True)) is False
+
+
+def test_covered_only_unattended_daemon_refuses_allow_weak(monkeypatch):
+    monkeypatch.setenv("APEX_DAEMON", "1")
+    # --allow-weak is REFUSED under the daemon: still covered-only.
+    assert m._auto_covered_only(_ns(allow_weak=True)) is True
+
+
+def test_covered_only_unattended_evolve_refuses_allow_weak(monkeypatch):
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    assert m._auto_covered_only(_ns(allow_weak=True, evolve=2)) is True
+
+
+def test_covered_only_attended_matches_prechange_expression(monkeypatch):
+    """The attended CLI helper equals the literal pre-change expression for both
+    flag values — the byte-identity proof at the call-site layer."""
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    for allow_weak in (False, True):
+        args = _ns(allow_weak=allow_weak)
+        assert m._auto_covered_only(args) == (not getattr(args, "allow_weak", False))
+
+
+# --------------------------------------------------------------------------- #
+# End-to-end through the act path: the covered_only fed to apply_plan.          #
+# --------------------------------------------------------------------------- #
+def _act_ns(tmp_path: Path, **over) -> argparse.Namespace:
+    base = dict(
+        goal="", target=str(tmp_path), apply=True, allow_weak=False,
+        recommend=False, mode=None, commit=False, deep=False, no_verify=False,
+        max_apply=0, evolve=0, json=False, out="")
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def _spy_covered_only(monkeypatch, tmp_path: Path) -> dict:
+    """Stub everything cmd_auto's act path touches and capture the
+    ``covered_only`` value handed to ``apply_plan``. No real plan/apply/repo."""
+    captured: dict = {}
+
+    class _Plan:
+        objective = "auto"
+        project_root = str(tmp_path)
+        mode = "supervised"
+        steps: list = []
+        stats = {"executable_steps": 1, "total_steps": 1}
+
+    def _fake_plan(self, report, mode="report", project_root="", **kw):
+        return _Plan()
+
+    def _fake_apply(self, plan, root_, mode="supervised", verify=True,
+                    max_apply=None, commit=False, covered_only=False):
+        captured["covered_only"] = covered_only
+        return {"results": [{"applied": True}], "applied": 1}
+
+    from app.engine.idea_action_bridge import IdeaActionBridge
+
+    monkeypatch.setattr(IdeaActionBridge, "plan_roadmap", _fake_plan)
+    monkeypatch.setattr(IdeaActionBridge, "apply_plan", _fake_apply)
+    monkeypatch.setattr(
+        "app.engine.idea_action_bridge.render_maintenance_markdown",
+        lambda summary, target, objective="": "# Maintenance")
+    monkeypatch.setattr(m, "_working_tree_clean", lambda target: True)
+    # Force the act decision so the act path runs regardless of the fixture.
+    monkeypatch.setattr(
+        "app.policies.autonomy_policy.AutonomyPolicy",
+        lambda *a, **k: type("P", (), {
+            "decide": lambda self, **kw: AutonomyDecision(
+                True, "supervised", "clean tree + fixes")})())
+    monkeypatch.setattr("app.engine.idea_memory.IdeaMemory.learn_from",
+                        staticmethod(lambda summary, target: None))
+    monkeypatch.setattr("app.engine.signal_trends.SignalTrends",
+                        lambda root_: type("S", (), {
+                            "record": lambda self, p: None})())
+    monkeypatch.setattr("app.engine.proof_of_fix.build_proof",
+                        lambda summary, root_, objective="": {"p": True})
+    monkeypatch.setattr("app.engine.proof_of_fix.write_proof",
+                        lambda proof, root_: str(Path(root_) / ".apex" / "p.json"))
+    # A minimal engine/roadmap/shape so the narrative prelude doesn't do real work.
+    monkeypatch.setattr("app.engine.idea_permutation.IdeaPermutationEngine",
+                        lambda *a, **k: type("E", (), {
+                            "last_profile": None,
+                            "run": lambda self, objective=None: {}})())
+    monkeypatch.setattr("app.plugins.registry.PluginRegistry",
+                        lambda *a, **k: type("PR", (), {
+                            "load_all": lambda self: None,
+                            "idea_operators": lambda self: []})())
+    monkeypatch.setattr("app.engine.idea_roadmap.RoadmapSynthesizer",
+                        lambda *a, **k: type("R", (), {
+                            "build": lambda self, report: type("RM", (), {
+                                "quick_wins": []})()})())
+    monkeypatch.setattr("app.engine.idea_tree_shape.analyze_tree_shape",
+                        lambda report: type("SH", (), {
+                            "observations": [], "heaviest_module": "",
+                            "heaviest_loc": 0, "total_ideas": 1,
+                            "distinct_subjects": 1})())
+    return captured
+
+
+def test_act_attended_default_feeds_covered_only_true(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    captured = _spy_covered_only(monkeypatch, tmp_path)
+    rc = m.cmd_auto(_act_ns(tmp_path))
+    capsys.readouterr()
+    assert rc == 0
+    assert captured["covered_only"] is True
+
+
+def test_act_attended_allow_weak_feeds_covered_only_false(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    captured = _spy_covered_only(monkeypatch, tmp_path)
+    rc = m.cmd_auto(_act_ns(tmp_path, allow_weak=True))
+    capsys.readouterr()
+    assert rc == 0
+    # ATTENDED --allow-weak still relaxes the gate (unchanged behaviour).
+    assert captured["covered_only"] is False
+
+
+def test_act_unattended_daemon_forces_covered_only_despite_allow_weak(
+        tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("APEX_DAEMON", "1")
+    captured = _spy_covered_only(monkeypatch, tmp_path)
+    # Even with --allow-weak, the daemon context refuses it: covered-only forced.
+    rc = m.cmd_auto(_act_ns(tmp_path, allow_weak=True))
+    capsys.readouterr()
+    assert rc == 0
+    assert captured["covered_only"] is True

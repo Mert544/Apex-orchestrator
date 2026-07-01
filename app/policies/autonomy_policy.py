@@ -82,3 +82,32 @@ class AutonomyPolicy:
             f"clean tree + {executable_steps} safe, test-verified fix(es) — applying "
             "autonomously (not committed; review with `git diff`)",
         )
+
+    @staticmethod
+    def resolve_covered_only(*, allow_weak: bool, unattended: bool) -> bool:
+        """Alias so callers can reach the rule as
+        ``AutonomyPolicy.resolve_covered_only`` (the policy OWNS it). Delegates to
+        the module-level :func:`resolve_covered_only`, which the CLI act path
+        calls directly so the gate is NOT coupled to the ``AutonomyPolicy`` class
+        symbol some tests monkeypatch to stub ``decide``."""
+        return resolve_covered_only(allow_weak=allow_weak, unattended=unattended)
+
+
+def resolve_covered_only(*, allow_weak: bool, unattended: bool) -> bool:
+    """The effective ``covered_only`` verification gate for an apply.
+
+    COVERED-ONLY lands only moves a test actually EXERCISES (covered ⇒ verified)
+    and PREVIEWS a green-but-unreferencing (WEAK) move — a green suite that merely
+    IMPORTS a module can't vouch for a behaviour change there. ``--allow-weak`` is
+    the risk-explicit opt-out that lands weak moves too.
+
+    UNATTENDED (daemon / ``--evolve`` loop) forces covered-only UNCONDITIONALLY
+    and REFUSES ``--allow-weak``: weak verification is exactly where an unattended
+    loop turns into a SILENT regression risk (a Tier-1 behaviour change landed on
+    a suite that never ran the code), so the opt-out is honoured ONLY in ATTENDED
+    CLI mode, where a human is reviewing the diff. Pure (no I/O) so the caller
+    supplies ``unattended``; ATTENDED is ``not allow_weak`` — byte-identical to
+    the historical gate."""
+    if unattended:
+        return True
+    return not allow_weak

@@ -347,6 +347,41 @@ def _auto_synthesis_kwargs(args) -> dict:
     return kwargs
 
 
+def _auto_unattended(args) -> bool:
+    """True when ``apex auto`` is running UNATTENDED — no human at the diff.
+
+    Two signals: the ``APEX_DAEMON`` env var (the periodic daemon exports it
+    before it shells ``apex auto``) OR an active ``--evolve N`` (N>=1) loop. In
+    either, Apex applies without a person reviewing each landing, so the SAFE
+    verification gate must not be relaxable. Deterministic (a pure read of the
+    env + parsed flags — no clock/random); ATTENDED (both absent) ⇒ False, so the
+    covered-only decision below is byte-identical to today when attended."""
+    import os
+
+    if os.environ.get("APEX_DAEMON"):
+        return True
+    return int(getattr(args, "evolve", 0) or 0) >= 1
+
+
+def _auto_covered_only(args) -> bool:
+    """The effective ``covered_only`` gate the act path feeds ``apply_plan``.
+
+    Delegates to :func:`resolve_covered_only` (the policy's single source of
+    truth — also exposed as ``AutonomyPolicy.resolve_covered_only``): ATTENDED
+    honours ``--allow-weak`` (``not allow_weak`` — the historical gate,
+    byte-identical); UNATTENDED (daemon / ``--evolve``) forces covered-only and
+    REFUSES ``--allow-weak``, so a green suite that merely imports a module can
+    never land a Tier-1 behaviour change without a human reviewing it. Calls the
+    plain function (not the class) so the gate is decoupled from the
+    ``AutonomyPolicy`` symbol the decision path monkeypatches."""
+    from app.policies.autonomy_policy import resolve_covered_only
+
+    return resolve_covered_only(
+        allow_weak=getattr(args, "allow_weak", False),
+        unattended=_auto_unattended(args),
+    )
+
+
 def _auto_dream_boost(target) -> dict:
     """The dream-confluence priority boost `apex auto` threads into
     ``plan_roadmap`` so the value board AMPLIFIES the organism's OWN overnight
@@ -667,7 +702,10 @@ def _auto_act(args, target, goal, bridge, engine, report, mode,
                                **_auto_synthesis_kwargs(args))
     available = plan.stats.get("executable_steps", 0)
     cap = (getattr(args, "max_apply", 0) or 8)
-    covered_only = not getattr(args, "allow_weak", False)
+    # SAFE gate: covered-only unless attended + --allow-weak. Forced covered-only
+    # (--allow-weak refused) when UNATTENDED (daemon / --evolve). Attended default
+    # is byte-identical to the prior ``not getattr(args, "allow_weak", False)``.
+    covered_only = _auto_covered_only(args)
     summary = bridge.apply_plan(
         plan, str(target), mode=mode,
         verify=not getattr(args, "no_verify", False),
