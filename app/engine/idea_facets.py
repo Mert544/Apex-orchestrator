@@ -469,6 +469,15 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                              # widen an existing `__future__` import). Appended, so
                              # the originals still lead and emit in their order.
                              "annotations to make lazy with a future import",
+                             # added: a decorator-factory's inner wrapper that calls its
+                             # outer's single parameter but carries no `functools.wraps` —
+                             # the add-functools-wraps objective lands the one-line
+                             # `@functools.wraps(<callee>)` fix (metadata-only:
+                             # __name__/__doc__/__module__/__qualname__/__dict__ copied,
+                             # __wrapped__ set — zero control-flow change), refusing an
+                             # already-wrapped wrapper or an ambiguous callee. Appended, so
+                             # the originals still lead and emit in their order.
+                             "the wrapper missing functools.wraps",
                              # added: a leaf module with no `__all__` — wire-module-exports
                              # declares `__all__` == the current default star set
                              # (behaviour-identical). Appended, originals still lead.

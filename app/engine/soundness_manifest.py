@@ -63,6 +63,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "add-slots": "behavior-identical-storage+whole-project-closed-attribute-superset-proof-or-refuse",
     "dataclassify": "suite-catches-runtime+behavior-preserving-rewrite",
     "add-from-future-annotations": "behavior-identical-future-import",
+    "add-functools-wraps": "behavior-identical(metadata-only)+decorator-closure-shape-proof+refuse-already-wrapped/ambiguous-callee",
     "infer-type-hints": "behavior-identical-annotation-only",
     "annotate-self-returns": "behavior-identical-annotation-only+self/cls-class-bound-forward-ref",
     "document-signature": "behavior-identical-docstring-only",

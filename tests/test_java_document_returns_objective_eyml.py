@@ -895,7 +895,7 @@ def test_objective_total_is_ninety_one():
 
     # 91 after java-document-returns (the Java mirror of document-returns), completing the
     # Java Javadoc triad (@param + @throws + @return).
-    assert len(set(available_objectives())) == 92
+    assert len(set(available_objectives())) == 93
 
 
 # --- PARITY ROW 1: move_value tier (the doc-surface 0.66 tier) ----------------
@@ -927,7 +927,7 @@ def test_parity_concrete_count_is_forty_six():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 47  # java-final-parameter (47th CONCRETE)
+    assert len(buckets["CONCRETE"]) == 48  # add-functools-wraps (48th CONCRETE)
 
 
 # --- PARITY ROW 3: soundness-strategy manifest --------------------------------

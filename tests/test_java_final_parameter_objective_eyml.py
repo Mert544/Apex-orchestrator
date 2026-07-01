@@ -469,11 +469,12 @@ def test_objective_spec_is_callable_and_flagged():
     assert spec.scope_verify is False  # runtime-noop modifier add; no red-baseline veto
 
 
-def test_objective_total_is_ninety_two():
+def test_objective_total_is_ninety_three():
     from app.engine.objective_compiler import available_objectives
 
-    # 92 after java-final-parameter (java-finalize-field's parameter-level sibling).
-    assert len(set(available_objectives())) == 92
+    # 92 after java-final-parameter (java-finalize-field's parameter-level
+    # sibling); 93 after add-functools-wraps landed on top.
+    assert len(set(available_objectives())) == 93
 
 
 # --- PARITY ROW 1: move_value tier (matches java-finalize-field's runtime-noop tier) --
@@ -501,12 +502,12 @@ def test_parity_manifest_classifies_concrete():
     assert manifest_subset_of_registry() == []  # no stale manifest name
 
 
-def test_parity_concrete_count_is_forty_seven():
+def test_parity_concrete_count_is_forty_eight():
     from app.engine.north_star_audit import classify_objectives
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 47  # java-final-parameter (47th CONCRETE)
+    assert len(buckets["CONCRETE"]) == 48  # add-functools-wraps (48th CONCRETE)
 
 
 # --- PARITY ROW 3: soundness-strategy manifest --------------------------------

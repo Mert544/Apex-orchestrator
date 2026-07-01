@@ -711,8 +711,8 @@ def test_objective_count_pins():
     from app.engine.objective_compiler import available_objectives
 
     names = available_objectives()
-    assert len(set(names)) == 92  # 92 after java-final-parameter
-    assert len(classify_objectives(names)["CONCRETE"]) == 47  # java-final-parameter (47th CONCRETE)
+    assert len(set(names)) == 93  # 93 after add-functools-wraps
+    assert len(classify_objectives(names)["CONCRETE"]) == 48  # add-functools-wraps (48th CONCRETE)
 
 
 # --- the new soundness-corpus fixture refuses (the durable denetçi) -----------

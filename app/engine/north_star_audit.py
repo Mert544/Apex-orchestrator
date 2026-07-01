@@ -83,6 +83,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "freeze-dataclass",
         "add-slots",
         "add-from-future-annotations",
+        "add-functools-wraps",
         "generate-usage-doc",
         "document-signature",
         "document-raises",

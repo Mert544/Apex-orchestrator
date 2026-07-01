@@ -795,6 +795,21 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # it), so its insertion order is free.
     "annotations to make lazy with a future import": "add-from-future-annotations",
 
+    # Missing decorator metadata: the document lens's "signatures and types" aspect
+    # names a decorator-factory's inner WRAPPER function that calls its outer's
+    # single parameter (the wrapped callee) but carries no `functools.wraps` yet —
+    # so every decorated function silently loses its identity (`__name__`,
+    # `__doc__`, introspection). The add-functools-wraps objective LANDS exactly
+    # that one-line fix (`@functools.wraps(<callee>)`), metadata-only and
+    # BEHAVIOUR-IDENTICAL (zero control-flow/return/exception change) — refusing an
+    # already-wrapped wrapper, an ambiguous callee (more than one outer parameter
+    # called inside the wrapper), or a callee name reassigned/shadowed before the
+    # wrapper closes over it. So the "wrapper missing functools.wraps" facet
+    # becomes the campaign that restores its identity. Its phrasing is not a
+    # substring of any other key (nor any of them of it), so its insertion order is
+    # free.
+    "the wrapper missing functools.wraps": "add-functools-wraps",
+
     # Unimplemented protocol: the generalize lens's "the shared interface to
     # extract" aspect names a ``typing.Protocol`` the project declares but has NO
     # concrete implementer for — the interface is shelf-ware until a class

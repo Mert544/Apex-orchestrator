@@ -417,6 +417,14 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # a computed surface. sort-dunder-all refuses it for the same reason, so the
     # fixture also pins that sibling boundary.
     "dynamic_dunder_all": frozenset({"dedup-dunder-all"}),
+    # The add-functools-wraps AMBIGUOUS-CALLEE trap: a decorator-factory wrapper
+    # that calls BOTH of its outer's parameters (``primary(*a)`` AND
+    # ``fallback(*a)``), so no single callee is provable for
+    # ``@functools.wraps(<callee>)``. add-functools-wraps MUST refuse the whole
+    # wrapper — landing wraps on an arbitrarily-picked one of the two would be a
+    # metadata lie about the wrapper's true identity, not a behaviour change a
+    # green suite could ever catch (functools.wraps changes no return value).
+    "functools_wraps_ambiguous_callee": frozenset({"add-functools-wraps"}),
     "syntax_error": frozenset(),  # universal-refuse rule covers every objective
     "already_applied": frozenset(
         {"wire-module-exports", "add-final", "freeze-dataclass"}),

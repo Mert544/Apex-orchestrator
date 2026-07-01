@@ -109,6 +109,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "enforce_enum_unique": 0.34,     # lock an all-distinct Enum with @enum.unique
     "complete_match_exhaustiveness": 0.34,   # fill a closed-set dispatch's missing arm with a loud exhaustiveness sentinel
     "add_from_future_annotations": 0.32,  # lazy annotations via a __future__ import
+    "add_functools_wraps": 0.32,     # @functools.wraps(callee) on a decorator-factory wrapper missing it (metadata-only, behaviour-identical — same tier as add_from_future_annotations)
     "modernize_typing": 0.42,        # land PEP 585/604 annotation modernization (typing.List[x]->list[x], Optional[X]->X | None) — future-import-gated; a real annotation rewrite, sits with the annotation/structural modernizers above the bare-idiom tidies
     # --- TIER 3 — surface tidy / idiom (lowest buyer value; pure ceremony) ---
     "modernize": 0.25,               # == None -> is None, dead f-prefix, dict()/list()

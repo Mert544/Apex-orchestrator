@@ -90,6 +90,12 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("anotate", ("infer-type-hints", "annotate-self-returns", "pin-return-type")),
     ("tip belirteç", ("infer-type-hints", "annotate-self-returns", "pin-return-type")),
     ("tip ekle", ("infer-type-hints", "pin-return-type")),
+    # --- decorator metadata -----------------------------------------------------
+    ("functools.wraps", ("add-functools-wraps",)),
+    ("functools wraps", ("add-functools-wraps",)),
+    ("decorator wrapper", ("add-functools-wraps",)),
+    ("preserve function metadata", ("add-functools-wraps",)),
+    ("wrapper loses its name", ("add-functools-wraps",)),
     # --- docstrings / documentation -------------------------------------------
     # Docstring SUBTYPES first, by their section noun — so "document the yields"
     # leads with document-yields (not document-param). A filler word ("the") breaks
