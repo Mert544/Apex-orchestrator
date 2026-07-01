@@ -103,6 +103,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "add-final",
         "java-finalize-field",
         "java-final-parameter",
+        "java-final-local",
         "java-document-throws",
         "java-document-param",
         "java-document-returns",

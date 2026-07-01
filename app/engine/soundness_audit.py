@@ -348,6 +348,14 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # reassignment and omits the parameter from final-param-targets, never sealing
     # a falsely-`final` parameter.
     "java_reassigned_param": frozenset({"java-final-parameter"}),
+    # The Java REASSIGNED-LOCAL trap (the local-variable analogue of
+    # java_reassigned_param): a local variable declared as a direct block statement
+    # that LOOKS never-reassigned from its declaration alone (`int running = 0;`) but
+    # is REASSIGNED by a plain `=` LATER in its OWN method body — so `final` would be a
+    # COMPILE ERROR, not a runtime no-op. java-final-local MUST refuse it: the
+    # per-method assignment scan sees the reassignment and omits the local from
+    # final-local-targets, never sealing a falsely-`final` local.
+    "java_reassigned_local": frozenset({"java-final-local"}),
     # The raise-from del/unbound trap: a fixable ``raise X(...)`` in an ``except E as
     # err:`` handler that ``del``\s ``err`` BEFORE the raise. Appending ``from err``
     # would raise ``UnboundLocalError`` (the WRONG exception type + changed control

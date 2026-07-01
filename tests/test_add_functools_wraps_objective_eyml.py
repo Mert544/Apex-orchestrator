@@ -345,10 +345,10 @@ def test_objective_spec_is_callable():
     assert callable(spec.fitness) and callable(spec.moves)
 
 
-def test_objective_total_is_ninety_three():
+def test_objective_total_is_ninety_four():
     from app.engine.objective_compiler import available_objectives
 
-    assert len(set(available_objectives())) == 93
+    assert len(set(available_objectives())) == 94
 
 
 def test_objective_is_reachable_from_a_facet():
@@ -388,12 +388,12 @@ def test_manifest_classes_it_concrete_and_reverse_tripwire_clean():
     assert manifest_subset_of_registry() == []
 
 
-def test_parity_concrete_count_is_forty_eight():
+def test_parity_concrete_count_is_forty_nine():
     from app.engine.north_star_audit import classify_objectives
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 48  # add-functools-wraps (48th CONCRETE)
+    assert len(buckets["CONCRETE"]) == 49  # java-final-local (49th CONCRETE)
 
 
 def test_facet_phrase_lives_in_the_signatures_and_types_ladder():

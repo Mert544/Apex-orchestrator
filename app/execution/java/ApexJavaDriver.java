@@ -132,6 +132,44 @@
 //                          enhanced-`for` variable, and a `catch` variable are OUT OF
 //                          SCOPE for this first cut (never touched, never reported).
 //                          Exit 2 (REFUSE) on ANY parse error diagnostic.
+//   final-local-targets <file> -> JSON [{method, name, insertOffset}]: every LOCAL
+//                          VARIABLE declared as a DIRECT STATEMENT of a method/
+//                          constructor body block (`BlockTree.getStatements()` holds a
+//                          `VariableTree`) that is NEVER reassigned anywhere in that
+//                          SAME method's OWN body — a PER-METHOD scan, the exact spine
+//                          `final-param-targets` uses, because a local's entire
+//                          assignment surface is the stack frame of its own method
+//                          (never another method, never reflection — no other code can
+//                          write a Java local). `insertOffset` is the byte offset just
+//                          before the local's own type token where splicing `final `
+//                          makes it read `final <Type> <name> = ...`. `method` is the
+//                          enclosing method's fact-only summary name (a constructor's
+//                          synthetic `<init>` rendered as the enclosing class simple
+//                          name, exactly as `final-param-targets`/`doc-targets` do).
+//                          REFUSES (omits) a local that is: already `final`; reassigned
+//                          anywhere in the method body (a plain `=`, a compound `+=`, or
+//                          a `++`/`--`); has NO initializer (`getInitializer()` is null
+//                          — a bare `int x;` split from its assignment would need
+//                          definite-assignment analysis the parse-only oracle cannot do,
+//                          so it is refused rather than guessed). SCOPE BOUNDARY (an
+//                          EXPLICIT, TESTED decision, not an accidental byproduct): ONLY
+//                          a plain `VariableTree` that is a DIRECT statement of a
+//                          `BlockTree` is considered — a `for`-loop init variable
+//                          (`ForLoopTree.getInitializer()`), an enhanced-`for` variable
+//                          (`EnhancedForLoopTree.getVariable()`), and a
+//                          try-with-resources resource (`TryTree.getResources()`) are
+//                          NOT block statements, so scanning `getStatements()` EXCLUDES
+//                          them BY OMISSION. A variable captured by a lambda or an
+//                          anonymous inner class IS a block statement, so it is refused
+//                          EXPLICITLY (a per-body capture scan over every lambda /
+//                          anonymous-class body) rather than by omission — such a local
+//                          is already effectively-final and would compile if sealed, but
+//                          this first cut declines to reason about capture semantics
+//                          (over-refusal is safe: it never seals a variable it should
+//                          not). This is the local-scope analogue of
+//                          `final-param-targets`, one step deeper into the same
+//                          never-reassigned proof.
+//                          Exit 2 (REFUSE) on ANY parse error diagnostic.
 //
 // Determinism: no clock, no randomness; types/fields/methods are SORTED, targets are
 // reported in source order; JSON keys are emitted in a fixed order. `insertOffset`
@@ -146,11 +184,14 @@ import com.sun.source.tree.CompoundAssignmentTree;
 import com.sun.source.tree.ExpressionTree;
 import com.sun.source.tree.IdentifierTree;
 import com.sun.source.tree.ImportTree;
+import com.sun.source.tree.LambdaExpressionTree;
 import com.sun.source.tree.MemberSelectTree;
 import com.sun.source.tree.MethodInvocationTree;
 import com.sun.source.tree.MethodTree;
 import com.sun.source.tree.ModifiersTree;
+import com.sun.source.tree.NewClassTree;
 import com.sun.source.tree.PrimitiveTypeTree;
+import com.sun.source.tree.StatementTree;
 import com.sun.source.tree.Tree;
 import com.sun.source.tree.UnaryTree;
 import com.sun.source.tree.VariableTree;
@@ -561,6 +602,55 @@ public final class ApexJavaDriver {
         } else if (target instanceof MemberSelectTree) {
             assigned.add(String.valueOf(((MemberSelectTree) target).getIdentifier()));
         }
+    }
+
+    /** Every simple identifier NAME referenced anywhere inside a lambda body or an
+     * anonymous-inner-class body within ``root`` — the CAPTURE surface of ``root``'s
+     * own locals. Used ONLY by final-local-targets: a local captured by a lambda /
+     * anonymous inner class is CONSERVATIVELY refused (never sealed), even though a
+     * captured variable is already required to be effectively-final by javac (so
+     * sealing it would in fact compile) — this objective's first cut deliberately
+     * declines to reason about capture semantics, scoping to the locals whose whole
+     * lifetime is a plain block statement. Over-refusal is safe: it never seals a
+     * variable it should not, it only leaves some sound seals on the table. A lambda's
+     * OWN parameters and an anonymous class's OWN declarations are recorded too (a
+     * superset — conservative-by-design; the objective never wants a false ``final``
+     * on a name that also names a captured outer local). */
+    private static Set<String> collectCapturedNames(Tree root) {
+        Set<String> captured = new HashSet<>();
+        new TreeScanner<Void, Void>() {
+            @Override
+            public Void visitLambdaExpression(LambdaExpressionTree node, Void unused) {
+                recordIdentifiers(node.getBody(), captured);
+                return super.visitLambdaExpression(node, unused);
+            }
+
+            @Override
+            public Void visitNewClass(NewClassTree node, Void unused) {
+                // Only an ANONYMOUS inner class (one with a class body) captures
+                // enclosing locals; a plain `new Foo(...)` does not.
+                if (node.getClassBody() != null) {
+                    recordIdentifiers(node.getClassBody(), captured);
+                }
+                return super.visitNewClass(node, unused);
+            }
+        }.scan(root, null);
+        return captured;
+    }
+
+    /** Record every simple identifier NAME appearing anywhere in ``subtree`` (a lambda
+     * body or an anonymous-class body) — the conservative capture set. */
+    private static void recordIdentifiers(Tree subtree, Set<String> names) {
+        if (subtree == null) {
+            return;
+        }
+        new TreeScanner<Void, Void>() {
+            @Override
+            public Void visitIdentifier(IdentifierTree node, Void unused) {
+                names.add(String.valueOf(node.getName()));
+                return super.visitIdentifier(node, unused);
+            }
+        }.scan(subtree, null);
     }
 
     /** The simple field names declared as one of SEVERAL declarators in a single
@@ -1002,6 +1092,130 @@ public final class ApexJavaDriver {
         return -1;
     }
 
+    // --- final-local-targets: never-reassigned local variable declarations ----
+
+    private static void cmdFinalLocalTargets(String file) {
+        Parsed p = parseOrRefuse(file);
+        List<String> orderedMethods = new ArrayList<>();
+        List<String> orderedNames = new ArrayList<>();
+        List<Long> orderedOffsets = new ArrayList<>();
+        collectFinalLocalTargets(p, orderedMethods, orderedNames, orderedOffsets);
+        // Emit in source order (the method-declaration / statement order the scanner
+        // visits — a per-method scan, exactly as final-param-targets).
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < orderedNames.size(); i++) {
+            if (i > 0) {
+                sb.append(",");
+            }
+            sb.append("{\"method\":");
+            appendJsonString(sb, orderedMethods.get(i));
+            sb.append(",\"name\":");
+            appendJsonString(sb, orderedNames.get(i));
+            sb.append(",\"insertOffset\":").append(orderedOffsets.get(i)).append("}");
+        }
+        sb.append("]");
+        System.out.print(sb);
+    }
+
+    /** Every method/constructor's never-reassigned DIRECT-BLOCK-STATEMENT local
+     * variables, scanned ONE method at a time (the exact spine
+     * `collectFinalParamTargets` uses): a local's ENTIRE assignment surface is its own
+     * method's body (no other code — not another method, not reflection — can write a
+     * Java local), so a per-method scan is both sufficient and sound. A TreePathScanner
+     * is used only to get each method's TreePath for the fact-only summary name; the
+     * actual work is per-``MethodTree``. */
+    private static void collectFinalLocalTargets(Parsed p, List<String> methods,
+                                                 List<String> names, List<Long> offsets) {
+        new TreePathScanner<Void, Void>() {
+            @Override
+            public Void visitMethod(MethodTree node, Void unused) {
+                considerFinalLocalMethod(node, getCurrentPath(), p, methods, names, offsets);
+                return super.visitMethod(node, unused);
+            }
+        }.scan(p.unit, null);
+    }
+
+    private static void considerFinalLocalMethod(MethodTree method, TreePath path, Parsed p,
+                                                 List<String> methods, List<String> names,
+                                                 List<Long> offsets) {
+        BlockTree body = method.getBody();
+        // REFUSE the WHOLE method: an abstract/interface method or a native method has
+        // NO body (`getBody()` is null) — nothing to scan, so it declares no locals.
+        if (body == null) {
+            return;
+        }
+        Set<String> reassigned = collectAssignedNames(body);
+        Set<String> captured = collectCapturedNames(body);
+        String summary = summaryName(method, path);
+        // SCOPE BOUNDARY (explicit, not accidental): iterate ONLY the DIRECT statements
+        // of the body block. A for-loop init var (ForLoopTree), an enhanced-for var
+        // (EnhancedForLoopTree), and a try-with-resources resource (TryTree.getResources())
+        // are NOT block statements, so they are excluded here BY OMISSION — a plain
+        // `VariableTree` is the only statement shape considered. A local captured by a
+        // lambda / anonymous inner class IS a block statement, so it is refused
+        // EXPLICITLY in considerFinalLocal (via `captured`), not by omission.
+        // This deliberately mirrors the parameter scan: only the shape whose whole
+        // assignment surface is provably closed is sealed.
+        for (StatementTree statement : body.getStatements()) {
+            if (statement instanceof VariableTree) {
+                considerFinalLocal((VariableTree) statement, p, reassigned, captured,
+                        summary, methods, names, offsets);
+            }
+        }
+    }
+
+    private static void considerFinalLocal(VariableTree local, Parsed p,
+                                           Set<String> reassigned, Set<String> captured,
+                                           String methodSummary,
+                                           List<String> methods, List<String> names,
+                                           List<Long> offsets) {
+        String name = String.valueOf(local.getName());
+        // REFUSE: already final — nothing to add (the idempotency guard).
+        if (local.getModifiers().getFlags().contains(Modifier.FINAL)) {
+            return;
+        }
+        // REFUSE: no initializer (`int x;` with the assignment split off). Sealing a
+        // definitely-assigned-once split local needs definite-assignment analysis the
+        // parse-only oracle cannot do; scope to the initializer-bearing shape, which
+        // always compiles when sealed — the local analogue of java-finalize-field's
+        // blank-`final` refusal.
+        if (local.getInitializer() == null) {
+            return;
+        }
+        // REFUSE: reassigned anywhere in THIS method's own body (`=`, `+=`, `++`/`--`)
+        // — sealing it `final` would be a COMPILE ERROR, not a runtime no-op.
+        if (reassigned.contains(name)) {
+            return;
+        }
+        // REFUSE (EXPLICIT, conservative): a local captured by a lambda / anonymous
+        // inner class. Such a local is already effectively-final (javac enforces it),
+        // so sealing it WOULD compile — but this first cut deliberately declines to
+        // reason about capture semantics and leaves the seal on the table rather than
+        // risk it. Over-refusal is safe; it never seals a variable it should not.
+        if (captured.contains(name)) {
+            return;
+        }
+        long insert = localInsertOffset(local, p);
+        if (insert < 0) {
+            return;  // an unreadable local span — refuse rather than splice at a guess
+        }
+        methods.add(methodSummary);
+        names.add(name);
+        offsets.add(insert);
+    }
+
+    /** The byte offset of the local's own START (its type token, just past any
+     * annotations — `VariableTree.getStartPosition` via the positions table already
+     * skips leading annotations to the type), or -1 when the span is unreadable.
+     * Splicing `"final "` here reads `final <Type> <name> = ...`. */
+    private static long localInsertOffset(VariableTree local, Parsed p) {
+        long start = p.positions.getStartPosition(p.unit, local);
+        if (start >= 0 && start <= p.source.length()) {
+            return start;
+        }
+        return -1;
+    }
+
     // --- JSON emit (fixed key order, deterministic) --------------------------
 
     private static void appendStringList(StringBuilder sb, List<String> values) {
@@ -1092,9 +1306,14 @@ public final class ApexJavaDriver {
             cmdFinalParamTargets(args[1]);
             return;
         }
+        if (args.length == 2 && "final-local-targets".equals(args[0])) {
+            cmdFinalLocalTargets(args[1]);
+            return;
+        }
         System.err.println("usage: ApexJavaDriver.java parse-verify <file> | "
                 + "final-targets <file> | doc-targets <file> | param-targets <file> | "
-                + "return-targets <file> | final-param-targets <file>");
+                + "return-targets <file> | final-param-targets <file> | "
+                + "final-local-targets <file>");
         System.exit(REFUSE);
     }
 }

@@ -708,6 +708,20 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # finalize"), so its relative order is free.
     "the never-reassigned java method parameter to finalize": "java-final-parameter",
 
+    # A LOCAL Java variable declared as a DIRECT statement of a method body block and
+    # proven never reassigned anywhere in that SAME method's own body: the local-level
+    # sibling of java-final-parameter, one step deeper into the same never-reassigned
+    # proof (a local, like a parameter, is a stack-local whose assignment surface is
+    # closed to its own method body — no reflection/Serializable escape hatch). It seals
+    # such a local with `final` (a RUNTIME no-op, verified by the same re-parse
+    # fact-set-identity check), paying down Checkstyle FinalLocalVariable / SonarQube
+    # S3008. It EXCLUDES a for-loop / enhanced-for / try-with-resources variable (none is
+    # a direct block statement) and a no-initializer split local. Its phrasing shares no
+    # whole key with "the never-reassigned java method parameter to finalize" (in either
+    # direction — "java local variable to finalize" vs "java method parameter to
+    # finalize"), so its relative order is free.
+    "the never-reassigned java local variable to finalize": "java-final-local",
+
     # A Java method that DECLARES a `throws` clause but carries NO Javadoc: the Java
     # sibling of document-raises / document-raises-jsdoc. java-document-throws lands a
     # FRESH Javadoc block with one `@throws <Type>` line per DECLARED checked-exception

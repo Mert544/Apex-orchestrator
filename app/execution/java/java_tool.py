@@ -38,6 +38,7 @@ __all__ = [
     "JavaParamTarget",
     "JavaReturnTarget",
     "JavaFinalParamTarget",
+    "JavaFinalLocalTarget",
     "JavaFacts",
     "DRIVER",
     "final_targets",
@@ -45,6 +46,7 @@ __all__ = [
     "param_targets",
     "return_targets",
     "final_param_targets",
+    "final_local_targets",
     "parse_facts",
     "reparse_facts_identical",
 ]
@@ -140,6 +142,34 @@ class JavaFinalParamTarget:
 
 
 @dataclass(frozen=True)
+class JavaFinalLocalTarget:
+    """One LOCAL VARIABLE declared as a DIRECT STATEMENT of a method/constructor
+    body block that the driver proved is NEVER reassigned anywhere in that SAME
+    method's OWN body, with the byte ``insert_offset`` just before the local's
+    type token where splicing ``"final "`` makes it read
+    ``final <Type> <name> = ...`` — a pure byte-offset insert, not an unparse.
+    ``method`` is the enclosing method's fact-only summary name (a constructor's
+    synthetic ``<init>`` rendered as the enclosing class simple name, exactly as
+    :class:`JavaFinalParamTarget` does). ``name`` is the local's simple name
+    (advisory; the splice uses the offset).
+
+    Like :class:`JavaFinalParamTarget` this is a PER-METHOD scan (a local, like a
+    parameter, is a stack-local whose entire assignment surface is closed to its
+    own method body — no reflection/Serializable escape hatch exists, so no
+    whole-unit refusal is ever needed). It is one step deeper than the parameter
+    scan: the driver considers ONLY a plain ``VariableTree`` that is a direct
+    statement of a ``BlockTree`` AND carries an initializer, so a ``for``-loop
+    init variable, an enhanced-``for`` variable, and a try-with-resources
+    resource are EXCLUDED by omission (they are not block statements), and a
+    no-initializer split local is refused (its definite-assignment cannot be
+    proven by the parse-only oracle)."""
+
+    method: str
+    name: str
+    insert_offset: int
+
+
+@dataclass(frozen=True)
 class JavaFacts:
     """The canonical structural fact-set of a Java source — the sorted declared
     ``types`` (qualified names), ``fields`` (``<Type>.<field>``), and ``methods``
@@ -215,6 +245,31 @@ def final_param_targets(root: Path, rel: str) -> list[JavaFinalParamTarget]:
     if not isinstance(data, list):
         return []
     return [JavaFinalParamTarget(method=d["method"], name=d["name"],
+                                 insert_offset=d["insertOffset"])
+            for d in data]
+
+
+def final_local_targets(root: Path, rel: str) -> list[JavaFinalLocalTarget]:
+    """The never-reassigned LOCAL-VARIABLE targets in ``root/rel`` (empty on
+    refuse). Conservative: a file that does not parse, has no such local, or that
+    the driver declines yields ``[]`` — nothing to finalise, never a guess.
+
+    A PER-METHOD scan (the driver's ``final-local-targets`` subcommand), one step
+    deeper than ``final-param-targets``: each method/constructor's own body is
+    scanned independently for assignment targets, since a local's entire
+    assignment surface is its own method's stack frame — no reflection/Serializable
+    escape hatch exists for a local, so this needs no whole-unit refusal. The
+    driver considers ONLY a plain ``VariableTree`` that is a DIRECT statement of a
+    ``BlockTree`` AND carries an initializer, so a ``for``-loop init variable, an
+    enhanced-``for`` variable, and a try-with-resources resource are EXCLUDED by
+    omission, and a no-initializer split local is refused.
+
+    Deterministic source order, exactly as the driver's ``final-local-targets``
+    emits."""
+    data = _driver_json(["final-local-targets", str(root / rel)], root)
+    if not isinstance(data, list):
+        return []
+    return [JavaFinalLocalTarget(method=d["method"], name=d["name"],
                                  insert_offset=d["insertOffset"])
             for d in data]
 

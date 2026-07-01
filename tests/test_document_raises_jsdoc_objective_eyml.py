@@ -695,8 +695,8 @@ def test_counts_are_thirty_six_concrete_of_seventy_eight():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 93  # 93 after add-functools-wraps
-    assert len(classify_objectives(names)["CONCRETE"]) == 48  # add-functools-wraps (48th CONCRETE)
+    assert len(names) == 94  # 94 after java-final-local
+    assert len(classify_objectives(names)["CONCRETE"]) == 49  # java-final-local (49th CONCRETE)
 
 
 def test_refuses_on_python_soundness_corpus():

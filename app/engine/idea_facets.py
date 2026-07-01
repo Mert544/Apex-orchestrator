@@ -250,7 +250,18 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                          # own method body, so only a per-method scan is needed, never a
                          # whole-unit refusal). Appended after its field sibling, so the
                          # originals still lead.
-                         "the never-reassigned java method parameter to finalize"],
+                         "the never-reassigned java method parameter to finalize",
+                         # added: the LOCAL-variable sibling of java-final-parameter — a
+                         # LOCAL Java variable declared as a DIRECT statement of a method
+                         # body block, provably never reassigned in that SAME method's own
+                         # body, which java-final-local seals with the `final` modifier (a
+                         # runtime no-op; one step deeper into the same per-method
+                         # never-reassigned proof — a local, like a parameter, is a
+                         # stack-local whose assignment surface is closed to its own
+                         # method body; excludes for/enhanced-for/try-resources vars and
+                         # no-initializer split locals). Appended after its parameter
+                         # sibling, so the originals still lead.
+                         "the never-reassigned java local variable to finalize"],
     "sensible defaults": ["the safe default", "the override path", "documented rationale"],
     # generalize L3 ladders — the appended L2 moves decompose once more into the
     # concrete edits an engineer performs, then bottom out in the case split.

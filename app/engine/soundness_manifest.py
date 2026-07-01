@@ -52,6 +52,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "add-final": "runtime-noop+used-as-base-scan(tests-incl)",
     "java-finalize-field": "java-final-modifier-add(runtime-noop)+private-field-never-reassigned-whole-file-scan+reparse-fact-set-identical-or-refuse(no-suite-needed)",
     "java-final-parameter": "java-final-modifier-add(runtime-noop)+parameter-never-reassigned-single-method-body-scan+reparse-fact-set-identical-or-refuse(no-suite-needed)",
+    "java-final-local": "java-final-modifier-add(runtime-noop)+direct-block-statement-local-with-initializer-never-reassigned-single-method-body-scan+reparse-fact-set-identical-or-refuse(no-suite-needed)+refuse-for/enhanced-for/try-resources/no-initializer",
     "java-document-throws": "java-javadoc-throws-from-declared-throws-clause-verbatim+reparse-fact-set-identical-or-refuse(no-suite-needed)+refuse-already-documented",
     "java-document-param": "java-javadoc-param-from-declared-params-verbatim+reparse-fact-set-identical-or-refuse(no-suite-needed)+refuse-already-documented/no-param",
     "java-document-returns": "java-javadoc-return-from-declared-return-type-source-span-verbatim+reparse-fact-set-identical-or-refuse(no-suite-needed)+refuse-void/constructor/already-documented/unreadable-span",
