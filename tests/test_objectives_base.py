@@ -11,8 +11,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.engine import develop_registry
+import pytest
+
+from app.engine import develop_registry, soundness_manifest
 from app.execution.objectives._base import register_module_objective
+
+
+# The throwaway objectives these tests register exercise the *generic*
+# ``register_module_objective`` behaviour, so they use invented names asserted on
+# directly (``spec.name``, ``m.target``). The register-time soundness lock
+# (autonomy trust-floor, ``develop_registry.register``) requires every registered
+# objective to declare HOW it is sound in ``SOUNDNESS_STRATEGY`` first. Declare the
+# demo fixtures' strategy *test-scoped* (via ``monkeypatch.setitem``, auto-restored)
+# so the production lock stays fully intact — no bypass parameter — while these unit
+# tests satisfy the exact same contract a real objective must.
+_DEMO_OBJECTIVES = ("demo-base", "demo-changed", "remove-demo", "demo-empty", "demo-noproj")
+
+
+@pytest.fixture(autouse=True)
+def _declare_demo_soundness(monkeypatch):
+    for name in _DEMO_OBJECTIVES:
+        monkeypatch.setitem(
+            soundness_manifest.SOUNDNESS_STRATEGY, name,
+            "test fixture: register_module_objective generic-behaviour unit test")
 
 
 @dataclass
