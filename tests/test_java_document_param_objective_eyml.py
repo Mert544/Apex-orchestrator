@@ -128,6 +128,31 @@ def _jdk_ok() -> bool:
 _needs_jdk = pytest.mark.skipif(not _jdk_ok(), reason="no JDK (java) on PATH")
 
 
+def _javadoc_ok() -> bool:
+    """True when ``javadoc`` is on PATH — the buyer's doc-build gate. The doclint proof
+    is opt-in by availability (offline-friendly: skips cleanly when absent)."""
+    return shutil.which("javadoc") is not None
+
+
+_needs_javadoc = pytest.mark.skipif(
+    not _javadoc_ok(), reason="no javadoc on PATH")
+
+
+def _doclint_clean(files: list[Path]) -> tuple[bool, str]:
+    """Run ``javadoc -Xdoclint:all -private`` over ``files`` and return
+    ``(exit == 0, combined output)`` — the buyer's doc-build oracle. A `* <init>.` summary
+    on a constructor makes doclint report ``unknown tag: init`` and exit non-zero; the
+    class-name summary (`* Circle.`) is doclint-clean (exit 0)."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as out:
+        proc = subprocess.run(
+            ["javadoc", "-Xdoclint:all", "-private", "-d", out,
+             *[str(f) for f in files]],
+            capture_output=True, text=True)
+    return proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def _project(tmp_path: Path, rel: str, src: str) -> Path:
     (tmp_path / Path(rel).parent).mkdir(parents=True, exist_ok=True)
     (tmp_path / rel).write_text(src, encoding="utf-8")
@@ -314,6 +339,130 @@ def test_driver_param_targets_skips_method_without_params(tmp_path: Path):
     )
     root = _project(tmp_path, "src/C.java", src)
     assert param_targets(root, "src/C.java") == []
+
+
+# --- P1-b doclint fix: a constructor's summary is the CLASS name, not <init> ---
+
+@_needs_jdk
+def test_driver_param_targets_constructor_uses_class_name_not_init_P1B(tmp_path: Path):
+    # P1-b (field-found): a constructor's `MethodTree.getName()` is the synthetic `<init>`,
+    # so the `* {name}.` summary rendered `* <init>.` -> `javadoc` reads `<init>` as an HTML
+    # tag (`unknown tag: init`, exit 1). The driver now emits the ENCLOSING CLASS simple
+    # name for a ctor, so the target `name` is `Circle` (doclint-clean + correct prose),
+    # while a NORMAL method keeps its own name and the ctor's @param VALUE is PRESERVED.
+    src = (
+        "public class Circle {\n"
+        "    Circle(double cx, double cy) {\n"
+        "    }\n"
+        "\n"
+        "    int area(int r) {\n"
+        "        return r * r;\n"
+        "    }\n"
+        "}\n"
+    )
+    root = _project(tmp_path, "src/Circle.java", src)
+    targets = param_targets(root, "src/Circle.java")
+    by_params = {t.params: t.name for t in targets}
+    # the ctor target carries the CLASS name, NEVER the synthetic <init> ...
+    assert by_params[("cx", "cy")] == "Circle"
+    assert "<init>" not in {t.name for t in targets}
+    # ... and the ctor's declared @param VALUE is preserved (the params still carried).
+    # a normal method still uses its own method name.
+    assert by_params[("r",)] == "area"
+
+
+@_needs_jdk
+def test_driver_param_targets_nested_class_ctor_uses_inner_name_P1B(tmp_path: Path):
+    # The enclosing-class walk stops at the NEAREST ClassTree, so an inner class's ctor
+    # gets the INNER simple name, not the outer's — the correct prose for a nested type.
+    src = (
+        "public class Outer {\n"
+        "    Outer(int a) {}\n"
+        "    static class Inner {\n"
+        "        Inner(int b) {}\n"
+        "    }\n"
+        "}\n"
+    )
+    root = _project(tmp_path, "src/Outer.java", src)
+    by_params = {t.params: t.name for t in param_targets(root, "src/Outer.java")}
+    assert by_params[("a",)] == "Outer"
+    assert by_params[("b",)] == "Inner"  # NEAREST enclosing class, not the outer
+
+
+@_needs_jdk
+def test_plan_documents_constructor_with_class_name_summary_P1B(tmp_path: Path):
+    # End-to-end: the landed Javadoc for a ctor-with-params uses `* Circle.` (NOT `<init>`)
+    # and PRESERVES the @param lines; the splice re-parses fact-identical (a comment-only
+    # change). This is the higher-value fix (documents the ctor) over refusing it.
+    src = (
+        "package demo;\n"
+        "\n"
+        "public class Circle {\n"
+        "    Circle(double cx, double cy) {\n"
+        "    }\n"
+        "}\n"
+    )
+    root = _with_gradle(tmp_path)
+    _project(root, "src/Circle.java", src)
+    plan = plan_java_document_param(str(root), "src/Circle.java")
+    assert plan.ok
+    out = plan.new_contents["src/Circle.java"]
+    # the summary is the CLASS name, the ctor's @param lines are preserved, no <init>.
+    assert (
+        "    /**\n"
+        "     * Circle.\n"
+        "     *\n"
+        "     * @param cx\n"
+        "     * @param cy\n"
+        "     */\n"
+        "    Circle(double cx, double cy) {"
+    ) in out
+    assert "<init>" not in out
+    assert reparse_facts_identical(root, "src/Circle.java", out)
+
+
+@_needs_javadoc
+def test_constructor_param_javadoc_is_doclint_clean_RED_to_GREEN_P1B(tmp_path: Path):
+    # THE BUYER PROOF (P1-b, param): the OLD `* <init>.` summary breaks `javadoc`
+    # (`unknown tag: init`, exit 1); the Apex-documented file (`* Circle.`) is
+    # doclint-CLEAN (exit 0). Proves the fix RED->GREEN on the real doc-build tool.
+    root = _with_gradle(tmp_path)
+    # RED: the OLD (<init>) summary breaks doclint — the exact block Apex used to emit.
+    bare = (
+        "package demo;\n"
+        "\n"
+        "public class Bare {\n"
+        "    /**\n"
+        "     * <init>.\n"
+        "     *\n"
+        "     * @param cx\n"
+        "     * @param cy\n"
+        "     */\n"
+        "    Bare(double cx, double cy) {\n"
+        "    }\n"
+        "}\n"
+    )
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "Bare.java").write_text(bare, encoding="utf-8")
+    red_ok, red_out = _doclint_clean([root / "src" / "Bare.java"])
+    assert not red_ok, "the * <init>. summary should FAIL doclint"
+    assert "unknown tag: init" in red_out
+
+    # GREEN: the Apex-documented (`* Circle.`) file is doclint-clean.
+    src = (
+        "package demo;\n"
+        "\n"
+        "public class Circle {\n"
+        "    Circle(double cx, double cy) {\n"
+        "    }\n"
+        "}\n"
+    )
+    _project(root, "src/Circle.java", src)
+    out = plan_java_document_param(str(root), "src/Circle.java").new_contents["src/Circle.java"]
+    (root / "src" / "Circle.java").write_text(out, encoding="utf-8")
+    green_ok, green_out = _doclint_clean([root / "src" / "Circle.java"])
+    assert green_ok, f"the `* Circle.` summary should PASS doclint:\n{green_out}"
+    assert "unknown tag" not in green_out
 
 
 @_needs_jdk

@@ -127,6 +127,31 @@ def _jdk_ok() -> bool:
 _needs_jdk = pytest.mark.skipif(not _jdk_ok(), reason="no JDK (java) on PATH")
 
 
+def _javadoc_ok() -> bool:
+    """True when ``javadoc`` is on PATH — the buyer's doc-build gate. The doclint proof
+    is opt-in by availability (offline-friendly: skips cleanly when absent)."""
+    return shutil.which("javadoc") is not None
+
+
+_needs_javadoc = pytest.mark.skipif(
+    not _javadoc_ok(), reason="no javadoc on PATH")
+
+
+def _doclint_clean(files: list[Path]) -> tuple[bool, str]:
+    """Run ``javadoc -Xdoclint:all -private`` over ``files`` and return
+    ``(exit == 0, combined output)`` — the buyer's doc-build oracle. A `* <init>.` summary
+    on a constructor makes doclint report ``unknown tag: init`` and exit non-zero; the
+    class-name summary (`* Vault.`) is doclint-clean (exit 0)."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as out:
+        proc = subprocess.run(
+            ["javadoc", "-Xdoclint:all", "-private", "-d", out,
+             *[str(f) for f in files]],
+            capture_output=True, text=True)
+    return proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def _project(tmp_path: Path, rel: str, src: str) -> Path:
     (tmp_path / Path(rel).parent).mkdir(parents=True, exist_ok=True)
     (tmp_path / rel).write_text(src, encoding="utf-8")
@@ -313,6 +338,121 @@ def test_driver_doc_targets_skips_method_without_throws_clause(tmp_path: Path):
     )
     root = _project(tmp_path, "src/C.java", src)
     assert doc_targets(root, "src/C.java") == []
+
+
+# --- P1-b doclint fix: a constructor's summary is the CLASS name, not <init> ---
+
+@_needs_jdk
+def test_driver_doc_targets_constructor_uses_class_name_not_init_P1B(tmp_path: Path):
+    # P1-b (field-found): a constructor WITH a `throws` clause has the synthetic name
+    # `<init>`, so the `* {name}.` summary rendered `* <init>.` -> `javadoc` reads `<init>`
+    # as an HTML tag (`unknown tag: init`, exit 1). The driver now emits the ENCLOSING
+    # CLASS simple name for a ctor, so the target `name` is `Vault` (doclint-clean +
+    # correct prose), while a NORMAL throwing method keeps its own name and the ctor's
+    # @throws VALUE is PRESERVED.
+    src = (
+        "import java.io.IOException;\n"
+        "public class Vault {\n"
+        "    Vault() throws IOException {\n"
+        "        throw new IOException();\n"
+        "    }\n"
+        "\n"
+        "    void reload() throws IOException {\n"
+        "        throw new IOException();\n"
+        "    }\n"
+        "}\n"
+    )
+    root = _project(tmp_path, "src/Vault.java", src)
+    targets = doc_targets(root, "src/Vault.java")
+    names = [t.name for t in targets]
+    # source order: the ctor first (as CLASS name `Vault`), then the method `reload`.
+    assert names == ["Vault", "reload"]
+    assert "<init>" not in names
+    # the ctor's declared @throws VALUE is preserved (still carried, source order).
+    assert targets[0].throws_types == ("IOException",)
+
+
+@_needs_jdk
+def test_plan_documents_constructor_with_class_name_summary_P1B(tmp_path: Path):
+    # End-to-end: the landed Javadoc for a ctor-with-throws uses `* Vault.` (NOT `<init>`)
+    # and PRESERVES the @throws lines; the splice re-parses fact-identical (a comment-only
+    # change). This is the higher-value fix (documents the ctor) over refusing it.
+    src = (
+        "package demo;\n"
+        "\n"
+        "import java.io.IOException;\n"
+        "\n"
+        "public class Vault {\n"
+        "    Vault() throws IOException {\n"
+        "        throw new IOException();\n"
+        "    }\n"
+        "}\n"
+    )
+    root = _with_gradle(tmp_path)
+    _project(root, "src/Vault.java", src)
+    plan = plan_java_document_throws(str(root), "src/Vault.java")
+    assert plan.ok
+    out = plan.new_contents["src/Vault.java"]
+    # the summary is the CLASS name, the ctor's @throws line is preserved, no <init>.
+    assert (
+        "    /**\n"
+        "     * Vault.\n"
+        "     *\n"
+        "     * @throws IOException\n"
+        "     */\n"
+        "    Vault() throws IOException {"
+    ) in out
+    assert "<init>" not in out
+    assert reparse_facts_identical(root, "src/Vault.java", out)
+
+
+@_needs_javadoc
+def test_constructor_throws_javadoc_is_doclint_clean_RED_to_GREEN_P1B(tmp_path: Path):
+    # THE BUYER PROOF (P1-b, throws): the OLD `* <init>.` summary breaks `javadoc`
+    # (`unknown tag: init`, exit 1); the Apex-documented file (`* Vault.`) is
+    # doclint-CLEAN (exit 0). Proves the fix RED->GREEN on the real doc-build tool.
+    root = _with_gradle(tmp_path)
+    # RED: the OLD (<init>) summary breaks doclint — the exact block Apex used to emit.
+    bare = (
+        "package demo;\n"
+        "\n"
+        "import java.io.IOException;\n"
+        "\n"
+        "public class Bare {\n"
+        "    /**\n"
+        "     * <init>.\n"
+        "     *\n"
+        "     * @throws IOException\n"
+        "     */\n"
+        "    Bare() throws IOException {\n"
+        "        throw new IOException();\n"
+        "    }\n"
+        "}\n"
+    )
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "Bare.java").write_text(bare, encoding="utf-8")
+    red_ok, red_out = _doclint_clean([root / "src" / "Bare.java"])
+    assert not red_ok, "the * <init>. summary should FAIL doclint"
+    assert "unknown tag: init" in red_out
+
+    # GREEN: the Apex-documented (`* Vault.`) file is doclint-clean.
+    src = (
+        "package demo;\n"
+        "\n"
+        "import java.io.IOException;\n"
+        "\n"
+        "public class Vault {\n"
+        "    Vault() throws IOException {\n"
+        "        throw new IOException();\n"
+        "    }\n"
+        "}\n"
+    )
+    _project(root, "src/Vault.java", src)
+    out = plan_java_document_throws(str(root), "src/Vault.java").new_contents["src/Vault.java"]
+    (root / "src" / "Vault.java").write_text(out, encoding="utf-8")
+    green_ok, green_out = _doclint_clean([root / "src" / "Vault.java"])
+    assert green_ok, f"the `* Vault.` summary should PASS doclint:\n{green_out}"
+    assert "unknown tag" not in green_out
 
 
 @_needs_jdk

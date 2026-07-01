@@ -151,6 +151,32 @@ def _jdk_ok() -> bool:
 _needs_jdk = pytest.mark.skipif(not _jdk_ok(), reason="no JDK (java) on PATH")
 
 
+def _javadoc_ok() -> bool:
+    """True when ``javadoc`` is on PATH — the buyer's doc-build gate. The doclint proof
+    is opt-in by availability (offline-friendly: skips cleanly when absent)."""
+    return shutil.which("javadoc") is not None
+
+
+_needs_javadoc = pytest.mark.skipif(
+    not _javadoc_ok(), reason="no javadoc on PATH")
+
+
+def _doclint_clean(files: list[Path]) -> tuple[bool, str]:
+    """Run ``javadoc -Xdoclint:all -private`` over ``files`` and return
+    ``(exit == 0, combined output)`` — the buyer's doc-build oracle. A doclint ERROR
+    (an ``unknown tag`` from a leaked ``<...>`` / ``<init>``) makes ``javadoc`` exit
+    non-zero; Apex's fact-only bare tags only ever raise WARNINGS (no description), so a
+    doclint-clean output exits 0."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as out:
+        proc = subprocess.run(
+            ["javadoc", "-Xdoclint:all", "-private", "-d", out,
+             *[str(f) for f in files]],
+            capture_output=True, text=True)
+    return proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def _project(tmp_path: Path, rel: str, src: str) -> Path:
     (tmp_path / Path(rel).parent).mkdir(parents=True, exist_ok=True)
     (tmp_path / rel).write_text(src, encoding="utf-8")
@@ -213,9 +239,47 @@ def test_render_return_javadoc_has_no_invented_prose():
 
 def test_render_return_javadoc_keeps_generics_verbatim():
     # The declared type text is rendered VERBATIM (generics + the author's whitespace),
-    # never normalized — the byte-faithful source-span discipline.
+    # never normalized — the byte-faithful source-span discipline. It sits INSIDE the
+    # {@code ...} doclint wrap (the type carries `<`/`>`), so the double space still
+    # survives byte-for-byte.
     block = render_return_javadoc("names", "Map<String,  Integer>", "  ")
-    assert "  * @return Map<String,  Integer>\n" in block
+    assert "  * @return {@code Map<String,  Integer>}\n" in block
+
+
+# --- P1-a doclint fix: a generic/array return is {@code}-wrapped (pure, no java) ----
+
+def test_render_return_javadoc_wraps_generic_type_in_code_span_P1A():
+    # P1-a (field-found): a generic return type carries `<`/`>`, which `javadoc`/doclint
+    # reads as an HTML tag (`* @return List<Point>` -> `unknown tag: Point`, exit 1). The
+    # type is wrapped in {@code ...} so `<Point>` renders LITERALLY and doclint stays green.
+    block = render_return_javadoc("pointsAbove", "List<Point>", "    ")
+    assert "    * @return {@code List<Point>}\n" in block
+    # NON-TAUTOLOGICAL: the RAW `<Point>` never appears OUTSIDE the {@code} wrap — i.e.
+    # reverting the wrap (emitting `@return List<Point>`) would reintroduce the exact
+    # doclint-breaking token this test forbids.
+    assert "@return List<Point>" not in block  # never the bare, doclint-breaking form
+
+
+def test_render_return_javadoc_wraps_map_generic_and_array_P1A():
+    # A comma-generic (`Map<String,Integer>`) and an array (`int[]` carries no `<>` but is
+    # fine bare) — the wrap fires on ANY `<`/`>`/`&` (generics, wildcards, intersections).
+    block = render_return_javadoc("counts", "Map<String,Integer>", "  ")
+    assert "  * @return {@code Map<String,Integer>}\n" in block
+    # a wildcard bound uses `&`/`<`/`>` too -> wrapped.
+    wild = render_return_javadoc("items", "List<? extends Number>", "")
+    assert " * @return {@code List<? extends Number>}\n" in wild
+
+
+def test_render_return_javadoc_keeps_simple_type_bare_P1A():
+    # Minimal churn: a simple type with NO doclint-significant char stays BARE (no {@code}),
+    # so `@return int` / `@return String` / `@return boolean[]` are unchanged (existing
+    # simple-type expectations do not shift). `boolean[]` has `[`/`]`, not `<`/`>`/`&`.
+    assert "    * @return int\n" in render_return_javadoc("f", "int", "    ")
+    assert " * @return String\n" in render_return_javadoc("g", "String", "")
+    assert " * @return boolean[]\n" in render_return_javadoc("h", "boolean[]", "")
+    # none of these carry a `{@code}` wrap.
+    for t in ("int", "String", "boolean[]"):
+        assert "{@code" not in render_return_javadoc("f", t, "")
 
 
 # --- the splice (always runs — pure byte ops, no java) ------------------------
@@ -407,7 +471,9 @@ def test_reparse_facts_identical_true_for_return_javadoc_splice(tmp_path: Path):
     documented = splice_return_javadoc(_CALC_JAVA, list(targets))
     assert documented is not None
     assert "     * @return int\n" in documented
-    assert "     * @return List<String>\n" in documented
+    # P1-a: the generic `List<String>` return is {@code}-wrapped (doclint-clean), while the
+    # {@code} sits inside the comment so the fact-set re-parse below is unchanged.
+    assert "     * @return {@code List<String>}\n" in documented
     # `already` keeps its original Javadoc untouched; `doIt`/`Calc()` are untouched.
     assert "/** Already. */" in documented
     assert "@return void" not in documented  # the void method was NEVER documented
@@ -442,12 +508,13 @@ def test_plan_lands_javadoc_on_eligible_file(tmp_path: Path):
         "     */\n"
         "    int add(int a, int b) {"
     ) in out
-    # and before `List<String>  names`, with the type read VERBATIM.
+    # and before `List<String>  names`, with the type read VERBATIM inside the {@code}
+    # doclint wrap (P1-a: the generic carries `<`/`>`, so it is {@code}-wrapped).
     assert (
         "    /**\n"
         "     * names.\n"
         "     *\n"
-        "     * @return List<String>\n"
+        "     * @return {@code List<String>}\n"
         "     */\n"
         "    List<String>  names() {"
     ) in out
@@ -456,6 +523,88 @@ def test_plan_lands_javadoc_on_eligible_file(tmp_path: Path):
     assert "    void doIt() {" in out
     assert "    public Calc() {" in out
     assert "/** Already. */\n    String already(" in out
+    # P1-a: the generic `List<String>` return is {@code}-wrapped, not the bare
+    # doclint-breaking form — while the simple `int` stays bare (minimal churn).
+    assert "* @return {@code List<String>}\n" in out
+    assert "* @return int\n" in out
+
+
+# --- P1-a doclint buyer-proof: a generic-return method (need java) ------------
+
+@_needs_jdk
+def test_plan_wraps_generic_return_in_code_span_P1A(tmp_path: Path):
+    # P1-a end-to-end: a method that DECLARES a generic return (`List<Point>` /
+    # `Map<String, Integer>`) is documented with a {@code}-wrapped @return, and the splice
+    # still re-parses fact-identical (the {@code} lives inside the leading comment, so ZERO
+    # declared structure changes).
+    src = (
+        "package demo;\n"
+        "\n"
+        "import java.util.List;\n"
+        "import java.util.Map;\n"
+        "\n"
+        "public class Geo {\n"
+        "    List<Point> pointsAbove(int y) {\n"
+        "        return null;\n"
+        "    }\n"
+        "\n"
+        "    Map<String, Integer> counts() {\n"
+        "        return null;\n"
+        "    }\n"
+        "}\n"
+        "class Point {}\n"
+    )
+    root = _with_gradle(tmp_path)
+    _project(root, "src/Geo.java", src)
+    plan = plan_java_document_returns(str(root), "src/Geo.java")
+    assert plan.ok
+    out = plan.new_contents["src/Geo.java"]
+    # both generic returns are {@code}-wrapped (doclint-clean), NEVER the bare form.
+    assert "* @return {@code List<Point>}\n" in out
+    assert "* @return {@code Map<String, Integer>}\n" in out
+    assert "@return List<Point>" not in out  # the bare, doclint-breaking form is gone
+    # a comment-only change: the documented file re-parses with the IDENTICAL fact-set.
+    assert reparse_facts_identical(root, "src/Geo.java", out)
+
+
+@_needs_javadoc
+def test_generic_return_javadoc_is_doclint_clean_RED_to_GREEN_P1A(tmp_path: Path):
+    # THE BUYER PROOF (P1-a): the RAW bare `@return List<Point>` breaks `javadoc`
+    # (`unknown tag: Point`, exit 1); the Apex-documented file ({@code}-wrapped) is
+    # doclint-CLEAN (exit 0). Proves the fix RED->GREEN on the real doc-build tool.
+    src = (
+        "package demo;\n"
+        "\n"
+        "import java.util.List;\n"
+        "\n"
+        "public class Geo {\n"
+        "    List<Point> pointsAbove(int y) {\n"
+        "        return null;\n"
+        "    }\n"
+        "}\n"
+        "class Point {}\n"
+    )
+    root = _with_gradle(tmp_path)
+    _project(root, "src/Geo.java", src)
+
+    # RED: the OLD (bare) form breaks doclint — build the exact block Apex used to emit.
+    bare = src.replace(
+        "    List<Point> pointsAbove(int y) {",
+        "    /**\n     * pointsAbove.\n     *\n     * @return List<Point>\n     */\n"
+        "    List<Point> pointsAbove(int y) {")
+    (root / "src" / "Bare.java").write_text(
+        bare.replace("class Geo", "class Bare").replace("public class Bare {",
+                     "public class Bare {"), encoding="utf-8")
+    red_ok, red_out = _doclint_clean([root / "src" / "Bare.java"])
+    assert not red_ok, "the bare @return List<Point> should FAIL doclint"
+    assert "unknown tag: Point" in red_out
+
+    # GREEN: the Apex-documented ({@code}-wrapped) file is doclint-clean.
+    out = plan_java_document_returns(str(root), "src/Geo.java").new_contents["src/Geo.java"]
+    (root / "src" / "Geo.java").write_text(out, encoding="utf-8")
+    green_ok, green_out = _doclint_clean([root / "src" / "Geo.java"])
+    assert green_ok, f"the {{@code}}-wrapped @return should PASS doclint:\n{green_out}"
+    assert "unknown tag" not in green_out
 
 
 # --- CRLF (Windows-authored) end-to-end ---------------------------------------
@@ -706,7 +855,8 @@ def test_end_to_end_lands_javadoc_and_reparses_identical(tmp_path: Path):
 
     landed = (root / "src" / "Calc.java").read_text(encoding="utf-8")
     assert "* @return int" in landed
-    assert "* @return List<String>" in landed
+    # P1-a: the generic return lands {@code}-wrapped (doclint-clean).
+    assert "* @return {@code List<String>}" in landed
     # the structural fact-set is UNCHANGED — a Javadoc comment is a runtime no-op
     assert parse_facts(root, "src/Calc.java") == before_facts
 

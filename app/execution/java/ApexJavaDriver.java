@@ -634,9 +634,48 @@ public final class ApexJavaDriver {
         if (insert < 0) {
             return;  // an unreadable method span — refuse rather than splice at a guess
         }
-        names.add(String.valueOf(method.getName()));
+        // A ctor's name is the synthetic `<init>`; the summary uses the enclosing class
+        // simple name (`Circle`) so the rendered `* Circle.` is doclint-clean (a `* <init>.`
+        // is rejected as `unknown tag: init`, javadoc exit 1 — the field-found P1 defect).
+        names.add(summaryName(method, path));
         throwsLists.add(types);
         offsets.add(insert);
+    }
+
+    /** The simple name of the nearest enclosing class/interface/enum/record for a
+     * method's TreePath (walk `getParentPath()` up to the first `ClassTree` and return
+     * its `getSimpleName()`), or null when none is found (a top-level/synthetic path).
+     * Used as the fact-only summary NAME for a CONSTRUCTOR: a ctor's `MethodTree.getName()`
+     * is the synthetic `<init>`, and rendering `* <init>.` breaks `javadoc`/doclint
+     * (`unknown tag: init`, exit 1) — the field-found P1 defect — whereas the enclosing
+     * class simple name (`* Circle.`) is both doclint-clean AND the correct prose. The
+     * same `getSimpleName()` walk `collectFacts`'s `visitClass` uses; a comment-only text
+     * change, so the fact-set re-parse stays identical. */
+    private static String enclosingClassSimpleName(TreePath path) {
+        for (TreePath cur = path == null ? null : path.getParentPath();
+                cur != null; cur = cur.getParentPath()) {
+            if (cur.getLeaf() instanceof ClassTree) {
+                String simple = String.valueOf(((ClassTree) cur.getLeaf()).getSimpleName());
+                return simple.isEmpty() ? null : simple;  // anonymous class — no usable name
+            }
+        }
+        return null;
+    }
+
+    /** The fact-only summary NAME for a method: its own `getName()` normally, but the
+     * ENCLOSING CLASS simple name for a constructor (`getName()` is the synthetic `<init>`,
+     * which `javadoc`/doclint rejects as `unknown tag: init`). Falls back to the raw
+     * `<init>` only when no enclosing class name is resolvable (a synthetic path — the
+     * offset/parse would already have refused), never inventing a name. */
+    private static String summaryName(MethodTree method, TreePath path) {
+        String name = String.valueOf(method.getName());
+        if (name.equals("<init>")) {
+            String enclosing = enclosingClassSimpleName(path);
+            if (enclosing != null) {
+                return enclosing;
+            }
+        }
+        return name;
     }
 
     /** The byte offset of the method's START (its modifiers/return-type), or -1 when
@@ -721,7 +760,10 @@ public final class ApexJavaDriver {
         if (insert < 0) {
             return;  // an unreadable method span — refuse rather than splice at a guess
         }
-        names.add(String.valueOf(method.getName()));
+        // A ctor's name is the synthetic `<init>`; the summary uses the enclosing class
+        // simple name (`Circle`) so the rendered `* Circle.` is doclint-clean (a `* <init>.`
+        // is rejected as `unknown tag: init`, javadoc exit 1 — the field-found P1 defect).
+        names.add(summaryName(method, path));
         paramLists.add(params);
         offsets.add(insert);
     }

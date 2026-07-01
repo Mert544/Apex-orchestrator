@@ -126,6 +126,24 @@ def documentable_return_targets(root: Path, rel: str) -> list[JavaReturnTarget]:
     return list(return_targets(root, rel))
 
 
+def _doclint_safe_return_type(return_type: str) -> str:
+    """The ``@return`` payload text, doclint-clean: a generic/array/wildcard type whose
+    verbatim source text carries a doclint-significant char (``<``, ``>`` or ``&``) is
+    wrapped in ``{@code ...}`` (``List<Point>`` -> ``{@code List<Point>}``), so ``javadoc``
+    /doclint renders the ``<...>`` LITERALLY instead of treating ``<Point>`` as an unknown
+    HTML tag (``unknown tag: Point``, ``javadoc`` exit 1) — the field-found P1 defect. A
+    simple type with none of those chars (``int`` / ``String``) is kept BARE (``@return
+    int``) to minimise churn so existing simple-type expectations do not shift.
+
+    ``{@code}`` is the idiomatic Javadoc for a type/code reference and lives INSIDE the
+    leading comment, so the method still re-parses with the IDENTICAL structural fact-set
+    (:func:`reparse_facts_identical`); a second run is still a byte no-op. Deterministic:
+    a pure function of the type text, no clock/random."""
+    if any(c in return_type for c in "<>&"):
+        return f"{{@code {return_type}}}"
+    return return_type
+
+
 def render_return_javadoc(name: str, return_type: str, indent: str,
                           eol: str = "\n") -> str:
     """The Javadoc block (a fact-only summary + one ``@return <type>`` line) for a method
@@ -140,10 +158,17 @@ def render_return_javadoc(name: str, return_type: str, indent: str,
     ``*`` lines and the trailing method re-indent carry ``indent``. The ``eol`` is the
     file's dominant line ending (``"\\r\\n"`` on a CRLF file), so the block matches the
     surrounding source. NO invented prose: the summary is the method name and the only
-    contract line is the DECLARED return type. Deterministic: fixed layout, no
-    clock/random."""
+    contract line is the DECLARED return type.
+
+    A generic/array return type is wrapped in ``{@code ...}``
+    (:func:`_doclint_safe_return_type`), so ``@return List<Point>`` becomes
+    ``@return {@code List<Point>}`` — doclint-clean (``<Point>`` renders literally, not as an
+    unknown HTML tag) while the ``{@code}`` sits inside the comment so the fact-set re-parse
+    is unchanged. A simple type stays bare (``@return int``). Deterministic: fixed layout,
+    no clock/random."""
+    return_payload = _doclint_safe_return_type(return_type)
     lines = ["/**", f"{indent} * {name}.", f"{indent} *",
-             f"{indent} * @return {return_type}", f"{indent} */"]
+             f"{indent} * @return {return_payload}", f"{indent} */"]
     # Trailing EOL + indent re-indents the method declaration that follows the block.
     return eol.join(lines) + eol + indent
 
