@@ -243,16 +243,20 @@ def value_coverage_gaps(objectives: Any = None) -> list[str]:
     silently mid-valued; this surfaces the gap loudly instead. An objective is
     covered when its operator (the explicit ``OBJECTIVE_OPERATOR`` map, else the
     self-registering dash->underscore convention) carries an explicit
-    ``OPERATOR_VALUE`` row. Reuses ``available_objectives()`` (read-only) when no
-    objective list is supplied, so the live registry is the subject; a list may be
-    injected (the seam tests use). Returns the SORTED untiered names (empty ==
-    clean). Pure and deterministic: no clock, no random, no network."""
+    ``OPERATOR_VALUE`` row. When no objective list is supplied, the default is
+    built from ``develop_registry`` alone (``BUILTIN_OBJECTIVE_NAMES`` union
+    ``registered_specs()``) — the SAME set ``objective_compiler.
+    available_objectives()`` returns, without importing ``objective_compiler``
+    itself (whose transform imports would close a static cycle back through
+    ``value_reliability``, which this module is the never-fake-green bucketer
+    for). A list may be injected (the seam tests use). Returns the SORTED
+    untiered names (empty == clean). Pure and deterministic: no clock, no
+    random, no network."""
+    from app.engine.develop_registry import BUILTIN_OBJECTIVE_NAMES, registered_specs
     from app.engine.move_value import OBJECTIVE_OPERATOR, OPERATOR_VALUE
 
     if objectives is None:
-        from app.engine.objective_compiler import available_objectives
-
-        objectives = available_objectives()
+        objectives = BUILTIN_OBJECTIVE_NAMES | set(registered_specs())
     gaps: set[str] = set()
     for name in objectives or []:
         operator = OBJECTIVE_OPERATOR.get(name, name.replace("-", "_"))

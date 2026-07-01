@@ -17,15 +17,31 @@ The candidate naming is ALPHABET-ADVERSARIAL on purpose: the high-fan-in module
 order (hub-before-leaf) rather than agreeing with the alphabet by luck — and the
 byte-identical-default cases prove the leaf (``app/aaa_leaf.py``) leads when the
 signal is absent.
+
+The second half (``js_module_fanin`` / ``_move_centrality`` / ``js_centrality``)
+covers the JS/TS sibling: ``move_fanin`` was built + tested in
+``js_project_profile`` but had ZERO production call site — a JS move's target
+never matched the Python-``ast``-only ``centrality`` map, so its blast-radius
+tiebreak silently no-opped. These pin the SAME opt-in/byte-identity contract for
+the JS lane, plus the language-routing (a Python module never reads the JS map
+and vice versa) that makes it safe to supply both maps at once on a mixed repo.
 """
 
 from __future__ import annotations
 
 import textwrap
+from pathlib import Path
+
+import pytest
 
 from app.engine.idea_memory import IdeaMemory
-from app.engine.move_centrality import module_in_degrees
-from app.engine.objective_compiler import Move, _ordered_candidates
+from app.engine.move_centrality import js_module_fanin, module_in_degrees
+from app.engine.objective_compiler import (
+    Move,
+    _is_js_module,
+    _move_centrality,
+    _ordered_candidates,
+)
 
 
 # --- fixtures ---------------------------------------------------------------
@@ -183,3 +199,192 @@ def test_module_in_degrees_empty_tree(tmp_path):
     # No Python modules at all -> empty map (in-degree of nothing), no crash.
     (tmp_path / "README.md").write_text("nothing here\n", encoding="utf-8")
     assert module_in_degrees(tmp_path) == {}
+
+
+# ============================================================================ #
+# JS/TS sibling: _is_js_module / _move_centrality — the language-routing seam  #
+# ============================================================================ #
+
+def test_is_js_module_recognizes_js_ts_suffixes():
+    for rel in ("src/util.ts", "src/util.tsx", "src/util.js", "src/util.jsx",
+               "src/util.mjs", "src/util.cjs"):
+        assert _is_js_module(rel), rel
+
+
+def test_is_js_module_rejects_python_and_other():
+    for rel in ("app/util.py", "app/util", "README.md", "app/util.pyi"):
+        assert not _is_js_module(rel), rel
+
+
+def test_move_centrality_python_module_uses_python_map():
+    # A .py module is looked up in the Python-ast-only `centrality` map (the
+    # ONLY graph a Python module path can ever appear in).
+    assert _move_centrality("app/hub.py", {"app/hub.py": 5}, {}) == 5
+
+
+def test_move_centrality_js_module_falls_through_to_js_map():
+    # A .ts module is ABSENT from the Python ast-only graph by construction
+    # (real callers never see it there), so it must fall through to
+    # js_centrality — the exact bug this wave fixes.
+    assert _move_centrality("src/hub.ts", {}, {"src/hub.ts": 5}) == 5
+    assert _move_centrality("src/hub.ts", None, {"src/hub.ts": 5}) == 5
+
+
+def test_move_centrality_js_module_with_no_js_map_is_zero():
+    # A JS module with NO js_centrality supplied has no signal to consult (the
+    # Python map is, by construction, never asked about a JS path) -> the
+    # honest uniform-zero no-op, same as an untracked Python leaf.
+    assert _move_centrality("src/hub.ts", {}, None) == 0
+    assert _move_centrality("src/hub.ts", None, None) == 0
+
+
+def test_move_centrality_missing_key_and_no_maps_is_zero():
+    assert _move_centrality("app/leaf.py", {}, {}) == 0
+    assert _move_centrality("app/leaf.py", None, None) == 0
+    assert _move_centrality("src/leaf.ts", {}, {}) == 0
+
+
+# ============================================================================ #
+# JS/TS sibling: js_centrality wired into _ordered_candidates                  #
+# ============================================================================ #
+
+JS_HUB = "src/zzz_hub.ts"
+JS_LEAF = "src/aaa_leaf.ts"
+_JS_CANDIDATES = [JS_LEAF, JS_HUB]  # generation/alphabetical order: leaf, then hub
+_JS_FAN_IN = {JS_HUB: 5, JS_LEAF: 0}
+
+
+def _ordered_js(rels, *, value_aware, js_centrality):
+    memory = IdeaMemory()
+    out = _ordered_candidates(_generator(rels), "/proj", None, memory, "",
+                              value_aware=value_aware, js_centrality=js_centrality)
+    return [m.target.split(":", 1)[0] for m in out]
+
+
+def test_js_centrality_supplied_hub_first():
+    # The alphabet would keep the leaf first; js_centrality OVERRIDES that tie to
+    # land the 5-importer JS hub before the 0-importer JS leaf — the SAME lift
+    # module_in_degrees gives a Python hub, now reaching a JS/TS target.
+    order = _ordered_js(_JS_CANDIDATES, value_aware=True, js_centrality=_JS_FAN_IN)
+    assert order == [JS_HUB, JS_LEAF], "the 5-importer JS hub must land before the leaf"
+
+
+def test_js_centrality_none_is_alphabetical():
+    # Byte-identical regression guard: with no js_centrality the JS moves sort
+    # exactly as they did before this signal existed (pure m.target order).
+    order = _ordered_js(_JS_CANDIDATES, value_aware=True, js_centrality=None)
+    assert order == [JS_LEAF, JS_HUB]
+
+
+def test_js_centrality_ignored_off_value_aware_path():
+    order = _ordered_js(_JS_CANDIDATES, value_aware=False, js_centrality=_JS_FAN_IN)
+    assert order == _JS_CANDIDATES, "off the value-aware path js_centrality is inert"
+
+
+def test_python_and_js_centrality_coexist_on_a_mixed_repo():
+    # A mixed repo's move set carries BOTH a Python hub/leaf pair and a JS
+    # hub/leaf pair in one scan; each move consults ONLY the map for its own
+    # language, so both blast-radius lifts land in the SAME ordered call.
+    py_hub, py_leaf = "app/zzz_hub.py", "app/aaa_leaf.py"
+    rels = [py_leaf, py_hub, JS_LEAF, JS_HUB]
+    memory = IdeaMemory()
+    out = _ordered_candidates(
+        _generator(rels), "/proj", None, memory, "", value_aware=True,
+        centrality={py_hub: 5, py_leaf: 0}, js_centrality=_JS_FAN_IN)
+    order = [m.target.split(":", 1)[0] for m in out]
+    # Both hubs (fan-in 5) beat both leaves (fan-in 0); within the fan-in=5 tier
+    # and the fan-in=0 tier the final m.target tiebreak decides alphabetically.
+    assert order == [py_hub, JS_HUB, py_leaf, JS_LEAF]
+
+
+def test_js_determinism_100x():
+    first = _ordered_js(_JS_CANDIDATES, value_aware=True, js_centrality=_JS_FAN_IN)
+    for _ in range(100):
+        assert _ordered_js(_JS_CANDIDATES, value_aware=True,
+                           js_centrality=_JS_FAN_IN) == first
+
+
+# ============================================================================ #
+# js_module_fanin — the memoized JS/TS project-fanin accessor                  #
+# ============================================================================ #
+
+def _node_ok() -> bool:
+    """True when ``node`` is on PATH and the global ``typescript`` resolves —
+    mirrors ``test_js_project_profile_eyml``'s own gate, so the driver-spawning
+    tests here run under the same environment condition (and skip honestly,
+    never silently pass, when node/typescript are unavailable)."""
+    import shutil
+
+    from app.execution.js.js_tool import global_node_modules
+
+    if shutil.which("node") is None:
+        return False
+    nm = global_node_modules()
+    return bool(nm) and (Path(nm) / "typescript").is_dir()
+
+
+_needs_node = pytest.mark.skipif(
+    not _node_ok(), reason="node + global typescript not available")
+
+
+def _write_js(root: Path, rel: str, src: str) -> None:
+    (root / Path(rel).parent).mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(src, encoding="utf-8")
+
+
+def _js_pkg(root: Path) -> None:
+    (root / "package.json").write_text(
+        '{ "name": "demo", "version": "1.0.0" }\n', encoding="utf-8")
+
+
+@_needs_node
+def test_js_module_fanin_counts_real_fan_in(tmp_path):
+    # hub.ts imported by 5 modules; leaf.ts imported by none — the JS mirror of
+    # test_module_in_degrees_counts_real_fan_in.
+    _js_pkg(tmp_path)
+    _write_js(tmp_path, "src/hub.ts", "export const VALUE = 1;\n")
+    _write_js(tmp_path, "src/leaf.ts", "export const VALUE = 2;\n")
+    for i in range(5):
+        _write_js(tmp_path, f"src/importer_{i}.ts",
+                  'import { VALUE } from "./hub";\n')
+
+    fanin = js_module_fanin(tmp_path)
+    assert fanin.get("src/hub.ts") == 5
+    assert fanin.get("src/leaf.ts", 0) == 0
+
+
+@_needs_node
+def test_js_module_fanin_drives_real_order(tmp_path):
+    # End-to-end: a REAL fan-in map (through the driver, not a hand-built dict)
+    # flips an alphabet-adversarial JS pair via _ordered_candidates — the JS
+    # mirror of test_module_in_degrees_drives_real_order.
+    _js_pkg(tmp_path)
+    _write_js(tmp_path, "src/zzz_hub.ts", "export const VALUE = 1;\n")
+    _write_js(tmp_path, "src/aaa_leaf.ts", "export const VALUE = 2;\n")
+    for i in range(5):
+        _write_js(tmp_path, f"src/imp_{i}.ts",
+                  'import { VALUE } from "./zzz_hub";\n')
+
+    fanin = js_module_fanin(tmp_path)
+    assert fanin.get("src/zzz_hub.ts") == 5
+    order = _ordered_js(["src/aaa_leaf.ts", "src/zzz_hub.ts"],
+                        value_aware=True, js_centrality=fanin)
+    assert order == ["src/zzz_hub.ts", "src/aaa_leaf.ts"], \
+        "the real-driver-graph JS hub must land before the leaf"
+
+
+def test_js_module_fanin_non_js_project_is_empty(tmp_path):
+    # No package.json at all -> the profiler's own graceful-empty gate returns
+    # {} WITHOUT spawning the driver (this assertion needs no node/typescript).
+    _write(tmp_path, "app/a.py", "VALUE = 1\n")
+    assert js_module_fanin(tmp_path) == {}
+
+
+def test_js_module_fanin_is_memoized_per_root(tmp_path):
+    # Two calls for the SAME root return the identical (memoized) dict object
+    # (or at minimum equal content) without re-spawning the driver, mirroring
+    # module_in_degrees's own per-root memo contract.
+    _write(tmp_path, "app/a.py", "VALUE = 1\n")  # non-JS -> the cheap empty path
+    first = js_module_fanin(tmp_path)
+    second = js_module_fanin(tmp_path)
+    assert first == second == {}

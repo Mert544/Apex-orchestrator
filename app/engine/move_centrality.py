@@ -9,7 +9,14 @@ adapter that turns that graph into a ``module -> in-degree`` map keyed exactly
 like a move's target module (``_move_module``), so the compiler can use it as a
 SUBORDINATE sort key without re-deriving the graph.
 
-Determinism: pure function of the source tree (the graph builder is itself
+:func:`js_module_fanin` is the JS/TS sibling: the SAME memoized-per-root shape
+over :func:`app.tools.js_project_profile.profile_js_project`'s already-built
+``module_fanin`` (its own import-graph walk, via the deterministic TS driver) —
+the fan-in computation is owned there and not re-derived here, only cached the
+same way, so a Python and a JS/TS project campaign consult the correct graph for
+each move's language.
+
+Determinism: pure function of the source tree (both graph builders are
 deterministic — no clock, no random, no network). The per-root memo only avoids
 re-walking the tree within one campaign; it never changes the result.
 """
@@ -26,6 +33,11 @@ from pathlib import Path
 # mtime-invalidated. The cache is module-level (process-wide), matching the
 # DependencyGraphBuilder's own process-level parse cache.
 _IN_DEGREES_CACHE: dict[str, dict[str, int]] = {}
+
+# The JS/TS sibling memo, keyed and invalidated the SAME way — a distinct dict
+# so a project that carries both a Python and a JS/TS tree (a mixed repo) caches
+# each graph independently under the one resolved root key.
+_JS_FANIN_CACHE: dict[str, dict[str, int]] = {}
 
 
 def module_in_degrees(root: str | Path) -> dict[str, int]:
@@ -57,3 +69,28 @@ def module_in_degrees(root: str | Path) -> dict[str, int]:
                for node in graph.values()}
     _IN_DEGREES_CACHE[key] = degrees
     return degrees
+
+
+def js_module_fanin(root: str | Path) -> dict[str, int]:
+    """``module path -> number of internal JS/TS modules that import it`` for
+    ``root`` — the JS/TS sibling of :func:`module_in_degrees`.
+
+    Wraps :func:`app.tools.js_project_profile.profile_js_project` and reads its
+    already-populated ``module_fanin`` (root-relative POSIX paths, the SAME
+    string a JS move's ``_move_module`` yields, since both derive from
+    :func:`app.execution.lang.js_adapter._walk_files`'s ``as_posix`` walk).
+
+    Memoized per resolved root, mirroring :func:`module_in_degrees`. Returns an
+    EMPTY map for a non-JS / no-``package.json`` tree (the profiler's own
+    graceful-empty gate — no driver spawn), which the caller treats as a
+    uniform-zero signal exactly like an empty Python fan-in map."""
+    key = str(Path(root).resolve())
+    cached = _JS_FANIN_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    from app.tools.js_project_profile import profile_js_project
+
+    fanin = dict(profile_js_project(root).module_fanin)
+    _JS_FANIN_CACHE[key] = fanin
+    return fanin

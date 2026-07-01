@@ -11,12 +11,19 @@ defined, so the idea tree and the move loop can never disagree. These tests pin:
   * value-greedy ordering and the opt-in refusal floor inside ``compile_objective``,
     INCLUDING the off-by-default byte-identity of the existing step list;
   * the recorded ``CompileStep.value`` (serialized only when set; mean in the
-    markdown headline) and the determinism of the value-led order.
+    markdown headline) and the determinism of the value-led order;
+  * ``compile_objective`` WIRING the proof-of-fix VALUE-REALIZATION factor
+    (``value_reliability.operator_realization_factors``) into its
+    ``scored_move_value`` calls end-to-end: an operator that over-promised on
+    THIS project is demoted in both the recorded step ``value`` and the
+    value-aware ordering, ONLY on the opt-in value-aware path (a fresh/default
+    campaign never reads ``.apex/proof-of-fix.json`` and stays byte-identical).
 """
 
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 from app.engine.idea_memory import IdeaMemory
@@ -31,6 +38,7 @@ from app.engine.objective_compiler import (
     compile_objective,
     render_compile_markdown,
 )
+from app.engine.proof_of_fix import SCHEMA as PROOF_SCHEMA
 
 
 # --- the authoritative operator inventory (mirrors how move_value derives it) -
@@ -291,3 +299,103 @@ def test_value_selection_deterministic(tmp_path):
     # m.target tiebreak decides: "fetch(retries)" sorts before "render(color)".
     assert [s.target for s in a.steps] == [
         "app/m.py:fetch(retries)", "app/m.py:render(color)"]
+
+
+# --- 11. value-REALIZATION wired end-to-end into compile_objective ------------
+#
+# ``value_reliability.operator_realization_factors`` was built + tested but had
+# ZERO production call site: ``scored_move_value``'s ``realization=`` kwarg was
+# designed but never filled. These pin the wiring at both scored_move_value call
+# sites compile_objective drives (the value-aware ORDER, and the recorded step
+# VALUE), the demote-only direction, and the opt-in byte-identity.
+
+def _proof_rec(operator: str, level: str = "none") -> dict:
+    """One HELD-but-weak fix record in ``proof_of_fix._fix_record``'s shape —
+    ``applied`` + not rolled back (so ``value_landed._held`` counts it) with a
+    green-but-uncovered ('none') coverage level, so it credits the predicted
+    denominator but NOT the verified numerator (an over-promiser)."""
+    return {
+        "finding": {"operator": operator, "target": "app/m.py"},
+        "outcome": "applied",
+        "verification": {"strength": {"level": level}},
+        "rollback": {"occurred": False},
+    }
+
+
+def _write_proof(root: Path, fixes: list[dict]) -> None:
+    """Persist one apex-proof-of-fix artifact under ``<root>/.apex/`` — the SAME
+    store ``operator_realization_factors`` reads, mirrored from
+    ``test_value_reliability_eyml``'s helper."""
+    apex = root / ".apex"
+    apex.mkdir(parents=True, exist_ok=True)
+    (apex / "proof-0001.json").write_text(
+        json.dumps({"schema": PROOF_SCHEMA, "generated_at": "2026-01-01T00:00:00Z",
+                    "fixes": fixes}),
+        encoding="utf-8")
+
+
+def test_realization_demotes_recorded_step_value(tmp_path):
+    # drop_param HELD 8 weak (uncovered) landings on THIS project -> it never
+    # realized the verified value it promised, so operator_realization_factors
+    # demotes it below 1.0 and the recorded CompileStep.value must reflect that
+    # correction, not the bare static prior.
+    _dead_params_project(tmp_path)
+    _write_proof(tmp_path, [_proof_rec("drop_param") for _ in range(8)])
+    r = compile_objective(str(tmp_path), apply=True, verify=False,
+                          min_move_value=0.1)
+    assert len(r.steps) == 2
+    prior = move_value("drop_param")
+    assert all(0.0 < s.value < prior for s in r.steps), \
+        "an over-promising operator's recorded value must be demoted, never zero"
+
+
+def test_realization_never_inflates_a_reliable_operator(tmp_path):
+    # drop_param HELD 8 FUNCTION-verified (fully realized) landings -> the factor
+    # is bounded at <= 1.0 (neutral, never a boost), so the recorded value never
+    # exceeds the static prior.
+    _dead_params_project(tmp_path)
+    _write_proof(tmp_path, [_proof_rec("drop_param", level="function")
+                            for _ in range(8)])
+    r = compile_objective(str(tmp_path), apply=True, verify=False,
+                          min_move_value=0.1)
+    prior = move_value("drop_param")
+    assert all(s.value <= prior + 1e-9 for s in r.steps)
+
+
+def test_realization_reorders_toward_the_proven_operator(tmp_path):
+    # On a project offering BOTH a modernize move and a sort-imports move (equal
+    # static tiers would otherwise decide only by the static prior), a proof
+    # history where modernize chronically over-promises drags its scored value
+    # below sort_imports's — proving realization corrects the ORDER, not just
+    # the disclosed value. (modernize's static prior is well above
+    # sort_imports's floor, so only a real demotion could flip them.)
+    _modernize_and_sortimports_project(tmp_path)
+    assert move_value("modernize") > move_value("sort_imports")
+    _write_proof(tmp_path, [_proof_rec("modernize") for _ in range(10)])
+    from app.engine.value_reliability import operator_realization_factors
+
+    factors = operator_realization_factors(str(tmp_path))
+    demoted = scored_move_value("modernize", None, realization=factors)
+    assert demoted < move_value("sort_imports"), \
+        "a chronic over-promiser's realized value must fall below a lesser tier"
+
+
+def test_realization_off_by_default_is_byte_identical(tmp_path):
+    # min_move_value=0.0 (the default) never engages value_aware, so
+    # compile_objective must not even READ the proof history: a demoting proof
+    # file present on disk has ZERO effect on the default campaign's steps.
+    _dead_params_project(tmp_path)
+    _write_proof(tmp_path, [_proof_rec("drop_param") for _ in range(8)])
+    r = compile_objective(str(tmp_path), apply=True, verify=False)
+    assert [s.fitness_after for s in r.steps] == [1.0, 0.0]
+    assert all(s.value == 0.0 for s in r.steps)
+
+
+def test_realization_no_proof_history_is_byte_identical_to_static(tmp_path):
+    # A fresh project (no .apex/proof-of-fix.json at all) sees the EXACT static
+    # values recorded — the neutral-1.0-default byte-identity this wiring must
+    # preserve for every project that hasn't accumulated proof history yet.
+    _dead_params_project(tmp_path)
+    r = compile_objective(str(tmp_path), apply=True, verify=False,
+                          min_move_value=0.1)
+    assert all(s.value == move_value("drop_param") for s in r.steps)

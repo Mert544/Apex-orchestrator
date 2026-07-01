@@ -37,11 +37,31 @@ import pkgutil
 __all__ = [
     "ObjectiveSpec", "register", "objective", "discover",
     "registered_specs", "clear_registry", "expensive_names",
+    "BUILTIN_OBJECTIVE_NAMES",
 ]
 
 # The package every self-registering objective lives in. Dropping a module here
 # that calls register() (at import) is all it takes to add an objective.
 _OBJECTIVES_PACKAGE = "app.execution.objectives"
+
+# The names of the objective-compiler's HAND-WIRED built-ins (``modernize``,
+# ``dead-params``, ...) — kept here, NOT in ``objective_compiler``, purely so a
+# cycle-sensitive consumer that needs "every objective name" (built-in +
+# self-registered) without pulling in the compiler's own heavy transform imports
+# has a dependency-free source for the built-in half. ``objective_compiler``
+# is the single source of truth for what each name actually DOES (its
+# fitness/moves callables); this is only the append-only NAME roster, kept in
+# sync with ``objective_compiler._OBJECTIVES`` by a drift test — the same
+# discipline ``move_value``'s operator-inventory test already applies. A
+# consumer that wants the FULL set (built-in + discovered) unions this with
+# ``registered_specs()``'s keys, exactly as ``objective_compiler.
+# available_objectives()`` does internally.
+BUILTIN_OBJECTIVE_NAMES: frozenset[str] = frozenset({
+    "modernize", "simplify-bool-return", "simplify-comprehension",
+    "extract-constant", "remove-unused-imports", "sort-imports",
+    "remove-dead-code", "dedup", "dead-params", "shrink-functions",
+    "inline-helpers",
+})
 
 
 @dataclass(frozen=True)

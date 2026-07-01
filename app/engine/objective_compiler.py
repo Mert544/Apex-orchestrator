@@ -887,6 +887,37 @@ def _move_module(move: "Move") -> str:
     return move.target.split(":", 1)[0]
 
 
+def _is_js_module(module: str) -> bool:
+    """True when ``module`` (a move's target path) is a JS/TS source — the same
+    suffix gate :mod:`app.execution.lang.js_adapter` enforces, imported lazily so
+    a Python-only campaign never even touches the JS adapter module."""
+    from app.execution.lang.js_adapter import JS_SOURCE_SUFFIXES
+
+    return Path(module).suffix.lower() in JS_SOURCE_SUFFIXES
+
+
+def _move_centrality(module: str, centrality: dict[str, int] | None,
+                     js_centrality: dict[str, int] | None) -> int:
+    """The blast-radius fan-in for ``module``, from whichever centrality map
+    actually covers it.
+
+    ``centrality`` (Python ``ast``-derived, :func:`app.engine.move_centrality.
+    module_in_degrees`) is consulted first — it is the ONLY map a Python module
+    path can ever appear in. A JS/TS module path never appears there (the
+    dependency graph is Python-only), so it would silently read as fan-in 0
+    without this: :func:`_is_js_module`-gated, it falls through to
+    ``js_centrality`` (:attr:`app.tools.js_project_profile.JsProjectProfile.
+    module_fanin`) so the SAME blast-radius tiebreak that already orders Python
+    moves also orders JS/TS ones. Either map missing the key, or both maps being
+    ``None`` (the non-value-aware / no-JS-graph default), reads as 0 — the
+    uniform no-op the tiebreak has always fallen back to."""
+    if centrality and module in centrality:
+        return centrality[module]
+    if js_centrality and _is_js_module(module):
+        return js_centrality.get(module, 0)
+    return 0
+
+
 def _resolve_compile_target(
     objective: str,
     objectives: dict[str, tuple[Callable[[str | Path], float],
@@ -914,7 +945,9 @@ def _resolve_compile_target(
 def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
                         scope_module: str | None, memory: Any,
                         last_operator: str, value_aware: bool = False,
-                        centrality: dict[str, int] | None = None) -> list[Move]:
+                        centrality: dict[str, int] | None = None,
+                        realization: dict[str, float] | None = None,
+                        js_centrality: dict[str, int] | None = None) -> list[Move]:
     """The candidate moves for one scan, scoped and ordered.
 
     Generates the objective's moves against the CURRENT tree, confines them to
@@ -934,6 +967,15 @@ def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
     and the dedup family) and on interleaved sweeps, where the high-value move
     precedes the ceremony move within a capped budget.
 
+    ``realization`` (an operator -> PROVEN value-realization factor map, built by
+    :func:`app.engine.value_reliability.operator_realization_factors`) is forwarded
+    into the PRIMARY ``scored_move_value`` key: an operator that over-promised on
+    THIS project (held moves that landed weak/unverified) is demoted below an
+    operator whose promised value actually realized, so the buyer-value ordering
+    reflects proven track record, not just the static prior. Demote-only, neutral
+    ``1.0`` default (``None`` or no proof history) — a fresh project's order is
+    byte-identical to before this signal existed.
+
     ``centrality`` (a ``module path -> fan-in`` map, ONLY supplied on the
     value-aware path) inserts a blast-radius tiebreak BETWEEN the learned-sequence
     credit and the final ``m.target`` tiebreak: among moves the buyer values
@@ -941,7 +983,15 @@ def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
     first, so a capped ``--max-steps`` budget banks the highest-blast-radius move.
     When it is ``None`` (the DEFAULT — and the only state on a non-value-aware
     run) the slot is a constant ``0``, so the order is byte-identical to before
-    this signal existed: the same move lands first on every default campaign."""
+    this signal existed: the same move lands first on every default campaign.
+
+    ``js_centrality`` (:attr:`app.tools.js_project_profile.JsProjectProfile.
+    module_fanin`, the JS/TS sibling of ``centrality``) fills the SAME blast-radius
+    slot for a JS/TS-targeting move, whose module path never appears in the
+    Python-``ast``-only ``centrality`` graph and would otherwise silently tiebreak
+    as fan-in 0 (see :func:`_move_centrality`). ``None`` (the default, and the only
+    state on a Python-only or non-value-aware project) leaves the slot exactly as
+    it was: a JS move's blast radius reads 0, same as before this signal existed."""
     from app.engine.move_value import scored_move_value
 
     moves = generate(root)
@@ -949,9 +999,9 @@ def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
         moves = [m for m in moves if _move_module(m) == scope_module]
     if value_aware:
         moves = sorted(moves, key=lambda m: (
-            -scored_move_value(m.operator, memory),                 # buyer value first
+            -scored_move_value(m.operator, memory, realization=realization),  # buyer value first
             -memory.sequence_factor(last_operator, m.operator),     # learned-sequence credit
-            -centrality.get(_move_module(m), 0) if centrality else 0,  # blast-radius desc
+            -_move_centrality(_move_module(m), centrality, js_centrality),  # blast-radius desc
             m.target,                                               # stable, deterministic
         ))
     elif last_operator:
@@ -982,6 +1032,7 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
                     value_aware: bool = False, covered_only: bool = False,
                     skip_targets: set | None = None,
                     baseline_failing: frozenset[str] | None = None,
+                    realization: dict[str, float] | None = None,
                     ) -> tuple[bool, float]:
     """Try to land one move against the CURRENT tree, recording its outcome.
 
@@ -994,7 +1045,10 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
     When ``value_aware`` (the buyer opted in), the landed step also records its
     ``scored_move_value`` — an honest disclosure of WHAT KIND of value landed,
     kept separate from the ``verified``/``coverage`` correctness tier. Off ⇒ the
-    step's ``value`` stays 0.0 ⇒ ``to_dict()`` is byte-identical.
+    step's ``value`` stays 0.0 ⇒ ``to_dict()`` is byte-identical. ``realization``
+    (see :func:`_ordered_candidates`) corrects that recorded value by the
+    operator's PROVEN track record on this project — demote-only, neutral default,
+    so the disclosed value is honest about over-promised operators too.
 
     When ``covered_only`` (the broad autonomous SWEEP without ``--allow-weak``),
     ``apply_rename`` rolls back a move a green suite couldn't vouch for (no test
@@ -1046,7 +1100,7 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
     value = 0.0
     if value_aware:
         from app.engine.move_value import scored_move_value
-        value = scored_move_value(mv.operator, memory)
+        value = scored_move_value(mv.operator, memory, realization=realization)
     result.steps.append(CompileStep(
         operator=mv.operator, target=mv.target, description=mv.description,
         fitness_before=current, fitness_after=nxt,
@@ -1062,6 +1116,7 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
               covered_only: bool = False,
               skip_targets: set | None = None,
               baseline_failing: frozenset[str] | None = None,
+              realization: dict[str, float] | None = None,
               ) -> tuple[bool, float, str]:
     """Apply every move in one pass's scan that still lands, in order.
 
@@ -1082,7 +1137,11 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
     Default off ⇒ byte-identical to today.
 
     ``baseline_failing`` (the campaign's cached RED-baseline node set, or None) is
-    forwarded to each move's gate for DELTA-GREEN apply. None ⇒ absolute-green."""
+    forwarded to each move's gate for DELTA-GREEN apply. None ⇒ absolute-green.
+
+    ``realization`` (see :func:`_ordered_candidates`) is forwarded to
+    ``_apply_one_move`` so a landed step's disclosed value reflects the operator's
+    PROVEN track record. ``None`` (the default) ⇒ byte-identical to today."""
     progressed = False
     for mv in moves:
         if len(result.steps) >= max_steps:
@@ -1097,7 +1156,7 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
                 continue
         landed, current = _apply_one_move(
             result, mv, root, current, verify, scope_verify, memory, value_aware,
-            covered_only, skip_targets, baseline_failing)
+            covered_only, skip_targets, baseline_failing, realization)
         if landed:
             last_operator = mv.operator  # bias the next move's ordering
             progressed = True
@@ -1148,6 +1207,40 @@ def _campaign_baseline(root: str, apply: bool, verify: bool,
 
     _available, failing = suite_failing_nodes(Path(root))
     return failing or None
+
+
+def _value_aware_signals(
+    root: str, value_aware: bool,
+) -> tuple[dict[str, int] | None, dict[str, int] | None, dict[str, float] | None]:
+    """The three opt-in value-aware signals :func:`compile_objective` computes
+    ONCE per campaign, gated on the SAME ``value_aware`` (``min_move_value > 0``)
+    flag: Python blast-radius, its JS/TS sibling, and proof-of-fix VALUE-
+    REALIZATION. Returns ``(move_centrality, js_centrality, realization)``.
+
+    Off the value-aware path (the default) every signal is ``None`` — no
+    dependency-graph walk, no TS driver spawn, no ``.apex/`` glob — so a default
+    ``develop``/``--all``/``ascend`` campaign never pays for or is affected by any
+    of them; the move order and recorded values stay byte-identical to before
+    these signals existed.
+
+    On the value-aware path: ``move_centrality`` (:func:`app.engine.
+    move_centrality.module_in_degrees`, memoized per root) breaks equal-value ties
+    toward the highest-fan-in Python module; ``js_centrality`` (:func:`app.engine.
+    move_centrality.js_module_fanin`) is the SAME tiebreak for a JS/TS module,
+    whose path never appears in the Python-``ast``-only graph — its own graceful-
+    empty gate keeps a Python-only project from ever spawning the TS driver.
+    ``realization`` (:func:`app.engine.value_reliability.
+    operator_realization_factors`) corrects ``scored_move_value``'s static prior
+    by an operator's PROVEN track record on this project — demote-only, neutral
+    ``1.0`` default (see that module), so a project with no proof history yet
+    scores exactly as it did before this signal existed."""
+    if not value_aware:
+        return None, None, None
+    from app.engine.move_centrality import js_module_fanin, module_in_degrees
+    from app.engine.value_reliability import operator_realization_factors
+
+    return (module_in_degrees(root), js_module_fanin(root),
+           operator_realization_factors(root))
 
 
 def compile_objective(project_root: str | Path, objective: str = "dead-params",
@@ -1233,17 +1326,16 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     # so every default ``develop``/``--all``/``ascend`` campaign is byte-identical.
     value_aware = min_move_value > 0.0
 
-    # Blast-radius tiebreak rides the SAME opt-in gate: the fan-in map is computed
-    # (once, then memoized per root by ``module_in_degrees``) ONLY on the value-
-    # aware path, and stays ``None`` otherwise — so a default run never even walks
-    # the dependency graph and its move order is byte-identical to today. On the
-    # value-aware path it breaks equal-value ties toward the highest-fan-in move.
-    from app.engine.move_centrality import module_in_degrees
-    move_centrality = module_in_degrees(root) if value_aware else None
+    # The opt-in value-aware signals (blast-radius x2 + proof-of-fix realization),
+    # each computed ONCE per campaign and each a no-op (None) off the value-aware
+    # path — see :func:`_value_aware_signals`.
+    move_centrality, js_centrality, realization = _value_aware_signals(
+        root, value_aware)
 
     def candidates() -> list[Move]:
         return _ordered_candidates(generate, root, scope_module, memory,
-                                   last_operator, value_aware, move_centrality)
+                                   last_operator, value_aware, move_centrality,
+                                   realization, js_centrality)
 
     def measure() -> float:
         # Scoped runs measure the local debt (remaining scoped moves); a global
@@ -1286,7 +1378,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
         progressed, current, last_operator = _run_pass(
             result, moves, root, current, max_steps, verify, effective_scope,
             last_operator, memory, value_aware, min_move_value, covered_only,
-            skip_targets, campaign_baseline)
+            skip_targets, campaign_baseline, realization)
         if not progressed:
             break
 

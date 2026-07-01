@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.engine.develop_registry import (
+    BUILTIN_OBJECTIVE_NAMES,
     ObjectiveSpec,
     discover,
     objective,
@@ -143,3 +144,44 @@ def test_soundness_lock_does_not_break_import_or_objective_count():
     names = list(available_objectives())
     assert len(names) == 93
     assert [n for n in names if n not in SOUNDNESS_STRATEGY] == []
+
+
+# --- BUILTIN_OBJECTIVE_NAMES: the dependency-free roster stays in sync --------
+#
+# BUILTIN_OBJECTIVE_NAMES exists ONLY so a cycle-sensitive consumer (e.g.
+# value_landed.value_coverage_gaps) can list "every objective name" without
+# importing objective_compiler (whose heavy transform imports would close a
+# static cycle back through value_landed -> value_reliability ->
+# objective_compiler). This drift test is the append-only guard: it must always
+# equal objective_compiler._OBJECTIVES's keys exactly, and the UNION with
+# registered_specs() must always equal available_objectives() exactly — so a
+# new built-in objective added without updating this roster is caught here,
+# not silently drifting the cycle-safe consumer's view out of sync.
+
+def test_builtin_objective_names_matches_objective_compiler_builtins():
+    from app.engine.objective_compiler import _OBJECTIVES
+    assert BUILTIN_OBJECTIVE_NAMES == frozenset(_OBJECTIVES)
+
+
+def test_builtin_objective_names_union_registered_equals_available():
+    from app.engine.objective_compiler import available_objectives
+    union = BUILTIN_OBJECTIVE_NAMES | set(registered_specs())
+    assert union == set(available_objectives())
+
+
+def test_develop_registry_module_does_not_import_objective_compiler():
+    # The architecture invariant the header comment states: develop_registry has
+    # ZERO dependency on objective_compiler, so a cycle-sensitive consumer of
+    # BUILTIN_OBJECTIVE_NAMES never re-closes the loop through this module.
+    import ast
+    from pathlib import Path
+
+    src = Path("app/engine/develop_registry.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    assert not any("objective_compiler" in name for name in imported)
