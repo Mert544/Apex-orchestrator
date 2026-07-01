@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.engine.develop_registry import (
     ObjectiveSpec,
     discover,
@@ -46,29 +48,37 @@ def test_builtins_win_name_clash():
 
 
 def test_decorator_registers():
+    # Uses an existing manifest name so the register-time soundness lock passes;
+    # the point of the test is the decorator MECHANICS (it registers the wrapped
+    # moves fn under the given name/fitness), which are name-agnostic. Restored
+    # (re-discovered) afterwards so the built-in fitness is not left overridden.
     def _fit(project_root):
         return 0.0
 
-    @objective("demo-noop", _fit)
+    @objective("sort-imports", _fit)
     def _moves(project_root):
         return []
 
     try:
-        assert "demo-noop" in registered_specs()
-        spec = registered_specs()["demo-noop"]
+        assert "sort-imports" in registered_specs()
+        spec = registered_specs()["sort-imports"]
         assert spec.fitness is _fit and spec.moves is _moves
     finally:
         from app.engine import develop_registry
-        develop_registry._REGISTRY.pop("demo-noop", None)
+        develop_registry._REGISTRY.pop("sort-imports", None)
+        develop_registry._DISCOVERED = False
 
 
 def test_register_returns_spec():
-    spec = ObjectiveSpec("demo-x", lambda p: 1.0, lambda p: [])
+    # Existing manifest name (the soundness lock passes); the assertion under test
+    # is that register() RETURNS the spec it stored. Restored afterwards.
+    spec = ObjectiveSpec("dedup", lambda p: 1.0, lambda p: [])
     try:
         assert register(spec) is spec
     finally:
         from app.engine import develop_registry
-        develop_registry._REGISTRY.pop("demo-x", None)
+        develop_registry._REGISTRY.pop("dedup", None)
+        develop_registry._DISCOVERED = False
 
 
 def test_migrated_objective_still_compiles(tmp_path):
@@ -88,3 +98,47 @@ def test_migrated_objective_still_compiles(tmp_path):
                                apply=True, verify=False)
     assert result.steps  # the discovered objective produced a verified move
     assert "isinstance(x, (int, float))" in (tmp_path / "app" / "m.py").read_text()
+
+
+# --- register-time soundness-manifest lock (autonomy trust-floor) ------------
+
+def test_register_rejects_objective_absent_from_soundness_manifest():
+    # A NEW objective with no declared soundness strategy must FAIL LOUDLY at
+    # register (import) time, not skew silently until the late self-audit. The
+    # name is genuinely absent from SOUNDNESS_STRATEGY, so this is the intended
+    # trip — non-tautological.
+    from app.engine.soundness_audit import SOUNDNESS_STRATEGY
+    missing_name = "totally-unregistered-objective-zzz"
+    assert missing_name not in SOUNDNESS_STRATEGY  # the precondition the trip needs
+    with pytest.raises(ValueError, match=missing_name):
+        register(ObjectiveSpec(missing_name, lambda p: 0.0, lambda p: []))
+    # The failed registration left no partial entry behind.
+    assert missing_name not in registered_specs()
+
+
+def test_register_accepts_objective_present_in_soundness_manifest():
+    # A name that IS in the manifest registers fine — the lock trips only on a
+    # truly-undeclared objective. Use a manifest name not otherwise registered
+    # here, and restore the registry afterwards.
+    from app.engine.soundness_audit import SOUNDNESS_STRATEGY
+    present_name = "modernize"
+    assert present_name in SOUNDNESS_STRATEGY
+    spec = ObjectiveSpec(present_name, lambda p: 1.0, lambda p: [])
+    try:
+        assert register(spec) is spec  # registers, returns the spec
+        assert registered_specs()[present_name] is spec
+    finally:
+        from app.engine import develop_registry
+        develop_registry._REGISTRY.pop(present_name, None)
+        develop_registry._DISCOVERED = False  # re-discover to restore the built-in
+
+
+def test_soundness_lock_does_not_break_import_or_objective_count():
+    # The lock runs at import for every current objective; all 91 are already in
+    # SOUNDNESS_STRATEGY, so import must stay clean and the count unchanged (no
+    # import breakage, no count-pin drift).
+    from app.engine.objective_compiler import available_objectives
+    from app.engine.soundness_audit import SOUNDNESS_STRATEGY
+    names = list(available_objectives())
+    assert len(names) == 91
+    assert [n for n in names if n not in SOUNDNESS_STRATEGY] == []

@@ -51,6 +51,29 @@ def test_strategy_reverse_tripwire_flags_stale_name():
     assert "add-final" not in stale
 
 
+def test_manifest_lives_in_dependency_free_leaf_and_is_re_exported():
+    # The two manifest constants live in the leaf ``soundness_manifest`` (which
+    # imports nothing from the engine, so ``develop_registry`` can read it without a
+    # cycle) and are RE-EXPORTED by ``soundness_audit`` as the SAME objects, so the
+    # audit's public API is unchanged. Guards the cycle-avoidance decision: re-inlining
+    # the manifest into ``soundness_audit`` would reintroduce the register-time cycle.
+    from app.engine import soundness_manifest as manifest
+    assert sa.SOUNDNESS_STRATEGY is manifest.SOUNDNESS_STRATEGY
+    assert sa.SCOPE_VERIFY_ALLOWLIST is manifest.SCOPE_VERIFY_ALLOWLIST
+    # The leaf imports nothing from the engine (no back-edge -> no import cycle).
+    import ast
+    from pathlib import Path
+    src = Path(manifest.__file__).read_text(encoding="utf-8")
+    engine_imports = [
+        n for node in ast.walk(ast.parse(src))
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for n in ([node.module] if isinstance(node, ast.ImportFrom) else
+                  [a.name for a in node.names])
+        if n and n.startswith("app.")
+    ]
+    assert engine_imports == []
+
+
 def test_strategy_reverse_tripwire_clean_on_live_registry():
     assert sa.strategy_subset_of_registry() == []
 
@@ -302,7 +325,15 @@ _PLANTED_FRAGILE = '''\
 from __future__ import annotations
 from pathlib import Path
 from app.engine.develop_registry import ObjectiveSpec, register
+from app.engine.soundness_audit import SOUNDNESS_STRATEGY
 from app.execution.cross_file_rename import RenamePlan
+
+# The register-time soundness lock refuses an objective absent from the manifest.
+# Declare this planted probe's strategy IN THE MODULE so it holds in BOTH the parent
+# process AND the determinism subprocess (each imports this file from disk afresh); a
+# parent-only monkeypatch would not reach the child. The test's finally pops the
+# in-process entry; the child is short-lived, so its process-local entry dies with it.
+SOUNDNESS_STRATEGY.setdefault("zz-planted-fragile", "TEST-planted-env-fragile-probe")
 
 
 def _moves(project_root):
@@ -338,6 +369,9 @@ def test_determinism_catches_a_planted_env_fragile_objective():
     planted = objs / "zz_planted_probe.py"
     planted.write_text(_PLANTED_FRAGILE, encoding="utf-8")
     try:
+        # Importing the planted module both registers the objective AND declares its
+        # soundness strategy (the module inserts its own manifest entry so the
+        # register-time lock passes here and in the determinism subprocess).
         import app.execution.objectives.zz_planted_probe  # noqa: F401  -- register
         discover(force=True)
         fixture = sa.corpus_root(_REPO) / "shebang_coding"
@@ -350,6 +384,7 @@ def test_determinism_catches_a_planted_env_fragile_objective():
         sys.modules.pop("app.execution.objectives.zz_planted_probe", None)
         from app.engine import develop_registry
         develop_registry._REGISTRY.pop("zz-planted-fragile", None)
+        sa.SOUNDNESS_STRATEGY.pop("zz-planted-fragile", None)
         discover(force=True)
 
 

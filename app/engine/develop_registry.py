@@ -83,7 +83,32 @@ _DISCOVERED = False
 def register(spec: ObjectiveSpec) -> ObjectiveSpec:
     """Register (or replace) an objective by name. Returns the spec, so it can
     be used as ``SPEC = register(ObjectiveSpec(...))``. Re-registering the same
-    name (e.g. a module re-imported under test) is harmless — last write wins."""
+    name (e.g. a module re-imported under test) is harmless — last write wins.
+
+    SOUNDNESS LOCK (autonomy trust-floor): a self-registering objective MUST
+    declare HOW it is sound in ``SOUNDNESS_STRATEGY`` before it can register. An
+    objective absent from that manifest raises :class:`ValueError` HERE — at import
+    — rather than skewing silently until the late self-audit, so the hands-off
+    develop loop can never run an objective that has no reviewed soundness argument.
+    The manifest already covers every current objective (the forward tripwire
+    ``soundness_audit.strategy_completeness`` proves it), so this fires only for a
+    NEW objective added without a strategy entry — the intended trip.
+
+    ``SOUNDNESS_STRATEGY`` is read from the dependency-free leaf
+    ``app.engine.soundness_manifest`` (NOT ``soundness_audit``): that leaf imports
+    nothing from the engine, so this edge forms no import cycle — whereas importing
+    ``soundness_audit`` would close ``develop_registry`` -> ``soundness_audit`` ->
+    ``objective_compiler`` -> ``develop_registry``, the very cycle the module header
+    keeps this registry clear of. Imported inside the function to keep module import
+    cheap; the manifest is a tiny stdlib-only dict, so the call cost is negligible."""
+    from app.engine.soundness_manifest import SOUNDNESS_STRATEGY
+
+    if spec.name not in SOUNDNESS_STRATEGY:
+        raise ValueError(
+            f"develop objective {spec.name!r} has no declared soundness strategy — "
+            "add it to SOUNDNESS_STRATEGY in app/engine/soundness_manifest.py (state "
+            "HOW the transform is sound) before registering it. The autonomous develop "
+            "loop refuses to run an objective with no reviewed soundness argument.")
     _REGISTRY[spec.name] = spec
     return spec
 

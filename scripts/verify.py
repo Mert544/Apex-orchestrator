@@ -124,6 +124,21 @@ def run_ruff() -> int:
                           cwd=str(ROOT)).returncode
 
 
+def run_north_star_audit() -> int:
+    """Run ``apex self-audit --north-star``; return its exit code (0 = PASS/no drift).
+
+    The standing North-Star denetçi (CLAUDE.md names it the durable, automatic form
+    of the mission audit) as a first-class gate STEP, a peer of ruff: every gate run
+    auto-checks that the objective corpus has not drifted from concrete-development
+    (the audit exits non-zero on drift). It is a fast in-process report run in its own
+    subprocess — the same isolation discipline ``run_ruff`` keeps — so a red audit
+    fails the gate loudly instead of being caught only at wave close. Zero-token,
+    offline, deterministic."""
+    return subprocess.run(
+        [sys.executable, "-m", "app.cli", "self-audit", "--north-star"],
+        cwd=str(ROOT)).returncode
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """The argument parser — kept apart so ``main`` reads as pure control flow."""
     parser = argparse.ArgumentParser(description="Apex chunked verification gate")
@@ -202,6 +217,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_lint and not args.pytest_args:
         print("\n===== ruff check app/ =====", flush=True)
         results.append(("ruff", run_ruff()))
+        print("\n===== self-audit --north-star =====", flush=True)
+        results.append(("north-star", run_north_star_audit()))
 
     lines, code = render_summary(results, time.time() - start)
     for line in lines:

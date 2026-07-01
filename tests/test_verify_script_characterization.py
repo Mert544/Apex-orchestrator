@@ -39,12 +39,13 @@ FAKE_FILES = [
 ]
 
 
-def _drive(argv, chunk_codes, ruff_code):
+def _drive(argv, chunk_codes, ruff_code, north_star_code=0):
     """Run verify.main(argv) with step-runners + clock mocked.
 
     chunk_codes is consumed in order (cycled) for each run_chunk call; ruff_code
-    is the run_ruff return. The clock yields a fixed 42s elapsed. Returns
-    (stdout, exit_code)."""
+    is the run_ruff return; north_star_code is the run_north_star_audit return
+    (defaults to 0 = PASS/no drift, the current-tree posture). The clock yields a
+    fixed 42s elapsed. Returns (stdout, exit_code)."""
     state = {"i": 0}
 
     def fake_run_chunk(files, extra):
@@ -56,6 +57,7 @@ def _drive(argv, chunk_codes, ruff_code):
     with mock.patch.object(verify, "discover_tests", return_value=list(FAKE_FILES)), \
          mock.patch.object(verify, "run_chunk", side_effect=fake_run_chunk), \
          mock.patch.object(verify, "run_ruff", return_value=ruff_code), \
+         mock.patch.object(verify, "run_north_star_audit", return_value=north_star_code), \
          mock.patch.object(verify.time, "time", side_effect=[100.0, 142.7]), \
          contextlib.redirect_stdout(buf):
         rc = verify.main(argv)
@@ -71,15 +73,26 @@ def test_all_pass_with_ruff():
         "\n===== chunk 3/4 — 2 file(s) =====\n"
         "\n===== chunk 4/4 — 2 file(s) =====\n"
         "\n===== ruff check app/ =====\n"
+        "\n===== self-audit --north-star =====\n"
         "\n" + "=" * 48 + "\n"
         "  PASS  chunk 1/4\n"
         "  PASS  chunk 2/4\n"
         "  PASS  chunk 3/4\n"
         "  PASS  chunk 4/4\n"
         "  PASS  ruff\n"
+        "  PASS  north-star\n"
         f"  {'─' * 44}\n"
-        "  ✅ all green (5 step(s), 43s)\n"
+        "  ✅ all green (6 step(s), 43s)\n"
     )
+
+
+def test_north_star_drift_fails_gate():
+    # The North-Star denetçi wired as a peer of ruff: a non-zero self-audit
+    # (drift detected) fails the gate, printed like the ruff FAIL line.
+    out, rc = _drive([], [0], 0, north_star_code=1)
+    assert rc == 1
+    assert "  FAIL  north-star\n" in out
+    assert "  ❌ 1 step(s) failed: north-star  (43s)\n" in out
 
 
 def test_ruff_failure_returns_one():
@@ -123,22 +136,28 @@ def test_chunk_out_of_range_returns_two():
 def test_no_lint_skips_ruff():
     out, rc = _drive(["--no-lint"], [0], 0)
     assert rc == 0
+    # --no-lint drops the whole static-gate group (ruff AND its north-star peer).
     assert "ruff" not in out
+    assert "north-star" not in out
     assert "  ✅ all green (4 step(s), 43s)\n" in out
 
 
-def test_lint_only_runs_only_ruff():
+def test_lint_only_runs_ruff_and_north_star():
     out, rc = _drive(["--lint-only"], [0], 0)
     assert rc == 0
     assert "chunk" not in out
     assert "===== ruff check app/ =====" in out
-    assert "  ✅ all green (1 step(s), 43s)\n" in out
+    assert "===== self-audit --north-star =====" in out
+    # --lint-only runs the static-gate group: ruff + north-star, no tests.
+    assert "  ✅ all green (2 step(s), 43s)\n" in out
 
 
 def test_pytest_passthrough_disables_ruff():
     out, rc = _drive(["--", "-x", "-k", "foo"], [0], 0)
     assert rc == 0
+    # A pytest passthrough disables the whole static-gate group (ruff + north-star).
     assert "ruff" not in out
+    assert "north-star" not in out
     assert "  ✅ all green (4 step(s), 43s)\n" in out
 
 
@@ -148,7 +167,8 @@ def test_more_chunks_than_files_drops_empty():
     # 10 files -> 10 non-empty chunks even though 20 were requested.
     for n in range(1, 11):
         assert f"===== chunk {n}/10 — 1 file(s) =====" in out
-    assert "  ✅ all green (11 step(s), 43s)\n" in out
+    # 10 chunk steps + ruff + north-star = 12 steps.
+    assert "  ✅ all green (12 step(s), 43s)\n" in out
 
 
 @pytest.mark.parametrize("chunks", [1, 3, 4, 6])
@@ -176,6 +196,7 @@ def _drive_parallel(argv, fail_file=None, ruff_code=0):
     with mock.patch.object(verify, "discover_tests", return_value=list(FAKE_FILES)), \
          mock.patch.object(verify, "run_chunk_captured", side_effect=fake_captured), \
          mock.patch.object(verify, "run_ruff", return_value=ruff_code), \
+         mock.patch.object(verify, "run_north_star_audit", return_value=0), \
          mock.patch.object(verify.time, "time", side_effect=[100.0, 142.7]), \
          contextlib.redirect_stdout(buf):
         rc = verify.main(argv)
@@ -188,7 +209,7 @@ def test_default_jobs_is_sequential_unchanged():
     with mock.patch.object(verify, "run_chunk_captured",
                            side_effect=AssertionError("parallel path must not run")):
         out, rc = _drive([], [0], 0)
-    assert rc == 0 and "  ✅ all green (5 step(s), 43s)\n" in out
+    assert rc == 0 and "  ✅ all green (6 step(s), 43s)\n" in out
 
 
 def test_parallel_all_pass_orders_chunks_and_is_green():
@@ -197,7 +218,8 @@ def test_parallel_all_pass_orders_chunks_and_is_green():
     # Headers appear in CHUNK ORDER despite concurrent execution.
     pos = [out.index(f"===== chunk {n}/4 ") for n in range(1, 5)]
     assert pos == sorted(pos)
-    assert "  ✅ all green (5 step(s), 43s)\n" in out
+    # 4 chunk steps + ruff + north-star = 6 steps.
+    assert "  ✅ all green (6 step(s), 43s)\n" in out
     assert out.count("captured ") == 4  # every chunk's buffered block replayed
 
 
