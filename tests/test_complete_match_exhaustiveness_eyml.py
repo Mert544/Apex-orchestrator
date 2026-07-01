@@ -440,6 +440,23 @@ def test_refuses_dispatch_last_in_try_body_with_reachable_except():
     assert complete_match_exhaustiveness(src) is None  # the except would catch the raise
 
 
+def test_refuses_dispatch_last_in_trystar_body_with_reachable_except():
+    # ``try/except*`` (exception groups, 3.11+) is ``ast.TryStar`` — a SIBLING of
+    # ``ast.Try``, not a subclass — so the try-reachability guard must cover it too:
+    # the appended ``raise AssertionError`` would be caught by ``except* AssertionError``,
+    # rerouting the silent fall-through. Refuse.
+    src = (
+        "from enum import Enum\n\n\nclass S(Enum):\n"
+        "    A = 1\n    B = 2\n    C = 3\n\n\n"
+        "def f(s: S) -> int:\n    try:\n"
+        "        if s == S.A:\n            return 1\n"
+        "        elif s == S.B:\n            return 2\n"
+        "    except* AssertionError:\n        return -1\n"
+        "    return 0\n"
+    )
+    assert complete_match_exhaustiveness(src) is None  # except* would catch the raise
+
+
 def test_refuses_match_last_in_try_body_with_broad_except():
     # A ``match`` terminal in a ``try:`` body whose broad ``except Exception:`` would
     # catch the sentinel raise — refuse.

@@ -1182,7 +1182,11 @@ def _develop_auto(args, target, grade_before, max_steps, verify, apply) -> int:
                                    scope_verify=getattr(args, "fast", False),
                                    min_move_value=_min_move_value(args),
                                    covered_only=covered_only)
-        if result.steps or result.fitness_start > 0:
+        if (result.steps or result.fitness_start > 0
+                or result.verification_unavailable):
+            # Retain a verification-unavailable decline so `apex develop --auto`
+            # surfaces the loud "pytest can't verify here" message instead of a
+            # false "Nothing to do" (parity with compile_all / compile_goal).
             results.append(result)
     changed = apply and any(r.steps for r in results)
     _n_withheld, withheld_msg = _withheld_summary(results)

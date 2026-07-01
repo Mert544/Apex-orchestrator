@@ -491,8 +491,14 @@ def _in_reachable_try_ids(tree: ast.Module) -> set[int]:
                 for descendant in ast.walk(stmt):
                     risky.add(id(descendant))
 
+    # ``try/except*`` (exception groups, 3.11+) is ``ast.TryStar`` — a SIBLING of
+    # ``ast.Try`` under ``ast.stmt``, not a subclass — with the identical
+    # body/handlers/orelse/finalbody shape, so a dispatch terminal in an
+    # ``except*`` region is exactly as reroute-risky and must be marked too.
+    # ``getattr`` keeps this importable on 3.10 (repo floor), where TryStar is absent.
+    _try_types = (ast.Try, getattr(ast, "TryStar", ()))
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Try):
+        if not isinstance(node, _try_types):
             continue
         has_handlers = bool(node.handlers)
         has_finally = bool(node.finalbody)

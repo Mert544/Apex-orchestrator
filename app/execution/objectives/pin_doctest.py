@@ -122,28 +122,58 @@ def _doctest_examples_already_enforced_project_wide(root: Path) -> bool:
     return False
 
 
+def _repr_value_is_unordered(value: object) -> bool:
+    """True when ``value`` IS, or transitively CONTAINS, a ``set``/``frozenset``/
+    ``dict`` — a container whose iteration (and therefore ``repr``) order is
+    ``PYTHONHASHSEED``-dependent. Recurses through ``list``/``tuple`` elements so a
+    set nested inside an otherwise-ordered container (``[{'a', 'b'}]``,
+    ``({'x'},)``) is caught too. ``frozenset`` is included for completeness (it
+    can't arise from ``literal_eval`` — a constructor call — but a nested one from
+    another source would be just as seed-fragile)."""
+    if isinstance(value, (set, frozenset, dict)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return any(_repr_value_is_unordered(v) for v in value)
+    return False
+
+
 def _want_is_unordered_repr(want: str) -> bool:
-    """True when a doctest example's EXPECTED output ``want`` is a ``set``/``dict``
-    repr — an output whose element/key order is ``PYTHONHASHSEED``-dependent (a set)
-    or could be set-iteration-derived (a dict).
+    """True when a doctest example's EXPECTED output ``want`` is (or embeds) a
+    ``set``/``frozenset``/``dict`` repr — an output whose element/key order is
+    ``PYTHONHASHSEED``-dependent (a set/frozenset) or could be set-iteration-derived
+    (a dict).
 
     The LANDED pin-doctest test re-runs the example via :mod:`doctest` at the USER's
     runtime seed, comparing the live ``repr`` against this literal text. A set repr
     like ``{'a', 'b'}`` re-renders in a DIFFERENT order under another seed, so the
     landed test would be RED elsewhere — a future-red fake-green. We REFUSE to pin
-    such an example (conservative: a dict repr is refused too, since its key order
-    can be set-derived, and the degenerate empty ``set()``/``{}`` — though stable — is
-    refused as well, costing nothing). Pure: parses ``want`` with
-    :func:`ast.literal_eval` (no execution; modern ``literal_eval`` resolves
-    ``set()`` to an empty set); a non-literal ``want`` is not a set/dict repr."""
+    such an example. Coverage (conservative — over-refusal only costs an un-pinned
+    example, under-refusal ships a flaky test):
+
+    - a ``frozenset({...})`` repr is a constructor CALL, so ``literal_eval`` can't
+      parse it — caught by shape (prefix) BEFORE the literal probe;
+    - a parsed value is scanned RECURSIVELY (:func:`_repr_value_is_unordered`), so a
+      set/dict NESTED inside a list/tuple (``[{'a', 'b'}]``) is refused too, not just
+      a top-level one;
+    - a non-literal ``want`` we can't parse but that carries a ``{`` brace (a
+      ``Counter({...})`` / ``defaultdict(int, {...})`` / other mapping-bearing custom
+      repr) is refused conservatively; a brace-free non-literal (a plain object or
+      ``Enum``/``datetime`` repr — deterministically ordered) stays pinnable.
+
+    Pure: no execution; ``literal_eval`` resolves ``set()``/``{}`` to empty
+    containers (still refused — stable but costs nothing to skip)."""
     text = want.strip()
     if not text:
         return False
+    if text.startswith("frozenset(") or text == "frozenset()":
+        return True
     try:
         value = ast.literal_eval(text)
     except (ValueError, SyntaxError, TypeError, RecursionError, MemoryError):
-        return False
-    return isinstance(value, (set, dict))
+        # A non-literal repr: refuse when it embeds a ``{...}`` (set/dict/mapping)
+        # whose order can shift under another seed; leave brace-free reprs pinnable.
+        return "{" in text
+    return _repr_value_is_unordered(value)
 
 
 def _function_has_unordered_want(source: str, name: str, lineno: int) -> bool:

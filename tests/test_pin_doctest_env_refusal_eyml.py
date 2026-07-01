@@ -84,6 +84,31 @@ def test_want_is_unordered_repr_accepts_ordered_outputs():
     assert _want_is_unordered_repr("not a literal") is False
 
 
+def test_want_is_unordered_repr_flags_frozenset_nested_and_mapping_reprs():
+    # frozenset repr is a constructor CALL (``literal_eval`` can't parse it) yet its
+    # element order is exactly as PYTHONHASHSEED-dependent as a set — caught by shape.
+    assert _want_is_unordered_repr("frozenset({'a', 'b'})") is True
+    assert _want_is_unordered_repr("frozenset()") is True
+    # a set/dict NESTED inside an otherwise-ordered container is caught (recursive):
+    # a plain top-level-type check would have missed these seed-fragile reprs.
+    assert _want_is_unordered_repr("[{'a', 'b'}]") is True
+    assert _want_is_unordered_repr("({'x'}, {'y'})") is True
+    assert _want_is_unordered_repr("[{'k': 1}]") is True
+    assert _want_is_unordered_repr("(1, {2, 3})") is True
+    # a non-literal custom repr embedding a ``{...}`` mapping/set is refused
+    # conservatively (order can shift under another seed).
+    assert _want_is_unordered_repr("Counter({'a': 1})") is True
+    assert _want_is_unordered_repr("defaultdict(int, {'a': 1})") is True
+
+
+def test_want_is_unordered_repr_keeps_brace_free_nonliteral_reprs_pinnable():
+    # A brace-free non-literal repr is deterministically ordered → still pinnable
+    # (the fix must not over-refuse every custom repr).
+    assert _want_is_unordered_repr("datetime.date(2020, 1, 1)") is False
+    assert _want_is_unordered_repr("Color.RED") is False
+    assert _want_is_unordered_repr("[1, [2, 3], (4, 5)]") is False  # nested ordered
+
+
 # --- pin-doctest REFUSES set/dict-repr examples -------------------------------
 
 

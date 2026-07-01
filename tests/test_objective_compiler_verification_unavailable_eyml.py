@@ -251,3 +251,46 @@ def test_step_flag_is_additive_and_tags_distinctly():
     tag = _compile_tier_tag(unavailable)
     assert "verification-unavailable" in tag
     assert "no-suite" not in tag
+
+
+# --- (e) `apex develop --auto` (the THIRD aggregator) also surfaces the decline
+# `_develop_auto` in cli_autonomy has its OWN result filter, independent of
+# compile_all/compile_goal. It once dropped a verification-unavailable result
+# (`if result.steps or result.fitness_start > 0`) → a false "Nothing to do:
+# every objective is already at zero" instead of the loud message. This pins the
+# third aggregator surfaces the decline too.
+
+def test_develop_auto_surfaces_verification_unavailable_not_nothing_to_do(
+        tmp_path, monkeypatch):
+    import argparse
+    import contextlib
+    import io
+
+    import app.cli_autonomy as ca
+
+    root = _suited_project(tmp_path)
+    # Pin the swept objective set to one cheap objective so the run is fast and
+    # deterministic; the up-front decline in compile_objective fires regardless of
+    # WHICH objective is selected (it precedes any move generation).
+    monkeypatch.setattr(ca, "_select_for_sweep",
+                        lambda *a, **k: ["wire-module-exports"])
+    _patch_probe(monkeypatch, importable=False)
+
+    parser = argparse.ArgumentParser(prog="apex")
+    sub = parser.add_subparsers(dest="command")
+    ca.register_parsers(sub)
+    args = parser.parse_args(
+        ["develop", "--auto", "--apply", "--target", str(root)])
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = ca._develop_auto(args, root, grade_before=0.0, max_steps=8,
+                              verify=True, apply=True)
+    out = buf.getvalue()
+    assert rc == 0
+    # The loud, actionable message surfaces; the false "nothing to do" does NOT.
+    assert "pytest is not importable" in out
+    assert "already at zero" not in out
+    assert "Nothing to do" not in out
+    # And nothing was landed (declined before any move work).
+    assert (root / "app" / "m.py").read_text() == _THREE_DEAD
