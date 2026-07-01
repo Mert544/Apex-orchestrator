@@ -24,6 +24,16 @@ Conservative by design — it REFUSES (returns a plan whose ``.blockers`` make
     plans editing the same file would each clobber the other's bytes, so the
     union is ill-defined and the composition refuses.
 
+:func:`compose_chain` folds that pairwise merge over a WHOLE LIST of plans: a
+left fold that grows one accumulated multi-file plan and re-runs :func:`compose_plans`
+against it at every step. Because the accumulator carries the running UNION of
+every file merged so far, ``compose_plans``' own overlap guard now checks each new
+plan against the ENTIRE accumulated set — so the N-way merge REFUSES the moment
+ANY two plans in the list touch the same file, never a silent clobber. The soundness
+carries over VERBATIM: the fold only composes plans (it never writes a file, never
+calls :func:`apply_rename`), so the merged plan still flows through the ONE legal
+gated writer, gated once and unit-rolled-back.
+
 Deterministic (a pure dict-merge with ``sorted`` on the list fields — no clock,
 no randomness), zero-token, idempotent in shape.
 """
@@ -78,4 +88,40 @@ def compose_plans(a: RenamePlan, b: RenamePlan) -> RenamePlan:
     merged.scoped_test_nodes = sorted(included)
     merged.scoped_excluded_nodes = sorted(excluded - included)
     merged.warnings = a.warnings + b.warnings
+    return merged
+
+
+def compose_chain(plans: list[RenamePlan]) -> RenamePlan:
+    """LEFT-FOLD the pairwise :func:`compose_plans` over ``plans`` — merge a whole
+    whole-file-DISJOINT set of single-file plans into ONE multi-file atomic plan.
+
+    The canonical N-way coordinated change a team writes by hand: implement a stub
+    in module A, wire its export in package B, infer hints in module C — each a
+    single-file plan today. This folds them into ONE :class:`RenamePlan` so
+    :func:`apply_rename` writes the whole set, gates it ONCE, and rolls every file
+    back as a unit on any regression.
+
+    The fold grows one ACCUMULATED plan and re-runs :func:`compose_plans` against it
+    at each step. Since the accumulator carries the running UNION of every file
+    merged so far, ``compose_plans``' existing overlap guard checks each next plan
+    against the ENTIRE accumulated union — so the merge REFUSES (returns a blocked
+    plan that lands nothing) the moment ANY two plans in the list share a file, and
+    equally when any sub-plan is blocked or empty. The refusal is ``compose_plans``'
+    verbatim (never a new gate, never a silent clobber); the fold merely HONORS it,
+    returning the blocked plan as soon as one appears rather than forcing a
+    conflicting merge.
+
+    Refuses a list of FEWER THAN TWO plans: a chain needs at least two plans to
+    compose (a lone plan is not a merge — the caller should land it directly).
+    Pure, IO-free, AST-free, deterministic — the same list yields a byte-identical
+    plan, and it NEVER calls :func:`apply_rename` (the single-gated-writer contract
+    is preserved: the merged plan flows through the one legal call site)."""
+    if len(plans) < 2:
+        return _refusal(
+            "compose_chain needs at least two plans to merge — nothing to compose")
+    merged = plans[0]
+    for plan in plans[1:]:
+        merged = compose_plans(merged, plan)
+        if merged.blockers:
+            return merged  # honor the refusal — overlap / blocked / empty sub-plan
     return merged
