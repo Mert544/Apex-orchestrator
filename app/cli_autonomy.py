@@ -347,6 +347,28 @@ def _auto_synthesis_kwargs(args) -> dict:
     return kwargs
 
 
+def _auto_dream_boost(target) -> dict:
+    """The dream-confluence priority boost `apex auto` threads into
+    ``plan_roadmap`` so the value board AMPLIFIES the organism's OWN overnight
+    discovery — the file the dream graduated as a confluence leads within its
+    phase — instead of ranking on the AST signals alone.
+
+    Reuses ``dream_signal_weight`` (a pure read of the persisted promotion store,
+    no LIVE dream, no clock/random, no writes), so it is cheap enough to run every
+    auto invocation and deterministic. REFUSAL-SAFE: any failure — or simply no
+    persisted confluence — yields an EMPTY map, and an empty ``dream_boost`` leaves
+    ``plan_roadmap``'s ranking byte-for-byte identical to the pre-dream AST-only
+    order. No dream ⇒ zero behaviour change; the map only ever REORDERS within a
+    phase, never changes WHICH steps run, so the suite-gated + auto-rollback
+    landings are untouched (never-fake-green is not on this path)."""
+    try:
+        from app.engine.dream_landing import dream_signal_weight
+
+        return dream_signal_weight(str(target))
+    except Exception:
+        return {}
+
+
 def _auto_deep_disclosure(args) -> str:
     """The one-line disclosure shown when ``--deep`` is OFF: deeper (pytest-cost)
     synthesis is available, so the cost stays visible and opt-in (never silent).
@@ -626,15 +648,22 @@ def _auto_recommend(args, target, goal, shape, roadmap, sec_n,
 
 
 def _auto_act(args, target, goal, bridge, engine, report, mode,
-              commit, decision, emit_json) -> int:
+              commit, decision, emit_json, dream_boost=None) -> int:
     """The act path: roadmap-ordered, verified, capped guarded apply + report.
 
     SAFE-by-default SWEEP: lands ONLY moves a test actually exercises (covered ⇒
     verified). A green-but-unreferencing move is PREVIEWED but withheld unless
-    ``--allow-weak`` restores today's behaviour (byte-identical apply)."""
+    ``--allow-weak`` restores today's behaviour (byte-identical apply).
+
+    ``dream_boost`` amplifies dream-graduated confluences in the roadmap ranking
+    (leads within a phase); an empty/None map leaves the plan byte-identical, so
+    a no-dream project applies exactly what it would have pre-dream. The boost
+    only REORDERS — the covered-only, suite-gated, auto-rollback landing is
+    untouched (never-fake-green is off this path)."""
     from app.engine.idea_action_bridge import render_maintenance_markdown
 
     plan = bridge.plan_roadmap(report, mode=mode, project_root=str(target), draft=True,
+                               dream_boost=dream_boost,
                                **_auto_synthesis_kwargs(args))
     available = plan.stats.get("executable_steps", 0)
     cap = (getattr(args, "max_apply", 0) or 8)
@@ -689,6 +718,30 @@ def _auto_act(args, target, goal, bridge, engine, report, mode,
     return 0
 
 
+_AUTO_EVOLVE_MAX_CYCLES = 10
+
+
+def _auto_evolve_delegate(args: argparse.Namespace) -> int | None:
+    """`apex auto --evolve N`: run the self-improvement LOOP for N cycles by
+    DELEGATING to the exact same ``EvolutionLoop`` ``apex evolve`` drives — a
+    one-command convenience, NOT a second implementation of the loop.
+
+    ``N <= 0`` (the default) returns None → the caller keeps today's one-pass
+    ``apex auto`` behaviour, byte-for-byte. ``N >= 1`` clamps N to
+    ``[1, _AUTO_EVOLVE_MAX_CYCLES]`` (so a fat-fingered ``--evolve 999`` can't
+    launch an unbounded overnight run), stamps it onto ``args.max_cycles``, and
+    hands off to :func:`cmd_evolve` — which builds ``EvolutionLoop(max_cycles=N)``
+    and calls ``.run()``. The per-cycle verify + auto-rollback and the
+    before/after proof are inherited unchanged (never-fake-green is EvolutionLoop's
+    own, untouched here); returns its exit code so the loop's report is the output.
+    """
+    n = int(getattr(args, "evolve", 0) or 0)
+    if n <= 0:
+        return None
+    args.max_cycles = max(1, min(_AUTO_EVOLVE_MAX_CYCLES, n))
+    return cmd_evolve(args)
+
+
 def cmd_auto(args: argparse.Namespace) -> int:
     """One autonomous command — no flags to memorize.
 
@@ -696,7 +749,17 @@ def cmd_auto(args: argparse.Namespace) -> int:
     recommends the best next moves (default, no changes) or, with ``--apply``,
     safely applies the test-verified, auto-rolled-back fixes in roadmap order.
     An optional natural-language goal focuses the ideas and can hint the mode.
+
+    ``--evolve N`` (N>=1) short-circuits into the multi-cycle self-improvement
+    LOOP by delegating to the same ``EvolutionLoop`` as ``apex evolve`` — a
+    one-command convenience; N<=0 (default) is the single-pass behaviour below,
+    unchanged.
     """
+    # --evolve N: delegate to the shared EvolutionLoop (no single-pass work).
+    evolved = _auto_evolve_delegate(args)
+    if evolved is not None:
+        return evolved
+
     from app.engine.idea_action_bridge import IdeaActionBridge
     from app.engine.idea_permutation import IdeaPermutationEngine
     from app.engine.idea_roadmap import RoadmapSynthesizer
@@ -728,11 +791,21 @@ def cmd_auto(args: argparse.Namespace) -> int:
     bridge = IdeaActionBridge()
     commit = getattr(args, "commit", False)
 
+    # The dream-confluence boost: `apex auto` AMPLIFIES the organism's own
+    # overnight discovery (the modules the dream graduated as confluences lead
+    # within their phase) when ranking the value board. REFUSAL-SAFE — an empty
+    # map (no persisted dream / unreadable / below-gate) leaves the ranking
+    # byte-for-byte identical to the AST-only order, so no-dream projects are
+    # unchanged. Computed ONCE and shared by the scout and the act path so the
+    # recommend count and what `--apply` lands tell one honest story.
+    dream_boost = _auto_dream_boost(target)
+
     # How many safe, executable fixes are available, and is the tree clean? The
     # scout enables the SAME synthesis opt-ins the act path will (cheap always,
     # expensive under --deep), so the recommend count and what `--apply` would
     # land tell one honest story.
     scout = bridge.plan_roadmap(report, mode="report", project_root=str(target),
+                                dream_boost=dream_boost,
                                 **_auto_synthesis_kwargs(args))
     executable = scout.stats.get("executable_steps", 0)
     tree_clean = _working_tree_clean(target)
@@ -760,7 +833,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
         return _auto_recommend(args, target, goal, shape, roadmap, sec_n,
                                executable, decision, emit_json)
     return _auto_act(args, target, goal, bridge, engine, report, mode,
-                     commit, decision, emit_json)
+                     commit, decision, emit_json, dream_boost)
 
 
 
@@ -1946,6 +2019,13 @@ def register_parsers(subparsers) -> None:
                              help="Skip test verification (not recommended)")
     auto_parser.add_argument("--max-apply", type=int, default=0, dest="max_apply",
                              help="Cap how many fixes to apply (default 8)")
+    auto_parser.add_argument(
+        "--evolve", type=int, default=0, dest="evolve",
+        help="Run the self-improvement LOOP for N cycles (apply→re-measure→"
+             "re-dream→prove) instead of a single pass — the SAME guarded, "
+             "per-cycle-verified EvolutionLoop as `apex evolve --max-cycles N`. "
+             "N is clamped to [1,10]; N<=0 (default) keeps the one-pass behaviour",
+    )
     auto_parser.add_argument("--json", action="store_true", help="Emit JSON")
     auto_parser.add_argument("--out", default="", help="Write the report to this path")
     auto_parser.set_defaults(func=cmd_auto)

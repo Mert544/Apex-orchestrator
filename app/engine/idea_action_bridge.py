@@ -501,6 +501,24 @@ def _confluence_weight(step: ActionStep) -> int:
     return best if best else len(facts)
 
 
+def _dream_step_boost(step: ActionStep, dream_boost: dict[str, float] | None) -> float:
+    """The dream-confluence priority boost a step earns, by its target MODULE.
+
+    ``dream_boost`` maps a module path → a positive boost for the modules the
+    dream has graduated as CONFLUENCES (see ``dream_landing.dream_signal_weight``).
+    A step's target is ``module`` or ``module:symbol``, so the module key is the
+    part before the first ``:`` — the same split ``objective_compiler`` uses.
+
+    Returns 0.0 for every step when ``dream_boost`` is None/empty (no dream, or a
+    step whose module the dream never flagged), so a caller that sorts on this as
+    a secondary key leaves the order byte-identical with no dream. Pure, no
+    clock/random — a frozen-map lookup."""
+    if not dream_boost:
+        return 0.0
+    module = (step.target or "").split(":", 1)[0]
+    return dream_boost.get(module, 0.0)
+
+
 def _function_anchors(node) -> list[dict]:
     """The idea's function-grain anchors, read DEFENSIVELY.
 
@@ -3354,7 +3372,8 @@ class IdeaActionBridge:
                        modernize: bool = False,
                        dedup_total_return: bool = False,
                        dedup_parameterized: bool = False,
-                       auto: bool = False) -> list[ActionStep]:
+                       auto: bool = False,
+                       dream_boost: dict[str, float] | None = None) -> list[ActionStep]:
         """Expand the roadmap's ideas into deduped, phase-ordered steps.
 
         Convergence ideas carry their own phased sub-steps (a Stabilize test
@@ -3366,6 +3385,15 @@ class IdeaActionBridge:
         ``generate_usage_doc`` / ``tdd_implement`` / ``strengthen_tests`` /
         ``modernize`` opt their broad synthesis objective in (default off,
         independent — see ``_augment_synthesis_steps``).
+
+        ``dream_boost`` (default None/empty ⇒ byte-identical) maps a module path
+        to a positive priority boost for the modules the dream graduated as
+        CONFLUENCES: within each phase group a boosted step sorts ahead of its
+        unboosted peers, so ``apex auto`` leads with the organism's own overnight
+        discovery. It is applied as a SECONDARY sort key AFTER the phase rank, so
+        the phase order (test-before-harden) is preserved, and when the map is
+        empty every step's boost is 0.0 — the sort key degenerates to the phase
+        rank alone and a stable sort reproduces the pre-dream order byte-for-byte.
         """
         idea_by_path = {i.branch_path: i for i in report.ideas}
         steps: list[ActionStep] = []
@@ -3389,7 +3417,12 @@ class IdeaActionBridge:
         steps = self._dedupe_steps(steps)
         from app.engine.idea_roadmap import PHASE_ORDER
         phase_rank = {name: i for i, name in enumerate(PHASE_ORDER)}
-        steps.sort(key=lambda s: phase_rank.get(s.phase, len(PHASE_ORDER)))
+        # Phase first (test-before-harden), then the dream-confluence boost as a
+        # STABLE secondary key: a boosted step leads WITHIN its phase, while an
+        # empty ``dream_boost`` makes every boost 0.0 ⇒ the key is the phase rank
+        # alone ⇒ the stable sort reproduces the pre-dream order byte-for-byte.
+        steps.sort(key=lambda s: (phase_rank.get(s.phase, len(PHASE_ORDER)),
+                                  -_dream_step_boost(s, dream_boost)))
         return steps
 
     def plan_roadmap(
@@ -3411,6 +3444,7 @@ class IdeaActionBridge:
         dedup_total_return: bool = False,
         dedup_parameterized: bool = False,
         auto: bool = False,
+        dream_boost: dict[str, float] | None = None,
     ) -> ActionPlan:
         """Plan actions in roadmap order (Stabilize→Secure→Evolve→Refine).
 
@@ -3422,6 +3456,12 @@ class IdeaActionBridge:
         ``tdd_implement`` / ``strengthen_tests`` / ``modernize`` opt their broad
         synthesis objective in (default off, independent, so the default plan's idea
         set is unchanged).
+
+        ``dream_boost`` (default None/empty ⇒ byte-identical) amplifies the
+        modules the dream graduated as CONFLUENCES: within a phase a boosted step
+        leads its peers, so ``apex auto`` prioritizes the organism's own overnight
+        discovery. An empty map (no dream / unreadable / below-gate) leaves the
+        plan byte-for-byte unchanged — the refusal-safe fallback.
         """
         from app.engine.idea_roadmap import RoadmapSynthesizer
 
@@ -3436,7 +3476,8 @@ class IdeaActionBridge:
                                     modernize=modernize,
                                     dedup_total_return=dedup_total_return,
                                     dedup_parameterized=dedup_parameterized,
-                                    auto=auto)
+                                    auto=auto,
+                                    dream_boost=dream_boost)
         # The phase filter applies to each *step's own* phase, so a convergence
         # idea's Secure sub-step is kept under --phase=Secure even though its
         # parent sat in Stabilize (and vice-versa).

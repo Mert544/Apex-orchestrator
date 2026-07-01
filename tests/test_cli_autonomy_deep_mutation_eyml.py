@@ -1482,7 +1482,7 @@ def test_cmd_auto_act_report_mode_upgraded_to_supervised(tmp_path, capsys, monke
     monkeypatch.setattr(
         "app.cli_autonomy._auto_act",
         lambda args, target, goal, bridge, engine, report, mode, commit,
-        decision, emit_json: captured.update(mode=mode) or 0)
+        decision, emit_json, dream_boost=None: captured.update(mode=mode) or 0)
     rc = m.cmd_auto(_auto_ns(tmp_path, apply=True))
     assert rc == 0
     assert captured["mode"] == "supervised"
@@ -2106,7 +2106,7 @@ def test_cmd_auto_act_non_report_mode_passes_through(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "app.cli_autonomy._auto_act",
         lambda args, target, goal, bridge, engine, report, mode, commit,
-        decision, emit_json: captured.update(mode=mode) or 0)
+        decision, emit_json, dream_boost=None: captured.update(mode=mode) or 0)
     rc = m.cmd_auto(_auto_ns(tmp_path, apply=True))
     assert rc == 0
     # `act(True) and mode=="report"(False)` -> False -> mode stays "autonomous";

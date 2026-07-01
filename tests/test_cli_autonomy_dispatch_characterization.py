@@ -309,7 +309,7 @@ def test_auto_report_mode_promoted_to_supervised_when_acting(tmp_path, monkeypat
     _route_auto(monkeypatch, decision=decision)
 
     def _act(args, target, goal, bridge, engine, report, mode,
-             commit, dec, emit_json):
+             commit, dec, emit_json, dream_boost=None):
         seen["mode"] = mode
         return 0
 

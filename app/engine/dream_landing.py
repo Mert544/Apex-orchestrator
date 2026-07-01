@@ -80,6 +80,74 @@ def _live_confluence_modules(project_root: str | Path) -> list[str]:
     return sorted(set(out))
 
 
+def _stored_confluence_modules(project_root: str | Path) -> list[str]:
+    """The confluence modules the dream has ALREADY PERSISTED to
+    ``.apex/dream-promotions.json`` — the organism's hardest-won, multi-night
+    discoveries, read WITHOUT running a dream.
+
+    A pure read of the store: existing ``confluence:`` module paths only, sorted
+    and deduplicated. Empty when the store is absent, unreadable, or names no
+    still-existing confluence. Unlike :func:`dream_confluence_modules` this never
+    falls back to a LIVE read-only dream, so it stays cheap enough to consult on
+    every ``apex auto`` run and its emptiness is a byte-cheap fact (no dream cost,
+    no clock/random) — the property the refusal-safe ranking boost relies on."""
+    import json
+
+    path = Path(project_root) / ".apex" / "dream-promotions.json"
+    try:
+        items = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out: list[str] = []
+    for it in items if isinstance(items, list) else []:
+        key = it.get("key", "") if isinstance(it, dict) else ""
+        module = _confluence_key_module(key, project_root)
+        if module:
+            out.append(module)
+    return sorted(set(out))
+
+
+# The priority boost a module earns for being a PERSISTED dream confluence. A
+# single fixed positive constant (not a per-module gradient) so the amplification
+# is deterministic and coarse: a confluence step is promoted ahead of a
+# non-confluence peer WITHIN its phase, but the relative order among confluences
+# and among non-confluences is left exactly as the existing ranking chose it. The
+# magnitude is irrelevant beyond being > 0 (the consumer sorts on sign, not
+# scale); kept at 1.0 for a legible ``preview``/debug value.
+DREAM_CONFLUENCE_BOOST = 1.0
+
+
+def dream_signal_weight(project_root: str | Path,
+                        modules: list[str] | None = None) -> dict[str, float]:
+    """Per-module priority BOOST for the modules the dream has graduated as
+    CONFLUENCES — the seam that lets ``apex auto`` amplify the organism's OWN
+    overnight discovery when it ranks the value board, instead of ignoring it.
+
+    Returns ``{module: DREAM_CONFLUENCE_BOOST}`` for each persisted confluence
+    module (``modules``, when supplied — a precomputed dream result — else read
+    from the promotion store via :func:`_stored_confluence_modules`); every other
+    module is simply ABSENT (the caller reads a missing key as a 0.0 boost). The
+    boost is a flat positive constant, so a confluence step sorts ahead of a
+    non-confluence peer within its phase while the order AMONG confluences and
+    AMONG non-confluences is untouched.
+
+    REFUSAL-SAFE by construction — the single invariant the whole wiring rests on:
+    when no dream has persisted a confluence (store absent / unreadable /
+    below-gate ⇒ empty ``modules``) the map is ``{}``, and a consumer that adds a
+    per-step boost of ``map.get(module, 0.0)`` then leaves EVERY step's key
+    unchanged, so a stable sort reproduces the current AST-only order
+    byte-for-byte. No dream ⇒ zero behaviour change.
+
+    Deterministic, offline, zero-token: a frozen-constant stamp over a pure store
+    read (or a caller-supplied list) — no clock, no randomness, no dream run, no
+    writes. Deliberately does NOT trigger a live dream (that is
+    ``dream_confluence_modules``' job on the explicit ``--from-dream`` path); the
+    auto ranking must not pay a dream's cost, and an unpersisted project must stay
+    byte-identical."""
+    mods = modules if modules is not None else _stored_confluence_modules(project_root)
+    return {module: DREAM_CONFLUENCE_BOOST for module in mods if module}
+
+
 def dream_confluence_modules(project_root: str | Path,
                              value_ranked: bool = False) -> list[str]:
     """Modules the dream graduated as CONFLUENCES — files that carry many
@@ -101,20 +169,8 @@ def dream_confluence_modules(project_root: str | Path,
     the SAME set (a permutation, never a different membership) and a single-/
     zero-confluence project is unchanged regardless, so opting in cannot land
     anything the alphabetical order would not."""
-    import json
-
-    path = Path(project_root) / ".apex" / "dream-promotions.json"
-    try:
-        items = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        items = []
-    out: list[str] = []
-    for it in items if isinstance(items, list) else []:
-        key = it.get("key", "") if isinstance(it, dict) else ""
-        module = _confluence_key_module(key, project_root)
-        if module:
-            out.append(module)
-    modules = sorted(set(out)) if out else _live_confluence_modules(project_root)
+    stored = _stored_confluence_modules(project_root)
+    modules = stored if stored else _live_confluence_modules(project_root)
     if value_ranked:
         modules = _rank_confluences(modules, project_root)
     return modules
