@@ -23,9 +23,9 @@ fix, or landed one that was rolled back, contributes ``realized=False`` — neve
 invisible, never a false positive.
 
 The realized RATE (``realized / promoted``) is therefore ``in [0, 1]`` by
-construction, Wilson-lower-bounded on the promoted sample count (the SAME
-``_WILSON_Z = 1.96`` interval — proven beats lucky: a thin 1-of-1 win cannot
-out-tighten a well-attested 8-of-10), then clamped to
+construction, Wilson-lower-bounded on the promoted sample count (the shared
+``app.engine.wilson.wilson_lower_bound`` — proven beats lucky: a thin 1-of-1 win
+cannot out-tighten a well-attested 8-of-10), then clamped to
 ``[_GATE_FACTOR_FLOOR, 1.0]``. Below ``_MIN_SAMPLES`` promoted confluences for a
 key, that key is simply ABSENT from the returned map — a fresh project or a
 project with too little promotion history is byte-identical to today (no
@@ -58,12 +58,12 @@ only; no LLM.
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 from typing import Any
 
 from app.engine.proof_history import _DECAY, _module_of, load_proof_history
 from app.engine.value_landed import _VERIFIED_LEVELS, _coverage_level, _held
+from app.engine.wilson import wilson_lower_bound as _wilson_lower_bound
 
 __all__ = [
     "gate_tighten_factors",
@@ -73,11 +73,10 @@ __all__ = [
 
 REALIZED_PROMOTION_SCHEMA = "apex-dream-gate-learn"
 
-# z-score for the Wilson score interval lower bound — the SAME 1.96 constant
-# ``idea_memory._WILSON_Z`` / ``value_reliability._WILSON_Z`` use, so "proven
-# beats lucky" reads identically here: a thin-but-perfect 1-of-1 promotion
-# cannot out-tighten a well-attested 8-of-10. Deterministic (no scipy/statistics).
-_WILSON_Z = 1.96
+# The Wilson lower-bound helper (``_wilson_lower_bound``) is the shared
+# ``app.engine.wilson`` implementation — "proven beats lucky" reads identically
+# here (a thin-but-perfect 1-of-1 promotion cannot out-tighten a well-attested
+# 8-of-10) and is not copied per consumer.
 
 # Don't tighten a key's gate until it has at least this many PROMOTED confluence
 # samples — mirrors ``value_reliability._MIN_SAMPLES``. Below it the key is
@@ -103,22 +102,6 @@ _MAX_TIGHTEN_CONFIDENCE = 0.15
 
 _JOURNAL_REL = ".apex/dream-journal.json"
 _CONFLUENCE_PREFIX = "confluence:"
-
-
-def _wilson_lower_bound(phat: float, n: float) -> float:
-    """Wilson score interval lower bound for rate ``phat`` over ``n`` samples.
-
-    The SAME arithmetic as ``idea_memory._Stat.confidence`` /
-    ``value_reliability._wilson_lower_bound`` (stdlib ``math`` only): it shrinks
-    toward 0 as ``n`` shrinks, rewarding accumulated evidence over a lucky small
-    sample. Safe on zero samples (returns 0.0). Deterministic."""
-    if n <= 0:
-        return 0.0
-    z = _WILSON_Z
-    denom = 1.0 + z * z / n
-    center = phat + z * z / (2.0 * n)
-    margin = z * math.sqrt((phat * (1.0 - phat) + z * z / (4.0 * n)) / n)
-    return (center - margin) / denom
 
 
 def _load_journal(root: Path) -> list[Any]:

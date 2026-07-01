@@ -50,7 +50,6 @@ can never disagree with the evidence — or with the metric that scores it.
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 from app.engine.proof_history import _DECAY, load_proof_history
@@ -59,6 +58,7 @@ from app.engine.value_landed import (
     _coverage_level,
     _held,
 )
+from app.engine.wilson import wilson_lower_bound as _wilson_lower_bound
 
 __all__ = [
     "operator_realization_factors",
@@ -68,11 +68,10 @@ __all__ = [
 
 REALIZATION_SCHEMA = "apex-value-realized"
 
-# z-score for the Wilson score interval lower bound — the SAME 1.96 (≈95% normal
-# quantile) ``idea_memory._WILSON_Z`` uses, so "proven beats lucky" reads
-# identically here: a thin-but-perfect 2-of-2 cannot outrank a well-attested
-# 9-of-10. Fixed constant (no scipy/statistics), so the bound is deterministic.
-_WILSON_Z = 1.96
+# The Wilson lower-bound helper (``_wilson_lower_bound``) is the shared
+# ``app.engine.wilson`` implementation — "proven beats lucky" reads identically
+# here (a thin-but-perfect 2-of-2 cannot outrank a well-attested 9-of-10) and is
+# not copied per consumer.
 
 # Don't move on an operator until it has at least this many HELD moves — mirrors
 # ``idea_memory._MIN_SAMPLES`` / the ``land_factors`` sample gate. Below it an
@@ -85,22 +84,6 @@ _MIN_SAMPLES = 2
 # this, never erased to zero (which would starve the operator). The band CEILING
 # is a hard 1.0 (neutral): the factor never inflates an operator above its prior.
 _REALIZATION_FLOOR = 0.15
-
-
-def _wilson_lower_bound(phat: float, n: float) -> float:
-    """Wilson score interval lower bound for rate ``phat`` over ``n`` samples.
-
-    The SAME arithmetic as ``idea_memory._Stat.confidence`` (stdlib ``math``
-    only), factored out so this leaf need not build a ``_Stat``: it shrinks toward
-    0 as ``n`` shrinks, so accumulated evidence is rewarded and a lucky small
-    sample is discounted. Safe on zero samples (returns 0.0). Deterministic."""
-    if n <= 0:
-        return 0.0
-    z = _WILSON_Z
-    denom = 1.0 + z * z / n
-    center = phat + z * z / (2.0 * n)
-    margin = z * math.sqrt((phat * (1.0 - phat) + z * z / (4.0 * n)) / n)
-    return (center - margin) / denom
 
 
 def _held_rows(history: list[dict]) -> list[tuple[str, bool, float]]:
