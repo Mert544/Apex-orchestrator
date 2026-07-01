@@ -1321,6 +1321,101 @@ def _develop_multifile(args, target, max_steps, verify, apply) -> int:
     return 0
 
 
+def _parse_chain(raw: str) -> tuple[list[str], str | None]:
+    """Split a ``--chain`` value into an ordered objective list, refusing honestly.
+
+    ``raw`` is the comma-separated sequence the user typed (``"implement-stub,
+    cover-gaps"``); whitespace around each name is trimmed and empty segments are
+    dropped, so ``"a, b,"`` yields ``["a", "b"]``. Returns ``(objectives, error)``:
+    ``error`` is ``None`` on success, otherwise a helpful usage message (an empty
+    chain, or a name that is NOT a registered objective — the malformed-chain
+    refusal, so no partial campaign ever runs on a typo). Pure/deterministic: a
+    parse + a frozen-registry membership check, no clock/IO."""
+    from app.engine.objective_compiler import available_objectives
+
+    objectives = [seg.strip() for seg in raw.split(",") if seg.strip()]
+    if not objectives:
+        return [], ("empty --chain — pass an ordered, comma-separated objective "
+                    "sequence (e.g. --chain implement-stub,cover-gaps,"
+                    "strengthen-tests)")
+    known = set(available_objectives())
+    unknown = [o for o in objectives if o not in known]
+    if unknown:
+        hint = ", ".join(sorted(known)[:8])
+        return objectives, (
+            f"unknown objective(s) in --chain: {', '.join(unknown)} — every step "
+            f"must be a registered objective (e.g. {hint}, …). Run `apex develop "
+            "--all` to see what the compiler can pursue.")
+    return objectives, None
+
+
+def _develop_chain(args, target, max_steps, verify, apply) -> int:
+    """`apex develop --chain a,b,c`: run an EXPLICIT, ordered objective SEQUENCE as
+    one proof-carrying campaign via the shipped ``chain_compiler.run_chain`` engine.
+
+    Parses the comma-separated ``--chain`` value into an ordered list (refusing a
+    malformed chain — an empty value or an unknown objective — honestly, before any
+    work), then hands it VERBATIM to ``run_chain``: each step is precondition-gated
+    against the frozen composition grammar, gated through the EXISTING
+    ``compile_objective`` verified-with-rollback loop, halts the chain on a
+    rolled-back (suite-red) step, and (on an ``--apply`` that landed) is archived +
+    recorded to ChainMemory. This handler adds ZERO gate logic — it parses, calls
+    the engine, and renders its report (``render_chain_markdown``). Default is a
+    dry run; ``--apply`` writes (the same baseline semantics the other develop
+    paths use). ``--halt-on-unmet`` opts the chain into halting at the first unmet
+    precondition instead of skipping past it."""
+    from app.engine.chain_compiler import render_chain_markdown, run_chain
+
+    objectives, error = _parse_chain(getattr(args, "chain", "") or "")
+    if error is not None:
+        print(f"⛔ {error}", file=sys.stderr)
+        return 2
+    report = run_chain(
+        str(target), objectives, max_steps=max_steps, verify=verify, apply=apply,
+        fast=getattr(args, "fast", False),
+        halt_on_unmet_precondition=getattr(args, "halt_on_unmet", False))
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(render_chain_markdown(report))
+        if report.applied and report.total_moves:
+            print(_APPLIED_TREE_NOTE)
+    # Non-zero when the chain HALTED on a red (rolled-back) step — an honest,
+    # never-faked failure the caller/CI should notice; a green or all-empty chain
+    # (nothing to land) is a clean exit.
+    return 1 if report.halted else 0
+
+
+def _develop_goal_atomic(args, target, goal, verify, apply) -> int:
+    """`apex develop --goal X --atomic`: land the goal's leaves as ONE gated,
+    atomic multi-file unit via the shipped ``project_goal_orchestrator`` engine.
+
+    Where the default ``--goal`` path (``compile_goal``) lands each leaf as its own
+    independent campaign — so a stub fill can land while its export wiring does not
+    — this composes the leaves' single-file plans into ONE plan and lands it through
+    the single gated writer: the whole goal lands together or NEITHER, and on a
+    regression the ENTIRE goal is rolled back. Adds ZERO gate logic — it calls
+    ``orchestrate_goal`` and renders its result (``render_goal_landing_markdown``).
+    Default is a dry run; ``--apply`` writes."""
+    from app.engine.project_goal_orchestrator import (
+        orchestrate_goal, render_goal_landing_markdown,
+    )
+
+    landing = orchestrate_goal(str(target), goal, verify=verify, apply=apply,
+                               value_led=getattr(args, "value_led", False))
+    if args.json:
+        print(json.dumps(landing.to_dict(), indent=2))
+    else:
+        print(render_goal_landing_markdown(landing))
+        if landing.applied:
+            print(_APPLIED_TREE_NOTE)
+    # Non-zero when the goal was UNKNOWN (a usage error) or the composed plan
+    # ROLLED BACK (an honest regression); a clean landing / dry-run composition /
+    # honest refusal-with-nothing-to-compose exits 0.
+    unknown = landing.refused and "unknown goal" in landing.reason
+    return 1 if (unknown or landing.rolled_back) else 0
+
+
 def _develop_objective(args, target, objective, grade_before, max_steps, verify, apply) -> int:
     """`apex develop` default: compose verified transforms toward one objective metric."""
     from app.engine.objective_compiler import compile_objective, render_compile_markdown
@@ -1437,6 +1532,13 @@ def cmd_develop(args: argparse.Namespace) -> int:
             or getattr(args, "mode_word", "") == "session"):
         return _develop_session(args, target, max_steps, verify, apply)
 
+    # `apex develop --chain a,b,c`: an EXPLICIT ordered objective SEQUENCE via the
+    # chain_compiler engine. Checked before the mode-word resolution (a chain names
+    # its own objectives) and before the single-objective default. Off unless the
+    # flag carries a value, so a bare develop is unaffected.
+    if getattr(args, "chain", "") or "":
+        return _develop_chain(args, target, max_steps, verify, apply)
+
     # DWIM the bare `apex develop <objective>`: a positional mode_word that
     # names a registered objective IS the objective (it used to fall through to
     # the --objective default, silently running the wrong objective). A typo
@@ -1455,9 +1557,14 @@ def _develop_campaign_dispatch(args, target, objective, grade_before,
     """The flag-driven campaign fork, reached after the preview / session /
     mode-word resolution short-circuits. Dispatch order is load-bearing and
     unchanged: ``--goal`` → ``--auto`` → ``--all`` → ``--multifile`` →
-    ``--from-dream`` → the default single-objective campaign."""
+    ``--from-dream`` → the default single-objective campaign. ``--goal X --atomic``
+    selects the whole-goal ORCHESTRATOR (leaves land as one gated unit) instead of
+    the default per-leaf ``compile_goal`` path; without ``--atomic`` the goal path
+    is byte-identical to before."""
     goal = getattr(args, "goal", "") or ""
     if goal:
+        if getattr(args, "atomic", False):
+            return _develop_goal_atomic(args, target, goal, verify, apply)
         return _develop_goal(args, target, goal, max_steps, verify, apply)
     if getattr(args, "auto", False):
         return _develop_auto(args, target, grade_before, max_steps, verify, apply)
@@ -2144,6 +2251,24 @@ def register_parsers(subparsers) -> None:
     develop_parser.add_argument("--all", action="store_true", dest="all_objectives",
                                 help="Sweep EVERY objective in order (modernize, dead-params, "
                                      "shrink-functions, inline-helpers) — clean everything")
+    develop_parser.add_argument(
+        "--chain", default="", metavar="A,B,C",
+        help="Run an EXPLICIT, ordered objective SEQUENCE as ONE proof-carrying "
+             "campaign (e.g. --chain implement-stub,cover-gaps,strengthen-tests): "
+             "each step is precondition-gated, suite-gated with auto-rollback, and "
+             "the chain HALTS honestly on a rolled-back step — no partial "
+             "fake-green. A landed chain is archived as a reusable recipe. Default "
+             "dry run; --apply writes")
+    develop_parser.add_argument(
+        "--halt-on-unmet", action="store_true", dest="halt_on_unmet",
+        help="With --chain: HALT at the first step whose earlier producer landed "
+             "nothing (an unmet precondition) instead of skipping past it")
+    develop_parser.add_argument(
+        "--atomic", action="store_true",
+        help="With --goal: compose the goal's leaf objectives into ONE multi-file "
+             "landing gated ONCE — the whole goal lands together or NEITHER (on a "
+             "regression the ENTIRE goal is rolled back), instead of landing each "
+             "leaf independently. Default dry run; --apply writes")
     develop_parser.add_argument(
         "--multifile", action="store_true",
         help="Land the COORDINATED multi-file change — implement a tested stub in "
