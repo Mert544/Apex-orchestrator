@@ -13,10 +13,14 @@ rolled-back (suite-red) step plus archival of the landed chain to
 
 These tests pin: explicit two-objective source order + per-step gating; an
 unmet-precondition step skips honestly (and HALTS under the opt-in policy); a red
-(rolled-back) step halts the chain (chain green IFF all landed steps held);
-archival recorded on apply; the honest empty/dry-run paths; and a clock-free,
-hashseed-invariant report body. The chain registers NO develop objective (it
-COMPOSES existing ones), so there is no objective-count / Facet-parity obligation.
+step — one that LANDS NOTHING because every candidate regressed — halts the chain
+(chain green IFF the chain didn't halt on a red step); a step that LANDS a move
+while a DIFFERENT candidate in the same objective also rolled back does NOT halt
+and DISCLOSES the mixed outcome on ``ChainStep.reason`` (disclose-not-halt — the
+moat held, so the chain keeps going, honestly); archival recorded on apply; the
+honest empty/dry-run paths; and a clock-free, hashseed-invariant report body. The
+chain registers NO develop objective (it COMPOSES existing ones), so there is no
+objective-count / Facet-parity obligation.
 """
 
 from __future__ import annotations
@@ -343,6 +347,33 @@ def test_step_is_red_reads_rollback_disclosure():
                            steps=[CompileStep("op", "t", "d", 1.0, 0.0)],
                            blocked=["y: tests failed after rename; all files restored"])
     assert _step_is_red(landed) is False
+
+
+def test_run_step_discloses_mixed_landed_and_rollback(monkeypatch):
+    # An adversarial denetçi's exact scenario: ONE objective's campaign holds a
+    # landed move AND rolled back a DIFFERENT candidate in the same objective
+    # (one candidate held, another regressed and was correctly reverted — the moat
+    # is intact). `_step_is_red` correctly reads this as NOT red (kept above), but
+    # `_run_step` must not silently report it as a plain "landed" with no reason —
+    # the in-step rollback must be DISCLOSED, not hidden (disclose-not-halt).
+    from app.engine.objective_compiler import CompileStep
+    from app.engine.chain_compiler import _run_step
+
+    mixed = CompileResult(
+        objective="x", fitness_start=2.0, fitness_end=1.0,
+        steps=[CompileStep("op", "t", "d", 2.0, 1.0)],
+        blocked=["y: tests failed after rename; all files restored"])
+    assert _step_is_red(mixed) is False  # the moat verdict stays unchanged
+
+    monkeypatch.setattr(
+        "app.engine.chain_compiler.compile_objective",
+        lambda *a, **k: mixed)
+    step = _run_step("/does-not-matter", "x", [], set(),
+                     max_steps=25, verify=True, apply=True, fast=False)
+    assert step.status == "landed"
+    assert step.reason  # the in-step rollback is DISCLOSED, never silent
+    assert "rolled back" in step.reason
+    assert "1" in step.reason  # the one candidate that regressed
 
 
 # --- 10. report shape sanity -------------------------------------------------

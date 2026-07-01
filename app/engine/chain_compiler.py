@@ -18,11 +18,14 @@ ARBITRARY caller-supplied ordered list of objectives — a "chain" like
      declared producer appears earlier in THIS chain but LANDED NOTHING, its
      precondition is unmet and the step is SKIPPED honestly (or the chain HALTS,
      opt-in) — never faked;
-  3. **chain-level archival + halt** — a step whose gate ROLLED BACK a move (the
-     suite went red) HALTS the chain (verified-or-refused, never a partial fake
-     green), and the LANDED chain is archived to ``composition_archive`` under its
-     objective-sequence signature — one learned recipe for "this ordered chain
-     did N verified moves for a fitness gain of D".
+  3. **chain-level archival + halt** — a step that LANDS NOTHING because every
+     candidate move regressed (a red step) HALTS the chain (verified-or-refused,
+     never a partial fake green); a step that LANDS a move while a DIFFERENT,
+     rejected candidate in the same objective also rolled back does NOT halt
+     (disclose-not-halt — the moat held, and the mixed outcome is disclosed on the
+     step, never hidden). The LANDED chain is archived to ``composition_archive``
+     under its objective-sequence signature — one learned recipe for "this ordered
+     chain did N verified moves for a fitness gain of D".
 
 Every byte the chain writes goes through the EXISTING ``compile_objective``
 propose→apply→measure→select loop — suite-gated with byte-for-byte
@@ -114,10 +117,14 @@ class ChainReport:
 
     @property
     def green(self) -> bool:
-        """The chain is GREEN iff every LANDED step held its suite AND the chain
-        did not halt on a red step — the never-fake-green chain verdict. A chain
-        with nothing to land (all steps empty) is trivially green (it faked
-        nothing); a chain halted by a rolled-back move is NOT green."""
+        """The chain is GREEN iff the chain did not HALT on a red step (one that
+        landed NOTHING because every candidate regressed) — the never-fake-green
+        chain verdict. A chain with nothing to land (all steps empty) is trivially
+        green (it faked nothing); a chain halted by a rolled-back move is NOT
+        green. GREEN does not claim no candidate ever rolled back anywhere: a
+        landed step may have ALSO rolled back a different, rejected candidate in
+        the same objective (disclosed on that step's ``reason``) while still
+        holding its own landed move — that is the moat working, not a red halt."""
         return not self.halted
 
     @property
@@ -202,15 +209,45 @@ def _precondition_unmet(objective: str, earlier: list[str],
 def _step_is_red(result: CompileResult) -> bool:
     """Did ``result`` ROLL BACK a move (the suite went red), landing nothing?
 
-    A red step is one the compiler ATTEMPTED (it had work) but every candidate move
+    A red step is one the compiler ATTEMPTED (it had work) but EVERY candidate move
     regressed and was auto-rolled-back — surfaced by ``compile_objective`` as a
     ``blocked`` reason mentioning the rollback ("tests failed ... restored"), with
     NO step appended. An honest EMPTY step (nothing to do) has no such reason, so it
-    is NOT red. This reads the compiler's OWN rollback disclosure — the chain adds
-    no gate logic; the never-fake-green verdict is inherited."""
+    is NOT red.
+
+    A step that LANDED at least one move is NEVER "red" here, even when
+    ``result.blocked`` ALSO contains a rollback-shaped entry — ``compile_objective``
+    routinely holds one candidate while a DIFFERENT candidate in the SAME objective
+    regressed and was correctly rolled back (one move landed, one didn't; the moat is
+    intact either way). That mixed outcome is real but is NOT a "red halt": it is
+    disclosed on the resulting ``ChainStep.reason`` by :func:`_run_step`, not
+    reclassified here. This reads the compiler's OWN rollback disclosure — the chain
+    adds no gate logic; the never-fake-green verdict is inherited."""
     if result.steps:
-        return False  # it landed something → not a red halt
+        return False  # it landed something → not a red halt (see disclosure above)
     return any("tests failed" in b or "restored" in b for b in result.blocked)
+
+
+def _rollback_disclosure(campaign: CompileResult) -> str:
+    """The honest in-step disclosure when a LANDED step's campaign ALSO rolled back
+    a different candidate — ``""`` when nothing rolled back.
+
+    ``compile_objective`` can land one candidate while a different candidate in the
+    SAME objective regressed and was auto-rolled-back (both are visible on the one
+    ``CompileResult``: a non-empty ``steps`` AND a rollback-shaped ``blocked`` entry).
+    That is the moat working correctly — no bad code lands — but leaving it silent
+    would let a "landed" step look like NOTHING regressed. This surfaces it as a
+    plain count so the chain report never over-claims. Pure/deterministic: a count
+    over the campaign's own disclosed lists, no new gate logic."""
+    rolled = [b for b in campaign.blocked if "tests failed" in b or "restored" in b]
+    if not rolled:
+        return ""
+    n = len(campaign.steps)
+    m = len(rolled)
+    move_word = "move" if n == 1 else "moves"
+    cand_word = "candidate" if m == 1 else "candidates"
+    return (f"landed {n} {move_word}; {m} {cand_word} hit a suite regression and "
+            f"were rolled back (moat working)")
 
 
 def _run_step(project_root: str | Path, objective: str, earlier: list[str],
@@ -220,10 +257,17 @@ def _run_step(project_root: str | Path, objective: str, earlier: list[str],
     the EXISTING ``compile_objective`` gate and classify the outcome.
 
     Returns a ``ChainStep`` with the honest status: ``skipped-precondition`` (an
-    earlier producer it depends on landed nothing), ``red`` (a move rolled back —
-    the suite went red), ``landed`` (at least one verified move), or ``empty`` (no
-    work). ZERO new verification: the suite gate + rollback live inside
-    ``compile_objective``."""
+    earlier producer it depends on landed nothing), ``red`` (the step landed
+    NOTHING and a candidate rolled back — the suite went red), ``landed`` (at least
+    one verified move), or ``empty`` (no work). ZERO new verification: the suite
+    gate + rollback live inside ``compile_objective``.
+
+    DISCLOSURE, not a new gate: a ``landed`` step's own campaign can ALSO show a
+    rolled-back candidate (one move held, a DIFFERENT candidate in the same
+    objective regressed and was correctly reverted — the moat is intact either
+    way). That mixed outcome is never invisible: ``reason`` carries the honest
+    disclosure (:func:`_rollback_disclosure`) instead of staying empty, so a
+    "landed" step never silently over-claims that nothing rolled back."""
     unmet = _precondition_unmet(objective, earlier, landed)
     if unmet:
         return ChainStep(objective=objective, status="skipped-precondition",
@@ -234,8 +278,10 @@ def _run_step(project_root: str | Path, objective: str, earlier: list[str],
     if _step_is_red(campaign):
         return ChainStep(objective=objective, status="red", result=campaign,
                          reason="a move rolled back — the suite went red")
-    status = "landed" if campaign.steps else "empty"
-    return ChainStep(objective=objective, status=status, result=campaign)
+    if campaign.steps:
+        return ChainStep(objective=objective, status="landed", result=campaign,
+                         reason=_rollback_disclosure(campaign))
+    return ChainStep(objective=objective, status="empty", result=campaign)
 
 
 def _archive_chain(report: ChainReport, project_root: str | Path) -> None:
@@ -277,14 +323,19 @@ def _chain_outcome(report: ChainReport) -> str:
     or ``""`` when there is nothing honest to record.
 
     Never-fake-green mapping: a chain that did NOT halt and LANDED at least one
-    verified move is ``"applied"`` — the whole ordered recipe HELD (every landed
-    step's suite stayed green, nothing rolled back). A chain HALTED by a
-    rolled-back (suite-red) step is ``"rolled_back"`` (a genuine regression); a
-    chain halted for any other reason (an opted-in precondition halt) is
-    ``"blocked"``. A non-halted chain that landed NOTHING (all steps empty/skipped)
-    is an honest no-op — ``""`` records nothing, so an all-empty chain leaves
-    ``by_chain`` untouched (opt-in / byte-identical). Only a genuinely-held chain
-    is ever a success, so a halted chain can never inflate a recipe's land-rate."""
+    verified move is ``"applied"`` — the chain landed verified work and did not
+    halt (every landed step's OWN move that held is on the tree). This does NOT
+    claim nothing ever rolled back anywhere: a landed step's campaign may have
+    ALSO rolled back a different, rejected candidate in the same objective (see
+    ``ChainStep.reason`` for that disclosure) — the moat still held, so the chain
+    is still a genuine "applied" success. A chain HALTED by a rolled-back
+    (suite-red) step — one that landed NOTHING — is ``"rolled_back"`` (a genuine
+    regression); a chain halted for any other reason (an opted-in precondition
+    halt) is ``"blocked"``. A non-halted chain that landed NOTHING (all steps
+    empty/skipped) is an honest no-op — ``""`` records nothing, so an all-empty
+    chain leaves ``by_chain`` untouched (opt-in / byte-identical). Only a
+    genuinely-held chain is ever a success, so a halted chain can never inflate a
+    recipe's land-rate."""
     if report.halted:
         return "rolled_back" if any(s.status == "red" for s in report.steps) else "blocked"
     return "applied" if report.landed_objectives else ""
@@ -336,9 +387,14 @@ def run_chain(project_root: str | Path, objectives: list[str], *,
       * GATED through the EXISTING ``compile_objective`` verified-with-rollback loop
         — a move lands only if its suite is green; a regression is rolled back
         INSIDE the compiler (zero new gate logic here);
-      * a RED step (a move rolled back — the suite went red) HALTS the chain: the
-        chain is green IFF every landed step held AND no step went red, so a partial
-        fake-green is impossible.
+      * a RED step — one that landed NOTHING because every candidate move
+        regressed and was rolled back — HALTS the chain: the chain is green IFF no
+        step went red, so a step that landed NOTHING via a hard regression can
+        never be silently skipped past. A DIFFERENT, in-step outcome — a step that
+        DID land a move while a separate, rejected candidate in the same objective
+        also rolled back — does NOT halt (disclose-not-halt): the moat held (no bad
+        code landed), so the chain keeps going, and the mixed outcome is disclosed
+        on that step's ``reason`` rather than hidden.
 
     ``apply`` defaults to ``False`` (DRY-RUN: reports the moves each step WOULD land,
     writing nothing); ``apply=True`` writes, every byte gated. ``fast`` scopes each

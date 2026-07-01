@@ -1386,6 +1386,73 @@ def _develop_chain(args, target, max_steps, verify, apply) -> int:
     return 1 if report.halted else 0
 
 
+def _parse_goals(raw: str) -> tuple[list[str], str | None]:
+    """Split a ``--goals`` value into a goal SET, refusing honestly.
+
+    ``raw`` is the comma-separated set the user typed (``"reduce-debt,tidy"``);
+    whitespace around each name is trimmed and empty segments dropped, so
+    ``"a, b,"`` yields ``["a", "b"]``. Mirrors ``_parse_chain``'s honest-refusal
+    shape: returns ``(goals, error)``, ``error`` is ``None`` on success. Each
+    entry is validated via :func:`app.engine.fractal_develop.resolve_goal`'s
+    truthiness — a name that resolves to NO leaves (unknown goal AND unknown
+    objective) is refused before any work runs, so no partial fixpoint runs on a
+    typo. Pure/deterministic: a parse + a resolution check, no clock/IO."""
+    from app.engine.fractal_develop import resolve_goal
+
+    goals = [seg.strip() for seg in raw.split(",") if seg.strip()]
+    if not goals:
+        return [], ("empty --goals — pass a comma-separated goal set (e.g. "
+                    "--goals reduce-debt,tidy)")
+    unknown = [g for g in goals if not resolve_goal(g)]
+    if unknown:
+        return goals, (
+            f"unknown goal(s) in --goals: {', '.join(unknown)} — every entry "
+            "must be a known goal or objective name. Run `apex develop --goal "
+            "<name>` to see the goal tree, or `apex develop --all` to see the "
+            "objectives.")
+    return goals, None
+
+
+def _develop_fixpoint(args, target, max_steps, verify, apply) -> int:
+    """`apex develop --goals A,B,C --fixpoint`: converge a whole goal SET via the
+    shipped ``goal_fixpoint.run_goal_fixpoint`` round-based engine.
+
+    Parses the comma-separated ``--goals`` value into a goal set (refusing a
+    malformed set — empty or an unknown entry — honestly, before any work), then
+    hands it VERBATIM to ``run_goal_fixpoint``: each round sequences the live
+    goals by the PROVEN dependency order, lands each atomically (``orchestrate_goal``)
+    or via the single-objective fallback (``compile_objective``), and a
+    rolled-back goal is permanently retired. Adds ZERO gate logic — it parses,
+    forces the SAME unattended covered-only policy ``cmd_evolve`` applies
+    (``resolve_covered_only(unattended=True)`` — ``--allow-weak`` is IGNORED here,
+    exactly like the evolve loop, because a multi-round headless loop is the
+    highest-risk silent-regression surface), calls the engine, and renders its
+    report. Default is a dry run; ``--apply`` writes."""
+    from app.engine.goal_fixpoint import render_fixpoint_markdown, run_goal_fixpoint
+    from app.policies.autonomy_policy import resolve_covered_only
+
+    goals, error = _parse_goals(getattr(args, "goals", "") or "")
+    if error is not None:
+        print(f"⛔ {error}", file=sys.stderr)
+        return 2
+    covered_only = resolve_covered_only(
+        allow_weak=getattr(args, "allow_weak", False), unattended=True)
+    report = run_goal_fixpoint(
+        str(target), goals, max_rounds=getattr(args, "max_rounds", 10) or 10,
+        max_steps_per_goal=max_steps, verify=verify, apply=apply,
+        covered_only=covered_only)
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(render_fixpoint_markdown(report))
+        if report.applied and report.total_landed:
+            print(_APPLIED_TREE_NOTE)
+    # Non-zero when the loop's circuit breaker tripped — an honest, never-faked
+    # early stop the caller/CI should notice; a fixpoint / round-cap stop with a
+    # clean (or all-empty) run is a clean exit.
+    return 1 if report.circuit_broken else 0
+
+
 def _develop_goal_atomic(args, target, goal, verify, apply) -> int:
     """`apex develop --goal X --atomic`: land the goal's leaves as ONE gated,
     atomic multi-file unit via the shipped ``project_goal_orchestrator`` engine.
@@ -1502,6 +1569,26 @@ def _resolve_develop_mode_word(args: argparse.Namespace,
     )
 
 
+def _develop_goals_dispatch(args, target, max_steps, verify, apply) -> int | None:
+    """The ``--goals``/``--fixpoint`` early fork, split out of ``cmd_develop`` to
+    keep that function under the complexity ceiling.
+
+    ``--goals`` + ``--fixpoint`` together dispatch to the round-based
+    ``goal_fixpoint`` engine (a fixpoint run names its own goals, so it is
+    resolved BEFORE the mode-word / ``--atomic`` paths). A ``--goals`` value with
+    NO ``--fixpoint`` is a usage error (naming a goal SET only makes sense for
+    the round-based loop) — printed to stderr, exit 2. Returns ``None`` when
+    neither flag applies, so ``cmd_develop`` falls through to its other
+    dispatch paths unchanged."""
+    if getattr(args, "goals", "") and getattr(args, "fixpoint", False):
+        return _develop_fixpoint(args, target, max_steps, verify, apply)
+    if getattr(args, "goals", ""):
+        print("⛔ --goals requires --fixpoint (a goal SET only runs through the "
+             "round-based convergence loop)", file=sys.stderr)
+        return 2
+    return None
+
+
 def cmd_develop(args: argparse.Namespace) -> int:
     """Goal-directed composition: drive an OBJECTIVE metric to its target by
     composing verified transforms, each suite-gated with auto-rollback.
@@ -1538,6 +1625,14 @@ def cmd_develop(args: argparse.Namespace) -> int:
     # flag carries a value, so a bare develop is unaffected.
     if getattr(args, "chain", "") or "":
         return _develop_chain(args, target, max_steps, verify, apply)
+
+    # `apex develop --goals A,B,C --fixpoint`: a whole GOAL-SET convergence loop.
+    # Checked before the mode-word resolution (a fixpoint run names its own
+    # goals) and BEFORE --atomic (--fixpoint wins over --atomic — this early
+    # check fires ahead of `_develop_campaign_dispatch`).
+    goals_rc = _develop_goals_dispatch(args, target, max_steps, verify, apply)
+    if goals_rc is not None:
+        return goals_rc
 
     # DWIM the bare `apex develop <objective>`: a positional mode_word that
     # names a registered objective IS the objective (it used to fall through to
@@ -2263,6 +2358,23 @@ def register_parsers(subparsers) -> None:
         "--halt-on-unmet", action="store_true", dest="halt_on_unmet",
         help="With --chain: HALT at the first step whose earlier producer landed "
              "nothing (an unmet precondition) instead of skipping past it")
+    develop_parser.add_argument(
+        "--goals", default="", metavar="A,B,C",
+        help="A SET of goals to converge with --fixpoint (e.g. --goals "
+             "reduce-debt,tidy) — each round lands them in PROVEN topological "
+             "order until the set reaches a fixpoint (a round that lands "
+             "nothing). Requires --fixpoint")
+    develop_parser.add_argument(
+        "--fixpoint", action="store_true",
+        help="Run the round-based goal-SET convergence loop over --goals: each "
+             "round sequences the live goals by proven dependency order, lands "
+             "each atomically (or via the single-objective fallback), and a "
+             "rolled-back goal is PERMANENTLY retired. Stops at a fixpoint, the "
+             "round cap, or a circuit breaker. FORCES covered-only (unattended). "
+             "Default dry run; --apply writes")
+    develop_parser.add_argument(
+        "--max-rounds", type=int, default=10, dest="max_rounds",
+        help="With --fixpoint: maximum rounds before stopping honestly (default 10)")
     develop_parser.add_argument(
         "--atomic", action="store_true",
         help="With --goal: compose the goal's leaf objectives into ONE multi-file "

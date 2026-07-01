@@ -222,7 +222,8 @@ def _refusal(landing: GoalLanding, reason: str) -> GoalLanding:
 
 def orchestrate_goal(project_root: str | Path, goal: str, *,
                      verify: bool = True, apply: bool = True,
-                     value_led: bool = False) -> GoalLanding:
+                     value_led: bool = False,
+                     covered_only: bool = False) -> GoalLanding:
     """Land a decomposed goal's leaf objectives as ONE gated, atomic unit.
 
     Decompose ``goal`` to its leaves (:func:`fractal_develop.resolve_goal`), build
@@ -236,7 +237,18 @@ def orchestrate_goal(project_root: str | Path, goal: str, *,
     offered a landable distinct-file plan (there is nothing to COMPOSE — the caller
     should use the per-objective path for a single change), or when ``compose_plans``
     refuses. ``apply=False`` is a dry run: it composes and reports the plan without
-    writing. Deterministic, offline, zero-token; no new gate logic."""
+    writing.
+
+    ``covered_only`` (DEFAULT False = byte-identical to today) is the SAME
+    SAFE-by-default policy :func:`app.engine.objective_compiler.compile_objective`
+    exposes: threaded to the single ``apply_rename`` gate at Tier 1, a composed
+    landing whose green suite cannot VOUCH for the change (no test exercises it)
+    is withheld (rolled back, reported honestly) rather than landed silently. Off
+    by default so every existing caller (the per-objective ``--goal`` CLI path,
+    which leaves a human reviewing the diff) is unchanged byte-for-byte; an
+    unattended caller (a headless fixpoint round) opts in. Deterministic,
+    offline, zero-token; no new gate logic — the covered-only check lives inside
+    ``apply_rename`` itself."""
     from app.engine.fractal_develop import resolve_goal
 
     root = str(project_root)
@@ -257,12 +269,12 @@ def orchestrate_goal(project_root: str | Path, goal: str, *,
     landing.files_changed = sorted(composed.new_contents)
     landing.diff = composed.render_diff()
     if apply:
-        _land_composed(landing, root, composed, verify)
+        _land_composed(landing, root, composed, verify, covered_only)
     return landing
 
 
 def _land_composed(landing: GoalLanding, root: str, composed: RenamePlan,
-                   verify: bool) -> None:
+                   verify: bool, covered_only: bool = False) -> None:
     """Land the composed plan through the ONE gate, recording the atomic outcome.
 
     The single gated writer is :func:`apply_rename` with ``impact_scope`` (only the
@@ -270,10 +282,15 @@ def _land_composed(landing: GoalLanding, root: str, composed: RenamePlan,
     whole-goal atomicity is ENTIRELY that call's: it writes every composed file,
     gates ONCE, and on regression restores ALL originals / deletes ALL created files
     — so on RED nothing lands (``rolled_back``), and on green the WHOLE goal holds
-    (``verified`` iff the suite genuinely ran green). No gate logic here."""
+    (``verified`` iff the suite genuinely ran green). No gate logic here.
+
+    ``covered_only`` forwards to ``apply_rename`` at Tier 1 (a composed goal is a
+    multi-file behaviour change, never a Tier-0 semantics-preserving rewrite) —
+    default False keeps this call BYTE-IDENTICAL to before covered-only existed."""
     baseline = _campaign_baseline(root, verify)
     result = apply_rename(root, composed, verify=verify, impact_scope=True,
-                          baseline_failing=baseline)
+                          baseline_failing=baseline,
+                          covered_only=covered_only, tier=1)
     if not result.get("applied"):
         landing.rolled_back = bool(result.get("rolled_back"))
         landing.reason = str(result.get("reason") or "the single gate refused the goal")
