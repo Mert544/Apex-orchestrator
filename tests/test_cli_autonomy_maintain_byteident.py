@@ -8,6 +8,14 @@ case. cmd_maintain imports its collaborators lazily, so all of them are patched
 at their source modules — no real engine runs, nothing touches a real repo.
 
 Determinism only: no time/random/order assertions.
+
+ONE KNOWN, INTENTIONAL divergence is carved out: the refactored side now feeds
+``apply_plan`` an explicit ``covered_only`` gate (the never-fake-green fix that
+closed ``maintain``'s missing covered-only default — see
+``test_cli_autonomy_maintain_covered_only.py``); the frozen ORIGINAL snapshot
+predates that fix and never passes it. The ``apply_plan`` calls are compared
+with that one field carved out (and separately asserted) so this file keeps
+proving every OTHER byte of behaviour is unchanged by the file-split refactor.
 """
 
 from __future__ import annotations
@@ -82,9 +90,13 @@ def _make_bridge(dry_preview, apply_summary):
         def dry_run_plan(self, plan, project_root):
             return dry_preview
 
+        # ``covered_only`` defaults to ``None`` (a sentinel, never a real gate
+        # value) because the frozen ORIGINAL snapshot never passes it — only the
+        # refactored side does (see the module docstring). Recorded on its own
+        # tuple element so the one known divergence is easy to carve out.
         def apply_plan(self, plan, project_root, mode="supervised", verify=True,
-                       max_apply=None, commit=False):
-            calls.append(("apply_plan", mode, verify, max_apply, commit))
+                       max_apply=None, commit=False, covered_only=None):
+            calls.append(("apply_plan", mode, verify, max_apply, commit, covered_only))
             return apply_summary
 
     return _FakeBridge(), calls
@@ -189,6 +201,19 @@ _CASES = [
 ]
 
 
+def _drop_covered_only(calls):
+    """Strip the trailing ``covered_only`` field off every recorded
+    ``apply_plan`` call so the ONE known, intentional divergence (see the module
+    docstring) doesn't mask a REAL regression in the other fields."""
+    out = []
+    for call in calls:
+        if call[0] == "apply_plan":
+            out.append(call[:-1])
+        else:
+            out.append(call)
+    return out
+
+
 @pytest.mark.parametrize("case", _CASES, ids=[c[0] for c in _CASES])
 def test_byte_identical(case, tmp_path, monkeypatch):
     label, dry_preview, apply_summary, filter_result, filter_raises, over = case
@@ -216,8 +241,21 @@ def test_byte_identical(case, tmp_path, monkeypatch):
     assert out_o == out_r, f"{label}: stdout differs"
     assert err_o == err_r, f"{label}: stderr differs"
 
-    # Collaborator call shape (mode/verify/max_apply/commit forwarding) matches.
-    assert calls_o == calls_r, f"{label}: collaborator calls differ"
+    # Collaborator call shape (mode/verify/max_apply/commit forwarding) matches
+    # EXACTLY — with the one known, intentional ``covered_only`` divergence
+    # (see module docstring) carved out before comparing.
+    assert _drop_covered_only(calls_o) == _drop_covered_only(calls_r), (
+        f"{label}: collaborator calls differ")
+    # The carved-out field itself: the frozen ORIGINAL never gates on it
+    # (``None`` sentinel — it predates the fix); the REFACTORED side always
+    # does, and — with no ``--allow-weak`` anywhere in this battery — always
+    # resolves to the SAFE covered-only default.
+    apply_calls_o = [c for c in calls_o if c[0] == "apply_plan"]
+    apply_calls_r = [c for c in calls_r if c[0] == "apply_plan"]
+    assert all(c[-1] is None for c in apply_calls_o), (
+        f"{label}: frozen original unexpectedly gated on covered_only")
+    assert all(c[-1] is True for c in apply_calls_r), (
+        f"{label}: refactored side did not default to the safe covered-only gate")
 
     # If stdout is pure JSON, it must parse to the same object (defensive; the
     # apply path can append a trailing report/proof line after the JSON, which

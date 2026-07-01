@@ -41,7 +41,34 @@ def test_maintain_supervised_applies_and_reports(tmp_path, capsys):
     # Supervised pass applies at least one verified fix and never commits.
     assert summary["applied"] >= 1
     assert summary["commit"] is False
+    # COVERED-ONLY DEFAULT: `danger.py` has NO test exercising it, so its
+    # `harden_security` fix is a green-but-unreferencing WEAK move — withheld
+    # (rolled back), not silently landed. `calc.py`'s covered fixes still land.
+    assert summary["rolled_back"] >= 1
+    assert summary.get("withheld_uncovered", 0) >= 1
+    assert "return eval(e)" in (tmp_path / "app" / "danger.py").read_text()
+
+
+def test_maintain_supervised_allow_weak_lands_uncovered_fix_too(tmp_path, capsys):
+    """``--allow-weak`` restores the historical land-everything behaviour: the
+    SAME uncovered `danger.py` fix that the default (covered-only) pass
+    withholds now lands, and nothing is rolled back."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    (tmp_path / "app" / "danger.py").write_text("def run(e):\n    return eval(e)\n")
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "from app.calc import add\ndef test_add():\n    assert add(2, 3) == 5\n"
+    )
+    rc = cmd_maintain(_ns(tmp_path, mode="supervised", json=True, allow_weak=True))
+    out = capsys.readouterr().out
+    summary = json.loads(out)
+    assert rc == 0
+    assert summary["applied"] >= 1
     assert summary["rolled_back"] == 0
+    assert not summary.get("withheld_uncovered")
+    assert "return eval(e)" not in (tmp_path / "app" / "danger.py").read_text()
+    assert "literal_eval(e)" in (tmp_path / "app" / "danger.py").read_text()
 
 
 def test_maintain_writes_report_file_and_json(tmp_path, capsys):

@@ -191,6 +191,24 @@ def _maintain_avoid_signatures(args, target):
     return failure_signatures(load_proof_history(str(target)))
 
 
+def _maintain_covered_only(args) -> bool:
+    """The effective ``covered_only`` gate ``apex maintain`` feeds ``apply_plan``.
+
+    ``maintain`` is always ATTENDED (a user ran it directly at a terminal — there
+    is no daemon/``--evolve`` loop concept here), so this delegates to the SAME
+    single-source-of-truth policy the ``auto``/``develop --auto`` sweeps use
+    (:func:`resolve_covered_only`) with ``unattended=False`` unconditionally: the
+    SAFE default lands only moves a test actually exercises (covered ⇒ verified),
+    and a green-but-unreferencing (WEAK) move is previewed/rolled back instead of
+    silently landed. ``--allow-weak`` is the explicit, attended opt-out that
+    restores the historical land-everything behaviour — mirroring ``develop``'s
+    and ``auto``'s attended path exactly (``not allow_weak``)."""
+    from app.policies.autonomy_policy import resolve_covered_only
+
+    return resolve_covered_only(
+        allow_weak=getattr(args, "allow_weak", False), unattended=False)
+
+
 def _maintain_apply(args, engine, bridge, plan, target) -> int:
     """Apply the plan (verified, guarded), then learn, record, report, prove."""
     from app.engine.idea_action_bridge import render_maintenance_markdown
@@ -211,6 +229,7 @@ def _maintain_apply(args, engine, bridge, plan, target) -> int:
         verify=not args.no_verify,
         max_apply=(args.max_apply or None) if args.max_apply else None,
         commit=args.commit,
+        covered_only=_maintain_covered_only(args),
         **apply_kwargs,
     )
     IdeaMemory.learn_from(summary, str(target))  # learn from this run's outcomes
@@ -2504,6 +2523,13 @@ def register_parsers(subparsers) -> None:
     maintain_parser.add_argument(
         "--dry-run", action="store_true", dest="dry_run",
         help="Preview the diffs of every fix without changing anything",
+    )
+    maintain_parser.add_argument(
+        "--allow-weak", action="store_true", dest="allow_weak",
+        help="Also land WEAK moves — ones a green suite passed but no test "
+             "exercises (uncovered). Off by default so the apply is SAFE "
+             "(covered-only, verified by a test that actually runs the change); "
+             "this restores the prior land-everything behaviour",
     )
     maintain_parser.add_argument(
         "--no-verify", action="store_true",

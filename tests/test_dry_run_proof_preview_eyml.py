@@ -77,7 +77,7 @@ class _FakeBridge:
         return _preview()
 
     def apply_plan(self, plan, project_root, mode="supervised", verify=True,
-                   max_apply=None, commit=False):
+                   max_apply=None, commit=False, covered_only=False):
         return {"results": [{"applied": True}], "applied": 1,
                 "rolled_back": 0, "commit": False}
 

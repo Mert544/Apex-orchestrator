@@ -60,8 +60,8 @@ class _FakeBridge:
         return self._dry_preview
 
     def apply_plan(self, plan, project_root, mode="supervised", verify=True,
-                   max_apply=None, commit=False):
-        type(self).applied.append((mode, verify, max_apply, commit))
+                   max_apply=None, commit=False, covered_only=False):
+        type(self).applied.append((mode, verify, max_apply, commit, covered_only))
         return self._apply_summary
 
 
@@ -218,8 +218,35 @@ def test_maintain_apply_forwards_max_apply_and_commit(tmp_path, capsys, monkeypa
     rc = cmd_maintain(_ns(tmp_path, mode="autonomous", commit=True, max_apply=5,
                           no_verify=True))
     assert rc == 0
-    mode, verify, max_apply, commit = bridge.applied[-1]
+    mode, verify, max_apply, commit, covered_only = bridge.applied[-1]
     assert mode == "autonomous"
     assert verify is False  # --no-verify
     assert max_apply == 5
     assert commit is True
+    # No --allow-weak passed -> the SAFE covered-only gate reaches apply_plan.
+    assert covered_only is True
+
+
+# --------------------------------------------------------------------------- #
+# --allow-weak / covered-only gate                                           #
+# --------------------------------------------------------------------------- #
+def test_maintain_apply_defaults_covered_only_true(tmp_path, capsys, monkeypatch):
+    """No ``--allow-weak`` -> ``apply_plan`` is called with ``covered_only=True``
+    (the SAFE default: only test-exercised moves land)."""
+    summary = {"results": [{"applied": True}], "applied": 1}
+    bridge = _patch(monkeypatch, apply_summary=summary)
+    rc = cmd_maintain(_ns(tmp_path))
+    assert rc == 0
+    *_rest, covered_only = bridge.applied[-1]
+    assert covered_only is True
+
+
+def test_maintain_apply_allow_weak_disables_covered_only(tmp_path, capsys, monkeypatch):
+    """``--allow-weak`` -> ``apply_plan`` is called with ``covered_only=False``
+    (the explicit, attended opt-out that restores land-everything)."""
+    summary = {"results": [{"applied": True}], "applied": 1}
+    bridge = _patch(monkeypatch, apply_summary=summary)
+    rc = cmd_maintain(_ns(tmp_path, allow_weak=True))
+    assert rc == 0
+    *_rest, covered_only = bridge.applied[-1]
+    assert covered_only is False
