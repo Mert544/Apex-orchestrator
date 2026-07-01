@@ -17,12 +17,14 @@ graduate; (3) the value-aware path is still streak-gated (one short → nothing)
 from __future__ import annotations
 
 import json
+import types
 
 from app.engine.dream import (
     PROMOTE_CONFIDENCE,
     PROMOTE_STREAK,
     _module_landable_objective,
 )
+from app.engine.dream_landing import _live_confluence_modules
 from app.tools.project_profile import ProjectProfile, ProjectProfiler
 
 
@@ -183,3 +185,84 @@ def test_default_dream_with_no_apex_state_graduates_nothing(tmp_path, monkeypatc
     assert not (tmp_path / ".apex" / "dream-promotions.json").exists()
     assert report.promoted == []
     assert not any("promote to the idea engine" in p for p in report.proposed)
+
+
+# --- (6) THE LIVE PATH now honors the value-aware gate (was curate-only) ------
+# ``_live_confluence_modules`` (backing ``develop --from-dream`` / ``dream --land``
+# on an un-``--curate``-d project) used to re-derive ONLY the design-level
+# ``confidence >= PROMOTE_CONFIDENCE`` half of the gate inline, silently dropping
+# exactly the most-actionable below-gate confluences the curate path graduates via
+# the value-aware second path. It now reuses ``_promotable_discoveries`` — the same
+# predicate the curate store uses — so the two paths agree. The ``dream`` analysis
+# is stubbed to a crafted report so the graduation LOGIC is what's under test; the
+# value-landable probe (``_module_landable_objective``) runs for REAL against the
+# fixture, so soundness is not mocked away.
+
+def _fake_dream(discovery_objs, streaks):
+    def _run(project_root, **kwargs):
+        return types.SimpleNamespace(
+            discovery_objs=list(discovery_objs), _streaks=dict(streaks))
+    return _run
+
+
+def test_live_path_surfaces_below_gate_value_landable_confluence(
+        tmp_path, monkeypatch):
+    """A streak-confirmed confluence BELOW 0.80 whose module carries a real
+    landable move now SURFACES on the live path — previously the inline
+    design-level-only gate dropped it, leaving ``dream --land`` scope narrower
+    than a curated store on the same project."""
+    _landable_project(tmp_path)  # app/big.py carries a genuinely fillable stub
+    assert _module_landable_objective(tmp_path, "app/big.py") == "implement-stub"
+    disc = [{"key": "confluence:app/big.py", "kind": "confluence",
+             "confidence": 0.75}]
+    monkeypatch.setattr(
+        "app.engine.dream.dream",
+        _fake_dream(disc, {"confluence:app/big.py": PROMOTE_STREAK}))
+
+    assert _live_confluence_modules(tmp_path) == ["app/big.py"], (
+        "the live path must graduate the SAME value-landable-below-gate "
+        "confluence the curate path does — never-fake-green is unaffected "
+        "because the landed moves still pass the covered-only verify gate")
+
+
+def test_live_path_still_drops_below_gate_confluence_without_landable_move(
+        tmp_path, monkeypatch):
+    """Honesty preserved: a below-0.80 confluence with NO provable landing is
+    still dropped on the live path (no over-promise) — the widening only reaches
+    confluences the dream can PROVE it can act on."""
+    _design_only_project(tmp_path)  # app/big.py already done — no landable move
+    assert _module_landable_objective(tmp_path, "app/big.py") is None
+    disc = [{"key": "confluence:app/big.py", "kind": "confluence",
+             "confidence": 0.75}]
+    monkeypatch.setattr(
+        "app.engine.dream.dream",
+        _fake_dream(disc, {"confluence:app/big.py": PROMOTE_STREAK}))
+
+    assert _live_confluence_modules(tmp_path) == []
+
+
+def test_live_path_value_aware_is_still_streak_gated(tmp_path, monkeypatch):
+    """The widened live path is still streak-gated: one short of the streak,
+    even a value-landable confluence graduates nothing (anti-oscillation)."""
+    _landable_project(tmp_path)
+    disc = [{"key": "confluence:app/big.py", "kind": "confluence",
+             "confidence": 0.75}]
+    monkeypatch.setattr(
+        "app.engine.dream.dream",
+        _fake_dream(disc, {"confluence:app/big.py": PROMOTE_STREAK - 1}))
+
+    assert _live_confluence_modules(tmp_path) == []
+
+
+def test_live_path_design_level_confluence_unchanged(tmp_path, monkeypatch):
+    """A design-level confluence AT/above 0.80 still surfaces exactly as before —
+    the change only ADDS the value-aware below-gate path, it never drops a
+    confluence the old inline gate already accepted."""
+    _design_only_project(tmp_path)
+    disc = [{"key": "confluence:app/big.py", "kind": "confluence",
+             "confidence": 0.90}]
+    monkeypatch.setattr(
+        "app.engine.dream.dream",
+        _fake_dream(disc, {"confluence:app/big.py": PROMOTE_STREAK}))
+
+    assert _live_confluence_modules(tmp_path) == ["app/big.py"]

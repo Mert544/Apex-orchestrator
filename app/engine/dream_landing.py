@@ -64,27 +64,40 @@ def _live_confluence_modules(project_root: str | Path) -> list[str]:
     project that has never been ``--curate``-d would land nothing. Here we run a
     fully read-only dream (``persist=False`` — the journal/ledger are never
     advanced, so repeated calls return the same modules and write nothing) and
-    apply the SAME graduation gate the curating dream uses — the existing
-    ``PROMOTE_STREAK`` / ``PROMOTE_CONFIDENCE`` thresholds over the dream's own
-    streak count — so the live path graduates exactly what a curated store would
-    have, no lowered bar and no new threshold. Sorted, deduplicated; empty when
-    the dream surfaces no above-gate confluence (or cannot run)."""
+    apply the SAME graduation predicate the curating dream uses —
+    :func:`app.engine.dream._promotable_discoveries`, the single source of truth
+    for what a curate run would promote. That predicate is streak-gated over BOTH
+    promote paths: the design-level ``PROMOTE_CONFIDENCE`` path AND the
+    value-aware second path (a confluence BELOW the confidence bar that carries a
+    PROVEN verified-landable move, :func:`_is_value_landable_confluence`). The
+    live path formerly re-derived only the design-level half inline, so it
+    silently DROPPED exactly the most actionable confluences — the ones the dream
+    can prove it can land — leaving ``develop --from-dream`` / ``dream --land``
+    scope narrower than a curated store on the same project. Reusing the curate
+    predicate closes that gap: the live path now graduates EXACTLY what a curated
+    store would (no lowered bar — the value-aware path still requires a proven
+    landing, and every landed move still passes the covered-only verify +
+    auto-rollback gate downstream, so never-fake-green is untouched). Sorted,
+    deduplicated; empty when the dream surfaces no promotable confluence (or
+    cannot run). ``gate_factors`` is left at its default (the static gate), so a
+    non-``--learn-gates`` live derivation is byte-identical to the curate default."""
     try:
-        from app.engine.dream import PROMOTE_CONFIDENCE, PROMOTE_STREAK, dream
+        from app.engine.dream import _promotable_discoveries, dream
 
         report = dream(project_root, write_digest=False, curate=False,
                        persist=False)
     except Exception:
         return []  # a dream that cannot run names no confluence — never invents one
     streaks: dict[str, int] = getattr(report, "_streaks", {}) or {}
+    root = Path(project_root)
     out: list[str] = []
-    for d in report.discovery_objs:
-        key = d.get("key", "")
-        if (streaks.get(key, 1) >= PROMOTE_STREAK
-                and d.get("confidence", 0.0) >= PROMOTE_CONFIDENCE):
-            module = _confluence_key_module(key, project_root)
-            if module:
-                out.append(module)
+    for d in _promotable_discoveries(root, report, streaks):
+        # confluence keys only — a non-confluence promote (association/triple)
+        # yields "" here, so the live confluence contract is preserved while the
+        # value-landable confluences the old inline gate dropped now surface.
+        module = _confluence_key_module(d.get("key", ""), project_root)
+        if module:
+            out.append(module)
     return sorted(set(out))
 
 
