@@ -834,11 +834,16 @@ def cmd_auto(args: argparse.Namespace) -> int:
     # --deep already means "also weigh the EXPENSIVE synthesis objectives
     # (cover-gaps, tdd-implement, strengthen-tests, wire-exports,
     # generate-usage-doc)" for the action plan (``_auto_synthesis_kwargs``
-    # below); extend the SAME flag to the idea TREE so the ranking/recommend
-    # narrative (headline + quick wins) tells the same story as `--apply`
-    # would land — a landable opportunity like cover-gaps (a real
-    # characterization test for an untested module) is otherwise invisible on
-    # the idea-tree side even with `--deep` set. Off by default, so a plain
+    # below); extend the SAME flag to the idea TREE so a landable opportunity
+    # like cover-gaps (a real characterization test for an untested module),
+    # otherwise invisible on the idea-tree side, surfaces as a top idea root.
+    # HONEST NOTE: this widens BOTH the recommend narrative AND what
+    # `apex auto --apply --deep` actually LANDS — those landable roots become
+    # roadmap steps ``apply_plan`` processes, so `--deep` can land a cover-gaps
+    # move on a module a plain `--apply` would not reach. This is by design
+    # (``--deep`` is an explicit opt-in to go deeper); every such landed move
+    # still goes through the covered-only, suite-gated, auto-rollback apply
+    # path, so never-fake-green is preserved. Off by default, so a plain
     # `apex auto` stays byte-identical.
     deep = getattr(args, "deep", False)
     engine = IdeaPermutationEngine(

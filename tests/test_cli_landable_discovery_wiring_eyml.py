@@ -21,9 +21,15 @@ separate ``--actions --cover-gaps`` opt-in, or invisibly inside ``apex dream`` /
     before this wiring — additive, refusal-safe, no shift to existing users.
   - ``apex auto --deep`` — which ALREADY means "weigh the expensive synthesis
     objectives (cover-gaps, tdd-implement, ...)" for the action plan — now ALSO
-    threads the same two switches into the idea-tree ranking config, so the
-    recommend narrative (headline / quick wins) that `--deep` promises to
-    include is consistent top-to-bottom. Without ``--deep``, byte-identical.
+    threads the same two switches into the idea-tree ranking config. HONEST
+    SCOPE: this widens BOTH the recommend narrative (headline / quick wins) AND,
+    on the ``--apply --deep`` path, what actually LANDS — the landable
+    cover-gaps root becomes an executable roadmap step, so ``--deep`` can land a
+    characterization test on an untested module a plain ``--apply`` would not
+    reach. That is by design (``--deep`` is an explicit opt-in to go deeper);
+    every such landed move still passes the covered-only, suite-gated,
+    auto-rollback apply path, so never-fake-green holds. Without ``--deep``,
+    byte-identical.
   - Nothing is invented: this reuses the EXISTING, already-tested
     ``cover_gaps_modules`` signal and ``_seed_landable_opportunities`` family
     verbatim — only the CLI-flag -> engine-config last mile is new.
@@ -203,3 +209,77 @@ def test_auto_deep_recommend_never_writes(tmp_path: Path) -> None:
     assert rc == 0
     assert (root / "shape.py").read_text(encoding="utf-8") == before
     assert not (root / "tests").exists()
+
+
+# --------------------------------------------------------------------------- #
+# apex auto --apply --deep — the LANDING side of the widening, honestly gated  #
+# --------------------------------------------------------------------------- #
+
+def _capture_apply_plans(root: Path, monkeypatch, *runs: tuple[str, ...]) -> list[dict]:
+    """Drive each ``apex auto`` run in ``runs`` through the REAL parser, but
+    intercept the first ``IdeaActionBridge.apply_plan`` call — capturing the
+    plan it is handed and the ``covered_only`` gate — and abort BEFORE the heavy
+    real apply/verify runs, so the probe is fast and writes nothing to the
+    project. Returns one capture dict per run, in order."""
+    from app.engine.idea_action_bridge import IdeaActionBridge
+
+    class _Stop(Exception):
+        pass
+
+    captures: list[dict] = []
+
+    def _spy(self, plan, project_root, **kwargs):  # noqa: ANN001
+        captures.append({
+            "covered_only": kwargs.get("covered_only"),
+            "shape_exec": {s.action_type for s in plan.steps
+                           if "shape.py" in s.target and s.executable},
+        })
+        raise _Stop
+
+    monkeypatch.setattr(IdeaActionBridge, "apply_plan", _spy)
+
+    for extra in runs:
+        parser = _build_auto_parser()
+        args = parser.parse_args(["auto", "--target", str(root), *extra])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.suppress(_Stop):
+            ca.cmd_auto(args)
+    return captures
+
+
+def test_auto_apply_is_covered_only_gated_without_allow_weak(
+        tmp_path: Path, monkeypatch) -> None:
+    """THE core never-fake-green promise the ``--deep`` widening leans on: an
+    attended ``apex auto --apply`` (no ``--allow-weak``) hands ``apply_plan``
+    ``covered_only=True`` — a green suite that merely imports a module can't
+    vouch for a behaviour change there, so weak moves are withheld."""
+    root = _gappy_project(tmp_path)
+    (shallow,) = _capture_apply_plans(root, monkeypatch, ("--apply",))
+    assert shallow["covered_only"] is True
+
+
+def test_auto_apply_deep_widens_what_lands_but_stays_covered_only(
+        tmp_path: Path, monkeypatch) -> None:
+    """HONESTY PIN for the ``--deep`` widening (the fix for the once-over-claiming
+    comment/docstring): ``apex auto --apply --deep`` genuinely LANDS more than a
+    plain ``apex auto --apply`` — the landable cover-gaps root for the untested
+    ``shape.py`` becomes an executable roadmap step ``apply_plan`` processes —
+    yet EVERY move it hands the apply path is still covered-only-gated, so
+    never-fake-green holds even as ``--deep`` reaches further.
+
+    Concretely: the deep plan carries a ``cover_gaps`` executable move on
+    ``shape.py`` that the shallow plan never carries, and BOTH plans are handed
+    ``covered_only=True`` (attended, no ``--allow-weak``)."""
+    root = _gappy_project(tmp_path)
+    shallow, deep = _capture_apply_plans(
+        root, monkeypatch, ("--apply",), ("--apply", "--deep"))
+
+    # 1. Never-fake-green: covered-only on BOTH the shallow and the deeper reach.
+    assert shallow["covered_only"] is True
+    assert deep["covered_only"] is True
+
+    # 2. --deep genuinely reaches further: a landable cover-gaps move on the
+    #    untested shape.py that a plain --apply would not land.
+    assert "cover_gaps" in deep["shape_exec"]
+    assert "cover_gaps" not in shallow["shape_exec"]
+    assert deep["shape_exec"] - shallow["shape_exec"] == {"cover_gaps"}
