@@ -105,6 +105,10 @@ class _StubCompileResult:
     fitness_start = 0
     applied = False
     blocked: list[str] = []
+    # Match the production CompileResult interface: the verification-unavailable
+    # decline field the `_develop_auto` result filter now consults (falsy default,
+    # so this stub is retained/dropped exactly as before its introduction).
+    verification_unavailable = ""
 
     def to_dict(self) -> dict:
         return {"steps": []}
