@@ -122,6 +122,68 @@ def test_round_order_respects_topological_sort(tmp_path):
     assert order.index("dataclassify") < order.index("freeze-dataclass")
 
 
+# --- 2b. the OPT-IN learned-ranking tiebreak (byte-identical by default) --------
+
+def test_learned_order_default_off_is_byte_identical(tmp_path):
+    """``learned_order`` defaults to OFF, and OFF threads ``tiebreak=None`` into
+    every round — so the per-round order is byte-identical to the existing
+    fixture (the explicit-default and the omitted-default agree)."""
+    _two_stub_project(tmp_path)
+    goals = ["freeze-dataclass", "dataclassify", "sort-imports"]
+    default = run_goal_fixpoint(str(tmp_path), goals, apply=False, verify=False)
+    explicit_off = run_goal_fixpoint(str(tmp_path), goals, apply=False,
+                                     verify=False, learned_order=False)
+    assert [rd.order for rd in default.rounds] == [
+        rd.order for rd in explicit_off.rounds]
+
+
+def test_learned_order_on_fresh_repo_matches_off(tmp_path):
+    """On a FRESH repo (no ``.apex/idea-memory.json``, no ``proof-of-fix.json``)
+    both learned signals are neutral ``1.0``, so ``learned_order=True`` produces
+    the IDENTICAL per-round order to ``learned_order=False`` — the neutral-default
+    proof end-to-end (the tiebreak degrades exactly to ``ready[0]``)."""
+    _two_stub_project(tmp_path)
+    assert not (tmp_path / ".apex" / "idea-memory.json").exists()
+    assert not (tmp_path / ".apex" / "proof-of-fix.json").exists()
+    goals = ["freeze-dataclass", "dataclassify", "sort-imports"]
+    off = run_goal_fixpoint(str(tmp_path), goals, apply=False, verify=False,
+                            learned_order=False)
+    on = run_goal_fixpoint(str(tmp_path), goals, apply=False, verify=False,
+                           learned_order=True)
+    assert [rd.order for rd in on.rounds] == [rd.order for rd in off.rounds]
+
+
+def test_learned_order_goal_tree_name_does_not_error_or_bias(tmp_path):
+    """A GOAL-TREE / non-leaf name (untracked as an operator) mixed into the goal
+    set neither errors nor biases the fresh-repo order: it scores the neutral
+    ``1.0`` like everything else, so ``learned_order=True`` still matches
+    ``learned_order=False`` byte-for-byte."""
+    _two_stub_project(tmp_path)
+    # 'reduce-debt' is a composite goal name (a non-leaf in the fractal tree),
+    # not an operator the memory or realization stores key on.
+    goals = ["reduce-debt", "sort-imports", "dataclassify", "freeze-dataclass"]
+    off = run_goal_fixpoint(str(tmp_path), goals, apply=False, verify=False,
+                            learned_order=False)
+    on = run_goal_fixpoint(str(tmp_path), goals, apply=False, verify=False,
+                           learned_order=True)
+    assert [rd.order for rd in on.rounds] == [rd.order for rd in off.rounds]
+
+
+def test_learned_tiebreak_neutral_on_a_fresh_repo(tmp_path):
+    """The precomputed tiebreak closure scores EVERY name — a real objective, a
+    goal-tree/non-leaf name, and an entirely unknown name — at exactly the neutral
+    ``1.0`` on a fresh repo, so it can never reorder ready peers there (the
+    signal-level neutral-default proof under the fixpoint end-to-end one)."""
+    from app.engine.goal_fixpoint import _build_learned_tiebreak
+
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='p'\nversion='0'\n", encoding="utf-8")
+    tb = _build_learned_tiebreak(str(tmp_path))
+    for name in ("sort-imports", "freeze-dataclass", "dataclassify",
+                 "reduce-debt", "tidy", "totally-unknown-name"):
+        assert tb(name) == 1.0
+
+
 # --- 3. fixpoint = a round that lands nothing -----------------------------------
 
 def test_fixpoint_reached_when_a_round_lands_nothing(tmp_path):

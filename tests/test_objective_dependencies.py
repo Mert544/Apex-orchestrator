@@ -176,6 +176,73 @@ def test_topological_sort_of_empty_and_singleton() -> None:
     assert topological_sort(["freeze-dataclass"]) == ["freeze-dataclass"]
 
 
+# --- 4b. the OPT-IN learned-ranking tiebreak (byte-identical by default) ------
+
+def test_topological_sort_tiebreak_none_is_byte_identical() -> None:
+    """The OPT-IN ``tiebreak`` default (``None``) is byte-identical to the
+    historical ``ready[0]`` path across every existing fixture — the safety
+    property that makes learned ordering a no-op by default."""
+    for board in (
+        [],
+        ["freeze-dataclass"],
+        ["c", "a", "b"],
+        ["modernize", "sort-imports"],
+        ["sort-imports", "modernize"],
+        ["freeze-dataclass", "dataclassify"],
+        ["dataclassify", "freeze-dataclass"],
+        ["freeze-dataclass", "modernize", "dataclassify", "sort-imports"],
+        ["dataclassify", "freeze-dataclass", "dataclassify"],
+    ):
+        assert topological_sort(board, tiebreak=None) == topological_sort(board)
+
+
+def test_topological_sort_neutral_tiebreak_degrades_to_ready0() -> None:
+    """A tiebreak whose scores are ALL EQUAL (e.g. every learned factor a neutral
+    ``1.0`` on a fresh repo) is provably identical to ``ready[0]`` — the ready
+    list's own position is the secondary key, so a score tie resolves to the
+    earliest ready node, NOT some hash/dict-order surprise."""
+    board = ["freeze-dataclass", "modernize", "dataclassify", "sort-imports"]
+    assert (topological_sort(board, tiebreak=lambda _n: 1.0)
+            == topological_sort(board))
+    # any other constant is equally a no-op (only DIFFERENCES reorder).
+    assert (topological_sort(board, tiebreak=lambda _n: 0.0)
+            == topological_sort(board))
+
+
+def test_topological_sort_tiebreak_reorders_ready_deterministically() -> None:
+    """A tiebreak with genuinely-different scores reorders INDEPENDENT ready peers
+    by descending score — deterministically, regardless of the input order — while
+    NEVER crossing a proven prerequisite (dataclassify still precedes
+    freeze-dataclass)."""
+    scores = {"sort-imports": 9.0, "modernize": 3.0, "dataclassify": 1.0}
+
+    def _tb(name: str) -> float:
+        return scores.get(name, 1.0)
+
+    a = topological_sort(
+        ["freeze-dataclass", "modernize", "dataclassify", "sort-imports"],
+        tiebreak=_tb)
+    b = topological_sort(
+        ["dataclassify", "sort-imports", "freeze-dataclass", "modernize"],
+        tiebreak=_tb)
+    assert a == b  # input order no longer matters once scores decide
+    # highest score leads among the ready peers; the proven edge still holds.
+    assert a.index("sort-imports") < a.index("modernize")
+    assert a.index("dataclassify") < a.index("freeze-dataclass")
+
+
+def test_topological_sort_tiebreak_never_starves_untracked_name() -> None:
+    """An untracked name (score falls back to the neutral default) is ordered by
+    its stable position among ties — it is never dropped or pushed to the end by
+    the tiebreak, only genuinely-higher-scored peers precede it."""
+    scores = {"sort-imports": 5.0}  # 'modernize' is untracked ⇒ neutral 1.0
+
+    out = topological_sort(["modernize", "sort-imports"],
+                           tiebreak=lambda n: scores.get(n, 1.0))
+    assert set(out) == {"modernize", "sort-imports"}  # nothing dropped
+    assert out == ["sort-imports", "modernize"]  # the tracked, higher score leads
+
+
 # --- 5. CYCLE honesty (report, never crash) ----------------------------------
 
 def _cyclic_edges() -> tuple[Edge, ...]:

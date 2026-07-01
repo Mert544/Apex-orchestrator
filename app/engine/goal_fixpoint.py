@@ -50,6 +50,7 @@ offline by default."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -254,9 +255,49 @@ def _land_via_compile(project_root: str | Path, goal: str, *, max_steps: int,
     return RoundResult(goal=goal, status="empty", via="compile")
 
 
+def _build_learned_tiebreak(project_root: str | Path) -> Callable[[str], float]:
+    """Build the OPT-IN learned-ranking tiebreak from the two DORMANT, bounded,
+    demote-only learned signals — loading each on-disk store ONCE here (before the
+    round loop) and threading the precomputed maps into a pure closure, so the
+    round loop never re-reads ``.apex/*.json`` per round (mirrors
+    :func:`app.engine.move_value.scored_move_value` taking factor maps as DATA).
+
+    The score is ``feasibility_factor(operator) * realization_factor(operator)``
+    where the operator is the goal name with hyphens as underscores — the SAME
+    ``name.replace('-', '_')`` convention ``ascend.land_factors`` /
+    ``move_value`` use to key an objective's operator. Both factors default to a
+    neutral ``1.0``: :meth:`IdeaMemory.feasibility_factor` returns ``1.0`` for an
+    operator with too few samples (or none), and
+    ``operator_realization_factors`` omits an under-sampled operator (``.get(...,
+    1.0)``). A GOAL-TREE / non-leaf name (or any name that isn't a tracked
+    operator) therefore scores a neutral ``1.0`` too — it never errors and never
+    biases the order. On a FRESH repo (no ``.apex/idea-memory.json``, no
+    ``proof-of-fix.json``) EVERY score is ``1.0``, so the tiebreak degrades
+    exactly to ``ready[0]`` — byte-identical to ``learned_order=False``.
+
+    ``feasibility_factor`` is bounded to ``[0.90, 1.10]`` and
+    ``operator_realization_factors`` to ``[_REALIZATION_FLOOR, 1.0]``; both are
+    demote-only in spirit, so a learned signal can only reorder ready peers whose
+    evidence genuinely differs — never invent a dependency or starve a goal."""
+    from app.engine.idea_memory import IdeaMemory
+    from app.engine.value_reliability import operator_realization_factors
+
+    memory = IdeaMemory.load(project_root)
+    realization = operator_realization_factors(project_root)
+
+    def _score(goal: str) -> float:
+        operator = goal.replace("-", "_")
+        feas = memory.feasibility_factor(operator)
+        realized = realization.get(operator, 1.0)
+        return feas * realized
+
+    return _score
+
+
 def _run_round(project_root: str | Path, pending: list[str], *, max_steps: int,
                verify: bool, apply: bool, covered_only: bool,
-               max_rollbacks_per_round: int) -> FixpointRound:
+               max_rollbacks_per_round: int,
+               tiebreak: Callable[[str], float] | None = None) -> FixpointRound:
     """Run ONE round: sequence ``pending`` in proven topological order, land each,
     and stop mid-round the moment the circuit breaker trips.
 
@@ -265,8 +306,10 @@ def _run_round(project_root: str | Path, pending: list[str], *, max_steps: int,
     changed what a later goal's proven prerequisite needs — the same
     re-measure-against-the-current-tree discipline ``chain_compiler.run_chain``
     uses across steps). Deterministic: :func:`topological_sort` is a pure,
-    stable function of ``pending``."""
-    order = topological_sort(pending)
+    stable function of ``pending`` (and, when supplied, the precomputed
+    ``tiebreak`` — which only reorders ready peers whose learned score differs,
+    so a fresh-repo neutral tiebreak leaves the order byte-identical)."""
+    order = topological_sort(pending, tiebreak=tiebreak)
     round_ = FixpointRound(order=order)
     rollbacks = 0
     for goal in order:
@@ -285,12 +328,15 @@ def _run_round(project_root: str | Path, pending: list[str], *, max_steps: int,
 def _run_rounds_loop(project_root: str | Path, report: FixpointReport,
                      live: list[str], *, max_rounds: int, max_steps_per_goal: int,
                      verify: bool, apply: bool, covered_only: bool,
-                     max_rollbacks_per_round: int) -> set[str]:
+                     max_rollbacks_per_round: int,
+                     tiebreak: Callable[[str], float] | None = None) -> set[str]:
     """The round-by-round convergence walk, split out of
     :func:`run_goal_fixpoint` to keep that function under the complexity
     ceiling. Mutates ``report`` in place (appends each round, sets the stop-flag)
     and returns the FINAL retired set. Pure control flow — no gate logic; every
-    round's landing runs through :func:`_run_round`."""
+    round's landing runs through :func:`_run_round`. ``tiebreak`` (the precomputed
+    learned-ranking closure, or ``None``) is threaded UNCHANGED into every round —
+    it is built ONCE in :func:`run_goal_fixpoint`, never re-read here per round."""
     retired: set[str] = set()
     for _round_num in range(1, max_rounds + 1):
         pending = [g for g in live if g not in retired]
@@ -300,7 +346,7 @@ def _run_rounds_loop(project_root: str | Path, report: FixpointReport,
         round_ = _run_round(
             project_root, pending, max_steps=max_steps_per_goal, verify=verify,
             apply=apply, covered_only=covered_only,
-            max_rollbacks_per_round=max_rollbacks_per_round)
+            max_rollbacks_per_round=max_rollbacks_per_round, tiebreak=tiebreak)
         report.rounds.append(round_)
         retired.update(r.goal for r in round_.results
                        if r.status in ("rolled_back", "unknown"))
@@ -319,7 +365,8 @@ def run_goal_fixpoint(project_root: str | Path, goals: list[str], *,
                       max_rounds: int = 10, max_steps_per_goal: int = 25,
                       verify: bool = True, apply: bool = False,
                       covered_only: bool = False,
-                      max_rollbacks_per_round: int = 3) -> FixpointReport:
+                      max_rollbacks_per_round: int = 3,
+                      learned_order: bool = False) -> FixpointReport:
     """Converge a whole GOAL SET to a FIXPOINT — round after round, each round a
     proven topological sweep, until nothing lands or the round cap is hit.
 
@@ -346,9 +393,27 @@ def run_goal_fixpoint(project_root: str | Path, goals: list[str], *,
     green suite can't vouch for is withheld, not landed (the CLI layer forces
     this True, unattended, exactly like ``cmd_evolve``).
 
+    ``learned_order`` (OPT-IN, default OFF) adds a LEARNED-RANKING TIEBREAK among
+    the ready goals within each round's topological sort: the two dormant,
+    bounded, demote-only learned signals — :meth:`IdeaMemory.feasibility_factor`
+    and ``value_reliability.operator_realization_factors`` — are loaded ONCE
+    (before the round loop) into a pure closure that is threaded UNCHANGED into
+    every round (never re-read per round). Both signals default to a neutral
+    ``1.0``, so on a FRESH repo (no ``.apex/idea-memory.json``, no
+    ``proof-of-fix.json``) every ready goal scores the same and the tiebreak
+    degrades EXACTLY to ``topological_sort``'s historical ``ready[0]`` — the
+    order is byte-identical to ``learned_order=False``. With ``learned_order``
+    OFF the tiebreak is ``None``, so the sort is literally the pre-existing code
+    path: byte-identical by default, full stop. The learned signal can only
+    reorder ready peers whose evidence genuinely differs — it never invents a
+    dependency, never crosses a proven prerequisite, and a goal-tree / non-leaf
+    name (untracked as an operator) scores neutral, so it neither errors nor
+    biases the order.
+
     Deterministic: the round loop and the topological order are pure functions
-    of the goal set and the tree state; the report body carries no clock or
-    randomness."""
+    of the goal set and the tree state (and, when ``learned_order`` is on, the
+    on-disk learned stores read ONCE up front); the report body carries no clock
+    or randomness."""
     report = FixpointReport(goals=list(goals), applied=apply)
     if not goals:
         report.reached_fixpoint = True
@@ -356,11 +421,15 @@ def run_goal_fixpoint(project_root: str | Path, goals: list[str], *,
     before = _grade(project_root) if apply else -1
     report.grade_before = before
 
+    # Build the learned tiebreak ONCE (reads .apex/*.json up front), or leave it
+    # None so the sort is byte-identical to the historical path.
+    tiebreak = _build_learned_tiebreak(project_root) if learned_order else None
     live = list(dict.fromkeys(goals))  # de-duplicated, first-seen order
     retired = _run_rounds_loop(
         project_root, report, live, max_rounds=max_rounds,
         max_steps_per_goal=max_steps_per_goal, verify=verify, apply=apply,
-        covered_only=covered_only, max_rollbacks_per_round=max_rollbacks_per_round)
+        covered_only=covered_only, max_rollbacks_per_round=max_rollbacks_per_round,
+        tiebreak=tiebreak)
 
     report.retired = sorted(retired)
     report.grade_after = _grade(project_root) if (apply and before >= 0) else before

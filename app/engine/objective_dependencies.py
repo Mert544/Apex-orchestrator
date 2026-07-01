@@ -300,7 +300,27 @@ def find_cycle(objectives: list[str]) -> list[str] | None:
     return remaining or None
 
 
-def topological_sort(objectives: list[str]) -> list[str]:
+def _pick_ready(ready: list[str],
+                tiebreak: Callable[[str], float] | None) -> str:
+    """Choose the next node to emit from ``ready`` (the nodes whose prerequisites
+    are all satisfied, in stable input order).
+
+    With ``tiebreak=None`` this is EXACTLY ``ready[0]`` — the earliest in the
+    stable order, byte-identical to the historical behaviour. With a ``tiebreak``
+    it picks the node with the HIGHEST score, using the ready-list POSITION as a
+    secondary key, so ties (e.g. every learned factor neutral at ``1.0``) resolve
+    to ``ready[0]`` — the tiebreak reorders only peers whose scores differ. Not
+    relying on ``max``'s first-maximal alone (the position key is EXPLICIT), so
+    the neutral case is provably ``ready[0]``."""
+    if tiebreak is None:
+        return ready[0]  # earliest in the (stable) pending order — the default
+    # Descending score, then ascending stable position: a score tie ⇒ ready[0].
+    best = max(range(len(ready)), key=lambda i: (tiebreak(ready[i]), -i))
+    return ready[best]
+
+
+def topological_sort(objectives: list[str], *,
+                     tiebreak: Callable[[str], float] | None = None) -> list[str]:
     """A STABLE, deterministic topological order of ``objectives`` under the
     proven dependency graph: every objective appears AFTER each of its proven
     prerequisites that is also in the set.
@@ -310,6 +330,17 @@ def topological_sort(objectives: list[str]) -> list[str]:
     with no dependency keeps its original position relative to its independent
     peers (a fresh, edge-free list is returned unchanged). Duplicates are
     collapsed to their first occurrence.
+
+    ``tiebreak`` (opt-in, default ``None``) is a LEARNED-RANKING TIEBREAK among
+    the ``ready`` nodes: when supplied, the ready node with the HIGHEST
+    ``tiebreak(name)`` score is emitted next, with the ready list's OWN stable
+    position as the SECONDARY key — so a tie in score degrades EXACTLY to
+    ``ready[0]`` (the default behaviour). With ``tiebreak=None`` the selection is
+    literally ``ready[0]``, byte-identical to before; with a tiebreak whose
+    scores are all equal (e.g. every learned factor a neutral ``1.0`` on a fresh
+    repo) the position key makes the result PROVABLY identical to ``ready[0]``
+    too — the tiebreak can only REORDER ready peers whose scores genuinely
+    differ, never change the topological constraints.
 
     NEVER crashes on a cycle (honest degradation): if a set of objectives is
     caught in a dependency cycle, none can be cleanly ordered, so they are
@@ -332,7 +363,7 @@ def topological_sort(objectives: list[str]) -> list[str]:
             # remainder in stable input order rather than loop forever (honest).
             ordered.extend(pending)
             break
-        nxt = ready[0]  # earliest in the (stable) pending order
+        nxt = _pick_ready(ready, tiebreak)
         ordered.append(nxt)
         emitted.add(nxt)
         pending.remove(nxt)
