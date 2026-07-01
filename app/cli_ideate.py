@@ -83,6 +83,20 @@ def _build_ideate_report(args: argparse.Namespace, target: Path):
             # seeder caps and suffixes them so they never displace budgeted
             # synthesis; the engine forwards this key to ``IdeaSeeder.seed``.
             "seed_discoveries": getattr(args, "include_discoveries", False),
+            # Opt-in (default OFF, DISCOVERY WIRING): surface Apex's own
+            # highest-value LANDABLE opportunities (implement-stub, cover-gaps,
+            # wire-exports, tdd-implement) as first-class ``::landable-*`` idea
+            # roots, each grounded in the REAL lander's own diff-producing gate
+            # (``idea_synthesis_signals`` — never an over-promise). Without this,
+            # a concrete-development capability like cover-gaps (write a real
+            # characterization test for an untested module) is invisible on the
+            # daily ``apex ideate`` entry point even though the objective itself
+            # already exists and lands verified diffs. Threads BOTH engine
+            # switches the family needs (``landability_aware`` scores the bonus,
+            # ``landability_deep`` also runs the suite-cost signals incl.
+            # cover-gaps) so one flag is all a user need pass.
+            "landability_aware": getattr(args, "landable", False),
+            "landability_deep": getattr(args, "landable", False),
         },
         project_root=str(target),
         extra_operators=extra_operators,
@@ -643,6 +657,15 @@ def register_parsers(subparsers) -> None:
         help="Opt-in: append the fused cross-engine discovery leads as "
         "recommend-only ideas (capped, appended after the budgeted seeds — "
         "never displaces them)",
+    )
+    ideate_parser.add_argument(
+        "--landable",
+        action="store_true",
+        dest="landable",
+        help="Opt-in: surface Apex's own highest-value LANDABLE opportunities "
+        "(implement-stub, cover-gaps, wire-exports, tdd-implement) as top-ranked "
+        "idea roots — each grounded in the real objective's own diff-producing "
+        "gate, so it is one `apex develop`/`--actions` could actually land",
     )
     ideate_parser.add_argument(
         "--facets",

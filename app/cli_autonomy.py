@@ -831,8 +831,19 @@ def cmd_auto(args: argparse.Namespace) -> int:
 
     plugins = PluginRegistry()
     plugins.load_all()
+    # --deep already means "also weigh the EXPENSIVE synthesis objectives
+    # (cover-gaps, tdd-implement, strengthen-tests, wire-exports,
+    # generate-usage-doc)" for the action plan (``_auto_synthesis_kwargs``
+    # below); extend the SAME flag to the idea TREE so the ranking/recommend
+    # narrative (headline + quick wins) tells the same story as `--apply`
+    # would land — a landable opportunity like cover-gaps (a real
+    # characterization test for an untested module) is otherwise invisible on
+    # the idea-tree side even with `--deep` set. Off by default, so a plain
+    # `apex auto` stays byte-identical.
+    deep = getattr(args, "deep", False)
     engine = IdeaPermutationEngine(
-        config={"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4},
+        config={"max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4,
+                "landability_aware": deep, "landability_deep": deep},
         project_root=str(target),
         extra_operators=plugins.idea_operators(),
     )

@@ -338,8 +338,82 @@ def test_cmd_auto_forwards_exact_permutation_config(tmp_path, monkeypatch):
                         recommend=True, mode=None, commit=False, no_verify=True,
                         max_apply=0, json=True, out=""))
     assert rc == 0
+    # Without --deep (getattr default False), landability stays off too — the
+    # idea-tree ranking config is byte-identical to before this wiring landed.
     assert _FakeEngine.last_config == {
-        "max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4}
+        "max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4,
+        "landability_aware": False, "landability_deep": False}
+
+
+def test_cmd_auto_deep_flag_also_enables_landability_ranking(tmp_path, monkeypatch):
+    # --deep already means "weigh the expensive synthesis objectives (incl.
+    # cover-gaps)" for the ACTION PLAN (_auto_synthesis_kwargs); this proves it
+    # ALSO threads landability_aware/landability_deep into the idea-TREE config,
+    # so a landable opportunity like cover-gaps is not invisible in the ranking
+    # `--deep` already promises to include (kills the `deep`->`False` constant
+    # flip that would silently drop this half of the wiring).
+    bridge = _FakeBridge(plan=_plan([]))
+    monkeypatch.setattr("app.engine.idea_permutation.IdeaPermutationEngine",
+                        _FakeEngine)
+    monkeypatch.setattr("app.engine.idea_action_bridge.IdeaActionBridge",
+                        lambda *a, **k: bridge)
+
+    class _Road:
+        def build(self, report):
+            class _R:
+                quick_wins = []
+            return _R()
+    monkeypatch.setattr("app.engine.idea_roadmap.RoadmapSynthesizer",
+                        lambda *a, **k: _Road())
+
+    class _Shape:
+        total_ideas = 0
+        distinct_subjects = 0
+        observations = []
+        heaviest_module = ""
+        heaviest_loc = 0
+    monkeypatch.setattr("app.engine.idea_tree_shape.analyze_tree_shape",
+                        lambda report: _Shape())
+    monkeypatch.setattr("app.cli_autonomy._auto_security_counts",
+                        lambda target: (0, 0))
+    monkeypatch.setattr("app.cli_autonomy._working_tree_clean",
+                        lambda target: False)
+
+    class _Decision:
+        act = False
+        mode = "report"
+        reason = "nothing to do"
+
+        def to_dict(self):
+            return {"act": False}
+
+    class _Policy:
+        def decide(self, **kw):
+            return _Decision()
+    monkeypatch.setattr("app.policies.autonomy_policy.AutonomyPolicy",
+                        lambda *a, **k: _Policy())
+
+    class _Plugins:
+        def load_all(self):
+            pass
+
+        def idea_operators(self):
+            return []
+    monkeypatch.setattr("app.plugins.registry.PluginRegistry",
+                        lambda *a, **k: _Plugins())
+
+    class _Scout:
+        stats = {"executable_steps": 0}
+    bridge._plan = _Scout()
+
+    _FakeEngine.last_config = None
+    rc = m.cmd_auto(_ns(target=str(tmp_path), goal="", apply=False,
+                        recommend=True, mode=None, commit=False, no_verify=True,
+                        max_apply=0, json=True, out="", deep=True))
+    assert rc == 0
+    assert _FakeEngine.last_config == {
+        "max_total_ideas": 40, "max_idea_depth": 2, "breadth": 4,
+        "landability_aware": True, "landability_deep": True}
 
 
 def test_cmd_evolve_dry_run_forwards_exact_config(tmp_path, capsys, monkeypatch):
