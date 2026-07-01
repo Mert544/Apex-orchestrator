@@ -350,3 +350,61 @@ def test_cmd_auto_evolve_forces_covered_only_true_even_with_allow_weak(
     capsys.readouterr()
     assert rc == 0
     assert captured["covered_only"] is True
+
+
+# --------------------------------------------------------------------------- #
+# The daemon-to-CLI wire: ApexDaemon's per-cycle subprocess env is what makes  #
+# ``APEX_DAEMON`` visible to the child ``apex auto --apply`` in the first      #
+# place. The isolation tests above set the env var directly, which proves the  #
+# CLI-side logic but NOT that the daemon actually exports it. This closes that  #
+# gap end-to-end: take the REAL ``ApexDaemon._build_env()`` output (the exact   #
+# dict the daemon hands to ``subprocess.run``), apply it as the process env,    #
+# and drive ``cmd_auto`` through it — proving the wire, not just the endpoints. #
+# Reverting the ``env=`` plumbing in ``ApexDaemon._run_apex``/``_build_env``     #
+# makes these fail (the daemon-produced env would no longer carry the var).     #
+# --------------------------------------------------------------------------- #
+def test_daemon_built_env_marks_unattended(tmp_path, monkeypatch):
+    """``_auto_unattended`` reads True from the EXACT value
+    ``ApexDaemon._build_env()`` stamps — the daemon's own output, not a
+    hand-written stand-in. Sourced from the real subprocess-env dict the
+    daemon builds, then applied to the process env the way the OS would hand
+    it to the child ``apex auto --apply``."""
+    from app.daemon import ApexDaemon
+
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    d = ApexDaemon(goal="", target=str(tmp_path), pid_file=str(tmp_path / "d.pid"))
+    daemon_env = d._build_env()
+    assert daemon_env.get("APEX_DAEMON") == "1"
+
+    # What the OS does when spawning the child with `env=daemon_env`: the
+    # child process's os.environ IS that dict's contents.
+    monkeypatch.setenv("APEX_DAEMON", daemon_env["APEX_DAEMON"])
+    assert m._auto_unattended(_ns()) is True
+
+
+def test_daemon_built_env_drives_covered_only_end_to_end(tmp_path, monkeypatch, capsys):
+    """Full wire: daemon-produced env ⇒ ``cmd_auto`` (as the daemon's child
+    process would run it) feeds ``covered_only=True`` to ``apply_plan`` even
+    with ``--allow-weak`` — the daemon subprocess can never silently land an
+    uncovered move. Proves the fix rather than re-asserting the policy."""
+    from app.daemon import ApexDaemon
+
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    d = ApexDaemon(goal="", target=str(tmp_path), pid_file=str(tmp_path / "d.pid"))
+    daemon_env = d._build_env()
+
+    monkeypatch.setenv("APEX_DAEMON", daemon_env["APEX_DAEMON"])
+    captured = _spy_covered_only(monkeypatch, tmp_path)
+    rc = m.cmd_auto(_act_ns(tmp_path, allow_weak=True))
+    capsys.readouterr()
+    assert rc == 0
+    assert captured["covered_only"] is True
+
+
+def test_daemon_env_without_the_fix_would_be_attended(tmp_path, monkeypatch):
+    """Non-tautological control: the UNPATCHED parent env (what the daemon's
+    subprocess saw BEFORE this fix, i.e. no ``env=`` override at all) reads as
+    ATTENDED — proving the assertions above genuinely depend on
+    ``ApexDaemon._build_env()`` doing the stamping, not on ambient state."""
+    monkeypatch.delenv("APEX_DAEMON", raising=False)
+    assert m._auto_unattended(_ns()) is False

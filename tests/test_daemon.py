@@ -100,6 +100,41 @@ class TestDaemonRunAndStop:
         assert "app.cli" in cmd and "auto" in cmd
         assert "successfully" in capsys.readouterr().out.lower()
 
+    def test_run_apex_subprocess_env_sets_apex_daemon(self, tmp_path):
+        """The daemon's per-cycle subprocess MUST carry ``APEX_DAEMON=1`` so the
+        child ``apex auto --apply`` self-identifies as UNATTENDED and forces the
+        covered-only verification gate (``_auto_unattended`` in cli_autonomy.py
+        reads exactly this var). Without it, the daemon silently ran the ATTENDED
+        branch — a green-but-uncovered move could land unreviewed. Reverting the
+        ``env=`` wiring in ``ApexDaemon._run_apex``/``_build_env`` makes this fail."""
+        from unittest.mock import patch
+        d = self._daemon(tmp_path)
+
+        class _Res:
+            returncode = 0
+            stderr = ""
+
+        with patch("subprocess.run", return_value=_Res()) as m:
+            d._run_apex()
+        _, kwargs = m.call_args
+        assert "env" in kwargs, "subprocess.run must be called with an explicit env kwarg"
+        assert kwargs["env"].get("APEX_DAEMON") == "1"
+
+    def test_build_env_preserves_parent_environment(self, tmp_path, monkeypatch):
+        """``_build_env`` stamps APEX_DAEMON onto a COPY of the parent env — it
+        does not drop unrelated inherited vars (e.g. PATH) and does not mutate
+        the real ``os.environ`` in place."""
+        import os
+        monkeypatch.delenv("APEX_DAEMON", raising=False)
+        monkeypatch.setenv("APEX_DAEMON_TEST_SENTINEL", "kept")
+        d = self._daemon(tmp_path)
+        env = d._build_env()
+        assert env["APEX_DAEMON"] == "1"
+        assert env["APEX_DAEMON_TEST_SENTINEL"] == "kept"
+        assert env["PATH"] == os.environ["PATH"]
+        # os.environ itself is untouched by the merge (no in-place mutation).
+        assert "APEX_DAEMON" not in os.environ
+
     def test_run_apex_failure(self, tmp_path, capsys):
         from unittest.mock import patch
         d = self._daemon(tmp_path)

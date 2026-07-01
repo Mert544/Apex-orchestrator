@@ -86,11 +86,25 @@ class ApexDaemon:
             cmd.append("--commit")
         return cmd
 
+    def _build_env(self) -> dict[str, str]:
+        """The child-process environment for the per-cycle ``apex`` subprocess.
+
+        Stamps ``APEX_DAEMON=1`` onto the parent's environment so the child
+        ``apex auto --apply`` recognises it is running UNATTENDED — no human is
+        reviewing the diff between cycles. ``_auto_unattended`` (cli_autonomy.py)
+        reads exactly this var to force the ``covered_only`` verification gate
+        (via ``resolve_covered_only``), which refuses a green-but-uncovered
+        (WEAK) move from landing silently. Without this, the daemon's subprocess
+        silently ran the ATTENDED branch — the exact crack this closes. A plain
+        dict merge (no clock/random) so it stays deterministic."""
+        return {**os.environ, "APEX_DAEMON": "1"}
+
     def _run_apex(self) -> None:
         cmd = self._build_command()
+        env = self._build_env()
         print(f"[daemon] Running: {' '.join(cmd)}")
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
             if result.returncode == 0:
                 print("[daemon] Run completed successfully.")
             else:
