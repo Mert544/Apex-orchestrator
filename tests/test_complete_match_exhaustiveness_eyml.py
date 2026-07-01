@@ -417,6 +417,109 @@ def test_does_not_edit_the_live_mode_policy_source():
     assert complete_match_exhaustiveness(src) is None
 
 
+# --- the "dispatch inside a reachable try must be refused" soundness guard ---
+# The block-position guard proves nothing about EXCEPT reachability. A dispatch that
+# is the LAST statement of a ``try:`` body silently falls through today (returns
+# ``None``); appending a ``raise AssertionError`` there is CAUGHT by the try's
+# ``except`` — the raise is swallowed / rerouted instead of falling through, a
+# behaviour change. Refuse whenever the new raise could be intercepted.
+
+def test_refuses_dispatch_last_in_try_body_with_reachable_except():
+    # The dispatch is the terminal statement of a ``try:`` whose ``except`` would
+    # catch the appended ``raise AssertionError`` — refuse (the raise would be
+    # swallowed, not fall through as today).
+    src = (
+        "from enum import Enum\n\n\nclass S(Enum):\n"
+        "    A = 1\n    B = 2\n    C = 3\n\n\n"
+        "def f(s: S) -> int:\n    try:\n"
+        "        if s == S.A:\n            return 1\n"
+        "        elif s == S.B:\n            return 2\n"
+        "    except AssertionError:\n        return -1\n"
+        "    return 0\n"
+    )
+    assert complete_match_exhaustiveness(src) is None  # the except would catch the raise
+
+
+def test_refuses_match_last_in_try_body_with_broad_except():
+    # A ``match`` terminal in a ``try:`` body whose broad ``except Exception:`` would
+    # catch the sentinel raise — refuse.
+    src = (
+        "from enum import Enum\n\n\nclass S(Enum):\n"
+        "    A = 1\n    B = 2\n    C = 3\n\n\n"
+        "def f(s: S) -> int:\n    try:\n        match s:\n"
+        "            case S.A:\n                return 1\n"
+        "            case S.B:\n                return 2\n"
+        "    except Exception:\n        return -1\n"
+    )
+    assert complete_match_exhaustiveness(src) is None  # the broad except would catch it
+
+
+def test_refuses_dispatch_in_try_body_with_finally():
+    # A ``finally`` reroutes control out of the ``try`` regardless of the raise — a
+    # dispatch terminal in the body of such a ``try`` is refused.
+    src = (
+        "from enum import Enum\n\n\nclass S(Enum):\n"
+        "    A = 1\n    B = 2\n    C = 3\n\n\n"
+        "def f(s: S) -> int:\n    try:\n"
+        "        if s == S.A:\n            return 1\n"
+        "        elif s == S.B:\n            return 2\n"
+        "    finally:\n        cleanup()\n"
+    )
+    assert complete_match_exhaustiveness(src) is None  # the finally reroutes control
+
+
+def test_refuses_dispatch_nested_under_if_inside_try_body():
+    # The risky-try region includes descendants: a dispatch nested under an ``if``
+    # inside a guarded ``try:`` body is still inside the region whose raise the
+    # ``except`` catches — refuse.
+    src = (
+        "from enum import Enum\n\n\nclass S(Enum):\n"
+        "    A = 1\n    B = 2\n    C = 3\n\n\n"
+        "def f(s: S, go: bool) -> int:\n    try:\n        if go:\n"
+        "            if s == S.A:\n                return 1\n"
+        "            elif s == S.B:\n                return 2\n"
+        "    except AssertionError:\n        return -1\n"
+        "    return 0\n"
+    )
+    assert complete_match_exhaustiveness(src) is None  # inside the guarded region
+
+
+def test_still_fires_on_terminal_dispatch_not_in_any_try():
+    # No over-refusal: the SAME dispatch shape, NOT inside a ``try``, is a genuine
+    # silent fall-through and still gains its sentinel.
+    src = (
+        "from enum import Enum\n\n\nclass S(Enum):\n"
+        "    A = 1\n    B = 2\n    C = 3\n\n\n"
+        "def f(s: S) -> int:\n"
+        "    if s == S.A:\n        return 1\n"
+        "    elif s == S.B:\n        return 2\n"
+    )
+    out = complete_match_exhaustiveness(src)
+    assert out is not None
+    compile(out, "<m>", "exec")
+    assert out.rstrip().endswith('raise AssertionError(f"unhandled s: {s!r}")')
+
+
+def test_still_fires_on_terminal_dispatch_in_try_orelse_no_finally():
+    # A dispatch terminal in a ``try``'s ``else:`` (which runs only after the body
+    # SUCCEEDS) is NOT caught by that try's ``except`` in Python, and with no
+    # ``finally`` there is no reroute — the fall-through is genuine, so it still
+    # fires. Guards against over-refusing every dispatch merely near a ``try``.
+    src = (
+        "from enum import Enum\n\n\nclass S(Enum):\n"
+        "    A = 1\n    B = 2\n    C = 3\n\n\n"
+        "def f(s: S) -> int:\n    try:\n        setup()\n"
+        "    except AssertionError:\n        return -1\n"
+        "    else:\n"
+        "        if s == S.A:\n            return 1\n"
+        "        elif s == S.B:\n            return 2\n"
+    )
+    out = complete_match_exhaustiveness(src)
+    assert out is not None
+    compile(out, "<m>", "exec")
+    assert out.rstrip().endswith('raise AssertionError(f"unhandled s: {s!r}")')
+
+
 # --- idempotency / determinism ----------------------------------------------
 
 def test_idempotent_second_run_is_noop():

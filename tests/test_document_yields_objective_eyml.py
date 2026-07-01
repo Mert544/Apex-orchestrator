@@ -390,6 +390,52 @@ def test_transform_refuses_undocumented_private_and_test():
         'def test_f() -> Iterator[int]:\n    """Doc."""\n    yield 1\n') is None  # test_
 
 
+def test_transform_refuses_overload_decorated_generator():
+    # An ``@overload`` stub carries a signature ONLY — its canonical docstring lives on
+    # the implementation. Splicing a ``Yields:`` into the overload stub documents the
+    # wrong body. Reuses the SAME ``_is_refused_decoration`` gate document-returns
+    # applies, so the two doc-family objectives refuse the identical decorated shape.
+    src = (
+        "from typing import overload, Iterator\n\n\n"
+        "@overload\n"
+        'def f(x: int) -> Iterator[int]:\n    """Doc."""\n    yield 1\n'
+    )
+    assert document_yields(src) is None  # overload stub -> refuse
+    # The dotted spelling is refused too.
+    dotted = (
+        "import typing\n\n\n"
+        "@typing.overload\n"
+        'def g() -> typing.Iterator[int]:\n    """Doc."""\n    yield 1\n'
+    )
+    assert document_yields(dotted) is None
+
+
+def test_transform_refuses_property_setter_deleter_generator():
+    # A property ``@x.setter`` / ``@x.deleter`` has no meaningful yielded contract —
+    # the same decorator gate document-returns uses refuses it here too.
+    setter = (
+        'def f() -> Iterator[int]:\n    """Doc."""\n    yield 1\n'
+    )
+    for deco in ("@prop.setter", "@prop.deleter"):
+        src = f"{deco}\n{setter}"
+        assert document_yields(src) is None, deco
+
+
+def test_transform_still_documents_plain_public_generator():
+    # No over-refusal: a plain (undecorated) public generator with the recognised
+    # annotation and a docstring STILL gains a ``Yields:`` section. The decorator gate
+    # only removes overloads / property setters, not ordinary generators.
+    src = 'def f() -> Iterator[int]:\n    """Doc."""\n    yield 1\n'
+    out = document_yields(src)
+    assert out is not None
+    assert "Yields:" in out
+    # A plain ``@property`` getter (NOT a setter/deleter) is likewise still documented.
+    getter = '@property\ndef f(self) -> Iterator[int]:\n    """Doc."""\n    yield 1\n'
+    out_getter = document_yields(getter)
+    assert out_getter is not None
+    assert "Yields:" in out_getter
+
+
 def test_transform_refuses_header_shared_one_liner():
     # ``def f(): """Doc."""`` reports the def header as the docstring-line indent.
     assert document_yields('def f() -> Iterator[int]: """Doc."""\n') is None

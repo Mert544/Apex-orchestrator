@@ -88,6 +88,7 @@ from app.execution.objectives.document_returns import (
     _convention,
     _head_name,
     _import_aliases,
+    _is_refused_decoration,
     apply_section_edits,
     splice_docstring_section,
 )
@@ -225,15 +226,18 @@ def _documentable_target(
     ``None`` to refuse it.
 
     Applies, in order: the public/non-test NAME gate (:func:`_is_public`), the
-    IS-A-GENERATOR gate (:func:`_is_generator` — a ``yield`` in its OWN scope; the
-    boundary that keeps this objective and ``document-returns`` mutually exclusive), the
-    HAS-a-docstring requirement (``ast.get_docstring`` — the inverse of
-    document-signature), the element-type gate (:func:`_element_text` — no annotation /
-    not a recognised iterator-generator / bare-unsubscripted => refuse), the
+    decorator gate (:func:`document_returns._is_refused_decoration` — an ``@overload``
+    stub whose impl carries the canonical docstring, or a property setter/deleter;
+    reused verbatim from ``document-returns`` so the two doc-family objectives refuse the
+    SAME decorated shapes), the IS-A-GENERATOR gate (:func:`_is_generator` — a ``yield``
+    in its OWN scope; the boundary that keeps this objective and ``document-returns``
+    mutually exclusive), the HAS-a-docstring requirement (``ast.get_docstring`` — the
+    inverse of document-signature), the element-type gate (:func:`_element_text` — no
+    annotation / not a recognised iterator-generator / bare-unsubscripted => refuse), the
     NOT-already-documented gate (:func:`_has_documented_yield`), and a usable splice
     point via the SHARED byte-aware :func:`document_returns.splice_docstring_section`
     (a ``Yields:`` section built by :func:`_yield_section`)."""
-    if not _is_public(fn) or not _is_generator(fn):
+    if not _is_public(fn) or _is_refused_decoration(fn) or not _is_generator(fn):
         return None
     doc = ast.get_docstring(fn)
     if doc is None:

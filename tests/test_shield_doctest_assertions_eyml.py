@@ -421,3 +421,123 @@ def test_multistatement_example_is_not_falsely_pinned(tmp_path):
     path = write_shield_test(tmp_path, shield)
     proc = _run_generated(tmp_path, path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+# --- set/dict-repr example -> never a PYTHONHASHSEED-fragile assertion ---------
+# A docstring whose expected output is a ``set``/``dict`` repr re-renders in a
+# DIFFERENT element/key order under another ``PYTHONHASHSEED``. A landed
+# ``assert repr(expr) == '{...}'`` over it is green under one seed and RED under
+# another -- a future-red fake-green. The generator must NEVER land such an
+# assertion (it REFUSES the example, mirroring pin_doctest's guard).
+
+
+def _run_generated_with_seed(
+    tmp_path: Path, path: str, seed: str
+) -> subprocess.CompletedProcess:
+    import os
+
+    env = dict(os.environ)
+    env["PYTHONHASHSEED"] = seed
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", path, "-q"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+def test_set_repr_example_is_never_seed_fragile_assertion(tmp_path):
+    # A public function whose docstring example returns a SET literal (its repr
+    # order is PYTHONHASHSEED-dependent). The generator must NOT emit
+    # ``assert repr(tags(...)) == "{...}"`` -- that assertion could pass under one
+    # seed and fail under another. It is refused (never landed).
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/tags.py",
+        '''
+        def tags():
+            """Return the tag set.
+
+            Examples:
+                >>> tags()
+                {'a', 'b', 'c'}
+            """
+            return {'a', 'b', 'c'}
+        ''',
+    )
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    ast.parse(shield.content)
+    # The seed-fragile ``assert repr(tags()) == '{...}'`` form is NOT rendered
+    # (the doctest example is refused). A value-oracle ``assert fn() == {...}``
+    # MAY appear -- that is set/dict EQUALITY, which is order-independent and
+    # therefore seed-stable; only the ``repr`` comparison is fragile.
+    assert "repr(tags())" not in shield.content
+    # Proven stable: the LANDED suite stays green under two distinct hash seeds
+    # (a fragile set-repr assertion would go RED under at least one).
+    path = write_shield_test(tmp_path, shield)
+    for seed in ("0", "424242"):
+        proc = _run_generated_with_seed(tmp_path, path, seed)
+        assert proc.returncode == 0, (
+            f"seed={seed}: " + proc.stdout + proc.stderr
+        )
+
+
+def test_dict_repr_example_is_never_seed_fragile_assertion(tmp_path):
+    # The dict sibling: a docstring example whose expected output is a DICT repr
+    # is refused too (its key order can be set-iteration-derived, so it is
+    # likewise seed-fragile). No assertion over the dict repr is landed.
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/lookup.py",
+        '''
+        def lookup():
+            """Return the lookup mapping.
+
+            Examples:
+                >>> lookup()
+                {'x': 1, 'y': 2}
+            """
+            return {'x': 1, 'y': 2}
+        ''',
+    )
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    ast.parse(shield.content)
+    # The seed-fragile ``repr`` comparison is refused; a value-oracle equality
+    # ``assert fn() == {...}`` (order-independent, seed-stable) may remain.
+    assert "repr(lookup())" not in shield.content
+    path = write_shield_test(tmp_path, shield)
+    for seed in ("0", "424242"):
+        proc = _run_generated_with_seed(tmp_path, path, seed)
+        assert proc.returncode == 0, (
+            f"seed={seed}: " + proc.stdout + proc.stderr
+        )
+
+
+def test_ordered_list_example_still_pinned_no_over_refusal(tmp_path):
+    # No over-refusal: a docstring example whose expected output is an ORDERED
+    # repr (a list -- order is stable across seeds) is still mined into a real
+    # passing assertion. Only the unordered set/dict shape is refused.
+    rel = _make_pkg(
+        tmp_path,
+        "mypkg/seq.py",
+        '''
+        def seq():
+            """Return the sequence.
+
+            Examples:
+                >>> seq()
+                [1, 2, 3]
+            """
+            return [1, 2, 3]
+        ''',
+    )
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    assert "assert repr(seq()) == '[1, 2, 3]'" in shield.content
+    ast.parse(shield.content)
+    path = write_shield_test(tmp_path, shield)
+    proc = _run_generated(tmp_path, path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr

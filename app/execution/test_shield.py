@@ -73,6 +73,15 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Reuse — never re-implement — the sibling seed-fragility predicate. A doctest
+# ``want`` that is a ``set``/``dict`` repr re-renders in a DIFFERENT order under
+# another ``PYTHONHASHSEED``; a landed ``assert repr(expr) == <want>`` over it is
+# green here but RED on another run — a future-red fake-green. ``pin_doctest``
+# already refuses this exact shape; we share its one predicate (no duplicate
+# block) so the two doctest paths guard identically. Import is a leaf-level
+# predicate with no cycle back into this module.
+from app.execution.objectives.pin_doctest import _want_is_unordered_repr
+
 
 def _is_fixture_path(path: str) -> bool:
     """Example/fixture/test code is not a characterization target — its
@@ -1057,6 +1066,8 @@ def _mine_examples_from(qualname: str, docstring: str | None, ns: dict) -> list[
         want = ex.want.strip()
         if not want or "\n" in want:
             continue  # only single-line value examples get a faithful oracle
+        if _want_is_unordered_repr(want):
+            continue  # a set/dict-repr want is PYTHONHASHSEED-fragile — never land it
         passes = _example_passes(source, ex.want, ns)
         out.append(DocExample(qualname, source, want, "", passes))
     return out

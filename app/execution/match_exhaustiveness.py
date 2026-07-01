@@ -466,15 +466,61 @@ def _last_in_block_ids(tree: ast.Module) -> set[int]:
     return out
 
 
+def _in_reachable_try_ids(tree: ast.Module) -> set[int]:
+    """The ``id()``s of every statement lexically inside a ``try`` region whose control
+    flow a newly-``raise``d sentinel could REROUTE — so the dispatch head there must be
+    refused. Today an unhandled discriminant value SILENTLY falls through the dispatch
+    (returns ``None`` / does nothing); if we append a ``raise AssertionError`` arm and
+    that raise is intercepted by an ``except`` that the silent fall-through never reached,
+    behaviour CHANGES (the raise is swallowed / rerouted instead of falling through). We
+    over-approximate toward refusal: a statement counts as risky when it sits in a
+    ``Try.body`` of a ``try`` that carries ANY ``except`` handler (a raise from the body
+    IS caught by those handlers), OR in a ``Try.body``/``orelse``/handler body of a
+    ``try`` that carries a ``finalbody`` (a ``finally`` re-runs and can re-raise / return
+    around the raise). An ``orelse``/handler body under a plain ``try/except`` is also
+    marked when an OUTER ``try`` (handlers or ``finally``) encloses it, since restructuring
+    changes which ``except`` sees the raise. "When in doubt, refuse." """
+    risky: set[int] = set()
+
+    def _mark(block: object) -> None:
+        # Mark every statement lexically inside the region (the region's direct
+        # statements AND their descendants), so a dispatch nested under an ``if`` /
+        # ``for`` / ``with`` inside the guarded region is caught too.
+        if isinstance(block, list):
+            for stmt in block:
+                for descendant in ast.walk(stmt):
+                    risky.add(id(descendant))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        has_handlers = bool(node.handlers)
+        has_finally = bool(node.finalbody)
+        if has_handlers or has_finally:
+            # A raise from the guarded ``body`` is caught by the handlers, and a
+            # ``finally`` reroutes control from any of the try's regions.
+            _mark(node.body)
+        if has_finally:
+            _mark(node.orelse)
+            for handler in node.handlers:
+                _mark(handler.body)
+    return risky
+
+
 def _match_edit(node: ast.Match, tree: ast.Module, lines: list[str],
-                enums: dict[str, frozenset[str]], last_ids: set[int]) -> _Edit | None:
+                enums: dict[str, frozenset[str]], last_ids: set[int],
+                try_ids: set[int]) -> _Edit | None:
     """The append edit for one ``match`` dispatch, or ``None`` (refuse). Refuses unless
     the dispatch is the LAST statement in its block (else following code already reaches
-    the unhandled value — a sentinel would change behaviour), the subject is a bare Name,
-    its set is provably closed, the cases carry no catch-all and only mappable patterns,
-    and at least one member is unhandled."""
+    the unhandled value — a sentinel would change behaviour), it is NOT inside a ``try``
+    region whose handlers/``finally`` could intercept the new raise (which would reroute
+    the silent fall-through), the subject is a bare Name, its set is provably closed, the
+    cases carry no catch-all and only mappable patterns, and at least one member is
+    unhandled."""
     if id(node) not in last_ids:
         return None  # code follows the match — the unhandled value is not a fall-through
+    if id(node) in try_ids:
+        return None  # inside a reachable try — the raise sentinel could be intercepted
     subject = _subject_name(node.subject)
     if subject is None:
         return None  # an unmodelled match subject
@@ -489,15 +535,19 @@ def _match_edit(node: ast.Match, tree: ast.Module, lines: list[str],
 
 
 def _if_edit(node: ast.If, tree: ast.Module, lines: list[str],
-             enums: dict[str, frozenset[str]], last_ids: set[int]) -> _Edit | None:
+             enums: dict[str, frozenset[str]], last_ids: set[int],
+             try_ids: set[int]) -> _Edit | None:
     """The append edit for one ``if``/``elif`` chain head, or ``None`` (refuse).
     Refuses unless the chain is the LAST statement in its block (else following code —
     a later guard or a fall-through ``return`` — already reaches the unhandled value, so
-    the sentinel would change behaviour), every branch tests the SAME bare-Name subject
-    against a member, the set is provably closed, there is no trailing ``else:``, and a
-    member is unhandled."""
+    the sentinel would change behaviour), it is NOT inside a ``try`` region whose
+    handlers/``finally`` could intercept the new raise, every branch tests the SAME
+    bare-Name subject against a member, the set is provably closed, there is no trailing
+    ``else:``, and a member is unhandled."""
     if id(node) not in last_ids:
         return None  # code follows the chain — the unhandled value is not a fall-through
+    if id(node) in try_ids:
+        return None  # inside a reachable try — the raise sentinel could be intercepted
     if _has_trailing_else(node):
         return None  # an existing catch-all — already total
     subject = _subject_name(node.test.left) if isinstance(node.test, ast.Compare) else None
@@ -535,12 +585,13 @@ def _collect_edits(tree: ast.Module, lines: list[str]) -> list[_Edit]:
     enums = _enum_member_map(tree)
     elif_ids = _elif_if_nodes(tree)
     last_ids = _last_in_block_ids(tree)
+    try_ids = _in_reachable_try_ids(tree)
     edits: list[_Edit] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Match):
-            edit = _match_edit(node, tree, lines, enums, last_ids)
+            edit = _match_edit(node, tree, lines, enums, last_ids, try_ids)
         elif isinstance(node, ast.If) and id(node) not in elif_ids:
-            edit = _if_edit(node, tree, lines, enums, last_ids)
+            edit = _if_edit(node, tree, lines, enums, last_ids, try_ids)
         else:
             continue
         if edit is not None:
