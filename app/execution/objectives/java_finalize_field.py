@@ -70,6 +70,7 @@ clean no-op.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from app.engine.develop_registry import ObjectiveSpec, register
@@ -88,6 +89,7 @@ __all__ = [
     "is_java_source",
     "finalizable_targets",
     "splice_final",
+    "record_final_splice_plan",
 ]
 
 # The single-Java-project markers, the analogue of a single ``package.json`` root.
@@ -150,6 +152,41 @@ def detect_finalize_targets(project_root: str | Path) -> list[str]:
             if finalizable_targets(root, rel)]
 
 
+def record_final_splice_plan(
+    project_root: str | Path, rel: str, plan_name: str, targets: list,
+    splice: Callable[[str, list], str | None],
+) -> RenamePlan:
+    """The shared ``final``-splice plan tail every java-final-* objective shares:
+    read the file, run ``splice(original, targets)``, prove the result a runtime
+    no-op with the driver's re-parse fact-set oracle, and record it on a fresh
+    :class:`RenamePlan` named ``plan_name`` — or return an empty no-op plan at any
+    refusal point (never-fake-green).
+
+    Lives HERE (java-finalize-field, the first Java landing) so
+    java-final-parameter reuses it verbatim rather than re-copying the
+    read/splice/verify/record shape byte-for-byte (the dedup discipline every
+    objective family in this package follows — see :mod:`_java_doc_common` for
+    the same pattern on the Javadoc-splice family). ``targets`` is any non-empty
+    list the caller already filtered to finalisable candidates; an empty
+    ``targets`` is refused by the caller BEFORE this is reached (both callers
+    check that first, so this helper does not need to)."""
+    plan = RenamePlan(old=rel, new=plan_name)
+    root = Path(project_root)
+    target_file = root / rel
+    original = _read(target_file)
+    if not original and not target_file.exists():
+        return plan  # unreadable / missing target — no-op
+    sealed = splice(original, targets)
+    if sealed is None:
+        return plan  # a stale offset / no-change splice — refuse
+    if not reparse_facts_identical(root, rel, sealed):
+        return plan  # the splice did not re-parse fact-identical — refuse, land nothing
+    plan.originals[rel] = original
+    plan.new_contents[rel] = sealed
+    plan.edits_by_file[rel] = len(targets)
+    return plan
+
+
 def plan_java_finalize_field(project_root: str | Path, rel: str) -> RenamePlan:
     """Build the finalize-field plan for ONE source file, or an empty no-op plan
     (an honest refusal).
@@ -159,26 +196,14 @@ def plan_java_finalize_field(project_root: str | Path, rel: str) -> RenamePlan:
     never-reassigned private field it splices a leading ` final` keyword bottom-up,
     then proves the splice is a runtime-noop with the driver's re-parse oracle
     (:func:`reparse_facts_identical` — re-parses AND carries the IDENTICAL structural
-    fact-set) before recording it. An empty plan means nothing was finalisable or the
-    oracle refused — nothing is touched (never-fake-green)."""
-    plan = RenamePlan(old=rel, new="java-finalize-field")
+    fact-set) before recording it via the shared :func:`record_final_splice_plan`
+    tail. An empty plan means nothing was finalisable or the oracle refused —
+    nothing is touched (never-fake-green)."""
     root = Path(project_root)
     targets = finalizable_targets(root, rel)
     if not targets:
-        return plan  # non-Java / test / nothing to finalise — honest no-op
-    target_file = root / rel
-    original = _read(target_file)
-    if not original and not target_file.exists():
-        return plan  # unreadable / missing target — no-op
-    sealed = splice_final(original, targets)
-    if sealed is None:
-        return plan  # a stale offset / no-change splice — refuse
-    if not reparse_facts_identical(root, rel, sealed):
-        return plan  # the splice did not re-parse fact-identical — refuse, land nothing
-    plan.originals[rel] = original
-    plan.new_contents[rel] = sealed
-    plan.edits_by_file[rel] = len(targets)
-    return plan
+        return RenamePlan(old=rel, new="java-finalize-field")  # nothing to finalise
+    return record_final_splice_plan(root, rel, "java-finalize-field", targets, splice_final)
 
 
 def _finalizable_files(project_root: str | Path) -> list[str]:

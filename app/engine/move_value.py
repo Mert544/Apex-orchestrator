@@ -104,6 +104,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "merge_duplicate_imports": 0.35,  # collapse repeated from-imports
     "add_final": 0.34,               # seal a never-subclassed class with @final
     "java_finalize_field": 0.34,     # Java sibling of add_final: seal a never-reassigned private field with `final` (same runtime-noop tier)
+    "java_final_parameter": 0.34,    # parameter-level sibling of java_finalize_field: seal a never-reassigned method/constructor parameter with `final` (same runtime-noop tier — a stronger soundness case, since a parameter's assignment surface is closed to its own method body)
     "seal_final_method": 0.34,       # seal a never-overridden method with @final
     "enforce_enum_unique": 0.34,     # lock an all-distinct Enum with @enum.unique
     "complete_match_exhaustiveness": 0.34,   # fill a closed-set dispatch's missing arm with a loud exhaustiveness sentinel

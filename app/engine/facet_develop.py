@@ -696,6 +696,18 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # so its relative order is free.
     "the never-reassigned java field to finalize": "java-finalize-field",
 
+    # A DECLARED Java method/constructor parameter proven never reassigned anywhere
+    # in that SAME method's own body: the parameter-level sibling of
+    # java-finalize-field, and a STRONGER soundness case — a parameter's assignment
+    # surface is closed to its own method body (no reflection/Serializable escape
+    # hatch exists for a stack-local), so java-final-parameter needs only a
+    # PER-METHOD scan (never a whole-unit refusal) to seal it with `final` (a RUNTIME
+    # no-op, verified by the same re-parse fact-set-identity check). Its phrasing
+    # shares no whole key with "the never-reassigned java field to finalize" (in
+    # either direction — "java method parameter to finalize" vs "java field to
+    # finalize"), so its relative order is free.
+    "the never-reassigned java method parameter to finalize": "java-final-parameter",
+
     # A Java method that DECLARES a `throws` clause but carries NO Javadoc: the Java
     # sibling of document-raises / document-raises-jsdoc. java-document-throws lands a
     # FRESH Javadoc block with one `@throws <Type>` line per DECLARED checked-exception

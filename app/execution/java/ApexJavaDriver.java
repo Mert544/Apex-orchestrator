@@ -109,6 +109,29 @@
 //                          or one whose return-type/start span is unreadable. This is the
 //                          Java analogue of document-returns / js-document-returns-inferred.
 //                          Exit 2 (REFUSE) on ANY parse error diagnostic.
+//   final-param-targets <file> -> JSON [{method, name, insertOffset}]: every DECLARED
+//                          method/constructor parameter that is NEVER reassigned anywhere
+//                          in that SAME method's OWN body — a PER-METHOD scan
+//                          (`MethodTree.getBody()`), not the whole-file scan
+//                          `final-targets` uses, because a parameter's entire assignment
+//                          surface is the stack frame of its own method (never another
+//                          method, never reflection — no other code can write a Java
+//                          local). `insertOffset` is the byte offset just before the
+//                          parameter's own type token where splicing `final ` makes it
+//                          read `final <Type> <name>`. `method` is the enclosing method's
+//                          fact-only summary name (a constructor's synthetic `<init>` is
+//                          rendered as the enclosing class simple name, exactly as
+//                          `doc-targets`/`param-targets` do, so a doclint-style summary
+//                          never emits `<init>`). REFUSES (omits) a parameter that is:
+//                          already `final`; reassigned anywhere in the method body (a
+//                          plain `=`, a compound `+=`, or a `++`/`--`); OR belongs to an
+//                          ABSTRACT/INTERFACE method or a NATIVE method (`getBody()` is
+//                          `null` — nothing to scan, so the WHOLE method's parameters are
+//                          skipped rather than vacuously accepted). Scope: declared
+//                          method/constructor parameters only — a lambda parameter, an
+//                          enhanced-`for` variable, and a `catch` variable are OUT OF
+//                          SCOPE for this first cut (never touched, never reported).
+//                          Exit 2 (REFUSE) on ANY parse error diagnostic.
 //
 // Determinism: no clock, no randomness; types/fields/methods are SORTED, targets are
 // reported in source order; JSON keys are emitted in a fixed order. `insertOffset`
@@ -116,6 +139,7 @@
 // precise byte insert, never an AST unparse — the surrounding source is untouched.
 
 import com.sun.source.tree.AssignmentTree;
+import com.sun.source.tree.BlockTree;
 import com.sun.source.tree.ClassTree;
 import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.tree.CompoundAssignmentTree;
@@ -489,14 +513,24 @@ public final class ApexJavaDriver {
         return -1;
     }
 
-    /** The simple names that are an assignment TARGET anywhere in the file — a plain
+    /** The simple names that are an assignment TARGET anywhere in ``root`` — a plain
      * `=`, a compound `+=`/`-=`/..., or a `++`/`--`. Conservative: for a member
      * select (`this.b`, `obj.b`) we record the trailing identifier, so a write to
-     * ANY `.b` marks the field `b` reassigned (soundness over recall — we never
-     * want a false `final`). */
-    private static Set<String> collectAssignedNames(CompilationUnitTree unit) {
+     * ANY `.b` marks the name `b` reassigned (soundness over recall — we never want
+     * a false `final`). ``root`` may be the WHOLE compilation unit (final-targets'
+     * whole-file field scan) or a SINGLE method's body
+     * (final-param-targets' per-method parameter scan) — the walk is identical
+     * either way, only the subtree scanned differs. */
+    private static Set<String> collectAssignedNames(Tree root) {
+        // A plain TreeScanner (NOT TreePathScanner): this walk never needs a
+        // TreePath, and TreePathScanner.scan(Tree, P) requires an ALREADY-ACTIVE
+        // path context (it seeds from getCurrentPath(), null outside a nested
+        // scan) — which final-param-targets' per-method call (from inside another
+        // scanner's visitMethod) does not have. A bare TreeScanner has no such
+        // requirement and walks any subtree (the whole unit, or one method's
+        // body) identically.
         Set<String> assigned = new HashSet<>();
-        new TreePathScanner<Void, Void>() {
+        new TreeScanner<Void, Void>() {
             @Override
             public Void visitAssignment(AssignmentTree node, Void unused) {
                 recordTarget(node.getVariable(), assigned);
@@ -517,7 +551,7 @@ public final class ApexJavaDriver {
                 }
                 return super.visitUnary(node, unused);
             }
-        }.scan(unit, null);
+        }.scan(root, null);
         return assigned;
     }
 
@@ -873,6 +907,101 @@ public final class ApexJavaDriver {
         return text.isEmpty() ? null : text;
     }
 
+    // --- final-param-targets: never-reassigned method/constructor parameters -
+
+    private static void cmdFinalParamTargets(String file) {
+        Parsed p = parseOrRefuse(file);
+        List<String> orderedMethods = new ArrayList<>();
+        List<String> orderedNames = new ArrayList<>();
+        List<Long> orderedOffsets = new ArrayList<>();
+        collectFinalParamTargets(p, orderedMethods, orderedNames, orderedOffsets);
+        // Emit in source order (the method-declaration / parameter order the scanner
+        // visits — a per-method scan, unlike final-targets' whole-file scan).
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < orderedNames.size(); i++) {
+            if (i > 0) {
+                sb.append(",");
+            }
+            sb.append("{\"method\":");
+            appendJsonString(sb, orderedMethods.get(i));
+            sb.append(",\"name\":");
+            appendJsonString(sb, orderedNames.get(i));
+            sb.append(",\"insertOffset\":").append(orderedOffsets.get(i)).append("}");
+        }
+        sb.append("]");
+        System.out.print(sb);
+    }
+
+    /** Every method/constructor's never-reassigned declared parameters, scanned ONE
+     * method at a time (unlike final-targets' whole-file field scan): a parameter's
+     * ENTIRE assignment surface is its own method's body (no other code — not another
+     * method, not reflection — can write a Java local), so a per-method scan is both
+     * sufficient and sound. A TreePathScanner is used only to get each method's
+     * TreePath for the fact-only summary name; the actual work is per-``MethodTree``. */
+    private static void collectFinalParamTargets(Parsed p, List<String> methods,
+                                                  List<String> names, List<Long> offsets) {
+        new TreePathScanner<Void, Void>() {
+            @Override
+            public Void visitMethod(MethodTree node, Void unused) {
+                considerFinalParamMethod(node, getCurrentPath(), p, methods, names, offsets);
+                return super.visitMethod(node, unused);
+            }
+        }.scan(p.unit, null);
+    }
+
+    private static void considerFinalParamMethod(MethodTree method, TreePath path, Parsed p,
+                                                  List<String> methods, List<String> names,
+                                                  List<Long> offsets) {
+        BlockTree body = method.getBody();
+        // REFUSE the WHOLE method: an abstract/interface method or a native method has
+        // NO body (`getBody()` is null) — nothing to scan, so its parameters are
+        // skipped rather than vacuously accepted (a body-less method could be
+        // implemented/overridden anywhere with a reassigning body we cannot see).
+        if (body == null) {
+            return;
+        }
+        Set<String> reassigned = collectAssignedNames(body);
+        String summary = summaryName(method, path);
+        for (VariableTree param : method.getParameters()) {
+            considerFinalParam(param, p, reassigned, summary, methods, names, offsets);
+        }
+    }
+
+    private static void considerFinalParam(VariableTree param, Parsed p,
+                                           Set<String> reassigned, String methodSummary,
+                                           List<String> methods, List<String> names,
+                                           List<Long> offsets) {
+        String name = String.valueOf(param.getName());
+        // REFUSE: already final — nothing to add (the idempotency guard).
+        if (param.getModifiers().getFlags().contains(Modifier.FINAL)) {
+            return;
+        }
+        // REFUSE: reassigned anywhere in THIS method's own body (`=`, `+=`, `++`/`--`)
+        // — sealing it `final` would be a COMPILE ERROR, not a runtime no-op.
+        if (reassigned.contains(name)) {
+            return;
+        }
+        long insert = paramInsertOffset(param, p);
+        if (insert < 0) {
+            return;  // an unreadable parameter span — refuse rather than splice at a guess
+        }
+        methods.add(methodSummary);
+        names.add(name);
+        offsets.add(insert);
+    }
+
+    /** The byte offset of the parameter's own START (its type token, just past any
+     * annotations — `VariableTree.getStartPosition` via the positions table already
+     * skips leading annotations to the type), or -1 when the span is unreadable.
+     * Splicing `"final "` here reads `final <Type> <name>`. */
+    private static long paramInsertOffset(VariableTree param, Parsed p) {
+        long start = p.positions.getStartPosition(p.unit, param);
+        if (start >= 0 && start <= p.source.length()) {
+            return start;
+        }
+        return -1;
+    }
+
     // --- JSON emit (fixed key order, deterministic) --------------------------
 
     private static void appendStringList(StringBuilder sb, List<String> values) {
@@ -959,9 +1088,13 @@ public final class ApexJavaDriver {
             cmdReturnTargets(args[1]);
             return;
         }
+        if (args.length == 2 && "final-param-targets".equals(args[0])) {
+            cmdFinalParamTargets(args[1]);
+            return;
+        }
         System.err.println("usage: ApexJavaDriver.java parse-verify <file> | "
                 + "final-targets <file> | doc-targets <file> | param-targets <file> | "
-                + "return-targets <file>");
+                + "return-targets <file> | final-param-targets <file>");
         System.exit(REFUSE);
     }
 }

@@ -1,0 +1,5 @@
+// Marks this fixture as a single Java project root (the Gradle marker), so the
+// java-final-parameter objective's single-project gate fires and it is SWEPT by the
+// soundness corpus — the Java analogue of the java_false_final field trap's marker.
+// No tasks/plugins: it is only a presence marker (parse-only, no build is ever run —
+// the objective is Tier-A structural reparse, never a Gradle run).

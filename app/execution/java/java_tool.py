@@ -37,12 +37,14 @@ __all__ = [
     "JavaDocTarget",
     "JavaParamTarget",
     "JavaReturnTarget",
+    "JavaFinalParamTarget",
     "JavaFacts",
     "DRIVER",
     "final_targets",
     "doc_targets",
     "param_targets",
     "return_targets",
+    "final_param_targets",
     "parse_facts",
     "reparse_facts_identical",
 ]
@@ -118,6 +120,26 @@ class JavaReturnTarget:
 
 
 @dataclass(frozen=True)
+class JavaFinalParamTarget:
+    """One DECLARED method/constructor parameter the driver proved is NEVER
+    reassigned anywhere in that SAME method's OWN body, with the byte
+    ``insert_offset`` just before the parameter's type token where splicing
+    ``"final "`` makes it read ``final <Type> <name>`` — a pure byte-offset
+    insert, not an unparse. ``method`` is the enclosing method's fact-only
+    summary name (a constructor's synthetic ``<init>`` rendered as the enclosing
+    class simple name, exactly as :class:`JavaDocTarget`/:class:`JavaParamTarget`
+    do). ``name`` is the parameter's simple name (advisory; the splice uses the
+    offset). Unlike :class:`JavaFinalTarget`'s WHOLE-FILE field scan, this is a
+    PER-METHOD scan: a parameter is a stack-local, so its entire assignment
+    surface is closed to its own method body — no reflection/Serializable escape
+    hatch exists for a local, so no whole-unit refusal is ever needed here."""
+
+    method: str
+    name: str
+    insert_offset: int
+
+
+@dataclass(frozen=True)
 class JavaFacts:
     """The canonical structural fact-set of a Java source — the sorted declared
     ``types`` (qualified names), ``fields`` (``<Type>.<field>``), and ``methods``
@@ -172,6 +194,28 @@ def final_targets(root: Path, rel: str) -> list[JavaFinalTarget]:
     if not isinstance(data, list):
         return []
     return [JavaFinalTarget(name=d["name"], insert_offset=d["insertOffset"])
+            for d in data]
+
+
+def final_param_targets(root: Path, rel: str) -> list[JavaFinalParamTarget]:
+    """The never-reassigned declared method/constructor PARAMETER targets in
+    ``root/rel`` (empty on refuse). Conservative: a file that does not parse, has
+    no such parameter, or that the driver declines yields ``[]`` — nothing to
+    finalise, never a guess.
+
+    A PER-METHOD scan (the driver's ``final-param-targets`` subcommand): each
+    method/constructor's own body is scanned independently for assignment
+    targets, since a parameter's entire assignment surface is its own method's
+    stack frame — no reflection/Serializable escape hatch exists for a local
+    (unlike a private field), so this needs no whole-unit refusal.
+
+    Deterministic source order, exactly as the driver's ``final-param-targets``
+    emits."""
+    data = _driver_json(["final-param-targets", str(root / rel)], root)
+    if not isinstance(data, list):
+        return []
+    return [JavaFinalParamTarget(method=d["method"], name=d["name"],
+                                 insert_offset=d["insertOffset"])
             for d in data]
 
 

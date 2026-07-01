@@ -240,7 +240,7 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
                "document-raises-jsdoc", "js-implement-from-jsdoc")),
     # --- Java -----------------------------------------------------------------
     ("java", ("java-document-param", "java-document-throws", "java-document-returns",
-              "java-finalize-field")),
+              "java-finalize-field", "java-final-parameter")),
     # --- restructure (long/sprawling code) ------------------------------------
     # "split this up", "break into smaller pieces", "this function is too long" —
     # the structural lenses. The synonym table already routes "split function"/

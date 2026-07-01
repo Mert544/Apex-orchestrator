@@ -240,7 +240,17 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                          # tree + a re-parse fact-set-identity check, no Maven/JUnit
                          # run). Appended last, so the originals still lead and emit
                          # first.
-                         "the never-reassigned java field to finalize"],
+                         "the never-reassigned java field to finalize",
+                         # added: the PARAMETER-level sibling of java-finalize-field — a
+                         # DECLARED Java method/constructor parameter provably never
+                         # reassigned anywhere in that SAME method's own body, which
+                         # java-final-parameter seals with the `final` modifier (a
+                         # runtime no-op; a STRONGER soundness case than the field
+                         # sibling — a parameter's assignment surface is closed to its
+                         # own method body, so only a per-method scan is needed, never a
+                         # whole-unit refusal). Appended after its field sibling, so the
+                         # originals still lead.
+                         "the never-reassigned java method parameter to finalize"],
     "sensible defaults": ["the safe default", "the override path", "documented rationale"],
     # generalize L3 ladders — the appended L2 moves decompose once more into the
     # concrete edits an engineer performs, then bottom out in the case split.

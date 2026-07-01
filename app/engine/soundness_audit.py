@@ -340,6 +340,14 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # nothing here and cleanly refuse, so this shape pins exactly the void/constructor
     # boundary.
     "java_void_return": frozenset({"java-document-returns"}),
+    # The Java REASSIGNED-PARAMETER trap (the parameter-level analogue of
+    # java_false_final): a declared method parameter that LOOKS never-reassigned
+    # from its declaration alone but is REASSIGNED by a plain `=` inside its OWN
+    # method body — so `final` would be a COMPILE ERROR, not a runtime no-op.
+    # java-final-parameter MUST refuse it: the per-method assignment scan sees the
+    # reassignment and omits the parameter from final-param-targets, never sealing
+    # a falsely-`final` parameter.
+    "java_reassigned_param": frozenset({"java-final-parameter"}),
     # The raise-from del/unbound trap: a fixable ``raise X(...)`` in an ``except E as
     # err:`` handler that ``del``\s ``err`` BEFORE the raise. Appending ``from err``
     # would raise ``UnboundLocalError`` (the WRONG exception type + changed control
