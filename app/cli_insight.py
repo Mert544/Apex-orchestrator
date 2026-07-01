@@ -145,13 +145,18 @@ def cmd_dream(args: argparse.Namespace) -> int:
 
     With ``--land`` it instead runs the overnight LANDING CHAIN (``_cmd_dream_land``):
     the value-led concrete objectives, scoped to the dream's confluences, each
-    verified-with-rollback. Without ``--land`` the command is unchanged."""
+    verified-with-rollback. Without ``--land`` the command is unchanged.
+
+    ``--learn-gates`` (opt-in, default off) threads ``learn_gates=True`` into the
+    promote gate — tighten-only feedback from realized-fix evidence; omitted, the
+    gate is the static constants (byte-identical)."""
     if getattr(args, "land", False):
         return _cmd_dream_land(args)
     from app.engine.dream import dream, render_dream_markdown
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
-    report = dream(str(target), curate=getattr(args, "curate", False))
+    report = dream(str(target), curate=getattr(args, "curate", False),
+                   learn_gates=getattr(args, "learn_gates", False))
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
     else:
@@ -1054,6 +1059,10 @@ def register_parsers(subparsers) -> None:
     dream_parser.add_argument("--target", default="", help="Target project root")
     dream_parser.add_argument("--curate", action="store_true",
                               help="Apply the curation (default only reports; inputs untouched)")
+    dream_parser.add_argument("--learn-gates", action="store_true", dest="learn_gates",
+                              help="Tighten the promote gate for confluence keys whose past "
+                                   "promotions never realized a held-and-verified fix "
+                                   "(tighten-only; default off, byte-identical)")
     dream_parser.add_argument("--land", action="store_true",
                               help="Run the overnight LANDING CHAIN: value-led concrete "
                                    "objectives, scoped to the dream's confluences, each "

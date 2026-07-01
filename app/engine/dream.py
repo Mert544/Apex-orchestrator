@@ -323,7 +323,8 @@ def _is_value_landable_confluence(root: Path, d: dict) -> bool:
 
 
 def _promotable_discoveries(root: Path, report: DreamReport,
-                            streaks: dict[str, int]) -> list[dict]:
+                            streaks: dict[str, int],
+                            gate_factors: dict[str, float] | None = None) -> list[dict]:
     """The confirmed discoveries that graduate this dream — TWO promote paths,
     both still streak-gated (never a one-off).
 
@@ -335,18 +336,31 @@ def _promotable_discoveries(root: Path, report: DreamReport,
 
     Discovery order is preserved (the source ``discovery_objs`` order), so the
     digest stays byte-stable; a discovery never appears twice (the two predicates
-    are mutually exclusive — path 2 requires confidence < the gate path 1 needs)."""
+    are mutually exclusive — path 2 requires confidence < the gate path 1 needs).
+
+    ``gate_factors`` (opt-in, default ``None``) is a precomputed
+    ``dream_gate_learn.gate_tighten_factors`` map: when supplied, the per-key
+    effective gate (:func:`app.engine.dream_gate_learn.effective_promote_gate`)
+    replaces the bare ``PROMOTE_STREAK``/``PROMOTE_CONFIDENCE`` constants for
+    BOTH the streak check and the design-level confidence check. Tighten-only —
+    with ``gate_factors`` empty/``None`` (the default caller) the effective gate
+    is the static constants exactly, so this stays byte-identical."""
+    from app.engine.dream_gate_learn import effective_promote_gate
+
     promotable: list[dict] = []
     for d in report.discovery_objs:
-        if streaks.get(d["key"], 1) < PROMOTE_STREAK:
+        eff_streak, eff_confidence = effective_promote_gate(
+            gate_factors, d["key"], PROMOTE_STREAK, PROMOTE_CONFIDENCE)
+        if streaks.get(d["key"], 1) < eff_streak:
             continue
-        if (d.get("confidence", 0.0) >= PROMOTE_CONFIDENCE
+        if (d.get("confidence", 0.0) >= eff_confidence
                 or _is_value_landable_confluence(root, d)):
             promotable.append(d)
     return promotable
 
 
-def _promote(root: Path, report: DreamReport, curate: bool) -> None:
+def _promote(root: Path, report: DreamReport, curate: bool,
+            learn_gates: bool = False) -> None:
     """Graduate confirmed discoveries into a seed store the waking engine reads.
 
     Default mode only proposes (inputs untouched, like the rest of the dream);
@@ -357,9 +371,21 @@ def _promote(root: Path, report: DreamReport, curate: bool) -> None:
     design-level confidence gate, and a value-aware gate that graduates a
     below-confidence confluence ONLY when it carries a verified-landable move — so
     the dream can act on what it can prove it can fix, while a default run with no
-    prior journal (streak 1) graduates nothing either way (byte-identical)."""
+    prior journal (streak 1) graduates nothing either way (byte-identical).
+
+    ``learn_gates`` (opt-in, default ``False``) computes
+    ``dream_gate_learn.gate_tighten_factors`` ONCE and threads it into
+    :func:`_promotable_discoveries` so a confluence key whose past promotions
+    never realized a held-and-verified fix needs a stricter streak/confidence to
+    graduate again — tighten-only, never loosens. ``False`` (the default) passes
+    no factors, so the gate reads the static constants — byte-identical."""
     streaks: dict[str, int] = getattr(report, "_streaks", {}) or {}
-    promotable = _promotable_discoveries(root, report, streaks)
+    gate_factors: dict[str, float] | None = None
+    if learn_gates:
+        from app.engine.dream_gate_learn import gate_tighten_factors
+
+        gate_factors = gate_tighten_factors(root, PROMOTE_STREAK)
+    promotable = _promotable_discoveries(root, report, streaks, gate_factors)
     if not curate:
         for d in promotable:
             report.proposed.append(
@@ -482,14 +508,14 @@ def _safe(call) -> None:
 
 
 def _run_reviews(root: Path, report: DreamReport, curate: bool,
-                 persist: bool = True) -> None:
+                 persist: bool = True, learn_gates: bool = False) -> None:
     """The full review sweep, each step isolated so one failure can't abort it."""
     _safe(lambda: _review_outcome_memory(root, report, curate))
     _safe(lambda: _review_briefs(root, report, curate))
     _safe(lambda: _review_proof(root, report))
     _safe(lambda: _review_pulse(root, report, persist))
     _safe(lambda: _consolidate(root, report, persist))
-    _safe(lambda: _promote(root, report, curate))
+    _safe(lambda: _promote(root, report, curate, learn_gates))
     _safe(lambda: _forecast(report))
 
 
@@ -505,7 +531,8 @@ def _write_digest(root: Path, report: DreamReport) -> None:
 
 
 def dream(project_root: str | Path, write_digest: bool = True,
-          curate: bool = False, persist: bool = True) -> DreamReport:
+          curate: bool = False, persist: bool = True,
+          learn_gates: bool = False) -> DreamReport:
     """Run the full pass; returns what was noticed (and, with ``curate``, tidied).
 
     Like the real Dreams API, the default NEVER modifies the input stores —
@@ -519,10 +546,18 @@ def dream(project_root: str | Path, write_digest: bool = True,
     byte-for-byte what a persisting run would compute), but writes NOTHING — so a
     caller can derive promotable confluences deterministically and idempotently,
     without advancing the streak or touching any store.
-    """
+
+    ``learn_gates`` (opt-in, default ``False``) folds
+    ``dream_gate_learn.gate_tighten_factors`` into the promote gate
+    (:func:`_promote`/:func:`_promotable_discoveries`): a confluence key whose
+    past promotions never realized a held-and-verified fix needs a stricter
+    streak/confidence to graduate again — TIGHTEN-ONLY, it can never loosen the
+    gate below ``PROMOTE_STREAK``/``PROMOTE_CONFIDENCE``. ``False`` (the
+    default) computes no factors, so the gate is the static constants —
+    byte-identical to before this parameter existed."""
     root = Path(project_root)
     report = DreamReport()
-    _run_reviews(root, report, curate, persist)
+    _run_reviews(root, report, curate, persist, learn_gates)
     if write_digest:
         _write_digest(root, report)
     return report

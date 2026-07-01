@@ -2601,7 +2601,7 @@ def _tests_ins3_eyml__t_cmd_dream_md(m):
     cap = {}
     rep = types.SimpleNamespace(to_dict=lambda: {}, digest_path='')
 
-    def dream(root, curate=False):
+    def dream(root, curate=False, learn_gates=False):
         cap['curate'] = curate
         return rep
     dm = _FakeModule('app.engine.dream', dream=dream, render_dream_markdown=lambda r: 'DREAMMD')
@@ -2612,14 +2612,14 @@ def _tests_ins3_eyml__t_cmd_dream_md(m):
 
 def _tests_ins3_eyml__t_cmd_dream_digest_path(m):
     rep = types.SimpleNamespace(to_dict=lambda: {}, digest_path='/tmp/digest.md')
-    dm = _FakeModule('app.engine.dream', dream=lambda root, curate=False: rep, render_dream_markdown=lambda r: 'X')
+    dm = _FakeModule('app.engine.dream', dream=lambda root, curate=False, learn_gates=False: rep, render_dream_markdown=lambda r: 'X')
     with _inject(**{'app.engine.dream': dm}):
         rc, txt = _cap(m['cmd_dream'], _ns(target='', curate=False, json=False))
     assert 'Digest written to /tmp/digest.md' in txt
 
 def _tests_ins3_eyml__t_cmd_dream_json_indent(m):
     rep = types.SimpleNamespace(to_dict=lambda: {'z': 1, 'a': 2}, digest_path='')
-    dm = _FakeModule('app.engine.dream', dream=lambda root, curate=False: rep, render_dream_markdown=lambda r: 'X')
+    dm = _FakeModule('app.engine.dream', dream=lambda root, curate=False, learn_gates=False: rep, render_dream_markdown=lambda r: 'X')
     with _inject(**{'app.engine.dream': dm}):
         rc, txt = _cap(m['cmd_dream'], _ns(target='', curate=False, json=True))
     assert txt.splitlines()[1].startswith('  "') and (not txt.splitlines()[1].startswith('   "'))
@@ -2941,7 +2941,7 @@ def _tests_ins4_eyml__t_cmd_grade_min_score_default_missing(m):
 def _tests_ins4_eyml__t_cmd_dream_curate_default_missing(m):
     cap = {}
     rep = types.SimpleNamespace(to_dict=lambda: {}, digest_path='')
-    dm = _FakeModule('app.engine.dream', dream=lambda root, curate=False: cap.update(curate=curate) or rep, render_dream_markdown=lambda r: 'X')
+    dm = _FakeModule('app.engine.dream', dream=lambda root, curate=False, learn_gates=False: cap.update(curate=curate) or rep, render_dream_markdown=lambda r: 'X')
     with _inject(**{'app.engine.dream': dm}):
         m['cmd_dream'](argparse.Namespace(target='', json=False))
     assert cap['curate'] is False

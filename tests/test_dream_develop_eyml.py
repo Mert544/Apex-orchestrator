@@ -255,7 +255,7 @@ def test_cmd_dream_land_dispatch(tmp_path, monkeypatch, capsys):
         def to_dict(self):
             return {}
 
-    def _fake_dream(root, curate=False):
+    def _fake_dream(root, curate=False, learn_gates=False):
         called["dream"] = True
         return _Rep()
 

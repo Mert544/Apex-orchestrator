@@ -193,7 +193,8 @@ def test_cmd_dream_markdown_with_digest(monkeypatch, capsys):
         def to_dict(self):
             return {"patterns": []}
 
-    monkeypatch.setattr("app.engine.dream.dream", lambda target, curate: FakeReport())
+    monkeypatch.setattr("app.engine.dream.dream",
+                        lambda target, curate, learn_gates=False: FakeReport())
     monkeypatch.setattr("app.engine.dream.render_dream_markdown", lambda r: "# Dream")
     assert cli_insight.cmd_dream(_ns(curate=False)) == 0
     out = capsys.readouterr().out
@@ -210,14 +211,34 @@ def test_cmd_dream_json_passes_curate_flag(monkeypatch, capsys):
         def to_dict(self):
             return {"curated": True}
 
-    def fake_dream(target, curate):
+    def fake_dream(target, curate, learn_gates=False):
         seen["curate"] = curate
+        seen["learn_gates"] = learn_gates
         return FakeReport()
 
     monkeypatch.setattr("app.engine.dream.dream", fake_dream)
     assert cli_insight.cmd_dream(_ns(curate=True, json=True)) == 0
     assert json.loads(capsys.readouterr().out) == {"curated": True}
     assert seen["curate"] is True
+    assert seen["learn_gates"] is False
+
+
+def test_cmd_dream_threads_learn_gates_flag(monkeypatch, capsys):
+    seen: dict = {}
+
+    class FakeReport:
+        digest_path = ""
+
+        def to_dict(self):
+            return {}
+
+    def fake_dream(target, curate, learn_gates=False):
+        seen["learn_gates"] = learn_gates
+        return FakeReport()
+
+    monkeypatch.setattr("app.engine.dream.dream", fake_dream)
+    assert cli_insight.cmd_dream(_ns(curate=True, learn_gates=True, json=True)) == 0
+    assert seen["learn_gates"] is True
 
 
 # === cmd_outcomes =======================================================

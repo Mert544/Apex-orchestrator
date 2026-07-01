@@ -21,6 +21,14 @@ A non-empty stored store still wins byte-for-byte (a curated project is
 unchanged), and a below-gate confluence still graduates nothing (no
 over-promise).
 
+Note: a curated store built with ``apex dream --curate --learn-gates``
+(``dream_gate_learn``'s tighten-only promote-gate feedback) may promote a
+STRICTER SUBSET of the confluences an un-learned curate run would have — the
+gate only ever tightens, never loosens. This seam's refusal-safe invariant
+(empty/absent store ⇒ ``{}`` boost, zero behaviour change) is untouched either
+way: a smaller promoted set still reads as a smaller-or-equal boost map, never
+a fabricated one.
+
 Imports flow ONE-WAY: this module imports ``objective_compiler`` (compile_objective,
 CompileResult), ``ascend`` (rank_objectives), and ``dream`` (PROMOTE_*, dream).
 Nothing in those modules imports ``dream_landing`` — only the CLI and the tests

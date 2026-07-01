@@ -359,7 +359,7 @@ def test_brief_build_json_indent_two_116():
 
 def _dream_mods(report):
     dm = _FakeModule("app.engine.dream",
-                     dream=lambda t, curate=False: report,
+                     dream=lambda t, curate=False, learn_gates=False: report,
                      render_dream_markdown=lambda r: "DREAMMD")
     return {"app.engine.dream": dm}
 
@@ -1219,7 +1219,7 @@ def test_cmd_dream_curate_default_false_148():
     # default False is forwarded to dream() (flip to True would curate).
     cap = {}
 
-    def dream(t, curate=False):
+    def dream(t, curate=False, learn_gates=False):
         cap["curate"] = curate
         return types.SimpleNamespace(digest_path="", to_dict=lambda: {})
 
