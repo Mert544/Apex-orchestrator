@@ -76,18 +76,18 @@ def test_owner_report_composes_real_apex_verdicts():
     report = _apex_report()
     # Headline: every underlying audit passes on Apex today, so the owner sees YES.
     assert report["trustworthy"] is True
-    # North Star: the real PASS verdict, no drift, the live 49/94 concrete split.
+    # North Star: the real PASS verdict, no drift, the live 50/95 concrete split.
     ns = report["north_star"]
     assert ns["verdict"] == "PASS"
     assert ns["drift"] is False
     assert ns["total_objectives"] == 95
     assert ns["concrete_count"] == 50
     assert 0.0 <= ns["ratio"] <= 1.0
-    # Soundness: PASS with all 94 objectives declaring a proof-strategy, plus the
+    # Soundness: PASS with all 95 objectives declaring a proof-strategy, plus the
     # single-gated-writer and scope_verify allow-list booleans.
     sound = report["soundness"]
     assert sound["verdict"] == "PASS"
-    assert sound["strategies"] == "94/94"
+    assert sound["strategies"] == "95/95"
     assert sound["single_writer"] is True
     assert sound["scope_verify_ok"] is True
     # Grade: the real letter + score.
