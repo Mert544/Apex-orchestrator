@@ -1155,25 +1155,40 @@ _PROOF_STRENGTH_LABEL = {
 }
 
 
+def _proof_row_why(fix: dict, outcome: str, withheld: bool) -> str:
+    """The WHY sub-blocks (impact line + collapsed diff) for one proof row.
+
+    A CLEAN applied fix (outcome ``applied``, not withheld) returns ``""`` — its
+    diff/impact are DELIBERATELY suppressed so the row stays byte-identical to
+    the pre-WHY renderer (a clean apply's diff is not a "why", and rendering it
+    on every applied row would bloat the page; the full diff of every move
+    always remains in ``.apex/proof-of-fix.json`` and ``apex proof``). Only a
+    NON-clean move (rolled-back / blocked / withheld / applied-and-withheld)
+    surfaces them, where they EXPLAIN the outcome. Both fields are read with the
+    same defensive ``.get(...) or ''`` and appended ONLY when truthy; the diff is
+    ``html.escape``d (XSS guard: a failing-test line or a filename with
+    HTML-special chars can never inject markup)."""
+    if outcome == "applied" and not withheld:
+        return ""
+    impact = fix.get("impact") or ""
+    impact_html = f"<div class='muted'>{_esc(impact)}</div>" if impact else ""
+    diff = fix.get("diff") or ""
+    diff_html = (f"<details><summary>diff</summary><pre>{_esc(diff)}</pre></details>"
+                 if diff else "")
+    return impact_html + diff_html
+
+
 def _proof_row(fix: dict) -> str:
     """One ``<tr>`` of the proof-of-fix table for a stored ``fixes[]`` record.
 
     Surfaces the WHY behind a non-clean move — the honest disposition (an
     applied-but-withheld fix is its own state, with the gate that fired), the one
-    honest reason, the measured impact, and the full diff — reusing the SAME
-    helpers ``apex proof`` ships so the two renderers can never diverge. Every new
-    field is read with the same defensive ``.get(...) or ''`` and appended ONLY
-    when truthy. A CLEAN applied fix (outcome ``applied``, not withheld) renders
-    exactly the outcome/action/target/strength/shield it always did — its
-    ``reason`` is empty (``—`` cell) and its diff is DELIBERATELY not shown — so its
-    row is byte-identical to before but for that one ``—`` reason cell. The collapsed
-    diff and the impact sub-line surface ONLY on a NON-clean move (rolled-back /
-    blocked / withheld / applied-and-withheld), where they EXPLAIN the outcome — a
-    clean apply's diff is not a "why", and rendering it on every applied row would
-    bloat the page and break byte-identity (the full diff of every move always
-    remains in ``.apex/proof-of-fix.json`` and ``apex proof``). The diff is
-    ``html.escape``d (XSS guard: a failing-test line or a filename with HTML-special
-    chars can never inject markup).
+    honest reason, the measured impact, and the full diff (:func:`_proof_row_why`)
+    — reusing the SAME helpers ``apex proof`` ships so the two renderers can never
+    diverge. A CLEAN applied fix renders exactly the outcome/action/target/
+    strength/shield it always did — its ``reason`` is empty (``—`` cell) and its
+    WHY block is empty — so its row is byte-identical to before but for that one
+    ``—`` reason cell.
     """
     from app.cli_insight import _proof_disposition, _proof_reason
 
@@ -1184,18 +1199,11 @@ def _proof_row(fix: dict) -> str:
     withheld = bool(fix.get("commit_withheld"))
     display_outcome, _committed = _proof_disposition(fix, outcome, withheld)
     reason = _proof_reason(fix, outcome, withheld) or ""
-    # A clean success (``applied`` and not withheld) is byte-identical: its diff/impact
-    # are suppressed. Only a non-clean move surfaces the WHY (diff + impact).
-    clean_apply = outcome == "applied" and not withheld
-    impact = "" if clean_apply else (fix.get("impact") or "")
-    impact_html = f"<div class='muted'>{_esc(impact)}</div>" if impact else ""
-    diff = "" if clean_apply else (fix.get("diff") or "")
-    diff_html = (f"<details><summary>diff</summary><pre>{_esc(diff)}</pre></details>"
-                 if diff else "")
+    why_html = _proof_row_why(fix, outcome, withheld)
     return (
         f"<tr><td>{_PROOF_OUTCOME_ICON.get(display_outcome, '·')} "
         f"{_esc(display_outcome)}</td>"
-        f"<td>{_esc(finding.get('action', ''))}{impact_html}{diff_html}</td>"
+        f"<td>{_esc(finding.get('action', ''))}{why_html}</td>"
         f"<td><code>{_esc(finding.get('target', ''))}</code></td>"
         f"<td>{_esc(_PROOF_STRENGTH_LABEL.get(strength, '—'))}</td>"
         f"<td>{('🛡️ <code>' + _esc(shield) + '</code>') if shield else '—'}</td>"
