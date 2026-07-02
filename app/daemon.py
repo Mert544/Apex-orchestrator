@@ -51,6 +51,7 @@ class ApexDaemon:
 
         while self._running:
             self._run_apex()
+            self._refresh_memory()
             # Sleep in chunks to allow responsive shutdown
             slept = 0.0
             while slept < self.interval and self._running:
@@ -113,6 +114,23 @@ class ApexDaemon:
             print("[daemon] Run timed out after 300s.")
         except Exception as exc:
             print(f"[daemon] Run error: {exc}")
+
+    def _refresh_memory(self) -> None:
+        """The living loop's memory beat: refresh the vault + agenda artifacts
+        after every cycle. Both writers are byte-deterministic single-writer
+        mirrors of live state, so a quiet cycle rewrites identical bytes — the
+        artifact diff IS the change, no clocks and no growing log. Lazy imports
+        keep daemon startup free of engine costs, and NO failure here may ever
+        kill the supervision loop (memory is a convenience; the loop is the
+        contract)."""
+        try:
+            from app.engine.agenda import write_agenda
+            from app.memory.vault import write_vault
+            write_vault(self.target)
+            write_agenda(self.target)
+            print("[daemon] Memory refreshed (vault + agenda).")
+        except Exception as exc:  # noqa: BLE001 — supervision outlives any refresh failure
+            print(f"[daemon] Memory refresh skipped: {exc}")
 
     def _ensure_pid_dir(self) -> None:
         self.pid_file.parent.mkdir(parents=True, exist_ok=True)

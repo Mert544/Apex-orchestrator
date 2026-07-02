@@ -243,7 +243,28 @@ def cmd_assist(args: argparse.Namespace) -> int:
     from app.agent.assist import assist
 
     target = args.target or _get_project_root()
-    result = assist(args.request, target=str(target),
+    request = args.request or ""
+    if getattr(args, "from_agenda", False):
+        # The living loop's hand-off: take the agenda's rank-1 LANDABLE entry
+        # and route it through the SAME understand→plan→act pipeline as a typed
+        # request — preview-first, --apply/--commit compose unchanged. Honest
+        # empties: no landable work -> say so and exit 0 (not an error).
+        from app.engine.agenda import build_agenda
+        landable = build_agenda(str(target))["lanes"]["landable"]
+        if not landable:
+            print("Agenda has no landable entries — nothing to hand off. "
+                  "Run `apex agenda` for the full picture.")
+            return 0
+        top = landable[0]
+        request = (f"{top['fix_kind'].replace('_', ' ')} in {top['file']}"
+                   if top.get("file") else top["fix_kind"].replace("_", " "))
+        print(f"[agenda→assist] rank-1 landable: {top['fix_kind']} "
+              f"({top['file']}:{top['line']}, value {top['value']}) — "
+              f"request: {request!r}\n")
+    elif not request:
+        print("assist needs a request (or --from-agenda).")
+        return 2
+    result = assist(request, target=str(target),
                     apply=getattr(args, "apply", False),
                     commit=getattr(args, "commit", False))
     if getattr(args, "json", False):
@@ -263,8 +284,14 @@ def _register_local_parsers(subparsers) -> None:
              "explain — routes 'what should I build next?' into the dream core",
     )
     assist_parser.add_argument(
-        "request", help="The natural-language request, e.g. 'what should I build "
-                        "next?' or 'add type hints to the auth module'")
+        "request", nargs="?", default="",
+        help="The natural-language request, e.g. 'what should I build next?' "
+             "or 'add type hints to the auth module' (optional with "
+             "--from-agenda)")
+    assist_parser.add_argument(
+        "--from-agenda", action="store_true",
+        help="Take the agenda's rank-1 landable entry as the request "
+             "(preview-first; combine with --apply to land it)")
     assist_parser.add_argument("--target", default="", help="Target project root")
     assist_parser.add_argument("--apply", action="store_true",
                                help="Land develop changes (covered-only, "

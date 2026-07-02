@@ -13,6 +13,10 @@
 
 ---
 
+**V3-CANLI-DÖNGÜ DALGASI — daemon hafıza vuruşu + agenda→assist devri:** Vizyon programının V3'ü indi. (1) `agenda.write_agenda` — `.apex/agenda.json` tek-yazar/bayt-deterministik/yeniden-kurulur artifact'ı (vault sözleşmesinin aynası). (2) `ApexDaemon._refresh_memory` — her supervised döngü sonunda vault+agenda tazelenir; sessiz döngü bayt-aynı yazar (saat yok, büyüyen log yok — artifact diff'i = değişim); tazeleme HATASI süpervizyon döngüsünü ASLA öldürmez (test-pinli). (3) `apex assist --from-agenda` — gündemin rank-1 landable'ı aynı understand→plan→act hattına normal istek olarak girer; preview-first, `--apply/--commit` aynen komposit; boş gündem dürüst-mesaj+exit 0. 7 test; canlı: Apex'te tek vuruş 18.468 bulgu → 18.016 landable agenda.json'a. Otonom-yazma YOK (yalnız .apex hafıza-artifact'ları). SIRADAKİ: V4 öğrenme-derinliği (gate-learn/reliability geri-beslemesinin agenda'ya monoton yansıması) + V5 Obsidian köprüsü.
+
+---
+
 **V1-VAULT DALGASI — yaşayan-asistan programının ilk inşası (`apex vault`):** Vizyon spec'inin V1'i indi: `app/memory/vault.py` — `.apex/` altındaki 4 kalıcı depo (idea-memory, dream-journal, dream-digest, proof-of-fix) + türev track-record'un TEK deterministik roll-up'ı (`.apex/vault/vault.json`). Sözleşmeler test-pinli (7 test): **tek-yazar** (kaynak depolar bayt-dokunulmaz), **kayıpsız-additive** (vault silinse sıfır kayıp, yeniden-kurulur), **dürüst-boş** (yokluk uydurulmaz; bozuk depo "unreadable" olarak yüzeye çıkar), **bayt-determinizm** (değişmeyen depolar → bayt-aynı vault). CLI: `apex vault [--refresh|--json]` (read-only kaynaklar üzerinde; cli_insight desenine birebir; yüzey-pini bilinçli güncellendi). Apex'in kendisinde canlı: 3/5 depo mevcut. SIRADAKİ: V2 `apex agenda` (vault+move_value+readiness sentezinden deterministik gündem).
 
 ---

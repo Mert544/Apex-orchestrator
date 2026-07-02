@@ -28,6 +28,7 @@ behind the existing preview-first ``develop``/``assist``/``dream`` gates.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ from app.engine.move_value import scored_move_value
 from app.engine.value_reliability import operator_realization_factors
 
 SCHEMA_VERSION = 1
+AGENDA_REL = ".apex/agenda.json"
 
 # One screen per lane: entries beyond the cap are COUNTED, never silently cut.
 _LANE_CAP = 10
@@ -119,6 +121,25 @@ def build_agenda(project_root: str | Path) -> dict[str, Any]:
             "watched": _watched_lane(considered, memory, realization),
         },
     }
+
+
+def write_agenda(project_root: str | Path) -> Path:
+    """Refresh ``.apex/agenda.json`` from the live signals and return its path.
+
+    The agenda module is the file's ONLY writer (the vault's single-writer
+    contract, mirrored), and the dump is byte-deterministic — an unchanged
+    repo rewrites identical bytes, so the artifact diff IS the agenda change.
+    The living loop (``apex daemon``) calls this once per cycle; the file is
+    fully rebuildable and deleting it loses nothing."""
+    root = Path(project_root)
+    agenda = build_agenda(root)
+    path = root / AGENDA_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(agenda, sort_keys=True, indent=1, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def _lane_header(title: str, entries: list[dict[str, Any]]) -> str:
