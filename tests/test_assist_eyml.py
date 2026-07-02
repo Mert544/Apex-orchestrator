@@ -788,3 +788,63 @@ def test_to_dict_is_json_safe(tmp_path):
     payload = json.dumps(result.to_dict(), ensure_ascii=False)
     assert "dream" in payload
     assert "implement-stub" in payload
+
+
+# --- RANK 1: the applied narrative DISCLOSES covered-only WITHHELD moves ------
+
+def test_applied_narrative_discloses_withheld_uncovered_moves(tmp_path):
+    """An applied assist run over a thinly-tested project: the ONLY candidate move
+    is green-but-uncovered, so the covered-only gate (armed by ``apply=True``)
+    PREVIEWS it (rolls it back) instead of landing. The narrative must DISCLOSE
+    that withheld move — mirroring ``cli_autonomy._withheld_summary`` — so the run
+    is honest that a landable-once-covered move exists, never silently dropping it.
+    """
+    # A ``== None`` the modernizer would rewrite, but NO test references mod.py, so
+    # its coverage is "none" — the covered-only sweep withholds it.
+    (tmp_path / "mod.py").write_text(
+        "def greet(name):\n"
+        "    if name == None:\n"
+        "        return 'hi'\n"
+        "    return 'hi ' + name\n",
+        encoding="utf-8")
+    (tmp_path / "test_other.py").write_text(
+        "def test_trivial():\n    assert True\n", encoding="utf-8")
+
+    result = assist("modernize the code", target=str(tmp_path), apply=True)
+
+    # The gate withheld the move (previewed, not landed).
+    assert any(r.withheld for r in result._results)
+    assert all(not r.steps for r in result._results)
+    # ...and the narrative now SAYS SO (the RANK 1 reach fix — without it the
+    # applied narrative reports 0 verified and stays silent about the withheld
+    # move, under-disclosing on exactly the thinly-tested project that needs it).
+    assert "Withheld" in result.narrative
+    assert "PREVIEWED, not landed" in result.narrative
+    assert "--allow-weak" in result.narrative
+
+
+def test_fully_covered_apply_narrative_omits_withheld_disclosure(tmp_path):
+    """The EDGE/BYTE-IDENTICAL path: when a covered move actually LANDS (its test
+    exercises it), nothing is withheld, so the disclosure line must NOT appear —
+    the withheld surface is purely additive, present only when a move was held."""
+    root = _modernize_project(tmp_path)  # mod.py IS covered by test_mod.py
+    result = assist("modernize the code", target=str(root), apply=True)
+
+    assert not any(r.withheld for r in result._results)
+    assert "Withheld" not in result.narrative
+
+
+def test_preview_never_arms_withheld_gate(tmp_path):
+    """A dry-run preview passes ``covered_only=False``, so nothing is ever withheld
+    — the disclosure stays absent on a preview (the gate is an apply-time concern
+    only), keeping the preview narrative byte-identical to before."""
+    (tmp_path / "mod.py").write_text(
+        "def greet(name):\n"
+        "    if name == None:\n"
+        "        return 'hi'\n"
+        "    return 'hi ' + name\n",
+        encoding="utf-8")
+    result = assist("modernize the code", target=str(tmp_path), apply=False)
+
+    assert all(not r.withheld for r in result._results)
+    assert "Withheld" not in result.narrative

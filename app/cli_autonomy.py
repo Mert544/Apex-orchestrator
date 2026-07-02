@@ -1102,7 +1102,8 @@ def _develop_all(args, target, grade_before, max_steps, verify, apply) -> int:
 
 
 def _auto_selected_objectives(target, concrete: bool,
-                              value_lead: bool = False) -> list[str]:
+                              value_lead: bool = False,
+                              scope_module: str | None = None) -> list[str]:
     """The objectives the autonomous develop sweep will pursue — chosen by each
     objective's OWN fitness/grounding, not by name. Reuses the same fitness-ranked
     board ``apex plan`` / ``apex ascend`` use (``rank_objectives``), keeping ONLY
@@ -1112,21 +1113,46 @@ def _auto_selected_objectives(target, concrete: bool,
     ``--concrete`` does for plan/ascend. ``value_lead=True`` (opt-in) re-orders the
     SAME board by buyer value (a cheap Tier-1 fix leads a high-pending tidy) WITHOUT
     unlocking the expensive objectives — membership stays gated solely by
-    ``concrete``. Deterministic: the board's order is a fixed function of measured
-    fitness — no clock/random."""
+    ``concrete``.
+
+    ``scope_module`` (opt-in, default None) is the REACH lever: when the user
+    pointed the sweep at ONE specific, already-resolved module — a narrowly-named
+    target that has already cleared the safety bar — the expensive concrete
+    objectives (implement-stub, cover-gaps, wire-exports, the java-*/js-* families)
+    are unlocked AUTOMATICALLY (``include_expensive`` OR'd on), because running one
+    of them confined to a single named module is bounded + intended (the user
+    explicitly asked). This is what lets ``apex assist "implement the missing
+    functions in auth.py"`` reach ``implement-stub`` instead of honestly no-op'ing.
+    It NEVER widens a broad sweep: with ``scope_module=None`` (the default, a whole-
+    project sweep) membership stays gated solely by ``concrete`` — byte-identical.
+    ``scope_module`` here only gates MEMBERSHIP; the compiler does the actual
+    module-confinement (``compile_objective(scope_module=...)``), so no unrelated
+    module is touched. Deterministic: the board's order is a fixed function of
+    measured fitness — no clock/random."""
     from app.engine.ascend import rank_objectives
 
-    return [r.objective for r in rank_objectives(str(target), include_expensive=concrete,
+    # A resolved, narrowly-named scope is an explicit, bounded invitation to run
+    # the expensive concrete objectives on JUST that module — so it unlocks them
+    # even without --concrete. No scope ⇒ membership stays gated solely by concrete.
+    include_expensive = concrete or scope_module is not None
+    return [r.objective for r in rank_objectives(str(target),
+                                                 include_expensive=include_expensive,
                                                  value_lead=value_lead)
             if r.pending > 0]
 
 
-def _select_for_sweep(target, concrete: bool, value_lead: bool) -> list[str]:
-    """The autonomous sweep's objective set. ``value_lead`` is opt-in: when OFF
-    (the default) the selector is called with the SAME two-arg signature as before,
-    so the byte-identical default path — and every existing 2-arg test stub of
-    ``_auto_selected_objectives`` — is preserved; the third arg only ever appears
-    once the user opted in."""
+def _select_for_sweep(target, concrete: bool, value_lead: bool,
+                      scope_module: str | None = None) -> list[str]:
+    """The autonomous sweep's objective set. ``value_lead`` / ``scope_module`` are
+    opt-in: when BOTH are OFF (the default) the selector is called with the SAME
+    two-arg signature as before, so the byte-identical default path — and every
+    existing 2-arg test stub of ``_auto_selected_objectives`` — is preserved. A
+    resolved ``scope_module`` (the user named ONE module) is threaded so the
+    selector auto-unlocks the expensive concrete objectives ON THAT MODULE ONLY
+    (see ``_auto_selected_objectives``); the extra args only ever appear once the
+    user opted in."""
+    if scope_module is not None:
+        return _auto_selected_objectives(target, concrete, value_lead, scope_module)
     if value_lead:
         return _auto_selected_objectives(target, concrete, value_lead)
     return _auto_selected_objectives(target, concrete)
@@ -1148,6 +1174,27 @@ def _withheld_summary(results: list) -> tuple[int, str]:
            "them — a green suite can't vouch for the change). They were PREVIEWED, "
            "not landed. Re-run with `--allow-weak` to land them too._")
     return n, msg
+
+
+def _auto_scope_module(args, target) -> str | None:
+    """Resolve the sweep's named scope HINT (``args.scope``) to a real module path,
+    or None for a whole-project sweep.
+
+    Read via ``getattr`` (default ``""``), so a develop namespace WITHOUT a scope
+    attribute — every existing ``apex develop --auto`` invocation — yields None and
+    the sweep stays byte-identical. When a scope is present it is resolved by the
+    SAME best-effort matcher ``apex assist`` uses
+    (:func:`app.agent.assist._resolve_scope_module`: exact relative path → unique
+    basename → unique stem, else None for an ambiguous/unknown hint), so a
+    narrowly-named target unlocks the expensive concrete objectives on JUST that
+    module while a vague/ambiguous hint safely falls back to the whole-project
+    sweep. Read-only (no writes, no suite)."""
+    scope = getattr(args, "scope", "") or ""
+    if not scope:
+        return None
+    from app.agent.assist import _resolve_scope_module
+
+    return _resolve_scope_module(str(target), scope)
 
 
 def _develop_auto(args, target, grade_before, max_steps, verify, apply) -> int:
@@ -1173,14 +1220,21 @@ def _develop_auto(args, target, grade_before, max_steps, verify, apply) -> int:
     concrete = getattr(args, "concrete", False)
     # COVERED-ONLY is the sweep default; ``--allow-weak`` restores today's apply.
     covered_only = apply and not getattr(args, "allow_weak", False)
+    # REACH: when the sweep was pointed at ONE named module (an already-resolved,
+    # narrowly-scoped target), thread it so the selector auto-unlocks the expensive
+    # concrete objectives ON THAT MODULE ONLY and the compiler confines every
+    # campaign to it. No named scope ⇒ None ⇒ the whole-project sweep is byte-
+    # identical (membership still gated solely by ``concrete``).
+    scope_module = _auto_scope_module(args, target)
     selected = _select_for_sweep(target, concrete,
-                                 getattr(args, "value_lead", False))
+                                 getattr(args, "value_lead", False), scope_module)
     results = []
     for objective in selected:
         result = compile_objective(str(target), objective=objective,
                                    max_steps=max_steps, verify=verify, apply=apply,
                                    scope_verify=getattr(args, "fast", False),
                                    min_move_value=_min_move_value(args),
+                                   scope_module=scope_module,
                                    covered_only=covered_only)
         if (result.steps or result.fitness_start > 0
                 or result.verification_unavailable):

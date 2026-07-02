@@ -229,6 +229,94 @@ def test_auto_concrete_lands_the_expensive_stub_objective(tmp_path: Path):
     assert "implement-stub" in out
 
 
+# --------------------------------------------------------------------------- #
+# RANK 2: a resolved scope_module auto-unlocks the EXPENSIVE objectives — but   #
+# ONLY on that one named module; the whole-project default stays byte-identical #
+# --------------------------------------------------------------------------- #
+def test_scope_module_unlocks_expensive_objectives(tmp_path: Path):
+    # A narrowly-named, resolved scope is an explicit + bounded invitation: the
+    # selector unlocks the expensive concrete objectives (implement-stub, …) on it
+    # WITHOUT --concrete. This is what lets `apex assist "implement auth.py"` reach
+    # implement-stub instead of honestly no-op'ing.
+    _stub_project(tmp_path)
+    scoped = m._auto_selected_objectives(tmp_path, concrete=False,
+                                         scope_module="pkg/mathlib.py")
+    assert "implement-stub" in scoped
+
+
+def test_no_scope_module_keeps_expensive_excluded_byte_identical(tmp_path: Path):
+    # The DEFAULT (whole-project, no named scope) is byte-identical: expensive
+    # objectives stay excluded, and the selection equals the pre-fix 2-arg call.
+    _stub_project(tmp_path)
+    default_none = m._auto_selected_objectives(tmp_path, concrete=False,
+                                               scope_module=None)
+    default_2arg = m._auto_selected_objectives(tmp_path, concrete=False)
+    assert "implement-stub" not in default_none
+    assert default_none == default_2arg  # scope_module=None changes nothing
+
+
+def test_select_for_sweep_threads_scope_module_only_when_named(tmp_path: Path):
+    # _select_for_sweep unlocks expensive when a scope_module is threaded, and is
+    # byte-identical to the 2-arg default when it is None (the fitness board order
+    # and membership are unchanged for the broad sweep).
+    _stub_project(tmp_path)
+    scoped = m._select_for_sweep(tmp_path, False, False, "pkg/mathlib.py")
+    default = m._select_for_sweep(tmp_path, False, False)
+    assert "implement-stub" in scoped
+    assert "implement-stub" not in default
+    assert default == m._auto_selected_objectives(tmp_path, False)
+
+
+def test_auto_scope_module_none_without_scope_attr(tmp_path: Path):
+    # A develop namespace WITHOUT a scope attribute (every existing --auto call)
+    # resolves to None — the sweep stays whole-project + byte-identical.
+    ns = _auto_ns(tmp_path)  # no ``scope`` key
+    assert m._auto_scope_module(ns, tmp_path) is None
+    # An explicit empty scope is also None (no accidental whole-project narrowing).
+    ns_empty = _auto_ns(tmp_path, scope="")
+    assert m._auto_scope_module(ns_empty, tmp_path) is None
+
+
+def test_auto_scope_module_resolves_named_target(tmp_path: Path):
+    # A named-but-bare hint resolves to the real module path (unique-stem match),
+    # exactly as `apex assist` resolves it.
+    _stub_project(tmp_path)
+    ns = _auto_ns(tmp_path, scope="mathlib")
+    assert m._auto_scope_module(ns, tmp_path) == "pkg/mathlib.py"
+
+
+def test_auto_scope_module_unknown_hint_falls_back_to_whole_project(tmp_path: Path):
+    # An unknown/ambiguous hint resolves to None (safe whole-project sweep, never a
+    # wrong-module scope) — the expensive unlock only fires on a REAL named module.
+    _stub_project(tmp_path)
+    ns = _auto_ns(tmp_path, scope="does_not_exist")
+    assert m._auto_scope_module(ns, tmp_path) is None
+
+
+def test_scoped_auto_sweep_lands_expensive_stub_without_concrete(tmp_path: Path):
+    # END-TO-END: `apex develop --auto` pointed at ONE module (scope=mathlib) lands
+    # the EXPENSIVE implement-stub WITHOUT --concrete — the reach fix, real verified
+    # code — while WITHOUT a scope the same project no-ops on that stub (below).
+    _stub_project(tmp_path)
+    rc, out = _run(_auto_ns(tmp_path, apply=True, scope="mathlib"))
+    assert rc == 0
+    math_src = (tmp_path / "pkg" / "mathlib.py").read_text()
+    assert "raise NotImplementedError" not in math_src
+    assert "return a + b" in math_src
+    assert "implement-stub" in out
+
+
+def test_unscoped_auto_sweep_does_not_land_expensive_stub(tmp_path: Path):
+    # The NEGATIVE half (proves the test is non-tautological): the SAME project
+    # WITHOUT a named scope and WITHOUT --concrete never touches the expensive stub
+    # — the byte-identical default reach is preserved.
+    _stub_project(tmp_path)
+    rc, _out = _run(_auto_ns(tmp_path, apply=True))
+    assert rc == 0
+    math_src = (tmp_path / "pkg" / "mathlib.py").read_text()
+    assert "raise NotImplementedError" in math_src  # untouched — still a stub
+
+
 def test_selection_is_fitness_grounded_only_pending(tmp_path: Path):
     # The selection is GROUNDED in each objective's own fitness: only objectives
     # with qualifying targets (pending > 0) are chosen, so the sweep never runs an

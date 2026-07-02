@@ -424,6 +424,41 @@ def test_word_boundary_keeps_real_intent(req, expected):
         f"{req!r} should still surface {expected}")
 
 
+# --- RANK 3: ``javadoc`` is a STANDALONE trigger for the java-document-* trio --
+#
+# The bare ``java`` token needs a code-context companion ("throws"/"param"/…), so
+# "add javadoc to Calculator" — an unambiguous compound noun with NO companion —
+# used to miss the java-document-* objectives entirely. ``javadoc`` now resolves
+# them directly, word-bounded so it never fires inside an unrelated longer word.
+
+@pytest.mark.parametrize("req", [
+    "add javadoc to Calculator",
+    "add javadoc",
+    "write javadocs for the method",
+    "generate javadoc comments",
+    "the javadoc is missing",
+])
+def test_javadoc_resolves_java_document_objective(req):
+    objs = comprehend(req).objectives
+    assert any(o.startswith("java-document") for o in objs), (
+        f"{req!r} should surface a java-document-* objective, got {objs}")
+
+
+@pytest.mark.parametrize("req", [
+    # No ``javadoc`` token → the standalone trigger must stay silent; ``javascript``
+    # and the bare context-gated ``java`` phrasings are unaffected by this row.
+    "i love javascript",
+    "java is my favorite island",
+    "i visited java last summer",
+    "add jsdoc to the typescript",
+])
+def test_javadoc_trigger_no_false_positive(req):
+    objs = comprehend(req).objectives
+    assert not any(o.startswith("java-document") for o in objs), (
+        f"{req!r} must NOT surface a java-document-* objective via javadoc, "
+        f"got {objs}")
+
+
 # --- resolve_objective: the SHARED vocabulary lifts it, BACK-COMPAT preserved -
 
 @pytest.mark.parametrize("req,expected", [

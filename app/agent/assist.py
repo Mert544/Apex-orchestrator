@@ -741,10 +741,19 @@ def _render_deps_next(cycles: list[list[str]],
     return lines
 
 
-def _develop_counts(results: list[Any]) -> tuple[int, int, int, int]:
-    """``(landed_verified, weak, blocked, files)`` summed across the campaigns —
-    the honest never-fake-green split (only a test-COVERED move is "verified")."""
-    verified = weak = blocked = 0
+def _develop_counts(results: list[Any]) -> tuple[int, int, int, int, int]:
+    """``(landed_verified, weak, blocked, files, withheld)`` summed across the
+    campaigns — the honest never-fake-green split (only a test-COVERED move is
+    "verified").
+
+    ``withheld`` is the covered-only-gated total: moves whose green suite NO test
+    exercises, which ``compile_objective(covered_only=...)`` PREVIEWED (rolled back)
+    rather than landed — one entry per :attr:`CompileResult.withheld` description.
+    An applied assist run is covered-only (``_run_one_objective`` passes
+    ``covered_only=apply``), so on a thinly-tested project this is where the honest
+    "landed less than it could safely prove" gap lives; a PREVIEW never arms the
+    gate, so it is 0 there (byte-identical to before)."""
+    verified = weak = blocked = withheld = 0
     files: set[str] = set()
     for r in results:
         for s in getattr(r, "steps", []):
@@ -754,7 +763,21 @@ def _develop_counts(results: list[Any]) -> tuple[int, int, int, int]:
             else:
                 weak += 1
         blocked += len(getattr(r, "blocked", []))
-    return verified, weak, blocked, len(files)
+        withheld += len(getattr(r, "withheld", []))
+    return verified, weak, blocked, len(files), withheld
+
+
+def _develop_verification_unavailable(results: list[Any]) -> str:
+    """The loud "pytest is not importable" decline message an objective's campaign
+    carried, or ``""`` when every campaign could be verified. A decline lands
+    NOTHING (zero steps) — this exists so the develop-route body surfaces the honest
+    "could not verify => did not touch" message instead of a false "0 verified
+    move(s)" line (never-fake-green disclosure parity)."""
+    for r in results:
+        message = getattr(r, "verification_unavailable", "")
+        if message:
+            return message
+    return ""
 
 
 def _render_develop(result: AssistResult) -> list[str]:
@@ -773,7 +796,16 @@ def _render_develop(result: AssistResult) -> list[str]:
     where = f" on `{scope}`" if scope else ""
     lines = [f"## Plan — {len(objectives)} objective(s){capped}, value-led{where}",
              plan, ""]
-    verified, weak, blocked, files = _develop_counts(results)
+    decline = _develop_verification_unavailable(results)
+    if decline:
+        # A campaign DECLINED up front: pytest is not importable, so NOTHING was
+        # verified or landed. Surface ONLY the loud, actionable message (the SAME
+        # wording the develop session / compile campaign use) — not the misleading
+        # "0 verified move(s)" line, which would read like a clean no-op rather than
+        # an honest "could not verify => did not touch".
+        lines += ["## Result — verification unavailable", f"⚠️ {decline}", ""]
+        return lines
+    verified, weak, blocked, files, withheld = _develop_counts(results)
     committed = sum(1 for r in results if getattr(r, "committed", False))
     heading = ("Result — landed the verified moves" if write
                else "Result — preview (nothing written)")
@@ -787,6 +819,11 @@ def _render_develop(result: AssistResult) -> list[str]:
         if committed:
             lines.append(f"**{committed} objective(s) auto-committed** — see the "
                          "per-move breakdown below for each commit hash.")
+        # HONEST under-disclosure fix: an applied assist run is covered-only, so a
+        # green-but-unreferenced move is PREVIEWED, not landed. Surface that count
+        # (mirrors ``cli_autonomy._withheld_summary``) so a thinly-tested project
+        # is told the move exists and how to land it — never silently dropped.
+        lines += _withheld_disclosure(withheld)
     else:
         previewed = verified + weak
         lines.append(f"Preview: **{previewed} move(s)** would land across "
@@ -796,6 +833,24 @@ def _render_develop(result: AssistResult) -> list[str]:
     lines += _render_develop_steps(results, write)
     lines += _render_develop_next(write, weak, objectives, scope, committed)
     return lines
+
+
+def _withheld_disclosure(withheld: int) -> list[str]:
+    """The HONEST covered-only WITHHELD disclosure — mirrors the EXACT wording of
+    ``cli_autonomy._withheld_summary`` (the ``apex auto``/``develop --auto`` sweep).
+
+    ``withheld`` moves are green-but-unreferenced changes a green suite can't vouch
+    for: an applied assist run PREVIEWED them (rolled back), never landed them.
+    Empty when nothing was withheld (a fully-covered apply reads exactly as before)
+    — so this is purely additive. ``apex assist`` has no ``--allow-weak`` gate, so
+    the disclosure names the equivalent one-command follow-up (``apex develop --auto
+    --apply --allow-weak``) instead of implying a flag ``assist`` doesn't take."""
+    if not withheld:
+        return []
+    return [f"_Withheld {withheld} uncovered move(s) (suite green but no test "
+            "exercises them — a green suite can't vouch for the change). They were "
+            "PREVIEWED, not landed. Add a test that exercises them and re-run, or "
+            "`apex develop --auto --apply --allow-weak` to land them too._"]
 
 
 def _render_develop_steps(results: list[Any], write: bool) -> list[str]:
