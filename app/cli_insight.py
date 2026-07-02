@@ -902,6 +902,23 @@ def _render_proof_track_record(track: dict) -> list[str]:
     return lines
 
 
+def cmd_agenda(args: argparse.Namespace) -> int:
+    """Show the Apex agenda: what this project should do next, in three honest
+    lanes — provable-landable now (value-ranked with the project's own learned
+    demotes), human-decision (handed over with rationale), and watched (learned
+    caution made visible). Pure deterministic synthesis of existing engines;
+    recommends only — nothing is written or landed. Always exits 0."""
+    from app.engine.agenda import build_agenda, render_agenda_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    agenda = build_agenda(target)
+    if args.json:
+        print(json.dumps(agenda, sort_keys=True, indent=2, ensure_ascii=False))
+    else:
+        print(render_agenda_markdown(agenda))
+    return 0
+
+
 def cmd_vault(args: argparse.Namespace) -> int:
     """Refresh and show the Apex vault: ONE deterministic roll-up of the
     project's persistent memory stores (idea-memory, dream journal, dream
@@ -1463,6 +1480,18 @@ def register_parsers(subparsers) -> None:
         help="Rewrite .apex/vault/vault.json from the live stores first "
              "(byte-identical when nothing changed)")
     vault_parser.set_defaults(func=cmd_vault)
+
+    # agenda — what should this project do next (three honest lanes)
+    agenda_parser = subparsers.add_parser(
+        "agenda",
+        help="Show what this project should do next in three honest lanes: "
+             "provable-landable now (value-ranked), human-decision (with "
+             "rationale), watched (learned caution). Deterministic synthesis "
+             "of existing engines; recommends only, writes nothing",
+    )
+    agenda_parser.add_argument("--target", default="", help="Target project root")
+    agenda_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    agenda_parser.set_defaults(func=cmd_agenda)
 
     # scope — how much of THIS repo Apex's Python analysis covers (and what it
     # honestly leaves outside that scope)

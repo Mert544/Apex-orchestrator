@@ -9,6 +9,10 @@
 
 ---
 
+**V2-AGENDA DALGASI — "şimdi ne yapmalı" üç dürüst şeritte (`apex agenda`) + verimli-gate akışı:** Yaşayan-asistan V2 indi: `app/engine/agenda.py` — mevcut motorların saf deterministik SENTEZİ (develop_readiness × scored_move_value × IdeaMemory/value_reliability; yeni detector yok, yazma yok, saat yok). Şeritler: **landable** (fixable_now, alıcı-değeri × proje-öğrenilmiş demote ile sıralı), **human** (flag_only, gerekçesiyle dürüst devir), **watched** (nötr-altı feasibility/realization = görünür öğrenilmiş-tedbir). Taşma sayılır, asla gizlenmez. 7 test (seam-tarzı unit + bare-project dürüst-boş + CLI determinizm); canlı: Apex'te 18.460 bulgu → 18.008 landable (%98 readiness), human=2 (kasıtlı pickle fixture'ları), watched=0. **VERİMLİ-GATE AKIŞI (patron isteği):** (1) `preflight` — commit'ten önce yalnız ETKİLENEN test dosyaları (`app.engine.test_impact` ile; bu dalgada 1.459 test/6dk, eski "25. dakikada öl" deseni öldü); (2) gate checkpoint'leri artık İÇERİK-anahtarlı (hash(app+scripts+conftest+chunk'ın kendi test dosyaları)) — test-only düzeltmede değişmeyen chunk'lar cache'ten yeşil (~35dk→~4dk restart); (3) dalga-batching kuralı hatırlatıldı (tek kombine gate). Tam-yeşil-gate-push disiplini DEĞİŞMEDİ — yalnız israf öldü.
+
+---
+
 **V1-VAULT DALGASI — yaşayan-asistan programının ilk inşası (`apex vault`):** Vizyon spec'inin V1'i indi: `app/memory/vault.py` — `.apex/` altındaki 4 kalıcı depo (idea-memory, dream-journal, dream-digest, proof-of-fix) + türev track-record'un TEK deterministik roll-up'ı (`.apex/vault/vault.json`). Sözleşmeler test-pinli (7 test): **tek-yazar** (kaynak depolar bayt-dokunulmaz), **kayıpsız-additive** (vault silinse sıfır kayıp, yeniden-kurulur), **dürüst-boş** (yokluk uydurulmaz; bozuk depo "unreadable" olarak yüzeye çıkar), **bayt-determinizm** (değişmeyen depolar → bayt-aynı vault). CLI: `apex vault [--refresh|--json]` (read-only kaynaklar üzerinde; cli_insight desenine birebir; yüzey-pini bilinçli güncellendi). Apex'in kendisinde canlı: 3/5 depo mevcut. SIRADAKİ: V2 `apex agenda` (vault+move_value+readiness sentezinden deterministik gündem).
 
 ---
