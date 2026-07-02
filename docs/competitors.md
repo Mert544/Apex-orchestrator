@@ -59,7 +59,9 @@ for Python. Verified capabilities:
 - **Test-verified autonomous fixes with rollback.** `apex maintain` /
   `apex develop` apply AST transforms, run the host test suite, and auto-roll-back
   on failure (`app/engine/rollback_journal.py`); a `proof-of-fix.json` evidence
-  record is emitted (`app/engine/proof_of_fix.py`).
+  record is emitted (`app/engine/proof_of_fix.py`) and rendered read-only by
+  `apex proof` (per-move outcome + reason + coverage, a tamper-evident sha256,
+  and the aggregate track record).
 - **"Never fakes a green."** Verification strength is graded
   (`app/engine/verification_strength.py`): a fix on code the suite does not
   exercise is labeled as such and refused for unattended auto-apply.

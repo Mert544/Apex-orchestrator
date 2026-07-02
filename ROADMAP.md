@@ -15,7 +15,11 @@ an integrated supporting signal.
   non-Python files with a test-presence flag and a debt-marker count, surfaced as
   honest recommend-only ideas, in `apex scope`, and a dashboard panel. Apex knows
   itself: `apex trackrecord` shows its proven fix history; `apex pulse` is the
-  one-screen vital-signs snapshot (grade + scope + next-moves + track record).
+  one-screen vital-signs snapshot (grade + scope + next-moves + track record);
+  **`apex proof`** makes the proof-of-fix evidence visible — a read-only view of
+  each applied/rolled-back/blocked/withheld move with its reason and coverage, a
+  tamper-evident sha256, and the aggregate track record (renders
+  `.apex/proof-of-fix.json` + the proof history; invents no analysis).
 - **A learning, concrete idea engine** — roadmap ranking now learns from the
   repo's own `IdeaMemory` outcome ledger (historically-landing fixes rank up;
   no-op on a fresh repo), activated on `apex ideate`. Two new grounded signals:
@@ -104,8 +108,9 @@ an integrated supporting signal.
 > does*); **BS-1** (Python-only → first an honest "X% of this repo is outside
 > analysis scope" instead of silently grading the Python subset, then a
 > language-plugin seam); deepen the **idea/fractal engine** (richer grounded
-> signals, sharper "what to do next" prioritization); make the **proof visible**
-> (proof-of-fix / verification-strength surfaced). Explicitly **NO local-LLM
+> signals, sharper "what to do next" prioritization); ~~make the **proof
+> visible** (proof-of-fix / verification-strength surfaced)~~ — **✅ shipped as
+> `apex proof`**. Explicitly **NO local-LLM
 > layer** (BS-2 is deferred — it works against the positioning).
 > Run it as a team (army): `apex partition` to plan disjoint work, worktree
 > agents + a standing auditor per wave, `scripts/merge_train.py` to integrate,
@@ -126,7 +131,8 @@ an integrated supporting signal.
 4. **Coverage** — keep raising unit-test coverage of thin areas.
 
    (Shipped meanwhile: `apex bench` external calibration on pinned OSS repos;
-   risk-tiered transform catalog; `apex rename --param`; nightly dogfood CI.)
+   risk-tiered transform catalog; `apex rename --param`; nightly dogfood CI;
+   `apex proof` — the proof-of-fix evidence made visible.)
 
 ## Later
 - Plugin marketplace / registry server.

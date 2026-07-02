@@ -300,7 +300,7 @@ optionally let the BS-2 local-LLM layer *rephrase* ideas without inventing them.
 |---|---|
 | BS-1 Python-only | ✅ **advanced**: multi-language *awareness* — `polyglot_facts` names the biggest / most-churned non-Python files with a convention-based test-presence flag and a debt-marker count; `cross_language_coupling` surfaces py↔non-py co-change ("keep in sync"); `apex scope` reports honest coverage ("analysing 93% of this repo"); seeded as recommend-only ideas. Deep AST analysis stays Python-only (stated), but Apex no longer abandons the non-Python part of the repo. |
 | BS-2 no LLM for ambiguous work | ⏳ open **by design** — Apex is the deterministic complement, not a replacement; positioned as "use it *alongside* an LLM", never instead. The differentiator is that Apex needs no LLM. |
-| BS-3 no external proof | ✅ honest docs + `apex bench` calibration on pinned OSS repos; **proof-carrying recommendations** (exact draft diff + re-parse verdict + before→after metric delta + whether the tests exercise the change) make the claim tangible per recommendation; `apex trackrecord` shows the landed-fix history. |
+| BS-3 no external proof | ✅ honest docs + `apex bench` calibration on pinned OSS repos; **proof-carrying recommendations** (exact draft diff + re-parse verdict + before→after metric delta + whether the tests exercise the change) make the claim tangible per recommendation; `apex trackrecord` shows the landed-fix history; **`apex proof`** renders the proof-of-fix evidence for the last maintain run (each applied/rolled-back/blocked/withheld move with its reason and coverage, a tamper-evident sha256) so a run is auditable, not just trusted. |
 | BS-4 fix scope limited | ✅ risk-tiered catalog (Tier 0/1/2; unknown ⇒ Tier 1; Tier 1 needs coverage or shield); 41 develop objectives. |
 | BS-5 multi-file refactor weak | ✅ foundation: `apex rename`, `apex move`, `apex rename --param` (span-edit machinery; signature add/remove still open). |
 | BS-6 verification ≅ host tests | ✅ verification strength grading + test-first shield + failing-test names in evidence; **false-green refusal** — `apex develop --top` will not auto-apply to a module the suite doesn't exercise (blocks unless `--force`, or `--shield` writes a characterization-test stub first). |
@@ -332,7 +332,9 @@ override, a null/missing-key counting asymmetry).
 3. **Proof-carrying & auditable.** Every recommendation shows the exact diff, a
    re-parse safety verdict, the before→after complexity delta, and whether your
    tests actually exercise the change. `proof-of-fix.json` is the audit artifact a
-   compliance officer can open. "Trust me" becomes "here is the evidence."
+   compliance officer can open — and `apex proof` renders it read-only (each
+   move's outcome + reason + coverage, a tamper-evident sha256, the track record).
+   "Trust me" becomes "here is the evidence."
 4. **Honest about its limits — it never fakes a green.** `apex scope` says exactly
    what fraction it analyses; `apex develop --top` refuses to claim "verified" on
    code the tests don't cover. Trust is the product.

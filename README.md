@@ -29,12 +29,19 @@ Apex profiles your project, proposes a grounded engineering roadmap, and applies
 ## ⚡ In 30 seconds
 
 ```bash
-pip install apex-orchestrator   # from a clone: pip install -e .[dev]
-apex                            # assess, prioritize, apply safe fixes when it's safe to
+# Apex is not on PyPI — install from a clone:
+git clone https://github.com/Mert544/Apex-orchestrator && cd Apex-orchestrator
+pip install -e .[dev]   # editable install; drop [dev] if you only need the CLI
+
+apex                     # assess + prioritize + PREVIEW safe fixes (never edits without --apply)
+apex auto --apply        # land the safe, test‑verified fixes it found (uncommitted → git diff to review)
+apex auto --apply --commit   # full autonomy: apply verified fixes and commit each one
 ```
 
-> One command. No API keys, no network, no config. On a clean git tree it applies safe, test‑verified
-> fixes (and leaves them *uncommitted* so you review with `git diff`); on a dirty tree it just recommends.
+> One command. No API keys, no network, no config. **`apex` is preview‑by‑default** — it assesses,
+> prioritizes, and shows the safe, test‑verified fixes it *would* apply, but **never edits your tree
+> without an explicit `--apply`**. With `--apply` it lands them (auto‑rolled‑back if the suite fails)
+> and leaves them *uncommitted* so you review with `git diff`.
 
 ---
 
@@ -111,13 +118,14 @@ pytest -q
 **One command to remember — `apex`:**
 
 ```bash
-apex                        # autonomous review — applies safe fixes when it's safe to
+apex                        # assess + prioritize + PREVIEW safe fixes (never edits without --apply)
 apex "harden security"      # focus the review with a plain-English goal
 apex auto --recommend       # read-only: review and recommend, never touch the tree
+apex auto --apply           # land the safe, test-verified fixes it found (uncommitted → git diff to review)
 apex auto --apply --commit  # full autonomy: apply verified fixes and commit each one
 ```
 
-`apex` assesses the project, prioritizes the highest‑ROI work, and **decides for itself whether to act**: on a clean git tree with safe, verified fixes available it applies them (in roadmap order, capped, auto‑rolled‑back, *not committed*); on a dirty tree — or when nothing is safely auto‑applicable — it recommends and tells you the one command to proceed. The specialized commands below are there when you want them; you never *have* to memorize them.
+`apex` assesses the project, prioritizes the highest‑ROI work, and **previews the safe, verified fixes it would apply — it never edits your tree without an explicit `--apply`** (a deliberate footgun fix so the one‑command entry point can't silently touch a clean repo). Pass `--apply` and it lands them (in roadmap order, capped, auto‑rolled‑back, *not committed*); add `--commit` for full autonomy. On a dirty tree — or when nothing is safely auto‑applicable — it just recommends and tells you the one command to proceed. The specialized commands below are there when you want them; you never *have* to memorize them.
 
 > 📖 New here? The **[60‑second quickstart](docs/quickstart.md)** walks the whole path — install from source, `apex grade`, `apex review --base origin/main`, `apex gate`, the analyzer suite, and an HTML dashboard — plus the one‑line GitHub Action and the pre‑commit hook. For CI specifically, see **[docs/ci.md](docs/ci.md)**.
 
@@ -298,6 +306,66 @@ Ran 3 cycle(s) · applied 9 fix(es) · rolled back 0 · mode supervised
 ```
 
 </details>
+
+---
+
+## 🧰 More capabilities (verified, offline, all `--json`‑able)
+
+Beyond scan/roadmap/maintain, Apex ships a deeper toolbox. Each command below is real at HEAD — check any with `apex <cmd> --help`.
+
+### 🏗️ `apex develop` — drive a code objective to done
+
+Where `maintain` fixes safety findings, `develop` **drives an objective metric** (e.g. *implement stubs*, *wire exports*, *dead parameters*, *modernize idioms*) by composing verified transforms, each suite‑gated with auto‑rollback. It **previews by default; `--apply` writes.**
+
+```bash
+apex develop --objective dead-params        # preview one objective (dry run)
+apex develop session                        # the fixed concrete-objective sequence, one combined verified diff
+apex develop --goal reduce-debt             # a high-level GOAL that fractally decomposes into objectives
+apex develop --chain implement-stub,cover-gaps,strengthen-tests   # an ordered, precondition-gated campaign
+apex develop --goals reduce-debt,tidy --fixpoint                  # converge a goal-set to a fixpoint
+apex develop --top                          # the single highest-value proven, runnable move (--apply to land)
+apex develop --objective modernize --apply  # land it (covered-only, auto-rolled-back if the suite fails)
+```
+
+`apex objectives` lists the registered objectives — **94 today, all reachable from the idea engine** — and `apex recipes` shows the transform catalog as named, composable recipes.
+
+### 💬 `apex assist` — the plain‑English front door
+
+`apex assist "…"` takes a natural‑language request and routes it to the right capability. It's **preview‑by‑default**: `--apply` lands develop changes (covered‑only, suite‑gated, auto‑rollback), and `--commit` auto‑commits landed, coverage‑verified moves (requires `--apply`, an explicitly autonomous request, and a clean tree). Pair it with `apex comprehend "…"` — a **read‑only NLU preview** that shows how Apex parsed your request without doing anything.
+
+```bash
+apex comprehend "add type hints to the auth module"    # read-only: show the parsed plan
+apex assist "what should I build next?"                 # preview a recommendation
+apex assist "add type hints to the auth module" --apply # land it, suite-gated
+```
+
+### 📟 `apex pulse` — one‑screen vital signs
+
+A single grounded snapshot: the health grade, honest analysis scope, the next moves, and the proven track record — every number read from the repo's own structure and Apex's evidence trail.
+
+```bash
+apex pulse            # the one-screen vitals
+apex pulse --json     # machine-readable
+```
+
+### 🧾 `apex proof` — make the proof‑of‑fix visible
+
+A read‑only view over the proof‑of‑fix evidence Apex already records: each applied / rolled‑back / blocked / withheld move with its reason and coverage, a **tamper‑evident sha256**, and the aggregate track record. It invents no analysis — it renders `.apex/proof-of-fix.json` and the proof history so you can audit a run instead of trusting it.
+
+```bash
+apex maintain --apply   # first, land some fixes (writes the proof artifact)
+apex proof              # then read the evidence — honest about verified vs blocked
+apex proof --json
+```
+
+### 🌐 `apex polyglot` — non‑Python risk awareness
+
+Deep AST transforms stay Python‑only (stated honestly), but Apex doesn't abandon the rest of the repo: `apex polyglot` reports **TS/JS/YAML/HTML/shell** hotspots and high‑confidence findings. And the develop catalog reaches beyond Python — there are real **Java** (`java-final-parameter`, `java-document-throws`, …) and **JavaScript** (`js-tdd-implement`, `js-wire-exports`, …) objectives in `apex objectives`.
+
+```bash
+apex polyglot                       # non-Python risk hotspots + findings
+apex objectives | grep -E 'java-|js-'   # the Java/JS develop objectives
+```
 
 ---
 
