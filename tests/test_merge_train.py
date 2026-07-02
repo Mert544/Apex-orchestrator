@@ -107,6 +107,12 @@ def _run_train(repo: Path, *args: str) -> subprocess.CompletedProcess:
     env = {
         **os.environ,
         "PYTHONPATH": str(REPO_ROOT) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        # The throwaway repo has no .gitignore, so ambient bytecode caching for
+        # the vendored ``app`` stub would show up as ?? app/__pycache__/ and
+        # break the "tree is clean" guarantees non-deterministically (it only
+        # bites when the parent env allows .pyc). Same child-process discipline
+        # as the impacted-test / oracle runners.
+        "PYTHONDONTWRITEBYTECODE": "1",
     }
     return subprocess.run(
         [sys.executable, "scripts/merge_train.py", *args],

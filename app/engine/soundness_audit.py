@@ -713,6 +713,8 @@ def _run_determinism_probe(repo_root: Path, fixture_root: Path, name: str,
     crash/timeout/declined child — the caller treats ``None`` as a divergence."""
     import shutil
 
+    from app.execution.target_env import inherited_pythonpath
+
     with tempfile.TemporaryDirectory(prefix="apex_sound_") as base:
         cwd = os.path.join(base, "cwd")
         home = os.path.join(base, "home")
@@ -725,7 +727,7 @@ def _run_determinism_probe(repo_root: Path, fixture_root: Path, name: str,
             **os.environ, **overrides,
             "HOME": home, "TMPDIR": tmp, "TEMP": tmp, "TMP": tmp,
             "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONPATH": str(repo_root) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+            "PYTHONPATH": str(repo_root) + os.pathsep + inherited_pythonpath(),
         }
         try:
             proc = subprocess.run(

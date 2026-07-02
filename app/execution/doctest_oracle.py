@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import os
+
+from app.execution.target_env import inherited_pythonpath
 from pathlib import Path
 import subprocess
 import sys
@@ -143,7 +145,7 @@ def examples_run_green(
         # which would make the KEPT examples — and the landed ``USAGE.md`` — vary
         # run-to-run. A fixed seed keeps the proven artifact byte-deterministic.
         "PYTHONHASHSEED": "0",
-        "PYTHONPATH": str(root) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        "PYTHONPATH": str(root) + os.pathsep + inherited_pythonpath(),
     }
     try:
         proc = subprocess.run(

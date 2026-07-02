@@ -2091,11 +2091,24 @@ def _untested_own_modules(target: str) -> list[str]:
 
 
 def _verify_one_test(target: str, test_path: str, timeout: int = 120) -> bool:
-    """Run just the generated test file; True when it passes."""
+    """Run just the generated test file; True when it passes.
+
+    The child gets the TARGET root first on ``PYTHONPATH`` with the inherited
+    tail scrubbed of Apex's own repo root (``target_env`` discipline): under
+    the proof gate's chunk pin, Apex's regular ``app`` package would otherwise
+    shadow a target namespace package of the same name and every generated
+    test would be discarded as "failed" on import."""
+    import os
     import subprocess
+
+    from app.execution.target_env import inherited_pythonpath
+    env = {**os.environ,
+           "PYTHONDONTWRITEBYTECODE": "1",
+           "PYTHONPATH": target + os.pathsep + inherited_pythonpath()}
     try:
         r = subprocess.run(["python", "-m", "pytest", "-q", "-x", test_path],
-                           cwd=target, capture_output=True, timeout=timeout)
+                           cwd=target, capture_output=True, timeout=timeout,
+                           env=env)
     except (OSError, subprocess.TimeoutExpired):
         return False
     return r.returncode == 0

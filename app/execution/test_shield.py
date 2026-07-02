@@ -67,6 +67,8 @@ import importlib
 import io
 import json
 import os
+
+from app.execution.target_env import inherited_pythonpath
 import subprocess
 import sys
 import tempfile
@@ -617,7 +619,7 @@ def _run_recapture_probe(
         **os.environ,
         **env_overrides,
         "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPATH": str(project_root) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        "PYTHONPATH": str(project_root) + os.pathsep + inherited_pythonpath(),
     }
     try:
         proc = subprocess.run(
@@ -749,7 +751,7 @@ def _time_recapture_is_stable(
     env = {
         **os.environ,
         "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPATH": str(project_root) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        "PYTHONPATH": str(project_root) + os.pathsep + inherited_pythonpath(),
     }
     try:
         proc = subprocess.run(

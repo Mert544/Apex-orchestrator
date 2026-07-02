@@ -55,6 +55,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from app.execution.cross_file_rename import RenamePlan, _is_fixture_path
+
+from app.execution.target_env import inherited_pythonpath
 from app.execution.objectives._base import register_module_objective
 from app.execution.stub_synthesis import (
     _compiled_module_namespace,
@@ -258,7 +260,7 @@ def _examples_env_stable(root: Path, dotted: str, fn_name: str) -> bool:
             env = {
                 **os.environ,
                 "PYTHONDONTWRITEBYTECODE": "1",
-                "PYTHONPATH": str(root) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+                "PYTHONPATH": str(root) + os.pathsep + inherited_pythonpath(),
                 "HOME": var_home, "TMPDIR": var_tmp, "TEMP": var_tmp, "TMP": var_tmp,
                 "TZ": spec["TZ"], "PYTHONHASHSEED": spec["PYTHONHASHSEED"],
             }

@@ -4383,6 +4383,7 @@ def _examples_pass_seeded(source: str, fn_name: str, fn_lineno: int) -> bool | N
     fixed seed. Deterministic: same source -> same child decision."""
     import json
     import os
+    from app.execution.target_env import inherited_pythonpath
     import subprocess
     import sys
     import tempfile
@@ -4392,7 +4393,7 @@ def _examples_pass_seeded(source: str, fn_name: str, fn_lineno: int) -> bool | N
         **os.environ,
         "PYTHONHASHSEED": "0",
         "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPATH": root + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        "PYTHONPATH": root + os.pathsep + inherited_pythonpath(),
     }
     with tempfile.TemporaryDirectory(prefix="apex_examples_pass_") as tmp:
         src_path = os.path.join(tmp, "src.py")

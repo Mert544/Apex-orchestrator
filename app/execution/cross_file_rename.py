@@ -490,6 +490,7 @@ def _verify_scoped(root: Path, plan: RenamePlan,
     ``baseline_failing=None`` (the default, and the ONLY state on a green baseline)
     is the established ``-x`` command, byte-identical to before."""
     import os
+    from app.execution.target_env import inherited_pythonpath
     import subprocess
     import sys
 
@@ -528,7 +529,7 @@ def _verify_scoped(root: Path, plan: RenamePlan,
             # behaviour and miss a real regression NON-deterministically. Mirrors
             # the import-oracle / test-shield probes, which already set this.
             "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONPATH": str(root) + os.pathsep + os.environ.get("PYTHONPATH", "")})
+            "PYTHONPATH": str(root) + os.pathsep + inherited_pythonpath()})
     if not delta:
         ok = proc.returncode == 0
         return ok, {"scoped": True, "tests": impacted,

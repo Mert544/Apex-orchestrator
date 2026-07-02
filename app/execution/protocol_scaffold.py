@@ -44,6 +44,8 @@ from __future__ import annotations
 import ast
 import json
 import os
+
+from app.execution.target_env import inherited_pythonpath
 import subprocess
 import sys
 from pathlib import Path
@@ -374,7 +376,7 @@ def _run_probe(root: Path, dotted: str, impl_name: str) -> bool:
         **os.environ,
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": os.pathsep.join(
-            [*path_roots, os.environ.get("PYTHONPATH", "")]),
+            [*path_roots, inherited_pythonpath()]),
     }
     try:
         proc = subprocess.run(
