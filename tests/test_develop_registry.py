@@ -135,14 +135,14 @@ def test_register_accepts_objective_present_in_soundness_manifest():
 
 
 def test_soundness_lock_does_not_break_import_or_objective_count():
-    # The lock runs at import for every current objective; all 94 are already in
+    # The lock runs at import for every current objective; all 95 are already in
     # SOUNDNESS_STRATEGY (91 + java-final-parameter + add-functools-wraps +
-    # java-final-local), so import must stay clean and the count unchanged (no
-    # import breakage, no count-pin drift).
+    # java-final-local + finalize-module-constant), so import must stay clean and the
+    # count unchanged (no import breakage, no count-pin drift).
     from app.engine.objective_compiler import available_objectives
     from app.engine.soundness_audit import SOUNDNESS_STRATEGY
     names = list(available_objectives())
-    assert len(names) == 94
+    assert len(names) == 95
     assert [n for n in names if n not in SOUNDNESS_STRATEGY] == []
 
 

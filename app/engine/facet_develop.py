@@ -722,6 +722,17 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # finalize"), so its relative order is free.
     "the never-reassigned java local variable to finalize": "java-final-local",
 
+    # A top-level PYTHON module CONSTANT (`NAME = <literal>`, UPPER_SNAKE) proven never
+    # REBOUND anywhere in the project: the Python analogue of add-final (a class @final)
+    # and the java-final-* family, one level up — a whole MODULE-scope binding rather
+    # than a class/method. finalize-module-constant annotates it `typing.Final` (a PURE
+    # runtime no-op — CPython does not enforce Final; the false-final risk is closed
+    # STRUCTURALLY by a whole-project rebind scan, tests-incl, not the suite). Its
+    # phrasing shares no whole key with "the never-reassigned java local variable to
+    # finalize" (in either direction — "python module constant to seal" vs "java local
+    # variable to finalize"), so its relative order is free.
+    "the never-rebound python module constant to seal as final": "finalize-module-constant",
+
     # A Java method that DECLARES a `throws` clause but carries NO Javadoc: the Java
     # sibling of document-raises / document-raises-jsdoc. java-document-throws lands a
     # FRESH Javadoc block with one `@throws <Type>` line per DECLARED checked-exception

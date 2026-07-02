@@ -261,7 +261,18 @@ _FACET_SUBASPECTS: dict[str, list[str]] = {
                          # method body; excludes for/enhanced-for/try-resources vars and
                          # no-initializer split locals). Appended after its parameter
                          # sibling, so the originals still lead.
-                         "the never-reassigned java local variable to finalize"],
+                         "the never-reassigned java local variable to finalize",
+                         # added: the PYTHON analogue of add-final, one level up — a
+                         # top-level MODULE CONSTANT (`NAME = <literal>`, UPPER_SNAKE)
+                         # proven never REBOUND anywhere in the project, which
+                         # finalize-module-constant annotates `typing.Final` (a PURE
+                         # runtime no-op — CPython does not enforce Final; the
+                         # false-final risk is closed STRUCTURALLY by a whole-project
+                         # rebind scan, tests-incl, not the suite). It is the inverse of
+                         # an extension point at MODULE scope (a value nobody rebinds is
+                         # a fixed constant, not a variation point). Appended after the
+                         # java-final family, so the originals still lead and emit first.
+                         "the never-rebound python module constant to seal as final"],
     "sensible defaults": ["the safe default", "the override path", "documented rationale"],
     # generalize L3 ladders — the appended L2 moves decompose once more into the
     # concrete edits an engineer performs, then bottom out in the case split.

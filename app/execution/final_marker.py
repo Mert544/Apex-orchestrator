@@ -221,17 +221,23 @@ class _FinalBinding(NamedTuple):
     can_add_import: bool
 
 
-def _final_binding(tree: ast.AST) -> _FinalBinding:
+def _final_binding(tree: ast.AST, name: str = "final") -> _FinalBinding:
     """Compute the :class:`_FinalBinding` for a module's ``tree`` — which spelling
-    of ``typing.final`` is provable, and whether a fresh import may be added.
+    of ``typing.<name>`` is provable (default ``name`` = ``final``, the decorator),
+    and whether a fresh import may be added.
 
-    ``final`` is usable bare when ``from typing import final`` is present with no
-    asname, nothing else binds ``final``, and no local shadow exists. ``typing`` is
+    ``name`` is usable bare when ``from typing import <name>`` is present with no
+    asname, nothing else binds ``name``, and no local shadow exists. ``typing`` is
     usable dotted when ``import typing`` is present unshadowed and nothing else
-    rebinds it. A fresh ``from typing import final`` is addable only when ``final``
-    is bound by nothing at all (no import, no shadow), so the insert is safe."""
-    final_blessed, final_other = _import_bindings(tree, "final")
-    final_shadow = _shadows_name(tree, "final")
+    rebinds it. A fresh ``from typing import <name>`` is addable only when ``name``
+    is bound by nothing at all (no import, no shadow), so the insert is safe. The
+    ``name`` parameter lets the ``Final``-annotation sibling
+    (:mod:`app.execution.final_constant`) reuse this whole provability computation for
+    the capital ``Final`` annotation name — the ONE thing that differs between the two
+    (``final`` decorator vs ``Final`` annotation), so a single parameterized copy
+    lives here."""
+    final_blessed, final_other = _import_bindings(tree, name)
+    final_shadow = _shadows_name(tree, name)
     bare_ok = final_blessed and not final_other and not final_shadow
 
     typ_blessed, typ_other = _import_bindings(tree, "typing")
@@ -392,47 +398,53 @@ def _imported_typing_names(line: str) -> set[str]:
             if item.strip()}
 
 
-def _widen_typing_import(lines: list[str], idx: int) -> list[str]:
-    """Add ``final`` to the clean single-line ``from typing import ...`` at ``idx``
-    (items kept sorted), preserving the line's leading indentation. ``idx`` is known
-    to point at a cleanly-widenable line (the index finder guarantees it)."""
+def _widen_typing_import(lines: list[str], idx: int, name: str = "final") -> list[str]:
+    """Add ``name`` (default ``final``) to the clean single-line ``from typing import
+    ...`` at ``idx`` (items kept sorted), preserving the line's leading indentation.
+    ``idx`` is known to point at a cleanly-widenable line (the index finder guarantees
+    it). The ``name`` parameter lets the ``Final``-annotation sibling
+    (:mod:`app.execution.final_constant`) reuse this widen for ``Final`` — the block
+    is identical but for the imported name, so one parameterized copy lives here."""
     line = lines[idx]
     indent = line[: len(line) - len(line.lstrip())]
-    names = _imported_typing_names(line) | {"final"}
+    names = _imported_typing_names(line) | {name}
     out = list(lines)
     out[idx] = f"{indent}from typing import " + ", ".join(sorted(names))
     return out
 
 
-def _insert_fresh_final_import(lines: list[str]) -> list[str]:
-    """Insert a fresh ``from typing import final`` line at the canonical spot (after
-    the docstring / ``__future__`` imports), keeping a blank line before the code
-    that follows. A second ``from typing import`` is valid Python, so this is the
-    sound fallback when no existing typing import can be cleanly widened on one
-    line (a parenthesized / multi-line / commented import)."""
+def _insert_fresh_final_import(lines: list[str], name: str = "final") -> list[str]:
+    """Insert a fresh ``from typing import <name>`` line (default ``final``) at the
+    canonical spot (after the docstring / ``__future__`` imports), keeping a blank
+    line before the code that follows. A second ``from typing import`` is valid
+    Python, so this is the sound fallback when no existing typing import can be
+    cleanly widened on one line (a parenthesized / multi-line / commented import). The
+    ``name`` parameter lets the ``Final``-annotation sibling reuse this insert."""
     insert_at = _import_insertion_index(lines)
-    block = ["from typing import final"]
+    block = [f"from typing import {name}"]
     if insert_at < len(lines) and lines[insert_at].strip():
         block.append("")  # keep a blank line before the following code
     return lines[:insert_at] + block + lines[insert_at:]
 
 
-def _ensure_final_import(lines: list[str]) -> list[str]:
-    """Ensure ``from typing import final`` is importable: widen an existing CLEAN
-    single-line ``from typing import ...`` in place (only ``final`` added), else
-    insert a fresh ``from typing import final`` line at the canonical spot.
+def _ensure_final_import(lines: list[str], name: str = "final") -> list[str]:
+    """Ensure ``from typing import <name>`` (default ``final``) is importable: widen
+    an existing CLEAN single-line ``from typing import ...`` in place (only ``name``
+    added), else insert a fresh ``from typing import <name>`` line at the canonical
+    spot.
 
     The caller only calls this when a fresh binding is needed (``_needs_import``),
-    so an existing ``from typing import final`` — which would make the import
+    so an existing ``from typing import <name>`` — which would make the import
     unnecessary — never reaches here. A parenthesized / multi-line / commented
     typing import is NOT cleanly widenable on one line, so it is left untouched and
-    a second ``from typing import final`` line is inserted instead (valid Python) —
+    a second ``from typing import <name>`` line is inserted instead (valid Python) —
     closing the silent-no-op recall gap on the common parenthesized-import file
-    without ever corrupting the source."""
+    without ever corrupting the source. The ``name`` parameter lets the
+    ``Final``-annotation sibling reuse the whole ensure step for ``Final``."""
     idx = _existing_typing_import_index(lines)
     if idx is not None:
-        return _widen_typing_import(lines, idx)
-    return _insert_fresh_final_import(lines)
+        return _widen_typing_import(lines, idx, name)
+    return _insert_fresh_final_import(lines, name)
 
 
 def finalizable_classes(source: str) -> list[str]:

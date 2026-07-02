@@ -603,7 +603,7 @@ def test_objective_total_is_ninety_four():
 
     # 94 after java-final-local (java-final-parameter's local-variable sibling and the
     # third member of the Java final-modifier family).
-    assert len(set(available_objectives())) == 94
+    assert len(set(available_objectives())) == 95
 
 
 # --- PARITY ROW 1: move_value tier (matches java-final-parameter's runtime-noop tier) --
@@ -637,7 +637,7 @@ def test_parity_concrete_count_is_forty_nine():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 49  # java-final-local (49th CONCRETE)
+    assert len(buckets["CONCRETE"]) == 50  # finalize-module-constant (50th CONCRETE)
 
 
 # --- PARITY ROW 3: soundness-strategy manifest --------------------------------

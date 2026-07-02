@@ -356,6 +356,16 @@ _SHAPE_MUST_REFUSE: dict[str, frozenset[str]] = {
     # per-method assignment scan sees the reassignment and omits the local from
     # final-local-targets, never sealing a falsely-`final` local.
     "java_reassigned_local": frozenset({"java-final-local"}),
+    # The Python REBOUND-CONSTANT trap (the module-scope analogue of
+    # java_reassigned_local): a top-level UPPER_SNAKE constant `MAX_RETRIES = 3` that
+    # LOOKS never-rebound from its declaration alone but is REASSIGNED by a plain `=`
+    # later in the SAME module (inside a function via `global`) — so `typing.Final`
+    # would be a TYPE ERROR a checker rejects. `Final` is a runtime no-op, so a green
+    # suite can NEVER catch that false "final". finalize-module-constant MUST refuse it:
+    # the whole-project rebind scan sees the later assignment (and the `global`
+    # declaration) and omits the name from the finalizable set, never sealing a
+    # falsely-`Final` constant.
+    "reassigned_constant": frozenset({"finalize-module-constant"}),
     # The raise-from del/unbound trap: a fixable ``raise X(...)`` in an ``except E as
     # err:`` handler that ``del``\s ``err`` BEFORE the raise. Appending ``from err``
     # would raise ``UnboundLocalError`` (the WRONG exception type + changed control

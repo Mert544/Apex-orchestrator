@@ -469,13 +469,13 @@ def test_objective_spec_is_callable_and_flagged():
     assert spec.scope_verify is False  # runtime-noop modifier add; no red-baseline veto
 
 
-def test_objective_total_is_ninety_four():
+def test_objective_total_is_ninety_five():
     from app.engine.objective_compiler import available_objectives
 
     # 92 after java-final-parameter (java-finalize-field's parameter-level
     # sibling); 93 after add-functools-wraps; 94 after java-final-local (the
     # local-variable sibling) landed on top.
-    assert len(set(available_objectives())) == 94
+    assert len(set(available_objectives())) == 95
 
 
 # --- PARITY ROW 1: move_value tier (matches java-finalize-field's runtime-noop tier) --
@@ -508,7 +508,7 @@ def test_parity_concrete_count_is_forty_nine():
     from app.engine.objective_compiler import available_objectives
 
     buckets = classify_objectives(available_objectives())
-    assert len(buckets["CONCRETE"]) == 49  # java-final-local (49th CONCRETE)
+    assert len(buckets["CONCRETE"]) == 50  # finalize-module-constant (50th CONCRETE)
 
 
 # --- PARITY ROW 3: soundness-strategy manifest --------------------------------

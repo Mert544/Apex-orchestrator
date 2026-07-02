@@ -209,8 +209,8 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("slots", ("add-slots", "dataclassify")),
     ("veri sınıf", ("dataclassify", "freeze-dataclass", "add-slots")),
     # --- final / sealing ------------------------------------------------------
-    ("final", ("add-final", "seal-final-method", "seal-hashable-eq",
-               "seal-total-ordering")),
+    ("final", ("add-final", "seal-final-method", "finalize-module-constant",
+               "seal-hashable-eq", "seal-total-ordering")),
     ("seal", ("add-final", "seal-final-method", "seal-hashable-eq",
               "seal-total-ordering")),
     ("mühürle", ("add-final", "seal-final-method")),
@@ -245,6 +245,15 @@ CONCEPT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("jsdoc", ("js-document-param-types", "document-export-jsdoc",
                "document-raises-jsdoc", "js-implement-from-jsdoc")),
     # --- Java -----------------------------------------------------------------
+    # ``javadoc`` is an UNAMBIGUOUS compound noun (Java's documentation comments) —
+    # it names the java-document-* trio directly, WITHOUT the context gate the bare
+    # ``java`` token needs, so "add javadoc to Calculator" resolves even though no
+    # companion word ("throws"/"param"/"document") is present. Word-bounded (see
+    # ``_BOUNDARY_KEY_PATTERNS``) so it never fires inside an unrelated longer word;
+    # kept on its OWN row (not folded into the ``java`` context entry) so it reads —
+    # and cherry-picks — independently.
+    ("javadoc", ("java-document-param", "java-document-throws",
+                 "java-document-returns")),
     ("java", ("java-document-param", "java-document-throws", "java-document-returns",
               "java-finalize-field", "java-final-parameter", "java-final-local")),
     # --- restructure (long/sprawling code) ------------------------------------
@@ -347,6 +356,7 @@ _BOUNDARY_KEY_PATTERNS: dict[str, re.Pattern[str]] = {
     "imports": re.compile(r"\bimports\b"),
     "enum": re.compile(r"\benum\b"),         # not "enumerate"
     "document": re.compile(r"\bdocument(s|ed|ing|ation)?\b"),  # not "documentary"
+    "javadoc": re.compile(r"\bjavadocs?\b"),  # standalone; NOT inside "javadocument…"
     "type hint": re.compile(r"\btype hints?\b"),
     "type hints": re.compile(r"\btype hints?\b"),
     "typing": re.compile(r"\btyping\b(?!\s+speed)"),  # the module, not keyboard typing
