@@ -34,7 +34,11 @@ from app.execution._transform_base import (
     pin_signature_lines as _pin_signature_lines,
     resolve_sole_definition as _resolve_definition,
 )
-from app.execution.cross_file_rename import RenamePlan, _py_files
+from app.execution.cross_file_rename import (
+    RenamePlan,
+    _py_files,
+    bind_resolved_definition,
+)
 from app.execution.param_rename import _all_params
 
 __all__ = ["plan_param_drop"]
@@ -327,13 +331,11 @@ def plan_param_drop(project_root: str | Path, func_name: str,
     sources = dict(files)
     trees = _parse_trees(files)
 
-    definition = _resolve_definition(plan, trees, func_name)
-    if definition is None:
+    bound = bind_resolved_definition(
+        plan, _resolve_definition(plan, trees, func_name), sources)
+    if bound is None:
         return plan
-    defmod, fn = definition
-    plan.defined_in = defmod
-    dotted = defmod[:-3].replace("/", ".")
-    source = sources[defmod]
+    defmod, fn, dotted, source = bound
 
     if not _validate_droppable(fn, func_name, param, plan):
         return plan

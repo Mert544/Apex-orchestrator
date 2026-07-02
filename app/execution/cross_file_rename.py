@@ -89,6 +89,25 @@ class RenamePlan:
         return "\n".join(p for p in parts if p)
 
 
+def bind_resolved_definition(
+    plan: "RenamePlan",
+    definition: "tuple[str, ast.FunctionDef] | None",
+    sources: dict[str, str],
+) -> "tuple[str, ast.FunctionDef, str, str] | None":
+    """Unpack a resolved ``(defmod, fn)`` definition into the caller's working
+    set — stamping ``plan.defined_in`` and deriving the dotted module path and
+    source text — or ``None`` when resolution failed (the caller returns its
+    plan unchanged, blockers already recorded by the resolver). The shared
+    seam of every project-wide signature planner (param-add, param-drop):
+    behaviour-identical to the four lines each used to inline."""
+    if definition is None:
+        return None
+    defmod, fn = definition
+    plan.defined_in = defmod
+    dotted = defmod[:-3].replace("/", ".")
+    return defmod, fn, dotted, sources[defmod]
+
+
 def _is_fixture_path(path: str) -> bool:
     """Test / fixture / example files are REFUSED — Apex never edits the suite it
     is gated by. Shared by the single-file-rewrite objective plans."""
