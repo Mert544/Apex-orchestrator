@@ -222,10 +222,20 @@ def _bindings_in_tree(tree: ast.Module, keep_lineno: int | None) -> set[str]:
     there) IS still collected — a conservative over-refuse for an unrelated same-named
     global elsewhere, never a missed real own-module rebind.
 
-    An attribute / subscript store (``NAME.attr = ...`` / ``NAME[k] = ...``) is NOT a
-    binding of ``NAME`` — its target ``Name`` carries a ``Load`` context — so an
-    in-place MUTATION of the constant's value never counts as a rebind (``Final``
-    forbids rebinding, not mutation)."""
+    An attribute / subscript store (``CONST.attr = ...`` / ``x.NAME = ...`` /
+    ``NAME[k] = ...``) is NOT collected — its base ``Name`` carries a ``Load`` context
+    and its ``.attr`` is a bare string, not a ``Store``-context ``Name`` — so an in-place
+    MUTATION of the constant's value never counts as a rebind (``Final`` forbids
+    rebinding, not mutation), and an unrelated ``obj.NAME = ...`` (an instance attribute
+    that merely shares the name) never causes a false refusal. DOCUMENTED LIMITATION:
+    a genuine CROSS-MODULE rebind via ``import mod; mod.NAME = ...`` (the constant
+    reached through the module object) is therefore NOT detected. This is deliberately
+    accepted: it is a rare, bad-practice pattern; ``Final`` is a CPython runtime no-op so
+    it NEVER changes runtime behaviour or the verifying suite either way (never-fake-green
+    is untouched); its only theoretical effect is a type checker flagging that external
+    rebind — arguably ``Final`` working as intended. Detecting it precisely (without
+    over-refusing every same-named instance attribute) needs per-source import-alias
+    tracking of the target module — future hardening, not a soundness hole here."""
     keep_nodes: set[int] = set()
     if keep_lineno is not None:
         for stmt in tree.body:

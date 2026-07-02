@@ -285,6 +285,50 @@ def test_proof_section_clean_applied_has_no_reason_or_diff(tmp_path):
     assert "class='muted'>" not in html_doc.split("<table>")[1].split("</table>")[0]
 
 
+def test_proof_section_clean_applied_suppresses_its_diff_and_impact(tmp_path):
+    """The REALISTIC clean-applied case: a normal successful apply DOES carry a diff
+    (proof_of_fix stamps one on every applied fix) and may carry an impact — yet the
+    dashboard row stays byte-identical (no collapsed diff, no impact sub-line). The
+    diff/impact are the 'why' behind a NON-clean move; a clean apply's diff lives in
+    `.apex/proof-of-fix.json` / `apex proof`, not on every dashboard row. (Guards the
+    exact case an earlier diff-less fixture missed.)"""
+    import json
+    apex = tmp_path / ".apex"
+    apex.mkdir()
+    the_diff = "--- a/app/m.py\n+++ b/app/m.py\n@@ -1 +1 @@\n-x\n+x: Final = 1"
+    (apex / "proof-of-fix.json").write_text(json.dumps({
+        "generated_at": "2026-06-12T00:00:00+00:00",
+        "totals": {"applied": 1, "rolled_back": 0, "blocked": 0, "committed": 1},
+        "fixes": [
+            {"outcome": "applied",
+             "finding": {"action": "finalize_module_constant", "target": "app/m.py"},
+             "verification": {"strength": {"level": "module"}},
+             "impact": "fitness 1 → 0",
+             "diff": the_diff},
+        ],
+    }), encoding="utf-8")
+    html_doc = D._proof_section(str(tmp_path))
+    table = html_doc.split("<table>")[1].split("</table>")[0]
+    # A clean apply carries a diff+impact in the record, but the row suppresses both.
+    assert "<details>" not in table
+    assert "+x: Final = 1" not in html_doc
+    assert "class='muted'>" not in table
+    # Contrast: the SAME diff on a rolled-back move DOES surface (the WHY).
+    (apex / "proof-of-fix.json").write_text(json.dumps({
+        "generated_at": "2026-06-12T00:00:00+00:00",
+        "totals": {"applied": 0, "rolled_back": 1, "blocked": 0, "committed": 0},
+        "fixes": [
+            {"outcome": "rolled_back",
+             "finding": {"action": "finalize_module_constant", "target": "app/m.py"},
+             "rollback": {"occurred": True, "reason": "suite went red"},
+             "diff": the_diff},
+        ],
+    }), encoding="utf-8")
+    rolled = D._proof_section(str(tmp_path))
+    assert "<details><summary>diff</summary>" in rolled
+    assert "+x: Final = 1" in rolled
+
+
 def test_proof_section_surfaces_blocked_reason(tmp_path):
     import json
     apex = tmp_path / ".apex"

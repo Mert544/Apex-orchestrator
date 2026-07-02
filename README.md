@@ -327,7 +327,7 @@ apex develop --top                          # the single highest-value proven, r
 apex develop --objective modernize --apply  # land it (covered-only, auto-rolled-back if the suite fails)
 ```
 
-`apex objectives` lists the registered objectives — **94 today, all reachable from the idea engine** — and `apex recipes` shows the transform catalog as named, composable recipes.
+`apex objectives` lists the registered objectives — **95 today, all reachable from the idea engine** — and `apex recipes` shows the transform catalog as named, composable recipes.
 
 ### 💬 `apex assist` — the plain‑English front door
 

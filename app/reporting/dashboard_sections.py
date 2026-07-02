@@ -1163,11 +1163,17 @@ def _proof_row(fix: dict) -> str:
     honest reason, the measured impact, and the full diff — reusing the SAME
     helpers ``apex proof`` ships so the two renderers can never diverge. Every new
     field is read with the same defensive ``.get(...) or ''`` and appended ONLY
-    when truthy, so a clean applied fix (no reason/impact/diff) renders exactly the
-    outcome/action/target/strength/shield it always did, plus an empty ``—`` reason
-    cell — byte-identical to before. The diff is ``html.escape``d (XSS guard: a
-    failing-test line or a filename with HTML-special chars can never inject
-    markup).
+    when truthy. A CLEAN applied fix (outcome ``applied``, not withheld) renders
+    exactly the outcome/action/target/strength/shield it always did — its
+    ``reason`` is empty (``—`` cell) and its diff is DELIBERATELY not shown — so its
+    row is byte-identical to before but for that one ``—`` reason cell. The collapsed
+    diff and the impact sub-line surface ONLY on a NON-clean move (rolled-back /
+    blocked / withheld / applied-and-withheld), where they EXPLAIN the outcome — a
+    clean apply's diff is not a "why", and rendering it on every applied row would
+    bloat the page and break byte-identity (the full diff of every move always
+    remains in ``.apex/proof-of-fix.json`` and ``apex proof``). The diff is
+    ``html.escape``d (XSS guard: a failing-test line or a filename with HTML-special
+    chars can never inject markup).
     """
     from app.cli_insight import _proof_disposition, _proof_reason
 
@@ -1178,9 +1184,12 @@ def _proof_row(fix: dict) -> str:
     withheld = bool(fix.get("commit_withheld"))
     display_outcome, _committed = _proof_disposition(fix, outcome, withheld)
     reason = _proof_reason(fix, outcome, withheld) or ""
-    impact = fix.get("impact") or ""
+    # A clean success (``applied`` and not withheld) is byte-identical: its diff/impact
+    # are suppressed. Only a non-clean move surfaces the WHY (diff + impact).
+    clean_apply = outcome == "applied" and not withheld
+    impact = "" if clean_apply else (fix.get("impact") or "")
     impact_html = f"<div class='muted'>{_esc(impact)}</div>" if impact else ""
-    diff = fix.get("diff") or ""
+    diff = "" if clean_apply else (fix.get("diff") or "")
     diff_html = (f"<details><summary>diff</summary><pre>{_esc(diff)}</pre></details>"
                  if diff else "")
     return (
