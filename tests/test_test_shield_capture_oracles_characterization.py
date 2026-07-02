@@ -223,3 +223,21 @@ def test_restore_modules_drops_added_and_restores_evicted():
     _restore_modules(saved)
     assert sentinel_added not in sys.modules
     assert sys.modules.get(evicted_name) is evicted_mod
+
+
+def test_target_package_named_app_still_lands_its_oracle(tmp_path):
+    """A target whose top-level package is literally named ``app`` (a very common
+    real project name — and the shield's OWN package name) still lands its value
+    oracle: the probe children bind the shield helpers from the shield's repo
+    FIRST, then purge the module cache so the TARGET's ``app`` resolves under its
+    own root (`_PROBE_PREAMBLE`). Before that, the target's ``app`` shadowed the
+    helpers' package inside every probe, the helper import died, and EVERY oracle
+    silently declined — an honest but needless capability loss (witness mining and
+    value oracles returned nothing on any project named ``app``). Guards the
+    collision AND the ambient-env independence (no PYTHONPATH is required for the
+    probe to find its own helpers)."""
+    pkg = tmp_path / "app"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "colliding.py").write_text("def f():\n    return 42\n", encoding="utf-8")
+    assert _capture_oracles(tmp_path, "app.colliding", [("f", "")]) == {"f": "42"}

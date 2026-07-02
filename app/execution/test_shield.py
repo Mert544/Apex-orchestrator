@@ -503,17 +503,47 @@ def _contains_list_or_tuple(value: object) -> bool:
 # run); using more than one closes the parent-seed coincidence hole.
 _RECAPTURE_HASHSEEDS = ("1", "2", "424242")
 
+# The repo root that owns THIS module (three levels above app/execution/…) —
+# passed to every probe child as argv so the child can import the shield helpers
+# WITHOUT depending on the ambient environment (``PYTHONPATH``, a pip install).
+# A soundness gate whose child could only import its own helpers when the shell
+# happened to export the right path was silently environment-dependent — the
+# exact opposite of the determinism it exists to prove.
+_SHIELD_ROOT = Path(__file__).resolve().parents[2]
+
+# Shared probe preamble: bind the shield helpers from ``shield_root`` FIRST, then
+# hand the import system back to the TARGET project. The two roots may both own a
+# top-level ``app`` package (``app`` is a very common real-world project package
+# name — and the shield's own package IS ``app``), so the child must never let one
+# shadow the other: the helpers are imported with ``shield_root`` at the front of
+# ``sys.path``, their function objects keep their globals alive independently of
+# the module cache, and then every cached ``app*`` module AND ``shield_root``
+# itself are dropped so ``importlib.import_module(dotted)`` resolves the target's
+# OWN packages afresh under ``root``. (When the target IS the shield's repo the
+# purge just forces a clean re-import of the same files.) Without this, a target
+# project named ``app`` made every probe fail its helper import — and every value
+# oracle silently DECLINE — an honest but needless capability loss.
+_PROBE_PREAMBLE = r"""
+import ast, json, sys
+root, dotted, name, call_args = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+shield_root = sys.argv[5]
+sys.path.insert(0, shield_root)
+from app.execution.test_shield import _canonical_repr, _eval_call_args, _is_simple_literal
+for _cached in [m for m in sys.modules if m == "app" or m.startswith("app.")]:
+    del sys.modules[_cached]
+while shield_root in sys.path:
+    sys.path.remove(shield_root)
+sys.path.insert(0, root)
+"""
+
 # The probe: import the target under ``root`` on ``sys.path``, call the function
 # with the SAME literal args, and print the CANONICAL literal of its return value
 # (via the project's own ``_canonical_repr``, so the comparison is byte-for-byte
-# the same rendering the parent emits). argv: root, dotted, name, call_args text.
-_RECAPTURE_PROBE = r"""
-import ast, json, sys
-root, dotted, name, call_args = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-sys.path.insert(0, root)
+# the same rendering the parent emits). argv: root, dotted, name, call_args text,
+# shield_root (the repo that owns the shield helpers — see ``_PROBE_PREAMBLE``).
+_RECAPTURE_PROBE = _PROBE_PREAMBLE + r"""
 try:
     import importlib
-    from app.execution.test_shield import _canonical_repr, _eval_call_args, _is_simple_literal
     mod = importlib.import_module(dotted)
     fn = getattr(mod, name, None)
     if not callable(fn):
@@ -538,13 +568,10 @@ except BaseException:  # noqa: BLE001 - any failure -> decline (no oracle)
 # captures. The ``> 1s`` gap makes an ``int(time.time())`` floor advance by at
 # least one DETERMINISTICALLY (the check always declines a clock value and always
 # accepts a stable one), so the gate stays deterministic. argv as the main probe.
-_TIME_PROBE = r"""
-import ast, json, sys, time
-root, dotted, name, call_args = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-sys.path.insert(0, root)
+_TIME_PROBE = _PROBE_PREAMBLE + r"""
+import time
 try:
     import importlib
-    from app.execution.test_shield import _canonical_repr, _eval_call_args, _is_simple_literal
     mod = importlib.import_module(dotted)
     fn = getattr(mod, name, None)
     if not callable(fn):
@@ -595,7 +622,7 @@ def _run_recapture_probe(
     try:
         proc = subprocess.run(
             [sys.executable, "-c", _RECAPTURE_PROBE,
-             str(project_root), dotted, name, call_args],
+             str(project_root), dotted, name, call_args, str(_SHIELD_ROOT)],
             cwd=cwd if cwd is not None else str(project_root),
             capture_output=True, text=True, env=env, timeout=60,
         )
@@ -727,7 +754,7 @@ def _time_recapture_is_stable(
     try:
         proc = subprocess.run(
             [sys.executable, "-c", _TIME_PROBE,
-             str(project_root), dotted, name, call_args],
+             str(project_root), dotted, name, call_args, str(_SHIELD_ROOT)],
             cwd=str(project_root), capture_output=True, text=True,
             env=env, timeout=60,
         )
