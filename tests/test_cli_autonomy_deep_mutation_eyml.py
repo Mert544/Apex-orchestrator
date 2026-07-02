@@ -1142,10 +1142,11 @@ def test_working_tree_clean_dirty_status_is_not_clean(monkeypatch):
 def test_verify_one_test_forwards_default_timeout(monkeypatch):
     seen = {}
 
-    def _run(cmd, cwd=None, capture_output=False, timeout=None):
+    def _run(cmd, cwd=None, capture_output=False, timeout=None, env=None):
         seen["timeout"] = timeout
         seen["capture_output"] = capture_output
         seen["cmd"] = cmd
+        seen["env"] = env
         return _Proc(0)
     monkeypatch.setattr("subprocess.run", _run)
     from app.cli_autonomy import _verify_one_test
@@ -1155,10 +1156,16 @@ def test_verify_one_test_forwards_default_timeout(monkeypatch):
     # (kills the True->False flip at line 929).
     assert seen["capture_output"] is True
     assert "tests/test_a.py" in seen["cmd"]
+    # target_env discipline: the child sees the TARGET root first on
+    # PYTHONPATH (scrubbed inherited tail) and never writes bytecode — the
+    # generated test must import the TARGET's packages, not Apex's, even
+    # under the proof gate's chunk pin.
+    assert seen["env"]["PYTHONPATH"].startswith("/x")
+    assert seen["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
 def test_verify_one_test_failure_returncode(monkeypatch):
-    def _run(cmd, cwd=None, capture_output=False, timeout=None):
+    def _run(cmd, cwd=None, capture_output=False, timeout=None, env=None):
         return _Proc(1)
     monkeypatch.setattr("subprocess.run", _run)
     from app.cli_autonomy import _verify_one_test
