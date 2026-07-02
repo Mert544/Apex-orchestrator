@@ -261,8 +261,25 @@ def cmd_assist(args: argparse.Namespace) -> int:
         print(f"[agenda→assist] rank-1 landable: {top['fix_kind']} "
               f"({top['file']}:{top['line']}, value {top['value']}) — "
               f"request: {request!r}\n")
+    elif getattr(args, "from_notes", False):
+        # V5 (Obsidian bridge): the first VALID #apex-hedef note becomes the
+        # request — the user's own words, same pipeline, preview-first.
+        from app.memory.vault import read_user_notes
+        notes = read_user_notes(str(target))
+        valid = [n for n in notes if n.get("valid")]
+        if not valid:
+            rejected = [n for n in notes if not n.get("valid")]
+            if rejected:
+                for note in rejected:
+                    print(f"REJECTED {note['file']}: {note['reason']}")
+            print("No valid #apex-hedef notes — drop a `*.md` with "
+                  "`#apex-hedef <istek>` under `.apex/vault/notes/`.")
+            return 0
+        top = valid[0]
+        request = top["request"]
+        print(f"[notes→assist] {top['file']} — request: {request!r}\n")
     elif not request:
-        print("assist needs a request (or --from-agenda).")
+        print("assist needs a request (or --from-agenda / --from-notes).")
         return 2
     result = assist(request, target=str(target),
                     apply=getattr(args, "apply", False),
@@ -288,6 +305,10 @@ def _register_local_parsers(subparsers) -> None:
         help="The natural-language request, e.g. 'what should I build next?' "
              "or 'add type hints to the auth module' (optional with "
              "--from-agenda)")
+    assist_parser.add_argument(
+        "--from-notes", action="store_true",
+        help="Take the first valid #apex-hedef vault note as the request "
+             "(preview-first; the user's own words drive the pipeline)")
     assist_parser.add_argument(
         "--from-agenda", action="store_true",
         help="Take the agenda's rank-1 landable entry as the request "

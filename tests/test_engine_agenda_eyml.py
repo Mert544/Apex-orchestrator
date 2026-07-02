@@ -62,9 +62,11 @@ def test_landable_lane_ranks_by_demoted_value_then_file(monkeypatch, tmp_path):
         ],
         "flag_only": [], "unknown": [],
     }
-    # Demote create_test_stub hard so the two infer_type_hints entries lead.
+    # Demote create_test_stub (0.96 — BELOW neutral but ABOVE the V4
+    # retirement floor of 0.92, so it stays landable) so the two
+    # infer_type_hints entries lead.
     _patch_engines(monkeypatch, buckets,
-                   factors={"create_test_stub": 0.9},
+                   factors={"create_test_stub": 0.96},
                    realization={"create_test_stub": 0.7})
     lane = build_agenda(tmp_path)["lanes"]["landable"]
     assert [e["rank"] for e in lane] == [1, 2, 3]
@@ -98,13 +100,16 @@ def test_watched_lane_surfaces_only_below_neutral_operators(monkeypatch, tmp_pat
         ],
         "flag_only": [], "unknown": [],
     }
+    # 0.96 sits below neutral but above the V4 retirement floor (0.92):
+    # exactly the "watched, not retired" band this test characterizes.
     _patch_engines(monkeypatch, buckets,
-                   factors={"drop_param": 0.92},
+                   factors={"drop_param": 0.96},
                    realization={"drop_param": 0.8})
     watched = build_agenda(tmp_path)["lanes"]["watched"]
     assert [w["operator"] for w in watched] == ["drop_param"]
-    assert "feasibility 0.92" in watched[0]["note"]
+    assert "feasibility 0.96" in watched[0]["note"]
     assert "realization 0.80" in watched[0]["note"]
+    assert not watched[0].get("retired")
 
 
 def test_agenda_is_deterministic(monkeypatch, tmp_path):
@@ -145,7 +150,8 @@ def test_bare_project_yields_honest_empty_agenda(tmp_path):
     _pyproject(tmp_path)
     agenda = build_agenda(tmp_path)
     assert agenda["total_findings"] == 0
-    assert agenda["lanes"] == {"landable": [], "human": [], "watched": []}
+    assert agenda["lanes"] == {"landable": [], "human": [], "watched": [],
+                               "user": []}
     md = render_agenda_markdown(agenda)
     assert "Nothing provable-landable right now" in md
     assert "No human-decision items" in md

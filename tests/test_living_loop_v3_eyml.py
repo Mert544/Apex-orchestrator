@@ -34,7 +34,7 @@ def test_write_agenda_is_deterministic_and_rebuildable(tmp_path: Path):
     path.unlink()
     assert write_agenda(tmp_path).read_bytes() == first  # fully rebuildable
     parsed = json.loads(first)
-    assert set(parsed["lanes"]) == {"landable", "human", "watched"}
+    assert set(parsed["lanes"]) == {"landable", "human", "watched", "user"}
 
 
 # --------------------------------------------------------------------------- #

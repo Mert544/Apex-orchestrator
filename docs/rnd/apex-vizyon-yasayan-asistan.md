@@ -60,11 +60,11 @@ Asistanın "zekası" = deterministik sinyallerin sentezi; LLM yok, token yok.
 
 | Dalga | İçerik | Kanıt ölçütü |
 |---|---|---|
-| **V1 — vault** | `.apex/vault/` şeması + mevcut 5 kalıcı deponun tek-yazarlı birleşimi (migration: idempotent, kayıpsız) | round-trip testleri; eski yollar okumaya devam eder (geri-uyum) |
-| **V2 — agenda** | `apex agenda` (read-only sentez) + owner-dili özeti | agenda determinizmi (aynı repo → bayt-aynı); boş-proje dürüst-boş |
-| **V3 — canlı döngü** | daemon uyanışında agenda-tazele + vault-notu; `assist`'e "gündemden 1 numarayı uygula" kısayolu (preview-first) | daemon superviser testleri; hiçbir otonom yazma yok |
-| **V4 — öğrenme derinliği** | gate-learn/reliability sinyallerinin agenda'ya geri-beslemesi (demote-only); "bu projede şu objektif 3 kez rollback yedi → gündemden düşür, notunu vault'a yaz" | monotonluk testleri (asla gevşetme); açıklanabilirlik (neden düştü notu) |
-| **V5 — Obsidian köprüsü** | vault → canvas/markdown export'un çift-yönlü OKUMASI: kullanıcının vault'a el-yazdığı `#apex-hedef` notları agenda'ya aday girer (yine preview-first) | el-notu → aday → preview zinciri e2e; kötü-biçimli not dürüst-reddedilir |
+| **V1 — vault** ✅ | `.apex/vault/` şeması + mevcut 5 kalıcı deponun tek-yazarlı birleşimi (migration: idempotent, kayıpsız) | round-trip testleri; eski yollar okumaya devam eder (geri-uyum) |
+| **V2 — agenda** ✅ | `apex agenda` (read-only sentez) + owner-dili özeti | agenda determinizmi (aynı repo → bayt-aynı); boş-proje dürüst-boş |
+| **V3 — canlı döngü** ✅ | daemon uyanışında agenda-tazele + vault-notu; `assist`'e "gündemden 1 numarayı uygula" kısayolu (preview-first) | daemon superviser testleri; hiçbir otonom yazma yok |
+| **V4 — öğrenme derinliği** ✅ | gate-learn/reliability sinyallerinin agenda'ya geri-beslemesi (demote-only); "bu projede şu objektif 3 kez rollback yedi → gündemden düşür, notunu vault'a yaz" | monotonluk testleri (asla gevşetme); açıklanabilirlik (neden düştü notu) |
+| **V5 — Obsidian köprüsü** ✅ | vault → canvas/markdown export'un çift-yönlü OKUMASI: kullanıcının vault'a el-yazdığı `#apex-hedef` notları agenda'ya aday girer (yine preview-first) | el-notu → aday → preview zinciri e2e; kötü-biçimli not dürüst-reddedilir |
 
 ## 4. İlk adım (bir sonraki oturum için dispatch-hazır)
 

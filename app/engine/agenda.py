@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import Any
 
 from app.engine.develop_readiness import develop_readiness
+from app.engine.dream_gate_learn import gate_tighten_factors
+from app.memory.vault import read_user_notes
 from app.engine.idea_memory import IdeaMemory
 from app.engine.move_value import scored_move_value
 from app.engine.value_reliability import operator_realization_factors
@@ -43,25 +45,78 @@ AGENDA_REL = ".apex/agenda.json"
 # One screen per lane: entries beyond the cap are COUNTED, never silently cut.
 _LANE_CAP = 10
 
+# V4 retirement thresholds — DEMOTE-ONLY, monotone. feasibility_factor is
+# bounded to [0.90, 1.10] (idea_memory._MAX_NUDGE): sitting at/near the floor
+# means rollbacks dominate this operator's track record HERE. realization is
+# bounded to [0.15, 1.0] (value_reliability._REALIZATION_FLOOR): below half
+# means the operator's verified-and-held value repeatedly under-delivered.
+# A retired entry MOVES from landable to watched with its reason — learned
+# caution can only remove or annotate work, never promote it; with neutral
+# memory (fresh project) both thresholds are unreachable and the agenda is
+# byte-identical to the pre-learning shape.
+_RETIRE_FEASIBILITY = 0.92
+_RETIRE_REALIZATION = 0.50
+
+
+def _retirement_reason(operator: str, memory: IdeaMemory | None,
+                       realization: dict[str, float]) -> str:
+    """Why ``operator`` is retired from the landable lane, or ``""``."""
+    feasibility = memory.feasibility_factor(operator) if memory is not None else 1.0
+    realized = realization.get(operator, 1.0)
+    reasons = []
+    if feasibility <= _RETIRE_FEASIBILITY:
+        reasons.append(f"feasibility {feasibility:.2f} — rollbacks dominate "
+                       "this operator's track record here")
+    if realized <= _RETIRE_REALIZATION:
+        reasons.append(f"realization {realized:.2f} — verified value "
+                       "repeatedly under-delivered")
+    return "; ".join(reasons)
+
 
 def _landable_lane(buckets: dict[str, list[dict[str, Any]]],
                    memory: IdeaMemory | None,
-                   realization: dict[str, float]) -> list[dict[str, Any]]:
+                   realization: dict[str, float],
+                   gate_factors: dict[str, float] | None = None,
+                   ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """The ranked landable entries plus the RETIRED-operator map (V4).
+
+    Retirement is entry-removal with a reason — ranks recompute over the
+    survivors, and the removed operators surface in the watched lane. A
+    dream-gate tighten factor below neutral for an entry's module adds a
+    visible caution ``note`` (the signal measures dream-promotion over-promise
+    for that MODULE, not this fix_kind's soundness, so it annotates rather
+    than retires). Both signals are demote-only: with neutral memory the
+    result is byte-identical to the pre-learning lane."""
+    gate_factors = gate_factors or {}
     entries = []
+    retired: dict[str, dict[str, Any]] = {}
     for rec in buckets.get("fixable_now", []):
         operator = rec.get("fix_kind", "")
+        reason = _retirement_reason(operator, memory, realization)
+        if reason:
+            slot = retired.setdefault(operator, {"reason": reason, "entries": 0})
+            slot["entries"] += 1
+            continue
         value = scored_move_value(operator, memory, realization)
-        entries.append({
+        entry = {
             "fix_kind": operator,
             "file": rec.get("file", ""),
             "line": rec.get("line", 0),
             "category": rec.get("category", ""),
             "value": value,
-        })
+        }
+        rel = entry["file"]
+        if rel.endswith(".py"):
+            module = rel[:-3].replace("/", ".")
+            factor = gate_factors.get(f"confluence:{module}", 1.0)
+            if factor < 1.0:
+                entry["note"] = (f"dream gate tightened for this module "
+                                 f"(factor {factor:.2f})")
+        entries.append(entry)
     entries.sort(key=lambda e: (-e["value"], e["file"], e["line"], e["fix_kind"]))
     for i, e in enumerate(entries, 1):
         e["rank"] = i
-    return entries
+    return entries, retired
 
 
 def _human_lane(buckets: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -75,14 +130,25 @@ def _human_lane(buckets: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]
 
 
 def _watched_lane(operators: set[str], memory: IdeaMemory | None,
-                  realization: dict[str, float]) -> list[dict[str, Any]]:
+                  realization: dict[str, float],
+                  retired: dict[str, dict[str, Any]] | None = None,
+                  ) -> list[dict[str, Any]]:
     """Operators whose learned factors sit BELOW neutral — visible caution.
 
     Only operators the agenda actually considered (this run's findings) are
     reported, so the lane reads as "of today's work, these carry learned
     caution" rather than a global memory dump."""
     watched = []
-    for op in sorted(operators):
+    retired = retired or {}
+    for op in sorted(operators | set(retired)):
+        if op in retired:
+            watched.append({"operator": op,
+                            "retired": True,
+                            "entries": retired[op]["entries"],
+                            "note": (f"RETIRED from landable "
+                                     f"({retired[op]['entries']} entrie(s)): "
+                                     f"{retired[op]['reason']}")})
+            continue
         feasibility = memory.feasibility_factor(op) if memory is not None else 1.0
         realized = realization.get(op, 1.0)
         if feasibility >= 1.0 and realized >= 1.0:
@@ -109,16 +175,23 @@ def build_agenda(project_root: str | Path) -> dict[str, Any]:
     except (OSError, ValueError):
         memory = None
     realization = operator_realization_factors(root)
+    gate_factors = gate_tighten_factors(root)
     considered = {rec.get("fix_kind", "")
                   for lane in buckets.values() for rec in lane if rec.get("fix_kind")}
+    landable, retired = _landable_lane(buckets, memory, realization, gate_factors)
     return {
         "schema_version": SCHEMA_VERSION,
         "readiness_score": readiness.get("score", 0.0),
         "total_findings": readiness.get("total", 0),
         "lanes": {
-            "landable": _landable_lane(buckets, memory, realization),
+            "landable": landable,
             "human": _human_lane(buckets),
-            "watched": _watched_lane(considered, memory, realization),
+            "watched": _watched_lane(considered, memory, realization, retired),
+            # V5 (Obsidian bridge): the user's own #apex-hedef notes enter the
+            # agenda as candidates — stated goals in the user's words, handed
+            # to the normal pipeline preview-first; malformed notes surface
+            # with their rejection reason instead of being guessed at.
+            "user": read_user_notes(root),
         },
     }
 
@@ -175,4 +248,16 @@ def render_agenda_markdown(agenda: dict[str, Any]) -> str:
         lines.append(f"- `{e['operator']}` — {e['note']}")
     if not lanes["watched"]:
         lines.append("_No learned demotions among today's operators._")
+    user = lanes.get("user", [])
+    lines += ["", _lane_header("User notes (#apex-hedef)", user)]
+    for note in user[:_LANE_CAP]:
+        if note.get("valid"):
+            extra = (f" (+{note['extra_tags']} extra tag(s) ignored)"
+                     if note.get("extra_tags") else "")
+            lines.append(f"- `{note['file']}` — {note['request']!r}{extra}")
+        else:
+            lines.append(f"- `{note['file']}` — REJECTED: {note['reason']}")
+    if not user:
+        lines.append("_No user notes — drop a `*.md` with `#apex-hedef <istek>` "
+                     "under `.apex/vault/notes/` to queue one._")
     return "\n".join(lines) + "\n"

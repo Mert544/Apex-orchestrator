@@ -117,6 +117,54 @@ def write_vault(project_root: str | Path) -> Path:
     return path
 
 
+NOTES_DIR_REL = ".apex/vault/notes"
+_NOTE_TAG = "#apex-hedef"
+
+
+def read_user_notes(project_root: str | Path) -> list[dict[str, Any]]:
+    """The user's hand-written vault notes that opt INTO the agenda (V5).
+
+    A note is any ``*.md`` under ``.apex/vault/notes/`` carrying a line of the
+    form ``#apex-hedef <request>``. The request is the text after the tag on
+    that line — the user states the goal in their own words and Apex's normal
+    understand→plan→act pipeline takes it from there, preview-first. Contract:
+
+    * Files WITHOUT the tag are not Apex's business — skipped entirely (the
+      notes directory may hold anything else the user keeps there).
+    * A tagged note with an EMPTY request, or an unreadable file, is returned
+      with ``valid: False`` and a stated reason — honestly rejected, never
+      guessed at.
+    * Only the FIRST tag line counts (one note = one candidate); extra tag
+      lines are reported in ``extra_tags`` so nothing is silently dropped.
+    * Read-only and deterministic: notes sort by relative path; no clocks.
+    """
+    notes_dir = Path(project_root) / NOTES_DIR_REL
+    if not notes_dir.is_dir():
+        return []
+    notes: list[dict[str, Any]] = []
+    for path in sorted(notes_dir.glob("*.md")):
+        rel = f"{NOTES_DIR_REL}/{path.name}"
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            notes.append({"file": rel, "valid": False,
+                          "reason": "unreadable file"})
+            continue
+        tag_lines = [ln for ln in lines if _NOTE_TAG in ln]
+        if not tag_lines:
+            continue
+        request = tag_lines[0].split(_NOTE_TAG, 1)[1].strip()
+        if not request:
+            notes.append({"file": rel, "valid": False,
+                          "reason": f"empty request after {_NOTE_TAG}"})
+            continue
+        note: dict[str, Any] = {"file": rel, "valid": True, "request": request}
+        if len(tag_lines) > 1:
+            note["extra_tags"] = len(tag_lines) - 1
+        notes.append(note)
+    return notes
+
+
 def _section_line(name: str, section: dict[str, Any]) -> str:
     if not section.get("present"):
         origin = section.get("source") or section.get("derived_from", "?")
