@@ -61,9 +61,21 @@ def _node_refs(node: ast.AST) -> set[str]:
     if isinstance(node, ast.Attribute):
         return {node.attr}
     if isinstance(node, ast.ImportFrom):
-        return {a.asname or a.name for a in node.names}
+        # BOTH sides of an aliased import are references: importing a symbol
+        # references its SOURCE name (``from lib import helper as _h`` keeps
+        # ``helper`` alive — dropping this flagged genuinely-consumed shared
+        # helpers as dead), and the local alias is what downstream ``Name``
+        # loads in this module resolve against.
+        refs: set[str] = set()
+        for a in node.names:
+            refs.add(a.name)
+            if a.asname:
+                refs.add(a.asname)
+        return refs
     if isinstance(node, ast.Import):
-        return {(a.asname or a.name).split(".")[0] for a in node.names}
+        refs = {(a.asname or a.name).split(".")[0] for a in node.names}
+        refs |= {a.name.split(".")[0] for a in node.names}
+        return refs
     return set()
 
 

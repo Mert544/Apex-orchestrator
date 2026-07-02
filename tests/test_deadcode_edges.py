@@ -138,3 +138,40 @@ def test_unparseable_file_is_skipped_not_fatal(tmp_path: Path):
     # No exception, and the valid file's dead symbol is reported.
     names = {r["symbol"] for r in find_dead_code(str(tmp_path))}
     assert "_alone" in names
+
+
+def test_aliased_from_import_keeps_source_symbol_alive(tmp_path: Path):
+    # `from lib import helper as _h` references BOTH names: the SOURCE symbol
+    # (`helper` — the thing being imported) and the local alias. The detector
+    # used to record only the alias, so a shared helper consumed exclusively
+    # through aliased imports (the app/engine/wilson.py pattern: two modules
+    # import `wilson_lower_bound as _wilson_lower_bound`) was flagged dead.
+    _pyproject(tmp_path)
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "pkg" / "lib.py").write_text(
+        "def helper(x):\n    return x + 1\n")
+    (tmp_path / "pkg" / "main.py").write_text(
+        "from pkg.lib import helper as _h\n\n\ndef run(v):\n    return _h(v)\n")
+
+    names = {r["symbol"] for r in find_dead_code(str(tmp_path))}
+    assert "helper" not in names          # consumed via the aliased import
+    assert "run" in names                 # genuinely unreferenced -> still flagged
+
+
+def test_aliased_plain_import_keeps_module_root_reference(tmp_path: Path):
+    # `import pkg.lib as impl` must reference the ROOT module name too, not just
+    # the alias — same one-sided recording, plain-import shape.
+    _pyproject(tmp_path)
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "pkg" / "lib.py").write_text("def _quiet():\n    return 0\n")
+    (tmp_path / "pkg" / "main.py").write_text(
+        "import pkg.lib as impl\n\n\ndef run():\n    return impl._quiet()\n")
+
+    names = {r["symbol"] for r in find_dead_code(str(tmp_path))}
+    # `_quiet` is reached as an attribute through the alias — attribute refs
+    # already kept it alive; the point here is the scan stays consistent and
+    # nothing regresses when only the aliased-module form is used.
+    assert "_quiet" not in names
+    assert "run" in names
