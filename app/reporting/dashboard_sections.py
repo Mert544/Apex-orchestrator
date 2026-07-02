@@ -1145,9 +1145,59 @@ def _reasoning_section(r: dict[str, Any]) -> str:
     return _card("reasoning", "🧠", "Reasoning &amp; telemetry", f"<div class='chips'>{chips}</div>{table}")
 
 
+_PROOF_OUTCOME_ICON = {"applied": "✅", "rolled_back": "↩️", "blocked": "⛔",
+                       "applied & withheld": "🚧"}
+_PROOF_STRENGTH_LABEL = {
+    "function": "💪 names the changed function",
+    "module": "✔️ suite references the module",
+    "none": "⚠️ applied blind (no covering test)",
+    "test-change": "🧪 test change",
+}
+
+
+def _proof_row(fix: dict) -> str:
+    """One ``<tr>`` of the proof-of-fix table for a stored ``fixes[]`` record.
+
+    Surfaces the WHY behind a non-clean move — the honest disposition (an
+    applied-but-withheld fix is its own state, with the gate that fired), the one
+    honest reason, the measured impact, and the full diff — reusing the SAME
+    helpers ``apex proof`` ships so the two renderers can never diverge. Every new
+    field is read with the same defensive ``.get(...) or ''`` and appended ONLY
+    when truthy, so a clean applied fix (no reason/impact/diff) renders exactly the
+    outcome/action/target/strength/shield it always did, plus an empty ``—`` reason
+    cell — byte-identical to before. The diff is ``html.escape``d (XSS guard: a
+    failing-test line or a filename with HTML-special chars can never inject
+    markup).
+    """
+    from app.cli_insight import _proof_disposition, _proof_reason
+
+    finding = fix.get("finding") or {}
+    strength = ((fix.get("verification") or {}).get("strength") or {}).get("level", "")
+    shield = fix.get("shield_test", "")
+    outcome = str(fix.get("outcome") or "")
+    withheld = bool(fix.get("commit_withheld"))
+    display_outcome, _committed = _proof_disposition(fix, outcome, withheld)
+    reason = _proof_reason(fix, outcome, withheld) or ""
+    impact = fix.get("impact") or ""
+    impact_html = f"<div class='muted'>{_esc(impact)}</div>" if impact else ""
+    diff = fix.get("diff") or ""
+    diff_html = (f"<details><summary>diff</summary><pre>{_esc(diff)}</pre></details>"
+                 if diff else "")
+    return (
+        f"<tr><td>{_PROOF_OUTCOME_ICON.get(display_outcome, '·')} "
+        f"{_esc(display_outcome)}</td>"
+        f"<td>{_esc(finding.get('action', ''))}{impact_html}{diff_html}</td>"
+        f"<td><code>{_esc(finding.get('target', ''))}</code></td>"
+        f"<td>{_esc(_PROOF_STRENGTH_LABEL.get(strength, '—'))}</td>"
+        f"<td>{('🛡️ <code>' + _esc(shield) + '</code>') if shield else '—'}</td>"
+        f"<td>{_esc(reason) if reason else '—'}</td></tr>"
+    )
+
+
 def _proof_section(project_root: str) -> str:
     """The last maintenance pass's evidence record — outcomes, verification
-    strength and shields, straight from .apex/proof-of-fix.json."""
+    strength, shields, and (additively) the WHY a move rolled back / was
+    blocked / was withheld, straight from .apex/proof-of-fix.json."""
     import json as _json
     from pathlib import Path as _Path
 
@@ -1165,29 +1215,11 @@ def _proof_section(project_root: str) -> str:
         _chip("blocked", totals.get("blocked", 0)),
         _chip("committed", totals.get("committed", 0)),
     ])
-    outcome_icon = {"applied": "✅", "rolled_back": "↩️", "blocked": "⛔"}
-    strength_label = {
-        "function": "💪 names the changed function",
-        "module": "✔️ suite references the module",
-        "none": "⚠️ applied blind (no covering test)",
-        "test-change": "🧪 test change",
-    }
-    rows = ""
-    for fix in (proof.get("fixes") or [])[:12]:
-        strength = ((fix.get("verification") or {}).get("strength") or {}).get("level", "")
-        shield = fix.get("shield_test", "")
-        rows += (
-            f"<tr><td>{outcome_icon.get(fix.get('outcome', ''), '·')} "
-            f"{_esc(fix.get('outcome', ''))}</td>"
-            f"<td>{_esc((fix.get('finding') or {}).get('action', ''))}</td>"
-            f"<td><code>{_esc((fix.get('finding') or {}).get('target', ''))}</code></td>"
-            f"<td>{_esc(strength_label.get(strength, '—'))}</td>"
-            f"<td>{('🛡️ <code>' + _esc(shield) + '</code>') if shield else '—'}</td></tr>"
-        )
+    rows = "".join(_proof_row(fix) for fix in (proof.get("fixes") or [])[:12])
     if not rows:
         return ""
     table = ("<table><thead><tr><th>Outcome</th><th>Action</th><th>Target</th>"
-             "<th>Verification strength</th><th>Shield</th></tr></thead>"
+             "<th>Verification strength</th><th>Shield</th><th>Reason</th></tr></thead>"
              f"<tbody>{rows}</tbody></table>")
     sub = f"<p class='muted'>Generated {_esc(proof.get('generated_at', ''))} · full evidence (diffs, test runs) in <code>.apex/proof-of-fix.json</code></p>"
     return _card("proof", "🧾", "Proof of fix — last maintenance pass",

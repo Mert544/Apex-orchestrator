@@ -230,6 +230,122 @@ def test_proof_section_blocked_outcome_and_blind_strength(tmp_path):
     assert "applied blind" in html_doc
 
 
+# --- _proof_section deepened evidence: reason / diff / disposition / impact --
+# The dashboard already renders the outcome/strength/shield; these lock the
+# ADDITIVE surfacing of the WHY (rollback.reason, blocked_reason, the
+# applied-&-withheld disposition), the collapsed diff block, and — critically —
+# that a clean applied fix stays free of any of that new markup.
+
+def test_proof_section_surfaces_rollback_reason_and_diff(tmp_path):
+    import json
+    apex = tmp_path / ".apex"
+    apex.mkdir()
+    (apex / "proof-of-fix.json").write_text(json.dumps({
+        "generated_at": "2026-06-12T00:00:00+00:00",
+        "totals": {"applied": 0, "rolled_back": 1, "blocked": 0, "committed": 0},
+        "fixes": [
+            {"outcome": "rolled_back",
+             "finding": {"action": "add_docstring", "target": "app/x.py"},
+             "verification": {"performed": True},
+             "rollback": {"occurred": True,
+                          "reason": "suite went red: test_x failed"},
+             "diff": "--- a/app/x.py\n+++ b/app/x.py\n@@ -1 +1 @@\n-old\n+new"},
+        ],
+    }), encoding="utf-8")
+    html_doc = D._proof_section(str(tmp_path))
+    # The one honest reason for the roll-back is now visible...
+    assert "suite went red: test_x failed" in html_doc
+    # ...and the full diff sits behind a collapsed <details> block.
+    assert "<details><summary>diff</summary>" in html_doc
+    assert "+++ b/app/x.py" in html_doc
+
+
+def test_proof_section_clean_applied_has_no_reason_or_diff(tmp_path):
+    """Byte-identical-when-empty: a clean applied fix (no rollback reason, no
+    diff, no impact) surfaces NO reason text and NO <details> diff block — the
+    new markup appears only when the underlying field is truthy."""
+    import json
+    apex = tmp_path / ".apex"
+    apex.mkdir()
+    (apex / "proof-of-fix.json").write_text(json.dumps({
+        "generated_at": "2026-06-12T00:00:00+00:00",
+        "totals": {"applied": 1, "rolled_back": 0, "blocked": 0, "committed": 0},
+        "fixes": [
+            {"outcome": "applied",
+             "finding": {"action": "harden_security", "target": "app/danger.py"},
+             "verification": {"strength": {"level": "module"}},
+             "shield_test": "tests/test_danger.py"},
+        ],
+    }), encoding="utf-8")
+    html_doc = D._proof_section(str(tmp_path))
+    # The clean row still renders (its outcome/shield are there)...
+    assert "✅ applied" in html_doc and "tests/test_danger.py" in html_doc
+    # ...but carries none of the new WHY markup.
+    assert "<details>" not in html_doc
+    assert "class='muted'>" not in html_doc.split("<table>")[1].split("</table>")[0]
+
+
+def test_proof_section_surfaces_blocked_reason(tmp_path):
+    import json
+    apex = tmp_path / ".apex"
+    apex.mkdir()
+    (apex / "proof-of-fix.json").write_text(json.dumps({
+        "generated_at": "2026-06-12T00:00:00+00:00",
+        "totals": {"applied": 0, "rolled_back": 0, "blocked": 1, "committed": 0},
+        "fixes": [
+            {"outcome": "blocked",
+             "finding": {"action": "harden_security", "target": "app/x.py"},
+             "verification": {"strength": {"level": "none"}},
+             "blocked_reason": "unsafe to rewrite: dynamic attribute access"},
+        ],
+    }), encoding="utf-8")
+    html_doc = D._proof_section(str(tmp_path))
+    assert "unsafe to rewrite: dynamic attribute access" in html_doc
+
+
+def test_proof_section_surfaces_applied_and_withheld_disposition(tmp_path):
+    import json
+    apex = tmp_path / ".apex"
+    apex.mkdir()
+    (apex / "proof-of-fix.json").write_text(json.dumps({
+        "generated_at": "2026-06-12T00:00:00+00:00",
+        "totals": {"applied": 1, "rolled_back": 0, "blocked": 0, "committed": 0},
+        "fixes": [
+            {"outcome": "applied",
+             "finding": {"action": "harden_security", "target": "app/x.py"},
+             "verification": {"strength": {"level": "module"}},
+             "commit_withheld": True,
+             "fenced": True,
+             "withheld_reason": "behaviour change fenced pending review"},
+        ],
+    }), encoding="utf-8")
+    html_doc = D._proof_section(str(tmp_path))
+    assert "applied &amp; withheld" in html_doc
+    assert "behaviour change fenced pending review" in html_doc
+
+
+def test_proof_section_html_escapes_diff_xss(tmp_path):
+    """A diff line containing HTML-special chars must be html.escaped — a raw
+    <script> in a failing-test line / filename would be an XSS-in-report hole."""
+    import json
+    apex = tmp_path / ".apex"
+    apex.mkdir()
+    (apex / "proof-of-fix.json").write_text(json.dumps({
+        "generated_at": "2026-06-12T00:00:00+00:00",
+        "totals": {"applied": 0, "rolled_back": 1, "blocked": 0, "committed": 0},
+        "fixes": [
+            {"outcome": "rolled_back",
+             "finding": {"action": "add_docstring", "target": "app/x.py"},
+             "verification": {"performed": True},
+             "rollback": {"occurred": True, "reason": "boom"},
+             "diff": "-print('<script>alert(1)</script>')"},
+        ],
+    }), encoding="utf-8")
+    html_doc = D._proof_section(str(tmp_path))
+    assert "<script>alert(1)</script>" not in html_doc
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_doc
+
+
 # --- _roadmap_changes_section guard branches --------------------------------
 
 def test_roadmap_changes_section_none_roadmap_blank(tmp_path):
