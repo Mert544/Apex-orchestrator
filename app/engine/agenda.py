@@ -221,6 +221,22 @@ def _lane_header(title: str, entries: list[dict[str, Any]]) -> str:
     return f"## {title} — {len(entries)}{suffix}"
 
 
+def _render_user_lane(lines: list[str], user: list[dict[str, Any]]) -> None:
+    """Render the V5 user-notes section (extracted to keep the renderer under
+    the maintainability complexity ceiling — behaviour byte-identical)."""
+    lines += ["", _lane_header("User notes (#apex-hedef)", user)]
+    for note in user[:_LANE_CAP]:
+        if note.get("valid"):
+            extra = (f" (+{note['extra_tags']} extra tag(s) ignored)"
+                     if note.get("extra_tags") else "")
+            lines.append(f"- `{note['file']}` — {note['request']!r}{extra}")
+        else:
+            lines.append(f"- `{note['file']}` — REJECTED: {note['reason']}")
+    if not user:
+        lines.append("_No user notes — drop a `*.md` with `#apex-hedef <istek>` "
+                     "under `.apex/vault/notes/` to queue one._")
+
+
 def render_agenda_markdown(agenda: dict[str, Any]) -> str:
     """A one-screen, three-lane view; overflow is counted, never hidden."""
     lanes = agenda["lanes"]
@@ -248,16 +264,5 @@ def render_agenda_markdown(agenda: dict[str, Any]) -> str:
         lines.append(f"- `{e['operator']}` — {e['note']}")
     if not lanes["watched"]:
         lines.append("_No learned demotions among today's operators._")
-    user = lanes.get("user", [])
-    lines += ["", _lane_header("User notes (#apex-hedef)", user)]
-    for note in user[:_LANE_CAP]:
-        if note.get("valid"):
-            extra = (f" (+{note['extra_tags']} extra tag(s) ignored)"
-                     if note.get("extra_tags") else "")
-            lines.append(f"- `{note['file']}` — {note['request']!r}{extra}")
-        else:
-            lines.append(f"- `{note['file']}` — REJECTED: {note['reason']}")
-    if not user:
-        lines.append("_No user notes — drop a `*.md` with `#apex-hedef <istek>` "
-                     "under `.apex/vault/notes/` to queue one._")
+    _render_user_lane(lines, lanes.get("user", []))
     return "\n".join(lines) + "\n"

@@ -224,6 +224,47 @@ def cmd_comprehend(args: argparse.Namespace) -> int:
     return 0
 
 
+def _agenda_handoff(target: str) -> str | None:
+    """The living loop's hand-off: the agenda's rank-1 LANDABLE entry becomes
+    a typed request for the SAME understand→plan→act pipeline — preview-first,
+    ``--apply/--commit`` compose unchanged. ``None`` = honest empty (no
+    landable work; the caller exits 0, not an error)."""
+    from app.engine.agenda import build_agenda
+
+    landable = build_agenda(target)["lanes"]["landable"]
+    if not landable:
+        print("Agenda has no landable entries — nothing to hand off. "
+              "Run `apex agenda` for the full picture.")
+        return None
+    top = landable[0]
+    request = (f"{top['fix_kind'].replace('_', ' ')} in {top['file']}"
+               if top.get("file") else top["fix_kind"].replace("_", " "))
+    print(f"[agenda→assist] rank-1 landable: {top['fix_kind']} "
+          f"({top['file']}:{top['line']}, value {top['value']}) — "
+          f"request: {request!r}\n")
+    return request
+
+
+def _notes_handoff(target: str) -> str | None:
+    """V5 (Obsidian bridge): the first VALID ``#apex-hedef`` note becomes the
+    request — the user's own words, same pipeline, preview-first. Rejected
+    notes are surfaced with their reasons; ``None`` = no valid note (the
+    caller exits 0 honestly)."""
+    from app.memory.vault import read_user_notes
+
+    notes = read_user_notes(target)
+    valid = [n for n in notes if n.get("valid")]
+    if not valid:
+        for note in (n for n in notes if not n.get("valid")):
+            print(f"REJECTED {note['file']}: {note['reason']}")
+        print("No valid #apex-hedef notes — drop a `*.md` with "
+              "`#apex-hedef <istek>` under `.apex/vault/notes/`.")
+        return None
+    top = valid[0]
+    print(f"[notes→assist] {top['file']} — request: {top['request']!r}\n")
+    return top["request"]
+
+
 def cmd_assist(args: argparse.Namespace) -> int:
     """The conversational UNDERSTAND→PLAN→ACT→EXPLAIN loop — zero-token, offline.
 
@@ -245,39 +286,13 @@ def cmd_assist(args: argparse.Namespace) -> int:
     target = args.target or _get_project_root()
     request = args.request or ""
     if getattr(args, "from_agenda", False):
-        # The living loop's hand-off: take the agenda's rank-1 LANDABLE entry
-        # and route it through the SAME understand→plan→act pipeline as a typed
-        # request — preview-first, --apply/--commit compose unchanged. Honest
-        # empties: no landable work -> say so and exit 0 (not an error).
-        from app.engine.agenda import build_agenda
-        landable = build_agenda(str(target))["lanes"]["landable"]
-        if not landable:
-            print("Agenda has no landable entries — nothing to hand off. "
-                  "Run `apex agenda` for the full picture.")
+        request = _agenda_handoff(str(target))
+        if request is None:
             return 0
-        top = landable[0]
-        request = (f"{top['fix_kind'].replace('_', ' ')} in {top['file']}"
-                   if top.get("file") else top["fix_kind"].replace("_", " "))
-        print(f"[agenda→assist] rank-1 landable: {top['fix_kind']} "
-              f"({top['file']}:{top['line']}, value {top['value']}) — "
-              f"request: {request!r}\n")
     elif getattr(args, "from_notes", False):
-        # V5 (Obsidian bridge): the first VALID #apex-hedef note becomes the
-        # request — the user's own words, same pipeline, preview-first.
-        from app.memory.vault import read_user_notes
-        notes = read_user_notes(str(target))
-        valid = [n for n in notes if n.get("valid")]
-        if not valid:
-            rejected = [n for n in notes if not n.get("valid")]
-            if rejected:
-                for note in rejected:
-                    print(f"REJECTED {note['file']}: {note['reason']}")
-            print("No valid #apex-hedef notes — drop a `*.md` with "
-                  "`#apex-hedef <istek>` under `.apex/vault/notes/`.")
+        request = _notes_handoff(str(target))
+        if request is None:
             return 0
-        top = valid[0]
-        request = top["request"]
-        print(f"[notes→assist] {top['file']} — request: {request!r}\n")
     elif not request:
         print("assist needs a request (or --from-agenda / --from-notes).")
         return 2
