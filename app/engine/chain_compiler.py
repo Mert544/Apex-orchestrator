@@ -281,7 +281,12 @@ def _run_step(project_root: str | Path, objective: str, earlier: list[str],
     if campaign.steps:
         return ChainStep(objective=objective, status="landed", result=campaign,
                          reason=_rollback_disclosure(campaign))
-    return ChainStep(objective=objective, status="empty", result=campaign)
+    # An empty step whose campaign DECLINED up front (pytest is not importable)
+    # carries the loud reason on ``reason`` so the chain report DISCLOSES the honest
+    # "could not verify => did not touch" instead of a silent "nothing to do". The
+    # status stays ``empty`` (nothing landed either way) — this is disclosure only.
+    return ChainStep(objective=objective, status="empty", result=campaign,
+                     reason=campaign.verification_unavailable)
 
 
 def _archive_chain(report: ChainReport, project_root: str | Path) -> None:

@@ -60,6 +60,18 @@ class BriefDevelopResult:
         return sum(len(r.steps) for r in self.results)
 
     @property
+    def verification_unavailable(self) -> str:
+        """The loud "pytest is not importable" decline message a scoped campaign
+        carried, or ``""`` when every campaign could be verified. A decline lands
+        NOTHING (zero steps) — this exists so the renderer surfaces the honest
+        "could not verify => did not touch" message instead of a false
+        "0 verified move(s)" line (never-fake-green disclosure parity)."""
+        for r in self.results:
+            if r.verification_unavailable:
+                return r.verification_unavailable
+        return ""
+
+    @property
     def resolved(self) -> int:
         return len(self.check["resolved"]) if self.check else 0
 
@@ -223,7 +235,13 @@ def develop_brief(project_root: str | Path, branch_path: str = "",
         campaign = compile_objective(
             project_root, objective=obj, max_steps=max_steps, verify=verify,
             apply=apply, scope_module=subject_module)
-        if campaign.steps or campaign.fitness_start > 0:
+        # Retain a VERIFICATION-UNAVAILABLE decline (fitness 0, no steps) so its loud
+        # "pytest can't verify here" message is surfaced rather than dropped as a
+        # silent empty campaign — the brief COULD NOT verify, which is what the buyer
+        # must be told (parity with compile_all / compile_goal / _develop_auto). It
+        # never makes anything land.
+        if (campaign.steps or campaign.fitness_start > 0
+                or campaign.verification_unavailable):
             result.results.append(campaign)
 
     result.check = check_brief(str(project_root), brief.branch_path)
@@ -318,9 +336,20 @@ def render_brief_develop_markdown(result: BriefDevelopResult) -> str:
                   "work plan above._", ""]
         return "\n".join(lines)
 
+    lines += [f"**Maps to:** {' → '.join(f'`{o}`' for o in result.objectives)}", ""]
+    if result.verification_unavailable:
+        # A scoped campaign DECLINED up front: pytest is not importable, so NOTHING
+        # was verified or landed. Surface ONLY the loud, actionable message (the SAME
+        # wording the develop session / compile campaign use) — not the misleading
+        # "0 verified move(s)" line, which would read like a clean no-op rather than
+        # an honest "could not verify => did not touch".
+        lines += [f"⚠️ {result.verification_unavailable}", ""]
+        if result.check is not None:
+            lines.append(render_check_markdown(result.check))
+        return "\n".join(lines)
+
     verb = "Applied" if result.applied else "Would apply"
-    lines += [f"**Maps to:** {' → '.join(f'`{o}`' for o in result.objectives)}", "",
-              f"{verb} **{result.total_moves} verified move(s)** across "
+    lines += [f"{verb} **{result.total_moves} verified move(s)** across "
               f"{len(result.results)} scoped campaign(s)."]
     if result.applied and result.measured_total:
         lines.append(f"\n**Burndown: {result.resolved}/{result.measured_total} "

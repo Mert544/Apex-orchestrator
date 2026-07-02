@@ -252,7 +252,12 @@ def _land_via_compile(project_root: str | Path, goal: str, *, max_steps: int,
     if campaign.blocked:
         return RoundResult(goal=goal, status="refused", via="compile",
                            reason="; ".join(campaign.blocked))
-    return RoundResult(goal=goal, status="empty", via="compile")
+    # An empty round whose campaign DECLINED up front (pytest is not importable)
+    # carries the loud reason so the fixpoint report DISCLOSES the honest "could not
+    # verify => did not touch" instead of a silent "nothing to do". The status stays
+    # ``empty`` (nothing landed either way) — this is disclosure only.
+    return RoundResult(goal=goal, status="empty", via="compile",
+                       reason=campaign.verification_unavailable)
 
 
 def _build_learned_tiebreak(project_root: str | Path) -> Callable[[str], float]:

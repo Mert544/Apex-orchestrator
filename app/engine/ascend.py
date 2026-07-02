@@ -137,6 +137,11 @@ class AscendReport:
     applied: bool = True
     # Dry-run preview: the ranking the first round WOULD act on (no work done).
     preview: list[GoalRanking] = field(default_factory=list)
+    # The loud "pytest is not importable" decline message, when a round's compile
+    # DECLINED up front because verification is unavailable. Empty on every run that
+    # could verify — so ``to_dict()`` omits the key and the JSON stays byte-identical
+    # (additive disclosure). A decline lands NOTHING; this only surfaces the reason.
+    verification_unavailable: str = ""
 
     @property
     def total_moves(self) -> int:
@@ -149,7 +154,7 @@ class AscendReport:
         return self.grade_end - self.grade_start
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "rounds": [r.to_dict() for r in self.rounds],
             "grade_start": self.grade_start, "grade_end": self.grade_end,
             "grade_delta": self.grade_delta, "total_moves": self.total_moves,
@@ -157,6 +162,12 @@ class AscendReport:
             "applied": self.applied,
             "preview": [g.to_dict() for g in self.preview],
         }
+        # ``verification_unavailable`` is a PURELY ADDITIVE disclosure: it appears
+        # ONLY when a round declined because pytest is not importable (default "" ⇒
+        # key omitted ⇒ ``apex ascend --json`` is byte-identical to before).
+        if self.verification_unavailable:
+            d["verification_unavailable"] = self.verification_unavailable
+        return d
 
 
 def _grade(project_root: str | Path) -> int:
@@ -367,7 +378,8 @@ def _goal_objectives(goal: str) -> list[str] | None:
 def _take_first_landing_move(project_root: str | Path, ranked: list[GoalRanking],
                              round_no: int, before: int, *, max_steps: int,
                              verify: bool, scope_verify: bool,
-                             blocked_run: set[str]) -> AscendRound | None:
+                             blocked_run: set[str],
+                             report: AscendReport) -> AscendRound | None:
     """Develop the worst fixable debt that can actually MOVE this round, and
     report it as a round. An objective may carry pending debt the compiler can't
     safely act on (every candidate blocked); rather than spin on it, fall through
@@ -377,13 +389,29 @@ def _take_first_landing_move(project_root: str | Path, ranked: list[GoalRanking]
     ``blocked_run`` — the climb's within-run blocked set — so later rounds stop
     re-ranking a proven-immovable objective to the top and re-paying its
     expensive compile scan. Returns the landed round, or None when nothing in
-    ``ranked`` could move (a develop fixpoint for the current tools)."""
+    ``ranked`` could move (a develop fixpoint for the current tools).
+
+    DISCLOSURE, not a new gate: a ``compile_objective`` that DECLINED up front
+    because pytest is not importable (a ``verification_unavailable`` result with
+    zero steps) is NOT a "blocked" objective — the climb could not VERIFY anything
+    here. Rather than silently treating that zero-move decline as immovable debt,
+    stamp the loud message on ``report`` and STOP the round (the decline precedes
+    any move generation, so it fires the same for every objective — nothing more to
+    try). It lands nothing either way; this only surfaces the honest reason."""
     from app.engine.dev_history import record_run
 
     for choice in ranked:
         campaign = compile_objective(project_root, objective=choice.objective,
                                      max_steps=max_steps, verify=verify, apply=True,
                                      scope_verify=scope_verify)
+        # ``getattr`` (not attribute access) so a minimal campaign shape without the
+        # field reads as "no decline" — never an AttributeError.
+        unavailable = getattr(campaign, "verification_unavailable", "")
+        if unavailable:
+            # Can't verify here — record the loud reason and stop (every objective
+            # would decline identically). NOTHING landed; this is disclosure only.
+            report.verification_unavailable = unavailable
+            return None
         moves = len(campaign.steps)
         if moves == 0:
             blocked_run.add(choice.objective)
@@ -443,7 +471,13 @@ def ascend(project_root: str | Path, max_rounds: int = 4,
         before = _grade(project_root)
         landed = _take_first_landing_move(
             project_root, ranked, n, before, max_steps=max_steps, verify=verify,
-            scope_verify=scope_verify, blocked_run=blocked_run)
+            scope_verify=scope_verify, blocked_run=blocked_run, report=report)
+        if report.verification_unavailable:
+            # The compiler DECLINED up front — pytest is not importable, so nothing
+            # could be verified this round (or any round: the decline precedes move
+            # generation). Stop and let the renderer surface the loud reason instead
+            # of a misleading "develop fixpoint" (never-fake-green disclosure).
+            break
         if landed is None:
             # Pending debt remains, but nothing the compiler can safely move — a
             # develop fixpoint for this organism's current tools.
@@ -453,7 +487,11 @@ def ascend(project_root: str | Path, max_rounds: int = 4,
         if target_score is not None and landed.grade_after >= target_score:
             break
     report.grade_end = _grade(project_root)
-    if not report.rounds and not report.fixpoint:
+    # A verification-unavailable decline is NOT a develop fixpoint — the climb could
+    # not VERIFY anything, it did not prove the debt exhausted. Leave ``fixpoint``
+    # False so the honest reason (surfaced by the renderer) is never mislabelled.
+    if (not report.rounds and not report.fixpoint
+            and not report.verification_unavailable):
         report.fixpoint = True
     return report
 
@@ -512,6 +550,14 @@ def render_ascend_markdown(report: AscendReport) -> str:
         return "\n".join(lines)
 
     lines = ["# Ascend — autonomous self-improvement", ""]
+    if report.verification_unavailable:
+        # A round DECLINED up front: pytest is not importable, so NOTHING was
+        # verified or landed. Surface ONLY the loud, actionable message (the SAME
+        # wording the develop session / compile campaign use) — not the misleading
+        # "already at a develop fixpoint" line, which would read like a clean project
+        # rather than an honest "could not verify => did not climb".
+        lines += [f"⚠️ {report.verification_unavailable}", ""]
+        return "\n".join(lines)
     if not report.rounds:
         lines += ["_No fixable debt to develop — the project is already at a develop",
                   "fixpoint. Nothing was changed._", ""]

@@ -154,6 +154,18 @@ class DreamChainReport:
         return self.grade_after - self.grade_before
 
     @property
+    def verification_unavailable(self) -> str:
+        """The loud "pytest is not importable" decline message a scoped campaign
+        carried, or ``""`` when every campaign could be verified. A decline lands
+        NOTHING (zero steps) — this exists so the renderer surfaces the honest
+        "could not verify => did not touch" message instead of a false "nothing
+        landable" empty chain (never-fake-green disclosure parity)."""
+        for r in self.results:
+            if r.verification_unavailable:
+                return r.verification_unavailable
+        return ""
+
+    @property
     def contributions(self) -> list[LandedContribution]:
         """Every landed move as a buyer-facing contribution, in chain order."""
         from app.engine.move_value import objective_value
@@ -350,7 +362,13 @@ def dream_develop(project_root: str | Path, max_steps: int = 25,
             campaign = compile_objective(
                 project_root, objective=obj, max_steps=max_steps, verify=verify,
                 apply=apply, scope_module=scope, scope_verify=fast)
-            if campaign.steps or campaign.fitness_start > 0:
+            # Retain a VERIFICATION-UNAVAILABLE decline (fitness 0, no steps) so its
+            # loud "pytest can't verify here" message is surfaced rather than dropped
+            # as an empty "nothing landable" chain — the chain COULD NOT verify, which
+            # is exactly what the buyer must be told (parity with compile_all /
+            # compile_goal / _develop_auto). It never makes anything land.
+            if (campaign.steps or campaign.fitness_start > 0
+                    or campaign.verification_unavailable):
                 report.results.append(campaign)
     report.grade_after = _grade(project_root) if (apply and before >= 0) else before
     return report
@@ -380,6 +398,14 @@ def render_dream_chain_markdown(report: DreamChainReport) -> str:
              f"_Composes `{report.goal}` (value-led, concrete-first) · "
              "deterministic · zero tokens_", "",
              f"_Scope: {scope}._", ""]
+    if report.verification_unavailable:
+        # A scoped campaign DECLINED up front: pytest is not importable, so NOTHING
+        # was verified or landed. Surface ONLY the loud, actionable message (the SAME
+        # wording the develop session / compile campaign use) — not the misleading
+        # "nothing landable" line, which would read like a clean no-op rather than an
+        # honest "could not verify => did not touch".
+        lines += [f"⚠️ {report.verification_unavailable}", ""]
+        return "\n".join(lines)
     contributions = report.contributions
     if not contributions:
         lines += ["_Nothing landable — the chain refused honestly rather than "
