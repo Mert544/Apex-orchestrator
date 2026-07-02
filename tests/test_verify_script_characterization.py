@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -238,3 +239,43 @@ def test_parallel_with_single_chunk_falls_back_to_sequential():
                            side_effect=AssertionError("should stay sequential")):
         out, rc = _drive(["--chunk", "2", "-j", "8", "--no-lint"], [0], 0)
     assert rc == 0 and "  PASS  chunk 2/4\n" in out
+
+
+# --- _pytest_env: the gate's self-sufficient child environment -----------------
+#
+# The chunk subprocess must be able to import ``app`` even when it (or an oracle
+# grandchild it spawns) runs with cwd moved away from ROOT, so ``_pytest_env`` pins
+# ROOT onto PYTHONPATH. Without it a bare from-checkout run (app not installed,
+# PYTHONPATH unset) silently declines every value oracle and dozens of oracle tests
+# go RED for a reason unrelated to the code under test.
+
+def test_pytest_env_pins_root_when_pythonpath_unset():
+    with mock.patch.dict(os.environ, {}, clear=True):
+        env = verify._pytest_env()
+    # ROOT is the whole PYTHONPATH (no stray leading/trailing separator).
+    assert env["PYTHONPATH"] == str(verify.ROOT)
+
+
+def test_pytest_env_prepends_root_preserving_inherited():
+    inherited = os.pathsep.join(["/some/where", "/other/lib"])
+    with mock.patch.dict(os.environ, {"PYTHONPATH": inherited}, clear=True):
+        env = verify._pytest_env()
+    # ROOT wins the import race (first), but the caller's paths are preserved after.
+    assert env["PYTHONPATH"] == str(verify.ROOT) + os.pathsep + inherited
+
+
+def test_pytest_env_is_a_superset_of_os_environ():
+    with mock.patch.dict(os.environ, {"APEX_MARKER": "keep-me"}, clear=True):
+        env = verify._pytest_env()
+    # Every other inherited var survives (only PYTHONPATH is (re)written).
+    assert env["APEX_MARKER"] == "keep-me"
+
+
+def test_run_chunk_passes_pytest_env_to_subprocess():
+    # The env-pinning is actually WIRED into the chunk spawn, not just defined.
+    sentinel = {"PYTHONPATH": "sentinel-env"}
+    with mock.patch.object(verify, "_pytest_env", return_value=sentinel), \
+         mock.patch.object(verify.subprocess, "run") as run:
+        run.return_value = mock.Mock(returncode=0)
+        verify.run_chunk([verify.ROOT / "tests" / "test_x.py"], [])
+    assert run.call_args.kwargs.get("env") is sentinel

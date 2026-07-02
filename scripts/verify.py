@@ -28,6 +28,7 @@ ruff fails — drop it straight into CI.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -36,6 +37,30 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TESTS_DIR = ROOT / "tests"
 DEFAULT_CHUNKS = 4
+
+
+def _pytest_env() -> dict[str, str]:
+    """The child environment for a pytest chunk, with the apex repo ROOT pinned
+    onto ``PYTHONPATH``.
+
+    The parent pytest process imports ``app`` fine (it runs with ``cwd=ROOT``),
+    but several soundness engines (test_shield value/order/env oracle re-capture,
+    import/doctest/stub oracles, cross-file-rename verify) prove a change by
+    re-running it in a FRESH subprocess under a VARIED working directory — and
+    that grandchild imports ``app.…`` too. With ``cwd`` moved away from ROOT it
+    can import ``app`` only if the interpreter already knows where the package
+    lives, i.e. ``app`` is pip-installed OR ``PYTHONPATH`` carries ROOT. On a bare
+    from-checkout run with neither, EVERY value oracle silently DECLINES (the
+    import fails, the probe returns "no oracle") and dozens of oracle tests go RED
+    for a reason that has nothing to do with the code under test. Pinning ROOT
+    here makes the gate SELF-SUFFICIENT and deterministic — it no longer depends
+    on an ambient ``PYTHONPATH`` the shell/container may or may not export — which
+    is exactly the determinism the proof gate exists to guarantee. A test that
+    sets its own ``PYTHONPATH`` (``{**os.environ, "PYTHONPATH": ...}``) still wins,
+    because it overrides this in its own child env."""
+    inherited = os.environ.get("PYTHONPATH", "")
+    pythonpath = str(ROOT) + (os.pathsep + inherited if inherited else "")
+    return {**os.environ, "PYTHONPATH": pythonpath}
 
 
 def discover_tests(tests_dir: Path = TESTS_DIR) -> list[Path]:
@@ -72,7 +97,7 @@ def run_chunk(files: list[Path], extra: list[str]) -> int:
     """Run one chunk in its own pytest process; return its exit code."""
     cmd = [sys.executable, "-m", "pytest", *(_rel(f) for f in files),
            "-q", "-p", "no:cacheprovider", *extra]
-    return subprocess.run(cmd, cwd=str(ROOT)).returncode
+    return subprocess.run(cmd, cwd=str(ROOT), env=_pytest_env()).returncode
 
 
 def run_chunk_captured(files: list[Path], extra: list[str]) -> tuple[int, str]:
@@ -82,7 +107,8 @@ def run_chunk_captured(files: list[Path], extra: list[str]) -> tuple[int, str]:
     stdout — each block is buffered and replayed in chunk order afterwards."""
     cmd = [sys.executable, "-m", "pytest", *(_rel(f) for f in files),
            "-q", "-p", "no:cacheprovider", *extra]
-    proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
+                          env=_pytest_env())
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
