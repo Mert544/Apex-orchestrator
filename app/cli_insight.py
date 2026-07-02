@@ -902,6 +902,26 @@ def _render_proof_track_record(track: dict) -> list[str]:
     return lines
 
 
+def cmd_vault(args: argparse.Namespace) -> int:
+    """Refresh and show the Apex vault: ONE deterministic roll-up of the
+    project's persistent memory stores (idea-memory, dream journal, dream
+    digest, proof-of-fix + derived track record). Mirrors the live stores
+    losslessly into ``.apex/vault/vault.json`` (single-writer, rebuildable);
+    absent stores are reported honestly. Read-only over the sources; LLM-free;
+    always exits 0 (an empty vault is honest state, not an error)."""
+    from app.memory.vault import load_vault_view, render_vault_markdown, write_vault
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    if args.refresh:
+        write_vault(target)
+    view = load_vault_view(target)
+    if args.json:
+        print(json.dumps(view, sort_keys=True, indent=2, ensure_ascii=False))
+    else:
+        print(render_vault_markdown(view))
+    return 0
+
+
 def cmd_proof(args: argparse.Namespace) -> int:
     """Show the proof-of-fix evidence for the last maintain run on this repo:
     each applied/rolled-back/blocked/withheld move with its reason, a tamper-
@@ -1427,6 +1447,22 @@ def register_parsers(subparsers) -> None:
     proof_parser.add_argument("--target", default="", help="Target project root")
     proof_parser.add_argument("--json", action="store_true", help="Emit JSON")
     proof_parser.set_defaults(func=cmd_proof)
+
+    # vault — one deterministic roll-up of the project's persistent memory
+    vault_parser = subparsers.add_parser(
+        "vault",
+        help="Show (and --refresh) the Apex vault: one deterministic roll-up "
+             "of the project's persistent memory stores — idea-memory, dream "
+             "journal/digest, proof-of-fix + derived track record (read-only "
+             "over the sources, LLM-free)",
+    )
+    vault_parser.add_argument("--target", default="", help="Target project root")
+    vault_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    vault_parser.add_argument(
+        "--refresh", action="store_true",
+        help="Rewrite .apex/vault/vault.json from the live stores first "
+             "(byte-identical when nothing changed)")
+    vault_parser.set_defaults(func=cmd_vault)
 
     # scope — how much of THIS repo Apex's Python analysis covers (and what it
     # honestly leaves outside that scope)
