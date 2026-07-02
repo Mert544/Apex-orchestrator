@@ -50,6 +50,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 VERIFY = ROOT / "scripts" / "verify.py"
 
+# Self-sufficient import root: ``_serial_peers`` lazily imports
+# ``app.engine.work_partition``, but ``python scripts/merge_train.py`` puts only
+# ``scripts/`` on ``sys.path`` — so on a bare clone (no pip install, no ambient
+# ``PYTHONPATH``) the partition import died. Pin the script's HOME repo root so
+# the engine resolves from the checkout the script lives in; when the script is
+# COPIED into another repo (the test harness does, to point ``ROOT`` at a throwaway
+# repo), that repo has no ``app/`` and the caller must supply an Apex checkout on
+# ``PYTHONPATH`` — an explicit dependency, not an ambient accident.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 # Local branches named like this are the per-agent worktree branches that
 # ``--auto`` integrates (matches the repo's ``worktree-agent-*`` convention).
 _AUTO_PREFIX = "worktree-agent-"

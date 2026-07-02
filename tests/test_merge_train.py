@@ -7,6 +7,7 @@ exactly how the dev team would run it. The gate (``scripts/verify.py``) is alway
 kept out of the test path with ``--no-gate``.
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -98,11 +99,21 @@ def _branch_modifying_existing(repo: Path) -> None:
 
 
 def _run_train(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    # The script is COPIED into the throwaway repo (so its ``ROOT`` — and thus its
+    # self-sufficient ``sys.path`` pin — resolves there), but its partition step
+    # imports ``app.engine.work_partition`` from a real Apex checkout. Supply that
+    # checkout on ``PYTHONPATH`` explicitly, exactly what a dev running the copied
+    # script elsewhere must do — never rely on the ambient env carrying it.
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+    }
     return subprocess.run(
         [sys.executable, "scripts/merge_train.py", *args],
         cwd=repo,
         capture_output=True,
         text=True,
+        env=env,
     )
 
 
