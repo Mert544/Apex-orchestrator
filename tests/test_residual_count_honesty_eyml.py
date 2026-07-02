@@ -191,6 +191,6 @@ def test_at_cap_repo_count_equals_list(tmp_path: Path):
 def test_apex_self_grade_unchanged():
     repo_root = Path(__file__).resolve().parent.parent
     g = grade(str(repo_root))
-    assert (g.letter, g.score) == ("A+", 99)
+    assert (g.letter, g.score) == ("A+", 100)
     dup = next(c for c in g.components if c.name == "Duplication")
-    assert "1 duplicated block(s)" in dup.detail
+    assert "0 duplicated block(s)" in dup.detail
