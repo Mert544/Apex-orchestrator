@@ -193,13 +193,14 @@ def test_determinism_same_tree_same_count():
     assert first == second == 1
 
 
-def test_self_grade_stays_a_plus_99():
+def test_self_grade_stays_a_plus_100():
     """Characterization: dropping ``bool(cls.bases)`` surfaces NO new debt in
     Apex's own concrete subclasses — every Apex class with a NotImplementedError
     body is correctly excluded by ``_class_is_interface`` (genuine ABC/Protocol)
     or ``subclassed`` (a base subclassed in-project), never by the dropped blanket
-    base term. Apex's own stub-debt total is 0 and the self-grade holds at A+ 99
-    (the lone remaining fix is unrelated duplication).
+    base term. Apex's own stub-debt total is 0 and the self-grade holds at A+ 100
+    (the lone unrelated duplication this pin used to carve out was extracted into
+    ``bind_resolved_definition`` — clean bill of health).
     """
     g = grade(".")
-    assert (g.letter, g.score) == ("A+", 99)
+    assert (g.letter, g.score) == ("A+", 100)

@@ -5,7 +5,7 @@ NOT a new analysis engine:
 
 1. It COMPOSES the REAL deterministic audits on Apex's OWN tree — the same verdicts
    ``apex self-audit --north-star`` / ``--soundness`` / ``apex grade`` produce
-   (trustworthy True, North Star PASS, soundness 65/65, grade A+99 today).
+   (trustworthy True, North Star PASS, soundness 95/95, grade A+100 today).
 2. The render is PLAIN, non-technical English and CLOCK-FREE: no ISO-date, no "UTC",
    no time-of-day substring; byte-stable across two renders of the same dict.
 3. The CLI ``--json`` flag emits the composed dict; the markdown path renders the
@@ -91,7 +91,7 @@ def test_owner_report_composes_real_apex_verdicts():
     assert sound["single_writer"] is True
     assert sound["scope_verify_ok"] is True
     # Grade: the real letter + score.
-    assert report["grade"] == {"letter": "A+", "score": 99}
+    assert report["grade"] == {"letter": "A+", "score": 100}
     # Track record: THIS worktree's own .apex/ carries no proof-of-fix history yet
     # (a fresh checkout), so the evidence-free/neutral shape composes here.
     tr = report["track_record"]

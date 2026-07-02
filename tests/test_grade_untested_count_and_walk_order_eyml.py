@@ -75,13 +75,15 @@ def test_repo_with_few_untested_is_unchanged(tmp_path):
     assert _untested_penalty_count(profile) == len(profile.untested_modules)
 
 
-def test_apex_self_grade_unchanged_a_plus_99():
+def test_apex_self_grade_unchanged_a_plus_100():
     # The honest-count fix must not move Apex's own grade (Apex has <= 5 untested).
+    # Duplication is pinned at ZERO points lost since the param_add/param_drop
+    # seam was extracted into ``bind_resolved_definition`` (99 -> 100).
     result = grade(".")
     assert result.letter == "A+"
-    assert result.score == 99
+    assert result.score == 100
     dup = next(c for c in result.components if c.name == "Duplication")
-    assert dup.points_lost == 1
+    assert dup.points_lost == 0
 
 
 # --------------------------------------------------------------------------- #
