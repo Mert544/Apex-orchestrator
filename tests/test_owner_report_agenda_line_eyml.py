@@ -204,7 +204,10 @@ def test_render_places_agenda_line_immediately_before_promise():
     md = render_owner_report_markdown(report)
     assert "rank-1: implement-stub in app/a.py." in md
     agenda_idx, promise_idx = _line_indices(md)
-    assert promise_idx == agenda_idx + 1
+    # ÇAĞ2-W4: promise_idx moved from agenda_idx + 1 to + 2 — the new vault
+    # line (see tests/test_owner_report_vault_line_eyml.py) now sits between
+    # the agenda line and the promise line.
+    assert promise_idx == agenda_idx + 2
 
 
 def test_render_without_agenda_key_places_fallback_before_promise():
@@ -212,7 +215,10 @@ def test_render_without_agenda_key_places_fallback_before_promise():
     assert _NO_AGENDA_LINE in md
     assert _GENERIC_PROMISE in md  # the pre-feature dict keeps its old promise
     agenda_idx, promise_idx = _line_indices(md)
-    assert promise_idx == agenda_idx + 1
+    # ÇAĞ2-W4: promise_idx moved from agenda_idx + 1 to + 2 (vault line joined
+    # in between — a report dict predating the vault feature still renders
+    # its own honest _NO_VAULT_LINE fallback there).
+    assert promise_idx == agenda_idx + 2
 
 
 # --------------------------------------------------------------------------- #
@@ -281,7 +287,9 @@ def test_stubbed_owner_report_fresh_target_renders_fallback_line(
     md = render_owner_report_markdown(report)
     assert _NO_AGENDA_LINE in md
     agenda_idx, promise_idx = _line_indices(md)
-    assert promise_idx == agenda_idx + 1
+    # ÇAĞ2-W4: promise_idx moved from agenda_idx + 1 to + 2 (the fresh target's
+    # own honest-absent vault line now sits in between).
+    assert promise_idx == agenda_idx + 2
 
 
 def test_stubbed_owner_report_renders_rank_one_end_to_end(tmp_path: Path,

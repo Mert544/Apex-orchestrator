@@ -14,7 +14,9 @@ Three lanes:
 * **landable** — findings Apex can prove-land NOW (readiness's ``fixable_now``
   bucket), ranked by ``scored_move_value`` (static buyer value × the project's
   own feasibility/realization track record — demote-only, neutral on a fresh
-  repo) with a stable file/line tiebreak.
+  repo), then a dream-confluence tiebreak (a module the dream graduated as a
+  CONFLUENCE leads its same-value peers — see ``dream_landing.
+  dream_signal_weight``), then a stable file/line tiebreak.
 * **human** — findings that genuinely need a person (``flag_only``: design
   tasks, security judgement calls), carried with their rationale. The agenda
   never promises these; it hands them over honestly.
@@ -34,6 +36,7 @@ from typing import Any
 
 from app.engine.develop_readiness import develop_readiness
 from app.engine.dream_gate_learn import gate_tighten_factors
+from app.engine.dream_landing import dream_signal_weight
 from app.memory.vault import read_user_notes
 from app.engine.idea_memory import IdeaMemory
 from app.engine.move_value import scored_move_value
@@ -77,6 +80,7 @@ def _landable_lane(buckets: dict[str, list[dict[str, Any]]],
                    memory: IdeaMemory | None,
                    realization: dict[str, float],
                    gate_factors: dict[str, float] | None = None,
+                   dream_weight: dict[str, float] | None = None,
                    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """The ranked landable entries plus the RETIRED-operator map (V4).
 
@@ -86,8 +90,24 @@ def _landable_lane(buckets: dict[str, list[dict[str, Any]]],
     visible caution ``note`` (the signal measures dream-promotion over-promise
     for that MODULE, not this fix_kind's soundness, so it annotates rather
     than retires). Both signals are demote-only: with neutral memory the
-    result is byte-identical to the pre-learning lane."""
+    result is byte-identical to the pre-learning lane.
+
+    ``dream_weight`` (V6, obsidian bridge — :func:`app.engine.dream_landing.
+    dream_signal_weight`) maps a module's file path to a positive priority
+    boost for the modules the dream has graduated as CONFLUENCES: the
+    organism's own hardest-won, multi-night discovery. It folds in as a
+    SECOND descending sort key, right after value — mirrors the SAME pattern
+    ``apex auto`` already trusts for its action plan (``idea_action_bridge.
+    _dream_step_boost``) — so a confluence module leads its same-value peers
+    instead of losing to plain alphabetic file order, and can surface within
+    ``_LANE_CAP`` instead of sitting wherever its path happens to sort. A pure
+    RE-RANKING tiebreak: it never changes WHICH entries land here (retirement
+    still runs first) or their scored value, only their order. An empty/absent
+    map makes every boost 0.0, so the key degenerates back to the pre-dream
+    ``(-value, file, line, fix_kind)`` order — byte-identical with no
+    persisted confluence."""
     gate_factors = gate_factors or {}
+    dream_weight = dream_weight or {}
     entries = []
     retired: dict[str, dict[str, Any]] = {}
     for rec in buckets.get("fixable_now", []):
@@ -113,7 +133,8 @@ def _landable_lane(buckets: dict[str, list[dict[str, Any]]],
                 entry["note"] = (f"dream gate tightened for this module "
                                  f"(factor {factor:.2f})")
         entries.append(entry)
-    entries.sort(key=lambda e: (-e["value"], e["file"], e["line"], e["fix_kind"]))
+    entries.sort(key=lambda e: (-e["value"], -dream_weight.get(e["file"], 0.0),
+                                e["file"], e["line"], e["fix_kind"]))
     for i, e in enumerate(entries, 1):
         e["rank"] = i
     return entries, retired
@@ -176,9 +197,15 @@ def build_agenda(project_root: str | Path) -> dict[str, Any]:
         memory = None
     realization = operator_realization_factors(root)
     gate_factors = gate_tighten_factors(root)
+    # V6 (obsidian bridge): a pure store read of the dream's PERSISTED
+    # confluences (no live dream, no clock/random) — empty on a project that
+    # never graduated one, so the landable ranking is byte-identical by
+    # default (see _landable_lane's dream_weight tiebreak).
+    dream_weight = dream_signal_weight(root)
     considered = {rec.get("fix_kind", "")
                   for lane in buckets.values() for rec in lane if rec.get("fix_kind")}
-    landable, retired = _landable_lane(buckets, memory, realization, gate_factors)
+    landable, retired = _landable_lane(buckets, memory, realization, gate_factors,
+                                       dream_weight)
     return {
         "schema_version": SCHEMA_VERSION,
         "readiness_score": readiness.get("score", 0.0),

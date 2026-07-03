@@ -38,7 +38,12 @@ through ``apex self-audit`` / ``apex grade``:
   ``apex agenda`` / the daemon), read directly as bytes — so the report can name the
   NEXT landable move without running any analysis. No artifact yet → an honest
   "no agenda artifact yet" line that says how to create one (see :func:`_agenda_for`
-  and :func:`_agenda_line`).
+  and :func:`_agenda_line`);
+* the buyer's OWN vault artifact (``<project_root>/.apex/vault/vault.json``, written
+  by ``apex vault`` / the daemon), read directly as bytes — so the report can name
+  how much of Apex's cross-run memory this project actually carries, and how many of
+  it are the buyer's own ``#apex-hedef`` notes. No artifact yet → an honest "no vault
+  artifact yet" line (see :func:`_vault_for` and :func:`_vault_line`).
 
 Every technical verdict is folded into ONE owner-readable English sentence by
 :func:`render_owner_report_markdown`. Like every audit it composes, this view is
@@ -186,6 +191,58 @@ def _agenda_for(project_root: str | Path) -> dict:
             "landable": len(landable), "rank1": rank1}
 
 
+_VAULT_REL = ".apex/vault/vault.json"
+
+
+def _vault_for(project_root: str | Path) -> dict:
+    """The TARGET project's vault artifact, reduced to the owner-facing facts.
+
+    Reads ``<project_root>/.apex/vault/vault.json`` — the artifact ``apex vault`` /
+    the daemon writes — DIRECTLY as bytes (``json.loads``), mirroring
+    :func:`_agenda_for`'s cyclic-import discipline exactly: never through
+    ``app.memory.vault`` (no new analysis runs here — the artifact IS the
+    already-composed mirror of Apex's memory stores), the ``--target`` semantics
+    stay identical to the agenda/track-record read (the buyer's OWN project, never
+    Apex's own tree), and the vault module keeps its single-writer role. Returns a
+    stable-key dict:
+
+    * ``present`` (bool) — the artifact file exists.
+    * ``readable`` (bool) — it parsed to a JSON object.
+    * ``remembered`` (int) — how many of the vault's sections are present (a
+      section the vault mirrored a real store into, per ``app.memory.vault``).
+    * ``total`` (int) — how many sections the vault artifact carries (read from
+      the artifact itself, never hard-coded, so a future section joining the
+      vault schema is reflected automatically).
+    * ``user_notes`` (int) — the vault's own count of queued ``#apex-hedef``
+      notes (the vault's ``agenda`` section's ``user`` count; 0 when that
+      section is absent, unreadable, or the artifact predates it).
+
+    Pure and deterministic: same artifact bytes -> same dict; no clock, no
+    randomness, no network. Never raises — absent/corrupt artifacts yield the
+    honest ``present``/``readable`` flags instead."""
+    path = Path(project_root) / _VAULT_REL
+    if not path.exists():
+        return {"present": False, "readable": False, "remembered": 0,
+                "total": 0, "user_notes": 0}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    if not isinstance(data, dict):
+        return {"present": True, "readable": False, "remembered": 0,
+                "total": 0, "user_notes": 0}
+    sections = data.get("sections")
+    if not isinstance(sections, dict):
+        sections = {}
+    remembered = sum(1 for s in sections.values()
+                     if isinstance(s, dict) and s.get("present"))
+    agenda_section = sections.get("agenda")
+    user_notes = (int(agenda_section.get("user") or 0)
+                  if isinstance(agenda_section, dict) else 0)
+    return {"present": True, "readable": True, "remembered": remembered,
+            "total": len(sections), "user_notes": user_notes}
+
+
 def _track_record_for(project_root: str | Path) -> dict:
     """This project's OWN proof-of-fix track record, as an owner-facing dict.
 
@@ -250,10 +307,13 @@ def owner_report(project_root: str | Path) -> dict:
     * ``agenda`` — ``{present, readable, landable, rank1}``, the buyer's OWN
       ``.apex/agenda.json`` artifact (see :func:`_agenda_for`); ``present`` is False
       until ``apex agenda`` or the daemon has written one.
+    * ``vault`` — ``{present, readable, remembered, total, user_notes}``, the
+      buyer's OWN ``.apex/vault/vault.json`` artifact (see :func:`_vault_for`);
+      ``present`` is False until ``apex vault`` or the daemon has written one.
 
     Pure, deterministic, zero-token, offline: no clock, no randomness, no LLM (the
-    proof-history and agenda reads are file I/O over already-written JSON, not a
-    clock)."""
+    proof-history, agenda, and vault reads are file I/O over already-written JSON,
+    not a clock)."""
     from app.engine.health_score import grade
     from app.engine.north_star_audit import north_star_report
     from app.engine.soundness_audit import repo_root, soundness_report
@@ -289,6 +349,7 @@ def owner_report(project_root: str | Path) -> dict:
         "grade": {"letter": health.letter, "score": health.score},
         "track_record": track_record,
         "agenda": _agenda_for(project_root),
+        "vault": _vault_for(project_root),
         "capabilities": {
             "concrete_count": concrete_count,
             "languages": _languages_for(concrete_names),
@@ -413,6 +474,39 @@ def _agenda_line(report: dict) -> str:
     return line + "."
 
 
+# The honest no-vault-yet sentence — mirrors _NO_AGENDA_LINE's shape exactly, so
+# an owner without the artifact is told HOW to get one, never shown a fabricated
+# memory count. Kept as a named constant so every fallback path (absent artifact,
+# corrupt artifact, an older/hand-built report dict with no "vault" key at all)
+# renders the SAME bytes.
+_NO_VAULT_LINE = (
+    "- Memory (vault): no vault artifact yet (run apex vault or the daemon)."
+)
+
+
+def _vault_line(report: dict) -> str:
+    """One sentence on how much of Apex's cross-run memory this project carries.
+
+    With a readable vault artifact, renders how many of the vault's memory
+    stores are present for this project (``remembered``/``total``, e.g. "4/6")
+    plus how many of them are the buyer's OWN ``#apex-hedef`` notes when that
+    count is non-zero — copied from the already-written artifact, never
+    recomputed here. Without one (absent or corrupt artifact, or a report dict
+    predating this feature), renders the honest :data:`_NO_VAULT_LINE` fallback
+    instead — no vault is a stated fact plus the command that creates one, not
+    a silent omission."""
+    vault = report.get("vault")
+    if not vault or not vault.get("readable"):
+        return _NO_VAULT_LINE
+    line = (f"- Memory (vault): Apex remembers {vault['remembered']}/"
+            f"{vault['total']} memory store(s) for this project")
+    user_notes = vault.get("user_notes") or 0
+    if user_notes:
+        note_word = "note" if user_notes == 1 else "notes"
+        line += f", {user_notes} of them your own {note_word}"
+    return line + " — full picture: `apex vault`."
+
+
 # The ORIGINAL generic promise sentence — byte-identical to the pre-track-record
 # text. Kept as a named constant so the neutral/no-evidence fallback in
 # :func:`_promise_line` can never accidentally drift from it (both read the SAME
@@ -465,8 +559,12 @@ def render_owner_report_markdown(report: dict) -> str:
     lines.append(_quality_line(report))
     lines.append(_capabilities_line(report))
     # The agenda line sits immediately BEFORE the closing promise: "here is the
-    # next move" then "and here is the guarantee behind every move".
+    # next move" then "and here is the guarantee behind every move". The vault
+    # line sits right after the agenda line: "here is the next move" -> "here
+    # is how much Apex remembers about this project" -> "and here is the
+    # guarantee behind every move".
     lines.append(_agenda_line(report))
+    lines.append(_vault_line(report))
     lines.append(_promise_line(report))
     lines.append("")
     return "\n".join(lines)

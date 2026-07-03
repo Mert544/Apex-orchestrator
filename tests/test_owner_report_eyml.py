@@ -179,9 +179,12 @@ def test_cli_owner_report_json_emits_dict(capsys):
     # CONSCIOUS PIN MOVE (living-assistant polish): the key set gains "agenda"
     # — the target's own `.apex/agenda.json` artifact summary (see
     # tests/test_owner_report_agenda_line_eyml.py for its contract).
+    # ÇAĞ2-W4: the key set gains "vault" — the target's own
+    # `.apex/vault/vault.json` artifact summary (see
+    # tests/test_owner_report_vault_line_eyml.py for its contract).
     assert set(payload) == {
         "trustworthy", "north_star", "soundness", "grade", "capabilities",
-        "track_record", "agenda"}
+        "track_record", "agenda", "vault"}
     assert payload["trustworthy"] is True
     assert payload["grade"]["letter"] == "A+"
 
