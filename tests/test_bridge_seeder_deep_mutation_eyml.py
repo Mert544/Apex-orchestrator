@@ -1108,6 +1108,15 @@ _FACT_EXPECTED = {
     # generalization design stays a disclosed human remainder; same plan-time
     # probe as dependency-hub).
     "symbol-hub": ("cover_gaps", True),
+    # ÇAĞ2-W3: three more design_task rows flip to the SAME delegated
+    # cover_gaps lander (complexity-hotspot/knowledge-risk/churn-hotspot) —
+    # a characterization safety-net test lands first, honest by the
+    # identical plan-time _covergaps_unserviceable probe; each family's own
+    # intent (simplify / spread-knowledge / smooth-the-change-path) stays a
+    # disclosed human remainder.
+    "complexity-hotspot": ("cover_gaps", True),
+    "knowledge-risk": ("cover_gaps", True),
+    "churn-hotspot": ("cover_gaps", True),
     "missing-ci": ("add_ci", True),
     "polyglot-hotspot": ("design_task", False),
     # Autonomous-39 W5: flipped from design_task → the delegated seal_hashable_eq

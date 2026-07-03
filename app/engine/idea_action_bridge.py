@@ -84,6 +84,44 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                    "Land a characterization test pinning the public behavior of "
                    "the symbol-rich module {s} before generalizing it (the "
                    "generalization design itself stays a human decision)", True),
+    # ÇAĞ2-W3: three more design_task rows flip to the SAME delegated
+    # ``cover_gaps`` lander as dependency-hub/symbol-hub above — a
+    # characterization safety-net test lands FIRST, honest by the IDENTICAL
+    # mechanism (the plan-time ``_covergaps_unserviceable`` probe calls the
+    # lander's OWN gate; a module it can't characterize downgrades to an
+    # honest ``executable=False`` with the disclosed blocker, never a fake
+    # claim — ZERO new probe code). Each description NAMES the landed slice
+    # (the characterization test) and DISCLOSES the family-specific
+    # human-remaining design slice in parentheses — the signal's OWN intent
+    # (simplify / spread-knowledge / smooth-the-change-path) is NOT something
+    # ``cover_gaps`` performs, so it is never claimed as delivered.
+    "complexity-hotspot": ("cover_gaps",
+                           "Land a characterization safety-net test for the "
+                           "complexity hotspot {s} before it's simplified — a "
+                           "regression net for the riskiest place to change "
+                           "(the simplification itself stays a human design "
+                           "decision)", True),
+    # Bus-factor / knowledge concentration: the same safety net is the FIRST
+    # honest move — whoever inherits the module (not just its one author)
+    # gets a pinned behavior to change against; the actual knowledge-spread
+    # (docs, pairing, review) has no deterministic transform and stays a
+    # disclosed human remainder.
+    "knowledge-risk": ("cover_gaps",
+                       "Land a characterization safety-net test for the "
+                       "knowledge-risk module {s} — a regression net so it "
+                       "isn't understood by one author alone (spreading "
+                       "the knowledge itself, via docs and pairing, stays "
+                       "a human task)", True),
+    # Change-frequency hotspot: the busiest module benefits most from a
+    # regression net before its NEXT commit; evolving its change path
+    # (interfaces, coupling, simplification) is a design judgment with no
+    # deterministic transform and stays a disclosed human remainder.
+    "churn-hotspot": ("cover_gaps",
+                      "Land a characterization safety-net test for the "
+                      "churn hotspot {s} — a regression net for the module "
+                      "changing most before its next commit (smoothing "
+                      "the change path itself — interfaces, coupling — "
+                      "stays a human design decision)", True),
     "missing-ci": ("add_ci", "Add a CI workflow that runs the test suite", True),
     # Polyglot hotspot: a large, active NON-Python file. Apex has NO deterministic
     # transform for non-Python source, so this is strictly recommend-only — it must
