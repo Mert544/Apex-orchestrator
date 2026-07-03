@@ -71,6 +71,7 @@ from app.engine.near_dup import (
 )
 from app.execution._dedup_helpers import (
     _global_decl_reason,
+    _multiline_string_reason,
     _overlap_blocker,
     stamp_multi_module_plan,
 )
@@ -285,16 +286,19 @@ def _soundness_rails_blocker(resolved) -> str | None:
     """The near-dup lane's post-resolution soundness rails, in fixed order:
     overlapping same-file spans (the bottom-up splice would corrupt),
     ``global``/``nonlocal``-declared names the run binds or reads
-    (scope-capture divergence), and docstring-position runs (the lift nulls
-    ``__doc__``). The exact-dup family runs the first two via
-    ``family_rail_blocker``; near-dup occurrences intentionally differ at value
-    leaves, so the identity rail does not apply and the relevant rails are
-    invoked directly here. Refuse-direction only."""
+    (scope-capture divergence), multi-line string/bytes constants
+    (``_reindent`` rewrites their continuation lines — differing OR shared),
+    and docstring-position runs (the lift nulls ``__doc__``). The exact-dup
+    family runs the first three via ``family_rail_blocker``; near-dup
+    occurrences intentionally differ at value leaves, so the identity rail
+    does not apply and the relevant rails are invoked directly here.
+    Refuse-direction only."""
     blocker = _overlap_blocker(resolved)
     if blocker is not None:
         return blocker
     for occ in resolved:
-        reason = _global_decl_reason(occ.fn, occ.stmts)
+        reason = (_global_decl_reason(occ.fn, occ.stmts)
+                  or _multiline_string_reason(occ.stmts))
         if reason is not None:
             return f"{occ.rel}:{occ.span_lo}: {reason}"
     return _docstring_span_blocker(resolved)

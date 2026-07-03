@@ -808,4 +808,7 @@ def test_multiline_constant_hole_blocks_and_returns_plan(tmp_path):
     plan = plan_near_dup_extract(tmp_path, groups[0])
     assert not plan.ok
     assert not plan.new_contents
-    assert any("multiple lines" in b for b in plan.blockers)
+    # fix0: the family's multi-line-string rail now fires FIRST (wired into
+    # the near-dup lane's post-resolution rails) — same refusal, earlier and
+    # stronger blocker text than the old downstream splice check.
+    assert any("multi-line string constant" in b for b in plan.blockers)

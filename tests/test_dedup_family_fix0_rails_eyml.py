@@ -662,3 +662,101 @@ def test_apply_line_holes_span_splitting_multibyte_char_blocks():
     plan = RenamePlan(old="x", new="_s")
     assert _apply_line_holes(line, [(11, 17, "p0")], plan) is None
     assert any("splits a multi-byte character" in b for b in plan.blockers)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Fix 8 — multi-line str/bytes constants in the NEAR-DUP lane (P1: the family
+# rail existed but was not wired here; `_reindent` rewrote their continuation
+# lines exactly like the exact-lane bytes repro of Fix 2).
+# ══════════════════════════════════════════════════════════════════════════
+
+_MLSTR_NEAR = (
+    "def alpha(x):\n"
+    '    hdr = """H1\n'
+    "        row-a\n"
+    '"""\n'
+    "    a = x + 7\n"
+    "    b = a * 2\n"
+    "    return (hdr, b)\n"
+    "\n"
+    "\n"
+    "def beta(x):\n"
+    '    hdr = """H1\n'
+    "        row-a\n"
+    '"""\n'
+    "    a = x + 8\n"
+    "    b = a * 2\n"
+    "    return (hdr, b)\n"
+)
+
+
+def test_multiline_str_near_dup_blocks(tmp_path):
+    # The verified repro: the SHARED (non-differing) multi-line str rode into
+    # the helper and `_reindent` injected four spaces before the closing
+    # quotes (literal changed, blockers == []). Now: the family rail refuses.
+    _write(tmp_path, "mod.py", _MLSTR_NEAR)
+    groups = find_near_duplicates(tmp_path, min_statements=4)
+    plan = plan_near_dup_extract(tmp_path, _group_at(groups, "mod.py:2",
+                                                     "mod.py:11"))
+    _assert_blocked(plan, "multi-line string constant",
+                    "rewrite the string's contents")
+
+
+_MLSTR_HOLE_NEAR = (
+    "def alpha(x):\n"
+    '    hdr = """red\n'
+    'tail"""\n'
+    "    a = x + 1\n"
+    "    b = a * 2\n"
+    "    return (hdr, b)\n"
+    "\n"
+    "\n"
+    "def beta(x):\n"
+    '    hdr = """blue\n'
+    'tail"""\n'
+    "    a = x + 1\n"
+    "    b = a * 2\n"
+    "    return (hdr, b)\n"
+)
+
+
+def test_multiline_str_hole_near_dup_blocks(tmp_path):
+    # The DIFFERING leaf itself being a multi-line str is no safer: the splice
+    # would emit a broken single-line call argument. Same rail, same refusal.
+    _write(tmp_path, "mod.py", _MLSTR_HOLE_NEAR)
+    groups = find_near_duplicates(tmp_path, min_statements=4)
+    plan = plan_near_dup_extract(tmp_path, _group_at(groups, "mod.py:2",
+                                                     "mod.py:10"))
+    _assert_blocked(plan, "multi-line string constant")
+
+
+_SLSTR_NEAR = (
+    "def alpha(x):\n"
+    '    hdr = "H1"\n'
+    "    a = x + 7\n"
+    "    b = a * 2\n"
+    "    return (hdr, b)\n"
+    "\n"
+    "\n"
+    "def beta(x):\n"
+    '    hdr = "H1"\n'
+    "    a = x + 8\n"
+    "    b = a * 2\n"
+    "    return (hdr, b)\n"
+)
+
+
+def test_single_line_str_near_dup_negative_lands(tmp_path):
+    # Negative control: the rail keys on MULTI-LINE spans, not on strings —
+    # the single-line twin lands, exec-equivalent, string intact.
+    _write(tmp_path, "mod.py", _SLSTR_NEAR)
+    groups = find_near_duplicates(tmp_path, min_statements=4)
+    plan = plan_near_dup_extract(tmp_path, _group_at(groups, "mod.py:2",
+                                                     "mod.py:9"))
+    assert plan.ok, f"blockers={plan.blockers}"
+    old_ns = _exec_module(_SLSTR_NEAR)
+    new_ns = _exec_module(plan.new_contents["mod.py"])
+    for arg in (0, 3):
+        assert (new_ns["alpha"](arg), new_ns["beta"](arg)) == \
+            (old_ns["alpha"](arg), old_ns["beta"](arg))
+    assert new_ns["alpha"](0)[0] == "H1"
