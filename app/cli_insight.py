@@ -175,22 +175,37 @@ def _cmd_dream_land(args: argparse.Namespace) -> int:
     existing verified-with-rollback compiler — and prints one DreamChainReport.
     DRY-RUN by default; ``--apply`` writes, ``--fast`` scopes the per-move gate.
     Exit 0 even on an empty chain — a project with nothing landable is an honest
-    refusal, not a failure."""
+    refusal, not a failure.
+
+    ``apex dream --land`` is the project's ONLY unattended landing surface — no
+    human reviews the diff between chain steps the way an ``apex develop``/
+    ``apex assist --apply`` session would — so it forces ``covered_only`` True via
+    ``resolve_covered_only(unattended=True)``, the SAME single-source-of-truth
+    policy ``apex evolve``/the daemon force for their own unattended loops (#115's
+    precedent). Strictly demote-direction: a move a green suite can't vouch for is
+    withheld (previewed) instead of landed; it can never make a run land MORE. A
+    DRY RUN (the default, no ``--apply``) never reaches the gated apply loop, so
+    the preview is byte-identical regardless."""
     from app.engine.dream_develop import (
         dream_develop,
+        record_dream_chain_memory,
         record_dream_outcomes,
         render_dream_chain_markdown,
     )
+    from app.policies.autonomy_policy import resolve_covered_only
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
+    covered_only = resolve_covered_only(allow_weak=False, unattended=True)
     report = dream_develop(str(target), apply=getattr(args, "apply", False),
-                           fast=getattr(args, "fast", False))
+                           fast=getattr(args, "fast", False),
+                           covered_only=covered_only)
     _dream_land_write_proof(args, report, target)
-    # Learn-loop: feed the chain's OWN landed/withheld per-direction outcomes back
-    # into IdeaMemory so the next-night dream ranking learns which dreamed
-    # directions actually land here. A strict no-op on a dry run / empty chain, so
-    # the off-by-default tree stays byte-identical.
+    # Learn-loop: feed the chain's OWN landed/withheld per-direction outcomes, and
+    # its per-scope-module composition recipe, back into the SAME learn stores the
+    # next-night dream ranking reads. Both are a strict no-op on a dry run / empty
+    # chain, so the off-by-default tree stays byte-identical.
     record_dream_outcomes(report, str(target))
+    record_dream_chain_memory(report, str(target))
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
     else:

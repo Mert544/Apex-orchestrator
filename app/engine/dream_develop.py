@@ -48,7 +48,7 @@ from app.engine.objective_compiler import CompileResult, compile_objective
 __all__ = [
     "LandedContribution", "DreamChainReport",
     "dream_develop", "render_dream_chain_markdown",
-    "build_dream_proof", "record_dream_outcomes",
+    "build_dream_proof", "record_dream_outcomes", "record_dream_chain_memory",
 ]
 
 # The composed concrete goal: the North-Star LAND-working-code chain. Run
@@ -299,7 +299,8 @@ def dream_develop(project_root: str | Path, max_steps: int = 25,
                   verify: bool = True, apply: bool = False,
                   fast: bool = False, value_ranked: bool = False,
                   max_modules: int | None = None,
-                  preview_skip_mutation: bool = False) -> DreamChainReport:
+                  preview_skip_mutation: bool = False,
+                  covered_only: bool = False) -> DreamChainReport:
     """Land the value-led concrete chain, scoped to the dream's confluences.
 
     In one motion: derive the concrete-first objective order
@@ -343,6 +344,22 @@ def dream_develop(project_root: str | Path, max_steps: int = 25,
       ``wire-exports`` is preserved; the skipped ``strengthen-tests`` is disclosed
       by the narrative), never fabricated.
 
+    ``covered_only`` (DEFAULT False = byte-identical to today) is threaded
+    verbatim into EVERY ``compile_objective`` call — the SAME SAFE-by-default
+    autonomous-SWEEP gate ``compile_objective(covered_only=...)`` documents: a
+    move whose green suite no test exercises is withheld (previewed, not landed)
+    rather than silently landed. ``apex dream --land`` is the project's only
+    UNATTENDED landing surface (no human reviews the diff between chain steps),
+    so its CLI caller (``_cmd_dream_land``) forces this True via
+    ``resolve_covered_only(unattended=True)`` — the SAME single-source-of-truth
+    policy ``apex evolve``/the daemon force for their own unattended loops
+    (#115's precedent). A direct/programmatic caller (this function's default,
+    and ``apex assist``'s DRY-RUN preview) is unaffected: the parameter only
+    matters on an ``apply=True`` campaign (a DRY RUN never reaches the gated
+    apply loop — see ``compile_objective``), so the preview path is byte-
+    identical regardless of this flag. Strictly DEMOTE-direction: it can only
+    WITHHOLD a move that would otherwise land, never land one that wouldn't.
+
     Soundness: a move that fails its gate is rolled back and NOT counted, and a
     project with nothing landable yields an honest EMPTY chain — never a faked
     one. Deterministic: the report body carries no clock or randomness, and both
@@ -361,7 +378,8 @@ def dream_develop(project_root: str | Path, max_steps: int = 25,
         for scope in scopes:
             campaign = compile_objective(
                 project_root, objective=obj, max_steps=max_steps, verify=verify,
-                apply=apply, scope_module=scope, scope_verify=fast)
+                apply=apply, scope_module=scope, scope_verify=fast,
+                covered_only=covered_only)
             # Retain a VERIFICATION-UNAVAILABLE decline (fitness 0, no steps) so its
             # loud "pytest can't verify here" message is surfaced rather than dropped
             # as an empty "nothing landable" chain — the chain COULD NOT verify, which
@@ -589,3 +607,86 @@ def record_dream_outcomes(report: DreamChainReport,
         IdeaMemory.learn_from({"results": results}, project_root)
     except OSError:
         pass  # learning is best-effort; never fail a good apply on a memory write
+
+
+# --- Chain-level learning: per-SCOPE composition + outcome memory -------------
+#
+# ``record_dream_outcomes`` (above) credits each dreamed DIRECTION (the chain
+# objective); this closes the companion gap — the dream's own chain campaigns
+# never fed the CHAIN-level learning stores ``chain_compiler`` already writes for
+# an explicit, caller-ordered objective sequence (``composition_archive``'s
+# MAP-Elites cells + ``idea_memory.by_chain``, see ``chain_compiler._archive_
+# chain``/``_record_chain_memory``, chain_compiler.py:292-374). ``dream_develop``
+# has no caller-supplied sequence to key by — instead it groups by the SCOPE
+# MODULE each landed move actually touched (a dream confluence, or whichever
+# file a whole-tree run happened to land on), signature ``dream-chain:<scope>``,
+# so the organism learns not just WHICH objectives compose but WHERE (on what
+# kind of file) that composition reliably lands.
+_DREAM_CHAIN_PREFIX = "dream-chain:"
+
+
+def _dream_chain_scopes(report: DreamChainReport) -> dict[str, tuple[list[str], int]]:
+    """Landed work grouped by SCOPE MODULE: ``{module: (objectives, moves)}``.
+
+    ``objectives`` is the ordered, deduped chain objectives that landed at least
+    one move touching ``module`` (chain order preserved — the value-led order
+    ``report.objectives`` itself carries); ``moves`` is how many landed steps
+    touched it. Uses the SAME module-from-target convention
+    ``objective_compiler``'s own ``_move_module``/``_move_module_from_target``
+    apply (``target.split(':', 1)[0]``) over every LANDED step — never a
+    withheld/blocked one. A scoped confluence campaign's steps all share one
+    module by construction (``compile_objective(scope_module=...)`` filters
+    candidates to it); a whole-tree run groups by whichever module(s) its moves
+    actually touched, so this is honest either way. Pure projection of the
+    report: no clock, no randomness, no I/O."""
+    objectives: dict[str, list[str]] = {}
+    moves: dict[str, int] = {}
+    for r in report.results:
+        for s in r.steps:
+            module = s.target.split(":", 1)[0]
+            bucket = objectives.setdefault(module, [])
+            if r.objective not in bucket:
+                bucket.append(r.objective)
+            moves[module] = moves.get(module, 0) + 1
+    return {module: (objectives[module], moves[module]) for module in objectives}
+
+
+def record_dream_chain_memory(report: DreamChainReport,
+                              project_root: str | Path) -> None:
+    """Archive the landed chain's per-SCOPE recipe into the CHAIN-level learning
+    stores — the companion to :func:`record_dream_outcomes`.
+
+    For each scope module :func:`_dream_chain_scopes` names, records ONE
+    ``composition_archive.record_campaign`` elite (the landed objectives as the
+    recipe, the move count as the fitness gain) and ONE
+    ``IdeaMemory.record_chain_outcome`` tally, both under the SAME signature
+    ``dream-chain:<module>`` — mirroring ``chain_compiler``'s
+    ``_archive_chain``/``_record_chain_memory`` (chain_compiler.py:292-374)
+    exactly, keyed by scope module instead of by an explicit caller-ordered
+    objective sequence.
+
+    Best-effort and a STRICT no-op unless the chain APPLIED and landed at least
+    one move touching some module: a dry run (``applied`` False), an empty
+    chain, or a chain that landed/withheld nothing writes NOTHING, so the
+    off-by-default tree stays byte-identical. Only genuinely LANDED steps are
+    ever grouped (never a withheld/blocked move), so a recorded outcome is
+    always the honest ``"applied"`` — never a fabricated success. A write
+    failure on either store is swallowed (learning never fails a good apply);
+    does NOT touch ``dream_gate_learn``'s tighten-only promote-gate contract."""
+    if not report.applied:
+        return  # a dry run measured nothing to learn from
+    scopes = _dream_chain_scopes(report)
+    if not scopes:
+        return  # nothing landed anywhere → nothing to learn (byte-identical)
+    from app.engine.composition_archive import record_campaign
+    from app.engine.idea_memory import IdeaMemory
+    try:
+        mem = IdeaMemory.load(project_root)
+        for module, (objectives, moves) in scopes.items():
+            signature = f"{_DREAM_CHAIN_PREFIX}{module}"
+            record_campaign(project_root, signature, objectives,
+                           float(moves), 0.0, len(objectives))
+            mem.record_chain_outcome(signature, "applied")
+        mem.save(project_root)
+    except OSError:
+        pass  # the learn stores are best-effort; never fail a good apply on a write

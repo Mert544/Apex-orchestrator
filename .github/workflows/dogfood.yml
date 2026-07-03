@@ -23,6 +23,23 @@ jobs:
         with:
           fetch-depth: 0  # churn + debt-age signals need history
 
+      # .apex/*.json (dream journal, promotions, idea memory) is gitignored
+      # runtime state, so a fresh checkout starts every nightly run amnesiac —
+      # PROMOTE_STREAK (app/engine/dream.py) needs 3 CONSECUTIVE nightly dreams
+      # to graduate a discovery, which can never accrue without this. Restored
+      # before the run, saved after under a fresh per-run key so it always
+      # updates (restore-keys falls back to the most recent prior save).
+      - name: Restore Apex dream memory (so PROMOTE_STREAK can accrue across nights)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .apex/dream-journal.json
+            .apex/dream-promotions.json
+            .apex/idea-memory.json
+          key: apex-dream-memory-${{ github.run_id }}
+          restore-keys: |
+            apex-dream-memory-
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -41,7 +58,7 @@ jobs:
         run: python -m app.cli rewrite --all
 
       - name: Apex dreams (curate memory, extract patterns, write the digest)
-        run: python -m app.cli dream --curate
+        run: python -m app.cli dream --curate --learn-gates
 
       - name: Suite still green after self-maintenance
         run: python -m pytest -q
@@ -68,3 +85,13 @@ jobs:
             .apex/dream-digest.md
           if-no-files-found: ignore
           retention-days: 30
+
+      - name: Save Apex dream memory (so tonight's streak survives to tomorrow)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .apex/dream-journal.json
+            .apex/dream-promotions.json
+            .apex/idea-memory.json
+          key: apex-dream-memory-${{ github.run_id }}
