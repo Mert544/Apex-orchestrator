@@ -48,7 +48,10 @@ RAILS (any miss records a blocker; correctness over coverage, absolutely):
 - every live-out name must be DEFINITELY assigned when the run falls through
   (bound by a direct, top-level assignment statement of the run) — otherwise
   the helper's projection line could raise ``UnboundLocalError`` on a path
-  where the original never read the name;
+  where the original never read the name; a LIVE-IN name that is definitely
+  bound BEFORE the run (a parameter, or a direct top-level prelude
+  assignment) also counts (W100): it enters the helper as an always-bound
+  parameter, so even a conditional in-run rebind leaves the projection safe;
 - identical live-in AND live-out signatures across all copies;
 - the FAMILY rails (shared via :func:`~app.execution._dedup_helpers
   .family_rail_blocker`): every occurrence structurally identical to the
@@ -197,7 +200,18 @@ def _resolve_guarded_return(rel: str, start_line: int, n_statements: int,
     before = fn.body[:fn.body.index(run[0])]
     after = fn.body[fn.body.index(run[-1]) + 1:]
     live_in, live_out = _data_flow(fn, before, run, after)
-    unbound = [n for n in live_out if n not in _definitely_assigned(run)]
+    # W100 (over-refusal narrowing): a live-in name that is DEFINITELY bound
+    # BEFORE the run — a parameter, or a direct top-level assignment in the
+    # prelude — is always bound at the fall-through even when the run only
+    # rebinds it conditionally: it enters the helper as a parameter, so the
+    # projection line can never raise. Plain `live_in` membership is NOT
+    # enough: _data_flow's live-in admits names bound only CONDITIONALLY
+    # before the run, and evaluating such a name eagerly as a call argument
+    # could raise `UnboundLocalError` on a guard path where the original
+    # returned before ever reading it.
+    bound_before = _function_param_names(fn) | _definitely_assigned(before)
+    definite = _definitely_assigned(run) | (set(live_in) & bound_before)
+    unbound = [n for n in live_out if n not in definite]
     if unbound:
         plan.blockers.append(
             f"{rel}:{start_line}: {', '.join(unbound)} may be unbound when the "

@@ -580,10 +580,165 @@ def test_conditionally_bound_live_out_is_blocked(tmp_path):
     # `val` is live-out but bound only under `if flag:` — the helper's
     # projection line would raise UnboundLocalError on a path where the
     # ORIGINAL only raised later (or never). Definite assignment refuses it.
+    # W100: this stays the NEGATIVE control for the live-in narrowing below —
+    # `val` is NOT live-in (never read in the run, not bound before it), so
+    # the definite-assignment rail must keep refusing it unchanged.
     plan = plan_dedup_guarded_return(
         tmp_path, _block_for(_CONDITIONAL_OUT, tmp_path, min_statements=3))
     assert not plan.ok
     assert any("val" in b and "unbound" in b for b in plan.blockers)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# W100 over-refusal narrowing: a live-out name that is ALSO live-in and
+# DEFINITELY bound before the run (parameter / direct prelude assignment) is
+# always bound at the fall-through — a conditional in-run rebind cannot
+# unbind it (the helper receives it as a parameter), so projecting it out is
+# sound and the old blanket refusal was over-broad.
+# ──────────────────────────────────────────────────────────────────────────
+
+_LIVE_IN_COND_REBIND = '''\
+def scale_a(size, flag):
+    if size < 0:
+        return "bad"
+    if flag:
+        size = size * 2
+    total = size + 1
+    return f"A:{size}:{total}"
+
+
+def scale_b(size, flag):
+    if size < 0:
+        return "bad"
+    if flag:
+        size = size * 2
+    total = size + 1
+    return f"B:{total}:{size}"
+'''
+
+
+def test_live_in_param_conditionally_rebound_lands(tmp_path):
+    # W100: `size` is a PARAMETER (definitely bound before the run) that the
+    # run rebinds only under `if flag:` and the tail reads after — the old
+    # rail refused it; the lift is sound (helper param is always bound, the
+    # caller rebind restores exactly the fall-through value).
+    root = tmp_path
+    _write(root, "mod.py", _LIVE_IN_COND_REBIND)
+    blocks = find_duplicates(root, min_statements=3, min_occurrences=2)
+    assert blocks, "the detector should find the shared guarded block"
+    block = next(b for b in blocks if b.lines == 3)
+    plan = plan_dedup_guarded_return(root, block)
+    assert plan.ok, f"expected a clean plan, blockers={plan.blockers}"
+    new_src = plan.new_contents["mod.py"]
+
+    ast.parse(new_src)
+    assert new_src.count("total = size + 1") == 1  # body collapsed
+    assert new_src.count("size, total =") == 2     # live-out rebinds (sorted)
+
+    # Exec-equivalence across all three path classes: guard-taken,
+    # fall-through WITH the conditional rebind, and fall-through WITHOUT it
+    # (the live-in value flows through the projection untouched).
+    before = _exec_module(_LIVE_IN_COND_REBIND)
+    after = _exec_module(new_src)
+    for fn in ("scale_a", "scale_b"):
+        for size, flag in ((-5, True), (-5, False),  # guard-taken
+                           (3, True),                # conditional rebind fires
+                           (3, False)):              # rebind skipped
+            assert before[fn](size, flag) == after[fn](size, flag)
+    assert after["scale_a"](-5, True) == "bad"
+    assert after["scale_a"](3, True) == "A:6:7"
+    assert after["scale_a"](3, False) == "A:3:4"
+    assert after["scale_b"](3, False) == "B:4:3"
+
+
+_PRELUDE_BOUND_REBIND = '''\
+def fmt_a(raw, flag):
+    text = str(raw)
+    if not text:
+        return "empty"
+    if flag:
+        text = text.upper()
+    n = len(text)
+    return "A" + text + str(n)
+
+
+def fmt_b(raw, flag):
+    text = str(raw)
+    if not text:
+        return "empty"
+    if flag:
+        text = text.upper()
+    n = len(text)
+    return "B" + str(n) + text
+'''
+
+
+def test_live_in_prelude_assigned_conditionally_rebound_lands(tmp_path):
+    # W100: `text` is bound by a DIRECT prelude assignment (not a parameter),
+    # conditionally rebound in the run, and read after — the other half of
+    # the definitely-bound-before exemption.
+    _write(tmp_path, "mod.py", _PRELUDE_BOUND_REBIND)
+    block = DuplicateBlock(fingerprint="x", lines=3,
+                           occurrences=["mod.py:3", "mod.py:13"])
+    plan = plan_dedup_guarded_return(tmp_path, block)
+    assert plan.ok, f"expected a clean plan, blockers={plan.blockers}"
+    new_src = plan.new_contents["mod.py"]
+
+    ast.parse(new_src)
+    assert new_src.count("n = len(text)") == 1  # body collapsed
+    assert new_src.count("n, text =") == 2      # live-out rebinds (sorted)
+
+    before = _exec_module(_PRELUDE_BOUND_REBIND)
+    after = _exec_module(new_src)
+    for fn in ("fmt_a", "fmt_b"):
+        for raw, flag in (("", True), ("", False),  # guard-taken
+                          ("ab", True),             # conditional rebind fires
+                          ("ab", False)):           # rebind skipped
+            assert before[fn](raw, flag) == after[fn](raw, flag)
+    assert after["fmt_a"]("", False) == "empty"
+    assert after["fmt_a"]("ab", True) == "AAB2"
+    assert after["fmt_a"]("ab", False) == "Aab2"
+    assert after["fmt_b"]("ab", False) == "B2ab"
+
+
+_COND_BEFORE_LIVE_IN = '''\
+def ga(cond, flag):
+    if cond:
+        acc = 1
+    if not cond:
+        return None
+    if flag:
+        acc = acc + 1
+    total = 7
+    return acc + total
+
+
+def gb(cond, flag):
+    if cond:
+        acc = 1
+    if not cond:
+        return None
+    if flag:
+        acc = acc + 1
+    total = 7
+    return acc - total
+'''
+
+
+def test_live_in_only_conditionally_bound_before_is_still_blocked(tmp_path):
+    # W100 boundary: `acc` IS live-in (read in the run, stored in the
+    # prelude) but the prelude binding sits under `if cond:` — NOT definite.
+    # Accepting it would evaluate `acc` eagerly as a call argument, raising
+    # UnboundLocalError on ga(False, ...) where the ORIGINAL returns None
+    # from the guard before ever reading it. live_in membership alone must
+    # not lift the refusal.
+    _write(tmp_path, "mod.py", _COND_BEFORE_LIVE_IN)
+    block = DuplicateBlock(fingerprint="x", lines=3,
+                           occurrences=["mod.py:4", "mod.py:15"])
+    plan = plan_dedup_guarded_return(tmp_path, block)
+    assert not plan.ok
+    assert any("acc" in b and "unbound" in b for b in plan.blockers)
+    assert not plan.new_contents
 
 
 _SIG_DIVERGE = '''\
