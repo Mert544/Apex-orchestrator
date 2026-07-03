@@ -711,7 +711,7 @@ def test_objective_count_pins():
     from app.engine.objective_compiler import available_objectives
 
     names = available_objectives()
-    assert len(set(names)) == 96  # 95 -> 96: dedup-guarded-return
+    assert len(set(names)) == 97  # 96 -> 97: dedup-parameterized-total-return
     assert len(classify_objectives(names)["CONCRETE"]) == 50  # finalize-module-constant (50th CONCRETE)
 
 

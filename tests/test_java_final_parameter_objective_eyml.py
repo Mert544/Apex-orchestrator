@@ -475,7 +475,7 @@ def test_objective_total_is_ninety_five():
     # 92 after java-final-parameter (java-finalize-field's parameter-level
     # sibling); 93 after add-functools-wraps; 94 after java-final-local (the
     # local-variable sibling) landed on top.
-    assert len(set(available_objectives())) == 96  # 95 -> 96: dedup-guarded-return
+    assert len(set(available_objectives())) == 97  # 96 -> 97: dedup-parameterized-total-return
 
 
 # --- PARITY ROW 1: move_value tier (matches java-finalize-field's runtime-noop tier) --

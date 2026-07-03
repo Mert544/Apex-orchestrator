@@ -36,6 +36,13 @@ for BOTH objectives:
     path (impact-scoped verify keeps a tested module green), and honestly no-ops
     (writing nothing) when nothing is actionable — never a fake-green.
 
+W99a: a THIRD objective, ``dedup-parameterized-total-return`` (the Constant-only
+parameterized lander for ALWAYS-RETURNING near-duplicates — the shape
+``dedup-parameterized`` itself refuses since its tail is not a plain/tail return),
+gets the same signal==gate / refuses-detected-but-unsafe / deterministic-sorted /
+plan_tree+plan_roadmap-surfacing / off-by-default / no-dedupable-project /
+no-project-root coverage below, plus a trio-wide flag-independence check.
+
 Deterministic: fixed sources under ``tmp_path``, no time/random.
 """
 
@@ -47,6 +54,7 @@ from pathlib import Path
 from app.engine.idea_action_bridge import IdeaActionBridge
 from app.engine.idea_synthesis_signals import (
     dedup_parameterizable_modules,
+    dedup_parameterized_total_return_modules,
     dedup_total_return_modules,
 )
 from app.models.idea import ActionStep, IdeaNode, IdeaTreeReport
@@ -135,6 +143,41 @@ def _parameterized_project(tmp_path: Path) -> Path:
     _write(root, "pkg/a.py", _PARAM_A)
     _write(root, "pkg/b.py", _PARAM_B)
     _write(root, "pkg/__init__.py", "")
+    return root
+
+
+# ── parameterized-total-return fixtures ──────────────────────────────────────────
+# An ALWAYS-RETURNING near-duplicate: a guard return plus a tail return, differing
+# only at one constant leaf (``+ 10`` vs ``+ 20``) — the shape dedup-parameterized
+# itself refuses (an early, non-tail return) and dedup-parameterized-total-return
+# lifts instead.
+_PTR_A = (
+    "def alpha(n):\n"
+    "    a = n + 1\n"
+    "    if a > 5:\n"
+    "        return a\n"
+    "    b = a * 2\n"
+    "    c = b + 10\n"
+    "    return c\n"
+)
+_PTR_B = (
+    "def beta(n):\n"
+    "    a = n + 1\n"
+    "    if a > 5:\n"
+    "        return a\n"
+    "    b = a * 2\n"
+    "    c = b + 20\n"
+    "    return c\n"
+)
+
+
+def _parameterized_total_return_project(tmp_path: Path) -> Path:
+    """Two modules sharing ONE landable always-returning near-duplicate, plus a
+    unique module with nothing to dedup at all."""
+    root = tmp_path / "ptr"
+    _write(root, "a.py", _PTR_A)
+    _write(root, "b.py", _PTR_B)
+    _write(root, "lonely.py", "def solo(x):\n    return x + 99\n")
     return root
 
 
@@ -229,6 +272,57 @@ def test_parameterized_signal_deterministic_sorted_and_safe(tmp_path: Path) -> N
     assert dedup_parameterizable_modules(str(root), []) == []
 
 
+# === parameterized-total-return: signal equals the objective's own gate =========
+
+def test_parameterized_total_return_signal_equals_gate(tmp_path: Path) -> None:
+    root = _parameterized_total_return_project(tmp_path)
+    mods = ["a.py", "b.py", "lonely.py"]
+    assert dedup_parameterized_total_return_modules(str(root), mods) == ["a.py", "b.py"]
+    from app.execution.objectives.dedup_parameterized_total_return import (
+        _actionable_groups,
+    )
+    touched = {
+        occ.split(":", 1)[0]
+        for g in _actionable_groups(root) for occ in g.occurrences
+    }
+    assert touched == {"a.py", "b.py"}
+
+
+def test_parameterized_total_return_signal_refuses_detected_but_unsafe(
+    tmp_path: Path,
+) -> None:
+    """A near-duplicate group whose tail is a PLAIN/TAIL return (no earlier,
+    non-tail exit) is DETECTED by the near-dup detector but is dedup-
+    parameterized's own domain, not dedup-parameterized-total-return's — the
+    objective's plan blocks it (``the range is a plain/tail-return block``), and
+    the signal drops it (honest by construction, never an over-promise)."""
+    root = tmp_path / "unsafe_ptr"
+    _write(root, "a.py", _PARAM_A)
+    _write(root, "b.py", _PARAM_B)
+    # The group IS detected as a near-duplicate...
+    from app.engine.near_dup import near_duplicates
+    assert near_duplicates(root, fresh=True), "a near-dup group should be detected"
+    # ...but its tail is a plain return (dedup-parameterized's job), so
+    # dedup-parameterized-total-return has nothing actionable...
+    from app.execution.objectives.dedup_parameterized_total_return import (
+        _actionable_groups,
+    )
+    assert _actionable_groups(root) == []
+    # ...and the signal honestly reports nothing.
+    assert dedup_parameterized_total_return_modules(str(root), ["a.py", "b.py"]) == []
+
+
+def test_parameterized_total_return_signal_deterministic_sorted_and_safe(
+    tmp_path: Path,
+) -> None:
+    root = _parameterized_total_return_project(tmp_path)
+    mods = ["b.py", "a.py", "b.py", "nope.py"]  # dup input + missing path
+    assert dedup_parameterized_total_return_modules(str(root), mods) == ["a.py", "b.py"]
+    assert dedup_parameterized_total_return_modules(
+        str(root), mods, limit=1) == ["a.py"]
+    assert dedup_parameterized_total_return_modules(str(root), []) == []  # empty input
+
+
 # === the augmentation surfaces the qualifying modules, no negatives =============
 
 def test_plan_tree_surfaces_total_return_step(tmp_path: Path) -> None:
@@ -257,6 +351,28 @@ def test_plan_tree_surfaces_parameterized_step(tmp_path: Path) -> None:
         project_root=str(root), dedup_parameterized=True)
     assert _dedup_steps(plan, "dedup_parameterized") == {"pkg/a.py": "Refine",
                                                          "pkg/b.py": "Refine"}
+
+
+def test_plan_tree_surfaces_parameterized_total_return_step(tmp_path: Path) -> None:
+    root = _parameterized_total_return_project(tmp_path)
+    bridge = IdeaActionBridge()
+    plan = bridge.plan_tree(
+        _report(root, ["a.py", "b.py", "lonely.py"]),
+        project_root=str(root), dedup_parameterized_total_return=True)
+    assert _dedup_steps(plan, "dedup_parameterized_total_return") == {
+        "a.py": "Refine", "b.py": "Refine"}
+
+
+def test_plan_roadmap_phases_parameterized_total_return_in_refine(
+    tmp_path: Path,
+) -> None:
+    root = _parameterized_total_return_project(tmp_path)
+    bridge = IdeaActionBridge()
+    plan = bridge.plan_roadmap(
+        _report(root, ["a.py", "b.py", "lonely.py"]),
+        project_root=str(root), dedup_parameterized_total_return=True)
+    assert _dedup_steps(plan, "dedup_parameterized_total_return") == {
+        "a.py": "Refine", "b.py": "Refine"}
 
 
 # === opt-in: each is OFF by default (idea set never shifts) ======================
@@ -292,6 +408,29 @@ def test_parameterized_is_off_by_default(tmp_path: Path) -> None:
     opted = bridge.plan_tree(rpt, project_root=str(root), dedup_parameterized=True)
     assert _dedup_steps(opted, "dedup_parameterized") == {"pkg/a.py": "Refine",
                                                          "pkg/b.py": "Refine"}
+
+
+def test_parameterized_total_return_is_off_by_default(tmp_path: Path) -> None:
+    root = _parameterized_total_return_project(tmp_path)
+    bridge = IdeaActionBridge()
+    rpt = _report(root, ["a.py", "b.py", "lonely.py"])
+    default = bridge.plan_tree(rpt, project_root=str(root))
+    assert _dedup_steps(default, "dedup_parameterized_total_return") == {}
+    assert [s for s in default.steps
+            if s.action_type == "dedup_parameterized_total_return"] == []
+    # Opting in adds exactly the steps the default plan withheld.
+    opted = bridge.plan_tree(rpt, project_root=str(root),
+                             dedup_parameterized_total_return=True)
+    assert _dedup_steps(opted, "dedup_parameterized_total_return") == {
+        "a.py": "Refine", "b.py": "Refine"}
+    # The default plan is stable run-to-run (no time/random in the off path).
+    once = json.dumps([s.model_dump() for s in default.steps], sort_keys=True)
+    twice = json.dumps(
+        [s.model_dump()
+         for s in bridge.plan_tree(rpt, project_root=str(root)).steps],
+        sort_keys=True,
+    )
+    assert once == twice
 
 
 def test_total_return_off_by_default_in_roadmap(tmp_path: Path) -> None:
@@ -339,6 +478,46 @@ def test_dedup_flags_are_independent(tmp_path: Path) -> None:
     assert _dedup_steps(pp_only, "dedup_total_return") == {}
 
 
+def test_dedup_parameterized_total_return_flag_is_independent(tmp_path: Path) -> None:
+    """The THIRD dedup flag joins the independence set: enabling
+    dedup-parameterized-total-return must NOT pull in dedup-total-return NOR
+    dedup-parameterized, and enabling those two must not pull in
+    dedup-parameterized-total-return either — all three duplicates live in the
+    SAME project so the only reason another objective's step is absent is the
+    flag, not the fixture."""
+    root = tmp_path / "trio"
+    # An always-returning exact duplicate (dedup-total-return) ...
+    _write(root, "a.py", _TR_BLOCK)
+    _write(root, "b.py", _TR_BLOCK.replace("classify", "process"))
+    # ... a one-constant, plain/tail-return near-duplicate (dedup-parameterized) ...
+    _write(root, "pkg/a.py", _PARAM_A)
+    _write(root, "pkg/b.py", _PARAM_B)
+    _write(root, "pkg/__init__.py", "")
+    # ... AND an always-returning near-duplicate (dedup-parameterized-total-return).
+    _write(root, "ptr/a.py", _PTR_A)
+    _write(root, "ptr/b.py", _PTR_B)
+    bridge = IdeaActionBridge()
+    mods = ["a.py", "b.py", "pkg/a.py", "pkg/b.py", "pkg/__init__.py",
+            "ptr/a.py", "ptr/b.py"]
+
+    # Enable ONLY parameterized-total-return: its steps appear, the other two don't.
+    ptr_only = bridge.plan_tree(_report(root, mods), project_root=str(root),
+                                dedup_parameterized_total_return=True)
+    assert _dedup_steps(ptr_only, "dedup_parameterized_total_return") == {
+        "ptr/a.py": "Refine", "ptr/b.py": "Refine"}
+    assert _dedup_steps(ptr_only, "dedup_total_return") == {}
+    assert _dedup_steps(ptr_only, "dedup_parameterized") == {}
+
+    # Enable the OTHER two: parameterized-total-return does NOT appear.
+    others = bridge.plan_tree(_report(root, mods), project_root=str(root),
+                              dedup_total_return=True, dedup_parameterized=True)
+    assert _dedup_steps(others, "dedup_total_return") == {"a.py": "Refine",
+                                                          "b.py": "Refine"}
+    assert _dedup_steps(others, "dedup_parameterized") == {"pkg/a.py": "Refine",
+                                                            "pkg/b.py": "Refine"}
+    assert _dedup_steps(others, "dedup_parameterized_total_return") == {}
+
+
 def test_enabling_one_flag_adds_only_its_objective() -> None:
     """``_enabled_objectives`` adds EXACTLY the opted-in objective: each dedup flag
     appends only its own row and no other opt-in objective; with every flag off it is
@@ -351,6 +530,10 @@ def test_enabling_one_flag_adds_only_its_objective() -> None:
     only_pp = IdeaActionBridge._enabled_objectives(
         False, False, dedup_parameterized=True)
     assert [r[1] for r in only_pp if r not in base] == ["dedup_parameterized"]
+    only_ptr = IdeaActionBridge._enabled_objectives(
+        False, False, dedup_parameterized_total_return=True)
+    assert [r[1] for r in only_ptr if r not in base] == [
+        "dedup_parameterized_total_return"]
 
 
 # === determinism / opt-in safety: a duplicate-free project adds NOTHING =========
@@ -388,6 +571,48 @@ def test_no_project_root_adds_no_dedup_step() -> None:
                             dedup_total_return=True, dedup_parameterized=True)
     assert [s for s in plan.steps if s.operator == "synthesis"
             and s.action_type in ("dedup_total_return", "dedup_parameterized")] == []
+
+
+def test_no_dedupable_project_is_byte_identical_all_three_flags(
+    tmp_path: Path,
+) -> None:
+    """Even with all THREE dedup flags opted in (including the new
+    dedup-parameterized-total-return), a project with no actionable
+    duplicate/near-duplicate gets nothing added and the plan is byte-identical
+    run-to-run — the augmentation honestly no-ops."""
+    root = tmp_path / "clean_ptr"
+    _write(root, "alpha.py", "def a(x):\n    return x + 1\n")
+    _write(root, "beta.py", "def b(y):\n    return y * 2\n")
+    bridge = IdeaActionBridge()
+    rpt = _report(root, ["alpha.py", "beta.py"])
+    plan = bridge.plan_tree(rpt, project_root=str(root),
+                            dedup_total_return=True, dedup_parameterized=True,
+                            dedup_parameterized_total_return=True)
+    assert [s for s in plan.steps if s.operator == "synthesis"
+            and s.action_type in ("dedup_total_return", "dedup_parameterized",
+                                  "dedup_parameterized_total_return")] == []
+    once = json.dumps([s.model_dump() for s in plan.steps], sort_keys=True)
+    twice = json.dumps(
+        [s.model_dump()
+         for s in bridge.plan_tree(rpt, project_root=str(root),
+                                   dedup_total_return=True,
+                                   dedup_parameterized=True,
+                                   dedup_parameterized_total_return=True).steps],
+        sort_keys=True,
+    )
+    assert once == twice
+
+
+def test_no_project_root_adds_no_parameterized_total_return_step() -> None:
+    """Without a project root the signal cannot read any module, so the
+    dedup-parameterized-total-return step is never added — a graceful no-op,
+    never a raise."""
+    bridge = IdeaActionBridge()
+    rpt = IdeaTreeReport(objective="dev", project_root="", ideas=[_idea(0, "a.py")])
+    plan = bridge.plan_tree(rpt, project_root="",
+                            dedup_parameterized_total_return=True)
+    assert [s for s in plan.steps if s.operator == "synthesis"
+            and s.action_type == "dedup_parameterized_total_return"] == []
 
 
 # === apply_step actually LANDS the lift / no-ops honestly =======================

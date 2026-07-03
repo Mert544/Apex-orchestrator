@@ -147,6 +147,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "remove-unreachable-after-terminator",
         "dedup",
         "dedup-parameterized",
+        "dedup-parameterized-total-return",
         "dedup-total-return",
         "dedup-guarded-return",
         "dead-params",

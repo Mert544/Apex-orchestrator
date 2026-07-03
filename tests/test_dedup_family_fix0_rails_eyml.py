@@ -64,6 +64,7 @@ from app.execution.near_dup_extract import (
     _pattern_node_ids,
     plan_near_dup_extract,
 )
+from app.execution.near_dup_total_return import plan_near_dup_total_return
 
 
 def _write(root: Path, rel: str, text: str) -> None:
@@ -760,3 +761,194 @@ def test_single_line_str_near_dup_negative_lands(tmp_path):
         assert (new_ns["alpha"](arg), new_ns["beta"](arg)) == \
             (old_ns["alpha"](arg), old_ns["beta"](arg))
     assert new_ns["alpha"](0)[0] == "H1"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# W99a — the shipped rails, INHERITED row: each also refuses on the near-dup
+# TOTAL-RETURN lane (``plan_near_dup_total_return``), now writable since the
+# lander exists. Same rails, same shared pipeline, an always-returning shape.
+# ══════════════════════════════════════════════════════════════════════════
+
+_OVERLAP_TOTAL_RETURN = '''\
+def f(x):
+    return 1
+    return 1
+    return 1
+    return 1
+    return 1
+    return 2
+'''
+
+
+def test_overlap_total_return_lane_blocks(tmp_path):
+    _write(tmp_path, "mod.py", _OVERLAP_TOTAL_RETURN)
+    groups = find_near_duplicates(tmp_path, min_statements=5)
+    group = _group_at(groups, "mod.py:2", "mod.py:3")
+    plan = plan_near_dup_total_return(tmp_path, group)
+    _assert_blocked(plan, "occurrences at lines 2 and 3 overlap",
+                    "cannot be rewritten independently")
+
+
+_GLOBAL_DECL_TOTAL_RETURN = '''\
+G = 0
+
+
+def probe():
+    return G
+
+
+def alpha(x, flag):
+    global G
+    if flag:
+        return -1
+    G = x + 1
+    r = probe() + 10
+    return r
+
+
+def beta(x, flag):
+    global G
+    if flag:
+        return -1
+    G = x + 1
+    r = probe() + 20
+    return r
+'''
+
+
+def test_global_decl_total_return_lane_blocks(tmp_path):
+    _write(tmp_path, "mod.py", _GLOBAL_DECL_TOTAL_RETURN)
+    groups = find_near_duplicates(tmp_path, min_statements=4)
+    group = _group_at(groups, "mod.py:10", "mod.py:19")
+    plan = plan_near_dup_total_return(tmp_path, group)
+    _assert_blocked(plan, "declares `G` global/nonlocal", "binds or reads it")
+
+
+_MULTILINE_BYTES_TOTAL_RETURN = '''\
+def alpha(x, flag):
+    if flag:
+        return -1
+    hdr = b"""H1
+        row-a
+"""
+    a = x + 7
+    return (hdr, a)
+
+
+def beta(x, flag):
+    if flag:
+        return -1
+    hdr = b"""H1
+        row-a
+"""
+    a = x + 8
+    return (hdr, a)
+'''
+
+
+def test_multiline_bytes_total_return_lane_blocks(tmp_path):
+    _write(tmp_path, "mod.py", _MULTILINE_BYTES_TOTAL_RETURN)
+    groups = find_near_duplicates(tmp_path, min_statements=4)
+    group = _group_at(groups, "mod.py:2", "mod.py:12")
+    plan = plan_near_dup_total_return(tmp_path, group)
+    _assert_blocked(plan, "multi-line string constant",
+                    "rewrite the string's contents")
+
+
+_DRIFT_TOTAL_RETURN_BASE = (
+    "def f1(x, flag):\n"
+    "    if flag:\n"
+    "        return -1\n"
+    "    a = x + 1\n"
+    "    b = a - 3\n"
+    "    d = b + 7\n"
+    "    return d\n"
+    "\n\n"
+    "def f2(x, flag):\n"
+    "    if flag:\n"
+    "        return -1\n"
+    "    a = x + 1\n"
+    "    b = a - 3\n"
+    "    d = b + 8\n"
+    "    return d\n"
+)
+# Operator-only drift in f2: `d = b + 8` -> `d = b * 8` (value-leaf paths and
+# segments stay identical; only the re-derived structural TEMPLATE catches it).
+_DRIFT_TOTAL_RETURN_STALE = _DRIFT_TOTAL_RETURN_BASE.replace(
+    "d = b + 8\n    return d", "d = b * 8\n    return d")
+
+
+def test_template_drift_total_return_lane_blocks(tmp_path):
+    _write(tmp_path, "m.py", _DRIFT_TOTAL_RETURN_BASE)
+    groups = find_near_duplicates(tmp_path, min_statements=5)
+    group = _group_at(groups, "m.py:2", "m.py:11")
+    _write(tmp_path, "m.py", _DRIFT_TOTAL_RETURN_STALE)
+    plan = plan_near_dup_total_return(tmp_path, group)
+    _assert_blocked(plan, "no longer share one structural template",
+                    "structural drift")
+
+
+_MATCH_PATTERN_TOTAL_RETURN = '''\
+def alpha(x, flag):
+    if flag:
+        return -1
+    a = x + 1
+    r = 0
+    match x:
+        case 0:
+            r = a
+        case 100:
+            r = a + 1
+    return r
+
+
+def beta(x, flag):
+    if flag:
+        return -1
+    a = x + 1
+    r = 0
+    match x:
+        case 0:
+            r = a
+        case 200:
+            r = a + 1
+    return r
+'''
+
+
+def test_match_pattern_total_return_lane_blocks(tmp_path):
+    _write(tmp_path, "mod.py", _MATCH_PATTERN_TOTAL_RETURN)
+    groups = find_near_duplicates(tmp_path, min_statements=5)
+    group = _group_at(groups, "mod.py:2", "mod.py:15")
+    plan = plan_near_dup_total_return(tmp_path, group)
+    _assert_blocked(plan, "inside a `match` pattern",
+                    "would become a capture pattern")
+
+
+_DOCSTRING_TOTAL_RETURN = '''\
+def alpha(n, flag):
+    """Compute A."""
+    if flag:
+        return -1
+    a = n + 1
+    b = a * 2
+    return b
+
+
+def beta(n, flag):
+    """Compute B."""
+    if flag:
+        return -1
+    a = n + 1
+    b = a * 2
+    return b
+'''
+
+
+def test_docstring_total_return_lane_blocks(tmp_path):
+    _write(tmp_path, "mod.py", _DOCSTRING_TOTAL_RETURN)
+    groups = find_near_duplicates(tmp_path, min_statements=5)
+    group = _group_at(groups, "mod.py:2", "mod.py:11")
+    plan = plan_near_dup_total_return(tmp_path, group)
+    _assert_blocked(plan, "starts at the enclosing function's docstring",
+                    "null the function's `__doc__`")

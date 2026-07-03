@@ -122,6 +122,7 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "remove-unreachable-after-terminator": "behavior-preserving-idiom",
     "dedup": "behavior-preserving-idiom",
     "dedup-parameterized": "behavior-preserving-idiom",
+    "dedup-parameterized-total-return": "behavior-preserving-idiom",
     "dedup-total-return": "behavior-preserving-idiom",
     "dedup-guarded-return": ("behavior-preserving-idiom(sentinel-projection:"
                              "unforgeable-object()-marker+verbatim-block-lift)"

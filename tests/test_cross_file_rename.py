@@ -151,8 +151,43 @@ def test_apply_rolls_back_when_tests_fail(tmp_path):
     assert (tmp_path / "app" / "core.py").read_text() == before
 
 
+def test_apply_refuses_a_stale_plan_mutated_since_planning(tmp_path):
+    # W99a: STALENESS PRECONDITION — a target file changed on disk since the
+    # plan snapshotted `originals` (a composed multi-step campaign that plans
+    # ahead of an earlier apply in the SAME run, or a concurrent edit) must
+    # replan, not silently overwrite the intervening change or splice against
+    # now-wrong line/column offsets.
+    _project(tmp_path)
+    plan = plan_rename(tmp_path, "compute", "calculate")
+    assert plan.ok
+    # Mutate the SAME file the plan is about to rewrite, after planning.
+    core_path = tmp_path / "app" / "core.py"
+    core_path.write_text(core_path.read_text() + "\nEXTRA = 1\n")
+    res = apply_rename(tmp_path, plan, verify=False)
+    assert res["applied"] is False
+    assert "stale plan" in res["reason"] and "app/core.py" in res["reason"]
+    # Refusal is a true no-op: the on-disk mutation survives untouched, and
+    # no OTHER planned file was written either.
+    assert "EXTRA = 1" in core_path.read_text()
+    assert "def calculate" not in core_path.read_text()
+    assert "compute" in (tmp_path / "app" / "user_from.py").read_text()
+
+
+def test_apply_unmutated_plan_still_lands(tmp_path):
+    # Positive control: with NOTHING mutated between planning and applying,
+    # the staleness precondition is a no-op — the plan lands exactly as
+    # before (byte-identical to the pre-W99a behaviour).
+    _project(tmp_path)
+    plan = plan_rename(tmp_path, "compute", "calculate")
+    res = apply_rename(tmp_path, plan, verify=False)
+    assert res["applied"] is True
+    assert "def calculate(x):" in (tmp_path / "app" / "core.py").read_text()
+
+
 def _new_file_plan(rel: str, content: str) -> RenamePlan:
-    """A plan that CREATES a brand-new file (no original to restore)."""
+    """A plan that CREATES a brand-new file (no original to restore) — also
+    the staleness precondition's no-``originals`` case: with no snapshot to
+    compare against, the guard is a no-op and the create-path is unaffected."""
     plan = RenamePlan(old=rel, new="generate")
     plan.new_contents[rel] = content
     plan.edits_by_file[rel] = 1

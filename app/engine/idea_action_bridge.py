@@ -547,6 +547,22 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                              "is marked by an unforgeable sentinel and each copy "
                              "becomes a call + guard (refuses an unsafe or "
                              "sibling-shaped block)", True),
+    # dedup-parameterized-total-return is the near-dup family's SECOND
+    # control-flow rung: the SAME delegated shape as dedup-parameterized, but
+    # it rewrites the modules carrying an ALWAYS-RETURNING near-duplicate group
+    # (structurally identical, differing only at constant leaves — Name holes
+    # are deferred to W99c) into one PARAMETERIZED returning helper. Its verify
+    # MUST be impact-scoped, so ``apply_step`` delegates it to the develop-core
+    # ``apply_rename`` path. CROSS-MODULE like its siblings; surfaced executable
+    # ONLY for a module the objective's OWN gate
+    # (``dedup_parameterized_total_return_modules``) proves participates in a
+    # LANDABLE lift, so the claim is honest by construction.
+    "dedup-parameterized-total-return": ("dedup_parameterized_total_return",
+                                         "Lift the always-returning near-duplicate "
+                                         "group touching {s} into one shared "
+                                         "returning helper — differing constants "
+                                         "become parameters (refuses a group no "
+                                         "honest parameterization fits)", True),
 }
 
 
@@ -1132,6 +1148,7 @@ class IdeaActionBridge:
         "dedup_total_return": ["lift always-returning exact-duplicate block to shared helper"],
         "dedup_guarded_return": ["lift guard-return+fall-through exact-duplicate block to sentinel-projecting helper"],
         "dedup_parameterized": ["parameterize near-duplicate group into shared helper"],
+        "dedup_parameterized_total_return": ["lift always-returning near-duplicate group to one parameterized returning helper"],
         # promote_staticmethod (Autonomous-39 W3a, the honest god-class flip), like
         # the dedup landers above, is NOT a SemanticPatchResult transform —
         # ``apply_step`` delegates it to the develop-core ``apply_rename`` path.
@@ -2192,6 +2209,43 @@ class IdeaActionBridge:
 
         return _plan
 
+    @classmethod
+    def _plan_dedup_parameterized_total_return_lander(cls):
+        """The dedup-parameterized-total-return lander adapted to the delegated
+        ``(project_root, target)`` shape every delegated synthesis uses.
+
+        dedup-parameterized-total-return is CROSS-MODULE — its real lander is
+        ``plan_near_dup_total_return(root, group: NearDuplicateGroup)``, not
+        ``(root, rel_path)``. The target a surfaced step carries is a PARTICIPATING
+        module (exactly what ``dedup_parameterized_total_return_modules`` returns),
+        so this wrapper re-runs the objective's OWN gate
+        :func:`dedup_parameterized_total_return._actionable_groups`, matches the
+        FIRST actionable group whose occurrences touch that module, and DELEGATES
+        to the real ``plan_near_dup_total_return``. An unmatched target (no
+        actionable group touches it) yields an empty no-op :class:`RenamePlan`, so
+        the delegated apply path honestly no-ops rather than fakes a change (never a
+        fake-green).
+
+        Same joined ``"A + B"`` subject handling as its sibling
+        ``_plan_dedup_parameterized_lander`` (no primary-discovery seeder fact
+        currently emits one for this objective, but a single-module target already
+        degrades to the byte-identical one-element-list case, so this stays ready
+        for one)."""
+        from app.execution.cross_file_rename import RenamePlan
+        from app.execution.near_dup_total_return import plan_near_dup_total_return
+        from app.execution.objectives.dedup_parameterized_total_return import (
+            _actionable_groups,
+        )
+
+        def _plan(project_root: str, target: str) -> RenamePlan:
+            modules = [m.strip() for m in target.split(" + ")]
+            for group in _actionable_groups(project_root):
+                if any(cls._unit_touches(group, mod) for mod in modules):
+                    return plan_near_dup_total_return(project_root, group)
+            return RenamePlan(old=target, new="dedup-parameterized-total-return")
+
+        return _plan
+
     @staticmethod
     def _plan_extract_guard_clause_lander():
         """The extract-guard-clause lander adapted to the delegated ``(project_root,
@@ -2491,6 +2545,10 @@ class IdeaActionBridge:
             "_plan_dedup_parameterized_lander",
             "no dedup-parameterized (no parameterizable near-duplicate group "
             "touches this module)"),
+        "dedup_parameterized_total_return": (
+            "_plan_dedup_parameterized_total_return_lander",
+            "no dedup-parameterized-total-return (no parameterizable "
+            "always-returning near-duplicate group touches this module)"),
         "dedup_guarded_return": (
             "_plan_dedup_guarded_return_lander",
             "no dedup-guarded-return (no guard-return+fall-through "
@@ -3252,6 +3310,13 @@ class IdeaActionBridge:
     # like every delegated synthesis objective each lands through ``apply_rename`` with
     # ``impact_scope=True``. Their flags (``dedup_total_return`` / ``dedup_parameterized``)
     # are INDEPENDENT of each other and of every other opt-in flag.
+    #
+    # dedup-parameterized-total-return is dedup-parameterized's ALWAYS-RETURNING
+    # sibling (the near-dup family's second control-flow rung): it lifts a
+    # near-duplicate group whose block is total-return — the shape bare
+    # dedup-parameterized refuses. Same CROSS-MODULE shape, same Refine phase
+    # (a structural REFINEMENT), same ``apply_rename(impact_scope=True)`` landing,
+    # and its flag is likewise INDEPENDENT of every other opt-in flag.
     _OPTIN_SYNTHESIS_OBJECTIVES: dict[str, tuple[tuple[str, str, str, str], ...]] = {
         "cover_gaps": (
             ("cover_gaps_modules", "cover_gaps", "cover-gaps", "Stabilize"),
@@ -3286,6 +3351,11 @@ class IdeaActionBridge:
             ("dedup_parameterizable_modules", "dedup_parameterized",
              "dedup-parameterized", "Refine"),
         ),
+        "dedup_parameterized_total_return": (
+            ("dedup_parameterized_total_return_modules",
+             "dedup_parameterized_total_return",
+             "dedup-parameterized-total-return", "Refine"),
+        ),
     }
 
     # Cost ceiling: at most this many candidate modules are probed per signal
@@ -3317,6 +3387,7 @@ class IdeaActionBridge:
         dedup_total_return: bool = False,
         dedup_guarded_return: bool = False,
         dedup_parameterized: bool = False,
+        dedup_parameterized_total_return: bool = False,
         auto: bool = False,
     ) -> tuple[tuple[str, str, str, str], ...]:
         """The default synthesis objectives plus each opt-in objective whose flag
@@ -3338,7 +3409,8 @@ class IdeaActionBridge:
                  "modernize": modernize,
                  "dedup_total_return": dedup_total_return,
                  "dedup_guarded_return": dedup_guarded_return,
-                 "dedup_parameterized": dedup_parameterized}
+                 "dedup_parameterized": dedup_parameterized,
+                 "dedup_parameterized_total_return": dedup_parameterized_total_return}
         objectives = cls._SYNTHESIS_OBJECTIVES
         for flag, rows in cls._OPTIN_SYNTHESIS_OBJECTIVES.items():
             if auto or flags.get(flag):
@@ -3356,6 +3428,7 @@ class IdeaActionBridge:
                                  dedup_total_return: bool = False,
                                  dedup_guarded_return: bool = False,
                                  dedup_parameterized: bool = False,
+                                 dedup_parameterized_total_return: bool = False,
                                  auto: bool = False) -> None:
         """Append executable develop-grade synthesis steps for the qualifying
         candidate modules, in place (the caller then de-dups).
@@ -3399,7 +3472,9 @@ class IdeaActionBridge:
                                               strengthen_tests, modernize,
                                               dedup_total_return,
                                               dedup_guarded_return,
-                                              dedup_parameterized, auto)
+                                              dedup_parameterized,
+                                              dedup_parameterized_total_return,
+                                              auto)
         for signal_name, action_type, fact, phase in objectives:
             signal = getattr(sigs, signal_name)
             for module in signal(project_root, candidates,
@@ -3451,6 +3526,7 @@ class IdeaActionBridge:
         dedup_total_return: bool = False,
         dedup_guarded_return: bool = False,
         dedup_parameterized: bool = False,
+        dedup_parameterized_total_return: bool = False,
         auto: bool = False,
     ) -> ActionPlan:
         ideas = sorted(report.ideas, key=lambda i: i.value, reverse=True)
@@ -3460,17 +3536,19 @@ class IdeaActionBridge:
         steps: list[ActionStep] = []
         for i in ideas:
             steps.extend(self._expand_idea(i, project_root=root_for_checks))
-        self._augment_synthesis_steps(steps, root_for_checks,
-                                      cover_gaps=cover_gaps,
-                                      wire_exports=wire_exports,
-                                      generate_usage_doc=generate_usage_doc,
-                                      tdd_implement=tdd_implement,
-                                      strengthen_tests=strengthen_tests,
-                                      modernize=modernize,
-                                      dedup_total_return=dedup_total_return,
-                                      dedup_guarded_return=dedup_guarded_return,
-                                      dedup_parameterized=dedup_parameterized,
-                                      auto=auto)
+        self._augment_synthesis_steps(
+            steps, root_for_checks,
+            cover_gaps=cover_gaps,
+            wire_exports=wire_exports,
+            generate_usage_doc=generate_usage_doc,
+            tdd_implement=tdd_implement,
+            strengthen_tests=strengthen_tests,
+            modernize=modernize,
+            dedup_total_return=dedup_total_return,
+            dedup_guarded_return=dedup_guarded_return,
+            dedup_parameterized=dedup_parameterized,
+            dedup_parameterized_total_return=dedup_parameterized_total_return,
+            auto=auto)
         steps = self._dedupe_steps(steps)
         # Opt-in (default off, so existing plans are byte-identical): when the
         # top steps are a value near-tie, surface the subject with the most
@@ -3534,6 +3612,7 @@ class IdeaActionBridge:
                        dedup_total_return: bool = False,
                        dedup_guarded_return: bool = False,
                        dedup_parameterized: bool = False,
+                       dedup_parameterized_total_return: bool = False,
                        auto: bool = False,
                        dream_boost: dict[str, float] | None = None) -> list[ActionStep]:
         """Expand the roadmap's ideas into deduped, phase-ordered steps.
@@ -3566,17 +3645,19 @@ class IdeaActionBridge:
                     continue
                 steps.extend(self._expand_idea(idea, default_phase=ph.name,
                                                project_root=root_for_checks))
-        self._augment_synthesis_steps(steps, root_for_checks,
-                                      cover_gaps=cover_gaps,
-                                      wire_exports=wire_exports,
-                                      generate_usage_doc=generate_usage_doc,
-                                      tdd_implement=tdd_implement,
-                                      strengthen_tests=strengthen_tests,
-                                      modernize=modernize,
-                                      dedup_total_return=dedup_total_return,
-                                      dedup_guarded_return=dedup_guarded_return,
-                                      dedup_parameterized=dedup_parameterized,
-                                      auto=auto)
+        self._augment_synthesis_steps(
+            steps, root_for_checks,
+            cover_gaps=cover_gaps,
+            wire_exports=wire_exports,
+            generate_usage_doc=generate_usage_doc,
+            tdd_implement=tdd_implement,
+            strengthen_tests=strengthen_tests,
+            modernize=modernize,
+            dedup_total_return=dedup_total_return,
+            dedup_guarded_return=dedup_guarded_return,
+            dedup_parameterized=dedup_parameterized,
+            dedup_parameterized_total_return=dedup_parameterized_total_return,
+            auto=auto)
         steps = self._dedupe_steps(steps)
         from app.engine.idea_roadmap import PHASE_ORDER
         phase_rank = {name: i for i, name in enumerate(PHASE_ORDER)}
@@ -3607,6 +3688,7 @@ class IdeaActionBridge:
         dedup_total_return: bool = False,
         dedup_guarded_return: bool = False,
         dedup_parameterized: bool = False,
+        dedup_parameterized_total_return: bool = False,
         auto: bool = False,
         dream_boost: dict[str, float] | None = None,
     ) -> ActionPlan:
@@ -3630,19 +3712,21 @@ class IdeaActionBridge:
         from app.engine.idea_roadmap import RoadmapSynthesizer
 
         roadmap = roadmap or RoadmapSynthesizer().build(report)
-        steps = self._roadmap_steps(report, roadmap,
-                                    project_root or report.project_root or "",
-                                    cover_gaps=cover_gaps,
-                                    wire_exports=wire_exports,
-                                    generate_usage_doc=generate_usage_doc,
-                                    tdd_implement=tdd_implement,
-                                    strengthen_tests=strengthen_tests,
-                                    modernize=modernize,
-                                    dedup_total_return=dedup_total_return,
-                                    dedup_guarded_return=dedup_guarded_return,
-                                    dedup_parameterized=dedup_parameterized,
-                                    auto=auto,
-                                    dream_boost=dream_boost)
+        steps = self._roadmap_steps(
+            report, roadmap,
+            project_root or report.project_root or "",
+            cover_gaps=cover_gaps,
+            wire_exports=wire_exports,
+            generate_usage_doc=generate_usage_doc,
+            tdd_implement=tdd_implement,
+            strengthen_tests=strengthen_tests,
+            modernize=modernize,
+            dedup_total_return=dedup_total_return,
+            dedup_guarded_return=dedup_guarded_return,
+            dedup_parameterized=dedup_parameterized,
+            dedup_parameterized_total_return=dedup_parameterized_total_return,
+            auto=auto,
+            dream_boost=dream_boost)
         # The phase filter applies to each *step's own* phase, so a convergence
         # idea's Secure sub-step is kept under --phase=Secure even though its
         # parent sat in Stabilize (and vice-versa).

@@ -831,6 +831,148 @@ def test_reflection_negative_similar_names_land(tmp_path):
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# Bonus rail (W99a) — a `class` statement anywhere in the run: its `.name`
+# binding is invisible to `_stores`/`_bound_names` (an identifier FIELD, not
+# an ast.Name Store node), so a class defined in the run and READ AFTER it is
+# silently lost (NameError) once the run collapses into a helper — and, on
+# the near-dup lane, a differing class DOCSTRING splices to a bare expression,
+# silently nulling __doc__. Probe-confirmed on all three exact-dup lanes.
+# ══════════════════════════════════════════════════════════════════════════
+
+_CLASSDEF_EXTRACT = '''\
+def fa(x):
+    a = x + 1
+    class C:
+        tag = 1
+    b = a * 2
+    return C.tag + b
+
+
+def fb(x):
+    a = x + 1
+    class C:
+        tag = 1
+    b = a * 2
+    return C.tag + b
+'''
+
+
+def test_classdef_extract_read_after_run_blocks(tmp_path):
+    # The verified repro: a class bound in the (plain, non-returning) run and
+    # read AFTER it landed with blockers == [] and raised NameError at
+    # runtime (`C` never left the helper). Now: refusal.
+    _write(tmp_path, "m.py", _CLASSDEF_EXTRACT)
+    plan = plan_dedup_extract(tmp_path, _block(["m.py:2", "m.py:10"], 3))
+    _assert_blocked(plan, "the range defines a `class`",
+                    "invisible to this data-flow analysis")
+
+
+_CLASSDEF_TOTAL_RETURN = '''\
+def fa(x, flag):
+    if flag:
+        return -1
+    class C:
+        tag = 1
+    b = x + 1
+    return C.tag + b
+
+
+def fb(x, flag):
+    if flag:
+        return -1
+    class C:
+        tag = 1
+    b = x + 1
+    return C.tag + b
+'''
+
+
+def test_classdef_total_return_blocks(tmp_path):
+    # Immune to the NameError mechanism specifically (live_out is hardcoded
+    # [] — everything after a total-return run is unreachable), but the
+    # blanket rail refuses it anyway (cheap over-refusal, family-wide).
+    _write(tmp_path, "m.py", _CLASSDEF_TOTAL_RETURN)
+    plan = plan_dedup_total_return(tmp_path, _block(["m.py:2", "m.py:11"], 4))
+    _assert_blocked(plan, "the range defines a `class`",
+                    "invisible to this data-flow analysis")
+
+
+_CLASSDEF_GUARDED = '''\
+def fa(x, flag, log):
+    if flag:
+        return -1
+    class C:
+        tag = 1
+    b = x + 1
+    log.append(b)
+    return C.tag + b
+
+
+def fb(x, flag, log):
+    if flag:
+        return -1
+    class C:
+        tag = 1
+    b = x + 1
+    log.append(b)
+    return C.tag + b
+'''
+
+
+def test_classdef_guarded_return_blocks(tmp_path):
+    # The verified repro: the guarded-return lane's sentinel projection ALSO
+    # landed with blockers == [] and raised NameError ('C' is not defined) at
+    # runtime. Now: refusal.
+    _write(tmp_path, "m.py", _CLASSDEF_GUARDED)
+    plan = plan_dedup_guarded_return(tmp_path, _block(["m.py:2", "m.py:12"], 4))
+    _assert_blocked(plan, "the range defines a `class`",
+                    "invisible to this data-flow analysis")
+
+
+_CLASSDEF_NEGATIVE = '''\
+def ra(x, flag):
+    if flag:
+        return -1
+    a = x + 1
+    b = a * 2
+    return b
+
+
+def rb(x, flag):
+    if flag:
+        return -1
+    a = x + 1
+    b = a * 2
+    return b
+'''
+
+
+def test_classdef_negative_no_class_in_run_lands(tmp_path):
+    # Negative control: a run with NO class statement anywhere is untouched
+    # by the rail — the sound total-return shape still lands.
+    _write(tmp_path, "m.py", _CLASSDEF_NEGATIVE)
+    plan = plan_dedup_total_return(tmp_path, _block(["m.py:2", "m.py:10"], 4))
+    assert plan.ok, f"blockers={plan.blockers}"
+    ns: dict = {}
+    exec(compile(plan.new_contents["m.py"], "<m>", "exec"), ns)  # noqa: S102
+    assert ns["ra"](3, False) == 8
+
+
+def test_classdef_reason_unit_edges():
+    # Edge/unit paths: empty run, nested class inside another statement, and
+    # a class OUTSIDE the run (the enclosing container) never trips it.
+    from app.execution._dedup_helpers import _classdef_reason
+
+    assert _classdef_reason([]) is None
+    nested = ast.parse("if True:\n    class C:\n        pass\n").body
+    assert _classdef_reason(nested) is not None
+    method_run = ast.parse(
+        "class Outer:\n    def m(self):\n        x = 1\n        return x\n"
+    ).body[0].body[0].body
+    assert _classdef_reason(method_run) is None
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # Unit edges for the shared collectors / reason helpers.
 # ══════════════════════════════════════════════════════════════════════════
 

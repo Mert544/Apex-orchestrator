@@ -1222,6 +1222,12 @@ _FACT_EXPECTED = {
     # control-flow rung (guard return + live fall-through, sentinel projection),
     # the same delegated CROSS-MODULE shape as its two siblings above.
     "dedup-guarded-return": ("dedup_guarded_return", True),
+    # dedup-parameterized-total-return is the TENTH broad opt-in objective
+    # (default off, gated by ``dedup_parameterized_total_return=True``) — the
+    # near-dup family's second control-flow rung (an always-returning
+    # near-duplicate group, the shape bare dedup-parameterized refuses), the
+    # same delegated CROSS-MODULE shape as its siblings above.
+    "dedup-parameterized-total-return": ("dedup_parameterized_total_return", True),
 }
 
 

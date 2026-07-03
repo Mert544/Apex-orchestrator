@@ -697,7 +697,7 @@ def test_counts_bumped_to_eighty_seven_and_forty_two():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 96  # 95 -> 96: dedup-guarded-return
+    assert len(names) == 97  # 96 -> 97: dedup-parameterized-total-return
     assert len(classify_objectives(names)["CONCRETE"]) == 50
 
 

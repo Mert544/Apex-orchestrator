@@ -603,7 +603,7 @@ def test_objective_total_is_ninety_four():
 
     # 94 after java-final-local (java-final-parameter's local-variable sibling and the
     # third member of the Java final-modifier family).
-    assert len(set(available_objectives())) == 96  # 95 -> 96: dedup-guarded-return
+    assert len(set(available_objectives())) == 97  # 96 -> 97: dedup-parameterized-total-return
 
 
 # --- PARITY ROW 1: move_value tier (matches java-final-parameter's runtime-noop tier) --

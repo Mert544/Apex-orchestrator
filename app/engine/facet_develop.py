@@ -26,6 +26,15 @@ from __future__ import annotations
 # (in insertion order) whose text is a substring of the phrase wins, so the
 # more specific phrasings are listed before the broader ones they contain.
 FACET_OBJECTIVE_MAP: dict[str, str] = {
+    # Always-returning near-duplicate variants: the near-dup family's SECOND
+    # control-flow rung (dedup-parameterized-total-return) — a near-dup group
+    # whose block is TOTAL-RETURN (every exit path returns/raises), the shape
+    # bare dedup-parameterized refuses. MUST precede BOTH the "parameterize
+    # the variants" near-dup keys below (which "parameterize the returning
+    # variants" contains) and the broader ``parameterize`` key further down.
+    "always-returning near-duplicate": "dedup-parameterized-total-return",
+    "parameterize the returning variants": "dedup-parameterized-total-return",
+
     # Near-duplicate variants: blocks identical but for a few leaves are lifted
     # into ONE parameterized helper. These phrasings (the "parameterize the
     # variants" sub-aspect of "duplicated logic") describe the varying axis, so

@@ -613,6 +613,29 @@ def _withhold_uncovered(root: Path, plan: RenamePlan, created: list[str],
     return True
 
 
+def _stale_plan_reason(root: Path, plan: RenamePlan) -> str | None:
+    """The STALENESS PRECONDITION check for :func:`apply_rename`, extracted to
+    keep that function under the complexity ceiling.
+
+    A plan snapshots each target file's pre-edit text into ``plan.originals``
+    at PLAN time; if the file on disk no longer matches that snapshot,
+    something (a prior apply in the same composed campaign, a concurrent
+    edit) changed it since planning — applying this plan would silently
+    discard that change or splice against stale line/column offsets. Returns
+    a refusal reason, or ``None`` when every target's on-disk text still
+    matches its snapshot. A plan with no ``originals`` entry for a target (or
+    the target not yet existing — a plan that CREATES a file) is unaffected:
+    the guard only fires when there is a snapshot to compare against.
+    Deterministic order (sorted) so the reported ``rel`` never varies."""
+    for rel in sorted(plan.new_contents):
+        if rel not in plan.originals or not (root / rel).exists():
+            continue
+        if (root / rel).read_text(encoding="utf-8") != plan.originals[rel]:
+            return (f"stale plan: {rel} changed on disk since planning — "
+                    "replan before applying")
+    return None
+
+
 def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True,
                  impact_scope: bool = False, covered_only: bool = False,
                  tier: int = 0,
@@ -646,6 +669,9 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
     if not plan.ok:
         return {"applied": False, "reason": "; ".join(plan.blockers) or "nothing to rename"}
     root = Path(project_root)
+    stale = _stale_plan_reason(root, plan)
+    if stale is not None:
+        return {"applied": False, "reason": stale}
     # A plan may CREATE files (e.g. a generated test) as well as rewrite them.
     # Note which targets did not exist before writing, so a rollback can delete
     # them — restoring `originals` only un-edits files that were already there;

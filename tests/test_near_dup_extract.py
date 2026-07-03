@@ -221,21 +221,25 @@ def beta(n):
 
 
 def test_differing_free_name_extracts(tmp_path: Path) -> None:
+    # W99c: name holes deferred — see docs/PROGRESS.md
     _write(tmp_path, "pkg/mod.py", _NAME_DIFF_A)
     group = _only_group(tmp_path)
     # The detector groups a differing LOADED name (free module globals G/H)...
     assert group.diff_count == 1
     assert sorted(group.differences[0]) == ["G", "H"]
 
-    # ...and the extractor now parameterizes it — a bound name would be a Store
-    # and never group, so this loaded name is FREE; passing its value is identical
-    # to reading it inline.
+    # ...but W99a narrows the gate to Constant-only: Name holes are DEFERRED
+    # (W99c full binding/eval-order analysis), so this now BLOCKS instead of
+    # parameterizing — a real shipped hazard averted (H-A eager-eval: an
+    # argument passed for a free Name is evaluated at the CALL site, not
+    # where the original code read it, so a run whose earlier statements
+    # could mutate that name's value before the read would silently observe
+    # the WRONG value).
     plan = plan_near_dup_extract(tmp_path, group)
-    assert plan.ok, f"a free loaded name should parameterize, blockers={plan.blockers}"
-    new = plan.new_contents["pkg/mod.py"]
-    assert "_shared_1(n, G)" in new and "_shared_1(n, H)" in new
-    ns = _exec_module(new)
-    assert ns["alpha"](5) == 108 and ns["beta"](5) == 208
+    assert not plan.ok
+    assert not plan.new_contents
+    assert any("only constant holes are parameterized" in b
+              for b in plan.blockers)
 
 
 # ── 3b. a differing live-in NAME → blocked by the signature gate ──
@@ -604,9 +608,9 @@ def test_param_name_collision_avoided(tmp_path: Path) -> None:
 
 
 def test_differing_free_name_becomes_a_value_param(tmp_path):
-    # A differing FREE (module-global) name is now parameterizable: the call site
-    # passes its own name's value — identical to reading it inline. (A bound name
-    # would be a Store and never group, so a differing loaded name is always free.)
+    # W99c: name holes deferred — see docs/PROGRESS.md
+    # A differing FREE (module-global) name USED TO parameterize; W99a's
+    # Constant-only gate now refuses it (Name holes deferred to W99c).
     _write(tmp_path, "pyproject.toml", "[project]\nname='m'\nversion='0'\n")
     _write(tmp_path, "app/__init__.py", "")
     _write(tmp_path, "app/m.py",
@@ -615,20 +619,18 @@ def test_differing_free_name_becomes_a_value_param(tmp_path):
            "def beta(n):\n    a = n + 1\n    b = a * 2\n    c = b + 3\n    d = c + H\n    return d\n")
     group = _only_group(tmp_path)
     plan = plan_near_dup_extract(tmp_path, group)
-    assert plan.ok, f"a differing free name should parameterize now, blockers={plan.blockers}"
-    new = plan.new_contents["app/m.py"]
-    assert "def _shared_1(n, p0):" in new
-    assert "return _shared_1(n, G)" in new and "return _shared_1(n, H)" in new
-    ast.parse(new)
-    ns = _exec_module(new)
-    assert ns["alpha"](5) == 25 and ns["beta"](5) == 35
+    assert not plan.ok
+    assert not plan.new_contents
+    assert any("only constant holes are parameterized" in b
+              for b in plan.blockers)
 
 
 def test_differing_name_holes_share_suffix_token_descriptive_param(tmp_path):
-    # The differing free names PATCH_LIMIT / SEMANTIC_LIMIT share the suffix token
-    # `limit`, so the value param is named `limit` instead of the neutral `p0`.
-    # The function names (alpha/beta) share no tokens → helper stays `_shared_1`,
-    # isolating the param-naming behaviour under test.
+    # W99c: name holes deferred — see docs/PROGRESS.md
+    # The differing free names PATCH_LIMIT / SEMANTIC_LIMIT USED TO share the
+    # suffix token `limit` and land a descriptive param; W99a's Constant-only
+    # gate now refuses ANY Name hole before the descriptive-naming machinery
+    # (kept in-tree, unit-pinned) is ever reached.
     _write(tmp_path, "pyproject.toml", "[project]\nname='m'\nversion='0'\n")
     _write(tmp_path, "app/__init__.py", "")
     _write(tmp_path, "app/m.py",
@@ -637,15 +639,10 @@ def test_differing_name_holes_share_suffix_token_descriptive_param(tmp_path):
            "def beta(n):\n    a = n + 1\n    b = a * 2\n    c = b + 3\n    d = c + SEMANTIC_LIMIT\n    return d\n")
     group = _only_group(tmp_path)
     plan = plan_near_dup_extract(tmp_path, group)
-    assert plan.ok, f"a shared-suffix name hole should parameterize, blockers={plan.blockers}"
-    new = plan.new_contents["app/m.py"]
-    assert "def _shared_1(n, limit):" in new
-    assert "return _shared_1(n, PATCH_LIMIT)" in new
-    assert "return _shared_1(n, SEMANTIC_LIMIT)" in new
-    assert "p0" not in new
-    ast.parse(new)
-    ns = _exec_module(new)
-    assert ns["alpha"](5) == 25 and ns["beta"](5) == 35
+    assert not plan.ok
+    assert not plan.new_contents
+    assert any("only constant holes are parameterized" in b
+              for b in plan.blockers)
 
 
 def test_constant_holes_keep_neutral_param_fallback(tmp_path):
@@ -662,6 +659,161 @@ def test_constant_holes_keep_neutral_param_fallback(tmp_path):
     helper = plan.new
     first_src = plan.new_contents[plan.defined_in]
     assert f"def {helper}(n, p0):" in first_src
+
+
+# ── H-B: a run-local named `p0` must not collide with the fallback param ──
+
+_HB_SEED_A = '''\
+def alpha(n):
+    p0 = n + 1
+    b = p0 * 2
+    c = b + 3
+    d = c + 10
+    return d
+'''
+
+_HB_SEED_B = '''\
+def beta(n):
+    p0 = n + 1
+    b = p0 * 2
+    c = b + 3
+    d = c + 20
+    return d
+'''
+
+
+def test_param_seed_avoids_run_local_p0_h_b_fix(tmp_path):
+    # H-B (SHIPPED bug, closed this wave): the OLD fallback seed was
+    # `set(live_in)` only, missing names the run binds ITSELF — a run
+    # binding local `p0` got a helper param ALSO named `p0`, so the
+    # parameter's own value was invisible (shadowed by the run's rebind)
+    # and every read of `p0` after the rebind returned the LOCAL, not the
+    # argument (alpha(3): 21 -> 15, probe-confirmed). The widened seed now
+    # sees `p0` is taken and picks `p1`.
+    _write(tmp_path, "pkg/a.py", _HB_SEED_A)
+    _write(tmp_path, "pkg/b.py", _HB_SEED_B)
+    _write(tmp_path, "pkg/__init__.py", "")
+    group = _only_group(tmp_path)
+    plan = plan_near_dup_extract(tmp_path, group)
+    assert plan.ok, f"blockers={plan.blockers}"
+    helper = plan.new
+    first_src = plan.new_contents[plan.defined_in]
+    # The value param must NOT be `p0` (taken by the run's own local).
+    assert f"def {helper}(n, p1):" in first_src
+    assert "p0 = n + 1" in first_src  # the run's own local survives untouched
+
+    before_a = _exec_module(_HB_SEED_A)
+    before_b = _exec_module(_HB_SEED_B)
+    after = _exec_module(first_src)
+    for n in (-3, 0, 3, 17):
+        assert after["alpha"](n) == before_a["alpha"](n)
+        assert after[helper](n, 20) == before_b["beta"](n)
+
+
+# ── H-A: a differing free NAME read after an in-run mutation → blocks ──
+
+_HA_EAGER_A = '''\
+G = 1
+H = 1
+
+
+def bump():
+    global G, H
+    G = 99
+    H = 99
+
+
+def alpha(n):
+    a = n + 1
+    bump()
+    b = a + G
+    c = b + 1
+    return c
+
+
+def beta(n):
+    a = n + 1
+    bump()
+    b = a + H
+    c = b + 1
+    return c
+'''
+
+
+def test_eager_eval_free_name_hole_blocks_h_a(tmp_path):
+    # H-A (SHIPPED bug, closed this wave): a differing FREE name (G/H) read
+    # AFTER an earlier in-run statement (``bump()``) mutates it — if
+    # parameterized, the argument is evaluated EAGERLY at the CALL site
+    # (before the run's own ``bump()`` ever executes), not where the
+    # original inline read happened, so the helper would silently observe
+    # the PRE-mutation value instead of the post-mutation one. W99a's
+    # Constant-only gate refuses ANY Name hole outright, closing this whole
+    # hazard class (not just this one mechanism).
+    _write(tmp_path, "pkg/mod.py", _HA_EAGER_A)
+    group = _only_group(tmp_path)
+    plan = plan_near_dup_extract(tmp_path, group)
+    assert not plan.ok
+    assert not plan.new_contents
+    assert any("only constant holes are parameterized" in b
+              for b in plan.blockers)
+
+
+# ── f-string / annotation holes → blocked (Constant-only gate, extract lane) ──
+
+_FSTRING_A = '''\
+def alpha(x):
+    a = x + 1
+    b = f"red {a}"
+    c = b + "!"
+    d = c + "?"
+    return d
+'''
+
+_FSTRING_B = '''\
+def beta(x):
+    a = x + 1
+    b = f"blue {a}"
+    c = b + "!"
+    d = c + "?"
+    return d
+'''
+
+
+def test_fstring_diff_hole_blocks(tmp_path):
+    _write(tmp_path, "pkg/mod.py", _FSTRING_A + "\n\n" + _FSTRING_B)
+    group = _only_group(tmp_path)
+    plan = plan_near_dup_extract(tmp_path, group)
+    assert not plan.ok
+    assert not plan.new_contents
+    assert any("inside an f-string" in b for b in plan.blockers)
+
+
+_ANNOTATION_A = '''\
+def alpha(n):
+    a = n + 1
+    x: int = a + 1
+    b = x + 3
+    c = b + 10
+    return c
+'''
+
+_ANNOTATION_B = '''\
+def beta(n):
+    a = n + 1
+    x: str = a + 1
+    b = x + 3
+    c = b + 10
+    return c
+'''
+
+
+def test_annotation_diff_hole_blocks(tmp_path):
+    _write(tmp_path, "pkg/mod.py", _ANNOTATION_A + "\n\n" + _ANNOTATION_B)
+    group = _only_group(tmp_path)
+    plan = plan_near_dup_extract(tmp_path, group)
+    assert not plan.ok
+    assert not plan.new_contents
+    assert any("sits inside an annotation" in b for b in plan.blockers)
 
 
 # ── regression (H4): same-file copy ABOVE the first-in-emit-order container ──

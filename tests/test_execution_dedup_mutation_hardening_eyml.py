@@ -178,12 +178,23 @@ def _occ_for_gate() -> _Occurrence:
                        [], [], [], 2, 2, False)
 
 
-def test_gate_value_holes_passes_constant_and_loaded_name():
+def test_gate_value_holes_passes_constant():
     occ = _occ_for_gate()
-    leaves = [[("s0", ast.Constant(5))], [("s0", _load_name("g"))]]
+    leaves = [[("s0", ast.Constant(5))], [("s0", ast.Constant(9))]]
     plan = RenamePlan(old="x", new="_s")
     assert _gate_value_holes([occ, occ], leaves, [0], plan) is True
     assert not plan.blockers
+
+
+def test_gate_value_holes_blocks_loaded_name():
+    # W99a: Constant-only gate — Name holes are DEFERRED (W99c), so a loaded
+    # Name that used to pass now blocks with the "only constant holes" message.
+    occ = _occ_for_gate()
+    leaves = [[("s0", ast.Constant(5))], [("s0", _load_name("g"))]]
+    plan = RenamePlan(old="x", new="_s")
+    assert _gate_value_holes([occ, occ], leaves, [0], plan) is False
+    assert any("only constant holes are parameterized" in b
+              for b in plan.blockers)
 
 
 def test_gate_value_holes_blocks_attribute_leaf():
@@ -192,7 +203,7 @@ def test_gate_value_holes_blocks_attribute_leaf():
     leaves = [[("s0", ast.Constant(5))], [("s0", attr)]]
     plan = RenamePlan(old="x", new="_s")
     assert _gate_value_holes([occ, occ], leaves, [0], plan) is False
-    assert any("not a value" in b for b in plan.blockers)
+    assert any("not a plain constant" in b for b in plan.blockers)
 
 
 def test_gate_value_holes_blocks_stored_name():
@@ -203,7 +214,7 @@ def test_gate_value_holes_blocks_stored_name():
     leaves = [[("s0", ast.Constant(5))], [("s0", stored)]]
     plan = RenamePlan(old="x", new="_s")
     assert _gate_value_holes([occ, occ], leaves, [0], plan) is False
-    assert any("not a value" in b for b in plan.blockers)
+    assert any("not a plain constant" in b for b in plan.blockers)
 
 
 # ──────────────────────────────────────────────────────────────────────────

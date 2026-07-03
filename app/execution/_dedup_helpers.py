@@ -175,6 +175,28 @@ def _async_hazard_reason(run: list) -> str | None:
     return None
 
 
+def _classdef_reason(run: list) -> str | None:
+    """A ``class`` statement anywhere in the run (top-level or nested inside
+    another statement): its ``.name`` binding is an identifier FIELD, not an
+    ``ast.Name`` Store node, so it is INVISIBLE to ``_stores``/``_bound_names``
+    (W99a, probe-confirmed, family-wide). Two independent silent hazards
+    follow: (a) a class defined in the run and READ AFTER it is lost —
+    live-out never includes it, so the caller raises ``NameError`` once the
+    run collapses into a helper; (b) in the near-dup lane, a differing class
+    DOCSTRING (an ``Expr`` over a ``str`` Constant at ``ClassDef.body[0]``)
+    passes every other value-position gate and splices to a bare parameter
+    expression, silently nulling ``__doc__``. Refusing every ClassDef in the
+    run closes both at once — cheap over-refusal, class-in-function runs are
+    rare. Refuse-direction only."""
+    for stmt in run:
+        for n in ast.walk(stmt):
+            if isinstance(n, ast.ClassDef):
+                return ("the range defines a `class` — its name binding is "
+                        "invisible to this data-flow analysis (a read after "
+                        "the range would raise NameError), refusing")
+    return None
+
+
 def _multiline_string_reason(run: list) -> str | None:
     """A string/bytes constant (or f-string) spanning multiple physical lines:
     ``_reindent`` treats its continuation lines as CODE and rewrites the
@@ -272,15 +294,17 @@ def _global_decl_reason(fn, run: list) -> str | None:
 def occurrence_rail_reason(fn, run: list) -> str | None:
     """The first per-run soundness-rail reason ``run`` cannot lift verbatim out
     of ``fn`` (or ``None``): async blocks, multi-line strings, reflection,
-    pre-run closures over run-stores, invisible non-``Name`` bindings, and
-    ``global``/``nonlocal``-declared names the run binds or reads.
-    Fixed order, deterministic."""
+    pre-run closures over run-stores, invisible non-``Name`` bindings,
+    ``global``/``nonlocal``-declared names the run binds or reads, and a
+    ``class`` statement anywhere in the run (W99a — its name binding is
+    invisible to this analysis). Fixed order, deterministic."""
     return (_async_hazard_reason(run)
             or _multiline_string_reason(run)
             or _reflection_reason(run)
             or _outside_closure_reason(fn, run)
             or _invisible_binding_reason(fn, run)
-            or _global_decl_reason(fn, run))
+            or _global_decl_reason(fn, run)
+            or _classdef_reason(run))
 
 
 def _identity_blocker(resolved: list) -> str | None:

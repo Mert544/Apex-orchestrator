@@ -153,6 +153,31 @@ def _total_return_reason(run: list) -> str | None:
     return None
 
 
+def _total_return_occurrence(rel: str, source: str, fn, container,
+                             run: list) -> _Occurrence:
+    """Build the :class:`_Occurrence` for an ADMITTED total-return ``run``:
+    live_in from the standard before/after data flow, live_out hardcoded
+    ``[]`` (the block unconditionally returns, so any fn-body statement after
+    it is unreachable — nothing flows out, the helper returns the value
+    directly), and ``tail_return=True`` (the call site becomes ``return
+    helper(...)``). Shared by this module's own resolver
+    (:func:`_resolve_total_return`) and the near-dup sibling's
+    (:func:`app.execution.near_dup_total_return
+    ._resolve_parameterized_total_return`) — the ONE place both admissibility
+    checks converge once a run is accepted, so the two never duplicate this
+    tail (a near-dup group of themselves, previously)."""
+    before = fn.body[:fn.body.index(run[0])]
+    after = fn.body[fn.body.index(run[-1]) + 1:]
+    live_in, _live_out = _data_flow(fn, before, run, after)
+    live_out: list[str] = []
+
+    span_lo = run[0].lineno
+    span_hi = max(getattr(s, "end_lineno", s.lineno) for s in run)
+    return _Occurrence(rel, source, source.splitlines(keepends=True), fn,
+                       container, run, live_in, live_out, span_lo, span_hi,
+                       True)
+
+
 def _resolve_total_return(rel: str, start_line: int, n_statements: int,
                           sources: dict, trees: dict,
                           plan: RenamePlan) -> _Occurrence | None:
@@ -172,18 +197,7 @@ def _resolve_total_return(rel: str, start_line: int, n_statements: int,
         plan.blockers.append(f"{rel}:{start_line}: {reason}")
         return None
 
-    before = fn.body[:fn.body.index(run[0])]
-    after = fn.body[fn.body.index(run[-1]) + 1:]
-    live_in, _live_out = _data_flow(fn, before, run, after)
-    # The block unconditionally returns, so any fn-body statement after it is
-    # unreachable — nothing flows out. The helper returns the value directly.
-    live_out: list[str] = []
-
-    span_lo = run[0].lineno
-    span_hi = max(getattr(s, "end_lineno", s.lineno) for s in run)
-    return _Occurrence(rel, source, source.splitlines(keepends=True), fn,
-                       container, run, live_in, live_out, span_lo, span_hi,
-                       True)  # tail_return=True: call site becomes `return helper(...)`
+    return _total_return_occurrence(rel, source, fn, container, run)
 
 
 def _validate_block(block, plan: RenamePlan) -> tuple[list, int] | None:

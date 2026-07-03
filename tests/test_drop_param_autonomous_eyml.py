@@ -408,7 +408,7 @@ def test_object_count_pins_unchanged_by_the_bridge_flip():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 96  # 95 -> 96: dedup-guarded-return
+    assert len(names) == 97  # 96 -> 97: dedup-parameterized-total-return
     assert len(classify_objectives(names)["CONCRETE"]) == 50
 
 

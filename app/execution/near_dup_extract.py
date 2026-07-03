@@ -23,12 +23,15 @@ STRICT CONSERVATIVE SCOPE — every one of these is a hard gate; the slightest
 doubt is a BLOCKER with empty ``new_contents`` (correctness over coverage):
 
   * EVERY differing leaf, in EVERY occurrence, must be a parameterizable VALUE:
-    an :class:`ast.Constant`, or an :class:`ast.Name` that is LOADED (read). Both
-    become a value parameter the call site passes. A differing loaded name is
-    safe precisely because a name BOUND inside the block is a ``Store`` (structure
-    the detector requires to match), so any differing loaded name is a FREE name
-    (global/builtin/outer scope) — passing its value is identical to reading it
-    inline. Anything else (a ``Store``/``Del`` target, an attribute) → BLOCK.
+    a plain :class:`ast.Constant` — never inside a ``match`` pattern, an
+    f-string, or an annotation, and never spanning multiple lines. Name holes
+    are DEFERRED (W99c): a differing loaded :class:`ast.Name` still BLOCKS
+    today (see the pinned refusals in ``tests/test_near_dup_extract.py``) —
+    the machinery that would restore descriptive param naming from a shared
+    NAME affix token stays in-tree (``_common_affix_token`` /
+    ``_hole_param_names``' Name branch), unit-pinned, ready for W99c's full
+    binding/eval-order analysis. Anything else (a ``Store``/``Del`` target,
+    an attribute) → BLOCK.
   * Each occurrence must re-resolve EXACTLY as dedup_extract requires (reusing
     its ``_resolve_occurrence`` path verbatim): inside one top-level
     function/method body, a clean contiguous statement run, no relocate-unsafe
@@ -70,9 +73,9 @@ from app.engine.near_dup import (
     _statement_fragment,
 )
 from app.execution._dedup_helpers import (
-    _global_decl_reason,
-    _multiline_string_reason,
+    _cross_module_rebind_blocker,
     _overlap_blocker,
+    occurrence_rail_reason,
     stamp_multi_module_plan,
 )
 from app.execution.cross_file_rename import RenamePlan
@@ -285,39 +288,44 @@ def _docstring_span_blocker(resolved) -> str | None:
 def _soundness_rails_blocker(resolved) -> str | None:
     """The near-dup lane's post-resolution soundness rails, in fixed order:
     overlapping same-file spans (the bottom-up splice would corrupt),
-    ``global``/``nonlocal``-declared names the run binds or reads
-    (scope-capture divergence), multi-line string/bytes constants
-    (``_reindent`` rewrites their continuation lines — differing OR shared),
-    and docstring-position runs (the lift nulls ``__doc__``). The exact-dup
-    family runs the first three via ``family_rail_blocker``; near-dup
+    cross-module free-global rebinds (fires only for multi-file groups), the
+    family's FULL per-run rail set (:func:`occurrence_rail_reason` — async
+    blocks, multi-line string/bytes/f-string constants, reflection, pre-run
+    closures, invisible non-``Name`` bindings, ``global``/``nonlocal``-declared
+    names, and a ``class`` statement anywhere in the run), and docstring-
+    position runs (the lift nulls ``__doc__``). The exact-dup family runs the
+    first two plus the per-run set via ``family_rail_blocker``; near-dup
     occurrences intentionally differ at value leaves, so the identity rail
-    does not apply and the relevant rails are invoked directly here.
-    Refuse-direction only."""
-    blocker = _overlap_blocker(resolved)
+    does not apply and the relevant rails are invoked directly here — the
+    near-dup lane now inherits the family's per-run rails IN FULL, not just
+    the global-decl/multi-line pair. Refuse-direction only."""
+    blocker = _overlap_blocker(resolved) or _cross_module_rebind_blocker(resolved)
     if blocker is not None:
         return blocker
     for occ in resolved:
-        reason = (_global_decl_reason(occ.fn, occ.stmts)
-                  or _multiline_string_reason(occ.stmts))
+        reason = occurrence_rail_reason(occ.fn, occ.stmts)
         if reason is not None:
             return f"{occ.rel}:{occ.span_lo}: {reason}"
     return _docstring_span_blocker(resolved)
 
 
 def _resolve_all_occurrences(root: Path, parsed, n_statements: int,
-                             sources, trees, plan: RenamePlan):
-    """Resolve every occurrence with dedup_extract's EXACT path, run the
-    lane's post-resolution soundness rails, then enforce a single
-    live-in/live-out signature and a single tail-return shape across them
-    all. Returns ``(resolved, live_in, live_out, tail_return)`` or ``None``
-    (recording a blocker) on any unsafe occurrence or divergence."""
+                             sources, trees, plan: RenamePlan, *,
+                             resolver=_resolve_occurrence):
+    """Resolve every occurrence via ``resolver`` (default: dedup_extract's
+    ``_resolve_occurrence``; the total-return lane passes its own — same
+    ``resolver(root, rel, line, n_statements, sources, trees, plan)`` shape
+    dedup_total_return's ``_resolve_all`` established), run the lane's
+    post-resolution soundness rails, then enforce a single live-in/live-out
+    signature and a single tail-return shape across them all. Returns
+    ``(resolved, live_in, live_out, tail_return)`` or ``None`` (recording a
+    blocker) on any unsafe occurrence or divergence."""
     # Same contiguous-run snapping, same control-flow blockers, same tail-return
     # handling, same live-in/live-out data flow. Any unsafe one blocks the whole
     # plan. The occurrences stay PARALLEL to the differences columns (same order).
     resolved: list[_Occurrence] = []
     for rel, line in parsed:  # type: ignore[misc]
-        occ = _resolve_occurrence(root, rel, line, n_statements, sources,
-                                  trees, plan)
+        occ = resolver(root, rel, line, n_statements, sources, trees, plan)
         if occ is None:
             return None
         resolved.append(occ)
@@ -471,39 +479,95 @@ def _pattern_node_ids(statements: list) -> set[int]:
     return out
 
 
+def _fstring_node_ids(statements: list) -> set[int]:
+    """``id()`` of every AST node inside any :class:`ast.JoinedStr` (f-string)
+    subtree of ``statements``. ``ast.walk`` covers nested ``JoinedStr`` and
+    ``FormattedValue.format_spec`` (itself a ``JoinedStr``), so a format-spec
+    hole and 3.12's per-segment nesting are both covered STRUCTURALLY; sound
+    on 3.11 (whole-f-string ``Constant`` spans) AND 3.12 (real per-segment
+    spans) because the refusal is POSITIONAL (id-based), never span-based."""
+    out: set[int] = set()
+    for stmt in statements:
+        for n in ast.walk(stmt):
+            if isinstance(n, ast.JoinedStr):
+                out.update(id(x) for x in ast.walk(n))
+    return out
+
+
+def _annotation_node_ids(statements: list) -> set[int]:
+    """``id()`` of every AST node inside an ``AnnAssign.annotation`` subtree of
+    ``statements``. Function/lambda argument and return annotations only occur
+    inside a nested ``def``/``lambda``, which ``_NESTED_SCOPE_NODES`` already
+    blocks upstream (and a ``ClassDef`` in the run is refused family-wide by
+    ``_dedup_helpers._classdef_reason``) — so the reachable carrier is a plain
+    top-level ``x: T = value`` inside the run. An annotation is a TYPE
+    expression, not a runtime value; under ``from __future__ import
+    annotations`` it is even a lazily-stringified one, so splicing a parameter
+    there is never sound."""
+    out: set[int] = set()
+    for stmt in statements:
+        for n in ast.walk(stmt):
+            if isinstance(n, ast.AnnAssign) and n.annotation is not None:
+                out.update(id(x) for x in ast.walk(n.annotation))
+    return out
+
+
+def _hole_blocker(node: ast.AST, occ: _Occurrence, pattern_ids: set[int],
+                  fstring_ids: set[int], annotation_ids: set[int]) -> str | None:
+    """The gate ladder for ONE differing leaf ``node`` in ONE occurrence, or
+    ``None`` when it passes every gate: pattern -> f-string -> annotation ->
+    Constant-only -> single-line. Name holes are DEFERRED (W99c)."""
+    seg = _segment(occ.source, node)
+    if id(node) in pattern_ids:
+        return ("a differing position sits inside a `match` pattern "
+                f"({seg!r} at {occ.rel}:{occ.span_lo}) — a parameter there "
+                "would become a capture pattern, not a value, refusing")
+    if id(node) in fstring_ids:
+        return ("a differing position lies inside an f-string "
+                f"({seg!r} at {occ.rel}:{occ.span_lo}) — splicing a "
+                "parameter there would rewrite the f-string, refusing")
+    if id(node) in annotation_ids:
+        return ("a differing position sits inside an annotation "
+                f"({seg!r} at {occ.rel}:{occ.span_lo}) — an annotation is "
+                "not a runtime value, refusing")
+    if not isinstance(node, ast.Constant):
+        return ("a differing position is not a plain constant in every "
+                f"occurrence ({seg!r} at {occ.rel}:{occ.span_lo}) — only "
+                "constant holes are parameterized (name holes are deferred)")
+    # Position info is checked defensively (as `_hole_edit` does downstream):
+    # a node lacking it simply isn't caught by THIS gate — `_hole_edit`'s own
+    # explicit "lacks position info" blocker is the load-bearing check for the
+    # real splice path; every leaf reaching here from `ast.parse`d source
+    # always carries both.
+    lineno = getattr(node, "lineno", None)
+    end_lineno = getattr(node, "end_lineno", lineno)
+    if end_lineno != lineno:
+        return ("a differing constant spans multiple lines in an "
+                "occurrence — refusing to splice a multi-line hole")
+    return None
+
+
 def _gate_value_holes(resolved, per_occ_leaves, diff_cols,
                       plan: RenamePlan) -> bool:
-    """EVERY differing leaf must be a parameterizable VALUE in every occurrence:
-    an ast.Constant, or an ast.Name LOADED (read) — and must NOT sit inside a
-    ``match`` PATTERN subtree. Returns ``True`` if all holes pass, else
-    ``False`` (recording a blocker).
+    """EVERY differing leaf must be a plain CONSTANT in every occurrence, and
+    must NOT sit inside a ``match`` PATTERN, an f-string, or an annotation.
+    Returns ``True`` if all holes pass, else ``False`` (recording a blocker).
 
-    A differing loaded Name is provably safe — because the detector only
-    wildcards value leaves and a name BOUND inside the block is a Store
-    (structure that must match to group), any differing loaded Name is a FREE
-    name (global/builtin/outer), so passing its value as an argument is identical
-    to reading it inline. Anything else (a Store/Del target, an attribute —
-    neither is a value leaf) blocks. A constant in PATTERN position blocks too:
-    it is only value-LIKE — replacing it with a name produces a capture pattern
-    (or a SyntaxError for mapping keys), never a value read."""
+    Constant-only: Name holes are DEFERRED (W99c — see the module docstring).
+    The single-line check runs for EVERY occurrence (defence-in-depth behind
+    the family multi-line-string rail already wired into
+    :func:`_soundness_rails_blocker`, which refuses any run carrying a
+    multi-line str/bytes/f-string constant, differing or shared)."""
     pattern_ids = [_pattern_node_ids(occ.stmts) for occ in resolved]
+    fstring_ids = [_fstring_node_ids(occ.stmts) for occ in resolved]
+    annotation_ids = [_annotation_node_ids(occ.stmts) for occ in resolved]
     for col in diff_cols:
         for i, occ in enumerate(resolved):
             node = per_occ_leaves[i][col][1]
-            if id(node) in pattern_ids[i]:
-                plan.blockers.append(
-                    "a differing position sits inside a `match` pattern "
-                    f"({_segment(occ.source, node)!r} at {occ.rel}:"
-                    f"{occ.span_lo}) — a parameter there would become a "
-                    "capture pattern, not a value, refusing")
-                return False
-            is_value = isinstance(node, ast.Constant) or (
-                isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load))
-            if not is_value:
-                plan.blockers.append(
-                    "a differing position is not a value (constant or loaded "
-                    f"name) in every occurrence ({_segment(occ.source, node)!r} "
-                    f"at {occ.rel}:{occ.span_lo}) — can't become a value parameter")
+            blocker = _hole_blocker(node, occ, pattern_ids[i], fstring_ids[i],
+                                    annotation_ids[i])
+            if blocker is not None:
+                plan.blockers.append(blocker)
                 return False
     return True
 
@@ -614,6 +678,27 @@ def _emit_rewrites(resolved, sources, trees, rels, first, first_dotted,
     return new_contents, edits
 
 
+def _param_seed_names(first: _Occurrence, live_in, live_out) -> list[str]:
+    """Every identifier the widened ``p<n>`` fallback must never reuse: the
+    helper's own params (``live_in``/``live_out``) plus EVERY name referenced
+    or bound anywhere in the FIRST occurrence's statements (H-B closure — a
+    shipped bug where a fallback ``p0`` colliding with a local the run itself
+    binds silently read the REBOUND local instead of the parameter, e.g. a run
+    binding ``p0 = n + 1`` then using it made the constant-hole's ``p0``
+    argument invisible). The first occurrence's seed suffices: the structural
+    template pins every non-diff-leaf name identical across occurrences, and a
+    Constant hole carries no name at all, so no OTHER occurrence can introduce
+    a name this seed misses."""
+    names = set(live_in) | set(live_out)
+    for stmt in first.stmts:
+        for n in ast.walk(stmt):
+            if isinstance(n, ast.Name):
+                names.add(n.id)
+            elif isinstance(n, ast.arg):
+                names.add(n.arg)
+    return sorted(names)
+
+
 def _build_helper_block(resolved, trees, rels, first, per_occ_leaves,
                         diff_cols, live_in, live_out, plan: RenamePlan):
     """Choose the helper name and param names, splice the first occurrence's
@@ -631,13 +716,15 @@ def _build_helper_block(resolved, trees, rels, first, per_occ_leaves,
 
     # Parameter names for the holes: a descriptive name from a common NAME affix
     # token where every occurrence's leaf agrees, else the neutral `p<n>` fallback.
-    # Never collide with each other or with live_in (which seeds `taken`).
+    # Never collide with each other, live_in, live_out, or any name the FIRST
+    # occurrence's own statements already reference or bind (H-B closure).
     diff_node_segments = [
         [(per_occ_leaves[i][col][1], _segment(occ.source, per_occ_leaves[i][col][1]))
          for i, occ in enumerate(resolved)]
         for col in diff_cols
     ]
-    param_names = _hole_param_names(diff_node_segments, live_in)
+    param_names = _hole_param_names(
+        diff_node_segments, _param_seed_names(first, live_in, live_out))
 
     # ── Splice the FIRST occurrence's source: replace each differing constant
     # with its parameter name, located by source span (structural, not textual).
@@ -657,16 +744,24 @@ def _build_helper_block(resolved, trees, rels, first, per_occ_leaves,
     return helper_name, helper_block
 
 
-def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
-    """Plan lifting a near-duplicate ``group`` into one parameterized helper.
+def _plan_parameterized(project_root: str | Path, group, *, resolver,
+                        plan_label: str = "near_dup") -> RenamePlan:
+    """The shared parameterized-dedup pipeline BOTH near-dup lanes run.
 
     ``group`` is a :class:`~app.engine.near_dup.NearDuplicateGroup`: its
     ``occurrences`` are ``"module:lineno"`` of each block's first statement and
     its ``differences`` lists, per differing position, the source text each
-    occurrence carries there. Returns a :class:`RenamePlan` ready for
-    ``apply_rename`` (suite-verified, auto-rollback). On the slightest doubt the
-    plan carries a blocker and empty ``new_contents``."""
-    plan = RenamePlan(old="near_dup", new="_shared")
+    occurrence carries there. ``resolver`` decides which control-flow SHAPE is
+    admissible (``_resolve_occurrence`` for dedup-parameterized's plain/tail-
+    return domain; ``near_dup_total_return._resolve_parameterized_total_return``
+    for the always-returning domain) — everything else (shape validation,
+    module reads, diff-column location, the value-hole gates, helper build,
+    call-site/import rewrites, gate-clean imports, the finalise stamp) is
+    lane-agnostic and byte-identical between the two. Returns a
+    :class:`RenamePlan` ready for ``apply_rename`` (suite-verified,
+    auto-rollback). On the slightest doubt the plan carries a blocker and
+    empty ``new_contents``."""
+    plan = RenamePlan(old=plan_label, new="_shared")
     root = Path(project_root)
 
     shape = _validate_group_shape(group, plan)
@@ -685,7 +780,7 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
     sources, trees, rels = read
 
     occ_result = _resolve_all_occurrences(root, parsed, n_statements, sources,
-                                          trees, plan)
+                                          trees, plan, resolver=resolver)
     if occ_result is None:
         return plan
     resolved, live_in, live_out, tail_return = occ_result
@@ -716,6 +811,21 @@ def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
     stamp_multi_module_plan(plan, helper_name, first.rel, sources,
                             new_contents, edits)
     return plan
+
+
+def plan_near_dup_extract(project_root: str | Path, group) -> RenamePlan:
+    """Plan lifting a near-duplicate ``group`` into one parameterized helper.
+
+    ``group`` is a :class:`~app.engine.near_dup.NearDuplicateGroup`: its
+    ``occurrences`` are ``"module:lineno"`` of each block's first statement and
+    its ``differences`` lists, per differing position, the source text each
+    occurrence carries there. Returns a :class:`RenamePlan` ready for
+    ``apply_rename`` (suite-verified, auto-rollback). On the slightest doubt the
+    plan carries a blocker and empty ``new_contents``. Delegates to the shared
+    :func:`_plan_parameterized` pipeline with dedup_extract's occurrence
+    resolver — the plain/tail-return domain, byte-identical to before the
+    share-in-place refactor (``plan.old`` stays ``"near_dup"``)."""
+    return _plan_parameterized(project_root, group, resolver=_resolve_occurrence)
 
 
 def _hole_edit(first: _Occurrence, node: ast.AST, n_block_lines: int,
@@ -755,6 +865,22 @@ def _hole_edit(first: _Occurrence, node: ast.AST, n_block_lines: int,
     return idx, col_off, end_col, pname
 
 
+def _overlapping_holes_reason(holes: list[tuple[int, int, str]]) -> str | None:
+    """Two holes on ONE line whose byte spans OVERLAP, or ``None``. Sorted by
+    start column; adjacent pairs suffice (non-adjacent overlap would imply an
+    adjacent one too, since spans are gapless within a sorted run). Defence in
+    depth: the f-string rail already removes the only known producer of
+    identical/overlapping spans on this Python (3.11's whole-f-string
+    ``Constant``), so this should never fire on a real plan — refuse-direction
+    only, never widens what lands."""
+    ordered = sorted(holes, key=lambda h: h[0])
+    for a, b in zip(ordered, ordered[1:]):
+        if b[0] < a[1]:
+            return ("two differing positions splice overlapping spans on "
+                    "one line — refusing")
+    return None
+
+
 def _apply_line_holes(line: str, holes: list[tuple[int, int, str]],
                       plan: RenamePlan) -> str | None:
     """Splice every ``(col_start, col_end, replacement)`` hole into ONE ``line``,
@@ -763,7 +889,12 @@ def _apply_line_holes(line: str, holes: list[tuple[int, int, str]],
     ``near_dup._segment`` slices) and decodes once at the end — slicing
     characters would misplace every hole preceded by a multi-byte character on
     its line. Returns the new line or ``None`` (recording a blocker) if any
-    span is out of range or splits a multi-byte character."""
+    span is out of range, two spans overlap, or a span splits a multi-byte
+    character."""
+    overlap = _overlapping_holes_reason(holes)
+    if overlap is not None:
+        plan.blockers.append(overlap)
+        return None
     raw = line.encode("utf-8")
     for c0, c1, pname in sorted(holes, key=lambda h: h[0], reverse=True):
         if c1 > len(raw.rstrip(b"\n")) or c0 < 0 or c0 >= c1:

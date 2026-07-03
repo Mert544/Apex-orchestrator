@@ -86,6 +86,7 @@ OPERATOR_VALUE: dict[str, float] = {
     "dedup_total_return": 0.60,      # lift an always-returning duplicate block
     "dedup_guarded_return": 0.60,    # lift a guard-return+fall-through duplicate block (sentinel projection)
     "dedup_parameterized": 0.60,     # lift near-duplicate variants into one helper
+    "dedup_parameterized_total_return": 0.60,  # lift an always-returning near-duplicate group into one helper (dedup_parameterized's total-return sibling)
     "extract": 0.55,                 # extract a helper from a long function
     "dataclassify": 0.50,            # boilerplate __init__ -> @dataclass
     "synthesize_dunders": 0.50,      # canonical __repr__/__eq__/__hash__ over a class's proven field set (dataclassify's sibling)
