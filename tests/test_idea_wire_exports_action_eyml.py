@@ -51,7 +51,12 @@ def _idea(i: int, subject: str) -> IdeaNode:
     return IdeaNode(
         id=str(i), title=f"Develop {subject}", subject=subject,
         branch_path=f"x.{i}", operator="root",
-        source_facts=[f"dependency-hub: {subject}"], value=1.0 - i * 0.01,
+        # W98: the carrier fact is `coordinator` (proven-permanently
+        # recommend-only), NOT `dependency-hub` — that row now routes to the
+        # executable cover_gaps lander, which would collide with the augmented
+        # step on the dedupe key and trigger the plan-time cover-gaps probe on
+        # these fixtures. The carrier only needs to surface the .py candidate.
+        source_facts=[f"coordinator: {subject}"], value=1.0 - i * 0.01,
     )
 
 

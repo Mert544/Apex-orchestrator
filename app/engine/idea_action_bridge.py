@@ -25,12 +25,21 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "hotspot-function": ("create_test_stub", "Write behavioral tests for the complex function {s}", True),
     "impure-untested": ("create_test_stub", "Cover the impure function {s} with tests (then isolate its side effects)", True),
     "hub-untested": ("create_test_stub", "Add a regression-net test for the dependency hub {s} (it has many dependents)", True),
-    # A confluence is a "decouple/test before you change" signal, not a blind
-    # auto-fix: recommend-only by default. The sole exception is an UNTESTED
-    # confluence, where the grounded first move is the same as every other
-    # untested high-leverage module — drop a safety-net test first (resolved in
-    # _root_action, which can read the fact value's "untested" marker).
-    "confluence": ("design_task", "Decouple and add tests to {s} before changing it — several independent pressures converge here", False),
+    # W98: the confluence FAMILY SPLIT. A confluence is a "decouple/test before
+    # you change" signal, and its two halves route differently: an UNTESTED
+    # confluence takes the same grounded first move as every other untested
+    # high-leverage module — a safety-net test stub (resolved in _root_action,
+    # which reads the fact value's "untested" marker and fires BEFORE this table);
+    # a TESTED confluence routes to the proven delegated ``strengthen_tests``
+    # lander (its template literally prescribed "add tests"), whose OWN apply-time
+    # gate (mutation engine + double-gated oracle; saturated / no killable
+    # survivor / red baseline / test-fixture target ⇒ empty plan, disclosed
+    # reason) keeps it honest — never a fake-green. The DECOUPLING itself stays a
+    # disclosed human design remainder in the description.
+    "confluence": ("strengthen_tests",
+                   "Strengthen the thin tests on {s} before changing it — several "
+                   "independent pressures converge here (the decoupling design "
+                   "itself stays a human decision)", True),
     # Co-change test-gap: a PAIR that co-changes but no single test exercises
     # both. The grounded first move is to add a joint test, so route to the
     # existing create_test_stub action (it is a test gap), executable like the
@@ -40,9 +49,41 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
     "security-finding": ("harden_security", "Fix the security findings in {s}", True),
     "correctness-bug": ("harden_security", "Fix the likely logic bug in {s}", True),
     "config": ("design_task", "Make configuration {s} environment-aware", False),
-    "entrypoint": ("design_task", "Grow capability behind entrypoint {s}", False),
-    "dependency-hub": ("design_task", "Plan an evolution of central module {s}", False),
-    "symbol-hub": ("design_task", "Generalize the symbol-rich module {s}", False),
+    # W98: flipped from design_task → the delegated ``strengthen_tests`` lander.
+    # "Grow capability" is behavior invention (a human design decision — disclosed
+    # in the description), but the grounded FIRST move on an entrypoint is to
+    # strengthen its tests with mutant-killing assertions before it grows. The
+    # lander's OWN apply-time gate (saturated / no killable survivor / no linked
+    # test / red baseline / test-fixture target ⇒ empty plan, disclosed reason)
+    # is the honesty rail — deliberately NO plan-time probe, because the mutation
+    # engine is unaffordable at plan time (matches the A39 deep-nesting /
+    # god-class / dead-parameter precedent).
+    "entrypoint": ("strengthen_tests",
+                   "Strengthen the tests behind entrypoint {s} with mutant-killing "
+                   "assertions before growing it (which capability to grow stays a "
+                   "human design decision)", True),
+    # W98: flipped from design_task → the delegated ``cover_gaps`` lander — the
+    # same first move as ``hub-untested`` above: a central module gets a
+    # characterization safety-net test BEFORE it evolves (the evolution plan
+    # itself stays a disclosed human design remainder). Honest by construction:
+    # the plan-time ``_covergaps_unserviceable`` probe calls the lander's OWN
+    # gate (existing linked ``tests/test_<stem>.py``, fixture/dunder, nothing
+    # honestly characterizable ⇒ empty plan ⇒ executable=False with the disclosed
+    # reason), and a qualifying module lands via ``apply_rename``
+    # (``impact_scope=True``) + auto-rollback.
+    "dependency-hub": ("cover_gaps",
+                       "Land a characterization safety-net test for the central "
+                       "module {s} — a regression net before it evolves (the "
+                       "evolution plan itself stays a human design decision)", True),
+    # W98: flipped from design_task → the delegated ``cover_gaps`` lander, same
+    # shape as dependency-hub above: pin the symbol-rich module's public behavior
+    # with a characterization test before generalizing it (the generalization
+    # design itself stays a disclosed human remainder); gated by the same
+    # plan-time ``_covergaps_unserviceable`` probe + apply-time auto-rollback.
+    "symbol-hub": ("cover_gaps",
+                   "Land a characterization test pinning the public behavior of "
+                   "the symbol-rich module {s} before generalizing it (the "
+                   "generalization design itself stays a human decision)", True),
     "missing-ci": ("add_ci", "Add a CI workflow that runs the test suite", True),
     # Polyglot hotspot: a large, active NON-Python file. Apex has NO deterministic
     # transform for non-Python source, so this is strictly recommend-only — it must
@@ -788,6 +829,25 @@ class IdeaActionBridge:
             return ""
         return "no undocumented Python symbol to document; human review"
 
+    def _covergaps_unserviceable(self, target: str, project_root: str) -> str:
+        """Why a characterization test can't land here — "" when it can.
+
+        W98: the plan-time reality probe for the flipped dependency-hub /
+        symbol-hub rows. Calls the cover-gaps lander itself (its OWN gate),
+        never re-derives it: an empty ``plan_cover_gaps`` plan (already linked
+        test / fixture / dunder / nothing honestly characterizable) means the
+        step downgrades to an honest ``executable=False`` with the disclosed
+        reason. ``plan_cover_gaps`` is the exact per-candidate call
+        ``cover_gaps_modules`` makes, so the plan-time cost is bounded and
+        already accepted in the synthesis augmentation."""
+        from app.execution.cover_gaps import plan_cover_gaps
+
+        plan = plan_cover_gaps(project_root, target)
+        if plan.new_contents:
+            return ""
+        return ("; ".join(plan.blockers)
+                or "no cover-gap (already linked test / not characterizable); human review")
+
     def _unserviceable_reason(self, action_type: str, target: str,
                               project_root: str) -> str:
         """Why an executable step can't be served right now — "" when it can.
@@ -802,6 +862,11 @@ class IdeaActionBridge:
             "organize_imports": self._imports_unserviceable,
             "add_docstring": self._docstring_unserviceable,
             "add_ci": self._ci_unserviceable,
+            # W98: the cheap delegated lander gets a plan-time probe too — the
+            # lander's OWN gate decides (NO probe for strengthen_tests: its
+            # mutation engine is unaffordable at plan time; the apply-time gate
+            # is the rail there, per the A39 precedent).
+            "cover_gaps": self._covergaps_unserviceable,
         }.get(action_type)
         return probe(target, project_root) if probe else ""
 

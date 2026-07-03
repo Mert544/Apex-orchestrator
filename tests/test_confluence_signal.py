@@ -241,11 +241,15 @@ def test_roadmap_ranks_confluence_high_impact_stabilize():
     assert impact >= 0.6
 
 
-def test_action_recommend_only_when_not_untested():
+def test_action_strengthen_tests_when_not_untested():
+    # W98: a TESTED confluence flipped from recommend-only design_task to the
+    # delegated strengthen_tests lander (mutant-killing assertions before
+    # changing the module; the decoupling design stays a disclosed human
+    # remainder, and the lander's apply-time gate keeps the claim honest).
     idea = IdeaSeeder().seed(_confluence_profile())[0]
     step = IdeaActionBridge().plan_idea(idea)
-    assert step.action_type == "design_task"
-    assert step.executable is False
+    assert step.action_type == "strengthen_tests"
+    assert step.executable is True
 
 
 def test_action_creates_test_stub_when_untested():

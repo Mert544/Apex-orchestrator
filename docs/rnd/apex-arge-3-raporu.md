@@ -62,7 +62,7 @@
 | Eksik | Kanıt | Etki | Yön |
 |---|---|---|---|
 | **Soğuk-başlangıç görünürlüğü** | taze klonda `trackrecord`/`proof` boş ("run apex maintain") | İlk-temas kullanıcısı değer kanıtını ancak ilk koşudan SONRA görür | `apex quickstart` tek-komut demosu; owner-report'un ilk-koşu modu |
-| **Actionability %32** | readiness: 44 adımın 14'ü auto-fixable; 24'ü `design_task` (insan-devri) | "Autonomous" vaadinin sınırı görünür | A39 devamı: design_task→otonom dönüşümler (spec'ler hazır) |
+| **Actionability %32** | readiness: 44 adımın 14'ü auto-fixable; 24'ü `design_task` (insan-devri) — **W98 sonrası ölçüldü: %40.9** (44 adımın 18'i; design_task 24→17: dependency-hub/symbol-hub→`cover_gaps`, entrypoint/confluence→`strengthen_tests`; 2 hub downgrade'i dürüst disclosed no-cover-gap) | "Autonomous" vaadinin sınırı görünür | A39 devamı: design_task→otonom dönüşümler (spec'ler hazır) — W98 4 satırı çevirdi |
 | **%6 analiz-dışı kapsam** | grade scope notu: HTML/YAML/JSON/Shell + `ts_driver.js` (1551 LOC) & `ApexJavaDriver.java` (1249 LOC) analiz DIŞI | Apex kendi sürücülerini derin-analiz edemiyor | JS/Java profilleyicilerini kendi driver'larına çevirmek (dogfood) |
 | **Hotspot: `protocol_scaffold`** | complexity 69, test-linkage 0 görünüyor | risk metriği yüksek (gerçek testleri var ama linkage görmüyor → test_linker iyileştirme fırsatı) | test-linkage'ı objective-suite'lere genişlet |
 | **2 test-siz modül** | grade: 2/~610 | küçük ama sıfır değil | cover-gaps/shield ile kapat |

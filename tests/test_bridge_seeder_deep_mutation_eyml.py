@@ -1083,15 +1083,31 @@ _FACT_EXPECTED = {
     "hotspot-function": ("create_test_stub", True),
     "impure-untested": ("create_test_stub", True),
     "hub-untested": ("create_test_stub", True),
-    "confluence": ("design_task", False),
+    # W98: flipped from design_task → the delegated strengthen_tests lander for a
+    # TESTED confluence (mutant-killing assertions before changing it; the
+    # decoupling design stays a disclosed human remainder). An UNTESTED
+    # confluence still routes to create_test_stub via the _root_action exception.
+    "confluence": ("strengthen_tests", True),
     "cochange-testgap": ("create_test_stub", True),
     "sensitive-path": ("harden_security", True),
     "security-finding": ("harden_security", True),
     "correctness-bug": ("harden_security", True),
     "config": ("design_task", False),
-    "entrypoint": ("design_task", False),
-    "dependency-hub": ("design_task", False),
-    "symbol-hub": ("design_task", False),
+    # W98: flipped from design_task → the delegated strengthen_tests lander
+    # (strengthen the entrypoint's tests before growing it; which capability to
+    # grow stays a disclosed human remainder; apply-time gate is the honesty rail,
+    # no plan-time probe — the mutation engine is unaffordable there).
+    "entrypoint": ("strengthen_tests", True),
+    # W98: flipped from design_task → the delegated cover_gaps lander (land a
+    # characterization safety-net test before the hub evolves; the evolution plan
+    # stays a disclosed human remainder; gated by the plan-time
+    # _covergaps_unserviceable probe — the lander's OWN gate).
+    "dependency-hub": ("cover_gaps", True),
+    # W98: flipped from design_task → the delegated cover_gaps lander (pin the
+    # symbol-rich module's public behavior before generalizing it; the
+    # generalization design stays a disclosed human remainder; same plan-time
+    # probe as dependency-hub).
+    "symbol-hub": ("cover_gaps", True),
     "missing-ci": ("add_ci", True),
     "polyglot-hotspot": ("design_task", False),
     # Autonomous-39 W5: flipped from design_task → the delegated seal_hashable_eq

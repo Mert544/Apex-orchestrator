@@ -92,7 +92,10 @@ extensible (plugins could add operators later). Child count per node =
 - each `dependency_hub` → "Evolve the central module {hub}"
 - each `critical_untested_module` → "Establish a safety net around {module}"
 - each `sensitive_path` → "Harden {path}"
-- each `entrypoint` → "Grow capability behind {entrypoint}"
+- each `entrypoint` → "Grow capability behind {entrypoint}" (W98: its action
+  step now lands test-strengthening behind the entrypoint first — mutant-killing
+  assertions via the `strengthen_tests` lander; which capability to grow stays a
+  human design decision)
 - `symbol_hubs`, `config_files`, missing `ci_files` → analogous seeds
 
 Each root carries `source_facts` so every idea is **traceable to real code**.

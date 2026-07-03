@@ -458,14 +458,17 @@ def test_root_action_untested_confluence_routes_to_test_stub():
     assert step.executable is True
 
 
-def test_root_action_plain_confluence_is_recommend_only():
+def test_root_action_plain_confluence_strengthens_tests():
+    # W98: a plain (tested) confluence flipped from recommend-only design_task
+    # to the delegated strengthen_tests lander; the untested-confluence
+    # exception above still wins (it fires before the _FACT_ACTIONS table read).
     idea = IdeaNode(
         id="i", title="Confluence app/hub.py", subject="app/hub.py",
         operator="root", source_facts=["confluence: app/hub.py"],
     )
     step = IdeaActionBridge().plan_idea(idea)
-    assert step.action_type == "design_task"
-    assert step.executable is False
+    assert step.action_type == "strengthen_tests"
+    assert step.executable is True
 
 
 def test_test_stub_body_smoke_path_when_no_anchors():
