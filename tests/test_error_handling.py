@@ -43,11 +43,18 @@ def test_with_error_handling_reraise():
 
 
 def test_with_timeout_success():
-    @with_timeout(1.0)
+    # P4 (docs/rnd/context-fragile-tests.md #6): hang-guard budget + call-count —
+    # the contract is "an instant function's value comes back after exactly one
+    # call", not "the worker thread gets scheduled within 1s of wall clock".
+    calls = []
+
+    @with_timeout(60.0)
     def fast():
+        calls.append(True)
         return 42
 
     assert fast() == 42
+    assert calls == [True]
 
 
 def test_with_timeout_raises():

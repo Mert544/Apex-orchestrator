@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import time
-
-import pytest
-
 from app.agents.base import AgentState
 from app.agents.bus import AgentBus
 from app.agents.recursive import RecursiveAgent
@@ -11,7 +7,9 @@ from app.agents.recursive import RecursiveAgent
 
 class FakeSubAgent(RecursiveAgent):
     def _execute(self, **kwargs):
-        time.sleep(0.01)
+        # P4 (docs/rnd/context-fragile-tests.md #5): synchronous fake, no sleep —
+        # spawn_sub_agent runs sub-agents inline, so a sleep here only added
+        # load-sensitive wall time to the wait deadline.
         return {"value": kwargs.get("x", 0) * 2}
 
 
@@ -28,7 +26,11 @@ class TestRecursiveAgent:
         parent = FakeSubAgent(name="p", role="parent", bus=bus)
         parent.spawn_sub_agent("sub-1", "child", {"x": 5}, agent_class=FakeSubAgent)
         parent.spawn_sub_agent("sub-2", "child", {"x": 10}, agent_class=FakeSubAgent)
-        results = parent.wait_for_sub_agents(timeout=1.0)
+        # P4 (docs/rnd/context-fragile-tests.md #5): spawn runs sub-agents
+        # synchronously, so completion is a STATE fact asserted directly — the
+        # wait's timeout is only a hang-guard, never a completion deadline.
+        assert all(a.state is AgentState.COMPLETED for a in parent.sub_agents)
+        results = parent.wait_for_sub_agents(timeout=30.0)
         assert len(results) == 2
         values = [r["value"] for r in results]
         assert 10 in values

@@ -229,13 +229,15 @@ def test_start_swallows_so_linger_unsupported(monkeypatch):
     t.start()
     import time
 
-    for _ in range(50):
+    # P4 (docs/rnd/context-fragile-tests.md #4): hang-guard-scale poll window and
+    # join budget (was ~1s / 3s) — bind readiness is polled, never sleep-timed.
+    for _ in range(500):
         if server.server is not None and server.actual_port != 0:
             break
         time.sleep(0.02)
     assert server.actual_port != 0
     server.stop()
-    t.join(timeout=3.0)
+    t.join(timeout=30.0)
     assert not t.is_alive()
 
 
@@ -247,7 +249,9 @@ def test_start_binds_and_loop_exits_on_close():
     t = threading.Thread(target=server.start, daemon=True)
     t.start()
     # Wait for bind.
-    for _ in range(50):
+    # P4 (docs/rnd/context-fragile-tests.md #4): hang-guard-scale poll window and
+    # join budget (was ~1s / 3s) — bind readiness is polled, never sleep-timed.
+    for _ in range(500):
         if server.server is not None and server.actual_port != 0:
             break
         socket.setdefaulttimeout(None)
@@ -256,5 +260,5 @@ def test_start_binds_and_loop_exits_on_close():
         time.sleep(0.02)
     assert server.actual_port != 0
     server.stop()
-    t.join(timeout=3.0)
+    t.join(timeout=30.0)
     assert not t.is_alive()

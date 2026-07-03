@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 import json
+import socket
 import time
 import urllib.request
-from pathlib import Path
 
 import pytest
 
 from app.plugins.marketplace_server import PluginMarketplaceServer
+
+
+def _wait_for_port(host: str, port: int, timeout: float = 30.0) -> bool:
+    """Poll-connect until the server socket accepts — bounded retry, no fixed sleep."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except OSError:
+            time.sleep(0.05)
+    return False
 
 
 @pytest.fixture
@@ -15,7 +27,11 @@ def marketplace_server(tmp_path):
     plugin_dir = tmp_path / "plugins"
     server = PluginMarketplaceServer(host="127.0.0.1", port=18788, plugin_dir=str(plugin_dir))
     server.start()
-    time.sleep(0.3)
+    # P4 (docs/rnd/context-fragile-tests.md #3): poll-connect readiness instead of
+    # a fixed 0.3s startup sleep. start() binds+listens synchronously, so the
+    # first connect normally succeeds immediately; the retry budget is a
+    # hang-guard, never a margin.
+    assert _wait_for_port("127.0.0.1", 18788), "marketplace server never became reachable"
     yield server
     server.stop()
 

@@ -18,9 +18,11 @@ This module proves two things, both non-negotiable for a proof-carrying engine:
      the same ``RenamePlan`` for every transform on hand-built triggering and
      non-triggering sources, and ``scan_simplifications`` returns identical output
      on synthetic trees and the real repo.
-  2. SPEEDUP. On a generated ~300-file synthetic repo, the in-memory scan is
-     meaningfully faster than the temp-dir scan (the per-(file x transform)
-     temp-dir + re-parse is gone).
+  2. ZERO TEMP-DIR I/O. On a generated ~300-file synthetic repo, the in-memory
+     scan creates no temp dirs, writes no files, and reads each file exactly
+     once, while the reference temp-dir scan pays per (file x transform) —
+     proven by counting shims, not by timing (P4:
+     docs/rnd/context-fragile-tests.md finding #1).
 
 Deterministic: no clock in any assertion, no randomness, fixed sources.
 """
@@ -29,7 +31,6 @@ from __future__ import annotations
 
 import json
 import tempfile
-import time
 from pathlib import Path
 
 import pytest
@@ -267,28 +268,68 @@ def _reference_scan(root: Path) -> list[dict]:
     return opportunities[:ss._MAX_OPPORTUNITIES]
 
 
-def test_in_memory_scan_is_faster_than_temp_dir(tmp_path):
-    """On a ~300-file synthetic repo, the in-memory scan beats the temp-dir scan.
+def test_in_memory_scan_is_faster_than_temp_dir(tmp_path, monkeypatch):
+    """On a ~300-file synthetic repo, the in-memory scan performs ZERO temp-dir
+    filesystem work while the temp-dir reference pays per (file x plan-transform)
+    — with byte-identical output.
 
-    Asserts a conservative >=1.5x floor (the real factor is reported); timing is
-    NOT used in any production code path, only this benchmark gate."""
+    P4 (docs/rnd/context-fragile-tests.md finding #1): this used to time both
+    scans and assert a >=1.5x wall-clock speedup ratio, which could dip below
+    the floor under gate load with zero code change. The counters below pin the
+    exact invariant the speedup comes FROM — the in-memory route creates no
+    temp dirs, writes no files, and reads each file exactly once — so the test
+    still fails on the same regression (the scan silently falling back to
+    temp-dir I/O) while never consulting a clock. STRICTER than the old ratio:
+    zero recomputation, not merely "faster"."""
     repo = tmp_path / "repo300"
     repo.mkdir()
     _build_synthetic_repo(repo, 300)
 
-    # Warm imports/caches so the comparison isn't skewed by first-call import cost.
+    # Warm both routes once BEFORE arming the counters, so any lazy first-call
+    # initialisation inside the transforms never pollutes the counted runs.
     scan_simplifications(repo)
-    _reference_scan(repo)
 
-    t0 = time.perf_counter()
+    counts = {"tempdirs": 0, "writes": 0, "reads": 0}
+    real_tempdir = tempfile.TemporaryDirectory
+    real_write_text = Path.write_text
+    real_read_text = Path.read_text
+
+    def counting_tempdir(*args, **kwargs):
+        counts["tempdirs"] += 1
+        return real_tempdir(*args, **kwargs)
+
+    def counting_write_text(self, *args, **kwargs):
+        counts["writes"] += 1
+        return real_write_text(self, *args, **kwargs)
+
+    def counting_read_text(self, *args, **kwargs):
+        counts["reads"] += 1
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", counting_tempdir)
+    monkeypatch.setattr(Path, "write_text", counting_write_text)
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+
     live = scan_simplifications(repo)
-    t_mem = time.perf_counter() - t0
+    mem = dict(counts)
 
-    t0 = time.perf_counter()
     ref = _reference_scan(repo)
-    t_disk = time.perf_counter() - t0
+    ref_tempdirs = counts["tempdirs"] - mem["tempdirs"]
+    ref_writes = counts["writes"] - mem["writes"]
+    ref_reads = counts["reads"] - mem["reads"]
 
+    # Equal output, exactly as before.
     assert json.dumps(live, sort_keys=True) == json.dumps(ref, sort_keys=True)
-    factor = t_disk / t_mem if t_mem > 0 else float("inf")
-    print(f"\n[perf] in-memory={t_mem:.3f}s temp-dir={t_disk:.3f}s factor={factor:.2f}x")
-    assert factor >= 1.5, f"expected >=1.5x speedup, got {factor:.2f}x"
+
+    # The in-memory scan: no temp dirs, no writes, ONE read per file (the
+    # scanner's own read_text) — the transforms re-read NOTHING from disk.
+    assert mem["tempdirs"] == 0
+    assert mem["writes"] == 0
+    assert mem["reads"] == 300
+
+    # The reference route really pays per (file x plan-transform). This also
+    # proves the counting shims intercept the temp-dir machinery, so the zeros
+    # above can never be vacuously green.
+    assert ref_tempdirs >= 300 * len(_PLAN_FNS)
+    assert ref_writes >= 300 * len(_PLAN_FNS)
+    assert ref_reads >= 300 + 300 * len(_PLAN_FNS)

@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import json
+import socket
 import time
 import urllib.request
 
 import pytest
 
 from app.mcp.http_server import MCPHTTPServer
+
+
+def _wait_for_port(host: str, port: int, timeout: float = 30.0) -> bool:
+    """Poll-connect until the server socket accepts — bounded retry, no fixed sleep."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except OSError:
+            time.sleep(0.05)
+    return False
 
 
 def _http_post(url: str, body: dict) -> dict:
@@ -32,8 +45,12 @@ def http_server():
     tools = {"echo": lambda msg="hello": msg}
     setattr(tools["echo"], "input_schema", {"type": "object", "properties": {}})
     server = MCPHTTPServer(tools, host="127.0.0.1", port=18787)
-    thread = server.start_in_thread()
-    time.sleep(0.3)  # Let server start
+    server.start_in_thread()
+    # P4 (docs/rnd/context-fragile-tests.md #3): poll-connect readiness instead of
+    # a fixed 0.3s startup sleep. HTTPServer binds+listens in __init__, so the
+    # first connect normally succeeds immediately; the retry budget is a
+    # hang-guard, never a margin.
+    assert _wait_for_port("127.0.0.1", 18787), "MCP HTTP server never became reachable"
     yield server
     server.shutdown()
 

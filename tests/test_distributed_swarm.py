@@ -70,8 +70,10 @@ class TestSwarmNodeServer:
             pytest.fail("SwarmNodeServer did not start in time")
         yield server
         server.stop()
-        # Give the accept loop time to notice the close and OS to release port
-        time.sleep(0.3)
+        # P4 (docs/rnd/context-fragile-tests.md #4): join the server thread with a
+        # hang-guard instead of a fixed 0.3s sleep — the accept loop has provably
+        # exited (and the socket is closed) when join returns.
+        t.join(timeout=30.0)
 
     def test_node_server_health(self, swarm_server):
         port = swarm_server.actual_port
@@ -151,11 +153,17 @@ class TestCircuitBreaker:
             cb.call(lambda: 42)
 
     def test_circuit_breaker_half_open_recovery(self):
-        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.1)
+        # P4 (docs/rnd/context-fragile-tests.md #4): drive the recovery window by
+        # rewinding the breaker's recorded failure time instead of sleeping over a
+        # 50ms margin — zero clock margin, zero wall time. Also proves (stronger
+        # than before) that the OPEN state still rejects BEFORE the window passes.
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=60.0)
         with pytest.raises(RuntimeError):
             cb.call(lambda: (_ for _ in ()).throw(RuntimeError("fail")))
         assert cb.state == cb.OPEN
-        time.sleep(0.15)
+        with pytest.raises(CircuitBreakerOpen):
+            cb.call(lambda: 42)  # recovery window not yet passed: still rejecting
+        cb.last_failure_time = 0.0  # deterministically move the failure past the window
         result = cb.call(lambda: 42)
         assert result == 42
         assert cb.state == cb.CLOSED
@@ -183,5 +191,10 @@ class TestSwarmNodeServerLifecycle:
         actual_port = server.actual_port
         assert _wait_for_server(f"http://127.0.0.1:{actual_port}/health", timeout=3.0)
         server.stop()
-        time.sleep(0.3)
+        # P4 (docs/rnd/context-fragile-tests.md #4): join the server thread with a
+        # hang-guard instead of sleeping 0.3s and hoping stop() took effect — the
+        # dead thread PROVES the accept loop exited and the socket is closed, so
+        # the negative connect check below is deterministic (connection refused).
+        t.join(timeout=30.0)
+        assert not t.is_alive()
         assert not _wait_for_server(f"http://127.0.0.1:{actual_port}/health", timeout=0.5)
