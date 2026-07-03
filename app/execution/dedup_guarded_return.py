@@ -49,7 +49,15 @@ RAILS (any miss records a blocker; correctness over coverage, absolutely):
   (bound by a direct, top-level assignment statement of the run) — otherwise
   the helper's projection line could raise ``UnboundLocalError`` on a path
   where the original never read the name;
-- identical live-in AND live-out signatures across all copies.
+- identical live-in AND live-out signatures across all copies;
+- the FAMILY rails (shared via :func:`~app.execution._dedup_helpers
+  .family_rail_blocker`): every occurrence structurally identical to the
+  first, no cross-module free-global rebinds, no multi-line strings, no
+  pre-run closures over run-stores, no invisible ``import``/``except``/
+  ``match`` bindings, no ``async for``/``async with``, no reflection;
+- no shadow of ``object``/``type``/``tuple``/``len`` (module level or any
+  enclosing function) — the emitted sentinel/guard must resolve to the real
+  builtins; and the sentinel name must be unused in every enclosing function.
 
 Consumes the same EXACT-duplicate :class:`~app.engine.dedup.DuplicateBlock`
 input as its siblings, reusing dedup_extract's occurrence resolution, data-flow
@@ -66,6 +74,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.execution._dedup_helpers import (
+    _bound_names,
     resolve_occurrence_prefix,
     stamp_multi_module_plan,
 )
@@ -87,6 +96,7 @@ from app.execution.dedup_total_return import (
 )
 from app.execution.extract_method import (
     _data_flow,
+    _function_param_names,
     _has_unenclosed_jump,
     _NESTED_SCOPE_NODES,
     _reindent,
@@ -202,11 +212,53 @@ def _resolve_guarded_return(rel: str, start_line: int, n_statements: int,
                        False)  # tail_return=False: the call site GUARDS the sentinel
 
 
-def _free_sentinel_name(helper_name: str, trees: dict, rels: set) -> str | None:
-    """A module-level sentinel name derived from the helper's own, free in every
-    involved module (its def and cross-module imports must never collide) —
-    ``_shared_1`` → ``_SHARED_1_MISS``. ``None`` when exhausted."""
-    bound = _all_top_level_bindings(trees, rels)
+# The names the emitted caller-side code RESOLVES at runtime outside the
+# lifted block: `object` builds the sentinel; `type`/`tuple`/`len` gate the
+# live-out projection form. A shadow of ANY of them (a module-level
+# ``object = lambda: None`` makes the sentinel forgeable; a parameter named
+# ``type`` breaks the guard) silently changes the emit's meaning.
+_EMIT_BUILTIN_NAMES = ("object", "type", "tuple", "len")
+
+
+def _shadowed_emit_builtin(resolved: list, trees: dict, rels: list) -> str | None:
+    """The blocker for the first emit-critical builtin that any involved
+    module's top-level bindings, or any enclosing function's locals/params,
+    shadow — the emitted sentinel/guard would resolve to the shadow, not the
+    builtin — or ``None`` when all four are the real builtins everywhere."""
+    bound = set(_all_top_level_bindings(trees, set(rels)))
+    for occ in resolved:
+        bound |= _function_param_names(occ.fn) | _bound_names([occ.fn])
+    for name in _EMIT_BUILTIN_NAMES:
+        if name in bound:
+            return (f"`{name}` is shadowed by a module-level or enclosing-"
+                    "function binding — the emitted sentinel/guard would "
+                    "resolve to the shadow, not the builtin")
+    return None
+
+
+def _names_used_in_fns(resolved: list) -> set[str]:
+    """Every Name/arg appearing in ANY enclosing function — the set a fresh
+    caller-visible name (the result local, the sentinel the guard compares
+    against) must dodge: a same-named local would hijack the emitted code."""
+    used: set[str] = set()
+    for occ in resolved:
+        for n in ast.walk(occ.fn):
+            if isinstance(n, ast.Name):
+                used.add(n.id)
+            elif isinstance(n, ast.arg):
+                used.add(n.arg)
+    return used
+
+
+def _free_sentinel_name(helper_name: str, trees: dict, rels: set,
+                        resolved: list) -> str | None:
+    """A module-level sentinel name derived from the helper's own, free in
+    every involved module (its def and cross-module imports must never
+    collide) AND unused as any Name/arg in every enclosing function (a
+    same-named local would hijack the guard's identity test — the same scan
+    :func:`_free_result_name` performs) — ``_shared_1`` → ``_SHARED_1_MISS``.
+    ``None`` when exhausted."""
+    bound = _all_top_level_bindings(trees, rels) | _names_used_in_fns(resolved)
     base = f"_{helper_name.strip('_').upper()}_MISS"
     if base not in bound:
         return base
@@ -221,13 +273,7 @@ def _free_result_name(resolved: list) -> str | None:
     """A local name for the helper's result, free in EVERY enclosing function —
     it must not collide with any name the function reads, writes, or takes as a
     parameter (rebinding a read-later name would change behaviour)."""
-    used: set[str] = set()
-    for occ in resolved:
-        for n in ast.walk(occ.fn):
-            if isinstance(n, ast.Name):
-                used.add(n.id)
-            elif isinstance(n, ast.arg):
-                used.add(n.arg)
+    used = _names_used_in_fns(resolved)
     for candidate in ["_res"] + [f"_res_{i}" for i in range(2, 100)]:
         if candidate not in used:
             return candidate
@@ -383,11 +429,17 @@ def _pick_names(resolved: list, trees: dict, rels: list,
                 plan: RenamePlan) -> tuple[str, str, str] | None:
     """The three fresh names a guarded-return lift needs — helper (shared
     scheme), sentinel (module level, everywhere), result local (every enclosing
-    function). Records a blocker and returns ``None`` when any is exhausted."""
+    function) — behind the shadowed-emit-builtin rail (the emitted
+    ``object()``/``type``/``tuple``/``len`` must be the real builtins).
+    Records a blocker and returns ``None`` when any is unavailable."""
+    shadow = _shadowed_emit_builtin(resolved, trees, rels)
+    if shadow is not None:
+        plan.blockers.append(shadow)
+        return None
     helper_name = _choose_helper_name(resolved, trees, rels, plan)
     if helper_name is None:
         return None
-    sentinel = _free_sentinel_name(helper_name, trees, set(rels))
+    sentinel = _free_sentinel_name(helper_name, trees, set(rels), resolved)
     if sentinel is None:
         plan.blockers.append("could not find a free module-level sentinel name")
         return None

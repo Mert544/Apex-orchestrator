@@ -6,6 +6,13 @@ block used: those names are no longer referenced in the original module, leaving
 self-dedup failure that left ``_py_files`` and ``json`` unused). These tests pin
 that dedup's emitted ``new_contents`` carry zero unused imports — while an import
 that is STILL used elsewhere in the file is kept untouched.
+
+W97 soundness-rail interaction: a CROSS-FILE run that reads an import-bound
+name (``json``) is exactly the "free module-global rebinds to the defining
+module's value" shape the family rails now REFUSE — so the cross-file
+stranded-import scenario can no longer land (it is pinned here as a blocker).
+Gate-cleaning stays pinned on its still-reachable single-module forms, where
+the helper lives beside the import it uses.
 """
 
 from __future__ import annotations
@@ -33,13 +40,15 @@ def _imported_names(source: str) -> set[str]:
     return names
 
 
-# ── 1. cross-file: the importing module's strand is removed (the dogfood bug) ──
+# ── 1. cross-file strand shape: REFUSED by the family soundness rails ──
 
 # Two modules share an identical 5-statement block that calls ``json.dumps``.
-# The helper lands in the FIRST module (which keeps ``json`` — the helper calls
-# it). In the OTHER module the copy collapses to a bare ``_shared_n(...)`` call,
-# so that module no longer references ``json`` — a stranded F401 (exactly the
-# self-dedup failure that left ``json`` unused) unless dedup gate-cleans output.
+# Before W97 the helper landed in the FIRST module and the OTHER module's
+# ``json`` import was gate-cleaned. But the run READS ``json`` — a free
+# module-global — so collapsing the copies into one module would rebind it to
+# the defining module's binding (the adversarially-verified cross-module
+# rebind hazard: the same shape with differing module globals silently changes
+# behaviour). The family rail now refuses the whole shape.
 _STRAND_A = '''\
 import json
 
@@ -67,7 +76,7 @@ def beta(data):
 '''
 
 
-def test_stranded_import_is_removed(tmp_path):
+def test_cross_file_import_reading_block_is_refused(tmp_path):
     root = tmp_path
     _write(root, "pkg/__init__.py", "")
     _write(root, "pkg/a.py", _STRAND_A)
@@ -76,32 +85,19 @@ def test_stranded_import_is_removed(tmp_path):
     assert blocks, "the detector should find the shared block"
 
     plan = plan_dedup_extract(root, blocks[0])
-    assert plan.ok, f"expected a clean plan, blockers={plan.blockers}"
-
-    first = plan.defined_in
-    other = next(r for r in plan.new_contents if r != first)
-    other_src = plan.new_contents[other]
-
-    # The emitted module still parses and the now-dead `json` import is gone.
-    ast.parse(other_src)
-    assert "json" not in _imported_names(other_src)
-    assert "import json" not in other_src
-    # The helper call replaced the copy, and the helper import survives (used).
-    assert f"{plan.new}(" in other_src
-    assert f"import {plan.new}" in other_src
-
-    # Running the detector on the emitted source confirms it is gate-clean:
-    # strip_unused_imports finds nothing more to remove.
-    assert strip_unused_imports(other_src) is None
+    assert not plan.ok, "a cross-module run reading a free module-global must block"
+    assert any("free module-global would rebind to the defining module's value"
+               in b for b in plan.blockers)
+    assert not plan.new_contents
 
 
 # ── 2. an import STILL used elsewhere in the file is KEPT ──
 
-# Cross-file again, but the OTHER module also has ``gamma`` (a non-duplicated
-# function) that ALSO uses ``json``. After the duplicated copy collapses to a
-# call, ``json`` is *still* referenced by ``gamma`` — so gate-cleaning must KEEP
-# the import (it removes only genuinely-dead bindings, never live ones).
-_KEEP_A = '''\
+# Single module (the sound class): alpha/beta share the duplicated block and
+# ``gamma`` ALSO uses ``json``. After the copies collapse, ``json`` is still
+# referenced (helper + gamma) — gate-cleaning must KEEP the import (it removes
+# only genuinely-dead bindings, never live ones).
+_KEEP = '''\
 import json
 
 
@@ -112,10 +108,6 @@ def alpha(data):
     marker = size + 1
     label = marker * 2
     return label
-'''
-
-_KEEP_B = '''\
-import json
 
 
 def beta(data):
@@ -135,30 +127,26 @@ def gamma(obj):
 def test_import_still_used_elsewhere_is_kept(tmp_path):
     root = tmp_path
     _write(root, "pkg/__init__.py", "")
-    _write(root, "pkg/a.py", _KEEP_A)
-    _write(root, "pkg/b.py", _KEEP_B)
+    _write(root, "pkg/mod.py", _KEEP)
     blocks = find_duplicates(root, min_statements=5, min_occurrences=2)
     assert blocks
 
     plan = plan_dedup_extract(root, blocks[0])
     assert plan.ok, f"expected a clean plan, blockers={plan.blockers}"
+    new_src = plan.new_contents["pkg/mod.py"]
 
-    first = plan.defined_in
-    other = next(r for r in plan.new_contents if r != first)
-    other_src = plan.new_contents[other]
-
-    ast.parse(other_src)
-    # gamma still references json in the OTHER module → the import is kept.
-    assert "import json" in other_src
-    assert "json" in _imported_names(other_src)
-    assert "def gamma(" in other_src
+    ast.parse(new_src)
+    # The helper AND gamma still reference json → the import is kept.
+    assert "import json" in new_src
+    assert "json" in _imported_names(new_src)
+    assert "def gamma(" in new_src
     # And the module is still gate-clean (the live import is not flagged).
-    assert strip_unused_imports(other_src) is None
+    assert strip_unused_imports(new_src) is None
 
 
-# ── 3. cross-file: the importing module keeps the helper import (it's used) ──
+# ── 3. single-module lift beside its import stays gate-clean end-to-end ──
 
-_CROSS_A = '''\
+_SAME_MODULE_IMPORT = '''\
 import json
 
 
@@ -169,10 +157,6 @@ def alpha(data):
     marker = size + 1
     label = marker * 2
     return label
-'''
-
-_CROSS_B = '''\
-import json
 
 
 def beta(data):
@@ -185,33 +169,24 @@ def beta(data):
 '''
 
 
-def test_cross_file_gate_clean_both_modules(tmp_path):
+def test_same_module_helper_keeps_import_gate_clean(tmp_path):
     root = tmp_path
     _write(root, "pkg/__init__.py", "")
-    _write(root, "pkg/a.py", _CROSS_A)
-    _write(root, "pkg/b.py", _CROSS_B)
+    _write(root, "pkg/mod.py", _SAME_MODULE_IMPORT)
     blocks = find_duplicates(root, min_statements=5, min_occurrences=2)
     assert blocks
 
     plan = plan_dedup_extract(root, blocks[0])
     assert plan.ok, f"expected a clean plan, blockers={plan.blockers}"
+    new_src = plan.new_contents["pkg/mod.py"]
 
-    first = plan.defined_in
-    other = next(r for r in plan.new_contents if r != first)
-    first_src = plan.new_contents[first]
-    other_src = plan.new_contents[other]
-
-    # Both modules parse and neither carries an unused import (gate-clean).
-    for src in (first_src, other_src):
-        ast.parse(src)
-        assert strip_unused_imports(src) is None
-
-    # The defining module keeps json (the helper still calls json.dumps);
-    # the other module no longer references json (its copy became a call), so
-    # its json import is stripped — but the helper import is kept (it's used).
-    assert "json.dumps" in first_src
-    assert "json" not in _imported_names(other_src)
-    assert f"import {plan.new}" in other_src
+    # The module parses and carries no unused import (gate-clean): the helper
+    # lives beside the import it uses, so ``json`` stays live.
+    ast.parse(new_src)
+    assert strip_unused_imports(new_src) is None
+    assert "json.dumps" in new_src
+    assert "import json" in new_src
+    assert f"def {plan.new}(" in new_src
 
 
 # ── 4. no stranded import → output is byte-for-byte the pre-clean extraction ──

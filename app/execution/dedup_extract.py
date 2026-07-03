@@ -37,6 +37,7 @@ import keyword
 from pathlib import Path
 
 from app.execution._dedup_helpers import (
+    family_rail_blocker,
     resolve_occurrence_prefix,
     stamp_multi_module_plan,
 )
@@ -542,6 +543,15 @@ def plan_dedup_extract(project_root: str | Path, block) -> RenamePlan:
     # Resolve each occurrence; any unsafe one blocks the whole plan.
     resolved = _resolve_all(root, parsed, n_statements, sources, trees, plan)
     if resolved is None:
+        return plan
+
+    # The family soundness rails (refuse-direction only): occurrence identity,
+    # cross-module free-global rebinds, and the per-run lift hazards
+    # (multi-line strings, pre-run closures, invisible bindings, async blocks,
+    # reflection) — shared with the total-/guarded-return siblings.
+    blocker = family_rail_blocker(resolved)
+    if blocker is not None:
+        plan.blockers.append(blocker)
         return plan
 
     # The shared helper has ONE interface: require an identical live-in/live-out

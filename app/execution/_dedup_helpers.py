@@ -7,6 +7,14 @@ SAME five fields onto it. That finalise tail was byte-identical across the three
 transforms (the duplication detector flagged it as a shared 5-statement window),
 so it lives here once and every transform calls it.
 
+It also hosts the family's SOUNDNESS RAILS (:func:`family_rail_blocker`): the
+adversarially-verified refusal checks the exact-dup landers (dedup_extract,
+dedup_total_return, dedup_guarded_return) run after resolving every occurrence
+— occurrence identity, cross-module free-global rebinds, and the per-run lift
+hazards (multi-line strings, pre-run closures, invisible non-``Name`` bindings,
+``async for``/``async with``, frame/namespace reflection). Strictly
+refuse-direction: a rail can only turn an unsound accept into a blocker.
+
 This is a **library** (leading underscore in the filename) — it is never an
 objective and exposes no ``plan_*`` entry point. It imports nothing from the
 transforms (only the plan type it stamps), so it can never form an import cycle
@@ -15,9 +23,35 @@ with them. Deterministic and stdlib-only — no time, no randomness.
 
 from __future__ import annotations
 
-from app.execution.extract_method import _enclosing_function
+import ast
+import builtins
 
-__all__ = ["stamp_multi_module_plan", "resolve_occurrence_prefix"]
+from app.execution.extract_method import (
+    _NESTED_SCOPE_NODES,
+    _enclosing_function,
+    _function_param_names,
+    _loads,
+    _stores,
+)
+
+__all__ = ["stamp_multi_module_plan", "resolve_occurrence_prefix",
+           "family_rail_blocker", "occurrence_rail_reason"]
+
+# Everything the running Python resolves WITHOUT a module-level binding — the
+# only names a run may read freely when its copies collapse into one module.
+_BUILTIN_NAMES = frozenset(dir(builtins))
+
+# Frame/namespace reflection: what these observe depends on WHICH scope is
+# executing, so a verbatim lift silently changes their meaning. ``_getframe``
+# is matched as an attribute (``sys._getframe``).
+_REFLECTION_NAMES = frozenset({"globals", "locals", "vars", "eval", "exec"})
+_REFLECTION_ATTRS = frozenset(_REFLECTION_NAMES | {"_getframe"})
+
+# ``async for`` / ``async with`` carry NO ``ast.Await`` child, so the family's
+# yield/await hazard walks miss them — yet lifted into a sync ``def`` they emit
+# a module that PARSES but cannot compile or import ("'async for' outside async
+# function" is a compile-stage error, not a parse error).
+_ASYNC_HAZARDS = (ast.AsyncFor, ast.AsyncWith)
 
 
 def stamp_multi_module_plan(
@@ -87,3 +121,187 @@ def resolve_occurrence_prefix(plan, rel, start_line, n_statements, sources,
         return None
 
     return source, fn, container, run
+
+
+# ── The family soundness rails (refuse-direction only) ────────────────────
+
+def _invisible_bound_names(nodes: list) -> set[str]:
+    """Names ``nodes`` bind WITHOUT an ``ast.Name`` store node — ``import …
+    as`` / ``from … import`` aliases, ``except … as`` targets, and match-case
+    captures (``MatchAs``/``MatchStar``) — invisible to ``_stores`` and hence
+    to the family's live-in computation."""
+    out: set[str] = set()
+    for node in nodes:
+        for n in ast.walk(node):
+            if isinstance(n, ast.alias):
+                out.add((n.asname or n.name).split(".")[0])
+            elif isinstance(n, ast.ExceptHandler) and n.name:
+                out.add(n.name)
+            elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name:
+                out.add(n.name)
+    return out
+
+
+def _bound_names(nodes: list) -> set[str]:
+    """Every name ``nodes`` binds by ANY mechanism: ``ast.Name`` stores (plain
+    assignments, aug-assigns, ``for``/``with`` targets, walrus) plus the
+    non-``Name`` bindings of :func:`_invisible_bound_names`."""
+    out = _invisible_bound_names(nodes)
+    for node in nodes:
+        for n in ast.walk(node):
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                out.add(n.id)
+    return out
+
+
+def _run_context(fn, run: list) -> tuple[list, list]:
+    """``(before, after)`` — the enclosing function's direct body statements
+    around ``run`` (whose statements are identity-members of ``fn.body``)."""
+    lo = fn.body.index(run[0])
+    hi = fn.body.index(run[-1]) + 1
+    return fn.body[:lo], fn.body[hi:]
+
+
+def _async_hazard_reason(run: list) -> str | None:
+    """``async for``/``async with`` in the run: no ``Await`` child, so the
+    yield/await walks miss it, and the broken sync emit still PARSES."""
+    for stmt in run:
+        for n in ast.walk(stmt):
+            if isinstance(n, _ASYNC_HAZARDS):
+                return (f"the range contains `{type(n).__name__.lower()}` — "
+                        "moving it into a helper would change control flow")
+    return None
+
+
+def _multiline_string_reason(run: list) -> str | None:
+    """A string constant (or f-string) spanning multiple physical lines:
+    ``_reindent`` treats its continuation lines as CODE and rewrites the
+    string's contents. Refuse-first — no delta-indent preservation."""
+    for stmt in run:
+        for n in ast.walk(stmt):
+            is_str = (isinstance(n, ast.JoinedStr)
+                      or (isinstance(n, ast.Constant)
+                          and isinstance(n.value, str)))
+            if (is_str and getattr(n, "end_lineno", None) is not None
+                    and n.end_lineno > n.lineno):
+                return ("the range contains a multi-line string constant — "
+                        "re-indenting the lifted block would rewrite the "
+                        "string's contents")
+    return None
+
+
+def _reflection_reason(run: list) -> str | None:
+    """``globals``/``locals``/``vars``/``eval``/``exec``/``sys._getframe`` in
+    the run: they observe the EXECUTING scope, which the lift changes."""
+    for stmt in run:
+        for n in ast.walk(stmt):
+            token = None
+            if isinstance(n, ast.Name) and n.id in _REFLECTION_NAMES:
+                token = n.id
+            elif isinstance(n, ast.Attribute) and n.attr in _REFLECTION_ATTRS:
+                token = n.attr
+            if token is not None:
+                return (f"the range references `{token}` — frame/namespace "
+                        "reflection would observe the helper's scope, not the "
+                        "original function's")
+    return None
+
+
+def _outside_closure_reason(fn, run: list) -> str | None:
+    """A nested def/lambda OUTSIDE the run (but inside the enclosing function)
+    reads a name the run STORES: after the lift that closure keeps reading the
+    enclosing function's (now never-assigned) local."""
+    stored = _stores(run)
+    if not stored:
+        return None
+    before, after = _run_context(fn, run)
+    for stmt in before + after:
+        for n in ast.walk(stmt):
+            if not isinstance(n, _NESTED_SCOPE_NODES):
+                continue
+            hit = sorted(stored & _loads([n]))
+            if hit:
+                return (f"the range assigns `{hit[0]}`, which a nested "
+                        "def/lambda outside the range reads — the closure "
+                        "would keep reading the now-helper-internal name")
+    return None
+
+
+def _invisible_binding_reason(fn, run: list) -> str | None:
+    """The run READS a name the enclosing function binds only via an
+    ``import``/``except``/``match`` binding outside the run — no ``ast.Name``
+    store exists, so live-in misses it and the helper would lose the binding."""
+    before, after = _run_context(fn, run)
+    invisible = _invisible_bound_names(before + after)
+    if not invisible:
+        return None
+    visible = _function_param_names(fn) | _stores(before) | _bound_names(run)
+    hit = sorted((_loads(run) & invisible) - visible)
+    if hit:
+        return (f"the range reads `{hit[0]}`, which the enclosing function "
+                "binds only via an `import`/`except`/`match` binding outside "
+                "the range — the lifted helper would lose that binding")
+    return None
+
+
+def occurrence_rail_reason(fn, run: list) -> str | None:
+    """The first per-run soundness-rail reason ``run`` cannot lift verbatim out
+    of ``fn`` (or ``None``): async blocks, multi-line strings, reflection,
+    pre-run closures over run-stores, and invisible non-``Name`` bindings.
+    Fixed order, deterministic."""
+    return (_async_hazard_reason(run)
+            or _multiline_string_reason(run)
+            or _reflection_reason(run)
+            or _outside_closure_reason(fn, run)
+            or _invisible_binding_reason(fn, run))
+
+
+def _identity_blocker(resolved: list) -> str | None:
+    """Every resolved run must be structurally identical (normalized
+    ``ast.dump``, position-free) to the first's — a stale/shifted detector
+    line otherwise replaces DIFFERENT code with the first copy's logic."""
+    first = resolved[0]
+    want = [ast.dump(s) for s in first.stmts]
+    for occ in resolved[1:]:
+        if [ast.dump(s) for s in occ.stmts] != want:
+            return (f"{occ.rel}:{occ.span_lo}: occurrence is not structurally "
+                    f"identical to {first.rel}:{first.span_lo} — stale "
+                    "detector lines would rewrite different code with the "
+                    "first copy's logic")
+    return None
+
+
+def _cross_module_rebind_blocker(resolved: list) -> str | None:
+    """When the copies span modules, any name a run LOADS that is neither
+    live-in, nor bound within the run, nor a Python builtin resolves to a
+    module global — and the lift would re-resolve it in the DEFINING module.
+    Single-module blocks are untouched (the helper stays in the same module)."""
+    if len({occ.rel for occ in resolved}) < 2:
+        return None
+    for occ in resolved:
+        free = sorted(_loads(occ.stmts) - set(occ.live_in)
+                      - _bound_names(occ.stmts) - _BUILTIN_NAMES)
+        if free:
+            return (f"{occ.rel}:{occ.span_lo}: the range reads `{free[0]}` — "
+                    "a free module-global would rebind to the defining "
+                    "module's value when the copies collapse into one module")
+    return None
+
+
+def family_rail_blocker(resolved: list) -> str | None:
+    """The dedup family's post-resolution soundness rails, in fixed order:
+    occurrence identity, cross-module free-global rebinds, then each
+    occurrence's per-run rails (:func:`occurrence_rail_reason`). Returns the
+    first blocker string, or ``None`` when the block is sound to lift.
+    ``resolved`` entries only need ``rel``/``span_lo``/``stmts``/``live_in``/
+    ``fn`` (the family's ``_Occurrence`` shape). Refuse-direction only: this
+    can never widen what lands."""
+    blocker = (_identity_blocker(resolved)
+               or _cross_module_rebind_blocker(resolved))
+    if blocker is not None:
+        return blocker
+    for occ in resolved:
+        reason = occurrence_rail_reason(occ.fn, occ.stmts)
+        if reason is not None:
+            return f"{occ.rel}:{occ.span_lo}: {reason}"
+    return None

@@ -693,6 +693,199 @@ def test_result_name_collision_falls_to_next_free(tmp_path):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# W97 rails: the emitted sentinel/guard must resolve to the REAL builtins.
+# A shadow of `object`/`type`/`tuple`/`len` — module level or any enclosing
+# function's local/param — silently changes the emit's meaning (a forgeable
+# sentinel via `object = lambda: None`; `type(_res)` calling a parameter).
+# ──────────────────────────────────────────────────────────────────────────
+
+_OBJECT_SHADOW = '''\
+object = lambda: None
+
+
+def fa(x, log):
+    if x < 0:
+        return
+    log.append(x)
+    log.append(x + 1)
+
+
+def fb(x, log):
+    if x < 0:
+        return
+    log.append(x)
+    log.append(x + 1)
+    log.append("b")
+'''
+
+
+def test_module_level_object_shadow_blocks(tmp_path):
+    # The verified repro: with `object = lambda: None` the sentinel is None,
+    # indistinguishable from a bare-return guard path (f(-1): None -> 'fell').
+    _write(tmp_path, "mod.py", _OBJECT_SHADOW)
+    block = DuplicateBlock(fingerprint="x", lines=3,
+                           occurrences=["mod.py:5", "mod.py:12"])
+    plan = plan_dedup_guarded_return(tmp_path, block)
+    assert not plan.ok
+    assert any("`object` is shadowed by a module-level or enclosing-function "
+               "binding" in b and "not the builtin" in b
+               for b in plan.blockers)
+    assert not plan.new_contents
+
+
+_TYPE_PARAM_SHADOW = '''\
+def fa(type, x):
+    if x < 0:
+        return None
+    y = x + 1
+    print(y)
+    return y + type(x)
+
+
+def fb(type, x):
+    if x < 0:
+        return None
+    y = x + 1
+    print(y)
+    return y - type(x)
+'''
+
+
+def test_type_parameter_shadow_blocks(tmp_path):
+    # The verified repro: a parameter named `type` makes the emitted 4-line
+    # guard call the PARAMETER (f(int, 3): 8 -> TypeError).
+    _write(tmp_path, "mod.py", _TYPE_PARAM_SHADOW)
+    block = DuplicateBlock(fingerprint="x", lines=3,
+                           occurrences=["mod.py:2", "mod.py:10"])
+    plan = plan_dedup_guarded_return(tmp_path, block)
+    assert not plan.ok
+    assert any("`type` is shadowed" in b and "sentinel/guard" in b
+               for b in plan.blockers)
+    assert not plan.new_contents
+
+
+_LEN_LOCAL_SHADOW = '''\
+def fa(vals, x):
+    len = 3
+    if x < 0:
+        return None
+    y = x + 1
+    vals.append(y)
+    return y + len
+
+
+def fb(vals, x):
+    len = 3
+    if x < 0:
+        return None
+    y = x + 1
+    vals.append(y)
+    return y - len
+'''
+
+
+def test_len_local_shadow_blocks(tmp_path):
+    _write(tmp_path, "mod.py", _LEN_LOCAL_SHADOW)
+    block = DuplicateBlock(fingerprint="x", lines=3,
+                           occurrences=["mod.py:3", "mod.py:12"])
+    plan = plan_dedup_guarded_return(tmp_path, block)
+    assert not plan.ok
+    assert any("`len` is shadowed" in b for b in plan.blockers)
+    assert not plan.new_contents
+
+
+_BUILTIN_READS = '''\
+def fa(cache, key, log):
+    if key in cache:
+        return cache[key]
+    cache[key] = len(str(key))
+    log.append(type(key).__name__)
+
+
+def fb(cache, key, log):
+    if key in cache:
+        return cache[key]
+    cache[key] = len(str(key))
+    log.append(type(key).__name__)
+    log.append("b")
+'''
+
+
+def test_builtin_reads_without_shadow_still_land(tmp_path):
+    # Negative control: READING `len`/`type`/`str` (no binding anywhere) is
+    # exactly the sound class — the rail must not over-refuse it.
+    _write(tmp_path, "mod.py", _BUILTIN_READS)
+    block = DuplicateBlock(fingerprint="x", lines=3,
+                           occurrences=["mod.py:2", "mod.py:9"])
+    plan = plan_dedup_guarded_return(tmp_path, block)
+    assert plan.ok, f"blockers={plan.blockers}"
+    new_src = plan.new_contents["mod.py"]
+    assert "= object()" in new_src
+
+    before = _exec_module(_BUILTIN_READS)
+    after = _exec_module(new_src)
+    for fn in ("fa", "fb"):
+        b_cache, b_log = {}, []
+        a_cache, a_log = {}, []
+        assert before[fn](b_cache, "k", b_log) == after[fn](a_cache, "k", a_log)
+        assert b_cache == a_cache and b_log == a_log
+        hit = {"k": 42}
+        assert before[fn](dict(hit), "k", []) == after[fn](dict(hit), "k", [])
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# W97 rail: the sentinel name must be free in the ENCLOSING FUNCTIONS too
+# (mirroring _free_result_name's scan) — a same-named local would hijack the
+# guard's identity test.
+# ──────────────────────────────────────────────────────────────────────────
+
+_SENTINEL_LOCAL = '''\
+def alpha(cache, key, log):
+    _SHARED_1_MISS = "hot"
+    if key in cache:
+        return cache[key]
+    cache[key] = 1
+    log.append("miss")
+    return _SHARED_1_MISS
+
+
+def beta(cache, key, log):
+    _SHARED_1_MISS = "hot"
+    if key in cache:
+        return cache[key]
+    cache[key] = 1
+    log.append("miss")
+    return _SHARED_1_MISS + "!"
+'''
+
+
+def test_sentinel_name_used_as_function_local_falls_to_next_free(tmp_path):
+    # The verified repro: with a fn-LOCAL `_SHARED_1_MISS`, the emitted guard
+    # compared against the local ("cache"/"hot"), so genuine fall-through
+    # returned the raw projection tuple. The sentinel scan now mirrors
+    # _free_result_name and dodges every enclosing-function Name/arg.
+    _write(tmp_path, "mod.py", _SENTINEL_LOCAL)
+    block = DuplicateBlock(fingerprint="x", lines=3,
+                           occurrences=["mod.py:3", "mod.py:12"])
+    plan = plan_dedup_guarded_return(tmp_path, block)
+    assert plan.ok, f"blockers={plan.blockers}"
+    new_src = plan.new_contents["mod.py"]
+    assert "_SHARED_1_MISS_2 = object()" in new_src
+    assert "is not _SHARED_1_MISS_2" in new_src
+    assert new_src.count('_SHARED_1_MISS = "hot"') == 2  # locals untouched
+
+    before = _exec_module(_SENTINEL_LOCAL)
+    after = _exec_module(new_src)
+    for fn in ("alpha", "beta"):
+        b_cache, b_log = {}, []
+        a_cache, a_log = {}, []
+        assert before[fn](b_cache, "k", b_log) == after[fn](a_cache, "k", a_log)
+        assert b_cache == a_cache and b_log == a_log
+        hit = {"k": 42}
+        assert before[fn](dict(hit), "k", []) == after[fn](dict(hit), "k", [])
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Determinism & robustness.
 # ──────────────────────────────────────────────────────────────────────────
 

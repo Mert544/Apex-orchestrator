@@ -46,6 +46,7 @@ import ast
 from pathlib import Path
 
 from app.execution._dedup_helpers import (
+    family_rail_blocker,
     resolve_occurrence_prefix,
     stamp_multi_module_plan,
 )
@@ -74,8 +75,13 @@ __all__ = ["plan_dedup_total_return", "_always_returns"]
 _TERMINATORS = (ast.Return, ast.Raise)
 
 # Nodes that, anywhere in the run, would change control-flow semantics if the
-# run were relocated into a helper (or that this pass deliberately won't analyze).
-_FLOW_HAZARDS = (ast.Yield, ast.YieldFrom, ast.Await, ast.Global, ast.Nonlocal)
+# run were relocated into a helper (or that this pass deliberately won't
+# analyze). ``async for``/``async with`` belong here even though they carry no
+# ``Await`` child: lifted into a sync helper they emit a module that PARSES
+# but cannot compile/import ('async for' outside async function is a
+# compile-stage error, not a parse error).
+_FLOW_HAZARDS = (ast.Yield, ast.YieldFrom, ast.Await, ast.Global, ast.Nonlocal,
+                 ast.AsyncFor, ast.AsyncWith)
 
 
 def _always_returns(stmts: list) -> bool:
@@ -349,6 +355,15 @@ def _load_and_resolve(root: Path, block, plan: RenamePlan, resolver=None
 
     resolved = _resolve_all(parsed, n_statements, sources, trees, plan, resolver)
     if resolved is None:
+        return None
+
+    # The family soundness rails (refuse-direction only): occurrence identity,
+    # cross-module free-global rebinds, and the per-run lift hazards
+    # (multi-line strings, pre-run closures, invisible bindings, async blocks,
+    # reflection). Shared with dedup_extract via the family library.
+    blocker = family_rail_blocker(resolved)
+    if blocker is not None:
+        plan.blockers.append(blocker)
         return None
     return sources, trees, resolved, rels
 
