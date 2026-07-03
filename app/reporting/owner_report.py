@@ -33,7 +33,12 @@ through ``apex self-audit`` / ``apex grade``:
   ``<project_root>/.apex/`` — so the closing "promise" sentence is evidence-derived
   ("Last N runs: ...") whenever this project has a history, instead of a static claim.
   When there is no history yet the closing line falls back to the original, generic,
-  BYTE-IDENTICAL sentence (opt-in by evidence, neutral default).
+  BYTE-IDENTICAL sentence (opt-in by evidence, neutral default);
+* the buyer's OWN agenda artifact (``<project_root>/.apex/agenda.json``, written by
+  ``apex agenda`` / the daemon), read directly as bytes — so the report can name the
+  NEXT landable move without running any analysis. No artifact yet → an honest
+  "no agenda artifact yet" line that says how to create one (see :func:`_agenda_for`
+  and :func:`_agenda_line`).
 
 Every technical verdict is folded into ONE owner-readable English sentence by
 :func:`render_owner_report_markdown`. Like every audit it composes, this view is
@@ -45,6 +50,7 @@ re-implements NO analysis; it only translates.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 __all__ = [
@@ -135,6 +141,51 @@ def _example_abilities(concrete_names) -> list[str]:
     return [_ABILITY_PHRASES[n] for n in present[:_MAX_EXAMPLE_ABILITIES]]
 
 
+_AGENDA_REL = ".apex/agenda.json"
+
+
+def _agenda_for(project_root: str | Path) -> dict:
+    """The TARGET project's agenda artifact, reduced to the owner-facing facts.
+
+    Reads ``<project_root>/.apex/agenda.json`` — the artifact ``apex agenda`` /
+    the daemon writes — DIRECTLY as bytes (``json.loads``), never through
+    ``app.engine.agenda``: no new analysis runs here (the artifact IS the
+    already-computed judgement), the ``--target`` semantics stay identical to
+    the track-record read (the buyer's OWN project, never Apex's tree), and
+    the agenda module keeps its single-writer role. Returns a stable-key dict:
+
+    * ``present`` (bool) — the artifact file exists.
+    * ``readable`` (bool) — it parsed to a JSON object.
+    * ``landable`` (int) — how many entries the landable lane carries.
+    * ``rank1`` — ``{"fix_kind", "file"}`` for the rank-1 landable entry, or
+      ``None`` when the lane is empty (or carries no rank-1 entry).
+
+    Pure and deterministic: same artifact bytes -> same dict; no clock, no
+    randomness, no network. Never raises — absent/corrupt artifacts yield the
+    honest ``present``/``readable`` flags instead."""
+    path = Path(project_root) / _AGENDA_REL
+    if not path.exists():
+        return {"present": False, "readable": False, "landable": 0, "rank1": None}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    if not isinstance(data, dict):
+        return {"present": True, "readable": False, "landable": 0, "rank1": None}
+    lanes = data.get("lanes")
+    landable = lanes.get("landable") if isinstance(lanes, dict) else None
+    if not isinstance(landable, list):
+        landable = []
+    rank1 = None
+    for entry in landable:
+        if isinstance(entry, dict) and entry.get("rank") == 1:
+            rank1 = {"fix_kind": entry.get("fix_kind", ""),
+                     "file": entry.get("file", "")}
+            break
+    return {"present": True, "readable": True,
+            "landable": len(landable), "rank1": rank1}
+
+
 def _track_record_for(project_root: str | Path) -> dict:
     """This project's OWN proof-of-fix track record, as an owner-facing dict.
 
@@ -196,9 +247,13 @@ def owner_report(project_root: str | Path) -> dict:
     * ``track_record`` — ``{has_history, runs, applied, rolled_back, blocked}``, the
       buyer's OWN ``.apex/`` proof-of-fix history (see :func:`_track_record_for`);
       ``has_history`` is False on a fresh project with no proof-carrying runs yet.
+    * ``agenda`` — ``{present, readable, landable, rank1}``, the buyer's OWN
+      ``.apex/agenda.json`` artifact (see :func:`_agenda_for`); ``present`` is False
+      until ``apex agenda`` or the daemon has written one.
 
     Pure, deterministic, zero-token, offline: no clock, no randomness, no LLM (the
-    proof-history read is file I/O over already-written JSON, not a clock)."""
+    proof-history and agenda reads are file I/O over already-written JSON, not a
+    clock)."""
     from app.engine.health_score import grade
     from app.engine.north_star_audit import north_star_report
     from app.engine.soundness_audit import repo_root, soundness_report
@@ -233,6 +288,7 @@ def owner_report(project_root: str | Path) -> dict:
         },
         "grade": {"letter": health.letter, "score": health.score},
         "track_record": track_record,
+        "agenda": _agenda_for(project_root),
         "capabilities": {
             "concrete_count": concrete_count,
             "languages": _languages_for(concrete_names),
@@ -328,6 +384,35 @@ def _capabilities_line(report: dict) -> str:
     )
 
 
+# The honest no-agenda-yet sentence — an owner without the artifact is told HOW
+# to get one, never shown fabricated "next moves". Kept as a named constant so
+# every fallback path (absent artifact, corrupt artifact, an older/hand-built
+# report dict with no "agenda" key at all) renders the SAME bytes.
+_NO_AGENDA_LINE = (
+    "- Next up (agenda): no agenda artifact yet (run apex agenda or the daemon)."
+)
+
+
+def _agenda_line(report: dict) -> str:
+    """One sentence on what the agenda says this project should do NEXT.
+
+    With a readable agenda artifact, renders the landable-lane count and names
+    the rank-1 move (the exact entry ``apex assist --from-agenda`` would pick
+    up) — the owner page's only forward-looking line, and it is copied from the
+    already-written artifact, never recomputed here. Without one (absent or
+    corrupt artifact, or a report dict predating this feature), renders the
+    honest :data:`_NO_AGENDA_LINE` fallback instead — no agenda is a stated
+    fact plus the command that creates one, not a silent omission."""
+    agenda = report.get("agenda")
+    if not agenda or not agenda.get("readable"):
+        return _NO_AGENDA_LINE
+    line = f"- Next up (agenda): {agenda['landable']} landable move(s)"
+    rank1 = agenda.get("rank1")
+    if rank1:
+        line += f"; rank-1: {rank1['fix_kind']} in {rank1['file']}"
+    return line + "."
+
+
 # The ORIGINAL generic promise sentence — byte-identical to the pre-track-record
 # text. Kept as a named constant so the neutral/no-evidence fallback in
 # :func:`_promise_line` can never accidentally drift from it (both read the SAME
@@ -379,6 +464,9 @@ def render_owner_report_markdown(report: dict) -> str:
     lines.append(_honesty_line(report))
     lines.append(_quality_line(report))
     lines.append(_capabilities_line(report))
+    # The agenda line sits immediately BEFORE the closing promise: "here is the
+    # next move" then "and here is the guarantee behind every move".
+    lines.append(_agenda_line(report))
     lines.append(_promise_line(report))
     lines.append("")
     return "\n".join(lines)

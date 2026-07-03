@@ -10,7 +10,9 @@ about this project" has to know all four paths and their shapes.
 The vault is the single roll-up: ``load_vault_view`` composes the stores into
 one schema-versioned view through their EXISTING readers (raw passthrough for
 the JSON/text stores, :func:`app.engine.proof_history.load_proof_history` for
-proof evidence, ``summarise_fix_track_record`` for the derived track record —
+proof evidence, ``summarise_fix_track_record`` for the derived track record,
+plus a lane-count summary of the ``agenda.json`` ARTIFACT — read as bytes,
+never through ``app.engine.agenda``, which itself imports this module — with
 no new analysis, no reinterpretation), and ``write_vault`` dumps that view
 byte-deterministically to ``.apex/vault/vault.json``.
 
@@ -42,6 +44,7 @@ VAULT_REL = ".apex/vault/vault.json"
 _DREAM_JOURNAL_REL = ".apex/dream-journal.json"
 _DREAM_DIGEST_REL = ".apex/dream-digest.md"
 _PROOF_REL = ".apex/proof-of-fix.json"
+_AGENDA_REL = ".apex/agenda.json"
 
 
 def _absent(source: str) -> dict[str, Any]:
@@ -73,6 +76,56 @@ def _text_section(root: Path, rel: str) -> dict[str, Any]:
     return {"present": True, "source": rel, "readable": True, "text": text}
 
 
+def _agenda_section(root: Path) -> dict[str, Any]:
+    """The agenda ARTIFACT (``.apex/agenda.json``) as a summarised vault section.
+
+    Reads the artifact FILE directly (``json.loads``) instead of importing
+    ``app.engine.agenda``: the agenda module already imports the vault
+    (``read_user_notes``), so importing back would be circular — and the vault
+    must stay a leaf reader of ``.apex/`` artifacts. Reading bytes also keeps
+    the single-writer contract intact on BOTH sides: the agenda module remains
+    the agenda file's only author, the vault module the vault file's.
+
+    Contract (mirrors the sibling sections): absent → ``{"present": False,
+    "source": ...}``; unparseable or non-dict → ``{"present": True,
+    "readable": False, ...}``; readable → the four lane LENGTHS plus the
+    ``retired`` operators (V4 learned caution) with their notes, so the vault
+    shows Apex's current judgement without duplicating the full artifact."""
+    path = root / _AGENDA_REL
+    if not path.exists():
+        return _absent(_AGENDA_REL)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    if not isinstance(data, dict):
+        # Corrupt bytes or a non-object payload: surfaced honestly, never
+        # "repaired" here (the agenda module owns the artifact's format).
+        return {"present": True, "source": _AGENDA_REL, "readable": False}
+    lanes = data.get("lanes")
+    if not isinstance(lanes, dict):
+        lanes = {}
+
+    def _lane(name: str) -> list[Any]:
+        lane = lanes.get(name)
+        return lane if isinstance(lane, list) else []
+
+    retired = [{"operator": entry.get("operator", ""),
+                "note": entry.get("note", "")}
+               for entry in _lane("watched")
+               if isinstance(entry, dict) and entry.get("retired") is True]
+    return {
+        "present": True,
+        "source": _AGENDA_REL,
+        "readable": True,
+        "landable": len(_lane("landable")),
+        "human": len(_lane("human")),
+        "watched": len(_lane("watched")),
+        "user": len(_lane("user")),
+        "retired": retired,
+    }
+
+
 def load_vault_view(project_root: str | Path) -> dict[str, Any]:
     """Compose the vault view from the live stores (pure read, no writes)."""
     root = Path(project_root)
@@ -97,6 +150,11 @@ def load_vault_view(project_root: str | Path) -> dict[str, Any]:
             "dream_digest": _text_section(root, _DREAM_DIGEST_REL),
             "proof_of_fix": proof_section,
             "track_record": track_record,
+            # Sixth section (living-assistant polish): the agenda artifact,
+            # summarised lane-by-lane — read as BYTES, never via the agenda
+            # engine (see _agenda_section for the circular-import/single-writer
+            # rationale).
+            "agenda": _agenda_section(root),
         },
     }
 
@@ -174,6 +232,12 @@ def _section_line(name: str, section: dict[str, Any]) -> str:
         return f"- **{name}** — derived from proof evidence ({len(summary)} field(s))"
     if not section.get("readable", True):
         return f"- **{name}** — present but unreadable (`{section['source']}`)"
+    if name == "agenda":
+        return (f"- **{name}** — {section['landable']} landable / "
+                f"{section['human']} human / {section['watched']} watched / "
+                f"{section['user']} user note(s); "
+                f"{len(section['retired'])} retired operator(s) "
+                f"(`{section['source']}`)")
     data = section.get("data")
     if isinstance(data, list):
         size = f"{len(data)} entrie(s)"
