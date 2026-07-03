@@ -121,6 +121,61 @@ python scripts/verify.py --lint-only
 - Tests use `tmp_path` and self-contained demo projects; `from __future__ import
   annotations` at the top; type hints on public APIs; dataclasses over dicts.
 
+## Dalga Döngüsü v2 (verim paketi) — the efficient wave cycle
+
+The wave tooling lives **in the repo** under `scripts/` (`preflight.py`,
+`gate_runner.py`, `session_pulse.py`), so a container reset can never lose it
+again. The cycle for shipping one wave:
+
+1. **Pulse** — `python scripts/session_pulse.py`: 5-second, read-only "where
+   are we" (local vs origin tip + divergence, newest `docs/PROGRESS.md` entry,
+   agenda rank-1 landable, pending `ERTELENEN`/`AÇIK KARAR` items, and whether
+   `.apex/gatechk` holds checkpoints reusable at the current content keys).
+2. **Preflight** — `python scripts/preflight.py`: maps the changed files
+   (diff vs origin + working tree) to impacted test files via
+   `app.engine.test_impact` and runs ONE pytest over just those
+   (`--timeout=300`). It honestly SKIPS straight to the full gate when a hub
+   file changed (`app/cli*.py`, `objective_compiler.py`,
+   `idea_action_bridge.py`, `tests/conftest.py`) or when >120 test files are
+   impacted — a partial smoke at that width is false confidence.
+3. **Commit early** — commit the wave on the feature branch (explicit
+   pathspecs) BEFORE gating. An unpushed commit plus a bundle is recoverable;
+   uncommitted work is not.
+4. **Insurance (optional)** — `python scripts/gate_runner.py --insurance …`
+   writes `.apex/gatechk/wave.bundle`, prints it gzip+base64 into the
+   transcript (the transcript itself becomes the backup), and best-effort
+   pushes `refs/backup/wave-<tip12>` (a rejection warns and continues; the
+   ref is deleted after the green push).
+5. **Content-keyed gate** — `python scripts/gate_runner.py` runs the 16
+   verify chunks (each a `scripts/verify.py --chunk K --no-lint` subprocess,
+   at most 3 at once), then `ruff check app/`, then
+   `apex self-audit --north-star`. Every GREEN chunk is checkpointed under
+   `.apex/gatechk` keyed by **content** (tree hash of `app/` + `scripts/` +
+   `tests/conftest.py` + the chunk's own test-file blobs) — so a test-only
+   fix re-runs ONLY the chunks whose files changed (~4 min instead of ~40),
+   while any `app/` change honestly invalidates everything.
+6. **Push on green** — all-green ⇒ gate_runner pushes the branch (retries
+   2/4/8/16s, local-proxy credential helper configured idempotently). Red ⇒
+   no push, ever. The full-green-gate-before-push discipline is unchanged —
+   only the waste died.
+
+Rules the cycle encodes (learned the hard way; see `docs/PROGRESS.md`):
+
+- **≤3 concurrent pytest processes** — the container OOMs at 5; the ceiling
+  is hard-coded (`gate_runner.MAX_JOBS = 3`) and requests above it are clamped.
+- **No concurrent load during the gate** (the chunk-12 case): a wall-clock
+  assertion in chunk 12 went red purely from load beside the gate and was
+  green alone. Run the gate alone; the ranked fix-later list of
+  timing-fragile tests lives in `docs/rnd/context-fragile-tests.md`
+  (fix = timing proxy → deterministic invariant, never a looser bound).
+- **Reset-recovery drill**: if the container resets with the wave unpushed —
+  recover the bundle (from `.apex/gatechk/wave.bundle`, the transcript's
+  base64 block via `base64 -d | gunzip > wave.bundle`, or the
+  `refs/backup/wave-<tip12>` ref), then
+  `python scripts/gate_runner.py --tip <sha>` restores HEAD itself
+  (fetch → bundle-unbundle fallback → hard reset) and resumes the gate from
+  the surviving checkpoints.
+
 ## Memory / learning stores (`.apex/`)
 | File | Purpose |
 |---|---|
